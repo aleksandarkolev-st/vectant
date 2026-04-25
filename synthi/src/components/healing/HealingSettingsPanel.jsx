@@ -39,7 +39,7 @@ import {
 import { selectHealingRules } from '@/redux/healingSelectors';
 import { HealingRulesEditor } from './HealingRulesEditor';
 import { HealingHistoryPanel } from './HealingHistoryPanel';
-import { RefreshCcw } from 'lucide-react';
+import { RefreshCcw, ChevronRight } from 'lucide-react';
 
 // ── Small UI atoms ──────────────────────────────────────────────────────
 function Toggle({ checked, onChange, label, description }) {
@@ -136,7 +136,9 @@ function RadioRow({ value, onChange, options }) {
           boxShadow: '0 1px 2px rgba(0,0,0,0.25)',
           opacity: pill.ready ? 1 : 0,
           transition:
-            'left 220ms cubic-bezier(0.4, 0, 0.2, 1), width 220ms cubic-bezier(0.4, 0, 0.2, 1), opacity 120ms',
+            'left 280ms cubic-bezier(0.34, 1.36, 0.64, 1), width 280ms cubic-bezier(0.34, 1.36, 0.64, 1), opacity 120ms, box-shadow 200ms ease',
+          boxShadow:
+            '0 1px 2px rgba(0,0,0,0.25), 0 0 12px color-mix(in srgb, var(--accent-primary) 28%, transparent)',
           pointerEvents: 'none',
           zIndex: 0,
         }}
@@ -331,9 +333,8 @@ export function HealingSettingsPanel({ aiHealing } = {}) {
       <button
         onClick={handleHealNow}
         disabled={!enabled}
-        className="flex items-center justify-center gap-2 text-sm py-2 rounded-md transition-opacity disabled:opacity-40"
+        className="heal-button-primary flex items-center justify-center gap-2 text-sm py-2 rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
         style={{
-          background: 'var(--accent-primary)',
           color: 'var(--text-on-accent, white)',
           fontWeight: 500,
         }}
@@ -516,12 +517,15 @@ export function HealingSettingsPanel({ aiHealing } = {}) {
           className="flex items-center gap-1 text-xs font-semibold uppercase tracking-wider"
           style={{ color: 'var(--text-muted)' }}
         >
-          <span>{advancedOpen ? '▾' : '▸'}</span>
+          <ChevronRight
+            className={`w-3 h-3 heal-chevron ${advancedOpen ? 'is-open' : ''}`}
+            aria-hidden
+          />
           <span>Advanced</span>
         </button>
 
         {advancedOpen && (
-          <div className="mt-3 flex flex-col gap-3">
+          <div className="mt-3 flex flex-col gap-3 heal-row-enter">
             {/* Fine-tune thresholds */}
             <div>
               <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>

@@ -17,7 +17,7 @@ import {
   selectAppliedFixes,
   selectUndoStack,
 } from '@/redux/healingSelectors';
-import { History, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react';
+import { History, RotateCcw, ChevronRight } from 'lucide-react';
 import { codeToTokens } from 'shiki';
 
 const HEAL_REVERT_EVENT = 'synthi:heal-revert-to-fix';
@@ -195,7 +195,6 @@ function FixDiff({ originalText, replacementText, filePath }) {
 // ── Single row ──────────────────────────────────────────────────────────
 function HistoryRow({ fix, undoEntry, isUndoable, onRevert }) {
   const [expanded, setExpanded] = useState(false);
-  const Chev = expanded ? ChevronDown : ChevronRight;
 
   const handleRevert = useCallback((e) => {
     e.stopPropagation();
@@ -204,7 +203,7 @@ function HistoryRow({ fix, undoEntry, isUndoable, onRevert }) {
 
   return (
     <div
-      className="rounded-md"
+      className="rounded-md heal-card"
       style={{
         background: 'var(--bg-surface)',
         border: '1px solid var(--border-subtle)',
@@ -214,8 +213,8 @@ function HistoryRow({ fix, undoEntry, isUndoable, onRevert }) {
         onClick={() => setExpanded((v) => !v)}
         className="w-full flex items-start gap-2 px-2 py-1.5 text-left"
       >
-        <Chev
-          className="w-3 h-3 mt-0.5 flex-shrink-0"
+        <ChevronRight
+          className={`w-3 h-3 mt-0.5 flex-shrink-0 heal-chevron ${expanded ? 'is-open' : ''}`}
           style={{ color: 'var(--text-muted)' }}
         />
         <div className="flex-1 min-w-0">
@@ -273,7 +272,7 @@ function HistoryRow({ fix, undoEntry, isUndoable, onRevert }) {
       </button>
 
       {expanded && undoEntry && (
-        <div className="px-2 pb-2">
+        <div className="px-2 pb-2 heal-row-enter">
           <FixDiff
             originalText={undoEntry.originalText}
             replacementText={fix.replacementText}
@@ -283,7 +282,7 @@ function HistoryRow({ fix, undoEntry, isUndoable, onRevert }) {
       )}
       {expanded && !undoEntry && (
         <div
-          className="px-2 pb-2 text-[10px] italic"
+          className="px-2 pb-2 text-[10px] italic heal-row-enter"
           style={{ color: 'var(--text-dim)' }}
         >
           No diff available (undo entry purged).
@@ -324,12 +323,15 @@ export function HealingHistoryPanel() {
         style={{ color: 'var(--text-muted)' }}
       >
         <History className="w-3 h-3" />
-        <span>{open ? '▾' : '▸'}</span>
+        <ChevronRight
+          className={`w-3 h-3 heal-chevron ${open ? 'is-open' : ''}`}
+          aria-hidden
+        />
         <span>Recent fixes ({applied.length})</span>
       </button>
 
       {open && (
-        <div className="mt-2 flex flex-col gap-1.5">
+        <div className="mt-2 flex flex-col gap-1.5 heal-stagger">
           {recent.map((fix) => (
             <HistoryRow
               key={fix.id || `${fix.appliedAt}-${fix.category}`}

@@ -105,11 +105,14 @@ function MatchPreview({ matched }) {
   return (
     <div
       role="dialog"
-      className="absolute right-0 top-full mt-1 z-30 w-72 rounded-md p-2 shadow-lg text-left"
+      className="heal-popover absolute right-0 top-full mt-1 z-30 w-72 rounded-md p-2 shadow-2xl text-left"
       style={{
-        background: 'var(--bg-surface)',
-        border: '1px solid var(--border-subtle)',
+        background:
+          'color-mix(in srgb, var(--bg-surface) 85%, transparent)',
+        border: '1px solid var(--border-medium, var(--border-subtle))',
         color: 'var(--text-primary)',
+        boxShadow:
+          '0 12px 32px rgba(0,0,0,0.35), 0 0 0 1px color-mix(in srgb, var(--accent-primary) 12%, transparent)',
       }}
       onMouseDown={(e) => e.stopPropagation()}
     >
@@ -119,7 +122,7 @@ function MatchPreview({ matched }) {
       >
         Affects {matched.length} diagnostic{matched.length === 1 ? '' : 's'}
       </div>
-      <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto">
+      <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto heal-stagger">
         {display.map((d, i) => {
           const file = (d._raw?.filePath || d._raw?.file || '').split('/').pop() || 'file';
           const line = (d._raw?.location?.line ?? d._raw?.range?.start ?? 0) + 1;
@@ -232,7 +235,7 @@ function RuleRow({ rule, index, total, matched, onMove, onChange, onRemove, onTo
 
   return (
     <div
-      className="flex items-start gap-2 p-2 rounded-md"
+      className="heal-card flex items-start gap-2 p-2 rounded-md"
       style={{
         background: rule.disabled ? 'transparent' : 'var(--bg-elevated)',
         border: '1px solid var(--border-subtle)',
@@ -276,8 +279,9 @@ function RuleRow({ rule, index, total, matched, onMove, onChange, onRemove, onTo
                 onBlur={matchCount > 0 ? scheduleClose : undefined}
               >
                 <span
+                  key={matchCount}
                   tabIndex={matchCount > 0 ? 0 : -1}
-                  className="text-[10px] px-1.5 py-0.5 rounded font-medium cursor-default"
+                  className="heal-count-pop inline-block text-[10px] px-1.5 py-0.5 rounded font-medium cursor-default transition-colors duration-200"
                   style={{
                     background: matchCount > 0
                       ? 'color-mix(in srgb, var(--accent-primary) 15%, transparent)'
@@ -601,7 +605,7 @@ export function HealingRulesEditor() {
           No custom rules. Healing uses the default behaviour for all errors.
         </div>
       ) : (
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5 heal-stagger">
           {rules.map((rule, i) => (
             <RuleRow
               key={rule.id}
@@ -620,7 +624,7 @@ export function HealingRulesEditor() {
 
       <button
         onClick={handleAdd}
-        className="text-sm text-left px-2 py-1.5 rounded-md mt-1 hover:opacity-80 transition-opacity"
+        className="heal-card text-sm text-left px-2 py-1.5 rounded-md mt-1"
         style={{
           color: 'var(--accent-primary)',
           background: 'var(--bg-elevated)',
