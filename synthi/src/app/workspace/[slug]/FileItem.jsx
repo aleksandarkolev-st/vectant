@@ -1,9 +1,11 @@
 // src/app/FileItem.jsx
 "use client";
 import { useState, useRef, useEffect, useMemo, memo } from "react";
+import { toast } from "sonner";
 import collabClient from '@/services/collabClient';
 import { useAppSelector } from "@/redux/hooks";
 import { selectExpandedFolders, toggleFolderExpansion } from "@/redux/uiSlice";
+import { moveItemThunk } from "@/redux/workspaceSlice";
 import { makeSelectFileHealth } from "@/redux/healingSelectors";
 
 // Shared empty result for folders / path-less rows so useAppSelector
@@ -385,11 +387,70 @@ useEffect(() => {
     handleFileClick(e);
   };
 
-  // Handle drag start for chat context
+  // Drag for chat-context (string drop on AI chat) and tree move (drop on folder).
+  // The tree-move handler (handleDrop) recognises the JSON payload below.
   const handleDragStart = (e) => {
     e.dataTransfer.setData('text/workspace-path', item.path);
     e.dataTransfer.setData('text/plain', item.name);
-    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData(
+      'application/x-synthi-tree-item',
+      JSON.stringify({ path: item.path, name: item.name, isFolder: !!item.isFolder }),
+    );
+    e.dataTransfer.effectAllowed = 'copyMove';
+  };
+
+  const [isDropTarget, setIsDropTarget] = useState(false);
+
+  const isValidDropSource = (e) => {
+    if (!item.isFolder) return null;
+    const raw = e.dataTransfer.getData('application/x-synthi-tree-item');
+    if (!raw) return null;
+    try {
+      const src = JSON.parse(raw);
+      if (!src.path || !src.name) return null;
+      // Don't allow dropping onto the same parent (no-op) or onto self / descendants.
+      const srcParent = src.path.includes('/')
+        ? src.path.slice(0, src.path.lastIndexOf('/'))
+        : '';
+      if (src.path === item.path) return null;
+      if (srcParent === item.path) return null;
+      if (src.isFolder && item.path.startsWith(src.path + '/')) return null;
+      return src;
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const handleDragOver = (e) => {
+    if (!item.isFolder) return;
+    // We can't read dataTransfer payload during dragover (browser locks it),
+    // so accept the drop optimistically and re-validate on drop.
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    if (!isDropTarget) setIsDropTarget(true);
+  };
+
+  const handleDragLeave = () => {
+    if (isDropTarget) setIsDropTarget(false);
+  };
+
+  const handleDrop = async (e) => {
+    if (!item.isFolder) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDropTarget(false);
+    const src = isValidDropSource(e);
+    if (!src) return;
+    const res = await dispatch(moveItemThunk({
+      sourcePath: src.path,
+      sourceName: src.name,
+      sourceIsFolder: src.isFolder,
+      targetFolderPath: item.path,
+    }));
+    if (moveItemThunk.rejected.match(res)) {
+      toast.error(`Move failed: ${res.error?.message || 'Unknown error'}`);
+    }
   };
 
   // Standard Display Rendering
@@ -402,13 +463,19 @@ useEffect(() => {
         data-node-name={item.name}
         draggable
         onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
         className={`file-item relative group flex items-center py-1.5 px-2 rounded-md cursor-pointer transition-all ${
           isSelected ? 'border-l-[3px]' : 'border-l-[3px] border-transparent'
         }`}
         style={{
           ...itemStyle,
-          ...(isSelected 
+          ...(isSelected
             ? { background: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)', borderColor: 'var(--accent-tertiary)', boxShadow: '0 0 0 1px color-mix(in srgb, var(--accent-tertiary) 18%, transparent)' }
+            : {}),
+          ...(isDropTarget
+            ? { background: 'color-mix(in srgb, var(--accent-primary) 22%, transparent)', outline: '1px solid var(--accent-tertiary)' }
             : {}),
         }}
         onClick={handleClick}

@@ -10,6 +10,7 @@ import {
   handleRenameItemThunk,
   deleteItemThunk,
   selectFileThunk,
+  moveItemThunk,
 } from "@/redux/workspaceSlice";
 import {
   selectUiActionState,
@@ -174,6 +175,37 @@ const FileTreeView = ({ onToggleOrientation }) => {
     }
   };
 
+  // Drop on the empty tree area moves the dragged item to the workspace root.
+  // Per-folder drops are handled inside FileItem; this only fires when the
+  // drop lands on whitespace below all rows.
+  const handleRootDragOver = useCallback((e) => {
+    if (!e.dataTransfer.types.includes("application/x-synthi-tree-item")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  }, []);
+
+  const handleRootDrop = useCallback(async (e) => {
+    const raw = e.dataTransfer.getData("application/x-synthi-tree-item");
+    if (!raw) return;
+    e.preventDefault();
+    let src;
+    try { src = JSON.parse(raw); } catch (_) { return; }
+    if (!src?.path || !src?.name) return;
+    const srcParent = src.path.includes("/")
+      ? src.path.slice(0, src.path.lastIndexOf("/"))
+      : "";
+    if (srcParent === "") return; // already at root
+    const res = await dispatch(moveItemThunk({
+      sourcePath: src.path,
+      sourceName: src.name,
+      sourceIsFolder: !!src.isFolder,
+      targetFolderPath: "",
+    }));
+    if (moveItemThunk.rejected.match(res)) {
+      toast.error(`Move failed: ${res.error?.message || "Unknown error"}`);
+    }
+  }, [dispatch]);
+
   // All layout tabs — used to detect if the editor panel is missing
   const layoutTabs = useAppSelector(selectTabs);
 
@@ -204,31 +236,30 @@ const FileTreeView = ({ onToggleOrientation }) => {
     if (row.isCreateInput) {
       return (
         <div
-          className="file-item relative flex items-center py-1 px-2"
+          className="file-item relative flex items-center py-1.5 px-2"
           style={{ paddingLeft: `${row.level * 16 + 8}px` }}
         >
-          <div className="flex items-center w-full">
-            <div className="w-4 h-4 mr-2 flex-shrink-0 flex items-center justify-center">
-              {isCreatingFolder ? (
-                <FolderIcon />
-              ) : (
-                getFileIcon(name || "newfile")
-              )}
-            </div>
-            <input
-              ref={inputRef}
-              type="text"
-              value={name}
-              onChange={(e) => dispatch(setUiActionName(e.target.value))}
-              onKeyDown={handleKeyDown}
-              onBlur={handleBlur}
-              placeholder={
-                isCreatingFolder ? "New folder name..." : "New file name..."
-              }
-              className="w-full bg-transparent border-none outline-none text-sm text-white placeholder-gray-500"
-              autoFocus
-            />
+          <div className="w-3.5 h-3.5 mr-2.5 flex-shrink-0 flex items-center justify-center text-sm opacity-95">
+            {isCreatingFolder ? (
+              <FolderIcon />
+            ) : (
+              getFileIcon(name || "newfile")
+            )}
           </div>
+          <input
+            ref={inputRef}
+            type="text"
+            value={name}
+            onChange={(e) => dispatch(setUiActionName(e.target.value))}
+            onKeyDown={handleKeyDown}
+            onBlur={handleBlur}
+            placeholder={
+              isCreatingFolder ? "New folder name..." : "New file name..."
+            }
+            className="w-full bg-transparent border-none outline-none text-[12px]"
+            style={{ color: "var(--text-primary)" }}
+            autoFocus
+          />
         </div>
       );
     }
@@ -277,6 +308,8 @@ const FileTreeView = ({ onToggleOrientation }) => {
           onClick={() => {
             setContextTarget(null);
           }}
+          onDragOver={handleRootDragOver}
+          onDrop={handleRootDrop}
           onMouseEnter={() => setIsTreeHovered(true)}
           onMouseLeave={() => setIsTreeHovered(false)}
         >

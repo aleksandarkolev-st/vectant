@@ -30,13 +30,43 @@ function sortNodes(nodes) {
  * all expanded.  The walk is DFS pre-order (parent before children) so the
  * flat list matches the visual order.
  */
-function flatten(nodes, expandedSet, level, ancestorHasNext, uiActionState) {
-  const sorted = sortNodes(nodes);
+function flatten(nodes, expandedSet, level, ancestorHasNext, uiActionState, parentPath) {
+  const isCreating = uiActionState.mode.startsWith('create');
+  const isCreatingFolder = uiActionState.mode === 'create-folder';
+  const targetPath = uiActionState.target?.path ?? null;
+
+  // If our parent is the create target (or both null = root creation), splice
+  // a virtual placeholder into this level and let sortNodes place it at the
+  // alphabetical position the new item will land in. Avoids the visual jump
+  // where the input shows at the top during edit but the row settles
+  // somewhere else after the file is actually created.
+  const insertHere = isCreating && (parentPath ?? null) === targetPath;
+  const synthetic = insertHere
+    ? {
+        __isCreateInput: true,
+        isFolder: isCreatingFolder,
+        name: uiActionState.name || '',
+      }
+    : null;
+
+  const sorted = sortNodes(synthetic ? [...nodes, synthetic] : nodes);
   const result = [];
 
   for (let i = 0; i < sorted.length; i++) {
     const item = sorted[i];
     const hasNextSibling = i < sorted.length - 1;
+
+    if (item.__isCreateInput) {
+      result.push({
+        isCreateInput: true,
+        level,
+        ancestorHasNext: [...ancestorHasNext],
+        hasNextSibling,
+        parentChildCount: sorted.length,
+        key: `__create_input__${parentPath || 'root'}`,
+      });
+      continue;
+    }
 
     result.push({
       item,
@@ -47,25 +77,8 @@ function flatten(nodes, expandedSet, level, ancestorHasNext, uiActionState) {
       key: item.path || `node-${level}-${i}`,
     });
 
-    // Recurse into expanded folders
     const isExpanded = expandedSet.has(item.path);
-    const isCreationTarget =
-      uiActionState.mode.startsWith('create') &&
-      uiActionState.target &&
-      item.path === uiActionState.target.path;
-
-    // Synthetic input row immediately after the folder that's the create target.
-    // Rendered as a dedicated Virtuoso row so the input gets a real, measured
-    // box instead of being a second top-level node inside FileItem (which
-    // Virtuoso wraps as one row and clips).
-    if (isCreationTarget) {
-      result.push({
-        isCreateInput: true,
-        level: level + 1,
-        ancestorHasNext: [...ancestorHasNext, hasNextSibling],
-        key: `__create_input__${item.path}`,
-      });
-    }
+    const isCreationTarget = isCreating && item.path === targetPath;
 
     if (item.isFolder && (isExpanded || isCreationTarget) && (item.children?.length || isCreationTarget)) {
       const childRows = flatten(
@@ -74,6 +87,7 @@ function flatten(nodes, expandedSet, level, ancestorHasNext, uiActionState) {
         level + 1,
         [...ancestorHasNext, hasNextSibling],
         uiActionState,
+        item.path,
       );
       result.push(...childRows);
     }
@@ -91,22 +105,7 @@ export function useVirtualizedTree(files, uiActionState) {
   const expandedSet = useMemo(() => new Set(expandedFolders), [expandedFolders]);
 
   const flatNodes = useMemo(
-    () => {
-      const rows = [];
-      // Root-level creation: synthetic input row at the top of the tree.
-      const isRootCreation =
-        uiActionState.mode.startsWith('create') && !uiActionState.target;
-      if (isRootCreation) {
-        rows.push({
-          isCreateInput: true,
-          level: 0,
-          ancestorHasNext: [],
-          key: '__create_input_root__',
-        });
-      }
-      rows.push(...flatten(files, expandedSet, 0, [], uiActionState));
-      return rows;
-    },
+    () => flatten(files, expandedSet, 0, [], uiActionState, null),
     [files, expandedSet, uiActionState],
   );
 
