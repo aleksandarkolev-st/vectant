@@ -568,6 +568,35 @@ export const handleRenameItemThunk = createAsyncThunk(
     }
 );
 
+// 5b. Move Item (drag-and-drop into a folder, or into root)
+export const moveItemThunk = createAsyncThunk(
+    'workspace/moveItem',
+    async ({ sourcePath, sourceName, sourceIsFolder, targetFolderPath }, { dispatch, getState }) => {
+        const slug = getState().workspace.slug;
+        if (!sourcePath || !sourceName) return;
+        // No-op: dropping onto its own parent.
+        const sourceParent = sourcePath.includes('/')
+            ? sourcePath.slice(0, sourcePath.lastIndexOf('/'))
+            : '';
+        const target = targetFolderPath || '';
+        if (sourceParent === target) return;
+        // Disallow dropping a folder onto itself or any descendant.
+        if (sourceIsFolder && (target === sourcePath || target.startsWith(sourcePath + '/'))) {
+            throw new SynthiException(
+                'Cannot move a folder into itself.',
+                'The destination is the folder being moved or one of its descendants.',
+            );
+        }
+        const oldPath = sourcePath + (sourceIsFolder ? '/' : '');
+        const newPath = (target ? target + '/' : '') + sourceName + (sourceIsFolder ? '/' : '');
+        await api.renameItem(slug, oldPath, newPath);
+        try {
+            getCompilerClient().renameFile(sourcePath, newPath.replace(/\/$/, ''));
+        } catch (_) { /* best-effort */ }
+        await dispatch(fetchFilesThunk(slug));
+    }
+);
+
 
 // 6. Delete Item (Mutation)
 export const deleteItemThunk = createAsyncThunk(
