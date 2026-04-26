@@ -132,5 +132,68 @@
 /* DockingContainer scroll guard for mobile so very narrow viewports don't
  * stretch panels into unusable widths. */
 .vp-mobile .dock-container {
+    overflow-x: hidden !important;
+}
+
+/* ───────────── Mobile single-pane mode ────────────────────────────────
+ *
+ * The docking layout splits horizontal/vertical regions side-by-side, which
+ * makes both halves unusable on a phone. On mobile we collapse the layout
+ * tree to whichever tab group currently holds focus: that group occupies
+ * 100% of the dock area, every other split-child is hidden, and the
+ * splitters disappear.
+ *
+ * Implemented with the CSS `:has()` selector — when a `[data-layout-child]`
+ * contains the focused tab group, it expands; siblings collapse. `:has()`
+ * is supported in all evergreen browsers (Chrome 105+, Safari 15.4+,
+ * Firefox 121+) and we only target mobile, so this is a safe choice.
+ *
+ * Inline `flex` styles set in SplitContainer.jsx are overridden with
+ * `!important`. */
+
+/* Hide siblings of the focused tab group inside any split. */
+.vp-mobile .dock-split [data-layout-child]:not(:has(.dock-tab-group--focused)) {
+    display: none !important;
+}
+
+/* Expand the focused tab group's wrapper to fill the split. */
+.vp-mobile .dock-split [data-layout-child]:has(.dock-tab-group--focused) {
+    flex: 1 1 100% !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+}
+
+/* Hide every splitter so users can't drag-resize a hidden sibling back in. */
+.vp-mobile .dock-splitter {
+    display: none !important;
+}
+
+/* Fallback: if no tab group is focused (shouldn't happen but covers the
+ * race during initial layout), show only the first split-child. */
+.vp-mobile .dock-split:not(:has(.dock-tab-group--focused)) > [data-layout-child]:not(:first-child) {
+    display: none !important;
+}
+.vp-mobile .dock-split:not(:has(.dock-tab-group--focused)) > [data-layout-child]:first-child {
+    flex: 1 1 100% !important;
+}
+
+/* Tighten tab bars on mobile so panel headers don't dwarf the content. */
+.vp-mobile .dock-tab-group .dock-tab,
+.vp-mobile .dock-tab {
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+    font-size: 12px !important;
+}
+
+/* Ensure sidebar tab content can scroll horizontally if it needs to,
+ * preventing the wrapped-character truncation seen in narrow GitStatus. */
+.vp-mobile .dock-tab-group--focused {
     overflow-x: auto !important;
+}
+
+/* TopNav: keep it from overflowing when search + buttons would be too wide.
+ * The flex-1 spacer compresses naturally; this just guards against weird
+ * children. */
+.vp-mobile .topnav-root {
+    overflow-x: auto;
 }
