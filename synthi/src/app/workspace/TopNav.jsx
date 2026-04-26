@@ -80,12 +80,12 @@ function TopNav({
   };
 
   return (
-    <div className="flex items-center h-9 px-2 border-b space-x-4 shadow-sm font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
-      <div className="flex items-center h-full">
+    <div className="topnav-root flex items-center h-9 px-2 border-b space-x-4 shadow-sm font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
+      <div className="flex items-center h-full flex-shrink-0">
           <img src={isLightTheme ? '/synthi-dark-logo.svg' : '/synthi-logo.svg'} alt="Synthi" className="h-22 w-auto" />
       </div>
-      <div className="relative transition-all duration-200" 
-           style={{ width: searchOpen ? '400px' : '200px' }}>
+      <div className="topnav-search relative transition-all duration-200 hidden sm:block min-w-0"
+           style={{ width: searchOpen ? '400px' : '200px', maxWidth: '100%' }}>
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} strokeWidth={1.5} />
         <input
           type="text"
@@ -121,15 +121,20 @@ function TopNav({
       </div>
       <div className="flex-1" />
 
-        {/* Collaboration — avatars, inbox, history, session share, knocks */}
-        {slug && <CollabToolbar slug={slug} filePath={activeFile?.path} />}
+        {/* Collaboration — avatars, inbox, history, session share, knocks.
+            Hidden on narrow widths to keep the run controls reachable. */}
+        {slug && (
+          <div className="hidden lg:flex items-center">
+            <CollabToolbar slug={slug} filePath={activeFile?.path} />
+          </div>
+        )}
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-shrink-0">
         {/* Terminal Toggle - Icon Only */}
-        <Button 
-          variant="ghost" 
-          size="sm" 
-          className="h-8 w-8 p-0 th-btn-ghost cursor-pointer duration-300 hover:-translate-y-0.5 transition-all rounded-lg" 
+        <Button
+          variant="ghost"
+          size="sm"
+          className="hidden sm:inline-flex h-8 w-8 p-0 th-btn-ghost cursor-pointer duration-300 hover:-translate-y-0.5 transition-all rounded-lg"
           onClick={onToggleTerminal}
           title="Toggle Terminal"
         >
@@ -149,22 +154,22 @@ function TopNav({
           <MessageSquare className="w-4 h-4" strokeWidth={2} />
         </Button>
 
-        {/* GUI Mode Toggle */}
+        {/* GUI Mode Toggle — desktop only (xl: ≥ 1280px) */}
         <Button
           variant="ghost"
           size="sm"
-          className={`h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${runInGuiMode ? 'th-btn-active' : ''}`}
+          className={`hidden xl:inline-flex h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${runInGuiMode ? 'th-btn-active' : ''}`}
           onClick={() => setRunInGuiMode(!runInGuiMode)}
           title={runInGuiMode ? "Run in GUI Mode" : "Run in Console Mode"}
         >
           {runInGuiMode ? "GUI" : "Console"}
         </Button>
 
-        {/* HMR Toggle - auto-recompile on save */}
+        {/* HMR Toggle - auto-recompile on save — desktop only */}
         <Button
           variant="ghost"
           size="sm"
-          className={`h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${hmrEnabled ? 'th-btn-active' : ''}`}
+          className={`hidden xl:inline-flex h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${hmrEnabled ? 'th-btn-active' : ''}`}
           onClick={() => setHmrEnabled(!hmrEnabled)}
           title={hmrEnabled ? "HMR Enabled — app restarts on save" : "HMR Disabled — save does not restart app"}
         >
