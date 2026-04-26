@@ -1028,7 +1028,7 @@ const server = http.createServer(async (req, res) => {
   if (requestOrigin) res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-session-id');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-user-id, x-session-id, x-user-name, x-user-email');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -2946,6 +2946,30 @@ const server = http.createServer(async (req, res) => {
                 ? [effectiveUserId]
                 : [];
 
+            // ── Per-requester commit attribution ───────────────────────
+            // Headers populated by the frontend from NextAuth. When set,
+            // the gitService pins GIT_AUTHOR_*/GIT_COMMITTER_* to these
+            // values for the duration of the spawned git process, so a
+            // guest's commits land in the host's worktree but show up
+            // under the guest's GitHub identity.
+            const decodeHeader = (raw) => {
+                if (!raw || typeof raw !== 'string') return '';
+                // Safe-decode a header value that the frontend
+                // base64-encodes (so non-ASCII names don't violate
+                // RFC 7230 token chars). Falls back to the raw value
+                // if decoding produces nothing useful.
+                try {
+                    const decoded = Buffer.from(raw, 'base64').toString('utf8');
+                    if (decoded && /[\w@.+\- ]/.test(decoded)) return decoded.trim();
+                } catch (_) {}
+                return raw.trim();
+            };
+            const reqName  = decodeHeader(req.headers['x-user-name']);
+            const reqEmail = decodeHeader(req.headers['x-user-email']);
+            const commitIdentity = (reqName || reqEmail)
+                ? { name: reqName || null, email: reqEmail || null }
+                : null;
+
             // ── Permission check FIRST ──────────────────────────────────
             // Check permissions BEFORE provisioning repos to prevent
             // unauthorized users from creating per-user repos and corrupting
@@ -3169,7 +3193,7 @@ const server = http.createServer(async (req, res) => {
                     result = await withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds));
                     break;
                 case 'commit':
-                    result = await withTelemetry('git:commit', () => gitService.commit(slug, data.message, effectiveUserId, data.amend));
+                    result = await withTelemetry('git:commit', () => gitService.commit(slug, data.message, effectiveUserId, data.amend, commitIdentity));
                     broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     break;
                 case 'stage':
@@ -3235,7 +3259,7 @@ const server = http.createServer(async (req, res) => {
                 case 'pull':
                     pauseWatcher(slug);
                     try {
-                      result = await withTelemetry('git:pull', () => gitService.pull(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds));
+                      result = await withTelemetry('git:pull', () => gitService.pull(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity));
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -3298,7 +3322,7 @@ const server = http.createServer(async (req, res) => {
                 case 'merge-branch':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds);
+                      result = await gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds, commitIdentity);
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -3343,12 +3367,12 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.stashList(slug, effectiveUserId);
                     break;
                 case 'stash-push':
-                    result = await gitService.stashPush(slug, data.message, effectiveUserId);
+                    result = await gitService.stashPush(slug, data.message, effectiveUserId, commitIdentity);
                     break;
                 case 'stash-pop':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.stashPop(slug, data.index, effectiveUserId);
+                      result = await gitService.stashPop(slug, data.index, effectiveUserId, commitIdentity);
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -3373,7 +3397,7 @@ const server = http.createServer(async (req, res) => {
                 case 'interactive-rebase':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.interactiveRebase(slug, data.baseCommit, data.operations, effectiveUserId);
+                      result = await gitService.interactiveRebase(slug, data.baseCommit, data.operations, effectiveUserId, commitIdentity);
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -3397,7 +3421,7 @@ const server = http.createServer(async (req, res) => {
                 case 'rebase-continue':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.rebaseContinue(slug, effectiveUserId);
+                      result = await gitService.rebaseContinue(slug, effectiveUserId, commitIdentity);
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -3407,7 +3431,7 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'cherry-pick':
-                    result = await gitService.cherryPick(slug, data.hash, effectiveUserId);
+                    result = await gitService.cherryPick(slug, data.hash, effectiveUserId, commitIdentity);
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);
@@ -3425,7 +3449,7 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.pushTag(slug, data.name, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds);
                     break;
                 case 'revert':
-                    result = await gitService.revertCommit(slug, data.hash, effectiveUserId);
+                    result = await gitService.revertCommit(slug, data.hash, effectiveUserId, commitIdentity);
                     broadcastFileReverted(slug, [], notifyScope);
                     await invalidateDocsForSlug(slug, null, notifyScope);
                     broadcastFileTreeChanged(slug, notifyScope);

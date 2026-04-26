@@ -930,7 +930,15 @@ export default function EditorPage({ params }) {
     useEffect(() => {
         if (!slug) return;
         if (authUserId) {
-            gitClient.setUserId(authUserId);
+            // setIdentity bundles userId + display name + email so the
+            // collab-server can pin commit author/committer to the
+            // requesting user — guests get correct GitHub attribution
+            // even though their commits land in the host's worktree.
+            gitClient.setIdentity({
+                userId: authUserId,
+                name: authSession?.user?.name || null,
+                email: authSession?.user?.email || null,
+            });
         }
         const authJustBecameAvailable = authUserId && !prevAuthRef.current;
         const sessionJustBecameAvailable = activeSessionId && !prevSessionRef.current;
@@ -942,7 +950,7 @@ export default function EditorPage({ params }) {
                 dispatch(forceRefreshGitStatus(slug));
             });
         }
-    }, [slug, dispatch, authUserId, activeSessionId]);
+    }, [slug, dispatch, authUserId, authSession?.user?.name, authSession?.user?.email, activeSessionId]);
 
     // 2. Consume global state directly via selectors
     const showTerminal = useAppSelector(selectShowTerminal);

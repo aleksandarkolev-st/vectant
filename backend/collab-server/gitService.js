@@ -2047,7 +2047,35 @@ class GitService {
         }, userId);
     }
 
-    async commit(slug, message, userId, amend = false) {
+    /**
+     * Build a child-process env object that pins commit author + committer
+     * to the requesting user's identity, so a guest's commits land in the
+     * host's worktree but still show up under the guest's GitHub account.
+     *
+     * Returns a clone of `baseEnv` (defaults to `process.env`); when
+     * `commitIdentity` is missing or empty, the returned env is byte-for-
+     * byte the base env so callers can use it unconditionally.
+     *
+     * Note: simple-git's `.env(env)` REPLACES the child env rather than
+     * merging it with `process.env`, so we always spread the base env in.
+     */
+    _buildCommitEnv(commitIdentity, baseEnv = process.env) {
+        const env = { ...baseEnv };
+        if (!commitIdentity || typeof commitIdentity !== 'object') return env;
+        const name = typeof commitIdentity.name === 'string' ? commitIdentity.name.trim() : '';
+        const email = typeof commitIdentity.email === 'string' ? commitIdentity.email.trim() : '';
+        if (name) {
+            env.GIT_AUTHOR_NAME = name;
+            env.GIT_COMMITTER_NAME = name;
+        }
+        if (email) {
+            env.GIT_AUTHOR_EMAIL = email;
+            env.GIT_COMMITTER_EMAIL = email;
+        }
+        return env;
+    }
+
+    async commit(slug, message, userId, amend = false, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
@@ -2062,10 +2090,12 @@ class GitService {
                         );
                     }
                 }
+                const env = this._buildCommitEnv(commitIdentity);
+                const gitWithEnv = git.env(env);
                 if (amend) {
-                    await git.commit(message, { '--amend': null });
+                    await gitWithEnv.commit(message, { '--amend': null });
                 } else {
-                    await git.commit(message);
+                    await gitWithEnv.commit(message);
                 }
                 await this._propagateToBare(slug, userId, git, { amend });
                 this._archiveGitAsync(slug, userId);
@@ -2118,7 +2148,7 @@ class GitService {
      *                                 action: 'pick'|'reword'|'squash'|'fixup'|'drop'
      * @param {string} userId
      */
-    async interactiveRebase(slug, baseCommit, operations, userId) {
+    async interactiveRebase(slug, baseCommit, operations, userId, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
@@ -2152,11 +2182,13 @@ class GitService {
                     seqEditor = `cp "${todoFile}" `;
                 }
 
-                // Use env to set the sequence editor
-                const env = {
+                // Use env to set the sequence editor (and pin author /
+                // committer to the requester so any commits the rebase
+                // creates carry the right identity).
+                const env = this._buildCommitEnv(commitIdentity, {
                     ...process.env,
                     GIT_SEQUENCE_EDITOR: `${seqEditor}`,
-                };
+                });
 
                 // For rewords, we need a GIT_EDITOR that writes the new message
                 // For simplicity, handle rewords as a second pass:
@@ -2210,11 +2242,11 @@ class GitService {
         }, userId);
     }
 
-    async rebaseContinue(slug, userId) {
+    async rebaseContinue(slug, userId, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                await git.rebase(['--continue']);
+                await git.env(this._buildCommitEnv(commitIdentity)).rebase(['--continue']);
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -2644,11 +2676,17 @@ class GitService {
         }
     }
 
-    async pull(slug, userId, token, tokenUserId = null, tokenFallbackUserIds = []) {
+    async pull(slug, userId, token, tokenUserId = null, tokenFallbackUserIds = [], commitIdentity = null) {
         return this.withLock(slug, async () => {
             const git = await this.getGit(slug, userId);
             try {
                 const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
+
+                // Pull may produce a merge commit when the local branch has
+                // diverged from upstream. Pin author/committer so that merge
+                // is attributed to the requesting user, not the host.
+                const env = this._buildCommitEnv(commitIdentity);
+                const gitWithEnv = git.env(env);
 
                 let pullResult;
                 if (effectiveToken) {
@@ -2668,13 +2706,13 @@ class GitService {
                         const branchSummary = await git.branchLocal();
                         const currentBranch = branchSummary.current || 'HEAD';
                         console.log(`[GitService][pull] Using URL-based auth for ${slug}`);
-                        await git.raw(['pull', authUrl, currentBranch]);
+                        await gitWithEnv.raw(['pull', authUrl, currentBranch]);
                     } else {
-                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'pull']);
+                        await gitWithEnv.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'pull']);
                     }
                     pullResult = { summary: { changes: 0, insertions: 0, deletions: 0 } };
                 } else {
-                    pullResult = await git.pull();
+                    pullResult = await gitWithEnv.pull();
                 }
                 const status = await this.getStatus(slug, userId);
                 
@@ -2809,11 +2847,14 @@ class GitService {
     }
 
     // Cherry-pick a commit onto the current branch
-    async cherryPick(slug, hash, userId) {
+    async cherryPick(slug, hash, userId, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                await git.raw(['cherry-pick', hash]);
+                // Cherry-pick replays the original author but sets the
+                // committer to the running user — pin both via env so
+                // attribution stays with the requester.
+                await git.env(this._buildCommitEnv(commitIdentity)).raw(['cherry-pick', hash]);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -2822,11 +2863,11 @@ class GitService {
     }
 
     // Revert a commit (create an inverse commit)
-    async revertCommit(slug, hash, userId) {
+    async revertCommit(slug, hash, userId, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                await git.raw(['revert', hash]);
+                await git.env(this._buildCommitEnv(commitIdentity)).raw(['revert', hash]);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -2913,7 +2954,7 @@ class GitService {
      * @param {string} [token]  Optional auth token for the fetch step
      * @returns {{ status, hasConflicts, conflictedFiles }}
      */
-    async mergeBranch(slug, branch, userId, token, tokenUserId = null, tokenFallbackUserIds = []) {
+    async mergeBranch(slug, branch, userId, token, tokenUserId = null, tokenFallbackUserIds = [], commitIdentity = null) {
         return this.withLock(slug, async () => {
             const git = await this.getGit(slug, userId);
 
@@ -2921,6 +2962,10 @@ class GitService {
             // bare branch name and prefix it ourselves where needed.
             const bareBranch = branch.replace(/^origin\//, '');
             const remoteBranch = `origin/${bareBranch}`;
+            // Merge commits go through git.env() so author/committer match
+            // the requester. The fetch step doesn't create commits and runs
+            // on the plain `git`.
+            const gitForMerge = git.env(this._buildCommitEnv(commitIdentity));
 
             // 1. Fetch the specific branch from origin so the remote-tracking
             //    ref is guaranteed to exist and be up-to-date.
@@ -2953,7 +2998,7 @@ class GitService {
             let mergeResult;
             let hasConflicts = false;
             try {
-                mergeResult = await git.merge([remoteBranch]);
+                mergeResult = await gitForMerge.merge([remoteBranch]);
             } catch (e) {
                 const msg = (e?.message || '').toLowerCase();
                 // Git merge exits non-zero on conflicts — this is expected
@@ -3265,12 +3310,14 @@ class GitService {
         }
     }
 
-    async stashPush(slug, message = '', userId) {
+    async stashPush(slug, message = '', userId, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
                 const options = message ? ['-m', message] : [];
-                await git.stash(['push', ...options]);
+                // `git stash push` builds synthetic stash + index commits;
+                // attribute them to the requester for clean ref-log history.
+                await git.env(this._buildCommitEnv(commitIdentity)).stash(['push', ...options]);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -3278,11 +3325,11 @@ class GitService {
         }, userId);
     }
 
-    async stashPop(slug, index = 0, userId) {
+    async stashPop(slug, index = 0, userId, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                await git.stash(['pop', `stash@{${index}}`]);
+                await git.env(this._buildCommitEnv(commitIdentity)).stash(['pop', `stash@{${index}}`]);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
