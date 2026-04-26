@@ -3038,13 +3038,13 @@ const server = http.createServer(async (req, res) => {
                 hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
                     break;
                 case 'add-remote':
-                    result = await gitService.addRemote(slug, data.name, data.url, effectiveUserId);
+                    result = await gitService.addRemote(slug, data.name, data.url, effectiveUserId, data.token);
                     break;
                 case 'remove-remote':
                     result = await gitService.removeRemote(slug, data.name, effectiveUserId);
                     break;
                 case 'set-remote-url':
-                    result = await gitService.setRemoteUrl(slug, data.name, data.url, effectiveUserId);
+                    result = await gitService.setRemoteUrl(slug, data.name, data.url, effectiveUserId, data.token);
                     break;
                 case 'remotes':
                     result = await gitService.getRemotes(slug, effectiveUserId);

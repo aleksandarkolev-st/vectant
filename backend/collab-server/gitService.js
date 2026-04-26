@@ -251,13 +251,30 @@ class GitService {
 
     _persistAuthToken(slug, userId, token) {
         const value = typeof token === 'string' ? token.trim() : '';
-        if (!value) return;
+        if (!value) return false;
         const tokenPath = this._getAuthTokenPath(slug, userId);
         try {
-            fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
-            fs.writeFileSync(tokenPath, JSON.stringify({ token: value }), 'utf8');
+            fs.mkdirSync(path.dirname(tokenPath), { recursive: true, mode: 0o700 });
+            // Write atomically via a temp file + rename so a crash mid-write
+            // can't leave an empty/partial token file on disk.
+            const tmpPath = `${tokenPath}.tmp-${process.pid}-${Date.now()}`;
+            fs.writeFileSync(tmpPath, JSON.stringify({ token: value }), { encoding: 'utf8', mode: 0o600 });
+            fs.renameSync(tmpPath, tokenPath);
+            // Verify the write actually persisted — surfaces silent ENOSPC,
+            // EROFS, container layer-fs quirks that swallow writes.
+            const verifyRaw = fs.readFileSync(tokenPath, 'utf8');
+            const verifyParsed = JSON.parse(verifyRaw);
+            if (!verifyParsed || verifyParsed.token !== value) {
+                throw new Error('post-write verification failed');
+            }
+            return true;
         } catch (e) {
-            console.warn(`[GitService] Failed to persist auth token for ${slug}${userId ? '/' + userId : ''}: ${e.message}`);
+            console.error(
+                `[GitService] FAILED to persist auth token for ${slug}${userId ? '/' + userId : ''} ` +
+                `at ${tokenPath}: ${e.message}. Token retained in memory only — ` +
+                `it WILL be lost on collab-server restart.`
+            );
+            return false;
         }
     }
 
@@ -1342,16 +1359,35 @@ class GitService {
                 return { success: true, path: repoPath };
             }
 
-            if (!fs.existsSync(path.join(repoPath, '.git'))) {
-                const git = simpleGit(repoPath);
+            const git = simpleGit(repoPath);
+            const hasGit = fs.existsSync(path.join(repoPath, '.git'));
+            if (!hasGit) {
                 await git.init();
-                if (remoteUrl) {
-                    await git.addRemote('origin', remoteUrl);
-                }
                 // Ensure HEAD exists so that downstream git operations
                 // (status, reset, etc.) don't fail with "no commits yet".
                 await git.commit('Initial commit', { '--allow-empty': null });
             }
+
+            // Always reconcile the requested remote URL — handles the case
+            // where the repo dir already had a `.git` (so we skipped `init`)
+            // but no `origin` remote was configured. Without this, calling
+            // `initRepo` with a `remoteUrl` was a no-op for existing repos.
+            if (remoteUrl) {
+                const { cleanUrl, token } = this._extractTokenFromHttpsUrl(remoteUrl);
+                if (token) this._rememberAuthToken(slug, userId, token);
+                try {
+                    const existing = await git.getRemotes(true);
+                    const origin = existing.find((r) => r.name === 'origin');
+                    if (!origin) {
+                        await git.addRemote('origin', cleanUrl);
+                    } else if ((origin.refs?.push || origin.refs?.fetch) !== cleanUrl) {
+                        await git.remote(['set-url', 'origin', cleanUrl]);
+                    }
+                } catch (e) {
+                    console.warn(`[GitService] initRepo: failed to set origin for "${slug}": ${e.message}`);
+                }
+            }
+
             // Defense-in-depth: hide internal artifacts from git status
             await this._ensureLocalExcludes(repoPath);
             return { success: true, path: repoPath };
@@ -2357,13 +2393,20 @@ class GitService {
         }, userId);
     }
 
-    async addRemote(slug, name, url, userId) {
+    async addRemote(slug, name, url, userId, explicitToken = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                const { cleanUrl, token } = this._extractTokenFromHttpsUrl(url);
-                if (token) {
-                    this._rememberAuthToken(slug, userId, token);
+                const { cleanUrl, token: urlToken } = this._extractTokenFromHttpsUrl(url);
+                // URL-embedded credentials win when present (matches the
+                // semantic the user typed); otherwise we fall back to the
+                // out-of-band token the caller passed (e.g. a global PAT
+                // saved in localStorage).
+                const finalToken = (typeof urlToken === 'string' && urlToken)
+                    ? urlToken
+                    : (typeof explicitToken === 'string' && explicitToken.trim() ? explicitToken.trim() : null);
+                if (finalToken) {
+                    this._rememberAuthToken(slug, userId, finalToken);
                 }
                 await git.addRemote(name, cleanUrl);
                 return this.getStatus(slug, userId);
@@ -2388,17 +2431,29 @@ class GitService {
     /**
      * Update the URL of an existing remote.
      *
-     * Uses `git remote set-url <name> <url>` under the hood.
+     * Uses `git remote set-url <name> <url>` under the hood. Auto-promotes
+     * to `git remote add` when the named remote doesn't yet exist, so the
+     * "edit remote" UI flow doesn't require the user to pre-create one.
      */
-    async setRemoteUrl(slug, name, url, userId) {
+    async setRemoteUrl(slug, name, url, userId, explicitToken = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                const { cleanUrl, token } = this._extractTokenFromHttpsUrl(url);
-                if (token) {
-                    this._rememberAuthToken(slug, userId, token);
+                const { cleanUrl, token: urlToken } = this._extractTokenFromHttpsUrl(url);
+                const finalToken = (typeof urlToken === 'string' && urlToken)
+                    ? urlToken
+                    : (typeof explicitToken === 'string' && explicitToken.trim() ? explicitToken.trim() : null);
+                if (finalToken) {
+                    this._rememberAuthToken(slug, userId, finalToken);
                 }
-                await git.remote(['set-url', name, cleanUrl]);
+
+                const existing = await git.getRemotes(true);
+                const exists = existing.some((r) => r.name === name);
+                if (exists) {
+                    await git.remote(['set-url', name, cleanUrl]);
+                } else {
+                    await git.addRemote(name, cleanUrl);
+                }
                 return await this.getRemotes(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);

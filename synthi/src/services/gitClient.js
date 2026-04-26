@@ -128,16 +128,20 @@ export const gitClient = {
         return this.request(slug, 'init', { remoteUrl });
     },
 
-    async addRemote(slug, name, url) {
-        return this.request(slug, 'add-remote', { name, url });
+    async addRemote(slug, name, url, token) {
+        const body = { name, url };
+        if (token) body.token = token;
+        return this.request(slug, 'add-remote', body);
     },
 
     async removeRemote(slug, name) {
         return this.request(slug, 'remove-remote', { name });
     },
 
-    async setRemoteUrl(slug, name, url) {
-        return this.request(slug, 'set-remote-url', { name, url });
+    async setRemoteUrl(slug, name, url, token) {
+        const body = { name, url };
+        if (token) body.token = token;
+        return this.request(slug, 'set-remote-url', body);
     },
 
     async getRemotes(slug) {

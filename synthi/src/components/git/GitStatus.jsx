@@ -352,13 +352,25 @@ function GitStatusInner({ slug }) {
 
   const handleAddRemote = async () => {
     if (!slug || !newRemoteName || !newRemoteUrl) return;
-    const valid = newRemoteUrl.startsWith('http://') || newRemoteUrl.startsWith('https://') || newRemoteUrl.includes('@');
+    const trimmedUrl = newRemoteUrl.trim();
+    const valid = trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://') || trimmedUrl.includes('@');
     if (!valid) { toast.error('Please enter a valid remote URL (https://... or git@...)'); return; }
-    const result = await dispatch(addRemote({ slug, name: newRemoteName, url: newRemoteUrl }));
+    // Pull any embedded PAT off the URL so the clean URL is what gets
+    // stored on disk and the token is stored separately. Mirror the
+    // clone flow's behavior of saving it as the global token so future
+    // operations on this workspace don't have to be re-authenticated.
+    const embeddedToken = extractTokenFromUrl(trimmedUrl);
+    const cleanUrl = embeddedToken ? stripTokenFromUrl(trimmedUrl) : trimmedUrl;
+    if (embeddedToken) {
+      try { localStorage.setItem('synthi:global-github-token', embeddedToken); } catch { /* ignore quota */ }
+    }
+    const result = await dispatch(addRemote({ slug, name: newRemoteName, url: cleanUrl, token: embeddedToken || undefined }));
     if (addRemote.fulfilled.match(result)) {
       toast.success(`Remote '${newRemoteName}' added`);
       setShowAddRemote(false);
       setNewRemoteUrl('');
+    } else {
+      toast.error(result?.error?.message || 'Failed to add remote');
     }
   };
 
@@ -376,13 +388,25 @@ function GitStatusInner({ slug }) {
 
   const handleEditRemoteSave = async () => {
     if (!slug || !editingRemote || !editRemoteUrl) return;
-    const valid = editRemoteUrl.startsWith('http://') || editRemoteUrl.startsWith('https://') || editRemoteUrl.includes('@');
+    const trimmedUrl = editRemoteUrl.trim();
+    const valid = trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://') || trimmedUrl.includes('@');
     if (!valid) { toast.error('Please enter a valid remote URL (https://... or git@...)'); return; }
-    const result = await dispatch(setRemoteUrl({ slug, name: editingRemote, url: editRemoteUrl }));
+    // Same pattern as handleAddRemote: peel off any inline token, save it
+    // as the global PAT, and ship a clean URL + token pair to the server.
+    // Without this, "edit remote" pointed at a different repo never
+    // re-bound the token, and the next push silently lost auth.
+    const embeddedToken = extractTokenFromUrl(trimmedUrl);
+    const cleanUrl = embeddedToken ? stripTokenFromUrl(trimmedUrl) : trimmedUrl;
+    if (embeddedToken) {
+      try { localStorage.setItem('synthi:global-github-token', embeddedToken); } catch { /* ignore quota */ }
+    }
+    const result = await dispatch(setRemoteUrl({ slug, name: editingRemote, url: cleanUrl, token: embeddedToken || undefined }));
     if (setRemoteUrl.fulfilled.match(result)) {
       toast.success(`Remote '${editingRemote}' URL updated`);
       setEditingRemote(null);
       setEditRemoteUrl('');
+    } else {
+      toast.error(result?.error?.message || 'Failed to update remote');
     }
   };
 
@@ -582,14 +606,23 @@ function GitStatusInner({ slug }) {
 
   const handleCloneRepo = async () => {
     if (!slug || !cloneUrl) return;
+    const trimmedUrl = cloneUrl.trim();
+    if (!trimmedUrl) return;
     try {
-      // Extract token from URL (if embedded) and pass it separately
-      const embeddedToken = extractTokenFromUrl(cloneUrl);
-      const cleanUrl = embeddedToken ? stripTokenFromUrl(cloneUrl) : cloneUrl;
-      await dispatch(cloneRepo({ slug, repoUrl: cleanUrl, token: embeddedToken }));
-      // Persist the token globally so all future git ops can use it
+      // Extract token from URL (if embedded) and pass it separately so the
+      // clean URL is what we send to the server. Persist any embedded PAT
+      // as the global token immediately — even if the clone fails, this
+      // means the user's next attempt (or a manual retry) already has the
+      // token cached and won't need them to re-paste credentials.
+      const embeddedToken = extractTokenFromUrl(trimmedUrl);
+      const cleanUrl = embeddedToken ? stripTokenFromUrl(trimmedUrl) : trimmedUrl;
       if (embeddedToken) {
-        localStorage.setItem('synthi:global-github-token', embeddedToken);
+        try { localStorage.setItem('synthi:global-github-token', embeddedToken); } catch { /* ignore quota */ }
+      }
+      const result = await dispatch(cloneRepo({ slug, repoUrl: cleanUrl, token: embeddedToken || undefined }));
+      if (cloneRepo.rejected.match(result)) {
+        toast.error(result?.error?.message || 'Clone failed');
+        return;
       }
       dispatch(fetchFilesThunk(slug));
       dispatch(fetchGitStatus(slug));
@@ -597,6 +630,7 @@ function GitStatusInner({ slug }) {
       setShowClone(false);
     } catch (e) {
       console.error('Clone repo failed', e);
+      toast.error(e?.message || 'Clone failed');
     }
   };
 

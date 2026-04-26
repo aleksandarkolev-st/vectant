@@ -129,8 +129,13 @@ export const initRepo = createAsyncThunk(
 
 export const addRemote = createAsyncThunk(
     'git/addRemote',
-    async ({ slug, name, url }, { dispatch }) => {
-        await gitClient.addRemote(slug, name, url);
+    async ({ slug, name, url, token }, { dispatch }) => {
+        // Fall back to stored PAT if the URL didn't carry credentials.
+        // Without this, "Add remote https://github.com/owner/private" + a
+        // global PAT in localStorage would never get associated, and the
+        // first push would silently use no auth.
+        const effectiveToken = token || getGitToken(slug);
+        await gitClient.addRemote(slug, name, url, effectiveToken);
         dispatch(fetchGitStatus(slug));
         dispatch(fetchRemotes(slug));
         dispatch(fetchUnpushedCommits({ slug, max: 50 }));
@@ -148,9 +153,12 @@ export const removeRemote = createAsyncThunk(
 
 export const setRemoteUrl = createAsyncThunk(
     'git/setRemoteUrl',
-    async ({ slug, name, url }, { dispatch }) => {
-        await gitClient.setRemoteUrl(slug, name, url);
+    async ({ slug, name, url, token }, { dispatch }) => {
+        const effectiveToken = token || getGitToken(slug);
+        await gitClient.setRemoteUrl(slug, name, url, effectiveToken);
         dispatch(fetchRemotes(slug));
+        dispatch(fetchGitStatus(slug));
+        dispatch(fetchUnpushedCommits({ slug, max: 50 }));
     }
 );
 
@@ -164,7 +172,11 @@ export const fetchRemotes = createAsyncThunk(
 export const cloneRepo = createAsyncThunk(
     'git/clone',
     async ({ slug, repoUrl, token }, { dispatch }) => {
-        await gitClient.clone(slug, repoUrl, token);
+        // If the caller didn't extract a token from the URL, fall back to
+        // the stored PAT so cloning a private repo works whether the user
+        // pasted credentials or saved them in Settings.
+        const effectiveToken = token || getGitToken(slug);
+        await gitClient.clone(slug, repoUrl, effectiveToken);
         dispatch(fetchGitStatus(slug));
     }
 );
