@@ -2933,6 +2933,19 @@ const server = http.createServer(async (req, res) => {
             const notifyScope = { userId: effectiveUserId || null, sessionId: sessionId || null };
             const bootstrapUserId = effectiveUserId || userId || null;
 
+            // ── Per-requester token isolation ──────────────────────────
+            // Repo path / working tree → effectiveUserId (guest writes
+            //   into the host's worktree).
+            // Auth tokens → the *real* requesting user, so a guest's PAT
+            //   gets stored under their own bucket and doesn't clobber
+            //   the host's. If the requester has no token of their own,
+            //   we fall back to the host's bucket (keeps today's "guest
+            //   borrows host's PAT" behavior working seamlessly).
+            const tokenUserId = userId || null;
+            const tokenFallbackUserIds = (effectiveUserId && effectiveUserId !== userId)
+                ? [effectiveUserId]
+                : [];
+
             // ── Permission check FIRST ──────────────────────────────────
             // Check permissions BEFORE provisioning repos to prevent
             // unauthorized users from creating per-user repos and corrupting
@@ -3034,23 +3047,23 @@ const server = http.createServer(async (req, res) => {
 
             switch (action) {
                 case 'init':
-                result = await gitService.initRepo(slug, data.remoteUrl, bootstrapUserId);
+                result = await gitService.initRepo(slug, data.remoteUrl, bootstrapUserId, tokenUserId);
                 hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
                     break;
                 case 'add-remote':
-                    result = await gitService.addRemote(slug, data.name, data.url, effectiveUserId, data.token);
+                    result = await gitService.addRemote(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId);
                     break;
                 case 'remove-remote':
                     result = await gitService.removeRemote(slug, data.name, effectiveUserId);
                     break;
                 case 'set-remote-url':
-                    result = await gitService.setRemoteUrl(slug, data.name, data.url, effectiveUserId, data.token);
+                    result = await gitService.setRemoteUrl(slug, data.name, data.url, effectiveUserId, data.token, tokenUserId);
                     break;
                 case 'remotes':
                     result = await gitService.getRemotes(slug, effectiveUserId);
                     break;
                 case 'clone':
-                  result = await gitService.cloneRepo(slug, data.repoUrl, data.token, bootstrapUserId);
+                  result = await gitService.cloneRepo(slug, data.repoUrl, data.token, bootstrapUserId, tokenUserId);
                   hydratedSlugs.add(hydrationKey(slug, bootstrapUserId));
                   // Save metadata locally
                   workspaceManager.addWorkspace(slug, data.repoUrl, data.owner, data.name);
@@ -3142,7 +3155,7 @@ const server = http.createServer(async (req, res) => {
                 case 'checkout':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.checkout(slug, data.branch, data.create, effectiveUserId, data.mode);
+                      result = await gitService.checkout(slug, data.branch, data.create, effectiveUserId, data.mode, tokenUserId, tokenFallbackUserIds);
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -3153,7 +3166,7 @@ const server = http.createServer(async (req, res) => {
                     }
                     break;
                 case 'fetch':
-                    result = await withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token));
+                    result = await withTelemetry('git:fetch', () => gitService.fetch(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds));
                     break;
                 case 'commit':
                     result = await withTelemetry('git:commit', () => gitService.commit(slug, data.message, effectiveUserId, data.amend));
@@ -3213,7 +3226,7 @@ const server = http.createServer(async (req, res) => {
                 case 'push':
                     pauseWatcher(slug);
                     try {
-                      result = await withTelemetry('git:push', () => gitService.push(slug, effectiveUserId, data.token, data.force));
+                      result = await withTelemetry('git:push', () => gitService.push(slug, effectiveUserId, data.token, data.force, tokenUserId, tokenFallbackUserIds));
                       broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
                     } finally {
                       resumeWatcher(slug);
@@ -3222,7 +3235,7 @@ const server = http.createServer(async (req, res) => {
                 case 'pull':
                     pauseWatcher(slug);
                     try {
-                      result = await withTelemetry('git:pull', () => gitService.pull(slug, effectiveUserId, data.token));
+                      result = await withTelemetry('git:pull', () => gitService.pull(slug, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds));
                       // Broadcast BEFORE invalidation so clients destroy stale
                       // Yjs docs before WS close triggers provider reconnect.
                       broadcastFileReverted(slug, [], notifyScope);
@@ -3285,7 +3298,7 @@ const server = http.createServer(async (req, res) => {
                 case 'merge-branch':
                     pauseWatcher(slug);
                     try {
-                      result = await gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token);
+                      result = await gitService.mergeBranch(slug, data.branch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds);
                       broadcastFileReverted(slug, [], notifyScope);
                       await invalidateDocsForSlug(slug, null, notifyScope);
                       broadcastFileTreeChanged(slug, notifyScope);
@@ -3298,7 +3311,7 @@ const server = http.createServer(async (req, res) => {
                     // In-memory merge conflict detection using git merge-tree.
                     // No working tree changes — runs in milliseconds.
                     result = await gitService.checkMergeConflicts(
-                        slug, data.baseBranch, data.headBranch, effectiveUserId, data.token
+                        slug, data.baseBranch, data.headBranch, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds
                     );
                     break;
                 case 'conflict-versions':
@@ -3409,7 +3422,7 @@ const server = http.createServer(async (req, res) => {
                     result = await gitService.deleteTag(slug, data.name, effectiveUserId);
                     break;
                 case 'push-tag':
-                    result = await gitService.pushTag(slug, data.name, effectiveUserId, data.token);
+                    result = await gitService.pushTag(slug, data.name, effectiveUserId, data.token, tokenUserId, tokenFallbackUserIds);
                     break;
                 case 'revert':
                     result = await gitService.revertCommit(slug, data.hash, effectiveUserId);
