@@ -61,6 +61,10 @@ class ShadowApplyRequest(BaseModel):
     universeId: str
 
 
+class ShadowWhyRequest(BaseModel):
+    question: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -244,6 +248,48 @@ def _cancel_tasks(job: events.JobState, *, keep: Optional[str]) -> List[str]:
         task.cancel()
         cancelled.append(uid)
     return cancelled
+
+
+@router.post("/{job_id}/why")
+async def shadow_why(job_id: str, req: ShadowWhyRequest) -> Dict[str, Any]:
+    """[Why?] follow-up — re-run the Arbiter against its own bundle plus
+    a user question. Master plan §22.
+    """
+    job = events.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"unknown job {job_id}")
+    if not job.bundle or not job.universe_results or not job.arbiter_provider:
+        raise HTTPException(status_code=409, detail="job has no cached arbiter context")
+
+    from .arbiter import Verdict, re_adjudicate
+    user_keys = (job.models or {}).get("user_keys") or {}
+    api_key = user_keys.get(job.arbiter_provider)
+    prior = None
+    if isinstance(job.last_verdict, dict):
+        prior = Verdict(
+            winner=job.last_verdict.get("winner", "?"),
+            confidence=float(job.last_verdict.get("confidence", 0)),
+            rationale=job.last_verdict.get("rationale", ""),
+            ranking=job.last_verdict.get("ranking") or [],
+            tradeoffs=job.last_verdict.get("tradeoffs") or [],
+            warnings=job.last_verdict.get("warnings") or [],
+            synthesis=job.last_verdict.get("synthesis") or {
+                "recommended": False, "explanation": None, "instruction": None,
+            },
+            source=job.last_verdict.get("source", "llm"),
+        )
+
+    verdict = await re_adjudicate(
+        bundle=job.bundle,
+        universes=job.universe_results,
+        provider=job.arbiter_provider,
+        api_key=api_key,
+        model=job.arbiter_model or "gemini-pro",
+        user_question=req.question or "",
+        prior_verdict=prior,
+    )
+    job.last_verdict = verdict.to_dict()
+    return {"verdict": verdict.to_dict()}
 
 
 @router.post("/{job_id}/cancel")

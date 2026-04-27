@@ -186,6 +186,15 @@ async def run_job(
     await job.emit(events.arbiter_verdict(verdict.to_dict()))
     winner = verdict.winner
 
+    # Cache bundle + verdict for the [Why?] follow-up route (master plan §22).
+    job.bundle = bundle
+    job.last_verdict = verdict.to_dict()
+    job.universe_results = valid
+    job.user_request = user_request
+    job.intent = intent
+    job.arbiter_provider = arb_provider
+    job.arbiter_model = arb_model
+
     await job.emit(events.all_done(winner=winner))
     await job.emit_done()
     return winner

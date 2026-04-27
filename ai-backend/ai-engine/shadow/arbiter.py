@@ -42,6 +42,18 @@ _MAX_FAILED_ATTACKS = 4
 # Confidence the UI uses to render "Arbiter is uncertain — review all".
 LOW_CONFIDENCE_THRESHOLD = 0.6
 
+# Two-stage Arbiter (master plan §11.1, Wave 3). When the bundle would
+# exceed this many tokens (rough 4 chars/token estimate), a Summarizer
+# pass reduces each universe to a structured ~200-token brief so the
+# Judge model never sees lost-in-the-middle context.
+TWO_STAGE_TOKEN_THRESHOLD = 8_000
+_SUMMARIZER_PROVIDER_MODEL = {
+    "anthropic": "claude-haiku-4-5-20251001",
+    "openai":    "gpt-4o-mini",
+    "gemini":    "gemini-flash",
+}
+_PER_UNIVERSE_BRIEF_BUDGET = 220  # rough words per universe brief
+
 
 # ---------------------------------------------------------------------------
 # Provider rotation
@@ -229,6 +241,9 @@ async def adjudicate(
     """Full Arbiter call. On any failure path, fall back to a
     deterministic top-of-score winner so the orchestrator always has
     *something* to render.
+
+    Wave 3: when the bundle is oversized, run a Summarizer pass first
+    (master plan §11.1) so the Judge model only sees structured briefs.
     """
     valid_ids = [u.universe_id for u in universes if u.score > 0]
     if not valid_ids:
@@ -256,6 +271,11 @@ async def adjudicate(
         return _fallback(universes, reason="provider unavailable",
                          first=_top_by_score(universes))
 
+    if estimate_bundle_tokens(bundle) > TWO_STAGE_TOKEN_THRESHOLD:
+        bundle = await _summarize_bundle(
+            bundle=bundle, provider=provider, api_key=api_key,
+        )
+
     prompt = _arbiter_prompt(bundle)
     raw = await _ask(prov, model, api_key, prompt)
     verdict = _parse_and_validate(raw, universes)
@@ -270,6 +290,73 @@ async def adjudicate(
         return _fallback(universes, reason="schema validation failed",
                          first=_top_by_score(universes))
     return verdict
+
+
+# ---------------------------------------------------------------------------
+# Two-stage Arbiter (master plan §11.1)
+# ---------------------------------------------------------------------------
+
+def estimate_bundle_tokens(bundle: Dict[str, Any]) -> int:
+    """Rough token estimate (~4 chars/token). Avoids loading a tokenizer
+    just to make a routing decision; off-by-30% is fine."""
+    raw = json.dumps(bundle, separators=(",", ":"))
+    return len(raw) // 4
+
+
+async def _summarize_bundle(
+    *,
+    bundle: Dict[str, Any],
+    provider: str,
+    api_key: Optional[str],
+) -> Dict[str, Any]:
+    """Reduce each universe to a ~200-word structured brief. The bundle
+    keeps its outer keys (request, intent, project_signals, summary) so
+    the Judge prompt format is unchanged.
+    """
+    summarizer_model = _SUMMARIZER_PROVIDER_MODEL.get(provider, "gemini-flash")
+    try:
+        from llm.providers.factory import get_provider
+        prov = get_provider(provider)
+    except Exception:
+        # No provider available — return the bundle unchanged. The Judge
+        # may still cope; the deterministic fallback catches the worst case.
+        return bundle
+
+    new_universes: List[Dict[str, Any]] = []
+    for u in bundle.get("universes", []):
+        brief = await _ask(prov, summarizer_model, api_key, _summarizer_prompt(u))
+        if brief and brief.strip():
+            new_universes.append({
+                "id": u.get("id"),
+                "style": u.get("style"),
+                "model_pair": u.get("model_pair"),
+                "score": u.get("score"),
+                "loc": u.get("loc"),
+                "brief": brief.strip()[: _PER_UNIVERSE_BRIEF_BUDGET * 8],
+            })
+        else:
+            # Summarizer failed for this universe — keep the original
+            # compressed form rather than dropping it from the run.
+            new_universes.append(u)
+    return {
+        **bundle,
+        "universes": new_universes,
+        "_summarized": True,
+    }
+
+
+def _summarizer_prompt(universe_block: Dict[str, Any]) -> str:
+    body = json.dumps(universe_block, indent=2)
+    return (
+        "Summarize this single-universe patch evidence into a ~200-word "
+        "structured brief that another LLM (the Arbiter) will use to "
+        "compare it against other universes. Cover: what the patch does "
+        "(one sentence), test/lint/type/runtime status, attacks survived "
+        "vs failed, and any concrete data point worth weighting. "
+        "Plain prose, no markdown. Do not include opinions or "
+        "recommendations — leave that to the Arbiter.\n\n"
+        f"Universe evidence:\n{body}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -304,10 +391,17 @@ Hard rules:
 
 def _arbiter_prompt(bundle: Dict[str, Any]) -> str:
     body = json.dumps(bundle, indent=2)
+    summarized_note = (
+        "Note: per-universe evidence has been pre-summarized by a "
+        "Summarizer pass (oversize bundle). Treat each `brief` as the "
+        "primary input, supplemented by the structured fields.\n\n"
+        if bundle.get("_summarized") else ""
+    )
     return (
         "You are the Arbiter — an impartial reviewer choosing the best patch from "
         "multiple AI-generated candidates. You see compressed evidence, not full "
         "files. Pick exactly one winner and ground your rationale in the evidence.\n\n"
+        f"{summarized_note}"
         f"Evidence bundle:\n{body}\n\n"
         f"{_SCHEMA_DESCRIPTION}\n"
     )
@@ -466,6 +560,58 @@ def _loc_delta_int(u: UniverseResult) -> int:
         if digits:
             total += int(digits)
     return total
+
+
+async def re_adjudicate(
+    *,
+    bundle: Dict[str, Any],
+    universes: List[UniverseResult],
+    provider: str,
+    api_key: Optional[str],
+    model: str,
+    user_question: str,
+    prior_verdict: Optional[Verdict] = None,
+) -> Verdict:
+    """[Why?] follow-up: re-run the Arbiter with the user's question
+    appended. The schema is unchanged so the UI can render it with the
+    same components — but the rationale now responds to the user's prompt.
+    """
+    try:
+        from llm.providers.factory import get_provider
+        prov = get_provider(provider)
+    except Exception:
+        return _fallback(universes, reason="provider unavailable for [Why?]",
+                         first=_top_by_score(universes))
+
+    # If oversize, summarize once before adding the question.
+    if estimate_bundle_tokens(bundle) > TWO_STAGE_TOKEN_THRESHOLD:
+        bundle = await _summarize_bundle(bundle=bundle, provider=provider, api_key=api_key)
+
+    prior_block = ""
+    if prior_verdict is not None:
+        prior_block = (
+            "\n\nYour previous verdict:\n"
+            + json.dumps(prior_verdict.to_dict(), indent=2)
+            + "\n\nThe user is asking a follow-up question about that verdict. "
+              "You may keep the same winner or change your mind, but you must "
+              "address the question explicitly in `rationale`.\n"
+        )
+
+    prompt = (
+        _arbiter_prompt(bundle)
+        + prior_block
+        + f"\n\nUser question: {user_question.strip()[:1200]}\n"
+    )
+    raw = await _ask(prov, model, api_key, prompt)
+    verdict = _parse_and_validate(raw, universes)
+    if verdict is None:
+        # one re-prompt path
+        raw2 = await _ask(prov, model, api_key, prompt + "\n\nOutput ONLY valid JSON matching the schema.")
+        verdict = _parse_and_validate(raw2, universes)
+    if verdict is None:
+        return _fallback(universes, reason="re-adjudication validation failed",
+                         first=(prior_verdict.winner if prior_verdict else _top_by_score(universes)))
+    return verdict
 
 
 def _fallback(universes: List[UniverseResult], *, reason: str, first: str) -> Verdict:
