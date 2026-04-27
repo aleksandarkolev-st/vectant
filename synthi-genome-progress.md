@@ -148,7 +148,74 @@ backend/collab-server/permissionMiddleware.js
 
 ## Wave 2 — 3-universe parallel + Arbiter + Critic-Critic
 
-⚪ Not started. Module skeletons referenced from `multiverse.py` (`TIER_UNIVERSE_COUNT`, `_make_specs`) make this a configuration flip plus three new files: `critic_critic.py`, `arbiter.py`, `convergence.py`, `project_signals.py`, plus `<ArbiterCard />` on the frontend.
+Files created on this branch:
+
+```
+ai-backend/ai-engine/shadow/
+  project_signals.py           Cheap project type / lang / test-framework / CI detection
+  critic_critic.py             Pedantry filter (deterministic baseline + optional LLM)
+  convergence.py               Normalized-content similarity + consensus detection
+  arbiter.py                   Compressed evidence bundle + strict-schema verdict + validator
+
+synthi/src/components/chat/
+  ArbiterCard.jsx              Verdict + consensus + low-confidence variants
+```
+
+Files modified:
+
+```
+ai-backend/ai-engine/shadow/multiverse.py
+  + TIER_UNIVERSE_COUNT lifted to {quick:1, standard:3, deep:3}
+  + per-provider rate card (_PROVIDER_RATE_USD) feeding estimate_cost(specs, tier)
+  + estimate_cost_for_request(tier, models) consumed by /shadow/run response
+  + signals = detect_signals(repo) shared across universes
+  + N>1 path: _run_with_convergence() fans out via asyncio.create_task,
+    drains via as_completed, cancels pending when ≥2 universes converge
+  + post-cohort: detect_convergence → emit convergence_detected + skip Arbiter,
+    else build_evidence_bundle → adjudicate → emit arbiter_verdict
+ai-backend/ai-engine/shadow/universe.py
+  + accepts `signals: ProjectSignals`; runs filter_pedantic between
+    reproducer execution and revise pass (and again post-revise)
+ai-backend/ai-engine/shadow/api.py
+  + /shadow/run uses estimate_cost_for_request(tier, models) for response
+synthi/src/components/chat/hooks/useShadowVerify.js
+  + tracks convergence + cohort; surfaces both alongside arbiter verdict
+synthi/src/components/chat/MultiverseCard.jsx
+  + renders <ArbiterCard /> when verdict or convergence present
+```
+
+### Wave 2 status by item (master plan §19 row "Wave 2")
+
+| Item | Status | Notes |
+|---|---|---|
+| 3-universe parallel orchestrator | ✅ | `TIER_UNIVERSE_COUNT={quick:1,standard:3,deep:3}`; `_run_with_convergence` fans out with as-completed cancellation. |
+| Arbiter with compressed evidence | ✅ | `arbiter.build_evidence_bundle` (~1KB typical) + `adjudicate(bundle, universes, …)`. |
+| Strict-schema verdict + validator | ✅ | `_validate` enforces single winner, evidence-grounded rationale, and warning-on-failing-tests. One re-prompt on validation failure, then deterministic fallback. |
+| Provider rotation for Arbiter | ✅ | `select_arbiter_provider(universes, forbid_in_run=True)` — least-used provider in the run; falls back to least-used overall when all are used. |
+| Critic-Critic pedantry filter | ✅ | Deterministic ruleset + optional LLM pass via `filter_pedantic_with_llm`. Demoted attacks become severity=low and never trigger revise. |
+| Project-signals detection | ✅ | `project_signals.detect()` walks workspace (capped at 4k files); shared across universes. |
+| Convergence detection | ✅ | `detect_convergence()` uses normalized-content min-similarity ≥ 0.92; cancels pending universes and skips Arbiter. |
+| `convergence_detected` + `arbiter_verdict` events | ✅ | Already wired in `events.py`; emitted from multiverse on consensus / verdict. |
+| Per-provider rate cards | ✅ | `_PROVIDER_RATE_USD` for {anthropic, openai, gemini} × {gen, critic, arbiter, critic_critic, revise}; `estimate_cost(specs, tier)` floors against tier ceiling. |
+| `<ArbiterCard />` frontend | ✅ | Decided / uncertain / consensus variants. Surfaced inside `<MultiverseCard />` once a verdict or convergence event arrives. |
+| Cross-paired Generator/Critic across N=3 | ✅ | `_make_specs` already cross-pairs; with the lifted tier table this is now actually exercised. |
+
+### Wave 2 gaps remaining (carry to Wave 3)
+
+1. **Bench corpus growth.** Still 6 / 50 fixtures. The §15.3 CI gates (Critic
+   precision ≥ 0.70, recall ≥ 0.60, **Arbiter top-1 agreement ≥ 0.80**, apply
+   success ≥ 0.95, p95 latency ≤ 14.4s) need ≥30-40 fixtures to be statistically
+   meaningful. The Arbiter agreement metric is computed by `metrics.py` against
+   `golden_patch.diff`/`golden_tests/` which most fixtures don't yet have.
+2. **Two-stage Arbiter on oversize bundles** (master plan §11.1, slated Wave 3).
+   The bundle compresses to ~1KB in the typical case (validated above); at 8K+
+   tokens we'd add a Summarizer pass.
+3. **Scoring weight re-tune from harness.** Master plan §10 / §15 — the harness
+   should grid-search the §10 weights against a sufficient corpus before Wave 2
+   GA. Tied to (1).
+4. **`[Why?]` button** (master plan §22) — opens a follow-up chat asking the
+   Arbiter to defend or revise its verdict. Frontend wire-up only; the Arbiter
+   already has the bundle to re-prompt on.
 
 ## Wave 3 — runtime probes + crossover + Go/Rust/HTML
 

@@ -18,6 +18,7 @@ const initial = () => ({
     snapshotFiles: [],
     universes: {}, // id -> { stage, evidence }
     arbiter: null,
+    convergence: null, // { downgrading_to, cohort? }
     winner: null,
     finished: false,
     cancelled: false,
@@ -155,6 +156,14 @@ function reduce(s, evt) {
             return { ...s, staleFiles: evt.files || [] };
         case 'arbiter_verdict':
             return { ...s, arbiter: evt };
+        case 'convergence_detected':
+            return {
+                ...s,
+                convergence: {
+                    downgrading_to: evt.downgrading_to ?? 1,
+                    cohort: evt.cohort || Object.keys(s.universes || {}),
+                },
+            };
         case 'all_done':
             return { ...s, finished: true, winner: evt.winner || null };
         case 'error':

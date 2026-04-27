@@ -17,7 +17,9 @@ from typing import Any, Dict, List, Optional
 
 from . import events
 from .critic import Critic, CritiqueResult
+from .critic_critic import filter_pedantic
 from .generator import Generator, GeneratorRequest, PatchBlock
+from .project_signals import ProjectSignals
 from .runner import RunResult, detect_runner
 from .runner.base import run_cmd
 from .scoring import ScoreInput, compute as compute_score
@@ -69,6 +71,7 @@ class Universe:
         seed_patches: List[PatchBlock],
         job: events.JobState,
         dep_lock,
+        signals: Optional[ProjectSignals] = None,
     ) -> UniverseResult:
         uid = self.spec.universe_id
         await job.emit(events.universe_started(
@@ -139,6 +142,13 @@ class Universe:
         # 6. Run executable reproducers (only for kinds that benefit)
         await _run_reproducers(worktree.path, critique)
 
+        # 6.5. Critic-Critic — pedantry filter. Demotes non-executable
+        # attacks that don't apply to this project. Synchronous + cheap;
+        # the LLM-augmented variant (filter_pedantic_with_llm) is wired
+        # at the multiverse level when a fast model is configured.
+        if signals is not None:
+            filter_pedantic(critique, signals)
+
         # 7. Optional revise pass on blocking attacks (master plan §6.2: max 1).
         revised = False
         if critique.blocking:
@@ -161,6 +171,8 @@ class Universe:
                     diagnostics=diagnostics_evidence,
                 )
                 await _run_reproducers(worktree.path, critique)
+                if signals is not None:
+                    filter_pedantic(critique, signals)
 
         # 8. Score + evidence
         score = compute_score(ScoreInput(

@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { useShadowVerify } from './hooks/useShadowVerify';
+import { ArbiterCard } from './ArbiterCard';
 
 /**
  * Synthi Genome — MultiverseCard
@@ -106,6 +107,9 @@ export function MultiverseCard({ jobId }) {
                     <UniverseRow key={u.id} universe={u} onApply={(id) => verify.apply(id)} />
                 ))
             )}
+            {verify.convergence || verify.arbiter ? (
+                <ArbiterCard jobId={jobId} />
+            ) : null}
             {verify.finished && verify.winner ? (
                 <footer className="genome-card__foot">winner: Universe {verify.winner}</footer>
             ) : null}

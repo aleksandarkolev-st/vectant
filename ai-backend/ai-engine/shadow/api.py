@@ -68,12 +68,13 @@ class ShadowApplyRequest(BaseModel):
 async def shadow_run(req: ShadowRunRequest, background: BackgroundTasks) -> Dict[str, Any]:
     repo = _resolve_repo(req.workspace_path)
     job_id = multiverse.make_job_id()
+    cost_usd = multiverse.estimate_cost_for_request(req.tier, req.models)
     job = events.JobState(
         job_id=job_id,
         tier=req.tier,
         workspace_path=req.workspace_path,
         user_id=req.user_id,
-        estimated_cost_usd=multiverse.TIER_COST_USD.get(req.tier, 0.012),
+        estimated_cost_usd=cost_usd,
     )
     job.models = req.models or {}  # surfaced to Universe via run_job
     events.register(job)
