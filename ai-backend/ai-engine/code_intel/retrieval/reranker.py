@@ -42,6 +42,13 @@ class RerankerConfig:
     filter_duplicates: bool = True
     filter_low_quality: bool = True
 
+    # Maximal Marginal Relevance (Carbonell & Goldstein 1998).
+    # Diversifies the top-k so the LLM doesn't see five copies of the
+    # same chunk from one file. λ=1 disables (pure relevance);
+    # λ=0 is pure diversity. 0.7 is a strong default for code search.
+    enable_mmr: bool = True
+    mmr_lambda: float = 0.7
+
 
 @dataclass
 class RerankedResult:
@@ -167,9 +174,68 @@ class LightweightReranker:
         
         # Sort by rerank score
         results.sort(key=lambda r: r.rerank_score, reverse=True)
-        
+
+        # Diversity pass via MMR — prevents five near-duplicates from the
+        # same file dominating the top-k. Skip when MMR is disabled or
+        # when there are fewer results than the cap.
+        if self.config.enable_mmr and len(results) > self.config.max_results:
+            results = self._mmr_select(results, top_k=self.config.max_results)
+            return results
+
         # Limit results
         return results[:self.config.max_results]
+
+    def _mmr_select(
+        self,
+        results: List[RerankedResult],
+        *,
+        top_k: int,
+    ) -> List[RerankedResult]:
+        """Apply Maximal Marginal Relevance over the reranked list.
+
+        We measure inter-chunk similarity via two cheap signals stacked:
+          1. Same file → +0.6 base similarity (heavy penalty for clones).
+          2. Symbol token Jaccard → up to +0.4 incremental similarity.
+
+        Embedding cosine would be more accurate but the chunks here may
+        not have hot embeddings on the same vector — keeping it cheap
+        ensures MMR runs in <1ms even on 100 candidates.
+        """
+        from .fusion import jaccard_similarity, mmr
+
+        max_score = max((r.rerank_score for r in results), default=1.0) or 1.0
+
+        def relevance(r: RerankedResult) -> float:
+            return r.rerank_score / max_score
+
+        def tokens_for(r: RerankedResult) -> Set[str]:
+            md = r.chunk.metadata
+            tokens = set()
+            for attr in (
+                getattr(md, "qualified_name", None),
+                getattr(md, "symbol_name", None),
+                getattr(md, "signature", None),
+            ):
+                if attr:
+                    tokens.update(self._extract_terms(str(attr)))
+            return tokens
+
+        def similarity(a: RerankedResult, b: RerankedResult) -> float:
+            sim = 0.0
+            file_a = getattr(a.chunk.metadata, "file_path", None)
+            file_b = getattr(b.chunk.metadata, "file_path", None)
+            if file_a and file_b and file_a == file_b:
+                sim += 0.6
+            sim += 0.4 * jaccard_similarity(tokens_for(a), tokens_for(b))
+            return min(1.0, sim)
+
+        return mmr(
+            candidates=results,
+            relevance_fn=relevance,
+            similarity_fn=similarity,
+            lambda_=self.config.mmr_lambda,
+            top_k=top_k,
+        )
     
     def _extract_terms(self, text: str) -> Set[str]:
         """Extract searchable terms from text."""

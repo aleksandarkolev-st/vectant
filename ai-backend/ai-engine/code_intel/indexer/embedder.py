@@ -114,40 +114,69 @@ def build_embed_text(chunk: SemanticChunk) -> str:
         Structured text for embedding
     """
     parts = []
-    
+
+    # 0. File-level breadcrumb (Anthropic's "Contextual Retrieval"
+    # technique). Anchors generic chunks to a location so two functions
+    # named `apply` in different files don't share embeddings. Cheap and
+    # works even when the chunk has no symbol metadata.
+    file_breadcrumb = _file_breadcrumb(chunk)
+    if file_breadcrumb:
+        parts.append(f"FILE: {file_breadcrumb}")
+
     # 1. Symbol identity
     qualified_name = chunk.metadata.qualified_name or chunk.metadata.symbol_name
     if qualified_name:
         parts.append(f"SYMBOL: {qualified_name}")
-    
+
     # 2. Symbol type
     if chunk.metadata.symbol_type:
         parts.append(f"TYPE: {chunk.metadata.symbol_type.value}")
-    
+
     # 3. Signature (critical for API matching)
     if chunk.metadata.signature:
         parts.append(f"SIGNATURE: {chunk.metadata.signature}")
-    
+
     # 4. Docstring (capped to preserve key info)
     if chunk.metadata.docstring:
         doc = chunk.metadata.docstring[:500]
         if len(chunk.metadata.docstring) > 500:
             doc += "..."
         parts.append(f"DOC: {doc}")
-    
+
     # 5. Key lines (semantic essence of the implementation)
     code = chunk._code_body or ""
     if code:
         key_lines = extract_key_lines(code)
         if key_lines:
             parts.append(f"KEY: {key_lines}")
-    
+
     # 6. Imports used (semantic context)
     if chunk.metadata.imports_used:
         imports_list = list(chunk.metadata.imports_used)[:10]
         parts.append(f"USES: {', '.join(imports_list)}")
-    
+
     return "\n".join(parts)
+
+
+def _file_breadcrumb(chunk: SemanticChunk) -> str:
+    """One-line file/module breadcrumb: <path>[ · <module-or-package>].
+
+    Defensive against missing metadata so legacy chunks still embed.
+    """
+    md = chunk.metadata
+    file_path = getattr(md, "file_path", None) or getattr(md, "path", None)
+    module = (
+        getattr(md, "module_name", None)
+        or getattr(md, "package", None)
+        or getattr(md, "module", None)
+    )
+    if file_path and module and module not in str(file_path):
+        return f"{file_path} · {module}"
+    if file_path:
+        return str(file_path)
+    if module:
+        return str(module)
+    return ""
 
 
 class Embedder:
