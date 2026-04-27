@@ -153,6 +153,10 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
     if not patches:
         raise HTTPException(status_code=409, detail=f"universe {req.universeId} has no stored patches")
 
+    # Apply-and-cancel (master plan §16 mitigation #4 + §2 UX rule):
+    # accepting one universe should kill any still-running siblings.
+    cancelled_siblings = _cancel_tasks(job, keep=req.universeId)
+
     repo = _resolve_repo(job.workspace_path)
     snap = job.snapshot_obj
     if snap is None:
@@ -223,7 +227,23 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
             {"path": r.path, "strategy": r.strategy, "note": r.note}
             for r in results
         ],
+        "siblings_cancelled": cancelled_siblings,
     }
+
+
+def _cancel_tasks(job: events.JobState, *, keep: Optional[str]) -> List[str]:
+    """Cancel every in-flight universe task except `keep`. Returns the list
+    of universe ids actually cancelled (i.e. tasks that were still pending).
+    """
+    cancelled: List[str] = []
+    for uid, task in list(job.tasks.items()):
+        if uid == keep:
+            continue
+        if task is None or task.done():
+            continue
+        task.cancel()
+        cancelled.append(uid)
+    return cancelled
 
 
 @router.post("/{job_id}/cancel")
@@ -232,9 +252,10 @@ async def shadow_cancel(job_id: str) -> Dict[str, Any]:
     if job is None:
         raise HTTPException(status_code=404, detail=f"unknown job {job_id}")
     job.cancelled = True
+    cancelled_ids = _cancel_tasks(job, keep=None)
     await job.emit(events.error(stage="cancel", msg="cancelled by user"))
     await job.emit_done()
-    return {"cancelled": True}
+    return {"cancelled": True, "tasks_cancelled": cancelled_ids}
 
 
 # ---------------------------------------------------------------------------

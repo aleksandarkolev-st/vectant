@@ -84,6 +84,10 @@ class JobState:
     universe_patches: Dict[str, List[Dict[str, str]]] = field(default_factory=dict)  # id -> [{path, new_content}, ...]
     snapshot: Optional[Dict[str, Any]] = None  # filled by snapshot.create()
     snapshot_obj: Optional[Any] = None  # full Snapshot for /apply ladder (kept in memory for the run)
+    # In-flight asyncio tasks per universe id, populated by multiverse.run_job
+    # for the N>1 fan-out path. Used by /cancel and /apply to actually kill
+    # pending universes mid-flight (master plan §16 mitigations #4 + #5).
+    tasks: Dict[str, Any] = field(default_factory=dict)
     finished: bool = False
     cancelled: bool = False
     estimated_cost_usd: float = 0.0

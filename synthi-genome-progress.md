@@ -104,7 +104,9 @@ backend/collab-server/permissionMiddleware.js
 | Yjs-aware apply | ✅ | `applyTextDiffOps` in `ySweetBridge.js` runs a line-level LCS diff and submits each hunk as a `Y.Text.delete + .insert` pair inside a single `doc.transact()`; falls back to `resetDocContent` only if Y-Sweet rejects. |
 | Non-blocking verify panel | ✅ | `<MultiverseCard />` + SSE hook. |
 | Pre-warming | ✅ | Pool builds slots lazily on first `acquire()`. |
-| Apply-and-cancel | ✅ | `/cancel` endpoint + hook `cancel()`. |
+| Apply-and-cancel | ✅ | `/cancel` endpoint + hook `cancel()`. `/cancel` now actually cancels every in-flight `asyncio.Task` registered on `JobState.tasks`, not just the SSE drainer. |
+| Apply cancels remaining universes mid-flight | ✅ | Master plan §16 mitigation #4 + §2 UX rule. `/apply` calls `_cancel_tasks(job, keep=universeId)` before running the merge ladder; response surfaces `siblings_cancelled[]`. |
+| Per-universe wall-clock cap | ✅ | Master plan §16 mitigation #5. `_run_single` wraps `Universe.run` in `asyncio.wait_for` with `UNIVERSE_TIMEOUT_SEC = {quick: 8, standard: 25, deep: 45}`. Timeout emits an error event and returns `None` so the cohort continues with partial results. |
 | Apply ladder wired into `/shadow/apply` | ✅ | `shadow_apply` handler invokes `snapshot.apply_one()` per file (direct → 3-way → AI-rebase → conflict ladder), writes results to disk, and returns `merge_strategy` (worst across files) plus `per_file[]` and `files_failed[]`. |
 | Staleness UI | ✅ | `<StalenessBadge />` + `staleness_detected` event. |
 | Verify-only mode | ✅ | `POST /shadow/verify-only` + `multiverse.run_verify_only`. |

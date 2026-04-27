@@ -36,6 +36,11 @@ logger = logging.getLogger("shadow.multiverse")
 # cross-paired specs in `_make_specs` actually get exercised.
 TIER_UNIVERSE_COUNT = {"quick": 1, "standard": 3, "deep": 3}
 
+# Per-universe wall-clock cap (master plan §16 mitigation #5). On timeout
+# the universe is marked partial and its task is cancelled — partial
+# evidence still surfaces if the universe emitted any progress events.
+UNIVERSE_TIMEOUT_SEC = {"quick": 8, "standard": 25, "deep": 45}
+
 # Per-provider rate card — rough $-per-call estimates (Apr 2026). Used
 # to compute `estimated_cost_usd` from the actual (gen, critic) tuples
 # in the run, instead of the flat-tier fallback below.
@@ -197,15 +202,19 @@ async def _run_single(
 ) -> Optional[UniverseResult]:
     universe = Universe(spec=spec)
     started = time.time()
+    timeout = UNIVERSE_TIMEOUT_SEC.get(job.tier, UNIVERSE_TIMEOUT_SEC["standard"])
     try:
         async with pool.acquire() as wt:
-            result = await universe.run(
-                worktree=wt,
-                user_request=user_request,
-                seed_patches=seed_patches,
-                job=job,
-                dep_lock=pool.dep_lock,
-                signals=signals,
+            result = await asyncio.wait_for(
+                universe.run(
+                    worktree=wt,
+                    user_request=user_request,
+                    seed_patches=seed_patches,
+                    job=job,
+                    dep_lock=pool.dep_lock,
+                    signals=signals,
+                ),
+                timeout=timeout,
             )
         result.evidence["duration_ms"] = int((time.time() - started) * 1000)
         job.universes[result.universe_id] = result.evidence
@@ -215,6 +224,13 @@ async def _run_single(
         ]
         await job.emit(events.universe_done(result.universe_id, result.evidence))
         return result
+    except asyncio.TimeoutError:
+        logger.info("universe %s exceeded %ds wall-clock cap", spec.universe_id, timeout)
+        await job.emit(events.error(
+            stage=f"universe-{spec.universe_id}",
+            msg=f"per-universe wall-clock cap ({timeout}s) exceeded — partial result",
+        ))
+        return None
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -244,6 +260,8 @@ async def _run_with_convergence(
             signals=signals,
         ))
         tasks[task] = spec.universe_id
+        # Expose to /cancel and /apply so they can kill pending universes.
+        job.tasks[spec.universe_id] = task
 
     completed: List[UniverseResult] = []
     cancelled_ids: List[str] = []
@@ -267,6 +285,13 @@ async def _run_with_convergence(
                     cancelled_ids.append(uid)
             break
 
+    # External cancel via /shadow/cancel may have set this — make sure
+    # any still-running tasks are killed before we return.
+    if job.cancelled:
+        for t in tasks.keys():
+            if not t.done():
+                t.cancel()
+
     # Drain any stragglers we cancelled, swallowing exceptions.
     for t in tasks.keys():
         if t.done():
@@ -277,6 +302,9 @@ async def _run_with_convergence(
             pass
         except Exception:
             logger.debug("cancelled universe raised during teardown", exc_info=True)
+
+    # Clear the task registry so /cancel and /apply don't double-cancel.
+    job.tasks.clear()
 
     return completed, cancelled_ids
 
