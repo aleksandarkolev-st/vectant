@@ -192,6 +192,32 @@ export function generateMonacoTheme(theme) {
 }
 
 // ────────────────────────────────────────────────────────
+// 3b. Shiki Theme Generation
+// ────────────────────────────────────────────────────────
+
+/**
+ * Build a Shiki-compatible theme object from a resolved Synthi theme.
+ *
+ * Shiki accepts VS Code-style theme JSON (`colors` + `tokenColors`), which
+ * matches the Synthi theme shape one-to-one — `editor` becomes `colors`
+ * and `tokenColors` passes through.
+ *
+ * @param {object} theme - Resolved Synthi theme
+ * @returns {object} Shiki theme registration object
+ */
+export function generateShikiTheme(theme) {
+  if (!theme) return null;
+  return {
+    name: theme.id || 'synthi',
+    type: theme.type === 'light' ? 'light' : 'dark',
+    colors: theme.editor || {},
+    tokenColors: theme.tokenColors || [],
+    semanticTokenColors: theme.semanticTokenColors || {},
+    semanticHighlighting: true,
+  };
+}
+
+// ────────────────────────────────────────────────────────
 // 4. Terminal Theme Generation
 // ────────────────────────────────────────────────────────
 

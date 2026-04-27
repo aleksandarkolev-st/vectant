@@ -119,6 +119,12 @@ class SessionManager extends EventEmitter {
     /** @type {Map<string, string>} socketId → guestId (for fast lookup on disconnect) */
     this.socketIndex = new Map();
 
+    /** @type {Map<string, string>} socketId → sessionId (host's WS socket → session) */
+    this.hostSocketIndex = new Map();
+
+    /** @type {Map<string, string>} guestId → sessionId (pending knock → session) */
+    this.pendingKnockIndex = new Map();
+
     // Whether the post-restore bootstrap has completed.  Until then we skip
     // emitting persist:* events so a rehydrated session doesn't get written
     // back to storage immediately.
@@ -166,6 +172,9 @@ class SessionManager extends EventEmitter {
         for (const [gid, guest] of session.guests) {
           this.guestIndex.set(gid, session.id);
           if (guest?.socketId) this.socketIndex.set(guest.socketId, gid);
+        }
+        for (const guestId of session.pendingKnocks) {
+          this.pendingKnockIndex.set(guestId, session.id);
         }
         restored++;
       }
@@ -315,6 +324,7 @@ class SessionManager extends EventEmitter {
       for (const [guestId, ts] of session._knockTimes) {
         if (now - ts > KNOCK_TTL_MS) {
           if (session.pendingKnocks.delete(guestId)) {
+            this.pendingKnockIndex.delete(guestId);
             this.emit('session:knockCancelled', { sessionId, guestId });
           }
           session._knockTimes.delete(guestId);
@@ -355,6 +365,7 @@ class SessionManager extends EventEmitter {
       const first = session.pendingKnocks.values().next().value;
       if (first) {
         session.pendingKnocks.delete(first);
+        this.pendingKnockIndex.delete(first);
         this.emit('session:knockCancelled', { sessionId, guestId: first });
       }
     }
@@ -387,6 +398,7 @@ class SessionManager extends EventEmitter {
     }
 
     session.pendingKnocks.add(guestId);
+    this.pendingKnockIndex.set(guestId, sessionId);
     if (!session._knockTimes) session._knockTimes = new Map();
     session._knockTimes.set(guestId, Date.now());
     console.log(`[SessionManager] knock: ${guestId} (${displayName}) added to pendingKnocks. Host=${session.hostId}, Session=${sessionId}`);
@@ -427,6 +439,7 @@ class SessionManager extends EventEmitter {
 
     // Remove from pending if present
     session.pendingKnocks.delete(guestId);
+    this.pendingKnockIndex.delete(guestId);
     session._knockTimes?.delete(guestId);
 
     // If guest is already in another session, remove them first
@@ -470,6 +483,7 @@ class SessionManager extends EventEmitter {
     const session = this._getActiveSession(sessionId);
     console.log(`[SessionManager] denyKnock: host=${session.hostId} denied guest=${guestId} in session ${sessionId}`);
     session.pendingKnocks.delete(guestId);
+    this.pendingKnockIndex.delete(guestId);
     session._knockTimes?.delete(guestId);
     this.emit('session:knockDenied', { sessionId, guestId });
     this._persistSession(session);
@@ -655,10 +669,11 @@ class SessionManager extends EventEmitter {
       return { session, role: 'guest', userId: guestId, permissions: { ...guest.permissions } };
     }
 
-    // Maybe it's the host? We don't index host sockets, so scan. This is O(n)
-    // but session count is small.
-    for (const [, session] of this.sessions) {
-      if (session._hostSocketId === socketId) {
+    // Maybe it's the host? Look up via hostSocketIndex (O(1)).
+    const hostSessionId = this.hostSocketIndex.get(socketId);
+    if (hostSessionId) {
+      const session = this.sessions.get(hostSessionId);
+      if (session && session._hostSocketId === socketId) {
         return { session, role: 'host', userId: session.hostId, permissions: { ...HOST_PERMISSIONS } };
       }
     }
@@ -671,7 +686,11 @@ class SessionManager extends EventEmitter {
    */
   registerHostSocket(sessionId, socketId) {
     const session = this._getActiveSession(sessionId);
+    if (session._hostSocketId && session._hostSocketId !== socketId) {
+      this.hostSocketIndex.delete(session._hostSocketId);
+    }
     session._hostSocketId = socketId;
+    this.hostSocketIndex.set(socketId, sessionId);
   }
 
   /**
@@ -688,22 +707,28 @@ class SessionManager extends EventEmitter {
         guestId = identifier;
       } else {
         // Check if it's a host socket
-        for (const [, session] of this.sessions) {
-          if (session._hostSocketId === identifier) {
+        const hostSessionId = this.hostSocketIndex.get(identifier);
+        if (hostSessionId) {
+          const session = this.sessions.get(hostSessionId);
+          if (session && session._hostSocketId === identifier) {
             delete session._hostSocketId;
-            return;
           }
+          this.hostSocketIndex.delete(identifier);
+          return;
         }
         // Not a guest and not a host socket — check if they were a pending knock.
         // Clean up stale knocks so the host's pending list stays accurate.
-        for (const [, session] of this.sessions) {
-          if (session.pendingKnocks.has(identifier)) {
-            session.pendingKnocks.delete(identifier);
+        const knockSessionId = this.pendingKnockIndex.get(identifier);
+        if (knockSessionId) {
+          const session = this.sessions.get(knockSessionId);
+          if (session && session.pendingKnocks.delete(identifier)) {
+            session._knockTimes?.delete(identifier);
             this.emit('session:knockCancelled', {
-              sessionId: session.id || [...this.sessions.entries()].find(([, s]) => s === session)?.[0],
+              sessionId: knockSessionId,
               guestId: identifier,
             });
           }
+          this.pendingKnockIndex.delete(identifier);
         }
         return;
       }
@@ -828,6 +853,10 @@ class SessionManager extends EventEmitter {
     for (const [guestId, guest] of session.guests) {
       this.guestIndex.delete(guestId);
       if (guest.socketId) this.socketIndex.delete(guest.socketId);
+    }
+    if (session._hostSocketId) this.hostSocketIndex.delete(session._hostSocketId);
+    for (const guestId of session.pendingKnocks) {
+      this.pendingKnockIndex.delete(guestId);
     }
     this.sessions.delete(sessionId);
   }

@@ -190,9 +190,17 @@ function handleHttpRequest(req, res) {
   );
 }
 
+// Redact api key fields from a JSON-ish payload string before logging it.
+const API_KEY_REDACT_RE = /("(?:apiKey|api_key)"\s*:\s*)"(?:[^"\\]|\\.)*"/g;
+function redactApiKeys(text) {
+  return text.replace(API_KEY_REDACT_RE, '$1"[REDACTED]"');
+}
+
 async function handleClientMessage(socket, raw) {
   const payloadText = raw.toString("utf8").trim();
-  console.log(`[Gateway DEBUG] Received from client: ${payloadText.substring(0, 200)}...`);
+  if (process.env.GATEWAY_DEBUG_LOG_PAYLOADS === "1") {
+    console.log(`[Gateway DEBUG] Received from client: ${redactApiKeys(payloadText).substring(0, 200)}...`);
+  }
   if (!payloadText) {
     sendError(socket, "Empty payload received");
     return;
