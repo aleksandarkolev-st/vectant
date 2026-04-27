@@ -63,6 +63,7 @@ def select_arbiter_provider(
     universes: Sequence[Any],
     *,
     forbid_in_run: bool = True,
+    avoided_providers: Optional[set] = None,
 ) -> str:
     """Pick the least-used provider across universe (gen, critic) pairs.
 
@@ -71,8 +72,15 @@ def select_arbiter_provider(
     qualify if we pass UniverseResult.evidence... actually evidence
     only stores model strings). We accept either UniverseResult or
     UniverseSpec — see callers for plumbing.
+
+    Wave 4 (master plan §22): when `avoided_providers` lists providers
+    the user has historically overridden, we treat them as "used"
+    (effectively de-prioritize) before falling back to the least-used
+    rule. Rotation prefers a never-used provider; if every provider is
+    in the run, we still pick the least-used among non-avoided.
     """
     counts: Dict[str, int] = {p: 0 for p in _KNOWN_PROVIDERS}
+    avoided = set(avoided_providers or [])
     for u in universes:
         prov_g = getattr(u, "provider_gen", None)
         prov_c = getattr(u, "provider_critic", None)
@@ -83,6 +91,12 @@ def select_arbiter_provider(
             counts[prov_g] += 1
         if prov_c in counts:
             counts[prov_c] += 1
+    # Pretend avoided providers are used so rotation skips them when an
+    # alternative exists. Doesn't outright forbid them — if the user
+    # avoided every provider, the function should still return one.
+    for p in avoided:
+        if p in counts:
+            counts[p] += 2
 
     # Filter out providers actually used iff the run leaves at least one
     # untouched provider. Otherwise (rare: anthropic+openai+gemini all in

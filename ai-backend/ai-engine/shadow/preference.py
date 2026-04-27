@@ -173,6 +173,7 @@ def style_match(
     request: str,
     candidate_style: str,
     candidate_loc: int,
+    candidate_provider: Optional[str] = None,
 ) -> float:
     """0..1 affinity score between this candidate and the user's
     preference history. Plugs into ScoreInput.style_match (see
@@ -184,18 +185,123 @@ def style_match(
       - +0.3 if the most-similar example shares the candidate style.
       - +0.2 if the candidate's loc delta is within 30 % of that
         example's reported delta.
+      - Override signal (master plan §22 Wave 4):
+          +0.10 if the user has historically *picked* this style/provider
+                  over the Arbiter's recommendation (`user_overrode=True`
+                  with this style/provider as the user's choice).
+          −0.15 if the Arbiter previously *recommended* this style/provider
+                  and the user picked something else.
+        These shifts are intentionally smaller than the style-match
+        bonus so a single override doesn't dominate the ranking — it
+        nudges, then accumulates with repetition.
     """
     examples = few_shot_for(repo=repo, user_id=user_id, request=request, k=1)
-    if not examples:
-        return 0.5
-    top = examples[0]
     score = 0.5
-    if top.style == candidate_style:
-        score += 0.3
-    expected = _loc_delta_int(top.loc)
-    if expected and abs(candidate_loc - expected) <= max(3, int(expected * 0.3)):
-        score += 0.2
-    return min(1.0, score)
+    if examples:
+        top = examples[0]
+        if top.style == candidate_style:
+            score += 0.3
+        expected = _loc_delta_int(top.loc)
+        if expected and abs(candidate_loc - expected) <= max(3, int(expected * 0.3)):
+            score += 0.2
+
+    sig = override_signal(repo=repo, user_id=user_id)
+    if candidate_style in sig["preferred_styles"]:
+        score += 0.10
+    if candidate_style in sig["avoided_styles"]:
+        score -= 0.15
+    if candidate_provider:
+        if candidate_provider in sig["preferred_providers"]:
+            score += 0.10
+        if candidate_provider in sig["avoided_providers"]:
+            score -= 0.15
+
+    return max(0.0, min(1.0, score))
+
+
+def override_signal(
+    *,
+    repo: Path,
+    user_id: Optional[str],
+    half_life_examples: int = 4,
+) -> Dict[str, set]:
+    """Aggregate user overrides into preferred/avoided style + provider
+    sets. Both kinds of signal carry: `user_overrode=True` means the
+    user picked something the Arbiter didn't recommend (preferred), and
+    that other universe's metadata becomes the avoided set.
+
+    `half_life_examples` controls recency weighting — only examples
+    where (most_recent_index - i) <= 2 * half_life are considered. The
+    last 8 examples × half_life=4 means everything in scope, but bumping
+    the keep window later won't suddenly include ancient overrides.
+    """
+    pool = _load(repo, user_id)
+    if not pool:
+        return {
+            "preferred_styles": set(),
+            "avoided_styles": set(),
+            "preferred_providers": set(),
+            "avoided_providers": set(),
+        }
+    pool.sort(key=lambda e: e.ts)
+    cutoff_idx = max(0, len(pool) - 2 * max(1, half_life_examples))
+    recent = pool[cutoff_idx:]
+
+    preferred_styles: set = set()
+    avoided_styles: set = set()
+    preferred_providers: set = set()
+    avoided_providers: set = set()
+    for ex in recent:
+        gen_provider = ex.model_pair[0] if ex.model_pair else None
+        if ex.user_overrode:
+            preferred_styles.add(ex.style)
+            if gen_provider:
+                preferred_providers.add(_provider_family(gen_provider))
+        elif ex.arbiter_winner is False:
+            # Arbiter wasn't the source — user picked, but didn't
+            # explicitly override. Treat as soft preference.
+            preferred_styles.add(ex.style)
+        if ex.arbiter_winner is True and not ex.user_overrode:
+            # The user accepted the Arbiter's pick — neutral signal.
+            continue
+
+    # Avoided set: any *other* style/provider in the same recent window
+    # that wasn't accepted is treated as avoided. Conservative — we
+    # don't know the full universe set per example, so we infer from
+    # the family of declared providers across history.
+    declared_providers = {
+        _provider_family(ex.model_pair[0])
+        for ex in recent if ex.model_pair and ex.model_pair[0]
+    }
+    declared_providers.discard(None)
+    avoided_providers = declared_providers - preferred_providers
+
+    declared_styles = {ex.style for ex in recent}
+    avoided_styles = declared_styles - preferred_styles
+
+    return {
+        "preferred_styles": preferred_styles,
+        "avoided_styles": avoided_styles,
+        "preferred_providers": preferred_providers,
+        "avoided_providers": avoided_providers,
+    }
+
+
+_PROVIDER_FAMILY = {
+    "claude": "anthropic", "anthropic": "anthropic",
+    "gpt": "openai", "openai": "openai", "o1": "openai",
+    "gemini": "gemini", "google": "gemini",
+}
+
+
+def _provider_family(model_or_provider: Optional[str]) -> Optional[str]:
+    if not model_or_provider:
+        return None
+    s = str(model_or_provider).lower()
+    for key, fam in _PROVIDER_FAMILY.items():
+        if key in s:
+            return fam
+    return None
 
 
 def render_few_shot(examples: List[PreferenceExample], header: str = "PREFERENCE EXAMPLES") -> str:

@@ -201,6 +201,7 @@ class Universe:
                     repo=repo, user_id=user_id, request=user_request,
                     candidate_style=self.spec.style,
                     candidate_loc=_loc_delta(patches),
+                    candidate_provider=self.spec.provider_gen,
                 )
             except Exception:
                 logger.debug("preference style_match lookup failed", exc_info=True)

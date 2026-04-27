@@ -203,7 +203,17 @@ async def run_job(
             valid = valid + frag_children
 
     # Arbiter pass — provider rotation, compressed bundle, strict schema.
-    arb_provider = select_arbiter_provider(specs)
+    # Wave 4 (§22): override-driven rotation — if the user has been
+    # overriding the Arbiter when it was a particular provider, skip
+    # that provider on the next rotation.
+    avoided = set()
+    try:
+        from . import preference as _pref
+        sig = _pref.override_signal(repo=repo, user_id=job.user_id)
+        avoided = sig.get("avoided_providers") or set()
+    except Exception:
+        logger.debug("override_signal lookup failed", exc_info=True)
+    arb_provider = select_arbiter_provider(specs, avoided_providers=avoided)
     arb_model = model_for_arbiter(arb_provider)
     user_keys = (job.models or {}).get("user_keys") or {}
     arb_key = user_keys.get(arb_provider)
