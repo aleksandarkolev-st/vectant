@@ -94,6 +94,8 @@
     "editorGutter.modifiedBackground":      "#1871d0",
     "editorGutter.deletedBackground":       "#ff6b6b",
     "minimap.background":                   "#0a0b10",
+    "minimap.selectionHighlight":           "#3a8574a0",
+    "minimap.findMatchHighlight":           "#ffd93d80",
     "minimapSlider.background":             "#32746420",
     "minimapSlider.hoverBackground":        "#32746435",
     "minimapSlider.activeBackground":       "#32746450",

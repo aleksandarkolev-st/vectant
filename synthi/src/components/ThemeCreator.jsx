@@ -440,6 +440,11 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
       ? editingTheme.id
       : `user-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
     const parentId = themeType === 'light' ? 'synthi-light' : 'synthi-dark';
+    // For new themes (incl. AI-generated ones), inherit the parent's
+    // editor/terminal/tokenColors so the saved theme matches what the
+    // live preview shows.  Empty blocks would let Monaco fall back to
+    // its built-in defaults (e.g. blue selection on a green theme).
+    const parent = isEditing ? null : (BUILTIN_THEMES[parentId] || null);
     const updatedTheme = {
       ...(isEditing ? editingTheme : {}),
       id: themeId,
@@ -448,10 +453,18 @@ function ThemeCreatorOverlay({ onClose, editingTheme = null }) {
       source: 'user',
       parentThemeId: parentId,
       ui: { ...uiColors },
-      editor: isEditing ? (editingTheme.editor || {}) : {},
-      terminal: isEditing ? (editingTheme.terminal || {}) : {},
-      tokenColors: isEditing ? (editingTheme.tokenColors || []) : [],
-      semanticTokenColors: isEditing ? (editingTheme.semanticTokenColors || {}) : {},
+      editor: isEditing
+        ? (editingTheme.editor || {})
+        : { ...(parent?.editor || {}) },
+      terminal: isEditing
+        ? (editingTheme.terminal || {})
+        : { ...(parent?.terminal || {}) },
+      tokenColors: isEditing
+        ? (editingTheme.tokenColors || [])
+        : [...(parent?.tokenColors || [])],
+      semanticTokenColors: isEditing
+        ? (editingTheme.semanticTokenColors || {})
+        : { ...(parent?.semanticTokenColors || {}) },
     };
 
     dispatch(saveUserTheme(updatedTheme));
