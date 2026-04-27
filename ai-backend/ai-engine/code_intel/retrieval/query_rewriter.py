@@ -198,6 +198,62 @@ class QueryRewriter:
             "Hypothetical code:"
         )
 
+    # ------------------------------------------------------------------
+    # Multi-query fan-out
+    # ------------------------------------------------------------------
+
+    def variants(
+        self,
+        query: str,
+        *,
+        n: int = 3,
+        timeout_s: float = 4.0,
+    ) -> List[str]:
+        """Generate up to `n` paraphrased variants of `query`.
+
+        Multi-query retrieval (Pradeep et al. + LangChain literature)
+        fans out the query into distinct phrasings so vector search hits
+        chunks the original wording wouldn't reach. The caller fuses the
+        per-variant ranked lists with RRF.
+
+        Returns the original query plus 0..(n-1) paraphrases — never
+        fewer than 1 entry. Falls back gracefully when no API key is
+        configured or the LLM doesn't return parseable output.
+        """
+        original = (query or "").strip()
+        if not original:
+            return []
+        variants: List[str] = [original]
+        if n <= 1 or not self.api_key:
+            return variants
+
+        text = self._call_llm(self._variants_prompt(original, n))
+        if not text:
+            return variants
+        for raw in text.splitlines():
+            line = raw.strip().lstrip("-•*").lstrip("0123456789.) ").strip()
+            line = line.strip('"').strip("'")
+            if not line or line.lower() == original.lower():
+                continue
+            if line in variants:
+                continue
+            variants.append(line[:280])
+            if len(variants) >= n:
+                break
+        return variants
+
+    def _variants_prompt(self, query: str, n: int) -> str:
+        return (
+            f"Rewrite the search query below as {max(1, n - 1)} distinct "
+            "paraphrases that a code-search engine could use to find the "
+            "same answer. Each paraphrase should reorder the focus or use "
+            "a different vocabulary (e.g. \"auth middleware\" vs "
+            "\"request authentication wrapper\"). Output one paraphrase "
+            "per line, no numbering, no commentary, no markdown.\n\n"
+            f"Query: {query}\n\n"
+            "Paraphrases:"
+        )
+
     def _call_llm(self, prompt: str) -> Optional[str]:
         if not self.api_key:
             return None
