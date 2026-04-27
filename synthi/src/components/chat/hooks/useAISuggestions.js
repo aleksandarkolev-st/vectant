@@ -2087,6 +2087,24 @@ If image attachments are present, read/ocr the images and extract any text or co
                         }
                         continue;
                     }
+                    // ── Synthi Genome — shadow verification job started ──
+                    // Wave 1 of synthi-genome-master-plan.md. Render a
+                    // <MultiverseCard jobId={...} /> in the chat timeline.
+                    if (parsed?.shadowJob && activeSession) {
+                        try {
+                            appendMessagesToSession(activeSession.id, [{
+                                id: `shadow-${parsed.shadowJob}`,
+                                role: 'shadow',
+                                timestamp: new Date(),
+                                shadowJob: parsed.shadowJob,
+                                tier: parsed.tier || null,
+                                estimatedCostUsd: parsed.estimatedCostUsd ?? null,
+                            }]);
+                        } catch (shErr) {
+                            console.warn('[AI Chat] Failed to record shadowJob:', shErr);
+                        }
+                        continue;
+                    }
                     // ── Handle command approval requests ─────────────────
                     if (parsed?.commandPending) {
                         const cp = parsed.commandPending;

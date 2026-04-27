@@ -22,6 +22,7 @@ import { formatMessageContent } from './utils/formatMessage';
 import MessageContent from './utils/MessageContent';
 import { ThinkingDots } from './ThinkingDots';
 import CommandApprovalCard from './CommandApprovalCard';
+import MultiverseCard from './MultiverseCard';
 
 const formatTimestamp = (timestamp) => {
     if (!timestamp) return '';
@@ -1035,6 +1036,18 @@ const AIChatWindow = ({
                                                 })}
                                             </div>
                                         )}
+                                    </div>
+                                );
+                            }
+
+                            if (msg.role === 'shadow') {
+                                // Synthi Genome — verify panel for the shadow run
+                                // kicked off by /api/chat after fileBlocks emitted.
+                                return (
+                                    <div key={msg.id} className="flex justify-start min-w-0">
+                                        <div className="w-full min-w-0">
+                                            <MultiverseCard jobId={msg.shadowJob} />
+                                        </div>
                                     </div>
                                 );
                             }

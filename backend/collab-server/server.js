@@ -3545,6 +3545,31 @@ const server = http.createServer(async (req, res) => {
                     result = { success: true };
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
+                case 'apply-shadow-patch':
+                    // Synthi Genome — Wave 1.
+                    // Apply a verified shadow patch as a 3-way-aware text diff.
+                    // Payload: { files: [{ path, base, patched }], universeId }
+                    // For Wave 1 we write each patched file directly through
+                    // the same path as `write-file`. Wave 1.5 will replace
+                    // direct writes with Yjs op submission so concurrent
+                    // editors merge automatically (master plan §8.4).
+                    result = { applied: [], skipped: [] };
+                    for (const f of (data.files || [])) {
+                      if (!f?.path || typeof f.patched !== 'string') {
+                        result.skipped.push({ path: f?.path, reason: 'invalid file entry' });
+                        continue;
+                      }
+                      try {
+                        await flushYjsDocForFile(slug, f.path, notifyScope);
+                        await withTelemetry('fs:write', () => gitService.writeFile(slug, f.path, f.patched, effectiveUserId));
+                        result.applied.push({ path: f.path, strategy: 'direct' });
+                      } catch (e) {
+                        result.skipped.push({ path: f.path, reason: e?.message || 'write failed' });
+                      }
+                    }
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
                 case 'write-files-batch':
                   // Batch write many files (supports base64 for binary).
                   // Payload shape: { files: [{ path, encoding: 'utf8'|'base64', content }] }
