@@ -93,20 +93,20 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
   };
 
   return (
-    <div className="w-12 h-full flex flex-col items-center border-r-2" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
-      <div className="w-full flex flex-col pt-1">
+    <div className="dock-activitybar-root w-12 h-full flex flex-col items-center border-r-2" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
+      <div className="dock-activitybar-top w-full flex flex-col pt-1">
         {builtinItems.map(renderButton)}
         {/* Extension-contributed activity bar items */}
         {extensionItems.length > 0 && (
           <>
-            <div className="mx-3 my-1 border-t" style={{ borderColor: 'var(--border-subtle)' }} />
+            <div className="dock-activitybar-divider mx-3 my-1 border-t" style={{ borderColor: 'var(--border-subtle)' }} />
             {extensionItems.map(renderButton)}
           </>
         )}
       </div>
-      
+
       {/* Synthi AI Badge */}
-      <div className="mt-auto mb-3 flex flex-col items-center">
+      <div className="dock-activitybar-bottom mt-auto mb-3 flex flex-col items-center">
         {bottomItems.map(renderButton)}
         <div 
           onClick={() => onSelect('ai')}

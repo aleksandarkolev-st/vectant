@@ -128,7 +128,7 @@ function StatusBarInner({
   const hasProblems = deferredSummary.errors > 0 || deferredSummary.warnings > 0;
 
   return (
-    <div className="h-7 flex-shrink-0 flex items-center justify-between px-3 border-t-2 text-[12px] select-none font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
+    <div className="status-bar-root h-7 flex-shrink-0 flex items-center justify-between px-3 border-t-2 text-[12px] select-none font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
       {/* Left Section - Grouped info */}
       <div className="flex items-center gap-3">
         {/* Branch Selector - Compact with pill style */}
@@ -174,14 +174,14 @@ function StatusBarInner({
         <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
         
         {/* Compiler Status - Pill/Badge shaped indicator with better contrast */}
-        <div className={`flex items-center gap-2 px-2.5 py-1 transition-all cursor-default`}>
+        <div className={`status-bar-trim flex items-center gap-2 px-2.5 py-1 transition-all cursor-default`}>
           <Cpu className="w-3.5 h-3.5" style={statusStyle.textStyle} strokeWidth={2} />
           <div className={`w-2 h-2 rounded-full ${statusStyle.dotCls || ''}`} style={statusStyle.dotStyle} />
           <span className="font-semibold" style={statusStyle.textStyle}>{statusStyle.text}</span>
         </div>
-        
-        <div className="w-px h-4 bg-[#1a1b24]"></div>
-        
+
+        <div className="status-bar-trim w-px h-4 bg-[#1a1b24]"></div>
+
         {/* Collab Sync Status - green/yellow/red indicator */}
         <div className="flex items-center gap-2 px-2.5 py-1 transition-all cursor-default" title={`Collaboration: ${collabStyle.text}`}>
           <collabStyle.Icon className={`w-3.5 h-3.5 ${collabStyle.textColor}`} strokeWidth={2} />
@@ -195,10 +195,12 @@ function StatusBarInner({
           )}
         </div>
 
-        <div className="w-px h-4 bg-[#1a1b24]"></div>
+        <div className="status-bar-trim w-px h-4 bg-[#1a1b24]"></div>
 
         {/* Operator console trigger */}
-        <OperatorStatusBarButton sessionId={slug} />
+        <div className="status-bar-trim flex items-center">
+          <OperatorStatusBarButton sessionId={slug} />
+        </div>
 
         {/* Session Sharing Indicator */}
         {isHost && (
@@ -226,25 +228,25 @@ function StatusBarInner({
       <div className="flex items-center gap-3 mr-1">
         {/* Self-Healing indicator */}
         <HealingIndicator />
-        <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
+        <div className="status-bar-trim w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
 
         {/* Extension-contributed status bar items */}
         {extensionStatusBarItems.filter(i => i.text).map((item) => (
           <div
             key={item.id}
-            className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-default transition-colors"
+            className="status-bar-trim flex items-center gap-1 px-2 py-0.5 rounded-md cursor-default transition-colors"
             title={item.tooltip || item.text}
           >
             <span className="font-medium text-[11px]" style={{ color: 'var(--text-secondary)' }}>{item.text}</span>
           </div>
         ))}
         {extensionStatusBarItems.length > 0 && (
-          <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
+          <div className="status-bar-trim w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
         )}
 
         {/* VS Code Server status */}
         {vscodeServerState !== 'disconnected' && (
-          <>
+          <div className="status-bar-trim flex items-center gap-3">
             <div
               className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-colors`}
               style={vscodeServerState === 'running'
@@ -280,16 +282,17 @@ function StatusBarInner({
               </span>
             </div>
             <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
-          </>
+          </div>
         )}
 
         {/* Line/Column - Clearer */}
-        <StatusBarCursorInfo />
-        
-        <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
-        
+        <div className="status-bar-trim flex items-center gap-3">
+          <StatusBarCursorInfo />
+          <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
+        </div>
+
         {/* Language - Pill style with accent on hover */}
-        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all">
+        <div className="status-bar-trim flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all">
           <Zap className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
           <span className="font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
         </div>
@@ -299,7 +302,7 @@ function StatusBarInner({
             section — otherwise we fall back to the extension-derived
             language pill above. */}
         {languageAndFramework && (
-          <>
+          <div className="status-bar-trim flex items-center gap-3">
             <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
             <div
               className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-all"
@@ -308,7 +311,7 @@ function StatusBarInner({
               <Cpu className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
               <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>

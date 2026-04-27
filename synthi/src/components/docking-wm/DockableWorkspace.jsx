@@ -218,9 +218,9 @@ export const DockableWorkspace = memo(function DockableWorkspace({
   return (
     <WorkspacePanelContext.Provider value={ctxValue}>
       <DockingProvider workspaceSlug={workspaceSlug}>
-        <div className={`h-full w-full overflow-hidden flex flex-row ${className}`}>
+        <div className={`dock-workspace-root h-full w-full overflow-hidden flex flex-row ${className}`}>
           <DockingActivityBar />
-          <div className="flex-1 min-w-0 h-full overflow-hidden">
+          <div className="flex-1 min-w-0 min-h-0 h-full overflow-hidden">
             <DockableWorkspaceInner
               workspaceSlug={workspaceSlug}
               defaultPreset={defaultPreset}

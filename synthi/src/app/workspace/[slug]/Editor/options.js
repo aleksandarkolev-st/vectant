@@ -75,3 +75,46 @@ export const EDITOR_OPTIONS = {
     // Focus ring color
     'editor.focusRing': '#3b82f6',
 };
+
+/**
+ * Build responsive Monaco overrides for the current viewport. Lets us
+ * shrink the font, hide the minimap, and tighten padding on touch /
+ * narrow screens without forking the whole options object.
+ *
+ * @param {{ isMobile?: boolean, isTablet?: boolean }} viewport
+ */
+export function getResponsiveEditorOverrides(viewport = {}) {
+    if (viewport.isMobile) {
+        return {
+            fontSize: 11,
+            lineHeight: 17,
+            letterSpacing: 0.2,
+            lineNumbersMinChars: 3,
+            lineDecorationsWidth: 8,
+            padding: { top: 6, bottom: 12 },
+            minimap: { enabled: false },
+            glyphMargin: false,
+            folding: false,
+            scrollbar: {
+                verticalScrollbarSize: 6,
+                horizontalScrollbarSize: 6,
+                verticalSliderSize: 6,
+                horizontalSliderSize: 6,
+                verticalHasArrows: false,
+                horizontalHasArrows: false,
+                useShadows: false,
+            },
+        };
+    }
+    if (viewport.isTablet) {
+        return {
+            fontSize: 13,
+            lineHeight: 20,
+            lineNumbersMinChars: 4,
+            lineDecorationsWidth: 16,
+            minimap: { enabled: false },
+        };
+    }
+    return null;
+}
+
