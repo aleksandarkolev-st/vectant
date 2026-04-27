@@ -33,6 +33,11 @@ class UniverseSpec:
     model_gen: str
     model_critic: str
     intent: str = "fix"
+    # Wave 2 multi-provider plumbing — Wave 1 universes set both to "gemini".
+    provider_gen: str = "gemini"
+    provider_critic: str = "gemini"
+    api_key_gen: Optional[str] = None
+    api_key_critic: Optional[str] = None
 
 
 @dataclass
@@ -47,8 +52,14 @@ class UniverseResult:
 class Universe:
     def __init__(self, spec: UniverseSpec):
         self.spec = spec
-        self.generator = Generator(model=spec.model_gen, style=spec.style)
-        self.critic = Critic(model=spec.model_critic)
+        self.generator = Generator(
+            model=spec.model_gen, style=spec.style,
+            provider=spec.provider_gen, api_key=spec.api_key_gen,
+        )
+        self.critic = Critic(
+            model=spec.model_critic,
+            provider=spec.provider_critic, api_key=spec.api_key_critic,
+        )
 
     async def run(
         self,

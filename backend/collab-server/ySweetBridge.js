@@ -195,20 +195,149 @@ async function resetDocContent(docId, newContent) {
 }
 
 /**
+ * Compute a list of line-level hunks { start, deleteCount, insert } that
+ * transforms `current` into `target`. Coordinates are character offsets in
+ * `current`, so they can be fed straight into Y.Text.delete()/insert().
+ *
+ * Implementation: split both texts into lines (keeping the trailing
+ * newline on each line), peel off the longest common prefix + suffix of
+ * lines to bound the LCS region, then run a standard LCS-DP on the
+ * remaining middle. Walk the LCS to emit ordered, non-overlapping hunks.
+ *
+ * The hunks are yielded in increasing offset order so they can be applied
+ * sequentially after adjusting later offsets by each preceding delta.
+ *
+ * @returns {Array<{start:number, deleteCount:number, insert:string}>}
+ */
+function diffToHunks(current, target) {
+  if (current === target) return [];
+
+  // Split keeping trailing newlines so concat(lines) === original.
+  const splitKeepingNL = (s) => {
+    const out = [];
+    let i = 0;
+    while (i < s.length) {
+      const j = s.indexOf('\n', i);
+      if (j === -1) { out.push(s.slice(i)); break; }
+      out.push(s.slice(i, j + 1));
+      i = j + 1;
+    }
+    return out.length === 0 ? [''] : out;
+  };
+
+  const a = splitKeepingNL(current);
+  const b = splitKeepingNL(target);
+
+  // Peel common prefix
+  let p = 0;
+  const minP = Math.min(a.length, b.length);
+  while (p < minP && a[p] === b[p]) p++;
+
+  // Peel common suffix
+  let s = 0;
+  while (
+    s < (Math.min(a.length, b.length) - p) &&
+    a[a.length - 1 - s] === b[b.length - 1 - s]
+  ) s++;
+
+  const aMid = a.slice(p, a.length - s);
+  const bMid = b.slice(p, b.length - s);
+
+  // Char offset where the middle region starts in `current`.
+  let baseOffset = 0;
+  for (let i = 0; i < p; i++) baseOffset += a[i].length;
+
+  // Fast paths for pure insert / pure delete in the middle region.
+  if (aMid.length === 0) {
+    if (bMid.length === 0) return [];
+    return [{ start: baseOffset, deleteCount: 0, insert: bMid.join('') }];
+  }
+  if (bMid.length === 0) {
+    return [{ start: baseOffset, deleteCount: aMid.join('').length, insert: '' }];
+  }
+
+  // LCS DP over the middle region. Cap to keep memory bounded; if the
+  // region is too large, fall back to a single coarse hunk.
+  const MAX_LCS_LINES = 4000;
+  if (aMid.length > MAX_LCS_LINES || bMid.length > MAX_LCS_LINES) {
+    return [{
+      start: baseOffset,
+      deleteCount: aMid.join('').length,
+      insert: bMid.join(''),
+    }];
+  }
+
+  const m = aMid.length, n = bMid.length;
+  // dp[i][j] = LCS length of aMid[i:] vs bMid[j:]
+  const dp = new Array(m + 1);
+  for (let i = 0; i <= m; i++) dp[i] = new Int32Array(n + 1);
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i][j] = aMid[i] === bMid[j]
+        ? dp[i + 1][j + 1] + 1
+        : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  // Walk the DP to emit hunks. We accumulate consecutive non-matches into
+  // a single hunk for efficiency.
+  const hunks = [];
+  let i = 0, j = 0;
+  let curOffset = baseOffset;
+  let pendingDel = 0;
+  let pendingIns = '';
+  let pendingStart = curOffset;
+
+  const flush = () => {
+    if (pendingDel === 0 && pendingIns.length === 0) return;
+    hunks.push({ start: pendingStart, deleteCount: pendingDel, insert: pendingIns });
+    pendingDel = 0;
+    pendingIns = '';
+  };
+
+  while (i < m && j < n) {
+    if (aMid[i] === bMid[j]) {
+      flush();
+      curOffset += aMid[i].length;
+      pendingStart = curOffset;
+      i++; j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      // Deletion: extends the hunk's deleteCount AND consumes source bytes,
+      // so the running source offset advances. pendingStart stays put — it
+      // marks where the hunk began.
+      pendingDel += aMid[i].length;
+      curOffset += aMid[i].length;
+      i++;
+    } else {
+      pendingIns += bMid[j];
+      j++;
+    }
+  }
+  while (i < m) {
+    pendingDel += aMid[i].length;
+    curOffset += aMid[i].length;
+    i++;
+  }
+  while (j < n) { pendingIns += bMid[j]; j++; }
+  flush();
+
+  return hunks;
+}
+
+/**
  * Apply a "patched-content" replacement as a minimal Yjs.Text edit so concurrent
  * editors merge cleanly. Master plan §8.4 (Yjs-aware apply).
  *
- * Strategy: we don't have a diff library installed, so we compute a single
- * minimal hunk by stripping the longest common prefix and longest common
- * suffix between the current Y.Text and `patchedContent`. The middle region
- * becomes one delete + one insert inside a `doc.transact()` block. CRDT
- * semantics handle any concurrent edits in the unchanged prefix/suffix.
+ * Strategy: line-level LCS diff between the current Y.Text and the target
+ * content yields a list of hunks. Each hunk is applied as one delete + one
+ * insert inside a single `doc.transact()` block. CRDT semantics handle
+ * concurrent edits in the unchanged regions between hunks.
  *
  * Falls back to `resetDocContent` if no Y.Text content exists yet.
  *
  * @param {string} docId       Y-Sweet document identifier
  * @param {string} patchedContent  full target file body
- * @returns {Promise<{ ok: boolean, strategy: 'crdt-hunk'|'reset'|'noop'|'unsupported' }>}
+ * @returns {Promise<{ ok: boolean, strategy: 'crdt-hunks'|'reset'|'noop'|'unsupported', hunks?: number }>}
  */
 async function applyTextDiffOps(docId, patchedContent) {
   if (typeof patchedContent !== 'string') {
@@ -242,31 +371,23 @@ async function applyTextDiffOps(docId, patchedContent) {
     return { ok: true, strategy: 'noop' };
   }
 
-  // Compute longest common prefix + suffix in code-units.
-  const a = current;
-  const b = patchedContent;
-  const aLen = a.length;
-  const bLen = b.length;
-  let prefix = 0;
-  const minLen = Math.min(aLen, bLen);
-  while (prefix < minLen && a.charCodeAt(prefix) === b.charCodeAt(prefix)) prefix++;
-  let suffix = 0;
-  while (
-    suffix < (minLen - prefix) &&
-    a.charCodeAt(aLen - 1 - suffix) === b.charCodeAt(bLen - 1 - suffix)
-  ) suffix++;
-
-  const deleteAt = prefix;
-  const deleteLen = aLen - prefix - suffix;
-  const insertText = b.slice(prefix, bLen - suffix);
+  const hunks = diffToHunks(current, patchedContent);
+  if (hunks.length === 0) {
+    doc.destroy();
+    return { ok: true, strategy: 'noop' };
+  }
 
   let updatePayload = null;
   const captureUpdate = (update) => { updatePayload = update; };
   doc.on('update', captureUpdate);
   try {
     doc.transact(() => {
-      if (deleteLen > 0) ytext.delete(deleteAt, deleteLen);
-      if (insertText.length > 0) ytext.insert(deleteAt, insertText);
+      // Apply hunks back-to-front so earlier offsets remain valid.
+      for (let k = hunks.length - 1; k >= 0; k--) {
+        const h = hunks[k];
+        if (h.deleteCount > 0) ytext.delete(h.start, h.deleteCount);
+        if (h.insert.length > 0) ytext.insert(h.start, h.insert);
+      }
     });
   } finally {
     doc.off('update', captureUpdate);
@@ -274,7 +395,7 @@ async function applyTextDiffOps(docId, patchedContent) {
   doc.destroy();
 
   if (!updatePayload || updatePayload.length === 0) {
-    return { ok: true, strategy: 'noop' };
+    return { ok: true, strategy: 'noop', hunks: 0 };
   }
 
   const methods = ['updateDoc', 'updateDocument', 'applyUpdate', 'writeUpdate'];
@@ -282,7 +403,7 @@ async function applyTextDiffOps(docId, patchedContent) {
     if (typeof mgr[name] === 'function') {
       try {
         await mgr[name](safeId, updatePayload);
-        return { ok: true, strategy: 'crdt-hunk' };
+        return { ok: true, strategy: 'crdt-hunks', hunks: hunks.length };
       } catch (err) {
         console.warn(`[ySweetBridge] applyTextDiffOps: ${name}(${docId}) failed:`, err?.message || err);
         return { ok: false, strategy: 'unsupported' };
@@ -292,4 +413,4 @@ async function applyTextDiffOps(docId, patchedContent) {
   return { ok: false, strategy: 'unsupported' };
 }
 
-module.exports = { getOrCreateToken, readDocContent, docExists, getManager, resetDocContent, applyTextDiffOps };
+module.exports = { getOrCreateToken, readDocContent, docExists, getManager, resetDocContent, applyTextDiffOps, diffToHunks };

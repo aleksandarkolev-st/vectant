@@ -59,9 +59,17 @@ class Generator:
     Wave 2 without changes here.
     """
 
-    def __init__(self, model: str = "gemini-pro", style: str = "safe"):
+    def __init__(
+        self,
+        model: str = "gemini-pro",
+        style: str = "safe",
+        provider: str = "gemini",
+        api_key: Optional[str] = None,
+    ):
         self.model = model
         self.style = style
+        self.provider = provider
+        self.api_key = api_key
 
     async def generate(self, req: GeneratorRequest) -> List[PatchBlock]:
         """Wave 1: trust the chat-supplied patch text as the generator output.
@@ -93,7 +101,12 @@ class Generator:
             logger.warning("revise: provider unavailable: %s", e)
             return _mark_skipped(req.patches, "provider unavailable")
 
-        provider = get_provider()
+        try:
+            provider = get_provider(self.provider)
+        except Exception as e:
+            logger.warning("revise: get_provider(%s) failed: %s", self.provider, e)
+            return _mark_skipped(req.patches, f"provider-{self.provider}-unavailable")
+
         revised: List[PatchBlock] = []
         for p in req.patches:
             prompt = _build_revise_prompt(
@@ -108,6 +121,7 @@ class Generator:
                 text = await provider.ask_llm(
                     code=p.new_content, lang=_lang_for(p.path),
                     prompt=prompt, mode="patch",
+                    model=self.model, api_key=self.api_key,
                 )
             except Exception as e:
                 logger.warning("revise: provider call failed for %s: %s", p.path, e)

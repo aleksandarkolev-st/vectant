@@ -1,0 +1,6 @@
+[
+  {
+    "path": "inventory.py",
+    "new_content": "\"\"\"Compute total inventory value.\"\"\"\nfrom typing import Iterable, Mapping\n\n\ndef total_value(rows: Iterable[Mapping[str, str]]) -> float:\n    total = 0.0\n    for row in rows:\n        total += int(row[\"quantity\"]) * float(row[\"unit_price\"])\n    return total\n"
+  }
+]

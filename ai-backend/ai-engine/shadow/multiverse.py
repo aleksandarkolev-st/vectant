@@ -53,7 +53,7 @@ async def run_job(
 
     pool = await get_pool(repo, size=max(2, n))
 
-    specs = _make_specs(n, intent=intent)
+    specs = _make_specs(n, intent=intent, models=job.models or {})
 
     if n == 1:
         # Single-universe fast path (Wave 1 default)
@@ -108,12 +108,58 @@ async def _run_single(
         return None
 
 
-def _make_specs(n: int, *, intent: str) -> List[UniverseSpec]:
-    """Wave 1: single safe universe. Wave 2 expands to a 3-universe spread."""
+# Provider rotation policy (master plan §6.4 Arbiter rotation).
+# Wave 1 ships 1 universe so rotation is moot, but the same table is
+# what Wave 2 reads to assign `(model_gen, model_critic)` per universe.
+_PROVIDER_DEFAULTS = {
+    "anthropic": "claude-sonnet-4-6",
+    "openai":    "gpt-4o",
+    "google":    "gemini-pro",
+    "gemini":    "gemini-pro",
+}
+
+
+def _provider_chain(models: Dict[str, Any]) -> List[str]:
+    """Order in which to assign generators across universes."""
+    requested = (models or {}).get("providers") or []
+    ordered = [p for p in requested if p in _PROVIDER_DEFAULTS]
+    if not ordered:
+        ordered = ["gemini"]
+    return ordered
+
+
+def _model_for(provider: str) -> str:
+    return _PROVIDER_DEFAULTS.get(provider, "gemini-pro")
+
+
+def _make_specs(n: int, *, intent: str, models: Dict[str, Any]) -> List[UniverseSpec]:
+    """Wave 1 N=1 → single `safe` universe with the first available provider.
+
+    Wave 2 N=3 → three universes spanning safe / idiomatic / minimalist
+    styles, with cross-paired providers so each universe's Critic differs
+    from its Generator (master plan §1).
+    """
+    chain = _provider_chain(models)
+    user_keys = (models or {}).get("user_keys") or {}
+
+    def _spec(uid: str, style: str, gen_idx: int) -> UniverseSpec:
+        gen_provider = chain[gen_idx % len(chain)]
+        crit_provider = chain[(gen_idx + 1) % len(chain)]
+        return UniverseSpec(
+            universe_id=uid, style=style,
+            model_gen=_model_for(gen_provider),
+            model_critic=_model_for(crit_provider),
+            provider_gen=gen_provider,
+            provider_critic=crit_provider,
+            api_key_gen=user_keys.get(gen_provider),
+            api_key_critic=user_keys.get(crit_provider),
+            intent=intent,
+        )
+
     pool = [
-        UniverseSpec(universe_id="A", style="safe",       model_gen="gemini-pro", model_critic="gemini-pro", intent=intent),
-        UniverseSpec(universe_id="B", style="idiomatic",  model_gen="gemini-pro", model_critic="gemini-pro", intent=intent),
-        UniverseSpec(universe_id="C", style="minimalist", model_gen="gemini-pro", model_critic="gemini-pro", intent=intent),
+        _spec("A", "safe",       0),
+        _spec("B", "idiomatic",  1),
+        _spec("C", "minimalist", 2),
     ]
     return pool[:n]
 

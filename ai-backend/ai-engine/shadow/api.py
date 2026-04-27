@@ -75,6 +75,7 @@ async def shadow_run(req: ShadowRunRequest, background: BackgroundTasks) -> Dict
         user_id=req.user_id,
         estimated_cost_usd=multiverse.TIER_COST_USD.get(req.tier, 0.012),
     )
+    job.models = req.models or {}  # surfaced to Universe via run_job
     events.register(job)
 
     seed = _resolve_patches(repo, req.patches)

@@ -85,6 +85,8 @@ class JobState:
     finished: bool = False
     cancelled: bool = False
     estimated_cost_usd: float = 0.0
+    # Wave 2: { "providers": ["anthropic","openai","google"], "user_keys": {"anthropic":"...","openai":"..."} }
+    models: Dict[str, Any] = field(default_factory=dict)
 
     async def emit(self, evt: Dict[str, Any]) -> None:
         await self.queue.put(evt)

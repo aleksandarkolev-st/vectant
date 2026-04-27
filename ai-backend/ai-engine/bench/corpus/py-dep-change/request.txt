@@ -1,0 +1,1 @@
+slugify_text drops unicode characters. Switch to the python-slugify package so "Café au lait" becomes "cafe-au-lait". Add the dependency to requirements.txt.

@@ -70,8 +70,15 @@ class Critic:
     test/CI without requiring a live LLM.
     """
 
-    def __init__(self, model: str = "gemini-pro"):
+    def __init__(
+        self,
+        model: str = "gemini-pro",
+        provider: str = "gemini",
+        api_key: Optional[str] = None,
+    ):
         self.model = model
+        self.provider = provider
+        self.api_key = api_key
 
     async def critique(
         self,

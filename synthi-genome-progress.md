@@ -101,13 +101,13 @@ backend/collab-server/permissionMiddleware.js
 | Worktree pool with dep-install lock | ✅ | `worktree.WorktreePool`, lazy slot allocation, per-pool `dep_lock`. |
 | Snapshot + 3-way merge | ✅ | `snapshot.create` + `git merge-file` ladder. |
 | AI-rebase fallback | ✅ | Wired to Gemini provider, syntax quick-validate enforced (`snapshot._quick_validate`). |
-| Yjs-aware apply | ✅ | `applyTextDiffOps` in `ySweetBridge.js` does common-prefix/suffix CRDT hunks; falls back to direct write only if Y-Sweet rejects. |
+| Yjs-aware apply | ✅ | `applyTextDiffOps` in `ySweetBridge.js` runs a line-level LCS diff and submits each hunk as a `Y.Text.delete + .insert` pair inside a single `doc.transact()`; falls back to `resetDocContent` only if Y-Sweet rejects. |
 | Non-blocking verify panel | ✅ | `<MultiverseCard />` + SSE hook. |
 | Pre-warming | ✅ | Pool builds slots lazily on first `acquire()`. |
 | Apply-and-cancel | ✅ | `/cancel` endpoint + hook `cancel()`. |
 | Staleness UI | ✅ | `<StalenessBadge />` + `staleness_detected` event. |
 | Verify-only mode | ✅ | `POST /shadow/verify-only` + `multiverse.run_verify_only`. |
-| Evaluation harness (50 corpus cases) | 🟡 | Harness + metrics + report shipped; corpus seeded with **2 / 50** fixtures (`py-off-by-one`, `js-null-guard`). Harness now `git init`s each fixture workspace on first run. |
+| Evaluation harness (50 corpus cases) | 🟡 | Harness + metrics + report shipped; corpus seeded with **6 / 50** fixtures (`py-off-by-one`, `py-type-error`, `py-dep-change`, `py-multi-file-rename`, `js-null-guard`, `js-refactor-async`). Coverage: logic-bug, type-error, refactor, multi-file, dep-change. Harness now `git init`s each fixture workspace on first run. |
 | Python runner | ✅ | ruff + mypy + pytest. |
 | Node runner | ✅ | eslint + tsc + vitest/jest. |
 | Tree-sitter fallback | ✅ | Optional dep — degrades cleanly when missing. |
@@ -115,21 +115,34 @@ backend/collab-server/permissionMiddleware.js
 | Style post-hoc filter | ✅ | Hard reject on `minimalist` (>1.5× baseline LOC) and `surgical` (>1.0× and >5-line delta) in `Universe._check_style_filter`. |
 | Reproducer execution depth | ✅ | `kind: edge\|logic` with `type: test` runs pytest/vitest; `type: input` synthesises a Python harness from `target` + `input`. |
 
+### Multi-provider plumbing (Wave 2 prerequisite)
+
+| Item | Status | Notes |
+|---|---|---|
+| AnthropicProvider | ✅ | `llm/providers/anthropic_provider.py`, async, key from request or `ANTHROPIC_API_KEY`. SDK is an optional dep — factory falls back to Gemini if absent. |
+| OpenAIProvider | ✅ | `llm/providers/openai_provider.py`, async, key from request or `OPENAI_API_KEY`. Same optional-SDK fallback. |
+| Provider factory dispatch | ✅ | `get_provider(name)` accepts `gemini\|anthropic\|openai`; unknown / missing-SDK falls back to Gemini with a warning. |
+| `models.user_keys` plumbing | ✅ | `/shadow/run` request → `JobState.models` → `multiverse._make_specs` → `UniverseSpec.{provider,api_key}_{gen,critic}` → `Generator(provider,api_key)` + `Critic(provider,api_key)`. |
+| Cross-paired Generator/Critic per universe | ✅ | When `models.providers` is supplied, each universe pairs gen-provider[i] with crit-provider[i+1]. Wave 1 N=1 still defaults to gemini/gemini. |
+| Generator.revise honours per-universe provider/key | ✅ | Calls `provider.ask_llm(..., model=self.model, api_key=self.api_key)`. |
+| AI-rebase honours per-universe provider/key | ✅ | New `ai_rebase_with(provider_name, api_key, ...)`; old `gemini_ai_rebase` is now a compat shim. |
+
 ### Wave 1 gaps remaining (carry to Wave 2)
 
-1. **Multi-provider models.** The ai-engine currently only ships Gemini
-   (`llm/providers/factory.py:5`). Plan §5 references Anthropic/OpenAI/Gemini
-   in `models.providers` + `user_keys`. Wiring user-supplied keys into the
-   Generator/Critic call path is required for Wave 2's cross-validation.
-2. **Bench corpus growth.** 2 / 50 fixtures shipped. Wave 1 §15.1 calls for
-   a full 50, drawn from real bug fixes (ours, public CVE patches, OSS
-   commits) covering Python, TS/JS, multi-file, dep-change, refactor,
-   performance, type-error, logic bug.
-3. **CRDT diff granularity.** `applyTextDiffOps` collapses any change into a
-   single common-prefix/suffix hunk. That's correct but coarse — concurrent
-   edits in the changed *region* still get clobbered. A line-level diff
-   (Myers, fast-diff, or `diff-match-patch`) lands in Wave 2 alongside the
-   convergence detector that benefits from per-hunk fingerprinting.
+1. **Bench corpus growth.** 6 / 50 fixtures shipped (logic-bug, type-error,
+   refactor, multi-file, dep-change). The remaining 44 fixtures from §15.1
+   should cover performance, security, multi-language refactors, and CVE
+   patches drawn from public sources.
+2. **Universe count tier table.** `TIER_UNIVERSE_COUNT` is `{quick:1,
+   standard:1, deep:1}` in this branch. Wave 2 lifts standard/deep to N=3
+   to actually exercise the cross-paired specs above.
+3. **Critic LLM attacks.** The Wave 1 Critic only emits attacks derived
+   from runner diagnostics. Wave 2 layers an LLM critic that emits novel
+   attacks with executable reproducers (we already have
+   `parse_llm_attacks` + the run-the-reproducer harness).
+4. **Cost gate using cross-paired models.** `TIER_COST_USD` still uses
+   single-model estimates. Wave 2 needs per-provider rate cards so
+   `estimated_cost_usd` reflects the real (gen, critic) tuple per universe.
 
 ---
 

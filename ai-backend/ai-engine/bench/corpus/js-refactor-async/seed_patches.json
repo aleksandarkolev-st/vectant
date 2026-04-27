@@ -1,0 +1,6 @@
+[
+  {
+    "path": "loadProfile.js",
+    "new_content": "// Refactored: async/await form.\n\nconst { fetchUser, fetchOrgs } = require('./api');\n\nasync function loadProfile(userId) {\n    try {\n        const user = await fetchUser(userId);\n        const orgs = await fetchOrgs(user.id);\n        return { user, orgs };\n    } catch (err) {\n        return { user: null, orgs: [], error: err.message };\n    }\n}\n\nmodule.exports = { loadProfile };\n"
+  }
+]

@@ -174,17 +174,34 @@ AiRebaseFn = Callable[..., Awaitable[Optional[str]]]
 
 
 async def gemini_ai_rebase(*, base: str, ours: str, theirs: str, path: str) -> Optional[str]:
-    """Use the existing Gemini provider to resolve a 3-way conflict.
+    """Compatibility shim — defaults to Gemini. New callers should use
+    `ai_rebase_with(provider, ...)` to pass a chosen provider + key.
+    """
+    return await ai_rebase_with(
+        provider_name="gemini", api_key=None,
+        base=base, ours=ours, theirs=theirs, path=path,
+    )
 
-    Returns the merged file text on success, None on refuse/failure.
+
+async def ai_rebase_with(
+    *, provider_name: str, api_key: Optional[str],
+    base: str, ours: str, theirs: str, path: str,
+) -> Optional[str]:
+    """Run the AI-rebase prompt against a specific provider. Used by the
+    universe to keep the rebase model consistent with the universe's
+    Generator (multi-provider Wave 2 plumbing).
     """
     try:
         from llm.providers import get_provider
     except Exception as e:
         logger.warning("ai-rebase: provider import failed: %s", e)
         return None
+    try:
+        provider = get_provider(provider_name)
+    except Exception as e:
+        logger.warning("ai-rebase: get_provider(%s) failed: %s", provider_name, e)
+        return None
 
-    provider = get_provider()
     prompt = (
         "You are resolving a 3-way merge conflict for a single file.\n"
         "Combine the OURS edits (made by the user concurrently) with the THEIRS\n"
@@ -197,7 +214,10 @@ async def gemini_ai_rebase(*, base: str, ours: str, theirs: str, path: str) -> O
         "Output the final file content, nothing else."
     )
     try:
-        text = await provider.ask_llm(code="", lang="text", prompt=prompt, mode="merge")
+        text = await provider.ask_llm(
+            code="", lang="text", prompt=prompt, mode="merge",
+            api_key=api_key,
+        )
     except Exception as e:
         logger.warning("ai-rebase provider call failed: %s", e)
         return None
