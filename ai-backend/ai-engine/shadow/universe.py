@@ -137,6 +137,8 @@ class Universe:
             worktree=worktree.path,
             patched_files=changed_paths,
             diagnostics=diagnostics_evidence,
+            patches=patches,
+            user_request=user_request,
         )
 
         # 6. Run executable reproducers (only for kinds that benefit)
@@ -169,6 +171,8 @@ class Universe:
                     worktree=worktree.path,
                     patched_files=[p.path for p in patches],
                     diagnostics=diagnostics_evidence,
+                    patches=patches,
+                    user_request=user_request,
                 )
                 await _run_reproducers(worktree.path, critique)
                 if signals is not None:
