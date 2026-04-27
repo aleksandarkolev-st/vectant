@@ -84,6 +84,82 @@
 
 
 /* ============================================
+   AI Inline Completion (Ghost Text) — tokenized
+   ============================================ */
+
+/* Default Monaco ghost-text classes. The visible preview is rendered by the
+ * tokenized content widget below (so it inherits the editor's syntax colours
+ * exactly). The built-in ghost text is kept as the data backing for Monaco's
+ * accept/partial-accept actions but rendered transparent so we never see the
+ * harsh neon-green default flashing through.
+ */
+.monaco-editor .ghost-text,
+.monaco-editor .ghost-text-decoration,
+.monaco-editor .ghost-text-decoration-preview,
+.monaco-editor .suggest-preview-text .ghost-text {
+    color: transparent !important;
+    /* preserve glyph dimensions so the cursor reserves the right amount of
+     * horizontal space for the overlay */
+    text-shadow: none !important;
+}
+
+/* The tokenized overlay widget. Monaco's `colorize` emits per-token spans
+ * with classes mtk1..mtkN whose colours are defined by the active theme, so
+ * by rendering the suggestion through that pipeline the ghost text inherits
+ * the editor's syntax highlighting exactly. */
+.synthi-ghost-tokenized {
+    pointer-events: none;
+    user-select: none;
+    white-space: pre;
+    opacity: 0.55;
+    font-style: italic;
+    font-family: var(--monaco-monospace-font, 'JetBrains Mono', 'Fira Code', 'Consolas', monospace);
+    line-height: inherit;
+    /* Slightly de-emphasise so accepted text feels different from preview. */
+    filter: saturate(0.85);
+}
+
+.synthi-ghost-tokenized .mtk1,
+.synthi-ghost-tokenized .mtk2,
+.synthi-ghost-tokenized .mtk3,
+.synthi-ghost-tokenized .mtk4,
+.synthi-ghost-tokenized .mtk5,
+.synthi-ghost-tokenized .mtk6,
+.synthi-ghost-tokenized .mtk7,
+.synthi-ghost-tokenized .mtk8,
+.synthi-ghost-tokenized .mtk9,
+.synthi-ghost-tokenized .mtk10,
+.synthi-ghost-tokenized .mtk11,
+.synthi-ghost-tokenized .mtk12,
+.synthi-ghost-tokenized .mtk13,
+.synthi-ghost-tokenized .mtk14,
+.synthi-ghost-tokenized .mtk15,
+.synthi-ghost-tokenized .mtk16,
+.synthi-ghost-tokenized .mtk17,
+.synthi-ghost-tokenized .mtk18,
+.synthi-ghost-tokenized .mtk19,
+.synthi-ghost-tokenized .mtk20 {
+    /* mtkN classes are styled by Monaco from the theme — we just inherit. */
+}
+
+.synthi-ghost-tokenized__tail {
+    /* Multi-line continuation rendered after the cursor line. */
+    display: block;
+    margin-left: 0;
+}
+
+.synthi-ghost-tokenized__hint {
+    margin-left: 8px;
+    padding: 0 6px;
+    border-radius: 3px;
+    font-size: 0.78em;
+    font-style: normal;
+    color: color-mix(in srgb, var(--accent-secondary, #4aba9a) 85%, transparent);
+    background: color-mix(in srgb, var(--accent-secondary, #4aba9a) 10%, transparent);
+    vertical-align: middle;
+}
+
+/* ============================================
    Proactive Analysis Diagnostic Styles
    ============================================ */
 

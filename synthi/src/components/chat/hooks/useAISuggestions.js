@@ -176,6 +176,7 @@ export const useAISuggestions = ({
     dispatch,
     aiModel = null,
     aiApiKey = null,
+    aiProvider = null,
 }) => {
     const clientReady = true;
     const [isLoading, setIsLoading] = useState(false);
@@ -1889,6 +1890,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                     focusPath: includeActiveFile ? (activeFile?.path || activeFile?.name || null) : null,
                     model: aiModel,
                     apiKey: aiApiKey,
+                    provider: aiProvider || undefined,
                     // Code intelligence integration
                     workspacePath: workspaceSlug || null,
                     useCodeIntel: !isRunOnly,

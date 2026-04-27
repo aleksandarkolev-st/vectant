@@ -188,6 +188,18 @@ export function generateMonacoTheme(theme) {
   // Editor chrome colors — pass through as-is (already in VS Code format)
   const colors = theme.editor ? { ...theme.editor } : {};
 
+  // Inline-suggestion ghost text. Monaco's built-in default reads as a harsh,
+  // theme-agnostic colour (often green/lime against dark backgrounds). Derive a
+  // muted variant from editor.foreground so AI ghost text reads as a quiet
+  // preview that respects the active theme.
+  const fg = colors['editor.foreground'];
+  if (fg && !colors['editorGhostText.foreground']) {
+    colors['editorGhostText.foreground'] = fg + '66'; // ~40% alpha
+  }
+  if (fg && !colors['editorGhostText.border']) {
+    colors['editorGhostText.border'] = fg + '22';
+  }
+
   return { base, inherit: true, rules, colors };
 }
 

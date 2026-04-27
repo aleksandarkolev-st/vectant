@@ -70,6 +70,43 @@ function generateApprovalId() {
 const GEMINI_BASE =
     (process.env.GEMINI_API_BASE || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
 
+const ANTHROPIC_BASE =
+    (process.env.ANTHROPIC_API_BASE || 'https://api.anthropic.com/v1').replace(/\/$/, '');
+const OPENAI_BASE =
+    (process.env.OPENAI_API_BASE || 'https://api.openai.com/v1').replace(/\/$/, '');
+
+const DEFAULT_ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+const DEFAULT_OPENAI_MODEL    = process.env.OPENAI_MODEL    || 'gpt-4o-mini';
+
+/**
+ * Detect the LLM provider from a model name string. Frontend can also pass
+ * `provider` explicitly which always wins.
+ */
+function inferProvider(model = '') {
+    const m = String(model || '').toLowerCase();
+    if (!m) return 'gemini';
+    if (m.startsWith('claude') || m.startsWith('anthropic')) return 'anthropic';
+    if (m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') || m.startsWith('openai/')) return 'openai';
+    if (m.startsWith('gemini') || m.startsWith('google/')) return 'gemini';
+    return 'gemini';
+}
+
+/**
+ * Resolve an API key for a provider with the documented precedence:
+ *   1. User-provided key in the request body (highest priority)
+ *   2. Provider-specific server env var
+ *   3. null (caller must reject the request)
+ */
+function resolveProviderKey(provider, userKey) {
+    if (userKey && typeof userKey === 'string' && userKey.trim()) return userKey.trim();
+    switch (provider) {
+        case 'anthropic': return process.env.ANTHROPIC_API_KEY || null;
+        case 'openai':    return process.env.OPENAI_API_KEY    || null;
+        case 'gemini':
+        default:          return process.env.GEMINI_API_KEY    || null;
+    }
+}
+
 const COLLAB_BASE =
     (process.env.COLLAB_SERVER_URL || process.env.NEXT_PUBLIC_COLLAB_SERVER_URL || 'http://localhost:1234').replace(/\/$/, '');
 
@@ -1275,6 +1312,261 @@ const streamGemini = async ({ model, apiKey, userContent, conversationHistory = 
 };
 
 /**
+ * Stream from Anthropic Claude with automatic retry on 429 rate limiting.
+ * Emits the same NDJSON envelope as streamGemini ({delta},{done}) so the
+ * frontend doesn't need to know which provider answered.
+ */
+const streamAnthropic = async ({
+    model,
+    apiKey,
+    userContent,
+    conversationHistory = [],
+    attachments = [],
+    signal,
+    maxRetries = 3,
+}) => {
+    const key = apiKey || process.env.ANTHROPIC_API_KEY || '';
+    if (!key) throw new Error('Anthropic API key is not configured');
+
+    const targetModel = model || DEFAULT_ANTHROPIC_MODEL;
+    const endpoint = `${ANTHROPIC_BASE}/messages`;
+
+    // Anthropic uses a separate `system` field and `messages` array of {role, content}.
+    const recent = Array.isArray(conversationHistory) ? conversationHistory.slice(-20) : [];
+    const messages = [];
+    for (const msg of recent) {
+        if (!msg.role || !msg.content) continue;
+        const role = msg.role === 'model' || msg.role === 'assistant' ? 'assistant' : 'user';
+        messages.push({ role, content: [{ type: 'text', text: String(msg.content) }] });
+    }
+    const userParts = [{ type: 'text', text: userContent }];
+    for (const att of attachments || []) {
+        if (att?.kind !== 'image' || typeof att.content !== 'string') continue;
+        const parsed = parseDataUri(att.content);
+        const mediaType = parsed?.mimeType || att.type || 'image/png';
+        const data = parsed?.data || (att.content.startsWith('data:') ? '' : att.content);
+        if (!data) continue;
+        userParts.push({ type: 'image', source: { type: 'base64', media_type: mediaType, data } });
+    }
+    messages.push({ role: 'user', content: userParts });
+
+    const requestBody = JSON.stringify({
+        model: targetModel,
+        system: CODE_INTEL_SYSTEM_PROMPT,
+        max_tokens: getMaxOutputTokens(targetModel),
+        temperature: 0.2,
+        stream: true,
+        messages,
+    });
+
+    let lastError = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            const upstream = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    accept: 'text/event-stream',
+                    'x-api-key': key,
+                    'anthropic-version': '2023-06-01',
+                },
+                body: requestBody,
+                signal,
+            });
+
+            if (upstream.status === 429 && attempt < maxRetries) {
+                const delay = 500 * Math.pow(2, attempt) + Math.random() * 300;
+                console.warn(`[Anthropic] 429, retry ${attempt + 1}/${maxRetries} in ${delay.toFixed(0)}ms`);
+                await sleep(delay);
+                continue;
+            }
+            if (!upstream.ok || !upstream.body) {
+                throw new Error(`Upstream error ${upstream.status}`);
+            }
+            return createValidatedStream(createAnthropicTextStream(upstream.body));
+        } catch (e) {
+            lastError = e;
+            const msg = String(e?.message || '').toLowerCase();
+            if ((msg.includes('429') || msg.includes('quota')) && attempt < maxRetries) {
+                await sleep(500 * Math.pow(2, attempt) + Math.random() * 300);
+                continue;
+            }
+            throw e;
+        }
+    }
+    throw lastError || new Error('Anthropic max retries exceeded');
+};
+
+/**
+ * Convert Anthropic's SSE stream into a stream of plain Gemini-shaped JSON
+ * candidates so it can flow through the same `createValidatedStream` pipeline.
+ */
+const createAnthropicTextStream = (body) => {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    return new ReadableStream({
+        async pull(controller) {
+            const { value, done } = await reader.read();
+            if (done) {
+                controller.enqueue(encoder.encode(JSON.stringify({
+                    candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '' }] } }],
+                }) + '\n'));
+                controller.close();
+                return;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            const events = buffer.split(/\n\n/);
+            buffer = events.pop() || '';
+            for (const ev of events) {
+                const dataLine = ev.split('\n').find((l) => l.startsWith('data:'));
+                if (!dataLine) continue;
+                const json = dataLine.slice(5).trim();
+                if (!json || json === '[DONE]') continue;
+                try {
+                    const parsed = JSON.parse(json);
+                    let textDelta = '';
+                    if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
+                        textDelta = parsed.delta.text || '';
+                    } else if (parsed.type === 'message_delta' && parsed.delta?.stop_reason) {
+                        controller.enqueue(encoder.encode(JSON.stringify({
+                            candidates: [{ finishReason: parsed.delta.stop_reason, content: { parts: [] } }],
+                        }) + '\n'));
+                        continue;
+                    }
+                    if (textDelta) {
+                        controller.enqueue(encoder.encode(JSON.stringify({
+                            candidates: [{ content: { parts: [{ text: textDelta }] } }],
+                        }) + '\n'));
+                    }
+                } catch (_) { /* ignore malformed event */ }
+            }
+        },
+        cancel() { try { reader.cancel(); } catch (_) {} },
+    });
+};
+
+/**
+ * Stream from OpenAI Chat Completions API. Same NDJSON envelope as the others.
+ */
+const streamOpenAI = async ({
+    model,
+    apiKey,
+    userContent,
+    conversationHistory = [],
+    attachments = [],
+    signal,
+    maxRetries = 3,
+}) => {
+    const key = apiKey || process.env.OPENAI_API_KEY || '';
+    if (!key) throw new Error('OpenAI API key is not configured');
+
+    const targetModel = model || DEFAULT_OPENAI_MODEL;
+    const endpoint = `${OPENAI_BASE}/chat/completions`;
+
+    const recent = Array.isArray(conversationHistory) ? conversationHistory.slice(-20) : [];
+    const messages = [{ role: 'system', content: CODE_INTEL_SYSTEM_PROMPT }];
+    for (const msg of recent) {
+        if (!msg.role || !msg.content) continue;
+        const role = msg.role === 'model' ? 'assistant' : msg.role;
+        if (role === 'user' || role === 'assistant') {
+            messages.push({ role, content: String(msg.content) });
+        }
+    }
+    // Image attachments via OpenAI's multi-content message format.
+    const userContentParts = [{ type: 'text', text: userContent }];
+    for (const att of attachments || []) {
+        if (att?.kind !== 'image' || typeof att.content !== 'string') continue;
+        userContentParts.push({ type: 'image_url', image_url: { url: att.content } });
+    }
+    messages.push({ role: 'user', content: userContentParts.length > 1 ? userContentParts : userContent });
+
+    const requestBody = JSON.stringify({
+        model: targetModel,
+        max_tokens: getMaxOutputTokens(targetModel),
+        temperature: 0.2,
+        stream: true,
+        messages,
+    });
+
+    let lastError = null;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            const upstream = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    accept: 'text/event-stream',
+                    authorization: `Bearer ${key}`,
+                },
+                body: requestBody,
+                signal,
+            });
+            if (upstream.status === 429 && attempt < maxRetries) {
+                const delay = 500 * Math.pow(2, attempt) + Math.random() * 300;
+                console.warn(`[OpenAI] 429, retry ${attempt + 1}/${maxRetries} in ${delay.toFixed(0)}ms`);
+                await sleep(delay);
+                continue;
+            }
+            if (!upstream.ok || !upstream.body) {
+                throw new Error(`Upstream error ${upstream.status}`);
+            }
+            return createValidatedStream(createOpenAITextStream(upstream.body));
+        } catch (e) {
+            lastError = e;
+            const msg = String(e?.message || '').toLowerCase();
+            if ((msg.includes('429') || msg.includes('quota')) && attempt < maxRetries) {
+                await sleep(500 * Math.pow(2, attempt) + Math.random() * 300);
+                continue;
+            }
+            throw e;
+        }
+    }
+    throw lastError || new Error('OpenAI max retries exceeded');
+};
+
+const createOpenAITextStream = (body) => {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    return new ReadableStream({
+        async pull(controller) {
+            const { value, done } = await reader.read();
+            if (done) {
+                controller.enqueue(encoder.encode(JSON.stringify({
+                    candidates: [{ finishReason: 'STOP', content: { parts: [{ text: '' }] } }],
+                }) + '\n'));
+                controller.close();
+                return;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const raw of lines) {
+                const line = raw.replace(/^data:\s*/, '').trim();
+                if (!line || line === '[DONE]') continue;
+                try {
+                    const parsed = JSON.parse(line);
+                    const choice = parsed.choices?.[0];
+                    const delta = choice?.delta?.content;
+                    if (typeof delta === 'string' && delta) {
+                        controller.enqueue(encoder.encode(JSON.stringify({
+                            candidates: [{ content: { parts: [{ text: delta }] } }],
+                        }) + '\n'));
+                    }
+                    if (choice?.finish_reason) {
+                        controller.enqueue(encoder.encode(JSON.stringify({
+                            candidates: [{ finishReason: choice.finish_reason, content: { parts: [] } }],
+                        }) + '\n'));
+                    }
+                } catch (_) { /* skip */ }
+            }
+        },
+        cancel() { try { reader.cancel(); } catch (_) {} },
+    });
+};
+
+/**
  * Wrap a response stream with validation checks.
  * Accumulates response chunks and validates format in real-time.
  * If critical validation errors are detected, sends validation error instead of bad response.
@@ -1409,6 +1701,8 @@ export async function POST(request) {
         focusPath = '',
         model = '',
         apiKey = '',
+        // Provider selection — explicit provider always wins, otherwise inferred from model name.
+        provider: providerOverride = '',
         // Code intelligence integration
         workspacePath = '',
         useCodeIntel = true, // Enable by default when workspacePath is provided
@@ -1418,6 +1712,8 @@ export async function POST(request) {
         // Agentic tool-use mode
         useTools = 'auto', // 'auto' | true | false
     } = body || {};
+
+    const provider = (providerOverride && String(providerOverride).toLowerCase()) || inferProvider(model);
 
     // ── Resolve userId from server session ──────────────────────────
     // The collab server needs x-user-id to resolve per-user repos at
@@ -1531,36 +1827,49 @@ export async function POST(request) {
     const { signal, dispose } = withTimeoutSignal(request.signal);
 
     try {
-        const geminiKey = apiKey || process.env.GEMINI_API_KEY || '';
-        if (!geminiKey) {
+        const providerKey = resolveProviderKey(provider, apiKey);
+        if (!providerKey) {
+            const envName = provider === 'anthropic' ? 'ANTHROPIC_API_KEY'
+                          : provider === 'openai'    ? 'OPENAI_API_KEY'
+                          :                            'GEMINI_API_KEY';
             return NextResponse.json(
                 {
                     error: 'Missing API key',
-                    detail: 'Gemini API key is not configured. Set GEMINI_API_KEY environment variable.',
+                    detail: `${provider} key is not configured. Set ${envName} or pass an apiKey in the request body.`,
                 },
                 { status: 401 }
             );
         }
 
         // ── Choose fast path vs. agentic path ───────────────────────
+        // Tool-use is currently Gemini-only because the function-call schema
+        // is provider-specific. Anthropic/OpenAI fall through to direct streaming.
         const shouldUseTools =
-            useTools === true ||
-            (useTools === 'auto' && workspacePath && isComplexTask(prompt, (files || []).length));
-        
+            provider === 'gemini' && (
+                useTools === true ||
+                (useTools === 'auto' && workspacePath && isComplexTask(prompt, (files || []).length))
+            );
+
         let stream;
         if (shouldUseTools && workspacePath) {
-            console.log('[Chat API] Using agentic tool-calling path');
+            console.log('[Chat API] Using agentic tool-calling path (provider=gemini)');
             stream = await streamGeminiWithTools({
                 model,
-                apiKey: geminiKey,
+                apiKey: providerKey,
                 userContent,
                 conversationHistory,
                 attachments,
                 workspacePath,
                 signal,
             });
+        } else if (provider === 'anthropic') {
+            console.log(`[Chat API] Streaming via Anthropic (model=${model || DEFAULT_ANTHROPIC_MODEL})`);
+            stream = await streamAnthropic({ model, apiKey: providerKey, userContent, conversationHistory, attachments, signal });
+        } else if (provider === 'openai') {
+            console.log(`[Chat API] Streaming via OpenAI (model=${model || DEFAULT_OPENAI_MODEL})`);
+            stream = await streamOpenAI({ model, apiKey: providerKey, userContent, conversationHistory, attachments, signal });
         } else {
-            stream = await streamGemini({ model, apiKey: geminiKey, userContent, conversationHistory, attachments, signal });
+            stream = await streamGemini({ model, apiKey: providerKey, userContent, conversationHistory, attachments, signal });
         }
 
         const traceSummary = buildTraceSummary(codeIntelContext?.trace || []);
@@ -1597,6 +1906,13 @@ export async function POST(request) {
             headers: {
                 'content-type': 'application/x-ndjson',
                 'cache-control': 'no-cache',
+                // Provider used for this response (for the UI badge).
+                'x-llm-provider': provider,
+                'x-llm-model': model || (
+                    provider === 'anthropic' ? DEFAULT_ANTHROPIC_MODEL :
+                    provider === 'openai'    ? DEFAULT_OPENAI_MODEL    :
+                                               DEFAULT_GEMINI_MODEL
+                ),
                 // Include context metadata in headers for debugging
                 'x-code-intel-sufficiency': codeIntelContext?.sufficiency || 'NONE',
                 'x-code-intel-tokens': String(codeIntelContext?.tokensUsed || 0),
