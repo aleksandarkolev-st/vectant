@@ -222,15 +222,159 @@ synthi/src/components/chat/MultiverseCard.jsx
 
 ## Wave 3 — runtime probes + crossover + Go/Rust/HTML
 
-⚪ Not started.
+Files created on this branch:
+
+```
+ai-backend/ai-engine/shadow/
+  crossover.py                   Change-level (whole-file) crossover, compile-gated
+  runner/go.py                   go vet + go test + go build runtime probe
+  runner/rust.py                 cargo clippy + cargo check + cargo test --no-run
+  runner/html.py                 htmlhint + stylelint
+```
+
+Files modified:
+
+```
+ai-backend/ai-engine/shadow/
+  arbiter.py                    + estimate_bundle_tokens / _summarize_bundle
+                                  (two-stage Arbiter §11.1)
+                                + re_adjudicate() for the [Why?] follow-up
+  events.py                      bundle / last_verdict / universe_results /
+                                  arbiter_provider+model cached on JobState
+                                  for the [Why?] route
+  multiverse.py                 + crossover children (deep tier, before
+                                  Arbiter) + synthesis-mode crossover
+                                  (post-Arbiter when synthesis.recommended)
+  runner/__init__.py            + GoRunner / RustRunner / HtmlRunner exports
+  runner/base.py                + dispatch on .go / .rs / .html|css and
+                                  fall back via go.mod / Cargo.toml
+  runner/node.py                + Next.js dev-server probe — boot next dev,
+                                  hit routes derived from changed files,
+                                  capture 5xx / connect failures
+  api.py                        + POST /shadow/{jobId}/why endpoint
+synthi/src/app/api/shadow/[jobId]/why/route.js  NEW Next.js proxy for [Why?]
+synthi/src/components/chat/
+  ArbiterCard.jsx               + [Why?] button + inline textarea
+  hooks/useShadowVerify.js      + askWhy() helper that updates verdict in place
+```
+
+Status:
+
+| Item | Status |
+|---|---|
+| Two-stage Arbiter for oversize bundles (§11.1) | ✅ |
+| Runtime probe (`next dev` for 5s + route-hitting) | ✅ |
+| Change-level crossover, 1 generation, compile-gated | ✅ |
+| Synthesis-mode crossover driven by `synthesis.recommended` | ✅ |
+| Go runner | ✅ |
+| Rust runner | ✅ |
+| HTML/CSS runner | ✅ |
+| `[Why?]` button on Arbiter card (§22) | ✅ |
+| LLM-novel critic attacks (Wave 2 carryover) | ✅ |
 
 ## Wave 4 — continuous shadow + few-shot preference + cost dashboard
 
-⚪ Not started.
+Files created on this branch:
+
+```
+ai-backend/ai-engine/shadow/
+  preference.py                 Per-(user, repo) rolling list of accepted
+                                patches; few_shot_for + style_match
+  cost_ledger.py                Per-workspace daily spend ledger + cap
+                                + 30-day history + apply-and-cancel refunds
+
+ai-backend/ai-engine/shadow_continuous/
+  __init__.py
+  preference_store.py           Per-workspace opt-out + $0.50/day cap
+  regression_runner.py          Pass→fail detection on changed files
+  watcher.py                    Per-workspace 800ms debouncer + handler
+  api.py                        POST /shadow_continuous/notify + opt_out
+
+synthi/src/app/api/shadow/cost/route.js   GET/POST proxy for the dashboard
+synthi/src/components/chat/ShadowCostPanel.jsx   Today/cap/remaining +
+                                                  inline cap editor +
+                                                  SVG sparkline + per-job log
+```
+
+Files modified:
+
+```
+ai-backend/ai-engine/shadow/
+  generator.py                  + GeneratorRequest.few_shot;
+                                  revise prompt folds it into a
+                                  <PREFERENCE EXAMPLES> block
+  universe.py                   + accepts (repo, user_id); pulls few-shot
+                                  for the Generator and computes
+                                  ScoreInput.style_match from the store
+  multiverse.py                 + threads (repo, job.user_id) through
+                                  _run_single + _run_with_convergence
+  api.py                        + cost ledger debit on /run; refund
+                                  credits on /apply (apply-and-cancel)
+                                  and /cancel (user-cancel); records
+                                  preference example on every accepted
+                                  apply with arbiter_winner / user_overrode
+ai-backend/ai-engine/main.py    + mounts shadow_continuous_router
+```
+
+Status:
+
+| Item | Status |
+|---|---|
+| Few-shot preference store (§13) | ✅ |
+| `style_match` in ScoreInput driven by preferences | ✅ |
+| Continuous shadow watcher with 800ms debounce | ✅ |
+| Pass→fail regression replay (no idle ping) | ✅ |
+| Per-workspace opt-out + $0.50/day cap | ✅ |
+| Cost dashboard backend (ledger + history) | ✅ |
+| Cost dashboard frontend (`<ShadowCostPanel />`) | ✅ |
+| Apply-and-cancel + user-cancel refund credits | ✅ |
+| Override-driven preference learning (§22) | 🟡 signal recorded (`arbiter_winner` / `user_overrode`); ranking re-tune deferred |
 
 ## Wave 5 — closure-aware fragment crossover (research, flagged)
 
-⚪ Not started.
+Files created on this branch:
+
+```
+ai-backend/ai-engine/shadow/
+  closure_crossover.py          Python ast + JS regex fragment extractor;
+                                fragment swap into the higher-scorer's
+                                scaffold; compile-gated. Behind
+                                SHADOW_CLOSURE_CROSSOVER_ENABLED=1.
+```
+
+Files modified:
+
+```
+ai-backend/ai-engine/shadow/multiverse.py
+  + closure_crossover_enabled() gate; runs after change-level crossover
+    on deep tier when the flag is on
+  + _surgical_enabled() gate; swaps the third spec slot from minimalist
+    to surgical when SHADOW_SURGICAL_ENABLED=1
+```
+
+Status:
+
+| Item | Status |
+|---|---|
+| Closure-aware fragment crossover (compile-gated) | ✅ flagged off by default |
+| Surgical style as a fourth profile | ✅ flagged off by default |
+
+---
+
+## Bench corpus
+
+Total: **16 / 50 fixtures**.
+
+Wave 1 added: py-off-by-one, py-type-error, py-dep-change, py-multi-file-rename,
+js-null-guard, js-refactor-async (6).
+
+Wave 3-5 carry-over additions on this branch (10):
+py-mutable-default, py-divide-by-zero, py-perf-quadratic, py-security-eval,
+py-async-await-missing, js-equality-loose, js-regex-catastrophic,
+js-promise-unhandled, ts-type-narrow, multi-rename.
+
+Coverage: logic-bug, type-error, refactor, multi-file, dep-change, performance,
+security, async/await, type-narrowing, regex DoS.
 
 ---
 
@@ -256,3 +400,5 @@ With an empty corpus the report annotates "Wave 1 status: corpus is empty".
 | `SHADOW_VERIFY_ENABLED` | `true` | Master kill switch on the chat → /shadow/run kick-off. |
 | `SHADOW_VERIFY_DEFAULT` | `standard` | Tier used when chat fires shadow run. |
 | `CODE_INTEL_URL` / `AI_ENGINE_URL` | `http://localhost:8000` | Target for the Next.js /api/shadow/* proxies. |
+| `SHADOW_SURGICAL_ENABLED` | `0` | Wave 5 (research): swaps the third universe from minimalist to surgical. |
+| `SHADOW_CLOSURE_CROSSOVER_ENABLED` | `0` | Wave 5 (research): adds closure-aware fragment crossover children on deep tier. |
