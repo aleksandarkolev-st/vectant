@@ -23,6 +23,7 @@ import MessageContent from './utils/MessageContent';
 import { ThinkingDots } from './ThinkingDots';
 import CommandApprovalCard from './CommandApprovalCard';
 import MultiverseCard from './MultiverseCard';
+import ShadowCostPanel from './ShadowCostPanel';
 
 const formatTimestamp = (timestamp) => {
     if (!timestamp) return '';
@@ -836,6 +837,13 @@ const AIChatWindow = ({
                         )}
                     </div>
                 )}
+
+                {/* Synthi Genome — shadow verify cost dashboard (master plan §17 + §22) */}
+                {workspaceSlug ? (
+                    <div className="mx-3 mb-1.5">
+                        <ShadowCostPanel workspacePath={workspaceSlug} />
+                    </div>
+                ) : null}
 
                 <div className="px-2.5 pb-2 flex items-center gap-1 overflow-x-auto">
                     {chatSessions.map((session) => {
