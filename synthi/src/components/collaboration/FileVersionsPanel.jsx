@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/popover';
 import collabSessionService from '@/services/collabSessionService';
 import { getCurrentUser } from '@/services/userIdentity';
+import { useTheme } from '@/components/ThemeProvider';
 
 // Map file extensions to Shiki language IDs.  Kept in sync with the richer
 // table in CodeBlock.jsx; if a file has an unknown extension we fall back to
@@ -558,6 +559,8 @@ function PreviewView({
   // and fall back to plain text rendering.
   const [targetTokens, setTargetTokens] = useState(null);
   const [baseTokens, setBaseTokens] = useState(null);
+  const { shikiTheme } = useTheme();
+  const activeTheme = shikiTheme || 'github-dark-default';
   useEffect(() => {
     if (typeof content !== 'string') {
       setTargetTokens(null);
@@ -569,11 +572,11 @@ function PreviewView({
     const tokenize = async (text) => {
       if (typeof text !== 'string') return null;
       try {
-        const res = await codeToTokens(text, { lang, theme: 'github-dark-default' });
+        const res = await codeToTokens(text, { lang, theme: activeTheme });
         return res?.tokens || null;
       } catch (_) {
         try {
-          const res = await codeToTokens(text, { lang: 'text', theme: 'github-dark-default' });
+          const res = await codeToTokens(text, { lang: 'text', theme: activeTheme });
           return res?.tokens || null;
         } catch (__) {
           return null;
@@ -593,7 +596,7 @@ function PreviewView({
       }
     })();
     return () => { cancelled = true; };
-  }, [content, baseContent, filePath, version.index]);
+  }, [content, baseContent, filePath, version.index, activeTheme]);
 
   return (
     <div className="flex flex-col" style={{ maxHeight: 500 }}>
