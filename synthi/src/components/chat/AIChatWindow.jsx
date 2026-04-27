@@ -24,6 +24,7 @@ import { ThinkingDots } from './ThinkingDots';
 import CommandApprovalCard from './CommandApprovalCard';
 import MultiverseCard from './MultiverseCard';
 import ShadowCostPanel from './ShadowCostPanel';
+import RegressionFindingsCard from './RegressionFindingsCard';
 
 const formatTimestamp = (timestamp) => {
     if (!timestamp) return '';
@@ -842,6 +843,22 @@ const AIChatWindow = ({
                 {workspaceSlug ? (
                     <div className="mx-3 mb-1.5">
                         <ShadowCostPanel workspacePath={workspaceSlug} />
+                    </div>
+                ) : null}
+
+                {/* Synthi Genome — continuous-shadow regression findings (master plan §14) */}
+                {workspaceSlug ? (
+                    <div className="mx-3 mb-1.5">
+                        <RegressionFindingsCard
+                            workspacePath={workspaceSlug}
+                            onLookAt={(finding) => {
+                                const prompt =
+                                    `Continuous shadow flagged a regression in \`${finding.file}\` ` +
+                                    `(${finding.test || 'tests now failing'}). ` +
+                                    `Investigate the change since the last accepted patch and propose a fix.`;
+                                setInputValue(prompt);
+                            }}
+                        />
                     </div>
                 ) : null}
 
