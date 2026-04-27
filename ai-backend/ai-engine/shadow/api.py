@@ -15,7 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import events, multiverse, preference, snapshot
+from . import cost_ledger, events, multiverse, preference, snapshot
 from .generator import PatchBlock
 from .snapshot import ApplyResult  # noqa: F401  (re-exported for clarity)
 
@@ -86,14 +86,47 @@ async def shadow_run(req: ShadowRunRequest, background: BackgroundTasks) -> Dict
 
     seed = _resolve_patches(repo, req.patches)
 
+    # Cost dashboard (master plan §17): debit the daily bucket up-front;
+    # outcome + apply-and-cancel refunds are recorded by the runners.
+    try:
+        cost_ledger.record_estimate(
+            repo=repo, job_id=job_id, tier=req.tier,
+            user_id=req.user_id, estimated_usd=cost_usd,
+        )
+    except Exception:
+        logger.exception("cost ledger debit failed for job %s", job_id)
+
     background.add_task(_run_safe, job=job, repo=repo, seed_patches=seed,
                        user_request=req.user_request, intent=req.intent)
 
+    cost_state = cost_ledger.state(repo)
     return {
         "jobId": job_id,
         "tier": req.tier,
         "estimated_cost_usd": job.estimated_cost_usd,
+        "spent_today_usd": cost_state["spent_today_usd"],
+        "daily_cap_usd": cost_state["daily_cap_usd"],
+        "over_cap": cost_state["spent_today_usd"] > cost_state["daily_cap_usd"],
     }
+
+
+@router.get("/cost/state")
+async def cost_state(workspace_path: str) -> Dict[str, Any]:
+    """Cost dashboard snapshot for a workspace (master plan §17 + §22)."""
+    repo = _resolve_repo(workspace_path)
+    return cost_ledger.state(repo)
+
+
+class CostCapRequest(BaseModel):
+    workspace_path: str
+    daily_cap_usd: float
+
+
+@router.post("/cost/cap")
+async def cost_cap(req: CostCapRequest) -> Dict[str, Any]:
+    repo = _resolve_repo(req.workspace_path)
+    new_cap = cost_ledger.set_daily_cap(repo, req.daily_cap_usd)
+    return {"daily_cap_usd": new_cap}
 
 
 @router.post("/verify-only")
@@ -160,6 +193,24 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
     # Apply-and-cancel (master plan §16 mitigation #4 + §2 UX rule):
     # accepting one universe should kill any still-running siblings.
     cancelled_siblings = _cancel_tasks(job, keep=req.universeId)
+
+    # Cost ledger refund: each cancelled sibling represents compute we
+    # didn't run. Refund a per-tier slice (master plan §17 — apply-and-
+    # cancel saves 30-60 % on average, so we credit a third per universe).
+    if cancelled_siblings:
+        try:
+            tier_cost = multiverse.TIER_COST_USD.get(job.tier, 0.0)
+            n_planned = max(1, multiverse.TIER_UNIVERSE_COUNT.get(job.tier, 1))
+            per_universe = tier_cost / n_planned
+            cost_ledger.record_outcome(
+                repo=_resolve_repo(job.workspace_path),
+                job_id=job_id,
+                outcome="applied-with-cancel",
+                universes_cancelled=len(cancelled_siblings),
+                refund_usd=per_universe * len(cancelled_siblings),
+            )
+        except Exception:
+            logger.exception("cost ledger refund failed for job %s", job_id)
 
     repo = _resolve_repo(job.workspace_path)
     snap = job.snapshot_obj
@@ -340,6 +391,20 @@ async def shadow_cancel(job_id: str) -> Dict[str, Any]:
     cancelled_ids = _cancel_tasks(job, keep=None)
     await job.emit(events.error(stage="cancel", msg="cancelled by user"))
     await job.emit_done()
+    # User-cancel: refund all not-yet-run universes. Estimate as
+    # (cancelled / planned) * estimated_cost_usd.
+    try:
+        n_planned = max(1, multiverse.TIER_UNIVERSE_COUNT.get(job.tier, 1))
+        refund = job.estimated_cost_usd * (len(cancelled_ids) / n_planned)
+        cost_ledger.record_outcome(
+            repo=_resolve_repo(job.workspace_path),
+            job_id=job_id,
+            outcome="cancelled-by-user",
+            universes_cancelled=len(cancelled_ids),
+            refund_usd=refund,
+        )
+    except Exception:
+        logger.exception("cost ledger cancel-refund failed for job %s", job_id)
     return {"cancelled": True, "tasks_cancelled": cancelled_ids}
 
 
