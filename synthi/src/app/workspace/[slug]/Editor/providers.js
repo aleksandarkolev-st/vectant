@@ -178,6 +178,18 @@ export const useEditorProviders = ({
     };
 
     // 1. Inline Completion Provider (The "Ghost Text")
+    //
+    // We register two layers:
+    //   a) Monaco's standard inline-completions provider — owns the data flow
+    //      (insert, accept, partial-accept), but its visual output is rendered
+    //      almost-transparent via CSS so it never shows the default green.
+    //   b) A custom content widget (synthi-ghost-tokenizer) that renders the
+    //      same text through `monaco.editor.colorize(language)` — so the
+    //      preview inherits the editor's syntax highlighting, exactly like
+    //      the surrounding code.
+    const tokenizerWidgetRef = useRef(null);
+    const tokenizerColorizeIdRef = useRef(0);
+
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
         inlineCompletionProviderRef.current?.dispose();
@@ -187,17 +199,12 @@ export const useEditorProviders = ({
                 const cached = aiCompletionCacheRef.current;
                 const cursor = aiCompletionCursorRef.current;
 
-                // Only show if we have a suggestion and the cursor hasn't moved far (or is the same)
                 if (!cached?.suggestion || !cursor) return { items: [] };
-
-                // Simple validation: line must match
                 if (position.lineNumber !== cursor.lineNumber) return { items: [] };
-
-                const visibleText = cached.suggestion;
 
                 return {
                     items: [{
-                        insertText: visibleText,
+                        insertText: cached.suggestion,
                         range: new monacoInstance.Range(
                             position.lineNumber, position.column,
                             position.lineNumber, position.column
@@ -207,14 +214,105 @@ export const useEditorProviders = ({
                 };
             },
             freeInlineCompletions: () => { },
-            // Some Monaco builds call `disposeInlineCompletions` when disposing providers.
-            // Add an alias to be defensive across versions to avoid runtime errors.
             disposeInlineCompletions: () => { }
         });
         inlineCompletionProviderRef.current = provider;
 
         return () => inlineCompletionProviderRef.current?.dispose();
     }, [editorInstance, monacoInstance, activeLanguage, aiCompletionState, aiCompletionCacheRef, aiCompletionCursorRef, inlineAcceptCommandIdRef]);
+
+    // 1b. Tokenized ghost text overlay
+    //
+    // Renders the cached suggestion using `monaco.editor.colorize()` so each
+    // token gets the same `mtkN` class Monaco uses for the editor body —
+    // meaning the preview inherits the active theme's syntax colours instead
+    // of the harsh built-in default.
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+
+        const escape = (s) => s
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+        const node = document.createElement('span');
+        node.className = 'synthi-ghost-tokenized';
+
+        const widget = {
+            getId: () => 'synthi.ghost.tokenizer',
+            getDomNode: () => node,
+            getPosition: () => {
+                const cached = aiCompletionCacheRef.current;
+                const cursor = aiCompletionCursorRef.current;
+                if (!cached?.suggestion || !cursor) return null;
+                return {
+                    position: { lineNumber: cursor.lineNumber, column: cursor.column },
+                    preference: [monacoInstance.editor.ContentWidgetPositionPreference.EXACT],
+                };
+            },
+        };
+
+        editorInstance.addContentWidget(widget);
+        tokenizerWidgetRef.current = widget;
+
+        const renderTokenized = async () => {
+            const cached = aiCompletionCacheRef.current;
+            const suggestion = cached?.suggestion || '';
+            if (!suggestion) {
+                node.innerHTML = '';
+                editorInstance.layoutContentWidget(widget);
+                return;
+            }
+
+            // Cancel any in-flight colorize call — we only care about the latest.
+            const id = ++tokenizerColorizeIdRef.current;
+            try {
+                // Monaco returns colorized HTML using its own per-theme `mtkN`
+                // classes, which the editor stylesheet already maps to the
+                // active theme's syntax colours. This is the same tokenizer
+                // used everywhere else in the editor.
+                const html = await monacoInstance.editor.colorize(
+                    suggestion,
+                    activeLanguage || 'plaintext',
+                    { tabSize: 4 }
+                );
+                if (id !== tokenizerColorizeIdRef.current) return; // superseded
+                if (typeof html === 'string' && html.length) {
+                    // monaco.editor.colorize wraps lines in <br/>; replace the
+                    // first line break with a tail span so multi-line previews
+                    // render directly under the cursor instead of overflowing
+                    // the line.
+                    const split = html.split(/<br\s*\/?>(.*)/s);
+                    if (split.length >= 2) {
+                        node.innerHTML = split[0]
+                            + `<span class="synthi-ghost-tokenized__tail">${split[1]}</span>`;
+                    } else {
+                        node.innerHTML = html;
+                    }
+                } else {
+                    node.textContent = suggestion;
+                }
+            } catch (e) {
+                // Fall back to plain escaped text if colorize ever fails.
+                node.innerHTML = escape(suggestion);
+            }
+            editorInstance.layoutContentWidget(widget);
+        };
+
+        // Re-render whenever the suggestion or cursor changes.
+        const interval = setInterval(() => {
+            const cached = aiCompletionCacheRef.current;
+            const next = cached?.suggestion || '';
+            if (node.dataset.suggestion !== next) {
+                node.dataset.suggestion = next;
+                renderTokenized();
+            }
+        }, 80);
+
+        return () => {
+            clearInterval(interval);
+            try { editorInstance.removeContentWidget(widget); } catch (_) { /* disposed */ }
+            tokenizerWidgetRef.current = null;
+        };
+    }, [editorInstance, monacoInstance, activeLanguage, aiCompletionCacheRef, aiCompletionCursorRef]);
 
     // 2. Register Command for Accept
     useEffect(() => {
