@@ -235,11 +235,107 @@ class GitService {
         if (!fs.existsSync(this.baseDir)) {
             fs.mkdirSync(this.baseDir, { recursive: true });
         }
+        this._encryptionKey = this._resolveEncryptionKey();
+        if (this._encryptionKey) {
+            console.log(`[GitService] Token store encrypted at rest (key from ${this._encryptionKey.source}).`);
+        } else {
+            console.warn(
+                '[GitService] WARNING: token store is PLAINTEXT on disk. ' +
+                'Set SYNTHI_TOKEN_ENCRYPTION_KEY (32 bytes, base64) or ' +
+                'SYNTHI_TOKEN_ENCRYPTION_PASSPHRASE to encrypt at rest.'
+            );
+        }
+    }
+
+    _resolveEncryptionKey() {
+        const raw = process.env.SYNTHI_TOKEN_ENCRYPTION_KEY;
+        if (raw) {
+            try {
+                const buf = Buffer.from(String(raw).trim(), 'base64');
+                if (buf.length === 32) return { key: buf, source: 'SYNTHI_TOKEN_ENCRYPTION_KEY' };
+                console.error(
+                    `[GitService] SYNTHI_TOKEN_ENCRYPTION_KEY must decode to 32 bytes ` +
+                    `(got ${buf.length}); ignoring and falling back to passphrase.`
+                );
+            } catch (e) {
+                console.error(`[GitService] SYNTHI_TOKEN_ENCRYPTION_KEY is not valid base64: ${e.message}`);
+            }
+        }
+        const passphrase = process.env.SYNTHI_TOKEN_ENCRYPTION_PASSPHRASE;
+        if (passphrase && String(passphrase).length > 0) {
+            // Stable salt so the same passphrase derives the same key across
+            // restarts. The salt is non-secret — security comes from the
+            // passphrase entropy + scrypt's cost parameters.
+            const salt = Buffer.from('synthi-collab-token-store/v1', 'utf8');
+            const key = crypto.scryptSync(String(passphrase), salt, 32, { N: 16384, r: 8, p: 1 });
+            return { key, source: 'SYNTHI_TOKEN_ENCRYPTION_PASSPHRASE' };
+        }
+        return null;
+    }
+
+    _encryptTokenForDisk(token) {
+        if (!this._encryptionKey) return null;
+        const iv = crypto.randomBytes(12);
+        const cipher = crypto.createCipheriv('aes-256-gcm', this._encryptionKey.key, iv);
+        const ct = Buffer.concat([cipher.update(String(token), 'utf8'), cipher.final()]);
+        const tag = cipher.getAuthTag();
+        return JSON.stringify({
+            v: 1,
+            alg: 'aes-256-gcm',
+            iv: iv.toString('base64'),
+            tag: tag.toString('base64'),
+            ct: ct.toString('base64'),
+        });
+    }
+
+    /**
+     * Decode a token file's contents. Accepts the encrypted v1 format AND
+     * legacy plaintext `{ "token": "..." }`. Returns the token string, or
+     * null on failure / missing key. Sets `outMeta.legacy = true` when the
+     * source was plaintext so the caller can transparently re-encrypt.
+     */
+    _decodeTokenFile(raw, outMeta = {}) {
+        let parsed;
+        try { parsed = JSON.parse(raw); } catch { return null; }
+        if (!parsed || typeof parsed !== 'object') return null;
+
+        if (parsed.v === 1 && parsed.alg === 'aes-256-gcm' && parsed.iv && parsed.tag && parsed.ct) {
+            if (!this._encryptionKey) {
+                console.error('[GitService] Encrypted token on disk but no encryption key configured — cannot decrypt.');
+                return null;
+            }
+            try {
+                const iv = Buffer.from(parsed.iv, 'base64');
+                const tag = Buffer.from(parsed.tag, 'base64');
+                const ct = Buffer.from(parsed.ct, 'base64');
+                const decipher = crypto.createDecipheriv('aes-256-gcm', this._encryptionKey.key, iv);
+                decipher.setAuthTag(tag);
+                const pt = Buffer.concat([decipher.update(ct), decipher.final()]).toString('utf8');
+                const value = pt.trim();
+                return value || null;
+            } catch (e) {
+                console.error(`[GitService] Token decryption failed (wrong key or tampered file?): ${e.message}`);
+                return null;
+            }
+        }
+
+        // Legacy plaintext.
+        if (typeof parsed.token === 'string') {
+            outMeta.legacy = true;
+            return parsed.token.trim() || null;
+        }
+        return null;
     }
 
     _safeAuthPathPart(value, fallback = 'default') {
         const normalized = String(value || fallback).trim();
-        const safe = normalized.replace(/[^a-zA-Z0-9_@.\-]/g, '_');
+        let safe = normalized.replace(/[^a-zA-Z0-9_@.\-]/g, '_');
+        // Reject path-traversal sentinels even though path.join only
+        // collapses literal `..` segments — defense in depth.
+        if (safe === '.' || safe === '..' || safe === '') return fallback;
+        // Strip leading dots so we don't accidentally produce a dotfile
+        // when the caller's id is `.git` or similar.
+        safe = safe.replace(/^\.+/, '_');
         return safe || fallback;
     }
 
@@ -255,16 +351,23 @@ class GitService {
         const tokenPath = this._getAuthTokenPath(slug, userId);
         try {
             fs.mkdirSync(path.dirname(tokenPath), { recursive: true, mode: 0o700 });
-            // Write atomically via a temp file + rename so a crash mid-write
-            // can't leave an empty/partial token file on disk.
+            // Encrypted on-disk payload when a key is configured; plaintext
+            // legacy format otherwise (with a startup warning already logged).
+            const payload = this._encryptionKey
+                ? this._encryptTokenForDisk(value)
+                : JSON.stringify({ token: value });
+            // Atomic: temp file + rename so a crash mid-write can't leave a
+            // partial token file on disk.
             const tmpPath = `${tokenPath}.tmp-${process.pid}-${Date.now()}`;
-            fs.writeFileSync(tmpPath, JSON.stringify({ token: value }), { encoding: 'utf8', mode: 0o600 });
+            fs.writeFileSync(tmpPath, payload, { encoding: 'utf8', mode: 0o600 });
             fs.renameSync(tmpPath, tokenPath);
-            // Verify the write actually persisted — surfaces silent ENOSPC,
-            // EROFS, container layer-fs quirks that swallow writes.
+            // Round-trip verify — surfaces silent ENOSPC, EROFS, container
+            // layer-fs quirks that swallow writes, AND wrong-key bugs in the
+            // encryption path (we'd never want to write a file we can't read
+            // back).
             const verifyRaw = fs.readFileSync(tokenPath, 'utf8');
-            const verifyParsed = JSON.parse(verifyRaw);
-            if (!verifyParsed || verifyParsed.token !== value) {
+            const verifyValue = this._decodeTokenFile(verifyRaw);
+            if (verifyValue !== value) {
                 throw new Error('post-write verification failed');
             }
             return true;
@@ -283,9 +386,21 @@ class GitService {
         try {
             if (!fs.existsSync(tokenPath)) return null;
             const raw = fs.readFileSync(tokenPath, 'utf8');
-            const parsed = JSON.parse(raw);
-            const value = parsed && typeof parsed.token === 'string' ? parsed.token.trim() : '';
-            return value || null;
+            const meta = {};
+            const value = this._decodeTokenFile(raw, meta);
+            if (!value) return null;
+            // Lazy migration: if we read a legacy plaintext file but
+            // encryption is now configured, transparently re-write it
+            // encrypted on disk.
+            if (meta.legacy && this._encryptionKey) {
+                try {
+                    this._persistAuthToken(slug, userId, value);
+                    console.log(`[GitService] Migrated legacy plaintext token to encrypted: ${tokenPath}`);
+                } catch (e) {
+                    console.warn(`[GitService] Failed to migrate legacy token to encrypted form: ${e.message}`);
+                }
+            }
+            return value;
         } catch (e) {
             console.warn(`[GitService] Failed to read persisted auth token for ${slug}${userId ? '/' + userId : ''}: ${e.message}`);
             return null;
@@ -303,28 +418,52 @@ class GitService {
         this._persistAuthToken(slug, userId, value);
     }
 
-    _getStoredAuthToken(slug, userId) {
-        const direct = this.authTokens.get(this._authKey(slug, userId));
-        if (direct) return direct;
-
-        const persistedDirect = this._loadPersistedAuthToken(slug, userId);
-        if (persistedDirect) {
-            this.authTokens.set(this._authKey(slug, userId), persistedDirect);
-            return persistedDirect;
-        }
-
-        if (userId) {
-            const shared = this.authTokens.get(this._authKey(slug));
-            if (shared) return shared;
-
-            const persistedShared = this._loadPersistedAuthToken(slug);
-            if (persistedShared) {
-                this.authTokens.set(this._authKey(slug), persistedShared);
-                return persistedShared;
+    /**
+     * Look up a stored token across an explicit list of candidate userIds,
+     * with the slug-level shared bucket as a final fallback.
+     *
+     * In collab mode the server passes:
+     *   [requesterUserId, hostUserId]
+     * so a guest gets their own token first, then falls back to the host's
+     * (preserving today's "everyone uses the host's PAT" behavior for
+     * guests who haven't yet supplied one of their own).
+     *
+     * Single-user / non-collab: candidates = [userId], identical to the
+     * pre-existing behavior.
+     */
+    _lookupStoredToken(slug, candidateUserIds = []) {
+        const seen = new Set();
+        const tryKey = (id) => {
+            const key = this._authKey(slug, id);
+            if (seen.has(key)) return null;
+            seen.add(key);
+            const inMem = this.authTokens.get(key);
+            if (inMem) return inMem;
+            const onDisk = this._loadPersistedAuthToken(slug, id);
+            if (onDisk) {
+                this.authTokens.set(key, onDisk);
+                return onDisk;
             }
+            return null;
+        };
+        for (const id of candidateUserIds) {
+            if (!id) continue;
+            const found = tryKey(id);
+            if (found) return found;
         }
+        // Final fallback: slug-level shared (no userId) bucket. Lets an
+        // operator pre-seed a workspace-wide PAT without binding it to a
+        // specific user.
+        return tryKey(null);
+    }
 
-        return null;
+    /**
+     * Back-compat shim — the old single-userId lookup, expressed in terms
+     * of the new candidate list. Kept so any internal call site that
+     * predates the per-requester change continues to behave identically.
+     */
+    _getStoredAuthToken(slug, userId) {
+        return this._lookupStoredToken(slug, userId ? [userId] : []);
     }
 
     _cacheKeyForRepoPath(repoPath) {
@@ -493,12 +632,44 @@ class GitService {
         }
     }
 
-    async _resolveAuthToken(git, slug, userId, explicitToken) {
-        const effectiveToken = explicitToken || this._getStoredAuthToken(slug, userId) || await this._extractTokenFromRemoteUrl(git);
-        if (effectiveToken) {
-            this._rememberAuthToken(slug, userId, effectiveToken);
+    /**
+     * Resolve the token to use for an authenticated git operation.
+     *
+     * Token storage and lookup are scoped to `tokenUserId` (the *real*
+     * requesting user) when supplied, falling back to `userId` (the repo
+     * path's effective user — i.e. the host when a guest is in a session)
+     * for legacy / single-user callers. `tokenFallbackUserIds` is an
+     * additional list tried only when no token is bound to the primary
+     * key — used to let a guest fall back to the host's PAT when they
+     * haven't supplied one of their own.
+     *
+     * Resolution order:
+     *   1. explicitToken (from the request body) — bound to primary
+     *   2. stored token under primary, then each fallback id, then slug-shared
+     *   3. token still embedded in the configured remote URL — bound to primary
+     */
+    async _resolveAuthToken(git, slug, userId, explicitToken, tokenUserId = null, tokenFallbackUserIds = []) {
+        const primary = tokenUserId || userId || null;
+
+        if (typeof explicitToken === 'string' && explicitToken.trim()) {
+            const trimmed = explicitToken.trim();
+            this._rememberAuthToken(slug, primary, trimmed);
+            return trimmed;
         }
-        return effectiveToken || null;
+
+        const candidates = [primary, ...tokenFallbackUserIds.filter((x) => x && x !== primary)];
+        const stored = this._lookupStoredToken(slug, candidates);
+        if (stored) return stored;
+
+        const fromUrl = await this._extractTokenFromRemoteUrl(git);
+        if (fromUrl) {
+            // A token in the on-disk remote config is something we want to
+            // get rid of (we strip it elsewhere) — but until then, treat it
+            // as the requester's by binding it to the primary key.
+            this._rememberAuthToken(slug, primary, fromUrl);
+            return fromUrl;
+        }
+        return null;
     }
 
     async _readCommitRefsWithNodeGit(repo) {
@@ -1295,7 +1466,7 @@ class GitService {
         return null;
     }
 
-    async initRepo(slug, remoteUrl, userId) {
+    async initRepo(slug, remoteUrl, userId, tokenUserId = null) {
         const initResult = await this.withLock(slug, async () => {
             // repoCache.acquire (inside withLock) already materialised files
             // from GCS if needed, so we only need to git-init if missing.
@@ -1374,7 +1545,7 @@ class GitService {
             // `initRepo` with a `remoteUrl` was a no-op for existing repos.
             if (remoteUrl) {
                 const { cleanUrl, token } = this._extractTokenFromHttpsUrl(remoteUrl);
-                if (token) this._rememberAuthToken(slug, userId, token);
+                if (token) this._rememberAuthToken(slug, tokenUserId || userId, token);
                 try {
                     const existing = await git.getRemotes(true);
                     const origin = existing.find((r) => r.name === 'origin');
@@ -1402,7 +1573,7 @@ class GitService {
         return initResult;
     }
 
-    async cloneRepo(slug, repoUrl, token, userId) {
+    async cloneRepo(slug, repoUrl, token, userId, tokenUserId = null) {
         const cloneResult = await this.withLock(slug, async () => {
             const repoPath = this.getRepoPath(slug);
             let cleanRepoUrl = repoUrl;
@@ -1556,9 +1727,12 @@ class GitService {
             }
 
             if (effectiveToken) {
-                this._rememberAuthToken(slug, userId, effectiveToken);
+                // Bind to the *requesting* user's bucket when supplied so a
+                // guest cloning into a shared workspace stores their PAT
+                // under their own key, not the host's.
+                this._rememberAuthToken(slug, tokenUserId || userId, effectiveToken);
             }
-            
+
             // Upload cloned files to GCS so frontend can access them
             if (gcsSync.isGcsConfigured()) {
                 console.log(`[GitService] Uploading cloned files to GCS for slug: ${slug}`);
@@ -1714,11 +1888,11 @@ class GitService {
         }, userId);
     }
 
-    async pushTag(slug, name, userId, token) {
+    async pushTag(slug, name, userId, token, tokenUserId = null, tokenFallbackUserIds = []) {
         return this.withLock(slug, async () => {
             const git = await this.getGit(slug, userId);
             try {
-                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
+                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
                 if (effectiveToken) {
                     const remotes = await git.getRemotes(true);
                     const remoteUrl = remotes?.[0]?.refs?.push || remotes?.[0]?.refs?.fetch || '';
@@ -1741,7 +1915,7 @@ class GitService {
         }, userId);
     }
 
-    async checkout(slug, branchName, create = false, userId, mode = 'normal') {
+    async checkout(slug, branchName, create = false, userId, mode = 'normal', tokenUserId = null, tokenFallbackUserIds = []) {
         return this.withLock(slug, async () => {
             const git = await this.getGit(slug, userId);
             try {
@@ -1757,7 +1931,7 @@ class GitService {
                         if (!localExists) {
                             // Fetch the specific branch from origin
                             try {
-                                const token = await this._resolveAuthToken(git, slug, userId);
+                                const token = await this._resolveAuthToken(git, slug, userId, null, tokenUserId, tokenFallbackUserIds);
                                 if (token) {
                                     const remotes = await git.getRemotes(true);
                                     const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
@@ -1844,11 +2018,11 @@ class GitService {
         }, userId);
     }
 
-    async fetch(slug, userId, token) {
+    async fetch(slug, userId, token, tokenUserId = null, tokenFallbackUserIds = []) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
+                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
                 if (effectiveToken) {
                     const remotes = await git.getRemotes(true);
                     const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
@@ -1873,7 +2047,35 @@ class GitService {
         }, userId);
     }
 
-    async commit(slug, message, userId, amend = false) {
+    /**
+     * Build a child-process env object that pins commit author + committer
+     * to the requesting user's identity, so a guest's commits land in the
+     * host's worktree but still show up under the guest's GitHub account.
+     *
+     * Returns a clone of `baseEnv` (defaults to `process.env`); when
+     * `commitIdentity` is missing or empty, the returned env is byte-for-
+     * byte the base env so callers can use it unconditionally.
+     *
+     * Note: simple-git's `.env(env)` REPLACES the child env rather than
+     * merging it with `process.env`, so we always spread the base env in.
+     */
+    _buildCommitEnv(commitIdentity, baseEnv = process.env) {
+        const env = { ...baseEnv };
+        if (!commitIdentity || typeof commitIdentity !== 'object') return env;
+        const name = typeof commitIdentity.name === 'string' ? commitIdentity.name.trim() : '';
+        const email = typeof commitIdentity.email === 'string' ? commitIdentity.email.trim() : '';
+        if (name) {
+            env.GIT_AUTHOR_NAME = name;
+            env.GIT_COMMITTER_NAME = name;
+        }
+        if (email) {
+            env.GIT_AUTHOR_EMAIL = email;
+            env.GIT_COMMITTER_EMAIL = email;
+        }
+        return env;
+    }
+
+    async commit(slug, message, userId, amend = false, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
@@ -1888,10 +2090,12 @@ class GitService {
                         );
                     }
                 }
+                const env = this._buildCommitEnv(commitIdentity);
+                const gitWithEnv = git.env(env);
                 if (amend) {
-                    await git.commit(message, { '--amend': null });
+                    await gitWithEnv.commit(message, { '--amend': null });
                 } else {
-                    await git.commit(message);
+                    await gitWithEnv.commit(message);
                 }
                 await this._propagateToBare(slug, userId, git, { amend });
                 this._archiveGitAsync(slug, userId);
@@ -1944,7 +2148,7 @@ class GitService {
      *                                 action: 'pick'|'reword'|'squash'|'fixup'|'drop'
      * @param {string} userId
      */
-    async interactiveRebase(slug, baseCommit, operations, userId) {
+    async interactiveRebase(slug, baseCommit, operations, userId, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
@@ -1978,11 +2182,13 @@ class GitService {
                     seqEditor = `cp "${todoFile}" `;
                 }
 
-                // Use env to set the sequence editor
-                const env = {
+                // Use env to set the sequence editor (and pin author /
+                // committer to the requester so any commits the rebase
+                // creates carry the right identity).
+                const env = this._buildCommitEnv(commitIdentity, {
                     ...process.env,
                     GIT_SEQUENCE_EDITOR: `${seqEditor}`,
-                };
+                });
 
                 // For rewords, we need a GIT_EDITOR that writes the new message
                 // For simplicity, handle rewords as a second pass:
@@ -2036,11 +2242,11 @@ class GitService {
         }, userId);
     }
 
-    async rebaseContinue(slug, userId) {
+    async rebaseContinue(slug, userId, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                await git.rebase(['--continue']);
+                await git.env(this._buildCommitEnv(commitIdentity)).rebase(['--continue']);
                 this._archiveGitAsync(slug, userId);
                 return this.getStatus(slug, userId);
             } catch (e) {
@@ -2211,14 +2417,14 @@ class GitService {
         }, userId);
     }
 
-    async push(slug, userId, token, force = false) {
+    async push(slug, userId, token, force = false, tokenUserId = null, tokenFallbackUserIds = []) {
         return this.withLock(slug, async () => {
             const git = await this.getGit(slug, userId);
             // Make sure we don't trigger interactive credential prompts in the server process
             const prev = process.env.GIT_TERMINAL_PROMPT;
             process.env.GIT_TERMINAL_PROMPT = '0';
 
-            const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
+            const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
 
             /**
              * Build an authenticated push URL by embedding the token directly
@@ -2393,7 +2599,7 @@ class GitService {
         }, userId);
     }
 
-    async addRemote(slug, name, url, userId, explicitToken = null) {
+    async addRemote(slug, name, url, userId, explicitToken = null, tokenUserId = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
@@ -2406,7 +2612,7 @@ class GitService {
                     ? urlToken
                     : (typeof explicitToken === 'string' && explicitToken.trim() ? explicitToken.trim() : null);
                 if (finalToken) {
-                    this._rememberAuthToken(slug, userId, finalToken);
+                    this._rememberAuthToken(slug, tokenUserId || userId, finalToken);
                 }
                 await git.addRemote(name, cleanUrl);
                 return this.getStatus(slug, userId);
@@ -2435,7 +2641,7 @@ class GitService {
      * to `git remote add` when the named remote doesn't yet exist, so the
      * "edit remote" UI flow doesn't require the user to pre-create one.
      */
-    async setRemoteUrl(slug, name, url, userId, explicitToken = null) {
+    async setRemoteUrl(slug, name, url, userId, explicitToken = null, tokenUserId = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
@@ -2444,7 +2650,7 @@ class GitService {
                     ? urlToken
                     : (typeof explicitToken === 'string' && explicitToken.trim() ? explicitToken.trim() : null);
                 if (finalToken) {
-                    this._rememberAuthToken(slug, userId, finalToken);
+                    this._rememberAuthToken(slug, tokenUserId || userId, finalToken);
                 }
 
                 const existing = await git.getRemotes(true);
@@ -2470,11 +2676,17 @@ class GitService {
         }
     }
 
-    async pull(slug, userId, token) {
+    async pull(slug, userId, token, tokenUserId = null, tokenFallbackUserIds = [], commitIdentity = null) {
         return this.withLock(slug, async () => {
             const git = await this.getGit(slug, userId);
             try {
-                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
+                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
+
+                // Pull may produce a merge commit when the local branch has
+                // diverged from upstream. Pin author/committer so that merge
+                // is attributed to the requesting user, not the host.
+                const env = this._buildCommitEnv(commitIdentity);
+                const gitWithEnv = git.env(env);
 
                 let pullResult;
                 if (effectiveToken) {
@@ -2494,13 +2706,13 @@ class GitService {
                         const branchSummary = await git.branchLocal();
                         const currentBranch = branchSummary.current || 'HEAD';
                         console.log(`[GitService][pull] Using URL-based auth for ${slug}`);
-                        await git.raw(['pull', authUrl, currentBranch]);
+                        await gitWithEnv.raw(['pull', authUrl, currentBranch]);
                     } else {
-                        await git.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'pull']);
+                        await gitWithEnv.raw(['-c', `http.extraheader=Authorization: Bearer ${effectiveToken}`, 'pull']);
                     }
                     pullResult = { summary: { changes: 0, insertions: 0, deletions: 0 } };
                 } else {
-                    pullResult = await git.pull();
+                    pullResult = await gitWithEnv.pull();
                 }
                 const status = await this.getStatus(slug, userId);
                 
@@ -2635,11 +2847,14 @@ class GitService {
     }
 
     // Cherry-pick a commit onto the current branch
-    async cherryPick(slug, hash, userId) {
+    async cherryPick(slug, hash, userId, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                await git.raw(['cherry-pick', hash]);
+                // Cherry-pick replays the original author but sets the
+                // committer to the running user — pin both via env so
+                // attribution stays with the requester.
+                await git.env(this._buildCommitEnv(commitIdentity)).raw(['cherry-pick', hash]);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -2648,11 +2863,11 @@ class GitService {
     }
 
     // Revert a commit (create an inverse commit)
-    async revertCommit(slug, hash, userId) {
+    async revertCommit(slug, hash, userId, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                await git.raw(['revert', hash]);
+                await git.env(this._buildCommitEnv(commitIdentity)).raw(['revert', hash]);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -2739,7 +2954,7 @@ class GitService {
      * @param {string} [token]  Optional auth token for the fetch step
      * @returns {{ status, hasConflicts, conflictedFiles }}
      */
-    async mergeBranch(slug, branch, userId, token) {
+    async mergeBranch(slug, branch, userId, token, tokenUserId = null, tokenFallbackUserIds = [], commitIdentity = null) {
         return this.withLock(slug, async () => {
             const git = await this.getGit(slug, userId);
 
@@ -2747,11 +2962,15 @@ class GitService {
             // bare branch name and prefix it ourselves where needed.
             const bareBranch = branch.replace(/^origin\//, '');
             const remoteBranch = `origin/${bareBranch}`;
+            // Merge commits go through git.env() so author/committer match
+            // the requester. The fetch step doesn't create commits and runs
+            // on the plain `git`.
+            const gitForMerge = git.env(this._buildCommitEnv(commitIdentity));
 
             // 1. Fetch the specific branch from origin so the remote-tracking
             //    ref is guaranteed to exist and be up-to-date.
             try {
-                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
+                const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
                 if (effectiveToken) {
                     const remotes = await git.getRemotes(true);
                     const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
@@ -2779,7 +2998,7 @@ class GitService {
             let mergeResult;
             let hasConflicts = false;
             try {
-                mergeResult = await git.merge([remoteBranch]);
+                mergeResult = await gitForMerge.merge([remoteBranch]);
             } catch (e) {
                 const msg = (e?.message || '').toLowerCase();
                 // Git merge exits non-zero on conflicts — this is expected
@@ -2814,7 +3033,7 @@ class GitService {
      * @param {string} [token]    Optional auth token for the fetch step
      * @returns {{ hasConflicts: boolean, conflictedFiles: string[] }}
      */
-    async checkMergeConflicts(slug, baseBranch, headBranch, userId, token) {
+    async checkMergeConflicts(slug, baseBranch, headBranch, userId, token, tokenUserId = null, tokenFallbackUserIds = []) {
         const git = await this.getGit(slug, userId);
 
         // Normalise branch names — ensure we reference remote-tracking branches
@@ -2832,7 +3051,7 @@ class GitService {
         ];
         let fetchOk = false;
         try {
-            const effectiveToken = await this._resolveAuthToken(git, slug, userId, token);
+            const effectiveToken = await this._resolveAuthToken(git, slug, userId, token, tokenUserId, tokenFallbackUserIds);
             if (effectiveToken) {
                 const remotes = await git.getRemotes(true);
                 const remoteUrl = remotes?.[0]?.refs?.fetch || remotes?.[0]?.refs?.push || '';
@@ -3091,12 +3310,14 @@ class GitService {
         }
     }
 
-    async stashPush(slug, message = '', userId) {
+    async stashPush(slug, message = '', userId, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
                 const options = message ? ['-m', message] : [];
-                await git.stash(['push', ...options]);
+                // `git stash push` builds synthetic stash + index commits;
+                // attribute them to the requester for clean ref-log history.
+                await git.env(this._buildCommitEnv(commitIdentity)).stash(['push', ...options]);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);
@@ -3104,11 +3325,11 @@ class GitService {
         }, userId);
     }
 
-    async stashPop(slug, index = 0, userId) {
+    async stashPop(slug, index = 0, userId, commitIdentity = null) {
         return this.withLock(slug, async () => {
             try {
                 const git = await this.getGit(slug, userId);
-                await git.stash(['pop', `stash@{${index}}`]);
+                await git.env(this._buildCommitEnv(commitIdentity)).stash(['pop', `stash@{${index}}`]);
                 return this.getStatus(slug, userId);
             } catch (e) {
                 throw this.mapGitError(e, slug);

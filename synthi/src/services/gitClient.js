@@ -12,9 +12,38 @@ function normalizePath(p) {
 }
 
 let cachedUserId = null;
+// Display name + email for commit attribution. Sent on every git request
+// as `x-user-name` / `x-user-email`; the server pins these as
+// GIT_AUTHOR_*/GIT_COMMITTER_* on commit-creating operations so a guest's
+// commits in a host's worktree show up under the guest's GitHub identity.
+let cachedUserName = null;
+let cachedUserEmail = null;
 
 // Resolvers that will be called when userId becomes available.
 let _userIdReadyResolvers = [];
+
+/**
+ * RFC 7230 forbids non-token characters in HTTP header values, and many
+ * proxies silently drop headers containing them. base64-encode anything
+ * that isn't pure ASCII so non-Latin names survive the trip.
+ */
+function _encodeHeader(value) {
+    if (value == null) return null;
+    const s = String(value).trim();
+    if (!s) return null;
+    // Pure ASCII (no controls, no high-bit) — pass through.
+    // eslint-disable-next-line no-control-regex
+    if (/^[\x20-\x7E]+$/.test(s)) return s;
+    if (typeof window === 'undefined') return s; // SSR safety
+    try {
+        const bytes = new TextEncoder().encode(s);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        return btoa(bin);
+    } catch {
+        return s;
+    }
+}
 
 // Actions that truly cannot wait for authentication (bootstrapping).
 // All other actions (including reads like status, remotes, log) MUST wait
@@ -53,6 +82,17 @@ export const gitClient = {
         }
     },
 
+    /**
+     * Attach the display name + email used for commit attribution.
+     * Safe to call repeatedly — the latest values win for subsequent
+     * requests. `null` clears the value.
+     */
+    setIdentity({ userId, name, email } = {}) {
+        if (typeof userId !== 'undefined') this.setUserId(userId);
+        cachedUserName  = (typeof name  === 'string' && name.trim())  ? name.trim()  : null;
+        cachedUserEmail = (typeof email === 'string' && email.trim()) ? email.trim() : null;
+    },
+
     async request(slug, action, data = {}) {
         // Wait for auth before dispatching.  Without userId the server
         // falls back to the slug-level repo which produces wrong results.
@@ -69,6 +109,13 @@ export const gitClient = {
         if (cachedUserId) {
             headers['x-user-id'] = cachedUserId;
         }
+        // Identity headers — picked up by the server as commitIdentity and
+        // pinned to GIT_AUTHOR_*/GIT_COMMITTER_* for commit-creating actions
+        // so a guest's commits in a host's worktree are attributed to them.
+        const encodedName  = _encodeHeader(cachedUserName);
+        const encodedEmail = _encodeHeader(cachedUserEmail);
+        if (encodedName)  headers['x-user-name']  = encodedName;
+        if (encodedEmail) headers['x-user-email'] = encodedEmail;
         if (collabSessionService?.isActive && collabSessionService.sessionId) {
             headers['x-session-id'] = collabSessionService.sessionId;
         }
