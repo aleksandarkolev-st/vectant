@@ -1,0 +1,1 @@
+Rename `getUserById` to `find_user_by_id` to match Python naming conventions. Update both the definition in users.py and the importing call site in routes.py. Tests must pass after the rename.

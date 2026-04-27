@@ -1,0 +1,1 @@
+`isAdmin(role)` uses `==` so the string "0" matches the number 0 and a falsy admin role slips through. Replace with `===` and update the function to reject any value that isn't exactly the string "admin".

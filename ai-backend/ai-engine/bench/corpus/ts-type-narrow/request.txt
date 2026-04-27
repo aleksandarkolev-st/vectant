@@ -1,0 +1,1 @@
+`describe(value)` accepts `string | number | null` but accesses `.toUpperCase()` and `.toFixed(2)` without narrowing, producing TS errors. Add proper typeof narrowing so each branch sees the right type, and return "unknown" for null.

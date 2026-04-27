@@ -1,0 +1,6 @@
+[
+  {
+    "path": "asyncSum.js",
+    "new_content": "async function fetchValue(x) {\n  return x * 2;\n}\n\nasync function sumAsync(xs) {\n  let total = 0;\n  for (const x of xs) {\n    total += await fetchValue(x);\n  }\n  return total;\n}\n\nmodule.exports = { sumAsync, fetchValue };\n"
+  }
+]
