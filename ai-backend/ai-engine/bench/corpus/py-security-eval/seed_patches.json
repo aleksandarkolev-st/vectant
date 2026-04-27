@@ -1,0 +1,6 @@
+[
+  {
+    "path": "parser.py",
+    "new_content": "def safe_int(s):\n    \"\"\"Parse a user-supplied string as an integer. Rejects floats and\n    expressions; only base-10 integer strings are accepted.\"\"\"\n    return int(s)\n"
+  }
+]

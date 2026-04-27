@@ -1,0 +1,1 @@
+`safe_int(s)` uses `eval()` to parse user-supplied strings, which is a code-injection foothold. Replace with `int(s)` that only accepts integer-shaped input. Reject floats, expressions, and non-digit input by raising ValueError.
