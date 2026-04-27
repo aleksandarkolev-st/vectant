@@ -1,0 +1,6 @@
+[
+  {
+    "path": "counter.py",
+    "new_content": "import threading\n\n\nclass Counter:\n    def __init__(self):\n        self.value = 0\n        self._lock = threading.Lock()\n\n    def increment(self, n=1):\n        with self._lock:\n            new = self.value + n\n            for _ in range(50):\n                pass\n            self.value = new\n"
+  }
+]

@@ -1,0 +1,1 @@
+`join_lines(lines)` builds the result with `+=` inside a loop, which is O(n²) on large inputs. Replace with `"\n".join(...)` so it runs in O(n) and the final newline is preserved.

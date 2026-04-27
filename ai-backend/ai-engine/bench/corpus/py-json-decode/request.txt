@@ -1,0 +1,1 @@
+`load_config(text)` raises json.JSONDecodeError on malformed input. Wrap the parse so invalid JSON returns the empty dict instead of crashing, and re-raise on any non-decoding error.

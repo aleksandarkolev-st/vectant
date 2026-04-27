@@ -1,0 +1,8 @@
+{
+  "language": "python",
+  "intent": "implement",
+  "difficulty": "medium",
+  "has_dep_change": false,
+  "tier": "standard",
+  "tags": ["multi-file", "feature-flag", "implement"]
+}

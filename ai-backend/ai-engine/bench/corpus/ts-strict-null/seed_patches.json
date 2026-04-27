@@ -1,0 +1,6 @@
+[
+  {
+    "path": "firstChar.ts",
+    "new_content": "export function firstChar(s: string | undefined): string {\n  if (!s) return \"\";\n  return s[0].toUpperCase();\n}\n"
+  }
+]

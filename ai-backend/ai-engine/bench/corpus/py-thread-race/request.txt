@@ -1,0 +1,1 @@
+`Counter.increment()` is racy under threads — repeated `value = value + 1` from many workers loses updates. Add a threading.Lock and protect the read-modify-write so 1000 increments across threads always sums to 1000.
