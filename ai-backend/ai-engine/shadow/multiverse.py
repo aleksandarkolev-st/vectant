@@ -23,6 +23,7 @@ from .arbiter import (
     select_arbiter_provider,
 )
 from .convergence import detect_convergence
+from .crossover import run_children as run_crossover_children
 from .generator import PatchBlock
 from .project_signals import ProjectSignals, detect as detect_signals
 from .universe import Universe, UniverseSpec, UniverseResult
@@ -170,6 +171,20 @@ async def run_job(
         await job.emit_done()
         return winner
 
+    # Wave 3: change-level crossover on `deep` tier (master plan §16).
+    # We run the children before the Arbiter so the bundle includes them
+    # alongside the parents — Arbiter can then pick a child if it wins.
+    if tier == "deep" and len(valid) >= 2:
+        children = await run_crossover_children(universes=valid, pool=pool)
+        for ch in children:
+            job.universes[ch.universe_id] = ch.evidence
+            job.universe_patches[ch.universe_id] = [
+                {"path": p.path, "new_content": p.new_content}
+                for p in ch.patches_applied
+            ]
+            await job.emit(events.universe_done(ch.universe_id, ch.evidence))
+        valid = valid + children
+
     # Arbiter pass — provider rotation, compressed bundle, strict schema.
     arb_provider = select_arbiter_provider(specs)
     arb_model = model_for_arbiter(arb_provider)
@@ -185,6 +200,22 @@ async def run_job(
     )
     await job.emit(events.arbiter_verdict(verdict.to_dict()))
     winner = verdict.winner
+
+    # Wave 3 §6.4: when the Arbiter explicitly recommends synthesis, run
+    # one more crossover round honouring its instruction. Keeps the user
+    # from manually combining the fragments themselves.
+    if tier == "deep" and verdict.synthesis and verdict.synthesis.get("recommended"):
+        synth_children = await run_crossover_children(
+            universes=valid, pool=pool, synthesis=verdict.synthesis,
+        )
+        for ch in synth_children:
+            job.universes[ch.universe_id] = ch.evidence
+            job.universe_patches[ch.universe_id] = [
+                {"path": p.path, "new_content": p.new_content}
+                for p in ch.patches_applied
+            ]
+            await job.emit(events.universe_done(ch.universe_id, ch.evidence))
+            valid.append(ch)
 
     # Cache bundle + verdict for the [Why?] follow-up route (master plan §22).
     job.bundle = bundle
