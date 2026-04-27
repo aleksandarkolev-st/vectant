@@ -95,6 +95,10 @@ import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 // ─── New Docking Window Manager ────────────────────────
 import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
 
+// ─── Responsive: viewport observer + breakpoint-driven CSS ─────────────
+import { useViewport } from '@/hooks/useViewport';
+import '../responsive.css';
+
 // Feature flag: set to true to enable the new docking layout.
 // When false, the existing rigid ResizablePanelGroup layout is used.
 const USE_DOCKING_WM = true;
@@ -930,7 +934,15 @@ export default function EditorPage({ params }) {
     useEffect(() => {
         if (!slug) return;
         if (authUserId) {
-            gitClient.setUserId(authUserId);
+            // setIdentity bundles userId + display name + email so the
+            // collab-server can pin commit author/committer to the
+            // requesting user — guests get correct GitHub attribution
+            // even though their commits land in the host's worktree.
+            gitClient.setIdentity({
+                userId: authUserId,
+                name: authSession?.user?.name || null,
+                email: authSession?.user?.email || null,
+            });
         }
         const authJustBecameAvailable = authUserId && !prevAuthRef.current;
         const sessionJustBecameAvailable = activeSessionId && !prevSessionRef.current;
@@ -942,12 +954,28 @@ export default function EditorPage({ params }) {
                 dispatch(forceRefreshGitStatus(slug));
             });
         }
-    }, [slug, dispatch, authUserId, activeSessionId]);
+    }, [slug, dispatch, authUserId, authSession?.user?.name, authSession?.user?.email, activeSessionId]);
 
     // 2. Consume global state directly via selectors
     const showTerminal = useAppSelector(selectShowTerminal);
     const showEmulatorPreview = useAppSelector(selectShowEmulatorPreview);
     const treeOnRight = useAppSelector(selectTreeOnRight);
+
+    // ── Responsive viewport ─────────────────────────────────────────────
+    // Drives the .vp-* root classes (consumed by responsive.css) and the
+    // auto-close behaviour for chat / terminal at narrow widths.
+    const viewport = useViewport();
+    useEffect(() => {
+        if (viewport.isNarrow && chatVisible) setChatVisible(false);
+    }, [viewport.isNarrow, chatVisible]);
+    useEffect(() => {
+        if (viewport.isMobile && showTerminal) {
+            // Mobile: terminal eats most of the screen; close it on entering
+            // mobile width. User can re-open from the TopNav.
+            dispatch(toggleTerminal());
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [viewport.isMobile]);
     const rawFiles = useAppSelector(state => state.workspace.rawFiles);
     const currentContentRef = useRef(store.getState()?.workspace?.currentContent || '');
     const fileCacheEntriesRef = useRef([]);
@@ -2747,9 +2775,16 @@ export default function EditorPage({ params }) {
         return null;
     }
 
+    const viewportClass = cn(
+        viewport.isMobile && 'vp-mobile',
+        viewport.isTablet && 'vp-tablet',
+        viewport.isNarrow && 'vp-narrow',
+        viewport.isTouch && 'vp-touch',
+    );
+
     return (
         <DockablePanelProvider workspaceId={slug}>
-            <div className="flex flex-col h-screen overflow-hidden" style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}>
+            <div className={cn('workspace-root flex flex-col h-screen overflow-hidden', viewportClass)} style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}>
                 <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'var(--bg-editor)', color: 'var(--text-primary)' }}>
                     {/* Hydrate workspace-specific tabs from localStorage */}
                     <WorkspaceHydrator slug={slug} />

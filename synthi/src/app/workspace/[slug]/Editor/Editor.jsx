@@ -46,7 +46,8 @@ import {
 //   const prettier = (await import('prettier/standalone')).default;
 //   const babel = (await import('prettier/plugins/babel')).default;
 //   const estree = (await import('prettier/plugins/estree')).default;
-import { EDITOR_OPTIONS } from './options';
+import { EDITOR_OPTIONS, getResponsiveEditorOverrides } from './options';
+import { useViewport } from '@/hooks/useViewport';
 import { useAiCompletion } from './AICompletion';
 import { useDiffManager } from './diffManager';
 import { useGitGutter } from './gitGutterService';
@@ -221,6 +222,14 @@ const EditorPanel = ({
 }) => {
     const dispatch = useAppDispatch();
     const store = useAppStore();
+
+    // Responsive Monaco options — recalculated when the viewport breakpoint
+    // changes. Memoised so we don't re-spread on every render.
+    const viewport = useViewport();
+    const responsiveOverrides = useMemo(
+        () => getResponsiveEditorOverrides(viewport) || {},
+        [viewport.isMobile, viewport.isTablet],
+    );
 
     //Global state access djsaiodjasiodjasiodjasiodjaoidjasoidjsaiodjasiodjasjdnsaj
     const activeFile = useAppSelector(selectActiveFile);
@@ -3973,6 +3982,7 @@ const EditorPanel = ({
                                                         modifiedModelPath={activeFile ? `inmemory://synthi/diff/modified/${activeFile.path}?v=${diffSessionKey}` : undefined}
                                                         options={{
                                                             ...EDITOR_OPTIONS,
+                                                            ...responsiveOverrides,
                                                             readOnly: true,
                                                             readOnlyMessage: { value: '' },
                                                             renderSideBySide: true,
@@ -4001,6 +4011,7 @@ const EditorPanel = ({
                                                 theme="synthi-theme"
                                                 options={{
                                                     ...EDITOR_OPTIONS,
+                                                    ...responsiveOverrides,
                                                     semanticHighlighting: { enabled: true },
                                                     readOnly: isCollabReadOnly,
                                                     readOnlyMessage: isCollabReadOnly

@@ -176,15 +176,15 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
   };
 
   return (
-    <div className="w-12 h-full flex flex-col items-center border-r-2 flex-shrink-0" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
+    <div className="dock-activitybar-root w-12 h-full flex flex-col items-center border-r-2 flex-shrink-0" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
       {/* Top sidebar items */}
-      <div className="w-full flex flex-col pt-1">
+      <div className="dock-activitybar-top w-full flex flex-col pt-1">
         {TOP_ITEMS.map(renderButton)}
 
         {/* Dynamic extension sidebar items */}
         {extensionItems.length > 0 && (
           <>
-            <div className="mx-3 my-1 border-t" style={{ borderColor: 'var(--border-subtle)' }} />
+            <div className="dock-activitybar-divider mx-3 my-1 border-t" style={{ borderColor: 'var(--border-subtle)' }} />
             {extensionItems.map((item) =>
               renderButton({ ...item, onClick: () => handleExtensionClick(item) })
             )}
@@ -193,7 +193,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
       </div>
 
       {/* Bottom items */}
-      <div className="mt-auto mb-3 flex flex-col items-center w-full">
+      <div className="dock-activitybar-bottom mt-auto mb-3 flex flex-col items-center w-full">
         {renderButton({ id: 'settings', panelType: IDE_PANEL.SETTINGS, label: 'Settings', Icon: Settings })}
         <div
           className="w-7 h-7 rounded-lg border flex items-center justify-center cursor-pointer transition-all group mt-2"

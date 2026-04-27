@@ -106,38 +106,81 @@ export function commitWebUrl(remoteUrl, hash) {
   return `${base}/commit/${hash}`;
 }
 
+// Match a credential block in an HTTP(S) URL — supports both
+// `https://TOKEN@host/...` and `https://user:TOKEN@host/...`.
+// We deliberately use a permissive character class for the credential
+// component so pasted PATs containing odd characters don't get dropped
+// by `new URL()`'s strict parsing.
+const URL_CRED_RE = /^(https?:\/\/)([^/@\s]+)@/i;
+
+function safeDecode(value) {
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+
 /**
  * Extract an embedded access token from a remote URL.
  * Returns the raw token string, or null if none found.
  *
  *   https://ghp_abc123@github.com/o/r  →  'ghp_abc123'
  *   https://user:TOKEN@github.com/o/r  →  'TOKEN'
+ *
+ * Robust to leading/trailing whitespace and to PATs that `new URL()`
+ * refuses to parse — falls back to a regex-based extractor.
  */
 export function extractTokenFromUrl(url) {
   if (!url) return null;
+  const trimmed = String(url).trim();
+  if (!trimmed) return null;
+
   try {
-    const parsed = new URL(url);
-    if (parsed.password) return decodeURIComponent(parsed.password);
+    const parsed = new URL(trimmed);
+    if (parsed.password) return safeDecode(parsed.password);
     if (parsed.username && parsed.username !== 'git' && parsed.username !== 'oauth2' && parsed.username !== 'x-access-token') {
-      return decodeURIComponent(parsed.username);
+      return safeDecode(parsed.username);
     }
-  } catch { /* not a valid URL */ }
+  } catch { /* fall through to regex fallback */ }
+
+  // Regex fallback — handles malformed URLs that `new URL()` rejects.
+  const match = trimmed.match(URL_CRED_RE);
+  if (!match) return null;
+  const credBlock = match[2];
+  const colonIdx = credBlock.indexOf(':');
+  if (colonIdx >= 0) {
+    const user = credBlock.slice(0, colonIdx);
+    const pass = credBlock.slice(colonIdx + 1);
+    if (pass) return safeDecode(pass);
+    if (user && user !== 'git' && user !== 'oauth2' && user !== 'x-access-token') {
+      return safeDecode(user);
+    }
+    return null;
+  }
+  if (credBlock && credBlock !== 'git' && credBlock !== 'oauth2' && credBlock !== 'x-access-token') {
+    return safeDecode(credBlock);
+  }
   return null;
 }
 
 /**
  * Strip embedded credentials from a URL, returning a clean HTTPS URL.
  *   https://ghp_abc123@github.com/o/r  →  https://github.com/o/r
+ *
+ * Falls back to a regex strip when `new URL()` rejects the input.
  */
 export function stripTokenFromUrl(url) {
   if (!url) return url;
+  const trimmed = String(url).trim();
+  if (!trimmed) return trimmed;
+
   try {
-    const parsed = new URL(url);
-    parsed.username = '';
-    parsed.password = '';
-    return parsed.toString();
+    const parsed = new URL(trimmed);
+    if (parsed.username || parsed.password) {
+      parsed.username = '';
+      parsed.password = '';
+      return parsed.toString();
+    }
+    return trimmed;
   } catch {
-    return url;
+    return trimmed.replace(URL_CRED_RE, '$1');
   }
 }
 

@@ -21,6 +21,7 @@ import {
   selectAllTabGroups,
   selectTabs,
   selectNodes,
+  selectFocusedTabGroupId,
 } from '../state/layout-slice';
 import { IDE_PANEL } from '../panels/panel-types';
 
@@ -121,17 +122,35 @@ export function useActivityBarDocking() {
   const dispatch = useDispatch();
   const nodes = useSelector(selectNodes);
   const tabs = useSelector(selectTabs);
+  const focusedGroupId = useSelector(selectFocusedTabGroupId);
 
   /**
    * Toggle a panel.
-   * - If it already exists → focus it
-   * - If it doesn't exist → open it in the correct region
+   * - If the tapped panel is already the active+focused tab → return focus
+   *   to the editor group (mobile single-pane: "tap again to go back").
+   * - If it already exists → focus it.
+   * - If it doesn't exist → open it in the correct region.
    */
   const togglePanel = useCallback(
     (panelType, title) => {
       const existing = findExistingTab(nodes, tabs, panelType);
 
       if (existing) {
+        const group = nodes[existing.groupId];
+        const isAlreadyActive =
+          group?.activeTabId === existing.tabId &&
+          focusedGroupId === existing.groupId;
+
+        if (isAlreadyActive) {
+          // Re-tap: focus the editor group so mobile users can return
+          // to their code without needing a separate "back" affordance.
+          const editorGroupId = findGroupForCategory(nodes, tabs, 'editor');
+          if (editorGroupId && editorGroupId !== existing.groupId) {
+            dispatch(setFocusedTabGroup(editorGroupId));
+            return;
+          }
+        }
+
         // Focus the group containing this tab
         dispatch(setFocusedTabGroup(existing.groupId));
         // Activate the tab
@@ -153,7 +172,7 @@ export function useActivityBarDocking() {
         dispatch(setFocusedTabGroup(targetGroupId));
       }
     },
-    [dispatch, nodes, tabs],
+    [dispatch, nodes, tabs, focusedGroupId],
   );
 
   const handlers = useMemo(
