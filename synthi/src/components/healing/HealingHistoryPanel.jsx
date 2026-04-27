@@ -19,6 +19,7 @@ import {
 } from '@/redux/healingSelectors';
 import { History, RotateCcw, ChevronRight } from 'lucide-react';
 import { codeToTokens } from 'shiki';
+import { useTheme } from '@/components/ThemeProvider';
 
 const HEAL_REVERT_EVENT = 'synthi:heal-revert-to-fix';
 
@@ -131,6 +132,8 @@ function humanCategory(cat) {
 function FixDiff({ originalText, replacementText, filePath }) {
   const [oldTokens, setOldTokens] = useState(null);
   const [newTokens, setNewTokens] = useState(null);
+  const { shikiTheme } = useTheme();
+  const activeTheme = shikiTheme || 'github-dark-default';
 
   const oldLines = (originalText ?? '').split('\n');
   const newLines = (replacementText ?? '').split('\n');
@@ -141,11 +144,11 @@ function FixDiff({ originalText, replacementText, filePath }) {
     const tokenize = async (text) => {
       if (typeof text !== 'string' || text.length === 0) return null;
       try {
-        const res = await codeToTokens(text, { lang, theme: 'github-dark-default' });
+        const res = await codeToTokens(text, { lang, theme: activeTheme });
         return res?.tokens || null;
       } catch (_) {
         try {
-          const res = await codeToTokens(text, { lang: 'text', theme: 'github-dark-default' });
+          const res = await codeToTokens(text, { lang: 'text', theme: activeTheme });
           return res?.tokens || null;
         } catch (__) {
           return null;
@@ -162,7 +165,7 @@ function FixDiff({ originalText, replacementText, filePath }) {
       setNewTokens(n);
     })();
     return () => { cancelled = true; };
-  }, [originalText, replacementText, filePath]);
+  }, [originalText, replacementText, filePath, activeTheme]);
 
   return (
     <div

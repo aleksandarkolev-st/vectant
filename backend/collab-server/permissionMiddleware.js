@@ -90,10 +90,20 @@ function extractSessionContext(req, _res, next) {
         req.collabPermissions = { canEdit: true, canTerminal: true, canGit: true, canFileOps: true };
       } else {
         // getSession() returns the serialized form where guests is an Array.
-        // Still validate defensively in case that ever changes.
-        const guestsArr = Array.isArray(session.guests)
-          ? session.guests
-          : (session.guests instanceof Map ? Array.from(session.guests.values()) : []);
+        // Accept the in-memory Map shape too, but treat anything else as a
+        // serialization invariant violation — silently coercing to [] would
+        // mask the bug and look like a legitimate permission denial.
+        let guestsArr;
+        if (Array.isArray(session.guests)) {
+          guestsArr = session.guests;
+        } else if (session.guests instanceof Map) {
+          guestsArr = Array.from(session.guests.values());
+        } else {
+          throw new Error(
+            `extractSessionContext: session ${sessionId} has guests in unexpected shape (${typeof session.guests}); ` +
+            `expected Array or Map.`
+          );
+        }
         const guest = guestsArr.find(g => g && g.guestId === userId);
         req.collabPermissions = guest ? { ...guest.permissions } : null;
       }

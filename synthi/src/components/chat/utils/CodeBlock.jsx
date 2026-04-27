@@ -2,6 +2,7 @@
 
 import { useEffect, useState, memo } from 'react';
 import { codeToHtml } from 'shiki';
+import { useTheme } from '@/components/ThemeProvider';
 
 // Map common language aliases to Shiki language IDs
 const LANGUAGE_MAP = {
@@ -62,6 +63,8 @@ const escapeHtml = (str) => str
 const CodeBlock = memo(({ code, language = '' }) => {
     const [highlightedHtml, setHighlightedHtml] = useState(null);
     const [error, setError] = useState(false);
+    const { shikiTheme } = useTheme();
+    const activeTheme = shikiTheme || 'github-dark-default';
 
     const normalizedLang = LANGUAGE_MAP[language.toLowerCase()] || language.toLowerCase() || 'text';
 
@@ -72,7 +75,7 @@ const CodeBlock = memo(({ code, language = '' }) => {
             try {
                 const html = await codeToHtml(code, {
                     lang: normalizedLang,
-                    theme: 'github-dark-default',
+                    theme: activeTheme,
                 });
                 if (!cancelled) {
                     setHighlightedHtml(html);
@@ -84,7 +87,7 @@ const CodeBlock = memo(({ code, language = '' }) => {
                     try {
                         const html = await codeToHtml(code, {
                             lang: 'text',
-                            theme: 'github-dark-default',
+                            theme: activeTheme,
                         });
                         if (!cancelled) {
                             setHighlightedHtml(html);
@@ -104,7 +107,7 @@ const CodeBlock = memo(({ code, language = '' }) => {
         return () => {
             cancelled = true;
         };
-    }, [code, normalizedLang]);
+    }, [code, normalizedLang, activeTheme]);
 
     // Show language label
     const langLabel = language ? (

@@ -32,6 +32,7 @@ import {
   applyThemeToDOM,
   generateMonacoTheme,
   generateTerminalTheme,
+  generateShikiTheme,
 } from '@/lib/theme-engine';
 import { loadThemePrefs } from '@/redux/store';
 
@@ -95,6 +96,10 @@ export default function ThemeProvider({ children }) {
     return resolvedTheme ? generateTerminalTheme(resolvedTheme) : null;
   }, [resolvedTheme]);
 
+  const shikiTheme = useMemo(() => {
+    return resolvedTheme ? generateShikiTheme(resolvedTheme) : null;
+  }, [resolvedTheme]);
+
   // ── Apply to DOM (CSS vars + Monaco) after render ─────
   const applyCurrentTheme = useCallback(() => {
     if (!resolvedTheme) return;
@@ -115,9 +120,11 @@ export default function ThemeProvider({ children }) {
     monacoTheme,
     /** xterm.js ITheme for the current terminal */
     terminalTheme,
+    /** Shiki theme registration object — used by chat / diff code blocks */
+    shikiTheme,
     /** Force re-apply (call after Monaco ref is set, or after hot-edit) */
     reapply: applyCurrentTheme,
-  }), [resolvedTheme, monacoTheme, terminalTheme, applyCurrentTheme]);
+  }), [resolvedTheme, monacoTheme, terminalTheme, shikiTheme, applyCurrentTheme]);
 
   return (
     <ThemeContext.Provider value={contextValue}>
