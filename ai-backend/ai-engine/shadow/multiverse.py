@@ -117,6 +117,7 @@ async def run_job(
     rel_paths = [p.path for p in seed_patches]
     snap = snapshot.create(repo, rel_paths)
     job.snapshot = {"hashes": snap.hashes(), "files": rel_paths}
+    job.snapshot_obj = snap
     await job.emit(events.snapshot_taken(rel_paths))
 
     pool = await get_pool(repo, size=max(2, n))
@@ -208,6 +209,10 @@ async def _run_single(
             )
         result.evidence["duration_ms"] = int((time.time() - started) * 1000)
         job.universes[result.universe_id] = result.evidence
+        job.universe_patches[result.universe_id] = [
+            {"path": p.path, "new_content": p.new_content}
+            for p in result.patches_applied
+        ]
         await job.emit(events.universe_done(result.universe_id, result.evidence))
         return result
     except asyncio.CancelledError:

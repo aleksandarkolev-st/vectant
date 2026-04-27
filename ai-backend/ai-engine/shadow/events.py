@@ -81,7 +81,9 @@ class JobState:
     created_at: float = field(default_factory=time.time)
     queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     universes: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # id -> evidence bundle
+    universe_patches: Dict[str, List[Dict[str, str]]] = field(default_factory=dict)  # id -> [{path, new_content}, ...]
     snapshot: Optional[Dict[str, Any]] = None  # filled by snapshot.create()
+    snapshot_obj: Optional[Any] = None  # full Snapshot for /apply ladder (kept in memory for the run)
     finished: bool = False
     cancelled: bool = False
     estimated_cost_usd: float = 0.0

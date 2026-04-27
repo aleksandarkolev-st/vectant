@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from . import events, multiverse, snapshot
 from .generator import PatchBlock
+from .snapshot import ApplyResult  # noqa: F401  (re-exported for clarity)
 
 logger = logging.getLogger("shadow.api")
 
@@ -148,15 +149,80 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
     evidence = job.universes.get(req.universeId)
     if not evidence:
         raise HTTPException(status_code=404, detail=f"universe {req.universeId} not done")
+    patches = job.universe_patches.get(req.universeId)
+    if not patches:
+        raise HTTPException(status_code=409, detail=f"universe {req.universeId} has no stored patches")
 
-    # Wave 1: applying through the existing chat → file-suggestion path is the
-    # canonical flow. The Yjs-aware diff submission happens in collab-server
-    # (see backend/collab-server/server.js git action `apply-shadow-patch`).
-    # Here we just acknowledge the apply and let the caller do the merge.
+    repo = _resolve_repo(job.workspace_path)
+    snap = job.snapshot_obj
+    if snap is None:
+        # Reconstruct a snapshot if one wasn't kept in memory (e.g. server
+        # restart between job_started and apply). Falls back to "everything
+        # is direct" because we have no base content to feed `git merge-file`.
+        from . import snapshot as _snap
+        rel_paths = [p["path"] for p in patches]
+        snap = _snap.create(repo, rel_paths)
+
+    # Pick the AI-rebase provider used by the universe so the rebase model
+    # matches the model that produced the patch (per master plan §8.3).
+    user_keys = (job.models or {}).get("user_keys") or {}
+    provider_name = "gemini"
+    api_key: Optional[str] = None
+    spec_pair = (job.universes.get(req.universeId, {}) or {}).get("model_pair") or [None, None]
+    # Heuristic: derive provider from the gen model string.
+    if isinstance(spec_pair[0], str):
+        m = spec_pair[0].lower()
+        if "claude" in m:
+            provider_name = "anthropic"
+        elif "gpt" in m or "o1" in m or "openai" in m:
+            provider_name = "openai"
+    api_key = user_keys.get(provider_name)
+
+    async def _ai_rebase(*, base, ours, theirs, path):
+        return await snapshot.ai_rebase_with(
+            provider_name=provider_name, api_key=api_key,
+            base=base, ours=ours, theirs=theirs, path=path,
+        )
+
+    results: List[snapshot.ApplyResult] = []
+    for p in patches:
+        rel = p["path"]
+        new_content = p["new_content"]
+        results.append(await snapshot.apply_one(
+            repo, snap, rel, new_content, ai_rebase=_ai_rebase,
+        ))
+
+    # Decide overall merge_strategy = "worst" strategy seen across files.
+    # Severity: direct < 3way < ai-rebase < conflict
+    rank = {"direct": 0, "3way": 1, "ai-rebase": 2, "conflict": 3}
+    overall = max((r.strategy for r in results), key=lambda s: rank.get(s, 99), default="direct")
+
+    # Write applied files back to the repo (skip on conflict — caller can
+    # inspect `files_failed` and decide whether to force-apply or re-verify).
+    written: List[str] = []
+    failed: List[Dict[str, str]] = []
+    for r in results:
+        if r.strategy == "conflict" or r.new_content is None:
+            failed.append({"path": r.path, "reason": r.note or "merge conflict"})
+            continue
+        full = repo / r.path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            full.write_text(r.new_content, encoding="utf-8")
+        except OSError as e:
+            failed.append({"path": r.path, "reason": f"write failed: {e}"})
+            continue
+        written.append(r.path)
+
     return {
-        "applied": True,
-        "files": job.snapshot.get("files", []) if job.snapshot else [],
-        "merge_strategy": "direct",  # filled in by collab-server response in W1.5
+        "applied": not failed,
+        "files": written,
+        "files_failed": failed,
+        "merge_strategy": overall,
+        "per_file": [
+            {"path": r.path, "strategy": r.strategy, "note": r.note}
+            for r in results
+        ],
     }
 
 

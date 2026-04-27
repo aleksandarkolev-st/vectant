@@ -66,8 +66,37 @@ class NodeRunner(Runner):
             if finished and rc != 127:
                 result.tests = (_parse_jest_json(out), True)
 
-        # Runtime probe (next dev / vite preview) is Wave 3.
-        result.runtime = ({"clean": True}, False)
+        # ---- runtime: per-file `node --check` + require()-style smoke ----
+        # Catches syntax + module-resolution errors lint/types missed.
+        # The full `next dev` for 5s + route-hitting probe (master plan §9
+        # row 2 column 5) is heavier and Next.js-specific; we ship the
+        # cheap baseline now and leave the dev-server probe for Wave 3.
+        if node_files:
+            failures: List[Dict[str, Any]] = []
+            check_targets = [f for f in node_files if f.endswith((".js", ".mjs", ".cjs"))]
+            for f in check_targets[:8]:
+                rc, out, err, finished = await run_cmd(
+                    ["node", "--check", f], cwd=worktree, timeout=BUDGETS["runtime"] / 2,
+                )
+                if not finished:
+                    failures.append({"file": f, "msg": "node --check timed out"})
+                elif rc != 0:
+                    failures.append({"file": f, "msg": (err.strip().splitlines()[-1] if err else f"exit {rc}")[:240]})
+            # Try to actually require() the first changed JS module.
+            # `require()` treats bare names as node_modules; use a "./" prefix
+            # so the relative path resolves against the CWD.
+            if check_targets:
+                first = check_targets[0]
+                first_rel = first if first.startswith(("./", "../", "/")) else f"./{first}"
+                rc, out, err, finished = await run_cmd(
+                    ["node", "-e", f"try {{ require({first_rel!r}); }} catch (e) {{ console.error(e.message); process.exit(1); }}"],
+                    cwd=worktree, timeout=BUDGETS["runtime"] / 2,
+                )
+                if finished and rc != 0:
+                    failures.append({"file": first, "msg": (err.strip().splitlines()[-1] if err else "require failed")[:240]})
+            result.runtime = ({"clean": not failures, "failures": failures}, True)
+        else:
+            result.runtime = ({"clean": True}, False)
         return result
 
 

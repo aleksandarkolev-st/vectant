@@ -65,8 +65,38 @@ class PythonRunner(Runner):
                 passed, total = _parse_pytest_summary(out)
                 result.tests = ({"passed": passed, "total": total, "rc": rc}, True)
 
-        # Wave 1 does not run a Python runtime probe; reserved for Wave 3.
-        result.runtime = ({"clean": True}, False)
+        # ---- runtime: import-time smoke test (master plan §9 row 1) ------
+        # For each changed Python file, exec the module body in a fresh
+        # subprocess and capture stderr. Catches NameError / ImportError /
+        # SyntaxError that lint+types+pytest didn't (e.g. modules with no
+        # tests, top-level statements that throw on import).
+        if py_files:
+            failures: List[Dict[str, Any]] = []
+            for f in py_files[:8]:  # cap at 8 files to stay in budget
+                rc, out, err, finished = await run_cmd(
+                    [
+                        "python", "-c",
+                        # Use exec_module to mirror real import semantics
+                        # without firing __name__ == "__main__" blocks.
+                        "import sys, importlib.util\n"
+                        f"_p = {f!r}\n"
+                        "spec = importlib.util.spec_from_file_location('__shadow_probe', _p)\n"
+                        "if spec is None or spec.loader is None: sys.exit(0)\n"
+                        "m = importlib.util.module_from_spec(spec)\n"
+                        "try:\n"
+                        "    spec.loader.exec_module(m)\n"
+                        "except SystemExit:\n"
+                        "    pass\n",
+                    ],
+                    cwd=worktree, timeout=BUDGETS["runtime"],
+                )
+                if not finished:
+                    failures.append({"file": f, "msg": "runtime probe timed out"})
+                elif rc != 0:
+                    failures.append({"file": f, "msg": (err.strip().splitlines()[-1] if err else f"exit {rc}")[:240]})
+            result.runtime = ({"clean": not failures, "failures": failures}, True)
+        else:
+            result.runtime = ({"clean": True}, False)
         return result
 
 

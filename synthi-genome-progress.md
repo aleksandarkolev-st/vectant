@@ -105,11 +105,12 @@ backend/collab-server/permissionMiddleware.js
 | Non-blocking verify panel | ✅ | `<MultiverseCard />` + SSE hook. |
 | Pre-warming | ✅ | Pool builds slots lazily on first `acquire()`. |
 | Apply-and-cancel | ✅ | `/cancel` endpoint + hook `cancel()`. |
+| Apply ladder wired into `/shadow/apply` | ✅ | `shadow_apply` handler invokes `snapshot.apply_one()` per file (direct → 3-way → AI-rebase → conflict ladder), writes results to disk, and returns `merge_strategy` (worst across files) plus `per_file[]` and `files_failed[]`. |
 | Staleness UI | ✅ | `<StalenessBadge />` + `staleness_detected` event. |
 | Verify-only mode | ✅ | `POST /shadow/verify-only` + `multiverse.run_verify_only`. |
 | Evaluation harness (50 corpus cases) | 🟡 | Harness + metrics + report shipped; corpus seeded with **6 / 50** fixtures (`py-off-by-one`, `py-type-error`, `py-dep-change`, `py-multi-file-rename`, `js-null-guard`, `js-refactor-async`). Coverage: logic-bug, type-error, refactor, multi-file, dep-change. Harness now `git init`s each fixture workspace on first run. |
-| Python runner | ✅ | ruff + mypy + pytest. |
-| Node runner | ✅ | eslint + tsc + vitest/jest. |
+| Python runner | ✅ | ruff + mypy + pytest + runtime probe (per-file `exec_module` in subprocess, captures import-time errors that no other stage catches). |
+| Node runner | ✅ | eslint + tsc + vitest/jest + runtime probe (`node --check` + relative `require()` smoke for the first changed module). The full `next dev` for 5s + route-hitting probe is still Wave 3. |
 | Tree-sitter fallback | ✅ | Optional dep — degrades cleanly when missing. |
 | Generator revision pass | ✅ | One-pass LLM revise in `Generator.revise`, re-runs runner+critic on the revised patches. |
 | Style post-hoc filter | ✅ | Hard reject on `minimalist` (>1.5× baseline LOC) and `surgical` (>1.0× and >5-line delta) in `Universe._check_style_filter`. |
