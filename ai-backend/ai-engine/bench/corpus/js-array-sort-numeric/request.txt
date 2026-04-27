@@ -1,0 +1,1 @@
+`sortNumbers([10, 2, 33, 4])` returns [10, 2, 33, 4] sorted as strings → [10, 2, 33, 4] becomes [10, 2, 33, 4] which is wrong. Pass an explicit numeric comparator so the result is [2, 4, 10, 33].
