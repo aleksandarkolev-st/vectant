@@ -37,12 +37,46 @@ class FixtureResult:
     error: Optional[str] = None
 
 
+async def _ensure_git_repo(workspace: Path) -> None:
+    """The shadow worktree pool requires a git repo. Initialize one in
+    the fixture's workspace if it isn't already a repo. Idempotent.
+    """
+    if (workspace / ".git").exists():
+        return
+    proc = await asyncio.create_subprocess_exec(
+        "git", "init", "-q", "--initial-branch=main",
+        cwd=str(workspace),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    await proc.communicate()
+    # Configure a local identity so commit doesn't depend on global config.
+    for key, val in (("user.email", "bench@synthi-genome"), ("user.name", "Synthi Bench")):
+        p = await asyncio.create_subprocess_exec(
+            "git", "config", "--local", key, val, cwd=str(workspace),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        await p.communicate()
+    p = await asyncio.create_subprocess_exec(
+        "git", "add", "-A", cwd=str(workspace),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    await p.communicate()
+    p = await asyncio.create_subprocess_exec(
+        "git", "commit", "-q", "-m", "bench: initial fixture",
+        cwd=str(workspace),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    await p.communicate()
+
+
 async def run_fixture(fixture_dir: Path) -> FixtureResult:
     started = time.time()
     fixture_id = fixture_dir.name
     workspace = fixture_dir / "workspace"
     if not workspace.is_dir():
         return FixtureResult(fixture_id, 0.0, False, error="missing workspace/")
+
+    await _ensure_git_repo(workspace)
 
     try:
         request = (fixture_dir / "request.txt").read_text(encoding="utf-8").strip()

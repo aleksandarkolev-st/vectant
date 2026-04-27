@@ -114,12 +114,34 @@ async def apply_one(
                 theirs=patched_content,
                 path=rel,
             )
-            if ai_text:
+            if ai_text and await _quick_validate(rel, ai_text):
                 return ApplyResult(rel, "ai-rebase", ai_text)
+            if ai_text:
+                return ApplyResult(rel, "conflict", None,
+                                   note="AI-rebase produced output but quick-validate rejected it")
         except Exception as e:
             logger.warning("ai-rebase failed for %s: %s", rel, e)
 
     return ApplyResult(rel, "conflict", None, note="3-way + AI-rebase exhausted")
+
+
+# ---------------------------------------------------------------------------
+# AI-rebase quick-validate (master plan §8.3)
+# ---------------------------------------------------------------------------
+#
+# After AI-rebase produces a merged file, we run a syntax-only check before
+# accepting the result. Pass → apply. Fail → surface as a conflict so the
+# caller can fall through to "Apply anyway" / "Re-verify" UX.
+
+async def _quick_validate(rel: str, text: str) -> bool:
+    try:
+        from .runner.syntax import SyntaxRunner
+    except Exception:
+        return True  # syntax runner unavailable → accept (degrade open)
+
+    runner = SyntaxRunner()
+    diag = runner._parse_check(rel, text)
+    return diag is None
 
 
 async def _git_merge_file(base: str, ours: str, theirs: str) -> Optional[str]:

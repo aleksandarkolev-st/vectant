@@ -194,4 +194,102 @@ async function resetDocContent(docId, newContent) {
   return false;
 }
 
-module.exports = { getOrCreateToken, readDocContent, docExists, getManager, resetDocContent };
+/**
+ * Apply a "patched-content" replacement as a minimal Yjs.Text edit so concurrent
+ * editors merge cleanly. Master plan §8.4 (Yjs-aware apply).
+ *
+ * Strategy: we don't have a diff library installed, so we compute a single
+ * minimal hunk by stripping the longest common prefix and longest common
+ * suffix between the current Y.Text and `patchedContent`. The middle region
+ * becomes one delete + one insert inside a `doc.transact()` block. CRDT
+ * semantics handle any concurrent edits in the unchanged prefix/suffix.
+ *
+ * Falls back to `resetDocContent` if no Y.Text content exists yet.
+ *
+ * @param {string} docId       Y-Sweet document identifier
+ * @param {string} patchedContent  full target file body
+ * @returns {Promise<{ ok: boolean, strategy: 'crdt-hunk'|'reset'|'noop'|'unsupported' }>}
+ */
+async function applyTextDiffOps(docId, patchedContent) {
+  if (typeof patchedContent !== 'string') {
+    return { ok: false, strategy: 'unsupported' };
+  }
+  const safeId = encodeDocId(docId);
+  const mgr = await getManager();
+
+  let existingUpdate = null;
+  try {
+    existingUpdate = await mgr.getDocAsUpdate(safeId);
+  } catch (err) {
+    if (!(err?.status === 404 || err?.message?.includes('not found'))) {
+      console.warn(`[ySweetBridge] applyTextDiffOps: getDocAsUpdate(${docId}) failed:`, err?.message || err);
+    }
+  }
+
+  // Empty / missing doc → fall back to a fresh reset.
+  if (!existingUpdate || existingUpdate.length === 0) {
+    const ok = await resetDocContent(docId, patchedContent);
+    return { ok, strategy: 'reset' };
+  }
+
+  const doc = new Y.Doc();
+  try { Y.applyUpdate(doc, existingUpdate); } catch (_) { /* fresh */ }
+  const ytext = doc.getText('monaco');
+  const current = ytext.toString();
+
+  if (current === patchedContent) {
+    doc.destroy();
+    return { ok: true, strategy: 'noop' };
+  }
+
+  // Compute longest common prefix + suffix in code-units.
+  const a = current;
+  const b = patchedContent;
+  const aLen = a.length;
+  const bLen = b.length;
+  let prefix = 0;
+  const minLen = Math.min(aLen, bLen);
+  while (prefix < minLen && a.charCodeAt(prefix) === b.charCodeAt(prefix)) prefix++;
+  let suffix = 0;
+  while (
+    suffix < (minLen - prefix) &&
+    a.charCodeAt(aLen - 1 - suffix) === b.charCodeAt(bLen - 1 - suffix)
+  ) suffix++;
+
+  const deleteAt = prefix;
+  const deleteLen = aLen - prefix - suffix;
+  const insertText = b.slice(prefix, bLen - suffix);
+
+  let updatePayload = null;
+  const captureUpdate = (update) => { updatePayload = update; };
+  doc.on('update', captureUpdate);
+  try {
+    doc.transact(() => {
+      if (deleteLen > 0) ytext.delete(deleteAt, deleteLen);
+      if (insertText.length > 0) ytext.insert(deleteAt, insertText);
+    });
+  } finally {
+    doc.off('update', captureUpdate);
+  }
+  doc.destroy();
+
+  if (!updatePayload || updatePayload.length === 0) {
+    return { ok: true, strategy: 'noop' };
+  }
+
+  const methods = ['updateDoc', 'updateDocument', 'applyUpdate', 'writeUpdate'];
+  for (const name of methods) {
+    if (typeof mgr[name] === 'function') {
+      try {
+        await mgr[name](safeId, updatePayload);
+        return { ok: true, strategy: 'crdt-hunk' };
+      } catch (err) {
+        console.warn(`[ySweetBridge] applyTextDiffOps: ${name}(${docId}) failed:`, err?.message || err);
+        return { ok: false, strategy: 'unsupported' };
+      }
+    }
+  }
+  return { ok: false, strategy: 'unsupported' };
+}
+
+module.exports = { getOrCreateToken, readDocContent, docExists, getManager, resetDocContent, applyTextDiffOps };

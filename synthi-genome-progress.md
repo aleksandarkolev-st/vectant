@@ -100,40 +100,36 @@ backend/collab-server/permissionMiddleware.js
 | Critic with executable reproducers | ✅ | Reproducer-required schema, run-the-reproducer for `edge`/`logic`. |
 | Worktree pool with dep-install lock | ✅ | `worktree.WorktreePool`, lazy slot allocation, per-pool `dep_lock`. |
 | Snapshot + 3-way merge | ✅ | `snapshot.create` + `git merge-file` ladder. |
-| AI-rebase fallback | 🟡 | Wired to Gemini provider; lint-pass sanity check pending. |
-| Yjs-aware apply | 🟡 | collab-server endpoint `apply-shadow-patch` lands as direct-write today; text-diff-as-Yjs-ops submission deferred to Wave 1.5. |
+| AI-rebase fallback | ✅ | Wired to Gemini provider, syntax quick-validate enforced (`snapshot._quick_validate`). |
+| Yjs-aware apply | ✅ | `applyTextDiffOps` in `ySweetBridge.js` does common-prefix/suffix CRDT hunks; falls back to direct write only if Y-Sweet rejects. |
 | Non-blocking verify panel | ✅ | `<MultiverseCard />` + SSE hook. |
 | Pre-warming | ✅ | Pool builds slots lazily on first `acquire()`. |
 | Apply-and-cancel | ✅ | `/cancel` endpoint + hook `cancel()`. |
 | Staleness UI | ✅ | `<StalenessBadge />` + `staleness_detected` event. |
 | Verify-only mode | ✅ | `POST /shadow/verify-only` + `multiverse.run_verify_only`. |
-| Evaluation harness (50 corpus cases) | 🟡 | Harness + metrics + report shipped; corpus is empty (0/50). |
+| Evaluation harness (50 corpus cases) | 🟡 | Harness + metrics + report shipped; corpus seeded with **2 / 50** fixtures (`py-off-by-one`, `js-null-guard`). Harness now `git init`s each fixture workspace on first run. |
 | Python runner | ✅ | ruff + mypy + pytest. |
 | Node runner | ✅ | eslint + tsc + vitest/jest. |
 | Tree-sitter fallback | ✅ | Optional dep — degrades cleanly when missing. |
+| Generator revision pass | ✅ | One-pass LLM revise in `Generator.revise`, re-runs runner+critic on the revised patches. |
+| Style post-hoc filter | ✅ | Hard reject on `minimalist` (>1.5× baseline LOC) and `surgical` (>1.0× and >5-line delta) in `Universe._check_style_filter`. |
+| Reproducer execution depth | ✅ | `kind: edge\|logic` with `type: test` runs pytest/vitest; `type: input` synthesises a Python harness from `target` + `input`. |
 
-### Wave 1 gaps (TODO before Wave 2)
+### Wave 1 gaps remaining (carry to Wave 2)
 
 1. **Multi-provider models.** The ai-engine currently only ships Gemini
    (`llm/providers/factory.py:5`). Plan §5 references Anthropic/OpenAI/Gemini
    in `models.providers` + `user_keys`. Wiring user-supplied keys into the
-   Generator/Critic call path is required before Wave 2's cross-validation.
-2. **Generator revision.** `Generator.revise()` is intentionally a no-op in
-   Wave 1 (`[revision-skipped:wave1]`). Implementing the one-pass revise
-   needs the multi-provider work above so we don't block on it.
-3. **AI-rebase quick-validate.** Master plan §8.3 says the AI-rebase output
-   should be run through one quick lint+type pass before being accepted.
-   Wired but not yet enforced.
-4. **Yjs-aware apply (master plan §8.4).** Today `apply-shadow-patch` writes
-   the patched file directly. Wave 1.5 replaces this with a text-diff-as-ops
-   submission so concurrent edits merge via the CRDT.
-5. **Bench corpus.** The harness runs end-to-end but `bench/corpus/` is empty.
-   §15.1 target is 50 fixtures.
-6. **Reproducer execution depth.** Wave 1 runs `kind: edge|logic` reproducers.
-   `kind: input` reproducers are recorded but not executed (deferred to W2).
-7. **Style post-hoc filter.** `minimalist` is wired through the Generator
-   request but the LOC-overrun rejection only affects the score, not the
-   universe outcome. Master plan §6.1 calls for a hard reject.
+   Generator/Critic call path is required for Wave 2's cross-validation.
+2. **Bench corpus growth.** 2 / 50 fixtures shipped. Wave 1 §15.1 calls for
+   a full 50, drawn from real bug fixes (ours, public CVE patches, OSS
+   commits) covering Python, TS/JS, multi-file, dep-change, refactor,
+   performance, type-error, logic bug.
+3. **CRDT diff granularity.** `applyTextDiffOps` collapses any change into a
+   single common-prefix/suffix hunk. That's correct but coarse — concurrent
+   edits in the changed *region* still get clobbered. A line-level diff
+   (Myers, fast-diff, or `diff-match-patch`) lands in Wave 2 alongside the
+   convergence detector that benefits from per-hunk fingerprinting.
 
 ---
 

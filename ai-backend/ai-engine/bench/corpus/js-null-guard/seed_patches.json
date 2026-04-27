@@ -1,0 +1,6 @@
+[
+  {
+    "path": "parseAge.js",
+    "new_content": "// Bug: parseAge does not handle null / undefined inputs and crashes.\n// The fix is to return null when the input is falsy or not a string.\n\nfunction parseAge(input) {\n    if (input == null || typeof input !== 'string') return null;\n    return parseInt(input.trim(), 10);\n}\n\nmodule.exports = { parseAge };\n"
+  }
+]

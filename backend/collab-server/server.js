@@ -3546,13 +3546,12 @@ const server = http.createServer(async (req, res) => {
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
                 case 'apply-shadow-patch':
-                    // Synthi Genome — Wave 1.
-                    // Apply a verified shadow patch as a 3-way-aware text diff.
+                    // Synthi Genome — master plan §8.4.
+                    // Apply a verified shadow patch as a CRDT-aware Yjs.Text
+                    // edit (longest-common-prefix/suffix hunk) so concurrent
+                    // editors merge cleanly. Falls back to direct disk write
+                    // if Y-Sweet rejects the op or the doc does not exist.
                     // Payload: { files: [{ path, base, patched }], universeId }
-                    // For Wave 1 we write each patched file directly through
-                    // the same path as `write-file`. Wave 1.5 will replace
-                    // direct writes with Yjs op submission so concurrent
-                    // editors merge automatically (master plan §8.4).
                     result = { applied: [], skipped: [] };
                     for (const f of (data.files || [])) {
                       if (!f?.path || typeof f.patched !== 'string') {
@@ -3560,11 +3559,20 @@ const server = http.createServer(async (req, res) => {
                         continue;
                       }
                       try {
-                        await flushYjsDocForFile(slug, f.path, notifyScope);
-                        await withTelemetry('fs:write', () => gitService.writeFile(slug, f.path, f.patched, effectiveUserId));
-                        result.applied.push({ path: f.path, strategy: 'direct' });
+                        const docName = buildDocName(slug, f.path, notifyScope);
+                        const op = await ySweetBridge.applyTextDiffOps(docName, f.patched);
+                        if (op?.ok) {
+                          // Persist to disk so git sees the same content.
+                          await flushYjsDocForFile(slug, f.path, notifyScope);
+                          result.applied.push({ path: f.path, strategy: op.strategy });
+                        } else {
+                          // CRDT path failed — fall back to direct write.
+                          await flushYjsDocForFile(slug, f.path, notifyScope);
+                          await withTelemetry('fs:write', () => gitService.writeFile(slug, f.path, f.patched, effectiveUserId));
+                          result.applied.push({ path: f.path, strategy: 'direct-fallback' });
+                        }
                       } catch (e) {
-                        result.skipped.push({ path: f.path, reason: e?.message || 'write failed' });
+                        result.skipped.push({ path: f.path, reason: e?.message || 'apply failed' });
                       }
                     }
                     broadcastFileTreeChanged(slug, notifyScope);

@@ -75,6 +75,31 @@ class Universe:
         )
         patches = await self.generator.generate(gen_req)
 
+        # 1.5. Minimalist post-hoc filter (master plan §6.1 table).
+        # If the style is `minimalist` or `surgical` and the patch grew
+        # past the threshold, hard-reject the universe with a low score
+        # so a smaller universe wins. Skipping the runner + critic saves
+        # compute on a doomed candidate.
+        if (rejection := _check_style_filter(self.spec.style, patches)) is not None:
+            await job.emit(events.universe_progress(uid, "rejected", rejection))
+            evidence = {
+                "id": uid,
+                "style": self.spec.style,
+                "model_pair": [self.spec.model_gen, self.spec.model_critic],
+                "diagnostics": {"lint": "skipped", "types": "skipped",
+                                "tests": "skipped", "runtime": "skipped"},
+                "attacks": {"tested": 0, "survived": 0, "failed": []},
+                "loc": _loc_str(patches),
+                "score": 0.0,
+                "revised": False,
+                "rejected": rejection,
+                "duration_ms": 0,
+            }
+            return UniverseResult(
+                universe_id=uid, score=0.0, evidence=evidence,
+                patches_applied=[], revised=False,
+            )
+
         # 2. Apply patches to worktree
         await job.emit(events.universe_progress(uid, "applying"))
         applied = await _write_patches(worktree.path, patches)
@@ -103,18 +128,28 @@ class Universe:
         # 6. Run executable reproducers (only for kinds that benefit)
         await _run_reproducers(worktree.path, critique)
 
-        # 7. Optional revise pass on blocking attacks (max 1)
+        # 7. Optional revise pass on blocking attacks (master plan §6.2: max 1).
         revised = False
         if critique.blocking:
             await job.emit(events.universe_progress(uid, "revising"))
-            patches = await self.generator.revise(gen_req, [
-                {"msg": a.msg, "kind": a.kind, "reproducer": a.reproducer}
+            new_patches = await self.generator.revise(gen_req, [
+                {"msg": a.msg, "kind": a.kind, "severity": a.severity, "reproducer": a.reproducer}
                 for a in critique.blocking
             ])
-            revised = True
-            # Re-apply + re-run only if generator actually changed something.
-            # Wave 1 generator skips revision (see generator.py); we still
-            # short-circuit cleanly.
+            mutated = any(np.note and "[revised]" in np.note for np in new_patches)
+            if mutated:
+                revised = True
+                patches = new_patches
+                applied = await _write_patches(worktree.path, patches)
+                # Re-run runner + critic on the revised patches.
+                run_result = await runner.run(worktree.path, [p.path for p in patches])
+                diagnostics_evidence = run_result.to_evidence()
+                critique = await self.critic.critique(
+                    worktree=worktree.path,
+                    patched_files=[p.path for p in patches],
+                    diagnostics=diagnostics_evidence,
+                )
+                await _run_reproducers(worktree.path, critique)
 
         # 8. Score + evidence
         score = compute_score(ScoreInput(
@@ -154,6 +189,31 @@ class Universe:
 
 
 # ---------------------------------------------------------------------------
+# Minimalist / surgical post-hoc filter (master plan §6.1 table).
+# ---------------------------------------------------------------------------
+
+def _check_style_filter(style: str, patches: List[PatchBlock]) -> Optional[str]:
+    if style not in ("minimalist", "surgical"):
+        return None
+    threshold = 1.5 if style == "minimalist" else 1.0
+    for p in patches:
+        baseline = max(1, len(p.original.splitlines()))
+        new = len(p.new_content.splitlines())
+        if new > int(threshold * baseline):
+            return (
+                f"{style}-filter: {p.path} grew from {baseline}→{new} lines "
+                f"(threshold {int(threshold * baseline)})"
+            )
+    if style == "surgical":
+        # Additional rule: reject patches > 5 lines unless required.
+        for p in patches:
+            delta = abs(len(p.new_content.splitlines()) - len(p.original.splitlines()))
+            if delta > 5:
+                return f"surgical-filter: {p.path} delta {delta} > 5 lines"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -179,11 +239,16 @@ async def _try_dep_install(worktree: Path) -> None:
 async def _run_reproducers(worktree: Path, crit: CritiqueResult) -> None:
     """Execute attacks whose kind benefits from running (edge|logic).
 
-    For Wave 1 we re-run pytest/vitest with the inline reproducer test
-    snippet written into a scratch file under `.shadow-cache/repro_*`.
+    Reproducers come in two shapes:
+      - type=test:  a runnable test snippet (pytest or vitest)
+      - type=input: a structured input + a `target` of "module.func"
+                    that we feed through a small synthesized harness
+
     Diagnostics-derived attacks already have `real=True` set upstream and
     are skipped here.
     """
+    import json as _json
+
     cache = worktree / ".shadow-cache"
     cache.mkdir(parents=True, exist_ok=True)
     for i, a in enumerate(crit.attacks):
@@ -198,7 +263,6 @@ async def _run_reproducers(worktree: Path, crit: CritiqueResult) -> None:
         rtype = repro.get("type")
         code = repro.get("code") or ""
         if rtype == "test":
-            # Heuristic: write a python test if it looks like pytest, otherwise JS.
             if "def test_" in code or "import pytest" in code:
                 p = cache / f"repro_{i}_test.py"
                 p.write_text(code, encoding="utf-8")
@@ -215,10 +279,42 @@ async def _run_reproducers(worktree: Path, crit: CritiqueResult) -> None:
                     cwd=worktree, timeout=12,
                 )
                 a.real = finished and rc != 0
+        elif rtype == "input":
+            # input reproducer: { type: "input", target: "pkg.mod.func", input: ... }
+            target = repro.get("target") or ""
+            input_value = repro.get("input")
+            if not target or "." not in target:
+                a.real = False
+                a.note = "input reproducer missing dotted target"
+                continue
+            module_part, _, func_part = target.rpartition(".")
+            harness = (
+                "import json, sys, traceback\n"
+                f"from {module_part} import {func_part} as _target\n"
+                f"_inp = json.loads({_json.dumps(_json.dumps(input_value))})\n"
+                "try:\n"
+                "    if isinstance(_inp, list):\n"
+                "        _target(*_inp)\n"
+                "    elif isinstance(_inp, dict):\n"
+                "        _target(**_inp)\n"
+                "    else:\n"
+                "        _target(_inp)\n"
+                "except Exception:\n"
+                "    traceback.print_exc()\n"
+                "    sys.exit(1)\n"
+            )
+            p = cache / f"repro_{i}_input.py"
+            p.write_text(harness, encoding="utf-8")
+            rc, out, err, finished = await run_cmd(
+                ["python", str(p)], cwd=worktree, timeout=10,
+            )
+            # Attack is "real" if the input crashed the patched code.
+            a.real = finished and rc != 0
+            if finished and rc != 0:
+                a.note = (a.note or "") + " input crashed patched module"
         else:
-            # Pure input reproducers don't fail-fast on their own — leave for Wave 2.
             a.real = False
-            a.note = "input reproducer not executed in Wave 1"
+            a.note = "unknown reproducer type"
 
 
 def _attacks_evidence(crit: CritiqueResult) -> Dict[str, Any]:
