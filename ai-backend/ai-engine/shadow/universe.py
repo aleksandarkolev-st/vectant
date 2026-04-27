@@ -72,6 +72,8 @@ class Universe:
         job: events.JobState,
         dep_lock,
         signals: Optional[ProjectSignals] = None,
+        repo: Optional[Path] = None,
+        user_id: Optional[str] = None,
     ) -> UniverseResult:
         uid = self.spec.universe_id
         await job.emit(events.universe_started(
@@ -80,12 +82,24 @@ class Universe:
         ))
 
         # 1. Generator
+        few_shot: List[Dict[str, Any]] = []
+        if repo is not None:
+            try:
+                from . import preference as _pref
+                few_shot = [
+                    e.to_dict() for e in _pref.few_shot_for(
+                        repo=repo, user_id=user_id, request=user_request,
+                    )
+                ]
+            except Exception:
+                logger.debug("few-shot preference lookup failed", exc_info=True)
         gen_req = GeneratorRequest(
             user_request=user_request,
             style=self.spec.style,
             model=self.spec.model_gen,
             patches=seed_patches,
             intent=self.spec.intent,
+            few_shot=few_shot,
         )
         patches = await self.generator.generate(gen_req)
 
@@ -179,6 +193,17 @@ class Universe:
                     filter_pedantic(critique, signals)
 
         # 8. Score + evidence
+        style_match_score = 0.5
+        if repo is not None:
+            try:
+                from . import preference as _pref
+                style_match_score = _pref.style_match(
+                    repo=repo, user_id=user_id, request=user_request,
+                    candidate_style=self.spec.style,
+                    candidate_loc=_loc_delta(patches),
+                )
+            except Exception:
+                logger.debug("preference style_match lookup failed", exc_info=True)
         score = compute_score(ScoreInput(
             attacks_total=len(critique.attacks),
             attacks_real=len(critique.real_attacks),
@@ -188,7 +213,7 @@ class Universe:
             tests_passed=run_result.tests[0].get("passed", 0),
             tests_total=run_result.tests[0].get("total", 0),
             runtime_clean=bool(run_result.runtime[0].get("clean", True)),
-            style_match=0.5,  # placeholder until preference learning lands (Wave 4)
+            style_match=style_match_score,
             loc_delta=_loc_delta(patches),
             loc_baseline=_loc_baseline(patches),
             style=self.spec.style,

@@ -141,7 +141,7 @@ async def run_job(
         result = await _run_single(
             spec=specs[0], pool=pool, job=job,
             seed_patches=seed_patches, user_request=user_request,
-            signals=signals,
+            signals=signals, repo=repo, user_id=job.user_id,
         )
         winner = result.universe_id if result else None
         await job.emit(events.all_done(winner=winner))
@@ -152,7 +152,7 @@ async def run_job(
     completed, cancelled_ids = await _run_with_convergence(
         specs=specs, pool=pool, job=job,
         seed_patches=seed_patches, user_request=user_request,
-        signals=signals,
+        signals=signals, repo=repo, user_id=job.user_id,
     )
 
     valid = [r for r in completed if isinstance(r, UniverseResult)]
@@ -239,6 +239,8 @@ async def _run_single(
     seed_patches: List[PatchBlock],
     user_request: str,
     signals: Optional[ProjectSignals] = None,
+    repo: Optional[Path] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[UniverseResult]:
     universe = Universe(spec=spec)
     started = time.time()
@@ -253,6 +255,8 @@ async def _run_single(
                     job=job,
                     dep_lock=pool.dep_lock,
                     signals=signals,
+                    repo=repo,
+                    user_id=user_id,
                 ),
                 timeout=timeout,
             )
@@ -287,6 +291,8 @@ async def _run_with_convergence(
     seed_patches: List[PatchBlock],
     user_request: str,
     signals: Optional[ProjectSignals],
+    repo: Optional[Path] = None,
+    user_id: Optional[str] = None,
 ) -> Tuple[List[UniverseResult], List[str]]:
     """Fan out N universes in parallel. After each finishes, check
     convergence on the completed cohort; if 2+ universes already
@@ -297,7 +303,7 @@ async def _run_with_convergence(
         task = asyncio.create_task(_run_single(
             spec=spec, pool=pool, job=job,
             seed_patches=seed_patches, user_request=user_request,
-            signals=signals,
+            signals=signals, repo=repo, user_id=user_id,
         ))
         tasks[task] = spec.universe_id
         # Expose to /cancel and /apply so they can kill pending universes.

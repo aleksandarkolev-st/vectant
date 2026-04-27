@@ -15,7 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import events, multiverse, snapshot
+from . import events, multiverse, preference, snapshot
 from .generator import PatchBlock
 from .snapshot import ApplyResult  # noqa: F401  (re-exported for clarity)
 
@@ -222,6 +222,32 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
             continue
         written.append(r.path)
 
+    # Wave 4: record this acceptance as a few-shot preference example
+    # (master plan §13). Failures here never block the apply response —
+    # a corrupt store is recoverable on the next run.
+    if written:
+        try:
+            arbiter_winner_id = None
+            verdict = job.last_verdict or {}
+            if isinstance(verdict, dict):
+                arbiter_winner_id = verdict.get("winner")
+            preference.add_example(
+                repo=repo,
+                user_id=job.user_id,
+                request_summary=job.user_request or "",
+                accepted_diff=_compact_diff(patches),
+                style=evidence.get("style") or "safe",
+                model_pair=list(evidence.get("model_pair") or [None, None]),
+                loc=evidence.get("loc") or "+0 −0",
+                universe_id=req.universeId,
+                arbiter_winner=(arbiter_winner_id == req.universeId
+                                if arbiter_winner_id else None),
+                user_overrode=(arbiter_winner_id is not None
+                               and arbiter_winner_id != req.universeId),
+            )
+        except Exception:
+            logger.exception("preference store write failed for job %s", job_id)
+
     return {
         "applied": not failed,
         "files": written,
@@ -233,6 +259,19 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
         ],
         "siblings_cancelled": cancelled_siblings,
     }
+
+
+def _compact_diff(patches: List[Dict[str, str]]) -> str:
+    """Build a tiny `--- path` / first-N-lines diff for the preference
+    store. Full files would explode storage; this preserves enough style
+    signal for the few-shot Generator pass.
+    """
+    blocks: List[str] = []
+    for p in patches[:6]:
+        body = p.get("new_content") or ""
+        head = "\n".join(body.splitlines()[:60])
+        blocks.append(f"--- {p.get('path', '?')}\n{head}")
+    return "\n\n".join(blocks)[:4000]
 
 
 def _cancel_tasks(job: events.JobState, *, keep: Optional[str]) -> List[str]:
