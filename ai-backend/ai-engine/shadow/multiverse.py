@@ -22,6 +22,8 @@ from .arbiter import (
     model_for_arbiter,
     select_arbiter_provider,
 )
+from .closure_crossover import is_enabled as closure_crossover_enabled
+from .closure_crossover import run_fragment_children
 from .convergence import detect_convergence
 from .crossover import run_children as run_crossover_children
 from .generator import PatchBlock
@@ -184,6 +186,21 @@ async def run_job(
             ]
             await job.emit(events.universe_done(ch.universe_id, ch.evidence))
         valid = valid + children
+
+        # Wave 5 (research, behind SHADOW_CLOSURE_CROSSOVER_ENABLED):
+        # closure-aware fragment-level swaps. Compile-gated like Wave 3
+        # but the failure mode (captured-variable mismatch) is more
+        # subtle, so the flag stays off by default.
+        if closure_crossover_enabled() and len(valid) >= 2:
+            frag_children = await run_fragment_children(universes=valid, pool=pool)
+            for ch in frag_children:
+                job.universes[ch.universe_id] = ch.evidence
+                job.universe_patches[ch.universe_id] = [
+                    {"path": p.path, "new_content": p.new_content}
+                    for p in ch.patches_applied
+                ]
+                await job.emit(events.universe_done(ch.universe_id, ch.evidence))
+            valid = valid + frag_children
 
     # Arbiter pass — provider rotation, compressed bundle, strict schema.
     arb_provider = select_arbiter_provider(specs)
@@ -379,12 +396,22 @@ def _model_for(provider: str) -> str:
     return _PROVIDER_DEFAULTS.get(provider, "gemini-pro")
 
 
+def _surgical_enabled() -> bool:
+    """Wave 5 surgical style is research-only; flagged off by default."""
+    import os
+    return os.environ.get("SHADOW_SURGICAL_ENABLED", "0").lower() in ("1", "true", "yes")
+
+
 def _make_specs(n: int, *, intent: str, models: Dict[str, Any]) -> List[UniverseSpec]:
     """Wave 1 N=1 → single `safe` universe with the first available provider.
 
     Wave 2 N=3 → three universes spanning safe / idiomatic / minimalist
     styles, with cross-paired providers so each universe's Critic differs
     from its Generator (master plan §1).
+
+    Wave 5 (flagged) replaces the third slot with `surgical` when
+    SHADOW_SURGICAL_ENABLED is set — keeps N=3 stable, swaps the
+    minimalist universe out for an even tighter variant.
     """
     chain = _provider_chain(models)
     user_keys = (models or {}).get("user_keys") or {}
@@ -403,10 +430,11 @@ def _make_specs(n: int, *, intent: str, models: Dict[str, Any]) -> List[Universe
             intent=intent,
         )
 
+    third_style = "surgical" if _surgical_enabled() else "minimalist"
     pool = [
         _spec("A", "safe",       0),
         _spec("B", "idiomatic",  1),
-        _spec("C", "minimalist", 2),
+        _spec("C", third_style,  2),
     ]
     return pool[:n]
 
