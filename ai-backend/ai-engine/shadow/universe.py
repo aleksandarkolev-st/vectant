@@ -230,6 +230,23 @@ class Universe:
             "score": round(score, 3),
             "revised": revised,
             "duration_ms": 0,  # filled by orchestrator
+            # Wave 1 §15.4: capture the raw ScoreInput so the bench
+            # weight grid-search can re-score offline without rerunning
+            # the pipeline. Cheap (small dict per universe).
+            "scoring": {
+                "attacks_total": len(critique.attacks),
+                "attacks_real": len(critique.real_attacks),
+                "attacks_survived": critique.survived,
+                "diagnostics_count": run_result.diagnostics_count(),
+                "diagnostics_max": 20,
+                "tests_passed": run_result.tests[0].get("passed", 0),
+                "tests_total": run_result.tests[0].get("total", 0),
+                "runtime_clean": bool(run_result.runtime[0].get("clean", True)),
+                "style_match": style_match_score,
+                "loc_delta": _loc_delta(patches),
+                "loc_baseline": _loc_baseline(patches),
+                "style": self.spec.style,
+            },
         }
 
         return UniverseResult(

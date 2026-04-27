@@ -136,7 +136,7 @@ async def run_fixture(fixture_dir: Path) -> FixtureResult:
     )
 
 
-async def main(corpus: Path, out: Path) -> int:
+async def main(corpus: Path, out: Path, results_json: Optional[Path] = None) -> int:
     fixtures = sorted([p for p in corpus.iterdir() if p.is_dir()])
     if not fixtures:
         logger.warning("corpus is empty: %s", corpus)
@@ -151,6 +151,21 @@ async def main(corpus: Path, out: Path) -> int:
     summary = summarize(results)
     out.write_text(render(summary, results), encoding="utf-8")
     logger.info("wrote %s", out)
+
+    if results_json is not None:
+        # Capture the raw evidence for offline tooling (weight tuner).
+        payload = [
+            {
+                "fixture_id": r.fixture_id,
+                "duration_s": r.duration_s,
+                "success": r.success,
+                "error": r.error,
+                "universes": r.universes,
+            }
+            for r in results
+        ]
+        results_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        logger.info("wrote %s", results_json)
     return 0
 
 
@@ -158,7 +173,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", default="bench/corpus")
     parser.add_argument("--out", default="bench/report.md")
+    parser.add_argument("--results-json", default="bench/results.json",
+                        help="Per-universe evidence dump for the weight tuner.")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    rc = asyncio.run(main(Path(args.corpus), Path(args.out)))
+    rc = asyncio.run(main(
+        Path(args.corpus), Path(args.out),
+        results_json=Path(args.results_json) if args.results_json else None,
+    ))
     sys.exit(rc)
