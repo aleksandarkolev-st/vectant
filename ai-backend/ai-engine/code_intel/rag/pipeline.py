@@ -225,7 +225,12 @@ class RAGPipeline:
         # Build set of freshly-ingested file paths for stale-detection later
         ingested_paths: set = set()
 
-        # Store ingested documents
+        # First pass: store docs/ToC/sections, defer summary embedding so
+        # we can batch all summary embedding calls into a single round-trip
+        # (Gemini Embedder.embed_texts batches internally — 100 docs goes
+        # from 100 sequential API calls to 1-2 batch calls).
+        docs_with_summary: List = []  # (doc_id, summary) pairs
+
         for doc in result.documents:
             self._normalize_doc_paths(doc)
             file_path = doc.metadata.file_path if doc.metadata else None
@@ -252,13 +257,17 @@ class RAGPipeline:
             if doc.sections:
                 self.section_store.add_sections(doc.sections)
 
-            # Store summary + embedding
+            # Defer summary embedding for the batch pass below.
             if doc.summary:
-                embedding = self._compute_embedding(doc.summary)
-                self.summary_index.add(doc.id, embedding, doc.summary)
-                self._keyword_filter_instance().add_document(
-                    doc.id, doc.summary
-                )
+                docs_with_summary.append((doc.id, doc.summary))
+
+        # Batch-embed all summaries in one round-trip.
+        if docs_with_summary:
+            summaries = [s for _, s in docs_with_summary]
+            embeddings = self._compute_embeddings_batch(summaries)
+            for (doc_id, summary), embedding in zip(docs_with_summary, embeddings):
+                self.summary_index.add(doc_id, embedding, summary)
+                self._keyword_filter_instance().add_document(doc_id, summary)
 
         # ── Purge stale documents for files that no longer exist ─────────
         stale_removed = 0
@@ -967,15 +976,80 @@ class RAGPipeline:
             embed_failure = e
             logger.warning(f"Embedding generation failed: {e}")
 
-        # Fallback: zero vector — vector search is effectively disabled
+        return self._zero_vector_fallback(embedder, embed_failure)
+
+    def _compute_embeddings_batch(
+        self, summaries: List
+    ) -> List[np.ndarray]:
+        """
+        Embed multiple DocumentSummary objects in a single API round-trip.
+
+        Falls back gracefully per-summary on:
+        - pre-computed embeddings on the summary (used as-is if dim matches)
+        - per-text failure inside the batch (replaced with zero vector)
+        - whole-batch failure (each summary gets a zero vector)
+
+        Returns embeddings in the same order as `summaries`.
+        """
+        if not summaries:
+            return []
+
+        # Identify which summaries already have valid embeddings to skip.
+        result: List[Optional[np.ndarray]] = [None] * len(summaries)
+        to_embed_idx: List[int] = []
+        to_embed_text: List[str] = []
+
+        for i, s in enumerate(summaries):
+            if s.embedding is not None:
+                vec = np.asarray(s.embedding, dtype=np.float32)
+                if vec.shape == (self.config.embedding_dimension,):
+                    result[i] = vec
+                    continue
+            to_embed_idx.append(i)
+            to_embed_text.append(s.to_embed_text())
+
+        if not to_embed_idx:
+            return [r for r in result if r is not None]
+
+        embedder = None
+        embed_failure: Optional[Exception] = None
+        try:
+            embedder = self._get_embedder()
+            if embedder:
+                # Embedder.embed_texts batches at batch_size internally and
+                # returns List[List[float]] (or None for per-text failures).
+                vectors = embedder.embed_texts(to_embed_text)
+                for k, idx in enumerate(to_embed_idx):
+                    vec = vectors[k] if k < len(vectors) else None
+                    if vec is not None:
+                        result[idx] = np.asarray(vec, dtype=np.float32)
+        except Exception as e:
+            embed_failure = e
+            logger.warning(f"Batch embedding generation failed: {e}")
+
+        # Fill any holes (per-item failures or whole-batch failure) with zeros.
+        for i in range(len(result)):
+            if result[i] is None:
+                result[i] = self._zero_vector_fallback(embedder, embed_failure)
+
+        return [r for r in result if r is not None]
+
+    def _zero_vector_fallback(
+        self,
+        embedder: Optional[Any],
+        embed_failure: Optional[Exception],
+    ) -> np.ndarray:
+        """Zero vector + (one-shot) warning. Vector search disabled until recovery."""
         self._zero_vector_count += 1
         if self._zero_vector_count == 1:
-            has_api_key = bool(embedder and getattr(embedder, 'has_api_key', lambda: False)())
+            has_api_key = bool(
+                embedder and getattr(embedder, "has_api_key", lambda: False)()
+            )
             if has_api_key:
                 logger.warning(
                     "Embedding backend unavailable — using zero-vector fallback. "
-                    "Vector search in macro-retrieval will not return results until Gemini embedding requests recover. "
-                    f"Last error: {embed_failure}"
+                    "Vector search in macro-retrieval will not return results until "
+                    f"Gemini embedding requests recover. Last error: {embed_failure}"
                 )
             else:
                 logger.warning(

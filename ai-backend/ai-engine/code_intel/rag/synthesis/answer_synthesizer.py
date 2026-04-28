@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import time
 from dataclasses import dataclass, field
@@ -228,7 +229,7 @@ class AnswerSynthesizer:
         model_override: Optional[str] = None,
     ) -> tuple:
         """
-        Call the synthesis model.
+        Call the synthesis model with exponential-backoff retry on 429.
 
         Returns:
             Tuple of (response_text, model_name).
@@ -244,23 +245,48 @@ class AnswerSynthesizer:
             ),
         )
 
-        try:
-            response = model.generate_content(prompt)
-            text = (response.text or "").strip()
+        # Match the retry pattern used by routing/summary/embedder. Synthesis
+        # is the longest call in the pipeline; without retry, a single
+        # transient 429 forces the user to re-ask the question.
+        max_retries = 2
+        last_err: Optional[Exception] = None
+        for attempt in range(max_retries + 1):
+            try:
+                response = model.generate_content(prompt)
+                text = (response.text or "").strip()
 
-            if not text:
-                raise SynthesisModelError("Model returned empty response")
+                if not text:
+                    raise SynthesisModelError("Model returned empty response")
 
-            return text, model_name
+                return text, model_name
 
-        except Exception as e:
-            if "429" in str(e) or "quota" in str(e).lower():
+            except Exception as e:
+                last_err = e
+                err_str = str(e).lower()
+                is_rate_limit = (
+                    "429" in err_str
+                    or "resource" in err_str
+                    or "quota" in err_str
+                )
+                if is_rate_limit and attempt < max_retries:
+                    delay = (0.5 * (2 ** attempt)) + (random.random() * 0.3)
+                    logger.warning(
+                        f"Rate limited on synthesis ({model_name}), retry "
+                        f"{attempt + 1}/{max_retries} after {delay:.2f}s"
+                    )
+                    time.sleep(delay)
+                    continue
+                if is_rate_limit:
+                    raise SynthesisModelError(
+                        f"Rate limited on synthesis model after retries: {e}"
+                    ) from e
                 raise SynthesisModelError(
-                    f"Rate limited on synthesis model: {e}"
+                    f"Synthesis model call failed: {e}"
                 ) from e
-            raise SynthesisModelError(
-                f"Synthesis model call failed: {e}"
-            ) from e
+
+        raise SynthesisModelError(
+            f"Synthesis model call exhausted retries: {last_err}"
+        )
 
     # =========================================================================
     # Internal: Citation Extraction
