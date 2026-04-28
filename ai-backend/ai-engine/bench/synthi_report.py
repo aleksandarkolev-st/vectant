@@ -480,6 +480,65 @@ def test_rag_query_full(workspace_root: str) -> Dict:
     }
 
 
+def test_rag_query_cache(workspace_root: str) -> Dict:
+    """Verify pipeline-level query cache: identical query is a cache hit."""
+    pipeline, _ = _ensure_pipeline(workspace_root)
+    # Reset stats so we measure only this test.
+    pipeline._cache_hits = 0
+    pipeline._cache_misses = 0
+    pipeline._invalidate_query_cache("test_setup")
+
+    q = "How does the cache work?"
+    t0 = time.perf_counter()
+    r1 = pipeline.query(q)
+    t_cold = (time.perf_counter() - t0) * 1000
+
+    t0 = time.perf_counter()
+    r2 = pipeline.query(q)
+    t_warm = (time.perf_counter() - t0) * 1000
+
+    stats = pipeline.get_stats()["query_cache"]
+
+    # The warm call should skip macro+micro+synthesis entirely. Allow
+    # a generous bound (50ms) for OrderedDict + RAGResult ref ops.
+    assert stats["hits"] == 1, f"expected 1 hit, got {stats}"
+    assert stats["misses"] == 1, f"expected 1 miss, got {stats}"
+    # The cached result is the same object reference.
+    assert r1 is r2, "cache should return the same RAGResult instance"
+    return {
+        "cold_ms": round(t_cold, 1),
+        "warm_ms": round(t_warm, 1),
+        "speedup": (round(t_cold / t_warm, 1) if t_warm > 0 else None),
+        "hits": stats["hits"],
+        "misses": stats["misses"],
+    }
+
+
+def test_rag_cache_invalidation(workspace_root: str) -> Dict:
+    """Cache must drop on ingest/clear; otherwise stale answers leak."""
+    pipeline, _ = _ensure_pipeline(workspace_root)
+    pipeline._invalidate_query_cache("test_setup")
+    pipeline._cache_hits = 0
+    pipeline._cache_misses = 0
+
+    pipeline.query("invalidation probe query")
+    after_first = pipeline.get_stats()["query_cache"]["size"]
+
+    # ingest_file should bump invalidation
+    abs_fpath = str(Path(workspace_root) / "src" / "auth.py")
+    pipeline.ingest_file(abs_fpath)
+    after_ingest = pipeline.get_stats()["query_cache"]["size"]
+
+    assert after_first >= 1, f"cache should hold the result, got {after_first}"
+    assert after_ingest == 0, (
+        f"cache should be empty after ingest_file, got {after_ingest}"
+    )
+    return {
+        "size_after_query": after_first,
+        "size_after_ingest": after_ingest,
+    }
+
+
 def test_rag_clear(workspace_root: str) -> Dict:
     """Clear and verify the store empties; then re-ingest for later tests."""
     pipeline, _ = _ensure_pipeline(workspace_root)
@@ -780,6 +839,31 @@ def _render_report(
             w(f"> FAIL: {qr.error}")
         w("")
 
+    cache_r = next((r for r in results if r.name == "rag:query_cache"), None)
+    if cache_r and cache_r.status == PASS and cache_r.data:
+        d = cache_r.data
+        w("### Query Result Cache (Pipeline-level)")
+        w("")
+        w("Identical query within TTL skips macro+micro+synthesis entirely.")
+        w("")
+        w("| Metric | Value |")
+        w("|--------|-------|")
+        w(f"| Cold call (ms) | {d.get('cold_ms', 0)} |")
+        w(f"| Warm call (ms) | {d.get('warm_ms', 0)} |")
+        w(f"| Speed-up | {d.get('speedup', '?')}× |")
+        w(f"| Hits | {d.get('hits', 0)} |")
+        w(f"| Misses | {d.get('misses', 0)} |")
+        w("")
+
+    inval_r = next((r for r in results if r.name == "rag:cache_invalidation"), None)
+    if inval_r and inval_r.status == PASS and inval_r.data:
+        d = inval_r.data
+        w("### Cache Invalidation on Ingest")
+        w("")
+        w(f"Cache size after first query: {d.get('size_after_query', '?')} → "
+          f"after `ingest_file()`: {d.get('size_after_ingest', '?')} (expect 0).")
+        w("")
+
     clear_r = next((r for r in results if r.name == "rag:clear"), None)
     if clear_r and clear_r.data and clear_r.status == PASS:
         d = clear_r.data
@@ -1047,6 +1131,12 @@ def main() -> None:
             test_rag_query_full, workspace_root,
             skip_reason="" if has_gemini else "GEMINI_API_KEY not set - LLM synthesis skipped",
         )
+        run_test(
+            "rag:query_cache",
+            test_rag_query_cache, workspace_root,
+            skip_reason="" if has_gemini else "GEMINI_API_KEY not set - cache test needs a real query",
+        )
+        run_test("rag:cache_invalidation", test_rag_cache_invalidation, workspace_root)
         run_test("rag:clear",          test_rag_clear, workspace_root)
         print("")
 
