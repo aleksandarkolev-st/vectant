@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import threading
 import time
@@ -345,33 +346,56 @@ Return ONLY valid JSON in this exact format:
             )
 
         genai = self._get_genai()
-        try:
-            model = genai.GenerativeModel(
-                self._micro.routing_model,
-                # Note: response_mime_type=application/json is a Gemini preview
-                # feature that intermittently returns 504s on the flash-lite
-                # preview model. We parse JSON ourselves below to stay
-                # compatible across models.
-                generation_config=genai.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=256,
-                ),
-            )
-            # Per-call timeout: without this the SDK blocks indefinitely if
-            # the network is slow. Cap at routing_timeout_ms so a single
-            # stuck call can't burn the whole navigation budget.
-            timeout_s = max(1.0, self._micro.routing_timeout_ms / 1000)
-            response = model.generate_content(
-                prompt,
-                request_options={"timeout": timeout_s},
-            )
-            with self._calls_lock:
-                self._total_calls += 1
-        except Exception as e:
-            err_str = str(e).lower()
-            if "504" in err_str or "deadline" in err_str:
-                self._llm_disabled_for_query = True
-            raise RoutingModelError(f"Fast LLM routing call failed: {e}") from e
+        model = genai.GenerativeModel(
+            self._micro.routing_model,
+            # Note: response_mime_type=application/json is a Gemini preview
+            # feature that intermittently returns 504s on the flash-lite
+            # preview model. We parse JSON ourselves below to stay
+            # compatible across models.
+            generation_config=genai.GenerationConfig(
+                temperature=0.1,
+                max_output_tokens=256,
+            ),
+        )
+        timeout_s = max(1.0, self._micro.routing_timeout_ms / 1000)
+
+        # Retry with exponential backoff on 429/quota — these are transient
+        # rate limits, not server-side bugs. 504 errors trip the circuit
+        # breaker immediately (no point retrying a hung server).
+        max_retries = 2
+        response = None
+        for attempt in range(max_retries + 1):
+            try:
+                response = model.generate_content(
+                    prompt,
+                    request_options={"timeout": timeout_s},
+                )
+                with self._calls_lock:
+                    self._total_calls += 1
+                break
+            except Exception as e:
+                err_str = str(e).lower()
+                if "504" in err_str or "deadline" in err_str:
+                    self._llm_disabled_for_query = True
+                    raise RoutingModelError(
+                        f"Fast LLM routing call failed: {e}"
+                    ) from e
+                is_rate_limit = (
+                    "429" in err_str
+                    or "resource" in err_str
+                    or "quota" in err_str
+                )
+                if is_rate_limit and attempt < max_retries:
+                    delay = (0.4 * (2 ** attempt)) + (random.random() * 0.3)
+                    logger.warning(
+                        f"Rate limited on routing, retry "
+                        f"{attempt + 1}/{max_retries} after {delay:.2f}s"
+                    )
+                    time.sleep(delay)
+                    continue
+                raise RoutingModelError(
+                    f"Fast LLM routing call failed: {e}"
+                ) from e
 
         text = (response.text or "").strip()
         selected_indices, reasoning = self._parse_full_tree_response(

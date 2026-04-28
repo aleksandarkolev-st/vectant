@@ -1,6 +1,6 @@
 # Synthi Integration Report — RAG + Shadow
 
-Generated: 2026-04-28 09:13:17 UTC
+Generated: 2026-04-28 09:16:09 UTC
 Workspace: `C:/Users/dev/AppData/Local/Temp/synthi_report_ws_wjapybn4`
 Platform:  Windows 11 / Python 3.13.13
 
@@ -28,21 +28,21 @@ card, Anthropic and OpenAI are ~4–5x more expensive per call than Gemini.
 
 | Test | Status | Time (ms) | Detail |
 |------|--------|----------:|--------|
-| `rag:init` | PASS | 594 |  |
+| `rag:init` | PASS | 603 |  |
 | `rag:ingest_stats` | PASS | 0 |  |
 | `rag:stats` | PASS | 0 |  |
-| `rag:dedup` | PASS | 3452 |  |
-| `rag:remove_file` | PASS | 485 |  |
-| `rag:fusion_rrf` | PASS | 1063 |  |
-| `rag:fusion_weighted` | PASS | 1065 |  |
-| `rag:retrieve_context` | PASS | 1154 |  |
-| `rag:query_full` | PASS | 7566 |  |
-| `rag:clear` | PASS | 4120 |  |
-| `shadow:config` | PASS | 50 |  |
-| `shadow:cost_table` | PASS | 0 |  |
-| `shadow:project_signals` | PASS | 10 |  |
+| `rag:dedup` | PASS | 3184 |  |
+| `rag:remove_file` | PASS | 505 |  |
+| `rag:fusion_rrf` | PASS | 664 |  |
+| `rag:fusion_weighted` | PASS | 597 |  |
+| `rag:retrieve_context` | PASS | 787 |  |
+| `rag:query_full` | PASS | 14431 |  |
+| `rag:clear` | PASS | 3475 |  |
+| `shadow:config` | PASS | 52 |  |
+| `shadow:cost_table` | PASS | 1 |  |
+| `shadow:project_signals` | PASS | 8 |  |
 | `shadow:events_import` | PASS | 0 |  |
-| `shadow:cost_ledger` | PASS | 2 |  |
+| `shadow:cost_ledger` | PASS | 5 |  |
 
 ## RAG Subsystem
 
@@ -103,7 +103,7 @@ Step 4  Heavy Synthesis (LLM, 1-3s)                  -> cited answer
 | Sections | 16 |
 | ToC trees | 5 |
 | Keyword docs | 5 |
-| Unique BM25 terms | 108 |
+| Unique BM25 terms | 67 |
 
 ### retrieve_context() — Steps 2+3
 
@@ -112,13 +112,13 @@ Query: _"How does authentication work?"_
 | Metric | Value |
 |--------|-------|
 | Documents searched | 5 |
-| Documents selected | 5 |
-| Sections assembled | 15 |
-| Tokens in context | 1242 |
+| Documents selected | 1 |
+| Sections assembled | 5 |
+| Tokens in context | 394 |
 | Sufficiency | `SUFFICIENT` |
-| Macro time (ms) | 652.5 |
-| Micro time (ms) | 500.7 |
-| Total time (ms) | 1153.5 |
+| Macro time (ms) | 778.1 |
+| Micro time (ms) | 8.4 |
+| Total time (ms) | 786.6 |
 
 ### Fusion Method Comparison
 
@@ -126,8 +126,8 @@ Same query (`authentication session token login`) run with each fusion method.
 
 | Method | Docs selected | Sections | Tokens | Macro (ms) | Micro (ms) | Sufficiency |
 |--------|---------------|----------|--------|------------|------------|-------------|
-| `rrf` | 5 | 15 | 1242 | 547 | 509 | `SUFFICIENT` |
-| `weighted` | 5 | 15 | 1242 | 568 | 494 | `SUFFICIENT` |
+| `rrf` | 1 | 5 | 394 | 643 | 13 | `SUFFICIENT` |
+| `weighted` | 1 | 5 | 394 | 575 | 14 | `SUFFICIENT` |
 
 **RRF (Reciprocal Rank Fusion)** is the default (Cormack 2009).
 It fuses vector + BM25 + recency by rank position rather than raw scores,
@@ -140,21 +140,22 @@ Query: _"What is the RAG pipeline and how does micro-navigation work?"_
 
 | Metric | Value |
 |--------|-------|
-| Confidence | 0.623 |
+| Confidence | 0.670 |
 | Citations | 1 |
 | Documents searched | 5 |
-| Documents selected | 5 |
-| Macro time (ms) | 445 |
-| Micro time (ms) | 268 |
-| Synthesis time (ms) | 6854 |
-| Total time (ms) | 7566 |
+| Documents selected | 1 |
+| Macro time (ms) | 381 |
+| Micro time (ms) | 2363 |
+| Synthesis time (ms) | 11687 |
+| Total time (ms) | 14431 |
 
 **Answer snippet:**
 
-> The Retrieval-Augmented Generation (RAG) pipeline is responsible for answering codebase questions through the following four steps [1]:
+> The RAG pipeline is responsible for answering codebase questions through the following four steps [1]:
 
-1.  **Ingestion**: Handles document loading, Table of Contents (ToC) extraction, section splitting, and embedding [1].
-2.  **Macro-retrieval**: Performs vector search using cosine similarity combined with a BM25 keyword filter, fused via Reciprocal Rank Fusion (R
+1. **Ingestion**: Handles document loading, Table of Contents (ToC) extraction, section splitting, and embedding [1].
+2. **Macro-retrieval**: Uses a fusion of vector search (cosine similarity) and BM25 keyword filtering via Reciprocal Rank Fusion (RRF) [1].
+3. **Micro-navigation**: Employs agent
 
 
 ### Clear + Re-ingest

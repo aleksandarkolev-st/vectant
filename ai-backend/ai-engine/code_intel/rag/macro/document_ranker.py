@@ -119,16 +119,9 @@ class DocumentRanker:
             analyzed,
         )
 
-        # Step 5: Select top-K
-        max_docs = min(
-            query.max_documents,
-            self._macro.max_documents,
-        )
-        top_docs = ranked[:max_docs]
-
-        # Ensure minimum documents if available
-        if len(top_docs) < self._macro.min_documents and ranked:
-            top_docs = ranked[:self._macro.min_documents]
+        # Step 5: Select top-K (dynamic when enabled)
+        max_docs = min(query.max_documents, self._macro.max_documents)
+        top_docs = self._select_top_k(ranked, max_docs)
 
         elapsed = (time.time() - t0) * 1000
 
@@ -163,10 +156,7 @@ class DocumentRanker:
         ranked = self._combine_scores(vector_results, keyword_results, analyzed)
 
         max_docs = min(query.max_documents, self._macro.max_documents)
-        top_docs = ranked[:max_docs]
-
-        if len(top_docs) < self._macro.min_documents and ranked:
-            top_docs = ranked[:self._macro.min_documents]
+        top_docs = self._select_top_k(ranked, max_docs)
 
         elapsed = (time.time() - t0) * 1000
 
@@ -348,6 +338,65 @@ class DocumentRanker:
         for doc_id, fused_score in fused:
             scores[doc_id] = fused_score
         return scores
+
+    # =========================================================================
+    # Internal: Dynamic K Selection
+    # =========================================================================
+
+    def _select_top_k(
+        self,
+        ranked: List[RankedDocument],
+        max_docs: int,
+    ) -> List[RankedDocument]:
+        """Select top-K with optional score-gap cutoff.
+
+        When ``enable_dynamic_k`` is on, look at the fused-score gaps between
+        consecutive candidates inside ``[min_documents, max_documents]`` and
+        cut at the first gap that is at least ``dynamic_k_gap_factor`` ×
+        the mean gap in that window. This lets a high-confidence query (one
+        clear winner, then a cliff) return fewer docs and a flat-distribution
+        query keep the full max — instead of always padding to a fixed K.
+        """
+        if not ranked:
+            return []
+
+        min_docs = max(1, self._macro.min_documents)
+        ceiling = min(len(ranked), max(min_docs, max_docs))
+
+        if not getattr(self._macro, "enable_dynamic_k", False) or ceiling <= min_docs:
+            top = ranked[:ceiling]
+            if len(top) < min_docs and ranked:
+                top = ranked[:min_docs]
+            return top
+
+        # Compute gaps between consecutive scores in the [min_docs, ceiling] window.
+        # Index i in `gaps` is the drop after position i+1 (1-indexed).
+        gaps: List[float] = []
+        for i in range(min_docs - 1, ceiling - 1):
+            gaps.append(ranked[i].final_score - ranked[i + 1].final_score)
+
+        if not gaps:
+            return ranked[:ceiling]
+
+        mean_gap = sum(gaps) / len(gaps)
+        factor = getattr(self._macro, "dynamic_k_gap_factor", 1.5)
+        threshold = mean_gap * factor
+
+        # Find the first gap that exceeds the threshold; cut right after it.
+        for i, gap in enumerate(gaps):
+            if gap > 0 and gap >= threshold:
+                cut = (min_docs - 1) + i + 1   # convert window-local index to absolute
+                logger.debug(
+                    "Dynamic K cut at %d (gap=%.4f, threshold=%.4f)",
+                    cut, gap, threshold,
+                )
+                return ranked[:cut]
+
+        return ranked[:ceiling]
+
+    # =========================================================================
+    # Internal: Recency
+    # =========================================================================
 
     def _compute_recency_scores(
         self,

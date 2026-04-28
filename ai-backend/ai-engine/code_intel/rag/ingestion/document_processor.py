@@ -125,25 +125,47 @@ class DocumentProcessor:
                 """Adapter that exposes generate_summary for SummaryGenerator."""
 
                 def generate_summary(self, prompt: str) -> Optional[Dict]:
-                    try:
-                        response = model.generate_content(prompt)
-                        text = response.text.strip()
-                        # Parse structured output
-                        import json as _json
-                        # Try JSON first
+                    import json as _json
+                    import random
+                    import time as _time
+
+                    max_retries = 2
+                    last_err: Optional[Exception] = None
+                    for attempt in range(max_retries + 1):
                         try:
-                            return _json.loads(text)
-                        except _json.JSONDecodeError:
-                            pass
-                        # Fallback: treat entire response as summary text
-                        return {
-                            "summary": text[:500],
-                            "topics": [],
-                            "entities": [],
-                        }
-                    except Exception as e:
-                        logger.warning(f"Gemini summary call failed: {e}")
-                        return None
+                            response = model.generate_content(prompt)
+                            text = response.text.strip()
+                            try:
+                                return _json.loads(text)
+                            except _json.JSONDecodeError:
+                                # Fallback: treat entire response as summary text
+                                return {
+                                    "summary": text[:500],
+                                    "topics": [],
+                                    "entities": [],
+                                }
+                        except Exception as e:
+                            last_err = e
+                            err_str = str(e).lower()
+                            is_rate_limit = (
+                                "429" in err_str
+                                or "resource" in err_str
+                                or "quota" in err_str
+                            )
+                            if is_rate_limit and attempt < max_retries:
+                                delay = (0.5 * (2 ** attempt)) + (random.random() * 0.3)
+                                logger.warning(
+                                    f"Rate limited on summary, retry "
+                                    f"{attempt + 1}/{max_retries} after {delay:.2f}s"
+                                )
+                                _time.sleep(delay)
+                                continue
+                            logger.warning(f"Gemini summary call failed: {e}")
+                            return None
+                    logger.warning(
+                        f"Gemini summary call exhausted retries: {last_err}"
+                    )
+                    return None
 
             return _GeminiSummaryClient()
         except (ImportError, Exception) as e:

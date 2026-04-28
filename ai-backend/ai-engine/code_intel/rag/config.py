@@ -131,6 +131,28 @@ class MacroConfig:
     max_documents: int = 5            # Maximum documents to pass to micro-nav
     min_documents: int = 1            # Minimum documents (relax thresholds if needed)
 
+    # Dynamic K: cut the candidate list at the largest fused-score gap inside
+    # [min_documents, max_documents] when that gap is unusually wide. Trades
+    # a fixed top-5 for a smarter cut: tight queries get fewer docs, broad
+    # queries get more (up to max). Disable to fall back to fixed max_documents.
+    enable_dynamic_k: bool = True
+    dynamic_k_gap_factor: float = 1.5  # Cut where gap >= factor × mean gap
+
+    # HyDE / query rewriting: when enabled, the pipeline runs the user query
+    # through retrieval/query_rewriter.py before macro-retrieval. The
+    # hypothetical-code document is embedded in place of the raw question so
+    # vector search lives in code-space. BM25 still uses the original query
+    # text. No-ops when the GEMINI_API_KEY env var is missing.
+    enable_query_rewrite: bool = True
+    enable_hyde: bool = True
+
+    # Section-level MMR diversity: applied to the SectionReference list after
+    # micro-navigation so the LLM doesn't see five near-duplicate sections
+    # from the same file. λ=1.0 disables (pure relevance); 0.0 is pure
+    # diversity. Anything below 1 incurs a small ranking shuffle.
+    enable_section_mmr: bool = True
+    section_mmr_lambda: float = 0.7
+
     # Performance
     timeout_ms: int = 500             # Macro-retrieval timeout
 

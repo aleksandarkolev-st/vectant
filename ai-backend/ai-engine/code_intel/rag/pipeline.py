@@ -62,6 +62,10 @@ from .synthesis.answer_synthesizer import AnswerSynthesizer
 from .synthesis.citation_tracker import CitationTracker
 from .synthesis.confidence_scorer import ConfidenceScorer
 
+# Cross-pipeline retrieval helpers (HyDE rewrite + MMR diversity)
+from ..retrieval.query_rewriter import QueryRewriter, RewrittenQuery
+from ..retrieval.fusion import mmr as _mmr_select
+
 from ..gitignore_guard import ensure_gitignore
 
 logger = logging.getLogger("code_intel.rag.pipeline")
@@ -123,6 +127,7 @@ class RAGPipeline:
         # Initialize modules (lazy initialization for expensive components)
         self._processor: Optional[DocumentProcessor] = None
         self._query_analyzer: Optional[QueryAnalyzer] = None
+        self._query_rewriter: Optional[QueryRewriter] = None
         self._summary_searcher: Optional[SummarySearcher] = None
         self._keyword_filter: Optional[KeywordFilter] = None
         self._document_ranker: Optional[DocumentRanker] = None

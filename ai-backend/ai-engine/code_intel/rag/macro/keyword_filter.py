@@ -31,7 +31,10 @@ logger = logging.getLogger("code_intel.rag.macro.keyword_filter")
 
 # ── Tokenizer ───────────────────────────────────────────────────────────────
 
-_SPLIT_RE = re.compile(r'[^a-zA-Z0-9_]+')
+_CAMEL_RE = re.compile(r'([a-z0-9])([A-Z])')
+_SEP_RE = re.compile(r'[/_\\.\-:]+')
+_NON_ALNUM_RE = re.compile(r'[^a-z0-9 ]')
+_RAW_TOKEN_RE = re.compile(r'[A-Za-z][A-Za-z0-9_]*')
 
 _STOP: Set[str] = {
     "a", "an", "the", "is", "are", "was", "be", "been", "have", "has",
@@ -44,9 +47,38 @@ _STOP: Set[str] = {
 
 
 def tokenize(text: str) -> List[str]:
-    """Tokenize text into lowercase terms, removing stop words."""
-    tokens = _SPLIT_RE.split(text.lower())
-    return [t for t in tokens if t and t not in _STOP and len(t) > 1]
+    """Tokenize text into lowercase terms with code-aware splitting.
+
+    Mirrors `indexer/lexical_index.py`: splits camelCase, snake_case, dotted
+    paths, and path separators so that `AuthService` and `auth_service` both
+    produce {auth, service} — symmetric with what `query_analyzer.py` already
+    does on the query side. Also keeps the original lowercased identifier
+    (e.g., `authservice`) so exact-name matches still hit.
+    """
+    out: List[str] = []
+    seen: Set[str] = set()
+
+    def _add(term: str) -> None:
+        if not term or len(term) < 2 or term in _STOP:
+            return
+        if term in seen:
+            return
+        seen.add(term)
+        out.append(term)
+
+    for raw in _RAW_TOKEN_RE.findall(text):
+        # 1. The whole identifier, lowercased — preserves "authservice" for
+        #    exact-name BM25 hits even when the user types it as one word.
+        _add(raw.lower())
+
+        # 2. camelCase / PascalCase split, then snake/path/punct split.
+        split = _CAMEL_RE.sub(r'\1 \2', raw).lower()
+        split = _SEP_RE.sub(' ', split)
+        split = _NON_ALNUM_RE.sub('', split)
+        for part in split.split():
+            _add(part)
+
+    return out
 
 
 # ── BM25 Parameters ────────────────────────────────────────────────────────
@@ -122,16 +154,22 @@ class KeywordFilter:
         Add a document's summary to the keyword index.
 
         Extracts terms from: title, summary_text, key_topics, key_entities.
+        Title and key_entities are weighted 3× by repetition — mirrors the
+        symbol-name boost in `indexer/lexical_index.py` so doc names and
+        named identifiers dominate over prose.
         """
-        # Build searchable text from summary fields
-        text_parts = [
-            summary.title,
-            summary.summary_text,
-            " ".join(summary.key_topics),
-            " ".join(summary.key_entities),
-        ]
-        text = " ".join(text_parts)
-        tokens = tokenize(text)
+        title_tokens = tokenize(summary.title or "")
+        entity_tokens = tokenize(" ".join(summary.key_entities or []))
+        body_tokens = tokenize(summary.summary_text or "")
+        topic_tokens = tokenize(" ".join(summary.key_topics or []))
+
+        # 3× boost for title + entities (term-frequency weighting via repetition)
+        tokens: List[str] = (
+            title_tokens * 3
+            + entity_tokens * 3
+            + body_tokens
+            + topic_tokens
+        )
 
         if not tokens:
             return

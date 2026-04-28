@@ -107,13 +107,25 @@ class QueryAnalyzer:
     # Public API
     # =========================================================================
 
-    def analyze(self, query_text: str, generate_embedding: bool = True) -> AnalyzedQuery:
+    def analyze(
+        self,
+        query_text: str,
+        generate_embedding: bool = True,
+        embedding_text: Optional[str] = None,
+    ) -> AnalyzedQuery:
         """
         Analyze a user query.
 
         Args:
-            query_text: Raw user query text.
+            query_text: Raw user query text. Used for keyword/intent/entity
+                extraction.
             generate_embedding: Whether to generate an embedding vector.
+            embedding_text: Optional override for the text fed to the
+                embedder. When set, keywords still come from ``query_text``
+                but the vector signal embeds this string instead. Used by
+                the HyDE path so the embedding lives in the same semantic
+                space as the indexed corpus while BM25 keeps the user's
+                actual terms.
 
         Returns:
             AnalyzedQuery with keywords, intent, and optional embedding.
@@ -138,10 +150,11 @@ class QueryAnalyzer:
         # Build expanded text for embedding
         expanded_text = self._build_expanded_text(text, keywords, entities)
 
-        # Generate embedding
+        # Generate embedding (HyDE override takes precedence when supplied)
         embedding = None
         if generate_embedding:
-            embedding = self._generate_embedding(expanded_text)
+            embed_input = embedding_text.strip() if embedding_text and embedding_text.strip() else expanded_text
+            embedding = self._generate_embedding(embed_input)
 
         return AnalyzedQuery(
             original_text=text,
