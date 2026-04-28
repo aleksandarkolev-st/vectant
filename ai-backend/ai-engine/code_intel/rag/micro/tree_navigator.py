@@ -1,22 +1,24 @@
 """
-Tree Navigator — Fast LLM-guided ToC tree traversal.
+Tree Navigator — Single-shot LLM-guided ToC tree traversal.
 
 The core of micro-navigation (Step 3). Given the top-K documents
-from macro-retrieval, the navigator:
+from macro-retrieval, the navigator presents the entire ToC tree of
+each document to a fast LLM in a single call and asks it to select
+the most relevant leaf sections.
 
-1. Presents the ToC tree of each document to a fast LLM
-2. The LLM reads the ToC and selects the most relevant branches
-3. Drills deeper into selected branches
-4. Returns IDs of the most relevant leaf sections
-
-This is the "agentic" part — the fast LLM acts as a routing agent
-that navigates the document structure intelligently.
-
-DESIGN:
-- Uses Gemini Flash Lite for sub-second routing decisions
-- Falls back to heuristic keyword matching if LLM fails
-- Limits total LLM calls to prevent runaway costs
-- Respects timeout budgets
+DESIGN
+------
+- **Single-shot (one LLM call per document, not per depth-level)**:
+  the previous BFS-with-routing-per-level architecture made 3-4 LLM
+  calls per doc, blowing past the 10s total budget for trees with
+  any non-trivial depth. Single-shot is dramatically faster and lets
+  the LLM see the full structure instead of greedy local decisions.
+- **Skip the LLM entirely on small ToCs**: if a doc has <= max_sections
+  leaf nodes, just return them all — there is nothing to navigate.
+- **Heuristic fallback**: if the LLM call fails or returns nothing
+  parseable, fall back to keyword-overlap scoring on leaf nodes.
+- **Strict leaves**: the routing prompt asks the model to drill to
+  leaves; non-leaf selections are expanded to their leaf descendants.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import MicroConfig, RAGConfig, get_rag_config
 from ..types import ToCTree, ToCNode, ToCNodeType, RAGQuery
@@ -41,7 +43,7 @@ class NavigationStep:
     node_id: str
     node_title: str
     depth: int
-    action: str              # "select", "drill", "skip", "fallback"
+    action: str              # "select" | "skip_llm" | "fallback"
     reasoning: str = ""
     time_ms: float = 0.0
 
@@ -50,7 +52,7 @@ class NavigationStep:
 class NavigationResult:
     """Result of navigating a single document's ToC."""
     document_id: str
-    selected_node_ids: List[str]         # Final selected section IDs
+    selected_node_ids: List[str]
     steps: List[NavigationStep] = field(default_factory=list)
     total_routing_calls: int = 0
     time_ms: float = 0.0
@@ -59,11 +61,10 @@ class NavigationResult:
 
 class TreeNavigator:
     """
-    Navigate document ToC trees using a fast LLM.
+    Navigate document ToC trees using a fast LLM in a single call.
 
-    The navigator presents the ToC to the LLM and asks it to select
-    the branches most likely to contain the answer. Then it drills
-    into those branches until it reaches leaf sections.
+    The navigator presents the entire tree (with depth indentation)
+    to the LLM and asks it to pick relevant leaf sections by index.
     """
 
     def __init__(
@@ -71,13 +72,6 @@ class TreeNavigator:
         config: Optional[RAGConfig] = None,
         api_key: Optional[str] = None,
     ):
-        """
-        Initialize tree navigator.
-
-        Args:
-            config: RAG configuration.
-            api_key: Gemini API key override.
-        """
         self.config = config or get_rag_config()
         self._micro = self.config.micro
         self._api_key = api_key or self._micro.routing_api_key
@@ -94,16 +88,7 @@ class TreeNavigator:
         query: RAGQuery,
         toc_trees: Dict[str, ToCTree],
     ) -> List[NavigationResult]:
-        """
-        Navigate multiple document ToC trees.
-
-        Args:
-            query: User query.
-            toc_trees: Map of document_id → ToCTree.
-
-        Returns:
-            List of NavigationResult, one per document.
-        """
+        """Navigate multiple document ToC trees (one LLM call per doc)."""
         self._total_calls = 0
         t0 = time.time()
         deadline = t0 + (self._micro.total_timeout_ms / 1000)
@@ -112,7 +97,9 @@ class TreeNavigator:
 
         for doc_id, tree in toc_trees.items():
             if time.time() > deadline:
-                logger.warning("Total navigation timeout reached")
+                logger.warning(
+                    f"Total navigation timeout reached after {len(results)} docs"
+                )
                 break
 
             if self._total_calls >= self._micro.max_routing_calls:
@@ -154,248 +141,272 @@ class TreeNavigator:
         tree: ToCTree,
         deadline: float,
     ) -> NavigationResult:
-        """Navigate a single document's ToC tree."""
+        """Single-shot navigation of one document's ToC."""
         t0 = time.time()
-        steps: List[NavigationStep] = []
-        selected_ids: Set[str] = set()
-        used_fallback = False
 
-        # Start from root children
-        candidates = tree.root.children
-        if not candidates:
+        all_nodes = self._collect_all_nodes(tree)
+        leaves = [n for n in all_nodes if n.is_leaf]
+
+        if not leaves:
             return NavigationResult(
                 document_id=document_id,
                 selected_node_ids=[],
                 time_ms=(time.time() - t0) * 1000,
             )
 
-        # BFS-style navigation with LLM routing
-        depth = 0
-        max_depth = min(
-            self._micro.max_navigation_depth,
-            tree.max_depth,
-        )
+        max_sections = self._micro.max_sections_per_document
 
-        frontier = list(candidates)
-
-        while frontier and depth <= max_depth:
-            if time.time() > deadline:
-                break
-            if self._total_calls >= self._micro.max_routing_calls:
-                break
-
-            # Ask LLM to select relevant nodes from frontier
-            try:
-                selected_nodes, step = self._route_at_level(
-                    query.text,
-                    document_id,
-                    frontier,
-                    tree,
-                    depth,
-                )
-                steps.append(step)
-            except (NavigationError, Exception) as e:
-                logger.warning(f"LLM routing failed at depth {depth}: {e}")
-                used_fallback = True
-                selected_nodes = self._heuristic_select(
-                    query.text, frontier
-                )
-                steps.append(NavigationStep(
+        # Optimization: small ToC → skip LLM, return everything.
+        if len(leaves) <= max_sections:
+            selected_ids = [n.id for n in leaves]
+            return NavigationResult(
+                document_id=document_id,
+                selected_node_ids=selected_ids,
+                steps=[NavigationStep(
                     node_id="",
-                    node_title="heuristic_fallback",
-                    depth=depth,
-                    action="fallback",
-                    reasoning=str(e),
-                ))
+                    node_title=f"small_tree ({len(leaves)} leaves)",
+                    depth=0,
+                    action="skip_llm",
+                    reasoning=f"<= max_sections_per_document ({max_sections}) leaves",
+                    time_ms=(time.time() - t0) * 1000,
+                )],
+                total_routing_calls=0,
+                time_ms=(time.time() - t0) * 1000,
+            )
 
-            # Collect leaf nodes and build next frontier from non-leaf
-            next_frontier: List[ToCNode] = []
-            for node in selected_nodes:
-                if node.is_leaf:
-                    selected_ids.add(node.id)
-                else:
-                    # Drill into children
-                    next_frontier.extend(node.children)
+        used_fallback = False
+        try:
+            if time.time() > deadline:
+                raise NavigationError("Deadline reached before LLM call")
+            selected_leaf_ids, reasoning = self._route_full_tree(
+                query.text, tree, all_nodes, max_sections,
+            )
+            step_action = "select"
+            step_title = f"single_shot ({len(all_nodes)} nodes)"
+        except Exception as e:
+            logger.warning(
+                f"Single-shot navigation failed for {document_id}: {e}"
+            )
+            used_fallback = True
+            selected_nodes = self._heuristic_select(
+                query.text, leaves, max_selections=max_sections,
+            )
+            selected_leaf_ids = [n.id for n in selected_nodes]
+            reasoning = f"LLM failed: {e}"
+            step_action = "fallback"
+            step_title = "heuristic_fallback"
 
-            # If no more children to explore, select current nodes
-            if not next_frontier:
-                for node in selected_nodes:
-                    selected_ids.add(node.id)
-                break
-
-            frontier = next_frontier
-            depth += 1
-
-        # Enforce max sections per document
-        selected_list = list(selected_ids)[:self._micro.max_sections_per_document]
-
-        # Include sibling context if configured
-        if self._micro.include_sibling_context and selected_list:
-            selected_list = self._add_sibling_context(
-                selected_list, tree
+        # Optionally include immediate siblings of selected leaves for context.
+        if self._micro.include_sibling_context and selected_leaf_ids:
+            selected_leaf_ids = self._add_sibling_context(
+                selected_leaf_ids, tree,
             )
 
         elapsed = (time.time() - t0) * 1000
         return NavigationResult(
             document_id=document_id,
-            selected_node_ids=selected_list,
-            steps=steps,
+            selected_node_ids=selected_leaf_ids[:max_sections],
+            steps=[NavigationStep(
+                node_id="",
+                node_title=step_title,
+                depth=0,
+                action=step_action,
+                reasoning=reasoning,
+                time_ms=elapsed,
+            )],
             total_routing_calls=self._total_calls,
             time_ms=elapsed,
             used_fallback=used_fallback,
         )
 
     # =========================================================================
-    # Internal: LLM Routing
+    # Internal: Tree Flattening + LLM Prompt
     # =========================================================================
 
-    def _route_at_level(
+    def _collect_all_nodes(self, tree: ToCTree) -> List[ToCNode]:
+        """DFS-flatten the tree, skipping the synthetic root."""
+        flat: List[ToCNode] = []
+
+        def walk(node: ToCNode, depth: int) -> None:
+            if depth > 0:  # skip root
+                flat.append(node)
+            for child in node.children:
+                walk(child, depth + 1)
+
+        walk(tree.root, 0)
+        return flat
+
+    def _format_tree_for_llm(
+        self,
+        all_nodes: List[ToCNode],
+    ) -> str:
+        """Render the flattened tree with indentation + index labels."""
+        if not all_nodes:
+            return ""
+        # Normalise indentation so the shallowest visible node is column 0.
+        base_depth = min(n.depth for n in all_nodes)
+        lines: List[str] = []
+        for i, node in enumerate(all_nodes, 1):
+            indent = "  " * max(0, node.depth - base_depth)
+            suffix_parts: List[str] = []
+            if node.token_estimate:
+                suffix_parts.append(f"~{node.token_estimate}t")
+            if node.keywords:
+                suffix_parts.append(
+                    f"kw: {', '.join(node.keywords[:4])}"
+                )
+            if not node.is_leaf:
+                suffix_parts.append(f"[{node.child_count} subs]")
+            suffix = f"  ({'; '.join(suffix_parts)})" if suffix_parts else ""
+            lines.append(f"[{i}] {indent}{node.title}{suffix}")
+        return "\n".join(lines)
+
+    def _build_full_tree_prompt(
         self,
         query_text: str,
-        document_id: str,
-        nodes: List[ToCNode],
+        tree_text: str,
+        doc_title: str,
+        max_selections: int,
+    ) -> str:
+        return f"""You are navigating a document's table of contents to find sections relevant to a user's question.
+
+QUESTION: {query_text}
+
+DOCUMENT: {doc_title}
+
+TABLE OF CONTENTS (each entry is `[index] title`; indentation shows hierarchy):
+{tree_text}
+
+INSTRUCTIONS:
+- Pick up to {max_selections} sections most likely to contain the answer.
+- Strongly prefer leaf sections (no `[N subs]` annotation) — drill down to specifics.
+- Pick by INDEX number (the bracketed number on the left), not by title.
+- If multiple subsections of the same parent are relevant, pick them all rather than the parent.
+- If nothing seems relevant, return {{"selected": [], "reasoning": "explanation"}}.
+
+Return ONLY valid JSON in this exact format:
+{{"selected": [<index1>, <index2>], "reasoning": "brief"}}"""
+
+    def _route_full_tree(
+        self,
+        query_text: str,
         tree: ToCTree,
-        depth: int,
-    ) -> Tuple[List[ToCNode], NavigationStep]:
-        """
-        Ask the fast LLM to select relevant nodes at this level.
-
-        Returns:
-            Tuple of (selected nodes, navigation step).
-        """
-        t0 = time.time()
-
-        # Format nodes for LLM
-        node_descriptions = self._format_nodes_for_llm(nodes)
-        max_selections = min(
-            self._micro.max_sections_per_document,
-            len(nodes),
+        all_nodes: List[ToCNode],
+        max_selections: int,
+    ) -> Tuple[List[str], str]:
+        """Single LLM call: present the whole tree, get selected leaf node IDs."""
+        doc_title = ""
+        # Best-effort doc title from any annotated node
+        if all_nodes and all_nodes[0].depth > 0:
+            doc_title = ""
+        tree_text = self._format_tree_for_llm(all_nodes)
+        prompt = self._build_full_tree_prompt(
+            query_text, tree_text, doc_title, max_selections,
         )
 
-        prompt = self._build_routing_prompt(
-            query_text, node_descriptions, max_selections, depth
-        )
-
-        # Call fast LLM
+        genai = self._get_genai()
         try:
-            genai = self._get_genai()
             model = genai.GenerativeModel(
                 self._micro.routing_model,
                 generation_config=genai.GenerationConfig(
                     temperature=0.1,
                     max_output_tokens=512,
+                    response_mime_type="application/json",
                 ),
             )
-
             response = model.generate_content(prompt)
             self._total_calls += 1
-
-            text = (response.text or "").strip()
-            selected_titles, reasoning = self._parse_llm_response(
-                text, nodes
-            )
-
         except Exception as e:
-            raise RoutingModelError(
-                f"Fast LLM routing call failed: {e}"
-            ) from e
+            raise RoutingModelError(f"Fast LLM routing call failed: {e}") from e
 
-        # Map titles back to nodes
-        title_to_node = {n.title.lower(): n for n in nodes}
-        selected_nodes = []
-        for title in selected_titles:
-            node = title_to_node.get(title.lower())
-            if node:
-                selected_nodes.append(node)
-
-        # If LLM returned nothing, fallback to top nodes by token count
-        if not selected_nodes:
-            selected_nodes = sorted(
-                nodes, key=lambda n: n.token_estimate, reverse=True
-            )[:max_selections]
-            reasoning = "LLM returned no valid selections; using token-count fallback"
-
-        elapsed = (time.time() - t0) * 1000
-
-        step = NavigationStep(
-            node_id=nodes[0].id if nodes else "",
-            node_title=f"Level {depth} ({len(nodes)} nodes)",
-            depth=depth,
-            action="select",
-            reasoning=reasoning,
-            time_ms=elapsed,
+        text = (response.text or "").strip()
+        selected_indices, reasoning = self._parse_full_tree_response(
+            text, len(all_nodes),
         )
 
-        return selected_nodes, step
+        # Map indices → node IDs.
+        selected_ids: List[str] = []
+        for idx in selected_indices:
+            if 1 <= idx <= len(all_nodes):
+                selected_ids.append(all_nodes[idx - 1].id)
 
-    def _build_routing_prompt(
-        self,
-        query_text: str,
-        node_descriptions: str,
-        max_selections: int,
-        depth: int,
-    ) -> str:
-        """Build the routing prompt for the fast LLM."""
-        return f"""You are navigating a document's Table of Contents to find sections relevant to a user's question.
+        # Strict leaves: expand any non-leaf picks into their leaf descendants.
+        leaf_id_set = {n.id for n in all_nodes if n.is_leaf}
+        leaf_ids: List[str] = []
+        seen: set = set()
+        for nid in selected_ids:
+            if nid in leaf_id_set:
+                if nid not in seen:
+                    seen.add(nid)
+                    leaf_ids.append(nid)
+            else:
+                node = tree.get_node(nid)
+                if node:
+                    for desc in self._collect_descendants(node, only_leaves=True):
+                        if desc.id not in seen:
+                            seen.add(desc.id)
+                            leaf_ids.append(desc.id)
 
-QUESTION: {query_text}
+        # Final fallback: top-N leaves by token estimate (more content first).
+        if not leaf_ids:
+            leaves_sorted = sorted(
+                [n for n in all_nodes if n.is_leaf],
+                key=lambda n: -n.token_estimate,
+            )
+            leaf_ids = [n.id for n in leaves_sorted[:max_selections]]
+            reasoning = (
+                f"LLM returned no valid leaves; using top-{max_selections} "
+                f"by token count"
+            )
 
-Below are the sections at the current level of the document:
+        return leaf_ids[:max_selections], reasoning
 
-{node_descriptions}
-
-INSTRUCTIONS:
-- Select up to {max_selections} sections most likely to contain the answer.
-- Consider both direct relevance and sections that provide important context.
-- Return ONLY valid JSON in this exact format:
-{{"selected": ["Section Title 1", "Section Title 2"], "reasoning": "brief explanation"}}
-- Use the exact section titles from the list above.
-- If none seem relevant, return {{"selected": [], "reasoning": "explanation"}}"""
-
-    def _format_nodes_for_llm(self, nodes: List[ToCNode]) -> str:
-        """Format nodes as a numbered list for LLM consumption."""
-        lines: List[str] = []
-        for i, node in enumerate(nodes, 1):
-            parts = [f"{i}. {node.title}"]
-            if node.preview:
-                parts.append(f"   Preview: {node.preview[:120]}")
-            if node.keywords:
-                parts.append(f"   Keywords: {', '.join(node.keywords[:5])}")
-            if node.token_estimate:
-                parts.append(f"   (~{node.token_estimate} tokens)")
-            if not node.is_leaf:
-                parts.append(f"   [{node.child_count} subsections]")
-            lines.append("\n".join(parts))
-        return "\n\n".join(lines)
-
-    def _parse_llm_response(
+    def _parse_full_tree_response(
         self,
         text: str,
-        nodes: List[ToCNode],
-    ) -> Tuple[List[str], str]:
-        """Parse LLM JSON response."""
-        # Strip markdown code blocks
+        max_index: int,
+    ) -> Tuple[List[int], str]:
+        """Parse the LLM JSON response into validated indices."""
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
 
         try:
             parsed = json.loads(text)
-            selected = parsed.get("selected", [])
+            raw_selected = parsed.get("selected", [])
             reasoning = parsed.get("reasoning", "")
 
-            # Validate titles against actual nodes
-            valid_titles = {n.title.lower() for n in nodes}
-            valid_selected = [
-                s for s in selected
-                if s.lower() in valid_titles
-            ]
-
-            return valid_selected, reasoning
+            indices: List[int] = []
+            for x in raw_selected:
+                try:
+                    n = int(x)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= n <= max_index and n not in indices:
+                    indices.append(n)
+            return indices, reasoning
 
         except (json.JSONDecodeError, KeyError) as e:
             logger.warning(f"Failed to parse LLM response: {e}")
             logger.debug(f"Raw response: {text[:200]}")
             return [], f"JSON parse error: {e}"
+
+    def _collect_descendants(
+        self,
+        node: ToCNode,
+        only_leaves: bool = False,
+    ) -> List[ToCNode]:
+        """Return all descendants of `node`, optionally only leaves."""
+        out: List[ToCNode] = []
+        stack: List[ToCNode] = list(node.children)
+        while stack:
+            n = stack.pop()
+            if only_leaves:
+                if n.is_leaf:
+                    out.append(n)
+            else:
+                out.append(n)
+            stack.extend(n.children)
+        return out
 
     # =========================================================================
     # Internal: Heuristic Fallback
@@ -408,7 +419,7 @@ INSTRUCTIONS:
         max_selections: int = 3,
     ) -> List[ToCNode]:
         """
-        Heuristic node selection when LLM is unavailable.
+        Heuristic node selection when the LLM is unavailable.
 
         Scores by keyword overlap between query and node title/keywords.
         """
@@ -426,10 +437,11 @@ INSTRUCTIONS:
 
         scored.sort(key=lambda x: x[1], reverse=True)
 
-        # Return top selections (at least 1 even if score=0)
-        results = [node for node, score in scored[:max_selections] if score > 0]
+        results = [n for n, s in scored[:max_selections] if s > 0]
         if not results and nodes:
-            results = [nodes[0]]
+            # Best-effort: top max_selections by token estimate.
+            by_tokens = sorted(nodes, key=lambda n: -n.token_estimate)
+            results = by_tokens[:max_selections]
 
         return results
 
@@ -442,13 +454,9 @@ INSTRUCTIONS:
         selected_ids: List[str],
         tree: ToCTree,
     ) -> List[str]:
-        """
-        Add adjacent sibling sections for context.
-
-        If we selected "2.3 OAuth Flow", also include "2.2 Authentication Overview"
-        and "2.4 Token Refresh" as they likely provide useful context.
-        """
-        enriched: Set[str] = set(selected_ids)
+        """Add immediately-adjacent sibling sections for context."""
+        enriched: List[str] = list(selected_ids)
+        seen = set(selected_ids)
         max_sections = self._micro.max_sections_per_document
 
         for node_id in selected_ids:
@@ -459,8 +467,6 @@ INSTRUCTIONS:
             if not node or not node.parent_id:
                 continue
 
-            siblings = tree.get_siblings(node_id)
-            # Add immediately adjacent siblings
             parent = tree.get_node(node.parent_id)
             if not parent:
                 continue
@@ -474,13 +480,18 @@ INSTRUCTIONS:
 
             # Previous sibling
             if idx > 0 and len(enriched) < max_sections:
-                enriched.add(parent.children[idx - 1].id)
-
+                pid = parent.children[idx - 1].id
+                if pid not in seen:
+                    seen.add(pid)
+                    enriched.append(pid)
             # Next sibling
             if idx < len(parent.children) - 1 and len(enriched) < max_sections:
-                enriched.add(parent.children[idx + 1].id)
+                nid = parent.children[idx + 1].id
+                if nid not in seen:
+                    seen.add(nid)
+                    enriched.append(nid)
 
-        return list(enriched)[:max_sections]
+        return enriched[:max_sections]
 
     # =========================================================================
     # Internal: GenAI Client
