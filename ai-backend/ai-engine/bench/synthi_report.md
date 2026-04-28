@@ -1,7 +1,7 @@
 # Synthi Integration Report — RAG + Shadow
 
-Generated: 2026-04-28 09:38:16 UTC
-Workspace: `C:/Users/dev/AppData/Local/Temp/synthi_report_ws_wjapybn4`
+Generated: 2026-04-28 10:26:28 UTC
+Workspace: `C:\Users\dev\AppData\Local\Temp\synthi_report_ws_cxoqdf2o`
 Platform:  Windows 11 / Python 3.13.13
 
 ## API Key Status
@@ -24,27 +24,32 @@ card, Anthropic and OpenAI are ~4–5x more expensive per call than Gemini.
 
 ## Test Summary
 
-**17 passed / 0 failed / 0 skipped** (total 17)
+**22 passed / 0 failed / 0 skipped** (total 22)
 
 | Test | Status | Time (ms) | Detail |
 |------|--------|----------:|--------|
-| `rag:init` | PASS | 590 |  |
+| `rag:init` | PASS | 65762 |  |
 | `rag:ingest_stats` | PASS | 0 |  |
 | `rag:stats` | PASS | 0 |  |
-| `rag:dedup` | PASS | 5994 |  |
-| `rag:remove_file` | PASS | 2846 |  |
-| `rag:fusion_rrf` | PASS | 17707 |  |
-| `rag:fusion_weighted` | PASS | 13939 |  |
-| `rag:retrieve_context` | PASS | 14526 |  |
-| `rag:query_full` | PASS | 34179 |  |
-| `rag:query_cache` | PASS | 31944 |  |
-| `rag:cache_invalidation` | PASS | 20741 |  |
-| `rag:clear` | PASS | 35838 |  |
-| `shadow:config` | PASS | 57 |  |
+| `rag:dedup` | PASS | 7966 |  |
+| `rag:remove_file` | PASS | 19142 |  |
+| `rag:fusion_rrf` | PASS | 9769 |  |
+| `rag:fusion_weighted` | PASS | 13526 |  |
+| `rag:retrieve_context` | PASS | 11611 |  |
+| `rag:query_full` | PASS | 34606 |  |
+| `rag:query_cache` | PASS | 17933 |  |
+| `rag:cache_invalidation` | PASS | 50813 |  |
+| `rag:incremental` | PASS | 12 |  |
+| `rag:section_reranker` | PASS | 23414 |  |
+| `rag:async_ingest` | PASS | 105 |  |
+| `rag:query_stream` | PASS | 5121 |  |
+| `rag:query_trace` | PASS | 19553 |  |
+| `rag:clear` | PASS | 36797 |  |
+| `shadow:config` | PASS | 61 |  |
 | `shadow:cost_table` | PASS | 0 |  |
-| `shadow:project_signals` | PASS | 7 |  |
+| `shadow:project_signals` | PASS | 10 |  |
 | `shadow:events_import` | PASS | 0 |  |
-| `shadow:cost_ledger` | PASS | 4 |  |
+| `shadow:cost_ledger` | PASS | 5 |  |
 
 ## RAG Subsystem
 
@@ -79,8 +84,8 @@ Step 4  Heavy Synthesis (LLM, 1-3s)                  -> cited answer
 |-----------|-------|
 | Fusion method | `rrf` |
 | RRF damping k | `60` |
-| Routing model (Step 3) | `gemini-2.0-flash` |
-| Synthesis model (Step 4) | `gemini-3.1-flash-lite-preview` |
+| Routing model (Step 3) | `gemini-3-flash-preview` |
+| Synthesis model (Step 4) | `gemini-3-flash-preview` |
 | Embedding model | `gemini-embedding-001` |
 | Embedding dimension | `3072` |
 | Store directory | `.synthi/rag` |
@@ -94,7 +99,7 @@ Step 4  Heavy Synthesis (LLM, 1-3s)                  -> cited answer
 | Failed | 0 |
 | Purged (stale) | 0 |
 | Total sections | 16 |
-| Time (ms) | 0 |
+| Time (ms) | 63024 |
 
 ### Store State After Ingestion
 
@@ -105,7 +110,7 @@ Step 4  Heavy Synthesis (LLM, 1-3s)                  -> cited answer
 | Sections | 16 |
 | ToC trees | 5 |
 | Keyword docs | 5 |
-| Unique BM25 terms | 85 |
+| Unique BM25 terms | 133 |
 
 ### retrieve_context() — Steps 2+3
 
@@ -118,9 +123,9 @@ Query: _"How does authentication work?"_
 | Sections assembled | 5 |
 | Tokens in context | 394 |
 | Sufficiency | `SUFFICIENT` |
-| Macro time (ms) | 14516.8 |
-| Micro time (ms) | 8.7 |
-| Total time (ms) | 14525.5 |
+| Macro time (ms) | 11591.8 |
+| Micro time (ms) | 18.9 |
+| Total time (ms) | 11610.7 |
 
 ### Fusion Method Comparison
 
@@ -128,8 +133,8 @@ Same query (`authentication session token login`) run with each fusion method.
 
 | Method | Docs selected | Sections | Tokens | Macro (ms) | Micro (ms) | Sufficiency |
 |--------|---------------|----------|--------|------------|------------|-------------|
-| `rrf` | 1 | 5 | 394 | 17686 | 14 | `SUFFICIENT` |
-| `weighted` | 1 | 5 | 394 | 13902 | 31 | `SUFFICIENT` |
+| `rrf` | 1 | 5 | 394 | 9698 | 36 | `SUFFICIENT` |
+| `weighted` | 1 | 5 | 394 | 13437 | 76 | `SUFFICIENT` |
 
 **RRF (Reciprocal Rank Fusion)** is the default (Cormack 2009).
 It fuses vector + BM25 + recency by rank position rather than raw scores,
@@ -142,22 +147,22 @@ Query: _"What is the RAG pipeline and how does micro-navigation work?"_
 
 | Metric | Value |
 |--------|-------|
-| Confidence | 0.687 |
-| Citations | 1 |
+| Confidence | 0.751 |
+| Citations | 2 |
 | Documents searched | 5 |
 | Documents selected | 1 |
-| Macro time (ms) | 17086 |
-| Micro time (ms) | 2747 |
-| Synthesis time (ms) | 14346 |
-| Total time (ms) | 34179 |
+| Macro time (ms) | 28737 |
+| Micro time (ms) | 2388 |
+| Synthesis time (ms) | 3478 |
+| Total time (ms) | 34606 |
 
 **Answer snippet:**
 
-> The RAG pipeline is responsible for answering codebase questions through the following four steps [1]:
+> The Retrieval-Augmented Generation (RAG) pipeline is a subsystem within the Synthi IDE's AI Engine (Python/FastAPI) designed to answer codebase questions [1], [2]. 
 
-1. **Ingestion**: Handles document loading, Table of Contents (ToC) extraction, section splitting, and embedding [1].
-2. **Macro-retrieval**: Utilizes vector search (cosine similarity) combined with a BM25 keyword filter, fused via Reciprocal Rank Fusion (RRF) [1].
-3. **Micro-navigation**: Emplo
+The pipeline consists of four primary stages:
+1.  **Ingestion**: Includes document loading, Table of Contents (ToC) extraction, section splitting, and embedding [1].
+2.  **Macro-retrieval**: Utilizes vector search (cosine similarity)
 
 
 ### Query Result Cache (Pipeline-level)
@@ -166,9 +171,9 @@ Identical query within TTL skips macro+micro+synthesis entirely.
 
 | Metric | Value |
 |--------|-------|
-| Cold call (ms) | 31944.0 |
-| Warm call (ms) | 0.0 |
-| Speed-up | 647951.4× |
+| Cold call (ms) | 17931.8 |
+| Warm call (ms) | 0.9 |
+| Speed-up | 20425.8× |
 | Hits | 1 |
 | Misses | 1 |
 

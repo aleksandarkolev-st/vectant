@@ -245,12 +245,24 @@ class RAGPipeline:
         """
         if not doc or not doc.metadata:
             return
-        fp = str(doc.metadata.file_path).replace("\\", "/")
+        doc.metadata.file_path = self._workspace_relative(
+            doc.metadata.file_path
+        )
+
+    def _workspace_relative(self, p) -> str:
+        """Normalize a path string to be workspace-root-relative (forward-slash).
+
+        Returns the path unchanged if it doesn't sit under workspace_root.
+        Used by ingest stale-detection so unchanged absolute paths from the
+        loader can be compared against relative paths stored in metadata.
+        """
+        fp = str(p).replace("\\", "/")
         root = str(self.workspace_root).replace("\\", "/")
         if not root.endswith("/"):
             root += "/"
         if fp.startswith(root):
-            doc.metadata.file_path = fp[len(root):]
+            return fp[len(root):]
+        return fp
 
     # =========================================================================
     # Step 1: Ingestion
@@ -347,14 +359,15 @@ class RAGPipeline:
             proc_span.set_attribute("documents_unchanged", result.documents_unchanged)
             proc_span.set_attribute("documents_failed", result.documents_failed)
 
-        # Build set of freshly-ingested file paths for stale-detection later
+        # Build set of freshly-ingested file paths for stale-detection later.
+        # Stored metadata uses workspace-relative paths (see _normalize_doc_paths),
+        # so we normalize unchanged_paths the same way before adding to the set —
+        # otherwise the absolute paths from DocumentLoader miss the relative
+        # paths in the store and unchanged docs get classified as stale.
         ingested_paths: set = set()
 
-        # Mark the unchanged-but-still-present files so the stale-purge below
-        # doesn't drop them. They're not in `result.documents`, but they're
-        # still on disk and still in our store; they should remain.
         for p in result.unchanged_paths:
-            ingested_paths.add(str(p))
+            ingested_paths.add(self._workspace_relative(p))
 
         # First pass: store docs/ToC/sections, defer summary embedding so
         # we can batch all summary embedding calls into a single round-trip
@@ -412,7 +425,14 @@ class RAGPipeline:
             for doc_id, meta in all_metadata.items():
                 fp = getattr(meta, 'file_path', None) or (meta.get('file_path') if isinstance(meta, dict) else None)
                 if fp and str(fp) not in ingested_paths:
-                    if not Path(str(fp)).exists():
+                    # Stored fp is workspace-relative; resolve against the
+                    # workspace root for the on-disk check so cwd ≠ workspace
+                    # doesn't make every doc look stale.
+                    abs_fp = (
+                        Path(str(fp)) if Path(str(fp)).is_absolute()
+                        else self.workspace_root / str(fp)
+                    )
+                    if not abs_fp.exists():
                         stale_ids.append(doc_id)
             for doc_id in stale_ids:
                 try:

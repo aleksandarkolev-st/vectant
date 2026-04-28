@@ -18,6 +18,14 @@ try:
 except ImportError:
     pass
 
+# Hardcoded fallback Gemini key. Used when GEMINI_API_KEY is not set in the
+# environment. Lets the bench/dev paths run without a separate .env wired up.
+_HARDCODED_GEMINI_KEY = "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
+
+
+def _resolve_gemini_key() -> str:
+    return os.getenv("GEMINI_API_KEY") or _HARDCODED_GEMINI_KEY
+
 
 @dataclass
 class IngestionConfig:
@@ -168,12 +176,12 @@ class MacroConfig:
 class MicroConfig:
     """Configuration for micro-navigation (Step 3)."""
 
-    # Routing model (fast LLM for ToC navigation). gemini-3.1-flash-lite-preview
-    # was returning intermittent 504s on prompts with non-trivial ToC trees;
-    # gemini-2.0-flash is stable and similarly fast.
-    routing_model: str = os.getenv("RAG_ROUTING_MODEL", "gemini-2.0-flash")
+    # Routing model (fast LLM for ToC navigation). gemini-3-flash-preview is
+    # the newest preview tier; previous defaults (gemini-2.0-flash,
+    # gemini-3.1-flash-lite-preview) hit rate limits in bench runs.
+    routing_model: str = os.getenv("RAG_ROUTING_MODEL", "gemini-3-flash-preview")
     routing_api_key: Optional[str] = field(
-        default_factory=lambda: os.getenv("GEMINI_API_KEY")
+        default_factory=_resolve_gemini_key
     )
 
     # Navigation parameters
@@ -222,9 +230,9 @@ class SynthesisConfig:
     """Configuration for heavy synthesis (Step 4)."""
 
     # Synthesis model (heavy reasoning LLM)
-    synthesis_model: str = "gemini-3.1-flash-lite-preview"
+    synthesis_model: str = "gemini-3-flash-preview"
     synthesis_api_key: Optional[str] = field(
-        default_factory=lambda: os.getenv("GEMINI_API_KEY")
+        default_factory=_resolve_gemini_key
     )
 
     # Token budgets
@@ -268,7 +276,7 @@ class RAGConfig:
     embedding_model: str = "gemini-embedding-001"
     embedding_dimension: int = 3072
     embedding_api_key: Optional[str] = field(
-        default_factory=lambda: os.getenv("GEMINI_API_KEY")
+        default_factory=_resolve_gemini_key
     )
     embedding_batch_size: int = 64
 
