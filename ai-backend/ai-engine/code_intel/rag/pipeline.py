@@ -11,8 +11,11 @@ The pipeline is the primary public interface for the RAG subsystem.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -141,6 +144,14 @@ class RAGPipeline:
 
         self._initialized = False
         self._zero_vector_count = 0
+
+        # Query result cache: identical query text within TTL returns the
+        # cached RAGResult (skips macro+micro+synthesis). Invalidated on
+        # any ingest/remove/clear so callers never see stale answers.
+        self._query_cache: "OrderedDict[str, Any]" = OrderedDict()
+        self._query_cache_lock = threading.Lock()
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     # =========================================================================
     # Initialization
@@ -292,6 +303,9 @@ class RAGPipeline:
         self.summary_index.save()
         self._keyword_filter_instance().save()
 
+        # Document set changed — drop any cached query results.
+        self._invalidate_query_cache("ingest_directory")
+
         elapsed = (time.time() - t0) * 1000
 
         stats = {
@@ -355,6 +369,9 @@ class RAGPipeline:
 
         self.summary_index.save()
         self._keyword_filter_instance().save()
+
+        # Document set changed — drop any cached query results.
+        self._invalidate_query_cache("ingest_file")
 
         return {
             "status": "ingested",
@@ -610,6 +627,12 @@ class RAGPipeline:
 
         query = RAGQuery(text=query_text, **kwargs)
 
+        # ── Cache lookup (skip Steps 2-4 entirely on hit) ────────────────
+        cache_key = self._cache_key_for(query_text, kwargs)
+        cached = self._cache_lookup(cache_key)
+        if cached is not None:
+            return cached
+
         # ── Step 2: Macro-Retrieval ──────────────────────────────────────
         try:
             macro_result = self._run_macro_retrieval(query)
@@ -642,7 +665,74 @@ class RAGPipeline:
             logger.error(f"Synthesis failed: {e}")
             return self._error_result(query, f"Synthesis failed: {e}", t_start)
 
+        # Only cache real answers, not error/no-results results.
+        if rag_result.answer and not getattr(rag_result, "error", None):
+            self._cache_store(cache_key, rag_result)
+
         return rag_result
+
+    # =========================================================================
+    # Query Result Cache
+    # =========================================================================
+
+    def _cache_key_for(
+        self,
+        query_text: str,
+        kwargs: Dict[str, Any],
+    ) -> str:
+        """
+        Stable key including the kwargs that materially change the result
+        (max_documents, max_sections, etc.) so callers asking the same
+        question with different budgets don't collide.
+        """
+        relevant = {
+            k: kwargs[k] for k in (
+                "max_documents", "max_sections", "max_tokens",
+                "require_citations", "document_ids", "tags",
+            ) if k in kwargs
+        }
+        payload = f"{query_text.strip().lower()}|{repr(sorted(relevant.items()))}"
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+    def _cache_lookup(self, key: str) -> Optional[RAGResult]:
+        """Return cached RAGResult if present and within TTL."""
+        cache_cfg = getattr(self.config, "cache", None)
+        if not cache_cfg or not cache_cfg.enable_query_cache:
+            return None
+
+        with self._query_cache_lock:
+            entry = self._query_cache.get(key)
+            if entry is None:
+                self._cache_misses += 1
+                return None
+            if time.time() - entry["ts"] > cache_cfg.ttl_seconds:
+                self._query_cache.pop(key, None)
+                self._cache_misses += 1
+                return None
+            # LRU bump
+            self._query_cache.move_to_end(key)
+            self._cache_hits += 1
+            return entry["result"]
+
+    def _cache_store(self, key: str, result: RAGResult) -> None:
+        """Store a RAGResult, evicting the oldest entry past max_entries."""
+        cache_cfg = getattr(self.config, "cache", None)
+        if not cache_cfg or not cache_cfg.enable_query_cache:
+            return
+
+        with self._query_cache_lock:
+            self._query_cache[key] = {"result": result, "ts": time.time()}
+            self._query_cache.move_to_end(key)
+            while len(self._query_cache) > cache_cfg.max_entries:
+                self._query_cache.popitem(last=False)
+
+    def _invalidate_query_cache(self, reason: str = "") -> None:
+        """Drop all cached query results (called on ingest/remove/clear)."""
+        with self._query_cache_lock:
+            n = len(self._query_cache)
+            if n:
+                self._query_cache.clear()
+                logger.debug(f"Query cache invalidated ({n} entries) — {reason}")
 
     # =========================================================================
     # Internal: Pipeline Steps
@@ -1166,6 +1256,12 @@ class RAGPipeline:
         """Get pipeline statistics."""
         kf = self._keyword_filter_instance()
         kf_stats = kf.get_stats()
+        with self._query_cache_lock:
+            cache_size = len(self._query_cache)
+        total_lookups = self._cache_hits + self._cache_misses
+        cache_hit_rate = (
+            self._cache_hits / total_lookups if total_lookups > 0 else 0.0
+        )
         return {
             "documents": self.document_store.count(),
             "summaries": self.summary_index.count(),
@@ -1174,6 +1270,13 @@ class RAGPipeline:
             "keyword_docs": kf_stats.get("document_count", 0),
             "keyword_terms": kf_stats.get("unique_terms", 0),
             "store_directory": self._store_dir,
+            "query_cache": {
+                "size": cache_size,
+                "hits": self._cache_hits,
+                "misses": self._cache_misses,
+                "hit_rate": round(cache_hit_rate, 3),
+            },
+            "zero_vector_fallbacks": self._zero_vector_count,
         }
 
     def clear(self) -> None:
@@ -1196,6 +1299,8 @@ class RAGPipeline:
                 self._processor.reset_dedup()
             except Exception as e:
                 logger.debug(f"Processor dedup reset failed: {e}")
+
+        self._invalidate_query_cache("clear")
 
         logger.info("RAG pipeline data cleared")
 
@@ -1255,6 +1360,9 @@ class RAGPipeline:
         # Persist
         self.summary_index.save()
         self._keyword_filter_instance().save()
+
+        # Document set changed — drop any cached query results.
+        self._invalidate_query_cache("remove_file")
 
         logger.info(
             f"Removed file from RAG: {file_path} "

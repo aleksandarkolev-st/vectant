@@ -190,6 +190,19 @@ class MicroConfig:
 
 
 @dataclass
+class CacheConfig:
+    """Configuration for the pipeline-level query result cache.
+
+    Caches the full RAGResult keyed on query text. Identical query within
+    ttl_seconds returns the cached answer instantly (skips macro+micro+
+    synthesis entirely). Auto-invalidated on ingest/clear/remove_file.
+    """
+    enable_query_cache: bool = True
+    ttl_seconds: int = 3600              # 1 hour default
+    max_entries: int = 256               # bounded LRU
+
+
+@dataclass
 class SynthesisConfig:
     """Configuration for heavy synthesis (Step 4)."""
 
@@ -234,6 +247,7 @@ class RAGConfig:
     macro: MacroConfig = field(default_factory=MacroConfig)
     micro: MicroConfig = field(default_factory=MicroConfig)
     synthesis: SynthesisConfig = field(default_factory=SynthesisConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
 
     # Embedding model (shared between ingestion and macro)
     embedding_model: str = "gemini-embedding-001"

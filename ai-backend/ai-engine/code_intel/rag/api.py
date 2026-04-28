@@ -162,4 +162,73 @@ def register_rag_routes(router):
                 "error": str(e),
             }
 
+    @router.get("/rag/diagnostics")
+    async def rag_diagnostics() -> Dict[str, Any]:
+        """
+        Detailed diagnostics for the RAG subsystem.
+
+        Surfaces internal state useful for debugging latency, rate-limiting,
+        and cache effectiveness — not just the document counts that /stats
+        exposes.
+        """
+        try:
+            pipeline = _get_pipeline()
+            stats = pipeline.get_stats()
+
+            # Embedder caches (query-level + in-flight dedup).
+            embedder = getattr(pipeline, "_embedder_instance", None)
+            embedder_info: Dict[str, Any] = {"available": False}
+            if embedder is not None:
+                embedder_info = {
+                    "available": True,
+                    "model": getattr(embedder, "model", None),
+                    "dimension": getattr(embedder, "_dimension", None),
+                    "has_api_key": bool(
+                        getattr(embedder, "has_api_key", lambda: False)()
+                    ),
+                    "query_cache_size": len(getattr(embedder, "_query_cache", {}) or {}),
+                    "query_cache_capacity": getattr(embedder, "_cache_size", 0),
+                    "in_flight": len(getattr(embedder, "_in_flight", {}) or {}),
+                }
+
+            cfg = pipeline.config
+            return {
+                "status": "ok",
+                "stats": stats,
+                "embedder": embedder_info,
+                "config": {
+                    "embedding_model": cfg.embedding_model,
+                    "embedding_dimension": cfg.embedding_dimension,
+                    "fusion_method": cfg.macro.fusion_method,
+                    "rrf_k": cfg.macro.rrf_k,
+                    "max_documents": cfg.macro.max_documents,
+                    "routing_model": cfg.micro.routing_model,
+                    "synthesis_model": cfg.synthesis.synthesis_model,
+                    "max_sections_per_document": cfg.micro.max_sections_per_document,
+                    "max_total_sections": cfg.micro.max_total_sections,
+                    "routing_timeout_ms": cfg.micro.routing_timeout_ms,
+                    "total_timeout_ms": cfg.micro.total_timeout_ms,
+                    "query_cache_enabled": getattr(
+                        getattr(cfg, "cache", None), "enable_query_cache", False
+                    ),
+                    "query_cache_ttl_seconds": getattr(
+                        getattr(cfg, "cache", None), "ttl_seconds", 0
+                    ),
+                },
+                "workspace_root": str(getattr(pipeline, "workspace_root", "")),
+            }
+        except Exception as e:
+            logger.exception("RAG diagnostics failed")
+            return {"status": "error", "error": str(e)}
+
+    @router.post("/rag/cache/invalidate")
+    async def rag_cache_invalidate() -> Dict[str, Any]:
+        """Manually drop the query result cache (e.g. after content edits)."""
+        try:
+            pipeline = _get_pipeline()
+            pipeline._invalidate_query_cache("api_request")
+            return {"status": "invalidated"}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
     logger.info("RAG API routes registered")
