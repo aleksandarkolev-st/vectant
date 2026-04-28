@@ -640,10 +640,58 @@ class RAGPipeline:
     # =========================================================================
 
     def _run_macro_retrieval(self, query: RAGQuery) -> MacroResult:
-        """Step 2: Macro-retrieval."""
+        """Step 2: Macro-retrieval.
+
+        Optionally runs the user query through the HyDE rewriter first. The
+        rewriter produces a hypothetical code snippet which we feed to the
+        embedder in place of the raw question; BM25 keeps the original text
+        so we don't pollute keyword stats with LLM-invented identifiers.
+        Falls back transparently when there's no API key, the rewriter
+        errors, or the feature is disabled in config.
+        """
         t0 = time.time()
         ranker = self._document_ranker_instance()
-        result = ranker.rank(query)
+
+        if not getattr(self.config.macro, "enable_query_rewrite", False):
+            result = ranker.rank(query)
+            result.time_ms = (time.time() - t0) * 1000
+            return result
+
+        # Best-effort rewrite. Any failure → original query path.
+        embedding_text: Optional[str] = None
+        try:
+            rewriter = self._query_rewriter_instance()
+            rewritten: RewrittenQuery = rewriter.rewrite(
+                query.text,
+                conversation_history=None,
+                enable_hyde=getattr(self.config.macro, "enable_hyde", True),
+            )
+            if rewritten.used_hyde and rewritten.hyde_document:
+                # Embed HyDE doc + rewritten question so the vector still has
+                # the question's intent anchored alongside the synthetic code.
+                embedding_text = f"{rewritten.rewritten}\n\n{rewritten.hyde_document}"
+        except Exception as e:
+            logger.debug(f"Query rewrite failed, using original: {e}")
+
+        if embedding_text is None:
+            result = ranker.rank(query)
+            result.time_ms = (time.time() - t0) * 1000
+            return result
+
+        # Pre-analyze the original query but inject the HyDE text as the
+        # embedding source, then ask the ranker to use that analyzed query.
+        try:
+            analyzer = self._query_analyzer_instance()
+            analyzed = analyzer.analyze(
+                query.text,
+                generate_embedding=True,
+                embedding_text=embedding_text,
+            )
+            result = ranker.rank_with_analyzed(analyzed, query)
+        except Exception as e:
+            logger.debug(f"HyDE-augmented analyze failed, falling back: {e}")
+            result = ranker.rank(query)
+
         result.time_ms = (time.time() - t0) * 1000
         return result
 
@@ -688,31 +736,49 @@ class RAGPipeline:
             total_token_budget=self.config.synthesis.max_context_tokens,
         )
 
-        # Score relevance
+        # Score relevance, then optionally diversify via MMR. The flat list
+        # preserves the (extraction_index, scored_section) mapping so we can
+        # reorder/filter the underlying extraction_results in-place after
+        # diversification — keeping ContextBuilder's downstream view aligned.
         scorer = self._relevance_scorer_instance()
-        all_references = []
-        for result in extraction_results:
-            scored = scorer.score_sections(
-                query.text, result.sections
-            )
+        flat: List[tuple] = []
+        for ei, result in enumerate(extraction_results):
+            scored = scorer.score_sections(query.text, result.sections)
             for ss in scored:
-                # Resolve actual document title from store
-                doc_title = ss.section.document_id
-                doc_meta = self.document_store.get_metadata(ss.section.document_id)
-                if doc_meta:
-                    doc_title = doc_meta.title or doc_meta.file_name
+                flat.append((ei, ss))
 
-                ref = SectionReference(
-                    section_id=ss.section.id,
-                    document_id=ss.section.document_id,
-                    document_title=doc_title,
-                    section_title=ss.section.title,
-                    breadcrumb=ss.section.breadcrumb,
-                    relevance=ss.relevance,
-                    relevance_score=ss.score,
-                    content_snippet=ss.section.content[:200],
-                )
-                all_references.append(ref)
+        if (
+            getattr(self.config.macro, "enable_section_mmr", False)
+            and len(flat) > 1
+        ):
+            flat = self._apply_section_mmr(flat)
+
+        # Rebuild each ExtractionResult.sections in MMR (or score) order so
+        # ContextBuilder sees the diversified set. Sections dropped by the
+        # diversity cap are removed from the extraction altogether.
+        per_ext: Dict[int, List[Any]] = {ei: [] for ei in range(len(extraction_results))}
+        for ei, ss in flat:
+            per_ext[ei].append(ss.section)
+        for ei, sections in per_ext.items():
+            extraction_results[ei].sections = sections
+
+        all_references: List[SectionReference] = []
+        for ei, ss in flat:
+            doc_title = ss.section.document_id
+            doc_meta = self.document_store.get_metadata(ss.section.document_id)
+            if doc_meta:
+                doc_title = doc_meta.title or doc_meta.file_name
+
+            all_references.append(SectionReference(
+                section_id=ss.section.id,
+                document_id=ss.section.document_id,
+                document_title=doc_title,
+                section_title=ss.section.title,
+                breadcrumb=ss.section.breadcrumb,
+                relevance=ss.relevance,
+                relevance_score=ss.score,
+                content_snippet=ss.section.content[:200],
+            ))
 
         elapsed = (time.time() - t0) * 1000
 
@@ -726,6 +792,61 @@ class RAGPipeline:
         )
 
         return micro_result, extraction_results
+
+    # =========================================================================
+    # Internal: Section-level MMR diversity
+    # =========================================================================
+
+    @staticmethod
+    def _section_token_set(text: str, cap: int = 400) -> set:
+        """Cheap token set for Jaccard similarity. Caps input length so a
+        long section doesn't dominate the comparison cost.
+        """
+        if not text:
+            return set()
+        head = text[:cap].lower()
+        return {t for t in head.split() if len(t) > 2}
+
+    def _apply_section_mmr(self, flat: List[tuple]) -> List[tuple]:
+        """Diversify scored sections with MMR.
+
+        Similarity blends a same-document indicator (0.6) with a token
+        Jaccard on the section bodies (0.4) — mirrors the cheap reranker
+        similarity used in retrieval/reranker.py so we don't pull in the
+        chunk-tied LightweightReranker. Cap is the configured
+        max_total_sections so we don't accidentally let MMR pad results.
+        """
+        lambda_ = float(getattr(self.config.macro, "section_mmr_lambda", 0.7))
+        cap = max(1, int(getattr(self.config.micro, "max_total_sections", len(flat))))
+
+        # Pre-compute token sets once per section.
+        token_sets = {
+            id(ss.section): self._section_token_set(ss.section.content)
+            for _, ss in flat
+        }
+
+        def relevance_fn(item: tuple) -> float:
+            return float(item[1].score)
+
+        def similarity_fn(a: tuple, b: tuple) -> float:
+            sa, sb = a[1].section, b[1].section
+            same_doc = 1.0 if sa.document_id == sb.document_id else 0.0
+            ta, tb = token_sets[id(sa)], token_sets[id(sb)]
+            if not ta or not tb:
+                jacc = 0.0
+            else:
+                inter = ta & tb
+                union = ta | tb
+                jacc = len(inter) / len(union) if union else 0.0
+            return 0.6 * same_doc + 0.4 * jacc
+
+        return _mmr_select(
+            flat,
+            relevance_fn=relevance_fn,
+            similarity_fn=similarity_fn,
+            lambda_=lambda_,
+            top_k=cap,
+        )
 
     def _run_synthesis(
         self,
@@ -887,6 +1008,15 @@ class RAGPipeline:
         if self._query_analyzer is None:
             self._query_analyzer = QueryAnalyzer(config=self.config)
         return self._query_analyzer
+
+    def _query_rewriter_instance(self) -> QueryRewriter:
+        if self._query_rewriter is None:
+            # Reuse the synthesis API key (Gemini) — falls back to GEMINI_API_KEY
+            # env via QueryRewriter's own default. With no key the rewriter
+            # is a quiet no-op, so the pipeline still works offline.
+            api_key = getattr(self.config.synthesis, "synthesis_api_key", None)
+            self._query_rewriter = QueryRewriter(api_key=api_key)
+        return self._query_rewriter
 
     def _summary_searcher_instance(self) -> SummarySearcher:
         if self._summary_searcher is None:
