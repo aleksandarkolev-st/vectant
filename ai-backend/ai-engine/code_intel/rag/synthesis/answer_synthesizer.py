@@ -20,7 +20,7 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from ..config import SynthesisConfig, RAGConfig, get_rag_config
 from ..types import RAGQuery, RAGResult, Citation
@@ -146,6 +146,93 @@ class AnswerSynthesizer:
             output_tokens=output_tokens,
             time_ms=elapsed,
         )
+
+    def synthesize_stream(
+        self,
+        query: RAGQuery,
+        context: SynthesisContext,
+    ) -> Iterator[Dict[str, Any]]:
+        """
+        Stream the answer one chunk at a time.
+
+        Uses Gemini's streaming mode (stream=True) so the caller can show
+        first tokens before the full answer is generated. Yields:
+            {"type": "start",       "model": "<name>"}
+            {"type": "delta",       "text": "<chunk>"}        (repeated)
+            {"type": "complete",    "answer": "<full text>", ...}
+            {"type": "error",       "error": "<message>"}    (on failure)
+
+        Falls back to a single non-streamed result if streaming raises —
+        ensures callers always receive a "complete" event.
+        """
+        t0 = time.time()
+        prompt = self._build_prompt(query.text, context)
+        model_name = self._synth.synthesis_model
+
+        yield {"type": "start", "model": model_name}
+
+        full_text_parts: List[str] = []
+        try:
+            genai = self._get_genai()
+            model = genai.GenerativeModel(
+                model_name,
+                generation_config=genai.GenerationConfig(
+                    temperature=0.3,
+                    max_output_tokens=self._synth.max_answer_tokens,
+                ),
+            )
+            response = model.generate_content(prompt, stream=True)
+            for chunk in response:
+                # Gemini streaming yields response objects; .text aggregates
+                # the partial deltas added since the last chunk.
+                piece = ""
+                try:
+                    piece = (chunk.text or "")
+                except Exception:
+                    piece = ""
+                if not piece:
+                    continue
+                full_text_parts.append(piece)
+                yield {"type": "delta", "text": piece}
+
+        except Exception as e:
+            # Streaming failed — fall through to non-streamed synth so the
+            # caller still gets an answer. Don't double-report the error
+            # unless even the fallback fails.
+            logger.warning(
+                f"Streaming synthesis failed ({e}); falling back to non-streamed"
+            )
+            try:
+                fallback = self.synthesize(query, context)
+                full_text_parts = [fallback.answer_text]
+                yield {"type": "delta", "text": fallback.answer_text}
+            except Exception as e2:
+                yield {"type": "error", "error": f"{type(e2).__name__}: {e2}"}
+                return
+
+        full_text = "".join(full_text_parts).strip()
+        if not full_text:
+            yield {"type": "error", "error": "model returned empty response"}
+            return
+
+        # Citations / grounding warning post-pass on the assembled text.
+        citations = self._extract_citation_markers(full_text)
+        if self._synth.require_grounding and not citations:
+            full_text = self._add_grounding_warning(full_text, context)
+
+        elapsed = (time.time() - t0) * 1000.0
+        input_tokens = len(prompt) // 4 + 1
+        output_tokens = len(full_text) // 4 + 1
+
+        yield {
+            "type": "complete",
+            "answer": full_text,
+            "raw_citations": citations,
+            "model_used": model_name,
+            "time_ms": elapsed,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        }
 
     def synthesize_with_retry(
         self,

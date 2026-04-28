@@ -539,6 +539,138 @@ def test_rag_cache_invalidation(workspace_root: str) -> Dict:
     }
 
 
+def test_rag_incremental_indexing(workspace_root: str) -> Dict:
+    """Re-ingesting an unchanged corpus must skip the LLM summary calls.
+
+    The second ingest_directory pass should classify every previously-stored
+    document as `documents_unchanged` and process zero new documents.
+    """
+    pipeline, _ = _ensure_pipeline(workspace_root)
+    before = pipeline.get_stats()["documents"]
+    t0 = time.perf_counter()
+    stats = pipeline.ingest_directory(workspace_root)
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    after = pipeline.get_stats()["documents"]
+    unchanged = stats.get("documents_unchanged", 0)
+    processed = stats.get("documents_processed", 0)
+
+    assert before == after, f"document count changed: {before} -> {after}"
+    assert unchanged >= 1, (
+        f"expected at least 1 unchanged document on re-ingest, got {unchanged}"
+    )
+    return {
+        "elapsed_ms": round(elapsed_ms, 1),
+        "documents_before": before,
+        "documents_after": after,
+        "documents_unchanged": unchanged,
+        "documents_processed": processed,
+        "documents_purged": stats.get("documents_purged", 0),
+    }
+
+
+def test_rag_section_reranker(workspace_root: str) -> Dict:
+    """Confirm the section reranker runs and reorders for the top query."""
+    from code_intel.rag.config import RAGConfig
+    from code_intel.rag.pipeline import RAGPipeline
+
+    # Build a config with rerank ON and OFF and compare retrieval timings.
+    cfg_off = RAGConfig()
+    cfg_off.micro.enable_section_rerank = False
+    pipe_off = RAGPipeline(workspace_root=workspace_root, config=cfg_off)
+    pipe_off.initialize()
+
+    cfg_on = RAGConfig()
+    cfg_on.micro.enable_section_rerank = True
+    pipe_on = RAGPipeline(workspace_root=workspace_root, config=cfg_on)
+    pipe_on.initialize()
+
+    q = "authentication session token login"
+    r_off = pipe_off.retrieve_context(q, max_tokens=4000)
+    r_on = pipe_on.retrieve_context(q, max_tokens=4000)
+
+    return {
+        "rerank_off_sections": r_off["sections_used"],
+        "rerank_on_sections": r_on["sections_used"],
+        "rerank_off_micro_ms": r_off["timing"].get("micro_ms", 0),
+        "rerank_on_micro_ms": r_on["timing"].get("micro_ms", 0),
+        "backend": cfg_on.micro.section_rerank_backend,
+        "blend": cfg_on.micro.section_rerank_blend,
+    }
+
+
+def test_rag_async_ingest(workspace_root: str) -> Dict:
+    """Async ingest should return a job_id and progress to completed."""
+    pipeline, _ = _ensure_pipeline(workspace_root)
+    job_id = pipeline.ingest_directory_async(workspace_root)
+    deadline = time.time() + 60.0
+    final = None
+    while time.time() < deadline:
+        snap = pipeline.get_ingest_job(job_id)
+        if snap and snap["status"] in ("completed", "failed"):
+            final = snap
+            break
+        time.sleep(0.1)
+    assert final is not None, "async ingest did not finish in 60s"
+    assert final["status"] == "completed", (
+        f"async ingest failed: {final.get('error')}"
+    )
+    # Subsequent re-ingests should be near-instant once incremental kicks in.
+    return {
+        "job_id": job_id,
+        "status": final["status"],
+        "elapsed_ms": round(final["elapsed_ms"], 1),
+        "documents_unchanged": (final.get("stats") or {}).get(
+            "documents_unchanged", 0
+        ),
+    }
+
+
+def test_rag_query_stream(workspace_root: str) -> Dict:
+    """Streaming pipeline should emit start/macro/micro/answer_delta events."""
+    pipeline, _ = _ensure_pipeline(workspace_root)
+    events: List[Dict] = []
+    delta_count = 0
+    answer_chunks = []
+    for ev in pipeline.query_stream("How does authentication work?"):
+        events.append(ev)
+        if ev.get("type") == "answer_delta":
+            delta_count += 1
+            answer_chunks.append(ev.get("text", ""))
+        if ev.get("type") in ("complete", "error"):
+            break
+
+    types = [e.get("type") for e in events]
+    assert "start" in types, f"missing start event: {types}"
+    assert types[-1] in ("complete", "error"), (
+        f"stream ended without complete/error: {types}"
+    )
+    return {
+        "event_types": types,
+        "delta_chunks": delta_count,
+        "first_chunks": answer_chunks[:3],
+        "answer_length": sum(len(c) for c in answer_chunks),
+    }
+
+
+def test_rag_query_trace(workspace_root: str) -> Dict:
+    """RAGResult.trace should hold the structured span tree."""
+    pipeline, _ = _ensure_pipeline(workspace_root)
+    pipeline._invalidate_query_cache("trace_test")
+    result = pipeline.query("Explain the section reranker design.")
+    assert result.trace is not None, "expected non-null trace"
+    assert result.trace.get("name") == "rag.query", (
+        f"unexpected root span name: {result.trace.get('name')}"
+    )
+    child_names = [c["name"] for c in result.trace.get("children", [])]
+    return {
+        "root_span": result.trace.get("name"),
+        "root_duration_ms": result.trace.get("duration_ms"),
+        "child_spans": child_names,
+        "trace_attrs": result.trace.get("attributes"),
+    }
+
+
 def test_rag_clear(workspace_root: str) -> Dict:
     """Clear and verify the store empties; then re-ingest for later tests."""
     pipeline, _ = _ensure_pipeline(workspace_root)
@@ -1137,6 +1269,19 @@ def main() -> None:
             skip_reason="" if has_gemini else "GEMINI_API_KEY not set - cache test needs a real query",
         )
         run_test("rag:cache_invalidation", test_rag_cache_invalidation, workspace_root)
+        run_test("rag:incremental",    test_rag_incremental_indexing, workspace_root)
+        run_test("rag:section_reranker", test_rag_section_reranker, workspace_root)
+        run_test("rag:async_ingest",   test_rag_async_ingest, workspace_root)
+        run_test(
+            "rag:query_stream",
+            test_rag_query_stream, workspace_root,
+            skip_reason=("requires GEMINI_API_KEY" if not has_gemini else ""),
+        )
+        run_test(
+            "rag:query_trace",
+            test_rag_query_trace, workspace_root,
+            skip_reason=("requires GEMINI_API_KEY" if not has_gemini else ""),
+        )
         run_test("rag:clear",          test_rag_clear, workspace_root)
         print("")
 

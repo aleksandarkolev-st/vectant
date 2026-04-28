@@ -50,6 +50,13 @@ class IngestionConfig:
         "*.map",
         "package-lock.json",
         "yarn.lock",
+        # The RAG store keeps a per-document plaintext copy in
+        # `<store_dir>/doc_content/*.txt`. Without this exclusion the ingester
+        # re-walks those files on the next ingest, doubling counters and
+        # silently competing with the originals on the path-keyed dedup.
+        ".synthi/**",
+        # The IDE writes its own state dir in the workspace; never index it.
+        ".synthi-ide/**",
     ])
 
     # Maximum file size for ingestion (bytes)
@@ -184,6 +191,14 @@ class MicroConfig:
     # total cap is the wall-clock budget across all docs.
     routing_timeout_ms: int = 5000         # Per-call timeout
     total_timeout_ms: int = 8000           # Total micro-navigation timeout
+
+    # Section reranker (precision pass after RelevanceScorer, before MMR).
+    # Default backend is rule-based (no extra dependencies, ~1ms/section).
+    # Set backend="cross_encoder" to use sentence-transformers if installed.
+    enable_section_rerank: bool = True
+    section_rerank_backend: str = "rule"     # "rule" | "cross_encoder"
+    section_rerank_top_k: int = 30           # Only top-K candidates rerank
+    section_rerank_blend: float = 0.6        # final = (1-blend)*orig + blend*rerank
 
     # Fallback
     fallback_to_top_sections: bool = True  # If routing fails, use top N by token count

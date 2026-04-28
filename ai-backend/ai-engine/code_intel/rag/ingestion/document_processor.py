@@ -17,7 +17,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from ..config import RAGConfig
 from ..types import Document, ToCTree, Section, DocumentSummary
@@ -48,9 +48,13 @@ class ProcessingResult:
     documents: List[Document] = field(default_factory=list)
     documents_processed: int = 0
     documents_skipped: int = 0
+    documents_unchanged: int = 0
     documents_failed: int = 0
     errors: List[str] = field(default_factory=list)
     elapsed_ms: float = 0.0
+    # Paths whose content_hash matched an `already_indexed` entry — caller
+    # uses this to mark them as "ingested" so stale-purge doesn't drop them.
+    unchanged_paths: List[str] = field(default_factory=list)
 
     @property
     def total_sections(self) -> int:
@@ -176,7 +180,12 @@ class DocumentProcessor:
     # Public API
     # =====================================================================
 
-    def process_directory(self, directory: str) -> ProcessingResult:
+    def process_directory(
+        self,
+        directory: str,
+        *,
+        already_indexed: Optional[Set[str]] = None,
+    ) -> ProcessingResult:
         """
         Process all supported files in a directory.
 
@@ -185,6 +194,11 @@ class DocumentProcessor:
 
         Args:
             directory: Absolute path to the directory.
+            already_indexed: Optional set of content hashes already present
+                in persistent stores. Files whose computed hash matches an
+                entry are skipped before the LLM summary call — incremental
+                indexing. The summary call dominates ingest cost for large
+                corpora; skipping unchanged files makes re-ingest cheap.
 
         Returns:
             ProcessingResult with documents and statistics.
@@ -192,6 +206,7 @@ class DocumentProcessor:
         t0 = time.time()
         result = ProcessingResult()
         dir_path = Path(directory)
+        already_indexed = already_indexed or set()
 
         if not dir_path.is_dir():
             raise IngestionError(
@@ -222,6 +237,20 @@ class DocumentProcessor:
 
         # Step 2: Process each document through the pipeline
         for doc in raw_documents:
+            # Incremental skip: same content_hash = same content; nothing in
+            # ToC/Sections/Summary depends on path or mtime, so the existing
+            # store entry is still correct. Cheaper than the dedup check
+            # below because it short-circuits before any LLM call.
+            content_hash = doc.metadata.content_hash
+            if content_hash in already_indexed:
+                result.documents_unchanged += 1
+                if doc.metadata.file_path:
+                    result.unchanged_paths.append(str(doc.metadata.file_path))
+                logger.debug(
+                    f"Unchanged (skip): {doc.metadata.file_path} ({content_hash[:12]})"
+                )
+                continue
+
             try:
                 processed = self._process_single_document(doc)
                 if processed is None:
@@ -240,6 +269,7 @@ class DocumentProcessor:
         logger.info(
             f"Directory processing complete: "
             f"{result.documents_processed} processed, "
+            f"{result.documents_unchanged} unchanged, "
             f"{result.documents_skipped} skipped, "
             f"{result.documents_failed} failed "
             f"({result.elapsed_ms:.0f}ms)"

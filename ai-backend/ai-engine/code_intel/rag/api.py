@@ -9,6 +9,8 @@ Provides REST endpoints for:
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -64,7 +66,7 @@ def register_rag_routes(router):
 
         kwargs = {}
         for key in ("max_documents", "max_sections", "max_tokens",
-                     "require_citations", "document_ids", "tags"):
+                     "require_citations", "document_ids", "tags", "trace"):
             if key in payload:
                 kwargs[key] = payload[key]
 
@@ -76,6 +78,70 @@ def register_rag_routes(router):
             logger.error(f"RAG query failed: {e}", exc_info=True)
             return {"error": str(e), "answer": ""}
 
+    @router.post("/rag/query/stream")
+    async def rag_query_stream(payload: Dict[str, Any]):
+        """
+        Execute a RAG query and stream the answer back over Server-Sent Events.
+
+        Each SSE message is a JSON event of the form:
+            data: {"type": "macro" | "micro" | "answer_delta" | "complete" | ...}
+
+        Body:
+            {
+                "query": "How does the auth system work?",
+                ... (same kwargs as POST /rag/query)
+            }
+        """
+        from fastapi.responses import StreamingResponse  # local import: optional dep
+
+        query_text = payload.get("query", "")
+        if not query_text:
+            return {"error": "Missing 'query' field"}
+
+        kwargs: Dict[str, Any] = {}
+        for key in ("max_documents", "max_sections", "max_tokens",
+                    "require_citations", "document_ids", "tags", "trace"):
+            if key in payload:
+                kwargs[key] = payload[key]
+
+        async def _event_source():
+            # Run the sync generator in a worker thread so the event loop
+            # isn't blocked while waiting on Gemini token chunks. Each
+            # iteration becomes a single SSE message.
+            loop = asyncio.get_event_loop()
+            pipeline = _get_pipeline()
+            gen = pipeline.query_stream(query_text, **kwargs)
+
+            sentinel = object()
+
+            def _next():
+                try:
+                    return next(gen)
+                except StopIteration:
+                    return sentinel
+                except Exception as e:
+                    return {"type": "error", "error": str(e)}
+
+            while True:
+                event = await loop.run_in_executor(None, _next)
+                if event is sentinel:
+                    break
+                payload_str = json.dumps(event, ensure_ascii=False)
+                yield f"data: {payload_str}\n\n".encode("utf-8")
+                etype = event.get("type") if isinstance(event, dict) else None
+                if etype in ("complete", "error"):
+                    break
+
+        return StreamingResponse(
+            _event_source(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                # nginx-style buffering off so the client sees deltas live.
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     @router.post("/rag/ingest")
     async def rag_ingest(payload: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -84,22 +150,76 @@ def register_rag_routes(router):
         Body:
             {
                 "directory": "/path/to/docs",  // optional
-                "file": "/path/to/file.md"     // optional (single file)
+                "file": "/path/to/file.md",    // optional (single file)
+                "force_reindex": false         // optional, defaults false
             }
         """
         try:
             pipeline = _get_pipeline()
+            force = bool(payload.get("force_reindex", False))
 
             if "file" in payload:
-                result = pipeline.ingest_file(payload["file"])
+                result = pipeline.ingest_file(
+                    payload["file"], force_reindex=force
+                )
                 return result
 
             directory = payload.get("directory")
-            stats = pipeline.ingest_directory(directory)
+            stats = pipeline.ingest_directory(
+                directory, force_reindex=force
+            )
             return stats
 
         except Exception as e:
             logger.error(f"RAG ingestion failed: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    @router.post("/rag/ingest/async")
+    async def rag_ingest_async(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Kick off background ingestion. Returns a job_id.
+
+        Body:
+            {
+                "directory": "/path/to/docs",     // optional
+                "force_reindex": false            // optional
+            }
+        """
+        try:
+            pipeline = _get_pipeline()
+            directory = payload.get("directory")
+            force = bool(payload.get("force_reindex", False))
+            job_id = pipeline.ingest_directory_async(
+                directory, force_reindex=force
+            )
+            return {
+                "job_id": job_id,
+                "status": "queued",
+                "directory": directory or str(pipeline.workspace_root),
+            }
+        except Exception as e:
+            logger.error(f"RAG async ingest failed: {e}", exc_info=True)
+            return {"error": str(e)}
+
+    @router.get("/rag/ingest/job/{job_id}")
+    async def rag_ingest_job(job_id: str) -> Dict[str, Any]:
+        """Get the current status of an async ingest job."""
+        try:
+            pipeline = _get_pipeline()
+            job = pipeline.get_ingest_job(job_id)
+            if job is None:
+                return {"error": "job_not_found", "job_id": job_id}
+            return job
+        except Exception as e:
+            return {"error": str(e), "job_id": job_id}
+
+    @router.get("/rag/ingest/jobs")
+    async def rag_ingest_jobs() -> Dict[str, Any]:
+        """List recent async ingest jobs."""
+        try:
+            pipeline = _get_pipeline()
+            return {"jobs": pipeline.list_ingest_jobs()}
+        except Exception as e:
             return {"error": str(e)}
 
     @router.get("/rag/stats")

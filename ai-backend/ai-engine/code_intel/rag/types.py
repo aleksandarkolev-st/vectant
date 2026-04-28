@@ -752,8 +752,13 @@ class RAGResult:
     error: Optional[str] = None
     partial: bool = False             # True if answer is based on partial data
 
+    # Structured pipeline trace — span tree captured by observability.Tracer.
+    # None when tracing is disabled or the call originated from a path that
+    # didn't construct a Tracer. Always present in API responses when set.
+    trace: Optional[Dict[str, Any]] = None
+
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "answer": self.answer,
             "confidence": self.confidence,
             "citations": [c.to_dict() for c in self.citations],
@@ -779,3 +784,6 @@ class RAGResult:
             "error": self.error,
             "partial": self.partial,
         }
+        if self.trace is not None:
+            d["trace"] = self.trace
+        return d
