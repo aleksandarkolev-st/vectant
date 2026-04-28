@@ -155,9 +155,11 @@ class MicroConfig:
     min_relevance_score: float = 0.3       # Minimum relevance to include section
     include_sibling_context: bool = True   # Include adjacent sections for context
 
-    # Performance
-    routing_timeout_ms: int = 3000         # Per-routing-call timeout
-    total_timeout_ms: int = 10000          # Total micro-navigation timeout
+    # Performance — single-shot navigation makes one LLM call per doc,
+    # parallelised across docs. Per-call cap is the "this doc is stuck" guard;
+    # total cap is the wall-clock budget across all docs.
+    routing_timeout_ms: int = 8000         # Per-call timeout (Gemini Flash Lite)
+    total_timeout_ms: int = 12000          # Total micro-navigation timeout
 
     # Fallback
     fallback_to_top_sections: bool = True  # If routing fails, use top N by token count

@@ -347,7 +347,7 @@ def test_rag_dedup(workspace_root: str) -> Dict:
 
 
 def test_rag_remove_file(workspace_root: str) -> Dict:
-    """Remove and re-ingest a single file."""
+    """Remove and re-ingest a single file. Verify both halves of the cycle."""
     pipeline, _ = _ensure_pipeline(workspace_root)
     abs_fpath = str(Path(workspace_root) / "docs" / "README.md")
     # The store normalises to relative paths; try relative first, then absolute.
@@ -357,15 +357,23 @@ def test_rag_remove_file(workspace_root: str) -> Dict:
     if remove_result.get("status") != "removed":
         remove_result = pipeline.remove_file(abs_fpath)
     after_remove = pipeline.get_stats()["documents"]
-    # Re-ingest so the rest of the tests still have it
-    pipeline.ingest_file(abs_fpath)
+    # Re-ingest must actually put the doc back, not silently dedup-skip it.
+    reingest_result = pipeline.ingest_file(abs_fpath)
     after_reingest = pipeline.get_stats()["documents"]
     assert remove_result["status"] == "removed", f"remove_file returned: {remove_result}"
+    assert reingest_result.get("status") == "ingested", (
+        f"re-ingest after remove was skipped: {reingest_result}"
+    )
+    assert after_reingest == before, (
+        f"re-ingest did not restore doc count: before={before}, "
+        f"after_remove={after_remove}, after_reingest={after_reingest}"
+    )
     return {
         "docs_before_remove": before,
         "docs_after_remove": after_remove,
         "docs_after_reingest": after_reingest,
         "sections_removed": remove_result["sections_removed"],
+        "reingest_status": reingest_result.get("status"),
     }
 
 

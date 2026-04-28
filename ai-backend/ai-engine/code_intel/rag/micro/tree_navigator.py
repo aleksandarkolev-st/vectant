@@ -26,7 +26,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -77,7 +79,9 @@ class TreeNavigator:
         self._api_key = api_key or self._micro.routing_api_key
 
         self._genai = None
+        self._genai_lock = threading.Lock()
         self._total_calls = 0
+        self._calls_lock = threading.Lock()
 
     # =========================================================================
     # Public API
@@ -88,26 +92,49 @@ class TreeNavigator:
         query: RAGQuery,
         toc_trees: Dict[str, ToCTree],
     ) -> List[NavigationResult]:
-        """Navigate multiple document ToC trees (one LLM call per doc)."""
+        """Navigate multiple document ToC trees in parallel (one LLM call per doc)."""
         self._total_calls = 0
         t0 = time.time()
         deadline = t0 + (self._micro.total_timeout_ms / 1000)
 
-        results: List[NavigationResult] = []
+        if not toc_trees:
+            return []
 
-        for doc_id, tree in toc_trees.items():
-            if time.time() > deadline:
-                logger.warning(
-                    f"Total navigation timeout reached after {len(results)} docs"
-                )
-                break
+        # Most docs hit the small-tree shortcut and don't make an LLM call,
+        # so the parallelism cost is bounded by the few docs that do. Cap
+        # concurrency so we don't slam Gemini on huge workspaces.
+        max_workers = min(len(toc_trees), 8)
 
-            if self._total_calls >= self._micro.max_routing_calls:
-                logger.warning("Max routing calls reached")
-                break
+        ordered_ids = list(toc_trees.keys())
+        results_by_id: Dict[str, NavigationResult] = {}
 
-            result = self._navigate_single(query, doc_id, tree, deadline)
-            results.append(result)
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="rag-tree-nav",
+        ) as pool:
+            future_to_id = {
+                pool.submit(
+                    self._navigate_single, query, doc_id, tree, deadline,
+                ): doc_id
+                for doc_id, tree in toc_trees.items()
+            }
+
+            for future in as_completed(future_to_id):
+                doc_id = future_to_id[future]
+                try:
+                    results_by_id[doc_id] = future.result()
+                except Exception as e:
+                    logger.warning(
+                        f"Navigation worker for {doc_id} crashed: {e}"
+                    )
+                    results_by_id[doc_id] = NavigationResult(
+                        document_id=doc_id,
+                        selected_node_ids=[],
+                        used_fallback=True,
+                    )
+
+        # Preserve macro-retrieval ordering in the output
+        results = [results_by_id[d] for d in ordered_ids if d in results_by_id]
 
         elapsed = (time.time() - t0) * 1000
         total_selected = sum(len(r.selected_node_ids) for r in results)
@@ -314,8 +341,16 @@ Return ONLY valid JSON in this exact format:
                     response_mime_type="application/json",
                 ),
             )
-            response = model.generate_content(prompt)
-            self._total_calls += 1
+            # Per-call timeout: without this the SDK blocks indefinitely if
+            # the network is slow. Cap at routing_timeout_ms so a single
+            # stuck call can't burn the whole navigation budget.
+            timeout_s = max(1.0, self._micro.routing_timeout_ms / 1000)
+            response = model.generate_content(
+                prompt,
+                request_options={"timeout": timeout_s},
+            )
+            with self._calls_lock:
+                self._total_calls += 1
         except Exception as e:
             raise RoutingModelError(f"Fast LLM routing call failed: {e}") from e
 
@@ -498,16 +533,19 @@ Return ONLY valid JSON in this exact format:
     # =========================================================================
 
     def _get_genai(self):
-        """Lazy-load Google GenAI client."""
+        """Lazy-load Google GenAI client (thread-safe)."""
         if self._genai is not None:
             return self._genai
 
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=self._api_key)
-            self._genai = genai
-            return genai
-        except ImportError:
-            raise RoutingModelError(
-                "google-generativeai package required for tree navigation"
-            )
+        with self._genai_lock:
+            if self._genai is not None:
+                return self._genai
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=self._api_key)
+                self._genai = genai
+                return genai
+            except ImportError:
+                raise RoutingModelError(
+                    "google-generativeai package required for tree navigation"
+                )
