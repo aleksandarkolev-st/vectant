@@ -1,7 +1,7 @@
 # Synthi Integration Report — RAG + Shadow
 
-Generated: 2026-04-28 10:26:28 UTC
-Workspace: `C:\Users\dev\AppData\Local\Temp\synthi_report_ws_cxoqdf2o`
+Generated: 2026-04-28 11:30:31 UTC
+Workspace: `C:/Users/dev/AppData/Local/Temp/synthi_report_ws_wjapybn4`
 Platform:  Windows 11 / Python 3.13.13
 
 ## API Key Status
@@ -24,32 +24,25 @@ card, Anthropic and OpenAI are ~4–5x more expensive per call than Gemini.
 
 ## Test Summary
 
-**22 passed / 0 failed / 0 skipped** (total 22)
+**15 passed / 0 failed / 0 skipped** (total 15)
 
 | Test | Status | Time (ms) | Detail |
 |------|--------|----------:|--------|
-| `rag:init` | PASS | 65762 |  |
+| `rag:init` | PASS | 14087911 |  |
 | `rag:ingest_stats` | PASS | 0 |  |
 | `rag:stats` | PASS | 0 |  |
-| `rag:dedup` | PASS | 7966 |  |
-| `rag:remove_file` | PASS | 19142 |  |
-| `rag:fusion_rrf` | PASS | 9769 |  |
-| `rag:fusion_weighted` | PASS | 13526 |  |
-| `rag:retrieve_context` | PASS | 11611 |  |
-| `rag:query_full` | PASS | 34606 |  |
-| `rag:query_cache` | PASS | 17933 |  |
-| `rag:cache_invalidation` | PASS | 50813 |  |
-| `rag:incremental` | PASS | 12 |  |
-| `rag:section_reranker` | PASS | 23414 |  |
-| `rag:async_ingest` | PASS | 105 |  |
-| `rag:query_stream` | PASS | 5121 |  |
-| `rag:query_trace` | PASS | 19553 |  |
-| `rag:clear` | PASS | 36797 |  |
-| `shadow:config` | PASS | 61 |  |
+| `rag:dedup` | PASS | 9805 |  |
+| `rag:remove_file` | PASS | 11177 |  |
+| `rag:fusion_rrf` | PASS | 7906 |  |
+| `rag:fusion_weighted` | PASS | 7921 |  |
+| `rag:retrieve_context` | PASS | 8553 |  |
+| `rag:query_full` | PASS | 13903 |  |
+| `rag:clear` | PASS | 64174 |  |
+| `shadow:config` | PASS | 30 |  |
 | `shadow:cost_table` | PASS | 0 |  |
-| `shadow:project_signals` | PASS | 10 |  |
+| `shadow:project_signals` | PASS | 2 |  |
 | `shadow:events_import` | PASS | 0 |  |
-| `shadow:cost_ledger` | PASS | 5 |  |
+| `shadow:cost_ledger` | PASS | 1 |  |
 
 ## RAG Subsystem
 
@@ -84,8 +77,8 @@ Step 4  Heavy Synthesis (LLM, 1-3s)                  -> cited answer
 |-----------|-------|
 | Fusion method | `rrf` |
 | RRF damping k | `60` |
-| Routing model (Step 3) | `gemini-3-flash-preview` |
-| Synthesis model (Step 4) | `gemini-3-flash-preview` |
+| Routing model (Step 3) | `gemini-3.1-flash-lite-preview` |
+| Synthesis model (Step 4) | `gemini-3.1-flash-lite-preview` |
 | Embedding model | `gemini-embedding-001` |
 | Embedding dimension | `3072` |
 | Store directory | `.synthi/rag` |
@@ -94,23 +87,23 @@ Step 4  Heavy Synthesis (LLM, 1-3s)                  -> cited answer
 
 | Metric | Value |
 |--------|-------|
-| Processed | 5 |
-| Skipped | 0 |
+| Processed | 21 |
+| Skipped | 5 |
 | Failed | 0 |
-| Purged (stale) | 0 |
-| Total sections | 16 |
-| Time (ms) | 63024 |
+| Purged (stale) | 4 |
+| Total sections | 30 |
+| Time (ms) | 14085781 |
 
 ### Store State After Ingestion
 
 | Metric | Count |
 |--------|-------|
-| Documents | 5 |
-| Summaries indexed | 5 |
-| Sections | 16 |
-| ToC trees | 5 |
-| Keyword docs | 5 |
-| Unique BM25 terms | 133 |
+| Documents | 21 |
+| Summaries indexed | 21 |
+| Sections | 30 |
+| ToC trees | 21 |
+| Keyword docs | 21 |
+| Unique BM25 terms | 170 |
 
 ### retrieve_context() — Steps 2+3
 
@@ -118,14 +111,14 @@ Query: _"How does authentication work?"_
 
 | Metric | Value |
 |--------|-------|
-| Documents searched | 5 |
-| Documents selected | 1 |
-| Sections assembled | 5 |
-| Tokens in context | 394 |
+| Documents searched | 10 |
+| Documents selected | 5 |
+| Sections assembled | 9 |
+| Tokens in context | 714 |
 | Sufficiency | `SUFFICIENT` |
-| Macro time (ms) | 11591.8 |
-| Micro time (ms) | 18.9 |
-| Total time (ms) | 11610.7 |
+| Macro time (ms) | 537.1 |
+| Micro time (ms) | 8015.8 |
+| Total time (ms) | 8553.0 |
 
 ### Fusion Method Comparison
 
@@ -133,8 +126,8 @@ Same query (`authentication session token login`) run with each fusion method.
 
 | Method | Docs selected | Sections | Tokens | Macro (ms) | Micro (ms) | Sufficiency |
 |--------|---------------|----------|--------|------------|------------|-------------|
-| `rrf` | 1 | 5 | 394 | 9698 | 36 | `SUFFICIENT` |
-| `weighted` | 1 | 5 | 394 | 13437 | 76 | `SUFFICIENT` |
+| `rrf` | 5 | 9 | 721 | 732 | 7169 | `SUFFICIENT` |
+| `weighted` | 5 | 9 | 721 | 751 | 7163 | `SUFFICIENT` |
 
 **RRF (Reciprocal Rank Fusion)** is the default (Cormack 2009).
 It fuses vector + BM25 + recency by rank position rather than raw scores,
@@ -147,43 +140,27 @@ Query: _"What is the RAG pipeline and how does micro-navigation work?"_
 
 | Metric | Value |
 |--------|-------|
-| Confidence | 0.751 |
-| Citations | 2 |
-| Documents searched | 5 |
-| Documents selected | 1 |
-| Macro time (ms) | 28737 |
-| Micro time (ms) | 2388 |
-| Synthesis time (ms) | 3478 |
-| Total time (ms) | 34606 |
+| Confidence | 0.354 |
+| Citations | 0 |
+| Documents searched | 10 |
+| Documents selected | 5 |
+| Macro time (ms) | 381 |
+| Micro time (ms) | 7236 |
+| Synthesis time (ms) | 6285 |
+| Total time (ms) | 13903 |
 
 **Answer snippet:**
 
-> The Retrieval-Augmented Generation (RAG) pipeline is a subsystem within the Synthi IDE's AI Engine (Python/FastAPI) designed to answer codebase questions [1], [2]. 
+> The RAG (Retrieval-Augmented Generation) pipeline is responsible for answering codebase questions through the following four steps [1, 4]:
 
-The pipeline consists of four primary stages:
-1.  **Ingestion**: Includes document loading, Table of Contents (ToC) extraction, section splitting, and embedding [1].
-2.  **Macro-retrieval**: Utilizes vector search (cosine similarity)
+1.  **Ingestion**: Handles document loading, Table of Contents (ToC) extraction, section splitting, and embedding [1, 4].
+2.  **Macro-retrieval**: Uses a combination of vector search (cosine similarity) and a BM25 keyword filter, fused via RRF [1, 4].
+3.  **Mi
 
-
-### Query Result Cache (Pipeline-level)
-
-Identical query within TTL skips macro+micro+synthesis entirely.
-
-| Metric | Value |
-|--------|-------|
-| Cold call (ms) | 17931.8 |
-| Warm call (ms) | 0.9 |
-| Speed-up | 20425.8× |
-| Hits | 1 |
-| Misses | 1 |
-
-### Cache Invalidation on Ingest
-
-Cache size after first query: 1 → after `ingest_file()`: 0 (expect 0).
 
 ### Clear + Re-ingest
 
-Docs before clear: 5 — after clear: 0 — after re-ingest: 5
+Docs before clear: 22 — after clear: 0 — after re-ingest: 5
 
 ## Shadow Subsystem
 
