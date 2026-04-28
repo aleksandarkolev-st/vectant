@@ -977,6 +977,17 @@ class RAGPipeline:
 
         self.summary_index.save()
         self._keyword_filter_instance().save()
+
+        # The DocumentProcessor maintains a per-instance content-hash dedup
+        # cache (`_seen_hashes`). Without resetting it, every subsequent
+        # ingest_directory()/ingest_file() call will silently skip the
+        # just-cleared docs as "duplicates" and the store stays empty.
+        if self._processor is not None:
+            try:
+                self._processor.reset_dedup()
+            except Exception as e:
+                logger.debug(f"Processor dedup reset failed: {e}")
+
         logger.info("RAG pipeline data cleared")
 
     def _remove_doc_by_id(self, doc_id: str) -> int:

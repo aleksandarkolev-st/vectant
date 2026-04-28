@@ -177,6 +177,11 @@ class DocumentProcessor:
                 details={"directory": directory},
             )
 
+        # `_seen_hashes` is intra-batch dedup. Without resetting, the cached
+        # processor instance carries stale hashes across calls and a
+        # post-clear re-ingest silently drops every document as "duplicate".
+        self._seen_hashes.clear()
+
         logger.info(f"Processing directory: {directory}")
 
         # Step 1: Load all documents via DocumentLoader
@@ -231,6 +236,10 @@ class DocumentProcessor:
             Fully processed Document, or None if skipped (e.g. duplicate).
         """
         logger.debug(f"Processing file: {file_path}")
+
+        # Single-file ingestion never needs cross-call dedup; the
+        # pipeline.ingest_file() caller handles existing-doc removal first.
+        self._seen_hashes.clear()
 
         # Load
         try:

@@ -1,58 +1,75 @@
 # Synthi Integration Report — RAG + Shadow
 
-Generated: 2026-04-28 07:11:31 UTC
-Workspace:  `C:\Users\dev\AppData\Local\Temp\synthi_report_ws_yvslw1t9`
-Platform:   Windows 11 / Python 3.13.13
+Generated: 2026-04-28 07:18:34 UTC
+Workspace: `C:/Users/dev/AppData/Local/Temp/synthi_report_ws_wjapybn4`
+Platform:  Windows 11 / Python 3.13.13
 
 ## API Key Status
 
 | Key | Status | Notes |
 |-----|--------|-------|
-| GEMINI_API_KEY | ✅ set | Required for RAG embeddings + LLM + Shadow generation |
-| ANTHROPIC_API_KEY | ⚪ not set | Optional — Shadow cross-universe (Anthropic provider) |
-| OPENAI_API_KEY | ⚪ not set | Optional — Shadow cross-universe (OpenAI provider) |
+| GEMINI_API_KEY | **set** | Required — RAG embeddings + LLM + Shadow generation/critic/arbiter |
+| ANTHROPIC_API_KEY | not set | Optional — Shadow cross-universe (Anthropic provider) |
+| OPENAI_API_KEY | not set | Optional — Shadow cross-universe (OpenAI provider) |
 
-> **Shadow minimum:** 1 key (GEMINI_API_KEY).  
-> **Shadow maximum:** 3 keys (adds Anthropic + OpenAI cross-validation universes).  
-> **RAG:** 1 key (GEMINI_API_KEY) for all LLM steps.
+### How many keys does Shadow need?
+
+**Minimum: 1** (`GEMINI_API_KEY`). All three tiers (quick/standard/deep) work with
+Gemini alone; generation, criticism, and arbitration all run on Gemini.
+
+**Maximum: 3.** Adding `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` enables
+cross-provider universes — e.g. Gemini generates, Anthropic criticises,
+OpenAI arbitrates — giving diversity of opinion on the patch. Per the rate
+card, Anthropic and OpenAI are ~4–5x more expensive per call than Gemini.
 
 ## Test Summary
 
-**13 passed / 3 failed / 0 skipped** (total 16)
+**15 passed / 0 failed / 0 skipped** (total 15)
 
 | Test | Status | Time (ms) | Detail |
 |------|--------|----------:|--------|
-| `rag:init` | ✅ PASS | 1261 |  |
-| `rag:ingest_file` | ✅ PASS | 5111 |  |
-| `rag:ingest_directory` | ✅ PASS | 134236 |  |
-| `rag:stats` | ✅ PASS | 244477 |  |
-| `rag:dedup` | ❌ FAIL | 26515 | Duplicate ingest created 27 docs, expected 1 |
-| `rag:remove_file` | ❌ FAIL | 11638 | Traceback (most recent call last):
-  File "C:\Users\dev\Downloads\synthi-test\sy |
-| `rag:clear` | ✅ PASS | 359596 |  |
-| `rag:fusion_rrf` | ✅ PASS | 73101 |  |
-| `rag:fusion_weighted` | ✅ PASS | 267405 |  |
-| `rag:retrieve_context` | ✅ PASS | 456094 |  |
-| `rag:query_full` | ✅ PASS | 404458 |  |
-| `shadow:config` | ✅ PASS | 128 |  |
-| `shadow:cost_table` | ✅ PASS | 0 |  |
-| `shadow:project_signals` | ✅ PASS | 12 |  |
-| `shadow:events_import` | ❌ FAIL | 0 | JobState.__init__() missing 1 required positional argument: 'user_id' |
-| `shadow:cost_ledger` | ✅ PASS | 5 |  |
+| `rag:init` | PASS | 55052 |  |
+| `rag:ingest_stats` | PASS | 0 |  |
+| `rag:stats` | PASS | 0 |  |
+| `rag:dedup` | PASS | 13786 |  |
+| `rag:remove_file` | PASS | 1965 |  |
+| `rag:fusion_rrf` | PASS | 8176 |  |
+| `rag:fusion_weighted` | PASS | 11362 |  |
+| `rag:retrieve_context` | PASS | 31388 |  |
+| `rag:query_full` | PASS | 14157 |  |
+| `rag:clear` | PASS | 54382 |  |
+| `shadow:config` | PASS | 65 |  |
+| `shadow:cost_table` | PASS | 0 |  |
+| `shadow:project_signals` | PASS | 12 |  |
+| `shadow:events_import` | PASS | 0 |  |
+| `shadow:cost_ledger` | PASS | 5 |  |
 
 ## RAG Subsystem
 
 ### Pipeline Architecture
 
 ```
-Step 1  Dual-Ingestion  (offline, no LLM)  → DocumentStore + ToC + SummaryIndex
-Step 2  Macro-Retrieval (≤500ms)            → RRF fusion of vector + BM25 ranks
-Step 3  Micro-Navigation (agentic, LLM)     → TreeNavigator selects sections
-Step 4  Heavy Synthesis  (LLM, 1–3s)        → AnswerSynthesizer + CitationTracker
+Step 1  Dual-Ingestion  (offline, no LLM synthesis)  -> DocumentStore + ToC + SummaryIndex
+          DocumentLoader -> ToCExtractor -> SectionSplitter -> SummaryGenerator
+          Embedder (GEMINI_API_KEY) -> SummaryIndex (numpy vector store)
+
+Step 2  Macro-Retrieval (fast, <500ms)               -> top 3-5 docs
+          QueryAnalyzer (multi-query fan-out)
+          SummarySearcher (cosine similarity on embeddings)
+          KeywordFilter (BM25)
+          DocumentRanker (RRF fusion of vector + keyword + recency ranks)
+
+Step 3  Micro-Navigation (agentic LLM, ~200ms)       -> precise sections
+          TreeNavigator (routing LLM traverses ToC tree)
+          SectionExtractor
+          RelevanceScorer
+
+Step 4  Heavy Synthesis (LLM, 1-3s)                  -> cited answer
+          ContextBuilder -> AnswerSynthesizer -> CitationTracker -> ConfidenceScorer
 ```
 
-retrieve_context() runs Steps 2+3 only — used by the chat pipeline for RAG context.
-query() runs all four steps and returns a self-contained cited answer.
+**retrieve_context()** runs Steps 2+3 only — used by the chat pipeline.
+**query()** runs all four steps and returns a self-contained cited answer.
 
 ### Configuration
 
@@ -60,48 +77,62 @@ query() runs all four steps and returns a self-contained cited answer.
 |-----------|-------|
 | Fusion method | `rrf` |
 | RRF damping k | `60` |
-| Routing model | `gemini-3.1-flash-lite-preview` |
-| Synthesis model | `gemini-3.1-flash-lite-preview` |
+| Routing model (Step 3) | `gemini-3.1-flash-lite-preview` |
+| Synthesis model (Step 4) | `gemini-3.1-flash-lite-preview` |
 | Embedding model | `gemini-embedding-001` |
-| Embedding dim | `3072` |
+| Embedding dimension | `3072` |
 | Store directory | `.synthi/rag` |
 
-### Post-Ingestion Stats
-
-| Metric | Count |
-|--------|-------|
-| Documents | 26 |
-| Summaries | 26 |
-| Sections | 35 |
-| ToC trees | 26 |
-| Keyword docs | 26 |
-| Unique terms | 319 |
-
-### Ingestion Result
+### Ingestion Result (Step 1)
 
 | Metric | Value |
 |--------|-------|
-| Processed | 11 |
-| Skipped | 1 |
+| Processed | 5 |
+| Skipped | 0 |
 | Failed | 0 |
-| Purged (stale) | 1 |
-| Total sections | 20 |
-| Time (ms) | 134230 |
+| Purged (stale) | 0 |
+| Total sections | 16 |
+| Time (ms) | 53645 |
 
-### retrieve_context() — Steps 2+3 (no synthesis LLM)
+### Store State After Ingestion
+
+| Metric | Count |
+|--------|-------|
+| Documents | 5 |
+| Summaries indexed | 5 |
+| Sections | 16 |
+| ToC trees | 5 |
+| Keyword docs | 5 |
+| Unique BM25 terms | 109 |
+
+### retrieve_context() — Steps 2+3
 
 Query: _"How does authentication work?"_
 
 | Metric | Value |
 |--------|-------|
-| Documents searched | 2 |
-| Documents selected | 2 |
-| Sections used | 6 |
-| Tokens assembled | 448 |
+| Documents searched | 5 |
+| Documents selected | 5 |
+| Sections assembled | 10 |
+| Tokens in context | 881 |
 | Sufficiency | `SUFFICIENT` |
-| Macro time (ms) | 667.6 |
-| Micro time (ms) | 10698.7 |
-| Total time (ms) | 11366.4 |
+| Macro time (ms) | 572.3 |
+| Micro time (ms) | 30815.3 |
+| Total time (ms) | 31387.7 |
+
+### Fusion Method Comparison
+
+Same query (`authentication session token login`) run with each fusion method.
+
+| Method | Docs selected | Sections | Tokens | Macro (ms) | Micro (ms) | Sufficiency |
+|--------|---------------|----------|--------|------------|------------|-------------|
+| `rrf` | 5 | 15 | 1193 | 685 | 7487 | `SUFFICIENT` |
+| `weighted` | 5 | 14 | 1145 | 654 | 10703 | `SUFFICIENT` |
+
+**RRF (Reciprocal Rank Fusion)** is the default (Cormack 2009).
+It fuses vector + BM25 + recency by rank position rather than raw scores,
+making it robust to scale differences between cosine similarity and BM25.
+Weighted fusion uses a 0.6/0.3/0.1 vector/keyword/recency sum.
 
 ### query() — Full Pipeline (Steps 2+3+4, with synthesis LLM)
 
@@ -109,260 +140,186 @@ Query: _"What is the RAG pipeline and how does micro-navigation work?"_
 
 | Metric | Value |
 |--------|-------|
-| Confidence | 0.860 |
+| Confidence | 0.623 |
 | Citations | 1 |
-| Documents searched | 4 |
-| Documents selected | 4 |
-| Macro time (ms) | 617 |
-| Micro time (ms) | 25392 |
-| Synthesis time (ms) | 11161 |
-| Total time (ms) | 37171 |
+| Documents searched | 5 |
+| Documents selected | 5 |
+| Macro time (ms) | 441 |
+| Micro time (ms) | 9463 |
+| Synthesis time (ms) | 4253 |
+| Total time (ms) | 14156 |
 
 **Answer snippet:**
 
-> The RAG pipeline consists of the following four stages:
+> The Retrieval-Augmented Generation (RAG) pipeline is responsible for answering codebase questions through the following four steps [1]:
 
-1.  **Ingestion**: Involves document loading, extraction of the Table of Contents (ToC), section splitting, and embedding [1].
-2.  **Macro-retrieval**: Utilizes vector search based on cosine similarity combined with a BM25 keyword filter, whic
+1.  **Ingestion**: Handles document loading, Table of Contents (ToC) extraction, section splitting, and embedding [1].
+2.  **Macro-retrieval**: Performs vector search using cosine similarity combined with a BM25 keyword filter, fused via Reciprocal Rank Fusion (R
 
 
-### Fusion Method Comparison
+### Clear + Re-ingest
 
-Same query (`authentication session token`) run with each fusion method.
-
-| Method | Documents selected | Sufficiency |
-|--------|--------------------|-------------|
-| `rrf` | 1 | `INSUFFICIENT` |
-| `weighted` | 5 | `SUFFICIENT` |
-
-RRF (Reciprocal Rank Fusion) is the default. It fuses vector + BM25 + recency
-ranks rather than raw scores, making it robust to scale differences between
-the embedding cosine similarity and BM25 term frequencies.
+Docs before clear: 5 — after clear: 0 — after re-ingest: 5
 
 ## Shadow Subsystem
 
 ### Architecture
 
 ```
-POST /shadow/run          → multiverse.run_job → N universes in parallel
-  Universe                → generator → critic → critic_critic → (revise?)
-  convergence check       → early exit if all universes agree
-  arbiter                 → adjudicate winner across universe evidence
-POST /shadow/{id}/apply   → apply winning patch, cancel siblings, refund cost
-GET  /shadow/{id}/stream  → SSE job progress events
-POST /shadow/{id}/why     → re-adjudicate with user follow-up question
-GET  /shadow/cost/state   → daily spend vs cap
-POST /shadow/cost/cap     → set daily cap
+POST /shadow/run          -> multiverse.run_job -> N universes in parallel
+  Each Universe:          -> generator -> critic -> critic_critic -> (revise?)
+  convergence check       -> early exit if all universes agree
+  arbiter                 -> adjudicate winner across universe evidence bundles
+
+POST /shadow/{id}/apply   -> apply winning patch, cancel siblings, refund cost
+GET  /shadow/{id}/stream  -> SSE job progress events (real-time)
+POST /shadow/{id}/why     -> re-adjudicate with user follow-up question
+POST /shadow/verify-only  -> verify existing patches without generation
+GET  /shadow/cost/state   -> daily spend vs cap dashboard
+POST /shadow/cost/cap     -> set daily spend cap
+```
+
+shadow_continuous (Wave 4) adds:
+```
+POST /shadow_continuous/notify            -> file-save hook (from collab-server)
+GET  /shadow_continuous/{path}/state      -> continuous shadow state
+POST /shadow_continuous/opt_out           -> opt-out workspace
 ```
 
 ### Tier Configuration
 
 | Tier | Universes | Wall-clock cap (s) | Cost ceiling ($) |
 |------|-----------|--------------------|-----------------|
-| `quick` | 1 | 8 | 0.0010 |
-| `standard` | 3 | 25 | 0.0120 |
-| `deep` | 3 | 45 | 0.0400 |
+| `quick` | 1 | 8 | $0.0010 |
+| `standard` | 3 | 25 | $0.0120 |
+| `deep` | 3 | 45 | $0.0400 |
 
 ### Rate Cards ($ per call, Apr 2026 estimates)
 
 | Provider | gen | critic | arbiter | critic_critic | revise |
 |----------|-----|--------|---------|---------------|--------|
-| anthropic | 0.0180 | 0.0120 | 0.0200 | 0.0008 | 0.0120 |
-| openai | 0.0150 | 0.0100 | 0.0180 | 0.0006 | 0.0100 |
-| gemini | 0.0035 | 0.0025 | 0.0040 | 0.0002 | 0.0025 |
+| anthropic | $0.0180 | $0.0120 | $0.0200 | $0.0008 | $0.0120 |
+| openai | $0.0150 | $0.0100 | $0.0180 | $0.0006 | $0.0100 |
+| gemini | $0.0035 | $0.0025 | $0.0040 | $0.0002 | $0.0025 |
 
-### Cost Estimates by Tier × Provider
+### Cost Estimates by Tier x Provider
 
 | Tier | Provider | Universes | Timeout (s) | Ceiling ($) | Estimated ($) |
 |------|----------|-----------|-------------|-------------|---------------|
-| `quick` | gemini | 1 | 8 | 0.0010 | 0.0010 |
-| `quick` | anthropic | 1 | 8 | 0.0010 | 0.0010 |
-| `quick` | openai | 1 | 8 | 0.0010 | 0.0010 |
-| `standard` | gemini | 3 | 25 | 0.0120 | 0.0120 |
-| `standard` | anthropic | 3 | 25 | 0.0120 | 0.0120 |
-| `standard` | openai | 3 | 25 | 0.0120 | 0.0120 |
-| `deep` | gemini | 3 | 45 | 0.0400 | 0.0400 |
-| `deep` | anthropic | 3 | 45 | 0.0400 | 0.0400 |
-| `deep` | openai | 3 | 45 | 0.0400 | 0.0400 |
+| `quick` | gemini | 1 | 8 | $0.0010 | $0.0010 |
+| `quick` | anthropic | 1 | 8 | $0.0010 | $0.0010 |
+| `quick` | openai | 1 | 8 | $0.0010 | $0.0010 |
+| `standard` | gemini | 3 | 25 | $0.0120 | $0.0120 |
+| `standard` | anthropic | 3 | 25 | $0.0120 | $0.0120 |
+| `standard` | openai | 3 | 25 | $0.0120 | $0.0120 |
+| `deep` | gemini | 3 | 45 | $0.0400 | $0.0400 |
+| `deep` | anthropic | 3 | 45 | $0.0400 | $0.0400 |
+| `deep` | openai | 3 | 45 | $0.0400 | $0.0400 |
 
-> Gemini is the default provider. The estimated cost is the minimum of
-> the rate-card sum and the tier ceiling (master plan §10).
+> The estimated cost is `min(rate-card sum, tier ceiling)` (master plan §10).
+> The ceiling always wins so the user-visible number never exceeds the
+> contracted budget envelope. Cost is debited up-front and refunded on
+> apply-and-cancel or early convergence.
 
-### Project Signals (detected in temp workspace)
+### Project Signals (temp workspace)
+
+Project signals are detected once per job at the worktree-acquire step.
+They calibrate the Critic-Critic: e.g. `web-app` with no CI gets a
+different actionability threshold than `service` with lockfile + CI.
 
 | Signal | Value |
 |--------|-------|
 | Project type | `web-app` |
 | Languages | `python` |
-| Test framework | `None` |
-| Has CI | False |
-| Has lockfile | False |
+| Test framework | `none` |
+| Has CI | `False` |
+| Has lockfile | `False` |
 | Package manager | `npm` |
 | Style hints | `uses-async, type-annotated` |
-
-Project signals calibrate the Critic-Critic: e.g. a `web-app` with no CI
-is treated differently from a `service` with lockfile + CI.
 
 ### Cost Ledger State (fresh workspace)
 
 | Field | Value |
 |-------|-------|
-| daily_cap_usd | `5.0` |
-| spent_today_usd | `0.0` |
-| remaining_usd | `5.0` |
-| today_jobs | `[]` |
-| history | `[]` |
+| `daily_cap_usd` | `5.0` |
+| `spent_today_usd` | `0.0` |
+| `remaining_usd` | `5.0` |
+| `today_jobs` | `[]` |
+| `history` | `[]` |
 
 ## How to Test RAG Only
 
-### Unit / offline tests (no GEMINI_API_KEY needed)
+### Unit/offline tests (no GEMINI_API_KEY required)
 
 ```bash
 cd ai-backend/ai-engine
 python -m pytest code_intel/rag/tests/ -v
 ```
 
-Covers 26 test files: document_store, toc_store, summary_index, section_store,
-keyword_filter, document_ranker, query_analyzer, toc_extractor, section_splitter,
-summary_searcher, context_builder, citation_tracker, confidence_scorer,
-answer_synthesizer, tree_navigator, relevance_scorer, types, config, pipeline.
+26 test files covering every module: document_store, toc_store, summary_index,
+section_store, keyword_filter, document_ranker, query_analyzer, toc_extractor,
+section_splitter, summary_searcher, context_builder, citation_tracker,
+confidence_scorer, answer_synthesizer, tree_navigator, relevance_scorer,
+types, config, pipeline, content_hasher, page_resolver, and more.
 
-### Single pipeline test (no GEMINI_API_KEY for Steps 2+3, optional for Step 4)
+### Run a specific sub-test
 
 ```bash
 python -m pytest code_intel/rag/tests/test_pipeline.py -v
+python -m pytest code_intel/rag/tests/test_document_ranker.py -v  # fusion tests
+python -m pytest code_intel/rag/tests/test_summary_searcher.py -v # vector tests
 ```
 
-### Integration report (this script)
+### This integration report
 
 ```bash
-python -m bench.synthi_report
+cd ai-backend/ai-engine
+python -m bench.synthi_report                   # auto temp workspace
+python -m bench.synthi_report --no-cleanup      # keep workspace for inspection
+python -m bench.synthi_report --workspace /tmp/myws  # reuse an existing workspace
 ```
 
-With GEMINI_API_KEY set, the full 4-step query (Steps 2+3+4) also runs.
-
-### Fusion method test
-
-```bash
-python -m pytest code_intel/rag/tests/test_document_ranker.py -v
-python -m pytest code_intel/rag/tests/test_summary_searcher.py -v
-```
+With GEMINI_API_KEY set: ingestion uses real embeddings, Steps 3+4 use LLM.
+Without GEMINI_API_KEY: ingestion uses zero-vector fallback, Steps 2+3 fall
+back to BM25-only ranking + top-N sections (no routing LLM). Step 4 is skipped.
 
 ## How to Test Shadow Only
 
-### Cost estimation (offline, no API key)
+### Offline (no API key, no server)
 
-```python
-from shadow.multiverse import estimate_cost_for_request
-print(estimate_cost_for_request('quick'))    # Gemini, 1 universe
-print(estimate_cost_for_request('standard')) # Gemini, 3 universes
-print(estimate_cost_for_request('deep'))     # Gemini, 3 universes + deeper timeout
+```bash
+cd ai-backend/ai-engine
+python -m bench.synthi_report  # shadow:config, shadow:cost_table, etc.
+
+# Cost estimation:
+python -c "from shadow.multiverse import estimate_cost_for_request; print(estimate_cost_for_request('quick'), estimate_cost_for_request('standard'), estimate_cost_for_request('deep'))"
 ```
 
-### Bench harness (requires GEMINI_API_KEY and a running workspace)
+### Bench harness (GEMINI_API_KEY + git workspace required)
 
 ```bash
 cd ai-backend/ai-engine
 python -m bench.harness --corpus bench/corpus --out bench/report.md
+# Grid search over scoring weights:
+python -m bench.tune_weights
 ```
 
-### Shadow via HTTP (requires ai-engine running)
+### Shadow via HTTP (ai-engine must be running)
 
 ```bash
 # Start ai-engine
 uvicorn main:app --port 8000
 
-# Quick verify-only (no LLM generation, just structural check)
+# Check cost state
+curl "http://localhost:8000/shadow/cost/state?workspace_path=/tmp/ws"
+
+# Verify-only (no generation, just structural verification)
 curl -X POST http://localhost:8000/shadow/verify-only \
   -H "Content-Type: application/json" \
   -d '{"workspace_path":"/tmp/ws","patches":[{"path":"src/buggy.py","new_content":"def divide(a,b):\n    if b==0: raise ZeroDivisionError()\n    return a/b"}],"tier":"quick"}'
-```
 
-## API Key Requirements Summary
-
-### Shadow
-
-| Key | Required | Role |
-|-----|----------|------|
-| `GEMINI_API_KEY` | **YES** (minimum) | Generator + Critic + Arbiter (default provider) |
-| `ANTHROPIC_API_KEY` | no | Cross-universe generator/critic (Anthropic provider) |
-| `OPENAI_API_KEY` | no | Cross-universe generator/critic (OpenAI provider) |
-
-**Minimum: 1 key.** With only GEMINI_API_KEY, all three tiers work;
-all universes use Gemini for generation, criticism, and arbitration.
-
-With all 3 keys, Shadow can run cross-provider universes — e.g. Gemini generates,
-Anthropic criticises, OpenAI arbitrates — giving diversity of opinion on the patch.
-
-### RAG
-
-| Key | Required | Role |
-|-----|----------|------|
-| `GEMINI_API_KEY` | **YES** | Embeddings (`gemini-embedding-001`) + routing LLM + synthesis LLM |
-
-Without GEMINI_API_KEY: ingestion still works (zero-vector fallback for embeddings),
-vector search returns no results, keyword/BM25 search still functions,
-micro-navigation and synthesis are disabled.
-
-### Relevant env vars
-
-```bash
-# Required
-GEMINI_API_KEY=your-key-here
-
-# Optional — provider overrides for RAG
-RAG_DEBUG=true
-RAG_ROUTING_MODEL=gemini-3.1-flash-lite-preview
-RAG_SYNTHESIS_MODEL=gemini-3.1-flash-lite-preview
-
-# Optional — provider overrides for Shadow
-SYNTHI_GEMINI_MODEL=gemini-3.1-flash-lite-preview
-SYNTHI_ANTHROPIC_MODEL=claude-3-haiku-20240307
-OPENAI_MODEL=gpt-4o-mini
-ANTHROPIC_API_KEY=your-anthropic-key
-OPENAI_API_KEY=your-openai-key
-```
-
-## Failure Details
-
-### `rag:dedup`
-
-```
-Traceback (most recent call last):
-  File "C:\Users\dev\Downloads\synthi-test\synthi-ide\ai-backend\ai-engine\bench\synthi_report.py", line 85, in run_test
-    data = fn(*args, **kwargs)
-  File "C:\Users\dev\Downloads\synthi-test\synthi-ide\ai-backend\ai-engine\bench\synthi_report.py", line 331, in test_rag_dedup
-    assert stats["documents"] == 1, (
-           ^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError: Duplicate ingest created 27 docs, expected 1
-
-```
-
-### `rag:remove_file`
-
-```
-Traceback (most recent call last):
-  File "C:\Users\dev\Downloads\synthi-test\synthi-ide\ai-backend\ai-engine\bench\synthi_report.py", line 85, in run_test
-    data = fn(*args, **kwargs)
-  File "C:\Users\dev\Downloads\synthi-test\synthi-ide\ai-backend\ai-engine\bench\synthi_report.py", line 422, in test_rag_remove_file
-    assert result["status"] == "removed"
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-AssertionError
-
-```
-
-### `shadow:events_import`
-
-```
-Traceback (most recent call last):
-  File "C:\Users\dev\Downloads\synthi-test\synthi-ide\ai-backend\ai-engine\bench\synthi_report.py", line 85, in run_test
-    data = fn(*args, **kwargs)
-  File "C:\Users\dev\Downloads\synthi-test\synthi-ide\ai-backend\ai-engine\bench\synthi_report.py", line 480, in test_shadow_events_import
-        "universe_timeout_sec": UNIVERSE_TIMEOUT_SEC,
-          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    ...<3 lines>...
-    
-    
-TypeError: JobState.__init__() missing 1 required positional argument: 'user_id'
-
+# Full run (streams SSE events)
+curl -X POST http://localhost:8000/shadow/run \
+  -H "Content-Type: application/json" \
+  -d '{"workspace_path":"/tmp/ws","intent":"fix","user_request":"fix the divide function","patches":[{"path":"src/buggy.py","new_content":"def divide(a,b):\n    if b==0: raise ZeroDivisionError()\n    return a/b"}],"tier":"quick"}'
 ```
