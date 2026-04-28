@@ -1,0 +1,1 @@
+`format_user(name)` calls "{name}: {age}".format(name=name) without supplying an `age`, raising KeyError. Either remove the unused `{age}` placeholder or accept an optional age argument that defaults to 'unknown'. Tests expect the optional-age behaviour.

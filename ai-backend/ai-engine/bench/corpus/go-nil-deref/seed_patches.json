@@ -1,0 +1,6 @@
+[
+  {
+    "path": "users.go",
+    "new_content": "package users\n\ntype User struct {\n\tID   int\n\tName string\n}\n\n// Find returns (name, found).\nfunc Find(users []*User, id int) (string, bool) {\n\tfor _, u := range users {\n\t\tif u.ID == id {\n\t\t\treturn u.Name, true\n\t\t}\n\t}\n\treturn \"\", false\n}\n"
+  }
+]

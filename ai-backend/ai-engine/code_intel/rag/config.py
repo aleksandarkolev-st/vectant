@@ -113,10 +113,19 @@ class MacroConfig:
     keyword_top_k: int = 20           # BM25 candidates
     keyword_min_score: float = 0.0
 
-    # Hybrid scoring weights
+    # Hybrid scoring weights (used when fusion_method == "weighted")
     vector_weight: float = 0.6
     keyword_weight: float = 0.3
     recency_weight: float = 0.1
+
+    # Score-fusion method:
+    #   "weighted" — historical weighted-sum of normalised scores.
+    #   "rrf"      — Reciprocal Rank Fusion (Cormack 2009). More robust
+    #                across signals with different score distributions
+    #                because it only looks at ranks, not magnitudes.
+    fusion_method: str = "rrf"
+    rrf_k: int = 60                    # RRF damping constant
+    rrf_recency_weight: float = 0.5    # Per-list weight for the recency rank in RRF
 
     # Final selection
     max_documents: int = 5            # Maximum documents to pass to micro-nav

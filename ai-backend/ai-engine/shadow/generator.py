@@ -13,7 +13,8 @@ that Wave 2 can drop in additional providers without touching universe.py.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("shadow.generator")
@@ -49,6 +50,9 @@ class GeneratorRequest:
     model: str  # provider-qualified name; Wave 1 uses "gemini-pro"
     patches: List[PatchBlock]  # the seed patches from the chat (search/replace already resolved upstream)
     intent: str = "fix"
+    # Wave 4: optional few-shot examples drawn from the user's accepted-patch
+    # history. Folded into the revise prompt as a `PREFERENCE EXAMPLES` block.
+    few_shot: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class Generator:
@@ -116,6 +120,7 @@ class Generator:
                 original=p.original,
                 proposed=p.new_content,
                 attacks=blocking_attacks,
+                few_shot=req.few_shot,
             )
             try:
                 text = await provider.ask_llm(
@@ -163,13 +168,31 @@ def _lang_for(path: str) -> str:
 
 
 def _build_revise_prompt(*, user_request: str, style: str, path: str,
-                          original: str, proposed: str, attacks: List[Dict[str, Any]]) -> str:
+                          original: str, proposed: str, attacks: List[Dict[str, Any]],
+                          few_shot: Optional[List[Dict[str, Any]]] = None) -> str:
     style_hint = STYLE_PROMPTS.get(style, STYLE_PROMPTS["safe"])
     attacks_block = "\n".join(
         f"- [{a.get('severity','blocking')}] {a.get('kind','logic')}: {a.get('msg')}"
         + (f"\n  reproducer: {a['reproducer']}" if a.get("reproducer") else "")
         for a in attacks
     )
+    few_shot_block = ""
+    if few_shot:
+        rendered: List[str] = []
+        for i, ex in enumerate(few_shot[:3], start=1):
+            rendered.append(
+                f"<example {i}>\n"
+                f"request: {ex.get('request_summary', '')}\n"
+                f"style: {ex.get('style', '')}\n"
+                f"loc: {ex.get('loc', '')}\n"
+                f"accepted_diff:\n{ex.get('accepted_diff', '')}\n"
+                f"</example {i}>"
+            )
+        few_shot_block = (
+            "\n<PREFERENCE EXAMPLES>\n"
+            + "\n\n".join(rendered)
+            + "\n</PREFERENCE EXAMPLES>\n"
+        )
     return (
         f"You are revising a patch that survived its first review but failed an "
         f"adversarial Critic. The Critic produced executable reproducers that "
@@ -177,6 +200,7 @@ def _build_revise_prompt(*, user_request: str, style: str, path: str,
         f"that fixes those flaws while keeping the original intent.\n\n"
         f"USER REQUEST:\n{user_request}\n\n"
         f"STYLE: {style} — {style_hint}\n\n"
+        f"{few_shot_block}"
         f"FILE PATH: {path}\n\n"
         f"<ORIGINAL_FILE>\n{original}\n</ORIGINAL_FILE>\n\n"
         f"<PROPOSED_PATCH>\n{proposed}\n</PROPOSED_PATCH>\n\n"

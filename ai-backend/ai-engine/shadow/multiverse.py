@@ -22,7 +22,10 @@ from .arbiter import (
     model_for_arbiter,
     select_arbiter_provider,
 )
+from .closure_crossover import is_enabled as closure_crossover_enabled
+from .closure_crossover import run_fragment_children
 from .convergence import detect_convergence
+from .crossover import run_children as run_crossover_children
 from .generator import PatchBlock
 from .project_signals import ProjectSignals, detect as detect_signals
 from .universe import Universe, UniverseSpec, UniverseResult
@@ -140,7 +143,7 @@ async def run_job(
         result = await _run_single(
             spec=specs[0], pool=pool, job=job,
             seed_patches=seed_patches, user_request=user_request,
-            signals=signals,
+            signals=signals, repo=repo, user_id=job.user_id,
         )
         winner = result.universe_id if result else None
         await job.emit(events.all_done(winner=winner))
@@ -151,7 +154,7 @@ async def run_job(
     completed, cancelled_ids = await _run_with_convergence(
         specs=specs, pool=pool, job=job,
         seed_patches=seed_patches, user_request=user_request,
-        signals=signals,
+        signals=signals, repo=repo, user_id=job.user_id,
     )
 
     valid = [r for r in completed if isinstance(r, UniverseResult)]
@@ -170,8 +173,47 @@ async def run_job(
         await job.emit_done()
         return winner
 
+    # Wave 3: change-level crossover on `deep` tier (master plan §16).
+    # We run the children before the Arbiter so the bundle includes them
+    # alongside the parents — Arbiter can then pick a child if it wins.
+    if tier == "deep" and len(valid) >= 2:
+        children = await run_crossover_children(universes=valid, pool=pool)
+        for ch in children:
+            job.universes[ch.universe_id] = ch.evidence
+            job.universe_patches[ch.universe_id] = [
+                {"path": p.path, "new_content": p.new_content}
+                for p in ch.patches_applied
+            ]
+            await job.emit(events.universe_done(ch.universe_id, ch.evidence))
+        valid = valid + children
+
+        # Wave 5 (research, behind SHADOW_CLOSURE_CROSSOVER_ENABLED):
+        # closure-aware fragment-level swaps. Compile-gated like Wave 3
+        # but the failure mode (captured-variable mismatch) is more
+        # subtle, so the flag stays off by default.
+        if closure_crossover_enabled() and len(valid) >= 2:
+            frag_children = await run_fragment_children(universes=valid, pool=pool)
+            for ch in frag_children:
+                job.universes[ch.universe_id] = ch.evidence
+                job.universe_patches[ch.universe_id] = [
+                    {"path": p.path, "new_content": p.new_content}
+                    for p in ch.patches_applied
+                ]
+                await job.emit(events.universe_done(ch.universe_id, ch.evidence))
+            valid = valid + frag_children
+
     # Arbiter pass — provider rotation, compressed bundle, strict schema.
-    arb_provider = select_arbiter_provider(specs)
+    # Wave 4 (§22): override-driven rotation — if the user has been
+    # overriding the Arbiter when it was a particular provider, skip
+    # that provider on the next rotation.
+    avoided = set()
+    try:
+        from . import preference as _pref
+        sig = _pref.override_signal(repo=repo, user_id=job.user_id)
+        avoided = sig.get("avoided_providers") or set()
+    except Exception:
+        logger.debug("override_signal lookup failed", exc_info=True)
+    arb_provider = select_arbiter_provider(specs, avoided_providers=avoided)
     arb_model = model_for_arbiter(arb_provider)
     user_keys = (job.models or {}).get("user_keys") or {}
     arb_key = user_keys.get(arb_provider)
@@ -186,6 +228,31 @@ async def run_job(
     await job.emit(events.arbiter_verdict(verdict.to_dict()))
     winner = verdict.winner
 
+    # Wave 3 §6.4: when the Arbiter explicitly recommends synthesis, run
+    # one more crossover round honouring its instruction. Keeps the user
+    # from manually combining the fragments themselves.
+    if tier == "deep" and verdict.synthesis and verdict.synthesis.get("recommended"):
+        synth_children = await run_crossover_children(
+            universes=valid, pool=pool, synthesis=verdict.synthesis,
+        )
+        for ch in synth_children:
+            job.universes[ch.universe_id] = ch.evidence
+            job.universe_patches[ch.universe_id] = [
+                {"path": p.path, "new_content": p.new_content}
+                for p in ch.patches_applied
+            ]
+            await job.emit(events.universe_done(ch.universe_id, ch.evidence))
+            valid.append(ch)
+
+    # Cache bundle + verdict for the [Why?] follow-up route (master plan §22).
+    job.bundle = bundle
+    job.last_verdict = verdict.to_dict()
+    job.universe_results = valid
+    job.user_request = user_request
+    job.intent = intent
+    job.arbiter_provider = arb_provider
+    job.arbiter_model = arb_model
+
     await job.emit(events.all_done(winner=winner))
     await job.emit_done()
     return winner
@@ -199,6 +266,8 @@ async def _run_single(
     seed_patches: List[PatchBlock],
     user_request: str,
     signals: Optional[ProjectSignals] = None,
+    repo: Optional[Path] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[UniverseResult]:
     universe = Universe(spec=spec)
     started = time.time()
@@ -213,6 +282,8 @@ async def _run_single(
                     job=job,
                     dep_lock=pool.dep_lock,
                     signals=signals,
+                    repo=repo,
+                    user_id=user_id,
                 ),
                 timeout=timeout,
             )
@@ -247,6 +318,8 @@ async def _run_with_convergence(
     seed_patches: List[PatchBlock],
     user_request: str,
     signals: Optional[ProjectSignals],
+    repo: Optional[Path] = None,
+    user_id: Optional[str] = None,
 ) -> Tuple[List[UniverseResult], List[str]]:
     """Fan out N universes in parallel. After each finishes, check
     convergence on the completed cohort; if 2+ universes already
@@ -257,7 +330,7 @@ async def _run_with_convergence(
         task = asyncio.create_task(_run_single(
             spec=spec, pool=pool, job=job,
             seed_patches=seed_patches, user_request=user_request,
-            signals=signals,
+            signals=signals, repo=repo, user_id=user_id,
         ))
         tasks[task] = spec.universe_id
         # Expose to /cancel and /apply so they can kill pending universes.
@@ -333,12 +406,22 @@ def _model_for(provider: str) -> str:
     return _PROVIDER_DEFAULTS.get(provider, "gemini-pro")
 
 
+def _surgical_enabled() -> bool:
+    """Wave 5 surgical style is research-only; flagged off by default."""
+    import os
+    return os.environ.get("SHADOW_SURGICAL_ENABLED", "0").lower() in ("1", "true", "yes")
+
+
 def _make_specs(n: int, *, intent: str, models: Dict[str, Any]) -> List[UniverseSpec]:
     """Wave 1 N=1 → single `safe` universe with the first available provider.
 
     Wave 2 N=3 → three universes spanning safe / idiomatic / minimalist
     styles, with cross-paired providers so each universe's Critic differs
     from its Generator (master plan §1).
+
+    Wave 5 (flagged) replaces the third slot with `surgical` when
+    SHADOW_SURGICAL_ENABLED is set — keeps N=3 stable, swaps the
+    minimalist universe out for an even tighter variant.
     """
     chain = _provider_chain(models)
     user_keys = (models or {}).get("user_keys") or {}
@@ -357,10 +440,11 @@ def _make_specs(n: int, *, intent: str, models: Dict[str, Any]) -> List[Universe
             intent=intent,
         )
 
+    third_style = "surgical" if _surgical_enabled() else "minimalist"
     pool = [
         _spec("A", "safe",       0),
         _spec("B", "idiomatic",  1),
-        _spec("C", "minimalist", 2),
+        _spec("C", third_style,  2),
     ]
     return pool[:n]
 

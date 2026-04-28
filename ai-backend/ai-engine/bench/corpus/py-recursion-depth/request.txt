@@ -1,0 +1,1 @@
+`sum_to(n)` is recursive and overflows the default recursion limit at n=2000. Convert it to an iterative implementation that runs in O(n) time and O(1) extra space, preserving the (n*(n+1))/2 result.

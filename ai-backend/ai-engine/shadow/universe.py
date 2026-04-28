@@ -72,6 +72,8 @@ class Universe:
         job: events.JobState,
         dep_lock,
         signals: Optional[ProjectSignals] = None,
+        repo: Optional[Path] = None,
+        user_id: Optional[str] = None,
     ) -> UniverseResult:
         uid = self.spec.universe_id
         await job.emit(events.universe_started(
@@ -80,12 +82,24 @@ class Universe:
         ))
 
         # 1. Generator
+        few_shot: List[Dict[str, Any]] = []
+        if repo is not None:
+            try:
+                from . import preference as _pref
+                few_shot = [
+                    e.to_dict() for e in _pref.few_shot_for(
+                        repo=repo, user_id=user_id, request=user_request,
+                    )
+                ]
+            except Exception:
+                logger.debug("few-shot preference lookup failed", exc_info=True)
         gen_req = GeneratorRequest(
             user_request=user_request,
             style=self.spec.style,
             model=self.spec.model_gen,
             patches=seed_patches,
             intent=self.spec.intent,
+            few_shot=few_shot,
         )
         patches = await self.generator.generate(gen_req)
 
@@ -137,6 +151,8 @@ class Universe:
             worktree=worktree.path,
             patched_files=changed_paths,
             diagnostics=diagnostics_evidence,
+            patches=patches,
+            user_request=user_request,
         )
 
         # 6. Run executable reproducers (only for kinds that benefit)
@@ -169,12 +185,26 @@ class Universe:
                     worktree=worktree.path,
                     patched_files=[p.path for p in patches],
                     diagnostics=diagnostics_evidence,
+                    patches=patches,
+                    user_request=user_request,
                 )
                 await _run_reproducers(worktree.path, critique)
                 if signals is not None:
                     filter_pedantic(critique, signals)
 
         # 8. Score + evidence
+        style_match_score = 0.5
+        if repo is not None:
+            try:
+                from . import preference as _pref
+                style_match_score = _pref.style_match(
+                    repo=repo, user_id=user_id, request=user_request,
+                    candidate_style=self.spec.style,
+                    candidate_loc=_loc_delta(patches),
+                    candidate_provider=self.spec.provider_gen,
+                )
+            except Exception:
+                logger.debug("preference style_match lookup failed", exc_info=True)
         score = compute_score(ScoreInput(
             attacks_total=len(critique.attacks),
             attacks_real=len(critique.real_attacks),
@@ -184,7 +214,7 @@ class Universe:
             tests_passed=run_result.tests[0].get("passed", 0),
             tests_total=run_result.tests[0].get("total", 0),
             runtime_clean=bool(run_result.runtime[0].get("clean", True)),
-            style_match=0.5,  # placeholder until preference learning lands (Wave 4)
+            style_match=style_match_score,
             loc_delta=_loc_delta(patches),
             loc_baseline=_loc_baseline(patches),
             style=self.spec.style,
@@ -200,6 +230,23 @@ class Universe:
             "score": round(score, 3),
             "revised": revised,
             "duration_ms": 0,  # filled by orchestrator
+            # Wave 1 §15.4: capture the raw ScoreInput so the bench
+            # weight grid-search can re-score offline without rerunning
+            # the pipeline. Cheap (small dict per universe).
+            "scoring": {
+                "attacks_total": len(critique.attacks),
+                "attacks_real": len(critique.real_attacks),
+                "attacks_survived": critique.survived,
+                "diagnostics_count": run_result.diagnostics_count(),
+                "diagnostics_max": 20,
+                "tests_passed": run_result.tests[0].get("passed", 0),
+                "tests_total": run_result.tests[0].get("total", 0),
+                "runtime_clean": bool(run_result.runtime[0].get("clean", True)),
+                "style_match": style_match_score,
+                "loc_delta": _loc_delta(patches),
+                "loc_baseline": _loc_baseline(patches),
+                "style": self.spec.style,
+            },
         }
 
         return UniverseResult(

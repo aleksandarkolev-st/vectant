@@ -1,0 +1,6 @@
+[
+  {
+    "path": "io_utils.py",
+    "new_content": "def read_lines(path):\n    \"\"\"Read a file's lines.\"\"\"\n    with open(path, \"r\", encoding=\"utf-8\") as f:\n        return f.readlines()\n"
+  }
+]

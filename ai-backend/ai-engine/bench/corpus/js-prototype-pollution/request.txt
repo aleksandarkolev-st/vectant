@@ -1,0 +1,1 @@
+`assignDeep(target, src)` walks every key from `src` recursively, including __proto__ and constructor — which lets an attacker pollute Object.prototype across the whole runtime. Reject those keys explicitly so the merge can't cross over to the prototype chain.

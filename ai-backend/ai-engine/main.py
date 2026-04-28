@@ -2163,6 +2163,17 @@ except ImportError as e:
 
 
 # =============================================================================
+# Synthi Genome — continuous shadow (Wave 4)
+# =============================================================================
+try:
+    from shadow_continuous.api import router as shadow_continuous_router
+    app.include_router(shadow_continuous_router)
+    logger.info("Continuous shadow module loaded")
+except ImportError as e:
+    logger.warning(f"Continuous shadow module not available: {e}")
+
+
+# =============================================================================
 # Self-Healing System
 # =============================================================================
 from analyzer.proactive.healing import SelfHealingEngine, HealingConfig

@@ -1,0 +1,10 @@
+[
+  {
+    "path": "users.py",
+    "new_content": "_USERS = {1: \"alice\", 2: \"bob\", 3: \"carol\"}\n\n\ndef find_user_by_id(user_id):\n    return _USERS.get(user_id)\n"
+  },
+  {
+    "path": "routes.py",
+    "new_content": "from users import find_user_by_id\n\n\ndef user_route(user_id):\n    user = find_user_by_id(user_id)\n    if user is None:\n        return {\"status\": 404}\n    return {\"status\": 200, \"user\": user}\n"
+  }
+]

@@ -7,7 +7,7 @@ expected to re-tune them empirically before Wave 2 ships — see §15.4.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 # Starting weights — re-tuned by bench/ before Wave 2 GA.
@@ -37,7 +37,14 @@ class ScoreInput:
     style: str = "safe"               # safe|idiomatic|minimalist|surgical
 
 
-def compute(s: ScoreInput) -> float:
+def compute(s: ScoreInput, *, weights: Optional[Dict[str, float]] = None) -> float:
+    """Compute the composite score for a universe.
+
+    `weights` overrides the module-level WEIGHTS — used by the
+    bench/tune_weights grid-search to evaluate alternative tuples
+    without mutating the global. Production callers omit it.
+    """
+    w = weights or WEIGHTS
     survival = 1.0 if s.attacks_real == 0 else s.attacks_survived / s.attacks_real
 
     diag_norm = 0.0 if s.diagnostics_max == 0 else min(1.0, s.diagnostics_count / s.diagnostics_max)
@@ -59,10 +66,10 @@ def compute(s: ScoreInput) -> float:
         loc_score = 0.4
 
     return (
-        WEIGHTS["critic_survival"] * survival
-        + WEIGHTS["diagnostics"] * diag_score
-        + WEIGHTS["tests"] * test_rate
-        + WEIGHTS["runtime"] * runtime
-        + WEIGHTS["style"] * s.style_match
-        + WEIGHTS["loc"] * loc_score
+        w["critic_survival"] * survival
+        + w["diagnostics"] * diag_score
+        + w["tests"] * test_rate
+        + w["runtime"] * runtime
+        + w["style"] * s.style_match
+        + w["loc"] * loc_score
     )

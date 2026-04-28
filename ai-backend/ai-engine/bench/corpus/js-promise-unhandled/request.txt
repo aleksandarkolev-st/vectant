@@ -1,0 +1,1 @@
+`sumAsync(xs)` returns the unresolved Promises themselves added together, so the caller sees `[object Promise][object Promise]` instead of a number. Add the missing await/Promise.all so the function resolves to the numeric sum.

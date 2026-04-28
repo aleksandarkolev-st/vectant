@@ -1,0 +1,6 @@
+[
+  {
+    "path": "totals.py",
+    "new_content": "import asyncio\n\n\nasync def get_a():\n    await asyncio.sleep(0)\n    return 2\n\n\nasync def get_b():\n    await asyncio.sleep(0)\n    return 3\n\n\nasync def fetch_total():\n    a = await get_a()\n    b = await get_b()\n    return a + b\n"
+  }
+]

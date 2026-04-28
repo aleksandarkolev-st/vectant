@@ -1,0 +1,1 @@
+`fetch_total()` is awaiting only one of the two coroutines. The second call returns a coroutine object that's added to a number, raising TypeError. Add the missing await so both coroutines are scheduled and the sum returns an int.

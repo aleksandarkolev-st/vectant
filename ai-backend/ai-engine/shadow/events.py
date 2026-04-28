@@ -93,6 +93,16 @@ class JobState:
     estimated_cost_usd: float = 0.0
     # Wave 2: { "providers": ["anthropic","openai","google"], "user_keys": {"anthropic":"...","openai":"..."} }
     models: Dict[str, Any] = field(default_factory=dict)
+    # Cached evidence bundle + last verdict + universe results for the
+    # [Why?] follow-up endpoint (master plan §22). Kept in-memory for the
+    # lifetime of the job; cleared on `discard`.
+    bundle: Optional[Dict[str, Any]] = None
+    last_verdict: Optional[Dict[str, Any]] = None
+    universe_results: List[Any] = field(default_factory=list)
+    user_request: str = ""
+    intent: str = "fix"
+    arbiter_provider: Optional[str] = None
+    arbiter_model: Optional[str] = None
 
     async def emit(self, evt: Dict[str, Any]) -> None:
         await self.queue.put(evt)

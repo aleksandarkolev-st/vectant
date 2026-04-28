@@ -9,6 +9,7 @@ Hard guards (Wave 1):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ logger = logging.getLogger("shadow.critic")
 ATTACK_KINDS = {"edge", "race", "type", "import", "logic", "perf", "security"}
 SEVERITIES = {"blocking", "high", "medium", "low"}
 MAX_ATTACKS = 5
+LLM_CRITIC_TIMEOUT_SEC = 8.0
 
 
 @dataclass
@@ -86,6 +88,8 @@ class Critic:
         worktree: Path,
         patched_files: List[str],
         diagnostics: Dict[str, Any],
+        patches: Optional[List[Any]] = None,
+        user_request: str = "",
     ) -> CritiqueResult:
         attacks: List[Attack] = []
 
@@ -122,8 +126,70 @@ class Critic:
             except ValueError:
                 pass
 
+        # Wave 2: layer in LLM-novel attacks if there's room. Diagnostic
+        # attacks already cover real lint/type/test failures; the LLM is
+        # asked to find issues those stages can't see (logic edges,
+        # races, security gaps, missing-tests-this-patch-should-have).
+        room = MAX_ATTACKS - len(attacks)
+        if room > 0 and patches:
+            llm_attacks = await self._llm_attacks(
+                patches=patches,
+                diagnostics=diagnostics,
+                user_request=user_request,
+                room=room,
+            )
+            attacks.extend(llm_attacks)
+
         attacks = self._enforce_schema(attacks)[:MAX_ATTACKS]
         return CritiqueResult(attacks=attacks)
+
+    async def _llm_attacks(
+        self,
+        *,
+        patches: List[Any],
+        diagnostics: Dict[str, Any],
+        user_request: str,
+        room: int,
+    ) -> List[Attack]:
+        """Ask the configured provider for novel attacks with executable
+        reproducers. Failures (no provider, network, malformed JSON) are
+        swallowed — the deterministic baseline keeps the pipeline alive.
+        """
+        if room <= 0:
+            return []
+        try:
+            from llm.providers import get_provider
+            prov = get_provider(self.provider)
+        except Exception as e:
+            logger.debug("critic LLM unavailable: %s", e)
+            return []
+
+        prompt = _build_llm_critic_prompt(
+            patches=patches,
+            diagnostics=diagnostics,
+            user_request=user_request,
+            max_attacks=room,
+        )
+
+        try:
+            text = await asyncio.wait_for(
+                prov.ask_llm(
+                    code="", lang="json",
+                    prompt=prompt,
+                    model=self.model, api_key=self.api_key,
+                ),
+                timeout=LLM_CRITIC_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            logger.info("critic LLM timed out after %.1fs", LLM_CRITIC_TIMEOUT_SEC)
+            return []
+        except Exception as e:
+            logger.debug("critic LLM call failed: %s", e)
+            return []
+
+        if not text:
+            return []
+        return parse_llm_attacks(text)[:room]
 
     def _enforce_schema(self, raw: List[Attack]) -> List[Attack]:
         valid: List[Attack] = []
@@ -138,6 +204,55 @@ class Critic:
                 continue
             valid.append(a)
         return valid
+
+
+_LLM_CRITIC_SCHEMA = """
+Output ONLY a JSON array of attacks (no prose, no fences). Up to MAX entries.
+Each item:
+{
+  "kind": "edge|race|type|import|logic|perf|security",
+  "msg": "<one-sentence flaw>",
+  "severity": "blocking|high|medium|low",
+  "reproducer": {
+    "type": "test" | "input",
+    // type=test: an actual pytest or vitest test function that fails on the patched code
+    "code": "...",
+    // type=input: a dotted target + structured input that crashes the patched module
+    "target": "module.func",
+    "input": {}
+  }
+}
+
+Rules:
+- Every attack MUST include a reproducer. Drop attacks you can't ground in a runnable test or input.
+- Prefer kind=edge or logic with a runnable test — those get executed in the worktree to prove they're real.
+- Severity=blocking is reserved for flaws that obviously break the patch's intent.
+- Do not duplicate diagnostics already listed below — those are covered.
+""".strip()
+
+
+def _build_llm_critic_prompt(
+    *,
+    patches: List[Any],
+    diagnostics: Dict[str, Any],
+    user_request: str,
+    max_attacks: int,
+) -> str:
+    files_block: List[str] = []
+    for p in patches[:4]:  # cap at 4 files in the prompt
+        path = getattr(p, "path", "?")
+        new_content = getattr(p, "new_content", "") or ""
+        files_block.append(f"--- {path} ---\n{new_content[:3000]}")
+    diag_summary = json.dumps(diagnostics, indent=2)[:1200]
+    return (
+        "You are an adversarial Critic reviewing an AI-proposed patch. Your job "
+        "is to find real flaws the lint/type/test pipeline missed. Each attack "
+        "must come with an executable reproducer.\n\n"
+        f"USER REQUEST:\n{user_request[:600]}\n\n"
+        f"PATCHED FILES:\n" + "\n\n".join(files_block) + "\n\n"
+        f"PIPELINE DIAGNOSTICS (already-known issues, do NOT repeat):\n{diag_summary}\n\n"
+        f"{_LLM_CRITIC_SCHEMA.replace('MAX', str(max_attacks))}\n"
+    )
 
 
 def parse_llm_attacks(raw_text: str) -> List[Attack]:

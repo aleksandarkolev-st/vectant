@@ -1,0 +1,1 @@
+`Counter.tick(steps)` passes `this.add` as a callback to forEach but loses the `this` binding so `this.value` becomes undefined. Use an arrow function or `.bind(this)` so the count actually increments.

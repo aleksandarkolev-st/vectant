@@ -1,0 +1,1 @@
+Add a `dark_mode` boolean to the central `flags.py`, default False, and update `theme.py` so it returns "dark" when the flag is on, "light" otherwise. Update existing call sites in `theme.py`. Tests verify both branches by toggling `flags.dark_mode`.

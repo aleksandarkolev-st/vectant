@@ -1,0 +1,6 @@
+[
+  {
+    "path": "assignDeep.js",
+    "new_content": "const FORBIDDEN = new Set([\"__proto__\", \"constructor\", \"prototype\"]);\n\nfunction assignDeep(target, src) {\n  for (const k of Object.keys(src)) {\n    if (FORBIDDEN.has(k)) continue;\n    const v = src[k];\n    if (v && typeof v === \"object\" && !Array.isArray(v)) {\n      target[k] = target[k] || {};\n      assignDeep(target[k], v);\n    } else {\n      target[k] = v;\n    }\n  }\n  return target;\n}\n\nmodule.exports = { assignDeep };\n"
+  }
+]

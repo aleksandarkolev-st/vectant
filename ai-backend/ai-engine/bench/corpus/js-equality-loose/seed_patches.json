@@ -1,0 +1,6 @@
+[
+  {
+    "path": "auth.js",
+    "new_content": "function isAdmin(role) {\n  return role === \"admin\";\n}\n\nmodule.exports = { isAdmin };\n"
+  }
+]

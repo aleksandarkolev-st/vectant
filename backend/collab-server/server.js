@@ -16,6 +16,7 @@ const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
 const { acquireStagingLock, releaseStagingLock, pauseWatcher, resumeWatcher, registerChangeListener } = require('./fsWatcherService');
+const shadowContinuousProducer = require('./shadowContinuousProducer');
 const { LRUCache } = require('lru-cache');
 const ySweetBridge = require('./ySweetBridge');
 const { withTelemetry, getMetrics, resetMetrics, getEventLoopBlockCount } = require('./perfTelemetry');
@@ -4174,6 +4175,10 @@ process.on('uncaughtException', (err) => {
     if (process.env.KUBERNETES_SERVICE_HOST) {
       spawner.startCuller();
     }
+
+    // Synthi Genome — bridge fs-change events to the ai-engine's
+    // continuous-shadow watcher (master plan §14).
+    shadowContinuousProducer.start();
   });
 })();
 

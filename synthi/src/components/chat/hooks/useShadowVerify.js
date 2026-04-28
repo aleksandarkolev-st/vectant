@@ -113,7 +113,21 @@ export function useShadowVerify(jobId) {
         return res.json().catch(() => ({}));
     };
 
-    return { ...state, apply, cancel };
+    const askWhy = async (question) => {
+        if (!jobId) return null;
+        const res = await fetch(`/api/shadow/${encodeURIComponent(jobId)}/why`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ question: String(question || '') }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (data?.verdict) {
+            setState((s) => ({ ...s, arbiter: { ...data.verdict, type: 'arbiter_verdict' } }));
+        }
+        return data;
+    };
+
+    return { ...state, apply, cancel, askWhy };
 }
 
 function reduce(s, evt) {

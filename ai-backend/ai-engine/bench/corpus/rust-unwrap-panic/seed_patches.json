@@ -1,0 +1,6 @@
+[
+  {
+    "path": "src/lib.rs",
+    "new_content": "use std::num::ParseIntError;\n\npub fn parse_pos(s: &str) -> Result<u32, ParseIntError> {\n    s.parse::<u32>()\n}\n\npub fn is_pos(s: &str) -> bool {\n    parse_pos(s).map(|n| n > 0).unwrap_or(false)\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn parses_valid() {\n        assert_eq!(parse_pos(\"5\").unwrap_or(0), 5);\n    }\n\n    #[test]\n    fn rejects_invalid() {\n        assert!(!is_pos(\"abc\"));\n    }\n\n    #[test]\n    fn zero_is_not_positive() {\n        assert!(!is_pos(\"0\"));\n    }\n}\n"
+  }
+]

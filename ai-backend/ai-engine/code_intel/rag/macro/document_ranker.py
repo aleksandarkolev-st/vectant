@@ -237,8 +237,16 @@ class DocumentRanker:
         """
         Combine vector, keyword, and recency scores.
 
-        Uses weighted sum:
-            final = w_vec * vec_norm + w_kw * kw_norm + w_rec * recency
+        Two strategies, switched via `MacroConfig.fusion_method`:
+
+        - "weighted" (legacy): max-normalize keyword scores then take a
+          weighted sum:  final = w_vec*vec + w_kw*kw_norm + w_rec*recency
+          Fragile when score distributions differ across signals.
+
+        - "rrf" (default, Wave 4 RAG follow-up): Reciprocal Rank Fusion
+          over (vector ranking, keyword ranking, recency ranking).
+          Robust across distribution shift; doesn't require score
+          normalization. Cormack et al., SIGIR 2009.
         """
         # Collect all candidate document IDs
         all_doc_ids: Set[str] = set()
@@ -261,46 +269,85 @@ class DocumentRanker:
         if not all_doc_ids:
             return []
 
-        # Normalize keyword scores to [0, 1]
-        max_kw = max(kw_scores.values()) if kw_scores else 1.0
-        if max_kw > 0:
-            kw_normalized = {
-                doc_id: score / max_kw
-                for doc_id, score in kw_scores.items()
-            }
-        else:
-            kw_normalized = kw_scores
-
-        # Calculate recency scores
         recency_scores = self._compute_recency_scores(all_doc_ids)
 
-        # Weights
-        w_vec = self._macro.vector_weight
-        w_kw = self._macro.keyword_weight
-        w_rec = self._macro.recency_weight
+        method = (getattr(self._macro, "fusion_method", "weighted") or "weighted").lower()
+        if method == "rrf":
+            final_scores = self._fuse_rrf(
+                all_doc_ids, vec_scores, kw_scores, recency_scores,
+            )
+        else:
+            final_scores = self._fuse_weighted(
+                all_doc_ids, vec_scores, kw_scores, recency_scores,
+            )
 
-        # Combine
         ranked: List[RankedDocument] = []
         for doc_id in all_doc_ids:
-            vs = vec_scores.get(doc_id, 0.0)
-            ks = kw_normalized.get(doc_id, 0.0)
-            rs = recency_scores.get(doc_id, 0.0)
-
-            final = w_vec * vs + w_kw * ks + w_rec * rs
-
             ranked.append(RankedDocument(
                 document_id=doc_id,
-                final_score=final,
-                vector_score=vs,
+                final_score=final_scores.get(doc_id, 0.0),
+                vector_score=vec_scores.get(doc_id, 0.0),
                 keyword_score=kw_scores.get(doc_id, 0.0),
-                recency_score=rs,
+                recency_score=recency_scores.get(doc_id, 0.0),
                 matched_keywords=kw_terms.get(doc_id, []),
                 title=titles.get(doc_id, ""),
             ))
-
-        # Sort by final score descending
         ranked.sort(key=lambda d: d.final_score, reverse=True)
         return ranked
+
+    def _fuse_weighted(
+        self,
+        all_doc_ids: Set[str],
+        vec_scores: Dict[str, float],
+        kw_scores: Dict[str, float],
+        recency_scores: Dict[str, float],
+    ) -> Dict[str, float]:
+        max_kw = max(kw_scores.values()) if kw_scores else 1.0
+        kw_norm = (
+            {d: s / max_kw for d, s in kw_scores.items()}
+            if max_kw > 0 else dict(kw_scores)
+        )
+        w_vec = self._macro.vector_weight
+        w_kw = self._macro.keyword_weight
+        w_rec = self._macro.recency_weight
+        return {
+            d: w_vec * vec_scores.get(d, 0.0)
+                + w_kw * kw_norm.get(d, 0.0)
+                + w_rec * recency_scores.get(d, 0.0)
+            for d in all_doc_ids
+        }
+
+    def _fuse_rrf(
+        self,
+        all_doc_ids: Set[str],
+        vec_scores: Dict[str, float],
+        kw_scores: Dict[str, float],
+        recency_scores: Dict[str, float],
+    ) -> Dict[str, float]:
+        from ...retrieval.fusion import reciprocal_rank_fusion
+
+        # Build the three ranked lists, descending by score.
+        vec_rank = sorted(vec_scores.items(), key=lambda kv: -kv[1])
+        kw_rank = sorted(kw_scores.items(), key=lambda kv: -kv[1])
+        rec_rank = sorted(recency_scores.items(), key=lambda kv: -kv[1])
+        weights = [
+            self._macro.vector_weight,
+            self._macro.keyword_weight,
+            getattr(self._macro, "rrf_recency_weight", self._macro.recency_weight),
+        ]
+        fused = reciprocal_rank_fusion(
+            ranked_lists=[
+                [d for d, _ in vec_rank],
+                [d for d, _ in kw_rank],
+                [d for d, _ in rec_rank],
+            ],
+            k=getattr(self._macro, "rrf_k", 60),
+            weights=weights,
+        )
+        scores: Dict[str, float] = {d: 0.0 for d in all_doc_ids}
+        for doc_id, fused_score in fused:
+            scores[doc_id] = fused_score
+        return scores
 
     def _compute_recency_scores(
         self,

@@ -77,11 +77,15 @@ class Runner(ABC):
 def detect_runner(worktree: Path, changed_files: List[str]) -> Runner:
     """Pick the most specific runner that matches the workspace + changes.
 
-    Priority: any changed file that's clearly Python/Node beats project-wide
-    detection, because we want to run exactly what was touched.
+    Priority: any changed file that's clearly Python/Node/Go/Rust/HTML
+    beats project-wide detection, because we want to run exactly what
+    was touched. Wave 3 adds Go, Rust, and HTML.
     """
     has_py = any(f.endswith((".py",)) for f in changed_files)
     has_node = any(f.endswith((".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")) for f in changed_files)
+    has_go = any(f.endswith(".go") for f in changed_files)
+    has_rs = any(f.endswith(".rs") for f in changed_files)
+    has_html = any(f.endswith((".html", ".htm", ".css")) for f in changed_files)
 
     if has_node:
         from .node import NodeRunner
@@ -89,6 +93,15 @@ def detect_runner(worktree: Path, changed_files: List[str]) -> Runner:
     if has_py:
         from .python import PythonRunner
         return PythonRunner()
+    if has_go:
+        from .go import GoRunner
+        return GoRunner()
+    if has_rs:
+        from .rust import RustRunner
+        return RustRunner()
+    if has_html:
+        from .html import HtmlRunner
+        return HtmlRunner()
 
     # Project-level fallback
     if (worktree / "package.json").exists():
@@ -97,6 +110,12 @@ def detect_runner(worktree: Path, changed_files: List[str]) -> Runner:
     if (worktree / "pyproject.toml").exists() or (worktree / "requirements.txt").exists():
         from .python import PythonRunner
         return PythonRunner()
+    if (worktree / "go.mod").exists():
+        from .go import GoRunner
+        return GoRunner()
+    if (worktree / "Cargo.toml").exists():
+        from .rust import RustRunner
+        return RustRunner()
 
     from .syntax import SyntaxRunner
     return SyntaxRunner()

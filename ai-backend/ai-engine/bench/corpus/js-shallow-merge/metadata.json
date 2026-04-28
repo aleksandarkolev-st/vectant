@@ -1,0 +1,8 @@
+{
+  "language": "javascript",
+  "intent": "fix",
+  "difficulty": "medium",
+  "has_dep_change": false,
+  "tier": "standard",
+  "tags": ["object-merge", "logic-bug", "deep-clone"]
+}

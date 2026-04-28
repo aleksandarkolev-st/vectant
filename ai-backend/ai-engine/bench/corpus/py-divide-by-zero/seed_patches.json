@@ -1,0 +1,6 @@
+[
+  {
+    "path": "stats.py",
+    "new_content": "def average(values):\n    \"\"\"Return the arithmetic mean of `values`. Empty input → 0.0.\"\"\"\n    if not values:\n        return 0.0\n    return sum(values) / len(values)\n"
+  }
+]

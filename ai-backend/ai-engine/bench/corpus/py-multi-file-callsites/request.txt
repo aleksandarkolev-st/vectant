@@ -1,0 +1,1 @@
+`format_amount(value, currency)` currently returns "USD 100.00". Reverse the order to "100.00 USD" — and update both call sites in api.py and report.py so their outputs still match the tests.

@@ -15,7 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import events, multiverse, snapshot
+from . import cost_ledger, events, multiverse, preference, snapshot
 from .generator import PatchBlock
 from .snapshot import ApplyResult  # noqa: F401  (re-exported for clarity)
 
@@ -61,6 +61,10 @@ class ShadowApplyRequest(BaseModel):
     universeId: str
 
 
+class ShadowWhyRequest(BaseModel):
+    question: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -82,14 +86,47 @@ async def shadow_run(req: ShadowRunRequest, background: BackgroundTasks) -> Dict
 
     seed = _resolve_patches(repo, req.patches)
 
+    # Cost dashboard (master plan §17): debit the daily bucket up-front;
+    # outcome + apply-and-cancel refunds are recorded by the runners.
+    try:
+        cost_ledger.record_estimate(
+            repo=repo, job_id=job_id, tier=req.tier,
+            user_id=req.user_id, estimated_usd=cost_usd,
+        )
+    except Exception:
+        logger.exception("cost ledger debit failed for job %s", job_id)
+
     background.add_task(_run_safe, job=job, repo=repo, seed_patches=seed,
                        user_request=req.user_request, intent=req.intent)
 
+    cost_state = cost_ledger.state(repo)
     return {
         "jobId": job_id,
         "tier": req.tier,
         "estimated_cost_usd": job.estimated_cost_usd,
+        "spent_today_usd": cost_state["spent_today_usd"],
+        "daily_cap_usd": cost_state["daily_cap_usd"],
+        "over_cap": cost_state["spent_today_usd"] > cost_state["daily_cap_usd"],
     }
+
+
+@router.get("/cost/state")
+async def cost_state(workspace_path: str) -> Dict[str, Any]:
+    """Cost dashboard snapshot for a workspace (master plan §17 + §22)."""
+    repo = _resolve_repo(workspace_path)
+    return cost_ledger.state(repo)
+
+
+class CostCapRequest(BaseModel):
+    workspace_path: str
+    daily_cap_usd: float
+
+
+@router.post("/cost/cap")
+async def cost_cap(req: CostCapRequest) -> Dict[str, Any]:
+    repo = _resolve_repo(req.workspace_path)
+    new_cap = cost_ledger.set_daily_cap(repo, req.daily_cap_usd)
+    return {"daily_cap_usd": new_cap}
 
 
 @router.post("/verify-only")
@@ -157,6 +194,24 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
     # accepting one universe should kill any still-running siblings.
     cancelled_siblings = _cancel_tasks(job, keep=req.universeId)
 
+    # Cost ledger refund: each cancelled sibling represents compute we
+    # didn't run. Refund a per-tier slice (master plan §17 — apply-and-
+    # cancel saves 30-60 % on average, so we credit a third per universe).
+    if cancelled_siblings:
+        try:
+            tier_cost = multiverse.TIER_COST_USD.get(job.tier, 0.0)
+            n_planned = max(1, multiverse.TIER_UNIVERSE_COUNT.get(job.tier, 1))
+            per_universe = tier_cost / n_planned
+            cost_ledger.record_outcome(
+                repo=_resolve_repo(job.workspace_path),
+                job_id=job_id,
+                outcome="applied-with-cancel",
+                universes_cancelled=len(cancelled_siblings),
+                refund_usd=per_universe * len(cancelled_siblings),
+            )
+        except Exception:
+            logger.exception("cost ledger refund failed for job %s", job_id)
+
     repo = _resolve_repo(job.workspace_path)
     snap = job.snapshot_obj
     if snap is None:
@@ -218,6 +273,32 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
             continue
         written.append(r.path)
 
+    # Wave 4: record this acceptance as a few-shot preference example
+    # (master plan §13). Failures here never block the apply response —
+    # a corrupt store is recoverable on the next run.
+    if written:
+        try:
+            arbiter_winner_id = None
+            verdict = job.last_verdict or {}
+            if isinstance(verdict, dict):
+                arbiter_winner_id = verdict.get("winner")
+            preference.add_example(
+                repo=repo,
+                user_id=job.user_id,
+                request_summary=job.user_request or "",
+                accepted_diff=_compact_diff(patches),
+                style=evidence.get("style") or "safe",
+                model_pair=list(evidence.get("model_pair") or [None, None]),
+                loc=evidence.get("loc") or "+0 −0",
+                universe_id=req.universeId,
+                arbiter_winner=(arbiter_winner_id == req.universeId
+                                if arbiter_winner_id else None),
+                user_overrode=(arbiter_winner_id is not None
+                               and arbiter_winner_id != req.universeId),
+            )
+        except Exception:
+            logger.exception("preference store write failed for job %s", job_id)
+
     return {
         "applied": not failed,
         "files": written,
@@ -229,6 +310,19 @@ async def shadow_apply(job_id: str, req: ShadowApplyRequest) -> Dict[str, Any]:
         ],
         "siblings_cancelled": cancelled_siblings,
     }
+
+
+def _compact_diff(patches: List[Dict[str, str]]) -> str:
+    """Build a tiny `--- path` / first-N-lines diff for the preference
+    store. Full files would explode storage; this preserves enough style
+    signal for the few-shot Generator pass.
+    """
+    blocks: List[str] = []
+    for p in patches[:6]:
+        body = p.get("new_content") or ""
+        head = "\n".join(body.splitlines()[:60])
+        blocks.append(f"--- {p.get('path', '?')}\n{head}")
+    return "\n\n".join(blocks)[:4000]
 
 
 def _cancel_tasks(job: events.JobState, *, keep: Optional[str]) -> List[str]:
@@ -246,6 +340,48 @@ def _cancel_tasks(job: events.JobState, *, keep: Optional[str]) -> List[str]:
     return cancelled
 
 
+@router.post("/{job_id}/why")
+async def shadow_why(job_id: str, req: ShadowWhyRequest) -> Dict[str, Any]:
+    """[Why?] follow-up — re-run the Arbiter against its own bundle plus
+    a user question. Master plan §22.
+    """
+    job = events.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"unknown job {job_id}")
+    if not job.bundle or not job.universe_results or not job.arbiter_provider:
+        raise HTTPException(status_code=409, detail="job has no cached arbiter context")
+
+    from .arbiter import Verdict, re_adjudicate
+    user_keys = (job.models or {}).get("user_keys") or {}
+    api_key = user_keys.get(job.arbiter_provider)
+    prior = None
+    if isinstance(job.last_verdict, dict):
+        prior = Verdict(
+            winner=job.last_verdict.get("winner", "?"),
+            confidence=float(job.last_verdict.get("confidence", 0)),
+            rationale=job.last_verdict.get("rationale", ""),
+            ranking=job.last_verdict.get("ranking") or [],
+            tradeoffs=job.last_verdict.get("tradeoffs") or [],
+            warnings=job.last_verdict.get("warnings") or [],
+            synthesis=job.last_verdict.get("synthesis") or {
+                "recommended": False, "explanation": None, "instruction": None,
+            },
+            source=job.last_verdict.get("source", "llm"),
+        )
+
+    verdict = await re_adjudicate(
+        bundle=job.bundle,
+        universes=job.universe_results,
+        provider=job.arbiter_provider,
+        api_key=api_key,
+        model=job.arbiter_model or "gemini-pro",
+        user_question=req.question or "",
+        prior_verdict=prior,
+    )
+    job.last_verdict = verdict.to_dict()
+    return {"verdict": verdict.to_dict()}
+
+
 @router.post("/{job_id}/cancel")
 async def shadow_cancel(job_id: str) -> Dict[str, Any]:
     job = events.get(job_id)
@@ -255,6 +391,20 @@ async def shadow_cancel(job_id: str) -> Dict[str, Any]:
     cancelled_ids = _cancel_tasks(job, keep=None)
     await job.emit(events.error(stage="cancel", msg="cancelled by user"))
     await job.emit_done()
+    # User-cancel: refund all not-yet-run universes. Estimate as
+    # (cancelled / planned) * estimated_cost_usd.
+    try:
+        n_planned = max(1, multiverse.TIER_UNIVERSE_COUNT.get(job.tier, 1))
+        refund = job.estimated_cost_usd * (len(cancelled_ids) / n_planned)
+        cost_ledger.record_outcome(
+            repo=_resolve_repo(job.workspace_path),
+            job_id=job_id,
+            outcome="cancelled-by-user",
+            universes_cancelled=len(cancelled_ids),
+            refund_usd=refund,
+        )
+    except Exception:
+        logger.exception("cost ledger cancel-refund failed for job %s", job_id)
     return {"cancelled": True, "tasks_cancelled": cancelled_ids}
 
 

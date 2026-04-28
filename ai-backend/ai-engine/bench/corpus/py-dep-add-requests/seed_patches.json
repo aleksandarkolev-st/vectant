@@ -1,0 +1,10 @@
+[
+  {
+    "path": "fetcher.py",
+    "new_content": "import requests\n\n\ndef fetch_status(url):\n    return requests.get(url, timeout=5).status_code\n"
+  },
+  {
+    "path": "requirements.txt",
+    "new_content": "requests>=2.31\n"
+  }
+]

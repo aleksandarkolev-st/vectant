@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useShadowVerify } from './hooks/useShadowVerify';
 
 /**
@@ -40,8 +40,31 @@ function ConsensusBlock({ winner, cohort }) {
     );
 }
 
-function VerdictBlock({ verdict, onApply }) {
+function VerdictBlock({ verdict, onApply, onAskWhy }) {
     const uncertain = (verdict.confidence ?? 0) < LOW_CONFIDENCE;
+    const [whyOpen, setWhyOpen] = useState(false);
+    const [whyInput, setWhyInput] = useState('');
+    const [whyBusy, setWhyBusy] = useState(false);
+    const [whyError, setWhyError] = useState(null);
+
+    const submitWhy = async () => {
+        if (!whyInput.trim() || whyBusy) return;
+        setWhyBusy(true);
+        setWhyError(null);
+        try {
+            const res = await onAskWhy(whyInput.trim());
+            if (res?.error) setWhyError(String(res.error));
+            else {
+                setWhyInput('');
+                setWhyOpen(false);
+            }
+        } catch (e) {
+            setWhyError(String(e?.message || e));
+        } finally {
+            setWhyBusy(false);
+        }
+    };
+
     return (
         <div className={`genome-arbiter ${uncertain ? 'genome-arbiter--uncertain' : 'genome-arbiter--decided'}`}>
             <header className="genome-arbiter__head">
@@ -87,11 +110,36 @@ function VerdictBlock({ verdict, onApply }) {
                     {verdict.synthesis.explanation || verdict.synthesis.instruction}
                 </div>
             ) : null}
-            {!uncertain && verdict.winner ? (
-                <div className="genome-arbiter__actions">
+            <div className="genome-arbiter__actions">
+                {!uncertain && verdict.winner ? (
                     <button type="button" onClick={() => onApply(verdict.winner)}>
                         Apply Universe {verdict.winner}
                     </button>
+                ) : null}
+                <button
+                    type="button"
+                    className="genome-arbiter__why-btn"
+                    onClick={() => setWhyOpen((v) => !v)}
+                    aria-expanded={whyOpen}
+                >
+                    {whyOpen ? 'Cancel' : '[Why?]'}
+                </button>
+            </div>
+            {whyOpen ? (
+                <div className="genome-arbiter__why">
+                    <textarea
+                        value={whyInput}
+                        onChange={(e) => setWhyInput(e.target.value)}
+                        placeholder="Ask the Arbiter to defend or revise this verdict…"
+                        rows={3}
+                        disabled={whyBusy}
+                    />
+                    <div className="genome-arbiter__why-actions">
+                        <button type="button" onClick={submitWhy} disabled={whyBusy || !whyInput.trim()}>
+                            {whyBusy ? 'Asking…' : 'Ask Arbiter'}
+                        </button>
+                    </div>
+                    {whyError ? <p className="genome-arbiter__why-error">⚠ {whyError}</p> : null}
                 </div>
             ) : null}
         </div>
@@ -112,7 +160,13 @@ export function ArbiterCard({ jobId }) {
         );
     }
     if (!verify.arbiter) return null;
-    return <VerdictBlock verdict={verify.arbiter} onApply={(id) => verify.apply(id)} />;
+    return (
+        <VerdictBlock
+            verdict={verify.arbiter}
+            onApply={(id) => verify.apply(id)}
+            onAskWhy={(q) => verify.askWhy(q)}
+        />
+    );
 }
 
 export default ArbiterCard;
