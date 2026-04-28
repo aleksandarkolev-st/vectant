@@ -116,6 +116,11 @@ class SummaryIndex:
         Raises:
             StoreError: If embedding dimensions don't match.
         """
+        # Coerce to numpy. Gemini's embed_query returns List[float], so
+        # callers that bypass pipeline._compute_embedding() (e.g. tests, ad-hoc
+        # callers) would otherwise crash on .shape / .astype below.
+        embedding = np.asarray(embedding, dtype=np.float32)
+
         if embedding.shape != (self.dimension,):
             raise StoreError(
                 f"Embedding dimension mismatch: expected {self.dimension}, "
@@ -128,7 +133,7 @@ class SummaryIndex:
         if norm > 0:
             embedding = embedding / norm
 
-        embedding = embedding.astype(np.float32)
+        embedding = embedding.astype(np.float32, copy=False)
 
         # Check if already exists (update)
         if document_id in self._id_to_idx:
