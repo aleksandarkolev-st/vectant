@@ -82,6 +82,9 @@ class TreeNavigator:
         self._genai_lock = threading.Lock()
         self._total_calls = 0
         self._calls_lock = threading.Lock()
+        # Per-query circuit breaker: once a routing call 504s, fall through
+        # to the heuristic for the rest of the docs in this navigation pass.
+        self._llm_disabled_for_query = False
 
     # =========================================================================
     # Public API
@@ -94,6 +97,7 @@ class TreeNavigator:
     ) -> List[NavigationResult]:
         """Navigate multiple document ToC trees in parallel (one LLM call per doc)."""
         self._total_calls = 0
+        self._llm_disabled_for_query = False
         t0 = time.time()
         deadline = t0 + (self._micro.total_timeout_ms / 1000)
 
@@ -154,6 +158,7 @@ class TreeNavigator:
     ) -> NavigationResult:
         """Navigate a single document's ToC tree."""
         self._total_calls = 0
+        self._llm_disabled_for_query = False
         deadline = time.time() + (self._micro.total_timeout_ms / 1000)
         return self._navigate_single(query, document_id, toc_tree, deadline)
 
@@ -331,14 +336,25 @@ Return ONLY valid JSON in this exact format:
             query_text, tree_text, doc_title, max_selections,
         )
 
+        # Once a routing call has 504'd in this navigation pass, skip the
+        # remaining LLM calls and rely on the heuristic — repeated 504s
+        # against a flaky model just burn wall-clock with no payoff.
+        if self._llm_disabled_for_query:
+            raise RoutingModelError(
+                "LLM routing disabled for this query after prior 504"
+            )
+
         genai = self._get_genai()
         try:
             model = genai.GenerativeModel(
                 self._micro.routing_model,
+                # Note: response_mime_type=application/json is a Gemini preview
+                # feature that intermittently returns 504s on the flash-lite
+                # preview model. We parse JSON ourselves below to stay
+                # compatible across models.
                 generation_config=genai.GenerationConfig(
                     temperature=0.1,
-                    max_output_tokens=512,
-                    response_mime_type="application/json",
+                    max_output_tokens=256,
                 ),
             )
             # Per-call timeout: without this the SDK blocks indefinitely if
@@ -352,6 +368,9 @@ Return ONLY valid JSON in this exact format:
             with self._calls_lock:
                 self._total_calls += 1
         except Exception as e:
+            err_str = str(e).lower()
+            if "504" in err_str or "deadline" in err_str:
+                self._llm_disabled_for_query = True
             raise RoutingModelError(f"Fast LLM routing call failed: {e}") from e
 
         text = (response.text or "").strip()
@@ -401,29 +420,48 @@ Return ONLY valid JSON in this exact format:
         text: str,
         max_index: int,
     ) -> Tuple[List[int], str]:
-        """Parse the LLM JSON response into validated indices."""
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
+        """Parse the LLM JSON response into validated indices.
 
+        Without response_mime_type=json, models occasionally wrap the JSON
+        in code fences or precede it with prose. Strip fences, then fall
+        back to greedy `{...}` extraction.
+        """
+        cleaned = re.sub(r"^```(?:json)?\s*", "", text)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+        parsed = None
         try:
-            parsed = json.loads(text)
-            raw_selected = parsed.get("selected", [])
-            reasoning = parsed.get("reasoning", "")
-
-            indices: List[int] = []
-            for x in raw_selected:
+            parsed = json.loads(cleaned)
+        except (json.JSONDecodeError, KeyError):
+            # Try to extract the first JSON object substring.
+            match = re.search(r"\{[\s\S]*\}", cleaned)
+            if match:
                 try:
-                    n = int(x)
-                except (TypeError, ValueError):
-                    continue
-                if 1 <= n <= max_index and n not in indices:
-                    indices.append(n)
-            return indices, reasoning
+                    parsed = json.loads(match.group(0))
+                except (json.JSONDecodeError, KeyError) as e2:
+                    logger.warning(f"Failed to parse extracted JSON: {e2}")
+                    logger.debug(f"Raw response: {text[:200]}")
+                    return [], f"JSON parse error: {e2}"
+            else:
+                logger.warning(f"No JSON object found in response")
+                logger.debug(f"Raw response: {text[:200]}")
+                return [], "No JSON in response"
 
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.warning(f"Failed to parse LLM response: {e}")
-            logger.debug(f"Raw response: {text[:200]}")
-            return [], f"JSON parse error: {e}"
+        if not isinstance(parsed, dict):
+            return [], "Response is not a JSON object"
+
+        raw_selected = parsed.get("selected", [])
+        reasoning = parsed.get("reasoning", "")
+
+        indices: List[int] = []
+        for x in raw_selected:
+            try:
+                n = int(x)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= n <= max_index and n not in indices:
+                indices.append(n)
+        return indices, reasoning
 
     def _collect_descendants(
         self,

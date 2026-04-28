@@ -139,8 +139,10 @@ class MacroConfig:
 class MicroConfig:
     """Configuration for micro-navigation (Step 3)."""
 
-    # Routing model (fast LLM for ToC navigation)
-    routing_model: str = "gemini-3.1-flash-lite-preview"
+    # Routing model (fast LLM for ToC navigation). gemini-3.1-flash-lite-preview
+    # was returning intermittent 504s on prompts with non-trivial ToC trees;
+    # gemini-2.0-flash is stable and similarly fast.
+    routing_model: str = os.getenv("RAG_ROUTING_MODEL", "gemini-2.0-flash")
     routing_api_key: Optional[str] = field(
         default_factory=lambda: os.getenv("GEMINI_API_KEY")
     )
@@ -158,8 +160,8 @@ class MicroConfig:
     # Performance — single-shot navigation makes one LLM call per doc,
     # parallelised across docs. Per-call cap is the "this doc is stuck" guard;
     # total cap is the wall-clock budget across all docs.
-    routing_timeout_ms: int = 8000         # Per-call timeout (Gemini Flash Lite)
-    total_timeout_ms: int = 12000          # Total micro-navigation timeout
+    routing_timeout_ms: int = 5000         # Per-call timeout
+    total_timeout_ms: int = 8000           # Total micro-navigation timeout
 
     # Fallback
     fallback_to_top_sections: bool = True  # If routing fails, use top N by token count

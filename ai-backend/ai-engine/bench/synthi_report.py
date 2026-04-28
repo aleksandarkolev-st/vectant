@@ -281,7 +281,12 @@ _shared: Dict[str, Any] = {}   # pipeline, config, ingest_stats
 
 
 def _ensure_pipeline(workspace_root: str, force_rebuild: bool = False) -> tuple:
-    """Return (pipeline, config), building and ingesting only once."""
+    """Return (pipeline, config), building and ingesting only once.
+
+    If the workspace already has a populated `.synthi/rag/` store from a
+    prior run and `--reuse-store` was passed, skip the (expensive) Gemini
+    embedding round-trip and just load the existing index.
+    """
     if not force_rebuild and "pipeline" in _shared:
         return _shared["pipeline"], _shared["config"]
 
@@ -292,12 +297,24 @@ def _ensure_pipeline(workspace_root: str, force_rebuild: bool = False) -> tuple:
     pipeline = RAGPipeline(workspace_root=workspace_root, config=config)
     pipeline.initialize()
 
-    print("  [setup] ingesting workspace (may call Gemini for embeddings)...")
-    t0 = time.perf_counter()
-    stats = pipeline.ingest_directory(workspace_root)
-    elapsed = (time.perf_counter() - t0) * 1000
-    print(f"  [setup] ingested {stats.get('documents_processed', 0)} docs "
-          f"({stats.get('total_sections', 0)} sections) in {elapsed:.0f} ms")
+    existing = pipeline.get_stats().get("documents", 0)
+    if _shared.get("reuse_store") and existing > 0:
+        print(f"  [setup] reusing existing store ({existing} docs already indexed)")
+        stats = {
+            "documents_processed": existing,
+            "documents_skipped": 0,
+            "documents_failed": 0,
+            "documents_purged": 0,
+            "total_sections": pipeline.get_stats().get("sections", 0),
+            "time_ms": 0,
+        }
+    else:
+        print("  [setup] ingesting workspace (may call Gemini for embeddings)...")
+        t0 = time.perf_counter()
+        stats = pipeline.ingest_directory(workspace_root)
+        elapsed = (time.perf_counter() - t0) * 1000
+        print(f"  [setup] ingested {stats.get('documents_processed', 0)} docs "
+              f"({stats.get('total_sections', 0)} sections) in {elapsed:.0f} ms")
 
     _shared["pipeline"] = pipeline
     _shared["config"] = config
@@ -983,7 +1000,11 @@ def main() -> None:
                         help="Output Markdown path (default: bench/synthi_report.md)")
     parser.add_argument("--no-cleanup", action="store_true",
                         help="Keep temp workspace after run")
+    parser.add_argument("--reuse-store", action="store_true",
+                        help="Skip ingest if .synthi/rag/ already has docs (fast iteration)")
     args = parser.parse_args()
+
+    _shared["reuse_store"] = args.reuse_store
 
     has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
     has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))

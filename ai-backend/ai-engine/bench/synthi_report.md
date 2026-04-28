@@ -1,6 +1,6 @@
 # Synthi Integration Report — RAG + Shadow
 
-Generated: 2026-04-28 07:18:34 UTC
+Generated: 2026-04-28 09:13:17 UTC
 Workspace: `C:/Users/dev/AppData/Local/Temp/synthi_report_ws_wjapybn4`
 Platform:  Windows 11 / Python 3.13.13
 
@@ -28,21 +28,21 @@ card, Anthropic and OpenAI are ~4–5x more expensive per call than Gemini.
 
 | Test | Status | Time (ms) | Detail |
 |------|--------|----------:|--------|
-| `rag:init` | PASS | 55052 |  |
+| `rag:init` | PASS | 594 |  |
 | `rag:ingest_stats` | PASS | 0 |  |
 | `rag:stats` | PASS | 0 |  |
-| `rag:dedup` | PASS | 13786 |  |
-| `rag:remove_file` | PASS | 1965 |  |
-| `rag:fusion_rrf` | PASS | 8176 |  |
-| `rag:fusion_weighted` | PASS | 11362 |  |
-| `rag:retrieve_context` | PASS | 31388 |  |
-| `rag:query_full` | PASS | 14157 |  |
-| `rag:clear` | PASS | 54382 |  |
-| `shadow:config` | PASS | 65 |  |
+| `rag:dedup` | PASS | 3452 |  |
+| `rag:remove_file` | PASS | 485 |  |
+| `rag:fusion_rrf` | PASS | 1063 |  |
+| `rag:fusion_weighted` | PASS | 1065 |  |
+| `rag:retrieve_context` | PASS | 1154 |  |
+| `rag:query_full` | PASS | 7566 |  |
+| `rag:clear` | PASS | 4120 |  |
+| `shadow:config` | PASS | 50 |  |
 | `shadow:cost_table` | PASS | 0 |  |
-| `shadow:project_signals` | PASS | 12 |  |
+| `shadow:project_signals` | PASS | 10 |  |
 | `shadow:events_import` | PASS | 0 |  |
-| `shadow:cost_ledger` | PASS | 5 |  |
+| `shadow:cost_ledger` | PASS | 2 |  |
 
 ## RAG Subsystem
 
@@ -77,7 +77,7 @@ Step 4  Heavy Synthesis (LLM, 1-3s)                  -> cited answer
 |-----------|-------|
 | Fusion method | `rrf` |
 | RRF damping k | `60` |
-| Routing model (Step 3) | `gemini-3.1-flash-lite-preview` |
+| Routing model (Step 3) | `gemini-2.0-flash` |
 | Synthesis model (Step 4) | `gemini-3.1-flash-lite-preview` |
 | Embedding model | `gemini-embedding-001` |
 | Embedding dimension | `3072` |
@@ -92,7 +92,7 @@ Step 4  Heavy Synthesis (LLM, 1-3s)                  -> cited answer
 | Failed | 0 |
 | Purged (stale) | 0 |
 | Total sections | 16 |
-| Time (ms) | 53645 |
+| Time (ms) | 0 |
 
 ### Store State After Ingestion
 
@@ -103,7 +103,7 @@ Step 4  Heavy Synthesis (LLM, 1-3s)                  -> cited answer
 | Sections | 16 |
 | ToC trees | 5 |
 | Keyword docs | 5 |
-| Unique BM25 terms | 109 |
+| Unique BM25 terms | 108 |
 
 ### retrieve_context() — Steps 2+3
 
@@ -113,12 +113,12 @@ Query: _"How does authentication work?"_
 |--------|-------|
 | Documents searched | 5 |
 | Documents selected | 5 |
-| Sections assembled | 10 |
-| Tokens in context | 881 |
+| Sections assembled | 15 |
+| Tokens in context | 1242 |
 | Sufficiency | `SUFFICIENT` |
-| Macro time (ms) | 572.3 |
-| Micro time (ms) | 30815.3 |
-| Total time (ms) | 31387.7 |
+| Macro time (ms) | 652.5 |
+| Micro time (ms) | 500.7 |
+| Total time (ms) | 1153.5 |
 
 ### Fusion Method Comparison
 
@@ -126,8 +126,8 @@ Same query (`authentication session token login`) run with each fusion method.
 
 | Method | Docs selected | Sections | Tokens | Macro (ms) | Micro (ms) | Sufficiency |
 |--------|---------------|----------|--------|------------|------------|-------------|
-| `rrf` | 5 | 15 | 1193 | 685 | 7487 | `SUFFICIENT` |
-| `weighted` | 5 | 14 | 1145 | 654 | 10703 | `SUFFICIENT` |
+| `rrf` | 5 | 15 | 1242 | 547 | 509 | `SUFFICIENT` |
+| `weighted` | 5 | 15 | 1242 | 568 | 494 | `SUFFICIENT` |
 
 **RRF (Reciprocal Rank Fusion)** is the default (Cormack 2009).
 It fuses vector + BM25 + recency by rank position rather than raw scores,
@@ -144,10 +144,10 @@ Query: _"What is the RAG pipeline and how does micro-navigation work?"_
 | Citations | 1 |
 | Documents searched | 5 |
 | Documents selected | 5 |
-| Macro time (ms) | 441 |
-| Micro time (ms) | 9463 |
-| Synthesis time (ms) | 4253 |
-| Total time (ms) | 14156 |
+| Macro time (ms) | 445 |
+| Micro time (ms) | 268 |
+| Synthesis time (ms) | 6854 |
+| Total time (ms) | 7566 |
 
 **Answer snippet:**
 
