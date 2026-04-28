@@ -198,7 +198,7 @@ class SummaryIndex:
             return []
 
         # L2 normalize query
-        query = query_embedding.astype(np.float32).reshape(1, -1)
+        query = np.asarray(query_embedding, dtype=np.float32).reshape(1, -1)
         norm = np.linalg.norm(query)
         if norm > 0:
             query = query / norm
