@@ -16,6 +16,7 @@ const repoCache = require('./repoCache');
 const sessionManager = require('./SessionManager');
 const { extractSessionContext, requireGitActionPermission, wsRequirePermission, wsDenyAction, wsAttachContext } = require('./permissionMiddleware');
 const { acquireStagingLock, releaseStagingLock, pauseWatcher, resumeWatcher, registerChangeListener } = require('./fsWatcherService');
+const shadowContinuousProducer = require('./shadowContinuousProducer');
 const { LRUCache } = require('lru-cache');
 const ySweetBridge = require('./ySweetBridge');
 const { withTelemetry, getMetrics, resetMetrics, getEventLoopBlockCount } = require('./perfTelemetry');
@@ -3545,6 +3546,39 @@ const server = http.createServer(async (req, res) => {
                     result = { success: true };
                     broadcastFileTreeChanged(slug, notifyScope);
                     break;
+                case 'apply-shadow-patch':
+                    // Synthi Genome — master plan §8.4.
+                    // Apply a verified shadow patch as a CRDT-aware Yjs.Text
+                    // edit (longest-common-prefix/suffix hunk) so concurrent
+                    // editors merge cleanly. Falls back to direct disk write
+                    // if Y-Sweet rejects the op or the doc does not exist.
+                    // Payload: { files: [{ path, base, patched }], universeId }
+                    result = { applied: [], skipped: [] };
+                    for (const f of (data.files || [])) {
+                      if (!f?.path || typeof f.patched !== 'string') {
+                        result.skipped.push({ path: f?.path, reason: 'invalid file entry' });
+                        continue;
+                      }
+                      try {
+                        const docName = buildDocName(slug, f.path, notifyScope);
+                        const op = await ySweetBridge.applyTextDiffOps(docName, f.patched);
+                        if (op?.ok) {
+                          // Persist to disk so git sees the same content.
+                          await flushYjsDocForFile(slug, f.path, notifyScope);
+                          result.applied.push({ path: f.path, strategy: op.strategy });
+                        } else {
+                          // CRDT path failed — fall back to direct write.
+                          await flushYjsDocForFile(slug, f.path, notifyScope);
+                          await withTelemetry('fs:write', () => gitService.writeFile(slug, f.path, f.patched, effectiveUserId));
+                          result.applied.push({ path: f.path, strategy: 'direct-fallback' });
+                        }
+                      } catch (e) {
+                        result.skipped.push({ path: f.path, reason: e?.message || 'apply failed' });
+                      }
+                    }
+                    broadcastFileTreeChanged(slug, notifyScope);
+                    broadcastGitStatusChanged(slug, undefined, notifyScope, { immediate: true });
+                    break;
                 case 'write-files-batch':
                   // Batch write many files (supports base64 for binary).
                   // Payload shape: { files: [{ path, encoding: 'utf8'|'base64', content }] }
@@ -4141,6 +4175,10 @@ process.on('uncaughtException', (err) => {
     if (process.env.KUBERNETES_SERVICE_HOST) {
       spawner.startCuller();
     }
+
+    // Synthi Genome — bridge fs-change events to the ai-engine's
+    // continuous-shadow watcher (master plan §14).
+    shadowContinuousProducer.start();
   });
 })();
 

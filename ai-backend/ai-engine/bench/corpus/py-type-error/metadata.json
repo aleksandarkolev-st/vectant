@@ -1,0 +1,8 @@
+{
+  "language": "python",
+  "intent": "fix",
+  "difficulty": "easy",
+  "has_dep_change": false,
+  "tier": "standard",
+  "tags": ["type-error", "mypy"]
+}

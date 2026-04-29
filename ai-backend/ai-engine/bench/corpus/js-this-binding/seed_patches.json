@@ -1,0 +1,6 @@
+[
+  {
+    "path": "counter.js",
+    "new_content": "class Counter {\n  constructor() {\n    this.value = 0;\n  }\n  add(n) {\n    this.value += n;\n  }\n  tick(steps) {\n    steps.forEach((n) => this.add(n));\n    return this.value;\n  }\n}\n\nmodule.exports = { Counter };\n"
+  }
+]

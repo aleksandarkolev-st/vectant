@@ -1,0 +1,8 @@
+{
+  "language": "javascript",
+  "intent": "fix",
+  "difficulty": "easy",
+  "has_dep_change": false,
+  "tier": "standard",
+  "tags": ["null-guard", "logic-bug"]
+}

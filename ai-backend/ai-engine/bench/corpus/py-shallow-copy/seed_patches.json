@@ -1,0 +1,6 @@
+[
+  {
+    "path": "seq.py",
+    "new_content": "def without_first(seq):\n    \"\"\"Return a copy of `seq` with the first element removed.\"\"\"\n    return list(seq[1:])\n"
+  }
+]

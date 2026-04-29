@@ -1,0 +1,6 @@
+[
+  {
+    "path": "joiner.py",
+    "new_content": "def join_lines(lines):\n    \"\"\"Join `lines` with newlines. O(n) via str.join.\"\"\"\n    if not lines:\n        return \"\"\n    return \"\\n\".join(lines) + \"\\n\"\n"
+  }
+]

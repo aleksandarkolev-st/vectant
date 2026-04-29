@@ -1,0 +1,10 @@
+[
+  {
+    "path": "slugify_text.py",
+    "new_content": "\"\"\"Slugify titles using python-slugify so unicode is transliterated.\"\"\"\nfrom slugify import slugify\n\n\ndef slugify_text(title: str) -> str:\n    return slugify(title)\n"
+  },
+  {
+    "path": "requirements.txt",
+    "new_content": "pytest>=7.0\npython-slugify>=8.0\n"
+  }
+]

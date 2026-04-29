@@ -1,0 +1,6 @@
+[
+  {
+    "path": "dedup.py",
+    "new_content": "def first_duplicate(seq):\n    \"\"\"Return the first element that appears twice in `seq`, or None.\"\"\"\n    seen = set()\n    for x in seq:\n        if x in seen:\n            return x\n        seen.add(x)\n    return None\n"
+  }
+]

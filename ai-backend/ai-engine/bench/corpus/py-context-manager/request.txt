@@ -1,0 +1,1 @@
+`read_lines(path)` opens the file but never closes it — a resource leak the test suite picks up via tracemalloc. Rewrite using a `with` block so the file is closed even if reading raises.

@@ -144,6 +144,41 @@ const CODE_INTEL_BASE = process.env.CODE_INTEL_URL || process.env.AI_ENGINE_URL 
 const DEFAULT_GEMINI_MODEL = process.env.SYNTHI_AI_MODEL || process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
 const UPSTREAM_TIMEOUT_MS = 45_000;
 
+// ── Synthi Genome — shadow verification kick-off ───────────────────────
+// Fires a /shadow/run against the ai-engine when the chat finishes
+// emitting fileBlocks. Returns a jobId the frontend can subscribe to.
+// Wave 1 of synthi-genome-master-plan.md.
+const SHADOW_VERIFY_DEFAULT = (process.env.SHADOW_VERIFY_DEFAULT || 'standard').toLowerCase();
+const SHADOW_VERIFY_ENABLED = (process.env.SHADOW_VERIFY_ENABLED ?? 'true').toLowerCase() !== 'false';
+
+async function fireShadowRun({ workspacePath, userId, userRequest, files, intent = 'fix', tier = SHADOW_VERIFY_DEFAULT }) {
+    if (!SHADOW_VERIFY_ENABLED) return null;
+    if (!workspacePath || !Array.isArray(files) || files.length === 0) return null;
+    if (!['quick', 'standard', 'deep'].includes(tier)) tier = 'standard';
+    try {
+        const effectivePath = userId ? `${workspacePath}/${userId}` : workspacePath;
+        const res = await fetch(`${CODE_INTEL_BASE}/shadow/run`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            signal: AbortSignal.timeout(8000),
+            body: JSON.stringify({
+                workspace_path: effectivePath,
+                conversation_id: null,
+                intent,
+                user_request: userRequest || '',
+                tier,
+                user_id: userId || null,
+                patches: files.map((f) => ({ path: f.path, new_content: f.content })),
+            }),
+        });
+        if (!res.ok) return null;
+        const json = await res.json().catch(() => null);
+        return json?.jobId ? json : null;
+    } catch (_) {
+        return null;
+    }
+}
+
 /**
  * Maps model name prefixes to their maximum output token limit.
  * Ordered most-specific first so e.g. "gemini-3.1-flash-lite-preview" matches before "gemini".
@@ -821,6 +856,7 @@ const streamGeminiWithTools = async ({
     conversationHistory = [],
     attachments = [],
     workspacePath = '',
+    userId = null,
     signal,
     maxRetries = 3,
 }) => {
@@ -899,6 +935,15 @@ const streamGeminiWithTools = async ({
                     // independent of text delta stream / progressive parsing
                     if (collectedFiles.length > 0) {
                         await writeEvent({ fileBlocks: collectedFiles.map(f => ({ path: f.path, content: f.content })) });
+                        const shadow = await fireShadowRun({
+                            workspacePath,
+                            userId,
+                            userRequest: userContent,
+                            files: collectedFiles,
+                        });
+                        if (shadow?.jobId) {
+                            await writeEvent({ shadowJob: shadow.jobId, tier: shadow.tier, estimatedCostUsd: shadow.estimated_cost_usd });
+                        }
                     }
                     // Also emit as synthetic FILE: blocks in the text stream for
                     // backwards compatibility / text bubble display
@@ -1086,6 +1131,15 @@ const streamGeminiWithTools = async ({
             // Emit collected files as structured event — reliable delivery
             if (collectedFiles.length > 0) {
                 await writeEvent({ fileBlocks: collectedFiles.map(f => ({ path: f.path, content: f.content })) });
+                const shadow = await fireShadowRun({
+                    workspacePath,
+                    userId,
+                    userRequest: userContent,
+                    files: collectedFiles,
+                });
+                if (shadow?.jobId) {
+                    await writeEvent({ shadowJob: shadow.jobId, tier: shadow.tier, estimatedCostUsd: shadow.estimated_cost_usd });
+                }
             }
             // Also emit as synthetic FILE: blocks in the text stream
             if (collectedFiles.length > 0) {
@@ -1860,6 +1914,7 @@ export async function POST(request) {
                 conversationHistory,
                 attachments,
                 workspacePath,
+                userId,
                 signal,
             });
         } else if (provider === 'anthropic') {

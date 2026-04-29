@@ -1,0 +1,1 @@
+`fetch_status(url)` uses urllib.request which is hard to mock and clunky. Switch to the `requests` library — add it to requirements.txt and rewrite the fetch using requests.get with a 5s timeout. Tests use a stub so they pass without a network.

@@ -1,0 +1,6 @@
+[
+  {
+    "path": "merge.js",
+    "new_content": "function isPlainObject(v) {\n  return v && typeof v === \"object\" && !Array.isArray(v);\n}\n\nfunction merge(a, b) {\n  if (!isPlainObject(a) || !isPlainObject(b)) return b ?? a;\n  const out = { ...a };\n  for (const k of Object.keys(b)) {\n    out[k] = isPlainObject(a[k]) && isPlainObject(b[k])\n      ? merge(a[k], b[k])\n      : b[k];\n  }\n  return out;\n}\n\nmodule.exports = { merge };\n"
+  }
+]

@@ -1,0 +1,8 @@
+{
+  "language": "python",
+  "intent": "implement",
+  "difficulty": "easy",
+  "has_dep_change": true,
+  "tier": "standard",
+  "tags": ["dep-change", "implement", "stdlib-replacement"]
+}

@@ -119,16 +119,9 @@ class DocumentRanker:
             analyzed,
         )
 
-        # Step 5: Select top-K
-        max_docs = min(
-            query.max_documents,
-            self._macro.max_documents,
-        )
-        top_docs = ranked[:max_docs]
-
-        # Ensure minimum documents if available
-        if len(top_docs) < self._macro.min_documents and ranked:
-            top_docs = ranked[:self._macro.min_documents]
+        # Step 5: Select top-K (dynamic when enabled)
+        max_docs = min(query.max_documents, self._macro.max_documents)
+        top_docs = self._select_top_k(ranked, max_docs)
 
         elapsed = (time.time() - t0) * 1000
 
@@ -163,10 +156,7 @@ class DocumentRanker:
         ranked = self._combine_scores(vector_results, keyword_results, analyzed)
 
         max_docs = min(query.max_documents, self._macro.max_documents)
-        top_docs = ranked[:max_docs]
-
-        if len(top_docs) < self._macro.min_documents and ranked:
-            top_docs = ranked[:self._macro.min_documents]
+        top_docs = self._select_top_k(ranked, max_docs)
 
         elapsed = (time.time() - t0) * 1000
 
@@ -237,8 +227,16 @@ class DocumentRanker:
         """
         Combine vector, keyword, and recency scores.
 
-        Uses weighted sum:
-            final = w_vec * vec_norm + w_kw * kw_norm + w_rec * recency
+        Two strategies, switched via `MacroConfig.fusion_method`:
+
+        - "weighted" (legacy): max-normalize keyword scores then take a
+          weighted sum:  final = w_vec*vec + w_kw*kw_norm + w_rec*recency
+          Fragile when score distributions differ across signals.
+
+        - "rrf" (default, Wave 4 RAG follow-up): Reciprocal Rank Fusion
+          over (vector ranking, keyword ranking, recency ranking).
+          Robust across distribution shift; doesn't require score
+          normalization. Cormack et al., SIGIR 2009.
         """
         # Collect all candidate document IDs
         all_doc_ids: Set[str] = set()
@@ -261,46 +259,144 @@ class DocumentRanker:
         if not all_doc_ids:
             return []
 
-        # Normalize keyword scores to [0, 1]
-        max_kw = max(kw_scores.values()) if kw_scores else 1.0
-        if max_kw > 0:
-            kw_normalized = {
-                doc_id: score / max_kw
-                for doc_id, score in kw_scores.items()
-            }
-        else:
-            kw_normalized = kw_scores
-
-        # Calculate recency scores
         recency_scores = self._compute_recency_scores(all_doc_ids)
 
-        # Weights
-        w_vec = self._macro.vector_weight
-        w_kw = self._macro.keyword_weight
-        w_rec = self._macro.recency_weight
+        method = (getattr(self._macro, "fusion_method", "weighted") or "weighted").lower()
+        if method == "rrf":
+            final_scores = self._fuse_rrf(
+                all_doc_ids, vec_scores, kw_scores, recency_scores,
+            )
+        else:
+            final_scores = self._fuse_weighted(
+                all_doc_ids, vec_scores, kw_scores, recency_scores,
+            )
 
-        # Combine
         ranked: List[RankedDocument] = []
         for doc_id in all_doc_ids:
-            vs = vec_scores.get(doc_id, 0.0)
-            ks = kw_normalized.get(doc_id, 0.0)
-            rs = recency_scores.get(doc_id, 0.0)
-
-            final = w_vec * vs + w_kw * ks + w_rec * rs
-
             ranked.append(RankedDocument(
                 document_id=doc_id,
-                final_score=final,
-                vector_score=vs,
+                final_score=final_scores.get(doc_id, 0.0),
+                vector_score=vec_scores.get(doc_id, 0.0),
                 keyword_score=kw_scores.get(doc_id, 0.0),
-                recency_score=rs,
+                recency_score=recency_scores.get(doc_id, 0.0),
                 matched_keywords=kw_terms.get(doc_id, []),
                 title=titles.get(doc_id, ""),
             ))
-
-        # Sort by final score descending
         ranked.sort(key=lambda d: d.final_score, reverse=True)
         return ranked
+
+    def _fuse_weighted(
+        self,
+        all_doc_ids: Set[str],
+        vec_scores: Dict[str, float],
+        kw_scores: Dict[str, float],
+        recency_scores: Dict[str, float],
+    ) -> Dict[str, float]:
+        max_kw = max(kw_scores.values()) if kw_scores else 1.0
+        kw_norm = (
+            {d: s / max_kw for d, s in kw_scores.items()}
+            if max_kw > 0 else dict(kw_scores)
+        )
+        w_vec = self._macro.vector_weight
+        w_kw = self._macro.keyword_weight
+        w_rec = self._macro.recency_weight
+        return {
+            d: w_vec * vec_scores.get(d, 0.0)
+                + w_kw * kw_norm.get(d, 0.0)
+                + w_rec * recency_scores.get(d, 0.0)
+            for d in all_doc_ids
+        }
+
+    def _fuse_rrf(
+        self,
+        all_doc_ids: Set[str],
+        vec_scores: Dict[str, float],
+        kw_scores: Dict[str, float],
+        recency_scores: Dict[str, float],
+    ) -> Dict[str, float]:
+        from ...retrieval.fusion import reciprocal_rank_fusion
+
+        # Build the three ranked lists, descending by score.
+        vec_rank = sorted(vec_scores.items(), key=lambda kv: -kv[1])
+        kw_rank = sorted(kw_scores.items(), key=lambda kv: -kv[1])
+        rec_rank = sorted(recency_scores.items(), key=lambda kv: -kv[1])
+        weights = [
+            self._macro.vector_weight,
+            self._macro.keyword_weight,
+            getattr(self._macro, "rrf_recency_weight", self._macro.recency_weight),
+        ]
+        fused = reciprocal_rank_fusion(
+            ranked_lists=[
+                [d for d, _ in vec_rank],
+                [d for d, _ in kw_rank],
+                [d for d, _ in rec_rank],
+            ],
+            k=getattr(self._macro, "rrf_k", 60),
+            weights=weights,
+        )
+        scores: Dict[str, float] = {d: 0.0 for d in all_doc_ids}
+        for doc_id, fused_score in fused:
+            scores[doc_id] = fused_score
+        return scores
+
+    # =========================================================================
+    # Internal: Dynamic K Selection
+    # =========================================================================
+
+    def _select_top_k(
+        self,
+        ranked: List[RankedDocument],
+        max_docs: int,
+    ) -> List[RankedDocument]:
+        """Select top-K with optional score-gap cutoff.
+
+        When ``enable_dynamic_k`` is on, look at the fused-score gaps between
+        consecutive candidates inside ``[min_documents, max_documents]`` and
+        cut at the first gap that is at least ``dynamic_k_gap_factor`` ×
+        the mean gap in that window. This lets a high-confidence query (one
+        clear winner, then a cliff) return fewer docs and a flat-distribution
+        query keep the full max — instead of always padding to a fixed K.
+        """
+        if not ranked:
+            return []
+
+        min_docs = max(1, self._macro.min_documents)
+        ceiling = min(len(ranked), max(min_docs, max_docs))
+
+        if not getattr(self._macro, "enable_dynamic_k", False) or ceiling <= min_docs:
+            top = ranked[:ceiling]
+            if len(top) < min_docs and ranked:
+                top = ranked[:min_docs]
+            return top
+
+        # Compute gaps between consecutive scores in the [min_docs, ceiling] window.
+        # Index i in `gaps` is the drop after position i+1 (1-indexed).
+        gaps: List[float] = []
+        for i in range(min_docs - 1, ceiling - 1):
+            gaps.append(ranked[i].final_score - ranked[i + 1].final_score)
+
+        if not gaps:
+            return ranked[:ceiling]
+
+        mean_gap = sum(gaps) / len(gaps)
+        factor = getattr(self._macro, "dynamic_k_gap_factor", 1.5)
+        threshold = mean_gap * factor
+
+        # Find the first gap that exceeds the threshold; cut right after it.
+        for i, gap in enumerate(gaps):
+            if gap > 0 and gap >= threshold:
+                cut = (min_docs - 1) + i + 1   # convert window-local index to absolute
+                logger.debug(
+                    "Dynamic K cut at %d (gap=%.4f, threshold=%.4f)",
+                    cut, gap, threshold,
+                )
+                return ranked[:cut]
+
+        return ranked[:ceiling]
+
+    # =========================================================================
+    # Internal: Recency
+    # =========================================================================
 
     def _compute_recency_scores(
         self,

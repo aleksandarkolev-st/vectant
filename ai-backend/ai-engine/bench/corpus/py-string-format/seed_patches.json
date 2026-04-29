@@ -1,0 +1,6 @@
+[
+  {
+    "path": "fmt.py",
+    "new_content": "def format_user(name, age=\"unknown\"):\n    \"\"\"Render a user line.\"\"\"\n    return \"{name}: {age}\".format(name=name, age=age)\n"
+  }
+]

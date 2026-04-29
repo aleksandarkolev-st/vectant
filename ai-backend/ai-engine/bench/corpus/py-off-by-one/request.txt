@@ -1,0 +1,1 @@
+factorial(0) and factorial(1) both return 1 in tests but the implementation returns 1 for them by accident, and factorial(5) returns 24 instead of 120. Fix the off-by-one in factorial.py so the tests pass.

@@ -1,0 +1,1 @@
+Rename auth.chk_token to auth.is_token_valid and update the only caller in api.py. The tests already expect the new name.

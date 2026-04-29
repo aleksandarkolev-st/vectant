@@ -1,0 +1,13 @@
+# Corpus root.
+#
+# Wave 1 target: 50 fixtures by end of wave (master plan §15.1).
+# Each fixture is a directory:
+#   <id>/
+#     workspace/         snapshot of a real codebase state
+#     request.txt        the user's prompt
+#     golden_patch.diff  known-correct fix
+#     golden_tests/      tests that pass on golden, fail on workspace
+#     metadata.json      { difficulty, language, intent, has_dep_change, ... }
+#
+# Coverage targets: Python, TS/JS, multi-file, dep-change, refactor,
+# performance, type-error, logic bug.

@@ -1,0 +1,6 @@
+[
+  {
+    "path": "describe.ts",
+    "new_content": "export function describe(value: string | number | null): string {\n  if (value === null) {\n    return \"unknown\";\n  }\n  if (typeof value === \"string\") {\n    return value.toUpperCase();\n  }\n  return value.toFixed(2);\n}\n"
+  }
+]

@@ -1,0 +1,1 @@
+`isValidEmail(s)` uses a nested-quantifier regex that backtracks catastrophically on inputs like "aaaa…!". Replace it with a simple anchored pattern that tolerates the standard local-part / domain shape and runs in linear time.

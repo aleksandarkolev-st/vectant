@@ -116,6 +116,11 @@ class SummaryIndex:
         Raises:
             StoreError: If embedding dimensions don't match.
         """
+        # Coerce to numpy. Gemini's embed_query returns List[float], so
+        # callers that bypass pipeline._compute_embedding() (e.g. tests, ad-hoc
+        # callers) would otherwise crash on .shape / .astype below.
+        embedding = np.asarray(embedding, dtype=np.float32)
+
         if embedding.shape != (self.dimension,):
             raise StoreError(
                 f"Embedding dimension mismatch: expected {self.dimension}, "
@@ -128,7 +133,7 @@ class SummaryIndex:
         if norm > 0:
             embedding = embedding / norm
 
-        embedding = embedding.astype(np.float32)
+        embedding = embedding.astype(np.float32, copy=False)
 
         # Check if already exists (update)
         if document_id in self._id_to_idx:
@@ -198,7 +203,7 @@ class SummaryIndex:
             return []
 
         # L2 normalize query
-        query = query_embedding.astype(np.float32).reshape(1, -1)
+        query = np.asarray(query_embedding, dtype=np.float32).reshape(1, -1)
         norm = np.linalg.norm(query)
         if norm > 0:
             query = query / norm
@@ -311,11 +316,20 @@ class SummaryIndex:
                 self._ids = list(data["ids"])
                 self._id_to_idx = {did: i for i, did in enumerate(self._ids)}
 
-                # Dimension check
+                # Dimension check. A mismatch typically means the embedding
+                # model changed (e.g. text-embedding-004 768-dim → gemini-
+                # embedding-001 3072-dim). Clearing is correct, but it's
+                # silent data loss from the user's perspective unless we
+                # log loud and the integrator notices their next query
+                # returns nothing. Escalate to ERROR so it shows up in any
+                # log aggregator filtering on level.
                 if self._matrix.shape[1] != self.dimension:
-                    logger.warning(
-                        f"Index dimension {self._matrix.shape[1]} != "
-                        f"configured {self.dimension}. Rebuilding."
+                    logger.error(
+                        f"RAG summary index dimension mismatch — saved={self._matrix.shape[1]} "
+                        f"configured={self.dimension}. The embedding model has changed since "
+                        f"this index was built (vectors are not interchangeable across models). "
+                        f"Discarding {len(self._ids)} stored vectors; re-ingest the workspace "
+                        f"to rebuild the index with the new model."
                     )
                     self.clear()
                     return False

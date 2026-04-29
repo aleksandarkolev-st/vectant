@@ -1,0 +1,1 @@
+`first_duplicate(seq)` is O(n²) — it does `seq.index(x)` inside a loop. Refactor to O(n) using a set, preserving the existing return value (the first element seen twice, or None when the input has no duplicates).

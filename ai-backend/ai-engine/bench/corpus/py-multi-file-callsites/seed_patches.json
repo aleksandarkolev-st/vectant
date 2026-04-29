@@ -1,0 +1,6 @@
+[
+  {
+    "path": "money.py",
+    "new_content": "def format_amount(value, currency):\n    return f\"{value:.2f} {currency}\"\n"
+  }
+]
