@@ -1092,3 +1092,50 @@ export class AnalyzerGatewayClient {
 }
 
 export const GatewayStatus = STATUS;
+
+// ───────────────────────────────────────────────────────────────────────────
+// Shared singleton
+//
+// Many hooks (useAnalyzerGateway, useWorkspaceAnalysis, useVFSWorkspaceAnalysis,
+// useProactiveAnalysis, useBatchHealing, useHealingStats, HealingRulesEditor,
+// etc.) need a gateway client. Previously every call site instantiated its own
+// `new AnalyzerGatewayClient()`, which meant: (a) one WebSocket per call site,
+// (b) any unmount on any consumer's `useEffect` cleanup ran `dispose()` and
+// rejected its in-flight requests with "Gateway disposed before receiving a
+// response", and (c) React Strict Mode's double-mount in dev would dispose the
+// first client moments after creation, killing any analysis kicked off in that
+// window.
+//
+// Sharing one client across the page lifetime fixes all three. Hooks now call
+// `getSharedAnalyzerClient()` and only un-register their listeners on cleanup;
+// the underlying client + socket survive component remounts. Callers that want
+// an isolated client can still `new AnalyzerGatewayClient(...)` directly.
+// ───────────────────────────────────────────────────────────────────────────
+let _sharedClient = null;
+let _sharedClientUrl = null;
+
+export function getSharedAnalyzerClient(options = {}) {
+  if (typeof window === 'undefined') return null;
+  const url = options.url ?? DEFAULT_WS_URL;
+  if (_sharedClient && _sharedClientUrl === url && !_sharedClient.isDisposed) {
+    return _sharedClient;
+  }
+  if (_sharedClient && _sharedClient.isDisposed) {
+    _sharedClient = null;
+  }
+  if (_sharedClient && _sharedClientUrl !== url) {
+    try { _sharedClient.dispose(); } catch (_) { /* swallow */ }
+    _sharedClient = null;
+  }
+  _sharedClient = new AnalyzerGatewayClient({ ...options, url });
+  _sharedClientUrl = url;
+  return _sharedClient;
+}
+
+export function disposeSharedAnalyzerClient() {
+  if (_sharedClient) {
+    try { _sharedClient.dispose(); } catch (_) { /* swallow */ }
+  }
+  _sharedClient = null;
+  _sharedClientUrl = null;
+}
