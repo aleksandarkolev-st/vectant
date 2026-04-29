@@ -1,0 +1,1 @@
+`Find(users []*User, id int)` panics with a nil-pointer dereference when no user matches because it returns user.Name from a nil pointer. Return ("", false) when no user is found, and (u.Name, true) when one is.

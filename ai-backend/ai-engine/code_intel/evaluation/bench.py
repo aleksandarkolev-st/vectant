@@ -74,3 +74,35 @@ class RetrievalBenchmark:
         if not retrieved:
             return 1.0 if not expected else 0.0
         return len(expected.intersection(retrieved)) / max(1, len(retrieved))
+
+    def compare_fusion_methods(
+        self,
+        dataset_path: str,
+        methods: Optional[List[str]] = None,
+    ) -> Dict[str, Dict]:
+        """Run the same dataset under each macro fusion method and return
+        a side-by-side. Used by tooling to confirm RRF wins (or doesn't)
+        before flipping the config default.
+
+        We patch the macro config in place around each run, then restore
+        the original method so the engine state stays consistent.
+        """
+        methods = methods or ["weighted", "rrf"]
+        report: Dict[str, Dict] = {}
+
+        # Reach into the RAG config; if there's no macro config (legacy
+        # engine path) we just bail with a single method run.
+        try:
+            from ..rag.config import get_rag_config
+            macro = get_rag_config().macro
+        except Exception:
+            return {"single": self.run(dataset_path)}
+
+        original = getattr(macro, "fusion_method", "weighted")
+        try:
+            for m in methods:
+                macro.fusion_method = m
+                report[m] = self.run(dataset_path)
+        finally:
+            macro.fusion_method = original
+        return report

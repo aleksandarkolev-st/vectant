@@ -1,0 +1,6 @@
+[
+  {
+    "path": "sort.js",
+    "new_content": "function sortNumbers(xs) {\n  return xs.slice().sort((a, b) => a - b);\n}\n\nmodule.exports = { sortNumbers };\n"
+  }
+]

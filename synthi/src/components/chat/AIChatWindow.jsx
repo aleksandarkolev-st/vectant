@@ -15,12 +15,16 @@ import { useChatInput } from './hooks/useChatInput';
 import { useAISuggestions } from './hooks/useAISuggestions';
 import { useCodeIntelMetrics } from '@/hooks/useCodeIntelMetrics';
 import { useChatAttachments } from './hooks/useChatAttachments';
+import { PROVIDER_OPTIONS, getProviderMeta } from './ProviderLogos';
 import { renderDiffChunkList, diffStats } from './utils/diffUtils';
 import { fileSuggestionStatusClasses, fileSuggestionStatusLabel } from './utils/fileSuggestionsUtils';
 import { formatMessageContent } from './utils/formatMessage';
 import MessageContent from './utils/MessageContent';
 import { ThinkingDots } from './ThinkingDots';
 import CommandApprovalCard from './CommandApprovalCard';
+import MultiverseCard from './MultiverseCard';
+import ShadowCostPanel from './ShadowCostPanel';
+import RegressionFindingsCard from './RegressionFindingsCard';
 
 const formatTimestamp = (timestamp) => {
     if (!timestamp) return '';
@@ -134,7 +138,11 @@ const AIChatWindow = ({
     } = useChatSessions();
 
     const [modelMenuOpen, setModelMenuOpen] = useState(false);
-    const [modelChoice, setModelChoice] = useState('gemini');
+    // Provider + model are stored separately so the picker can offer canonical
+    // models per provider while still letting users pin a specific revision.
+    const [modelChoice, setModelChoice] = useState('gemini'); // 'gemini' | 'anthropic' | 'openai' | 'custom'
+    const [providerModel, setProviderModel] = useState({});   // { gemini: 'id', anthropic: 'id', openai: 'id' }
+    const [providerKeys, setProviderKeys] = useState({});     // { gemini: 'key', anthropic: 'key', openai: 'key' }
     const [customModel, setCustomModel] = useState('');
     const [customApiKey, setCustomApiKey] = useState('');
     const [isThinking, setIsThinking] = useState(false);
@@ -155,11 +163,15 @@ const AIChatWindow = ({
     useEffect(() => {
         try {
             const savedChoice = localStorage.getItem('synthi-ai-model-choice');
-            const savedModel = localStorage.getItem('synthi-ai-custom-model');
-            const savedKey = localStorage.getItem('synthi-ai-custom-api-key');
+            const savedModel  = localStorage.getItem('synthi-ai-custom-model');
+            const savedKey    = localStorage.getItem('synthi-ai-custom-api-key');
+            const savedModels = localStorage.getItem('synthi-ai-provider-models');
+            const savedKeys   = localStorage.getItem('synthi-ai-provider-keys');
             if (savedChoice) setModelChoice(savedChoice);
-            if (savedModel) setCustomModel(savedModel);
-            if (savedKey) setCustomApiKey(savedKey);
+            if (savedModel)  setCustomModel(savedModel);
+            if (savedKey)    setCustomApiKey(savedKey);
+            if (savedModels) { try { setProviderModel(JSON.parse(savedModels) || {}); } catch (_) {} }
+            if (savedKeys)   { try { setProviderKeys (JSON.parse(savedKeys)   || {}); } catch (_) {} }
         } catch (e) { }
     }, []);
 
@@ -167,14 +179,25 @@ const AIChatWindow = ({
         try {
             localStorage.setItem('synthi-ai-model-choice', modelChoice);
             localStorage.setItem('synthi-ai-custom-model', customModel);
-            if (customApiKey) {
-                localStorage.setItem('synthi-ai-custom-api-key', customApiKey);
-            }
+            if (customApiKey) localStorage.setItem('synthi-ai-custom-api-key', customApiKey);
+            localStorage.setItem('synthi-ai-provider-models', JSON.stringify(providerModel));
+            localStorage.setItem('synthi-ai-provider-keys',   JSON.stringify(providerKeys));
         } catch (e) { }
-    }, [modelChoice, customModel, customApiKey]);
+    }, [modelChoice, customModel, customApiKey, providerModel, providerKeys]);
 
-    const effectiveModel = modelChoice === 'custom' && customModel.trim() ? customModel.trim() : null;
-    const effectiveApiKey = modelChoice === 'custom' && customApiKey.trim() ? customApiKey.trim() : null;
+    // Compute the effective provider/model/key tuple sent to the chat API.
+    // Server-side keys win when no per-provider override is set, so users with
+    // env-configured keys never need to enter anything in the UI.
+    const activeProviderMeta = getProviderMeta(modelChoice);
+    const effectiveProvider = modelChoice === 'custom' ? null : modelChoice;
+    const effectiveModel =
+        modelChoice === 'custom'
+            ? (customModel.trim() || null)
+            : (providerModel[modelChoice] || activeProviderMeta.defaultModel || null);
+    const effectiveApiKey =
+        modelChoice === 'custom'
+            ? (customApiKey.trim() || null)
+            : ((providerKeys[modelChoice] || '').trim() || null);
 
     const {
         isLoading,
@@ -214,6 +237,7 @@ const AIChatWindow = ({
         dispatch,
         aiModel: effectiveModel,
         aiApiKey: effectiveApiKey,
+        aiProvider: effectiveProvider,
     });
 
     const {
@@ -815,6 +839,29 @@ const AIChatWindow = ({
                     </div>
                 )}
 
+                {/* Synthi Genome — shadow verify cost dashboard (master plan §17 + §22) */}
+                {workspaceSlug ? (
+                    <div className="mx-3 mb-1.5">
+                        <ShadowCostPanel workspacePath={workspaceSlug} />
+                    </div>
+                ) : null}
+
+                {/* Synthi Genome — continuous-shadow regression findings (master plan §14) */}
+                {workspaceSlug ? (
+                    <div className="mx-3 mb-1.5">
+                        <RegressionFindingsCard
+                            workspacePath={workspaceSlug}
+                            onLookAt={(finding) => {
+                                const prompt =
+                                    `Continuous shadow flagged a regression in \`${finding.file}\` ` +
+                                    `(${finding.test || 'tests now failing'}). ` +
+                                    `Investigate the change since the last accepted patch and propose a fix.`;
+                                setInputValue(prompt);
+                            }}
+                        />
+                    </div>
+                ) : null}
+
                 <div className="px-2.5 pb-2 flex items-center gap-1 overflow-x-auto">
                     {chatSessions.map((session) => {
                         const isActive = session.id === activeSession?.id;
@@ -1014,6 +1061,18 @@ const AIChatWindow = ({
                                                 })}
                                             </div>
                                         )}
+                                    </div>
+                                );
+                            }
+
+                            if (msg.role === 'shadow') {
+                                // Synthi Genome — verify panel for the shadow run
+                                // kicked off by /api/chat after fileBlocks emitted.
+                                return (
+                                    <div key={msg.id} className="flex justify-start min-w-0">
+                                        <div className="w-full min-w-0">
+                                            <MultiverseCard jobId={msg.shadowJob} />
+                                        </div>
                                     </div>
                                 );
                             }
@@ -1512,10 +1571,15 @@ const AIChatWindow = ({
                                         size="sm"
                                         className="text-xs px-2.5 py-1 h-6 rounded-md bg-transparent border-none transition-colors"
                                         style={{ color: 'var(--text-secondary)' }}
-                                        title="Switch AI model"
+                                        title="Switch AI provider / model"
                                     >
                                         <span className="flex items-center gap-1.5">
-                                            {modelChoice === 'custom' ? (effectiveModel || 'Custom') : 'Gemini'}
+                                            <activeProviderMeta.Logo size={13} color={activeProviderMeta.accent} />
+                                            <span className="font-medium">{
+                                                modelChoice === 'custom'
+                                                    ? (effectiveModel || 'Custom')
+                                                    : activeProviderMeta.label
+                                            }</span>
                                             <ChevronDown
                                                 className={`w-3 h-3 transition-transform duration-300 ${modelMenuOpen ? 'rotate-180' : 'rotate-0'}`}
                                                 style={{ animation: modelMenuOpen ? 'none' : 'chevron-float 2s ease-in-out infinite' }}
@@ -1524,62 +1588,108 @@ const AIChatWindow = ({
                                     </Button>
                                 </PopoverTrigger>
                                 <PopoverContent
-                                    className="w-72 mr-6 p-2.5 space-y-2.5"
+                                    className="w-80 mr-6 p-3 space-y-3"
                                     style={{ background: 'var(--bg-panel)', border: '1px solid var(--bg-elevated)' }}
                                     side="top"
                                     align="start"
                                     sideOffset={10}
                                 >
-                                    <div className="text-[9px] font-semibold uppercase tracking-wider px-1" style={{ color: 'var(--text-muted)' }}>Model selection</div>
-                                    <div className="flex gap-1.5 text-xs" style={{ color: 'var(--text-primary)' }}>
-                                        <button
-                                            className={`flex-1 px-3 py-1.5 rounded-lg border transition-all`}
-                                            style={modelChoice === 'gemini'
-                                                ? { borderColor: 'color-mix(in srgb, var(--accent-secondary) 40%, transparent)', background: 'color-mix(in srgb, var(--accent-secondary) 8%, transparent)', color: 'var(--accent-secondary)' }
-                                                : { borderColor: 'var(--bg-elevated)' }
-                                            }
-                                            onClick={() => setModelChoice('gemini')}
-                                        >
-                                            Gemini (default)
-                                        </button>
-                                        <button
-                                            className={`flex-1 px-3 py-1.5 rounded-lg border transition-all`}
-                                            style={modelChoice === 'custom'
-                                                ? { borderColor: 'color-mix(in srgb, var(--accent-secondary) 40%, transparent)', background: 'color-mix(in srgb, var(--accent-secondary) 8%, transparent)', color: 'var(--accent-secondary)' }
-                                                : { borderColor: 'var(--bg-elevated)' }
-                                            }
-                                            onClick={() => setModelChoice('custom')}
-                                        >
-                                            Custom
-                                        </button>
+                                    <div className="text-[9px] font-semibold uppercase tracking-wider px-1" style={{ color: 'var(--text-muted)' }}>Provider</div>
+                                    <div className="grid grid-cols-2 gap-1.5">
+                                        {PROVIDER_OPTIONS.map((p) => {
+                                            const Logo = p.Logo;
+                                            const active = modelChoice === p.provider;
+                                            return (
+                                                <button
+                                                    key={p.provider}
+                                                    onClick={() => setModelChoice(p.provider)}
+                                                    className="flex items-center gap-2 px-2.5 py-2 rounded-lg border transition-all text-left"
+                                                    style={active
+                                                        ? { borderColor: `color-mix(in srgb, ${p.accent} 55%, transparent)`,
+                                                            background: `color-mix(in srgb, ${p.accent} 10%, transparent)`,
+                                                            color: 'var(--text-primary)' }
+                                                        : { borderColor: 'var(--bg-elevated)', color: 'var(--text-secondary)' }
+                                                    }
+                                                >
+                                                    <Logo size={16} color={active ? p.accent : 'currentColor'} />
+                                                    <span className="flex-1 min-w-0">
+                                                        <span className="block text-xs font-semibold leading-tight">{p.label}</span>
+                                                        <span className="block text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{p.sublabel}</span>
+                                                    </span>
+                                                </button>
+                                            );
+                                        })}
                                     </div>
+
+                                    {modelChoice !== 'custom' && activeProviderMeta.models.length > 0 && (
+                                        <div>
+                                            <label className="block text-[10px] uppercase tracking-wider mb-1.5 px-1" style={{ color: 'var(--text-muted)' }}>Model</label>
+                                            <div className="flex flex-col gap-1 max-h-44 overflow-y-auto pr-1">
+                                                {activeProviderMeta.models.map((m) => {
+                                                    const selected = (providerModel[modelChoice] || activeProviderMeta.defaultModel) === m.id;
+                                                    return (
+                                                        <button
+                                                            key={m.id}
+                                                            onClick={() => setProviderModel((prev) => ({ ...prev, [modelChoice]: m.id }))}
+                                                            className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-md text-xs transition-colors"
+                                                            style={selected
+                                                                ? { background: `color-mix(in srgb, ${activeProviderMeta.accent} 12%, transparent)`,
+                                                                    color: activeProviderMeta.accent }
+                                                                : { color: 'var(--text-secondary)' }
+                                                            }
+                                                        >
+                                                            <span className="font-mono text-[11px]">{m.label}</span>
+                                                            {selected && <span className="text-[9px] opacity-70">✓</span>}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {modelChoice !== 'custom' && (
+                                        <div>
+                                            <label className="block text-[10px] uppercase tracking-wider mb-1.5 px-1" style={{ color: 'var(--text-muted)' }}>
+                                                {activeProviderMeta.label} API key (optional)
+                                            </label>
+                                            <Input
+                                                type="password"
+                                                value={providerKeys[modelChoice] || ''}
+                                                onChange={(e) => setProviderKeys((prev) => ({ ...prev, [modelChoice]: e.target.value }))}
+                                                placeholder="Leave blank to use server key"
+                                                className="text-xs"
+                                                style={{ background: 'var(--bg-app)', borderColor: 'var(--bg-elevated)' }}
+                                            />
+                                            <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                                                Key stored locally. Server falls back to its own credentials when blank.
+                                            </p>
+                                        </div>
+                                    )}
+
                                     {modelChoice === 'custom' && (
-                                        <div className="space-y-3 pt-1">
+                                        <div className="space-y-2.5 pt-1">
                                             <div>
-                                                <label className="block text-[11px] mb-1.5 uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Model ID</label>
+                                                <label className="block text-[10px] mb-1.5 uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>Model ID</label>
                                                 <Input
                                                     value={customModel}
                                                     onChange={(e) => setCustomModel(e.target.value)}
-                                                    placeholder="e.g. gpt-4.1, gemini-1.5-pro"
+                                                    placeholder="e.g. claude-opus-4-7, gpt-4.1, gemini-2.5-pro"
                                                     className="text-xs"
                                                     style={{ background: 'var(--bg-app)', borderColor: 'var(--bg-elevated)' }}
                                                 />
                                             </div>
                                             <div>
-                                                <label className="block text-[11px] mb-1.5 uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>API Key</label>
+                                                <label className="block text-[10px] mb-1.5 uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>API Key</label>
                                                 <Input
                                                     type="password"
                                                     value={customApiKey}
                                                     onChange={(e) => setCustomApiKey(e.target.value)}
-                                                    placeholder="Enter custom API key"
+                                                    placeholder="Provider key (auto-detected from model name)"
                                                     className="text-xs"
                                                     style={{ background: 'var(--bg-app)', borderColor: 'var(--bg-elevated)' }}
                                                 />
                                             </div>
-                                            <div className="text-[11px] flex items-center gap-1.5" style={{ color: 'var(--text-muted)' }}>
-                                                <Eye className="w-3 h-3" />
-                                                Key stored locally in your browser
-                                            </div>
+                                            <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Key stored locally in your browser.</p>
                                         </div>
                                     )}
                                 </PopoverContent>

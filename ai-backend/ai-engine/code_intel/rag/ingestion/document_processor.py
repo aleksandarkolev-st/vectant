@@ -17,7 +17,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 from ..config import RAGConfig
 from ..types import Document, ToCTree, Section, DocumentSummary
@@ -48,9 +48,13 @@ class ProcessingResult:
     documents: List[Document] = field(default_factory=list)
     documents_processed: int = 0
     documents_skipped: int = 0
+    documents_unchanged: int = 0
     documents_failed: int = 0
     errors: List[str] = field(default_factory=list)
     elapsed_ms: float = 0.0
+    # Paths whose content_hash matched an `already_indexed` entry — caller
+    # uses this to mark them as "ingested" so stale-purge doesn't drop them.
+    unchanged_paths: List[str] = field(default_factory=list)
 
     @property
     def total_sections(self) -> int:
@@ -125,25 +129,47 @@ class DocumentProcessor:
                 """Adapter that exposes generate_summary for SummaryGenerator."""
 
                 def generate_summary(self, prompt: str) -> Optional[Dict]:
-                    try:
-                        response = model.generate_content(prompt)
-                        text = response.text.strip()
-                        # Parse structured output
-                        import json as _json
-                        # Try JSON first
+                    import json as _json
+                    import random
+                    import time as _time
+
+                    max_retries = 2
+                    last_err: Optional[Exception] = None
+                    for attempt in range(max_retries + 1):
                         try:
-                            return _json.loads(text)
-                        except _json.JSONDecodeError:
-                            pass
-                        # Fallback: treat entire response as summary text
-                        return {
-                            "summary": text[:500],
-                            "topics": [],
-                            "entities": [],
-                        }
-                    except Exception as e:
-                        logger.warning(f"Gemini summary call failed: {e}")
-                        return None
+                            response = model.generate_content(prompt)
+                            text = response.text.strip()
+                            try:
+                                return _json.loads(text)
+                            except _json.JSONDecodeError:
+                                # Fallback: treat entire response as summary text
+                                return {
+                                    "summary": text[:500],
+                                    "topics": [],
+                                    "entities": [],
+                                }
+                        except Exception as e:
+                            last_err = e
+                            err_str = str(e).lower()
+                            is_rate_limit = (
+                                "429" in err_str
+                                or "resource" in err_str
+                                or "quota" in err_str
+                            )
+                            if is_rate_limit and attempt < max_retries:
+                                delay = (0.5 * (2 ** attempt)) + (random.random() * 0.3)
+                                logger.warning(
+                                    f"Rate limited on summary, retry "
+                                    f"{attempt + 1}/{max_retries} after {delay:.2f}s"
+                                )
+                                _time.sleep(delay)
+                                continue
+                            logger.warning(f"Gemini summary call failed: {e}")
+                            return None
+                    logger.warning(
+                        f"Gemini summary call exhausted retries: {last_err}"
+                    )
+                    return None
 
             return _GeminiSummaryClient()
         except (ImportError, Exception) as e:
@@ -154,7 +180,12 @@ class DocumentProcessor:
     # Public API
     # =====================================================================
 
-    def process_directory(self, directory: str) -> ProcessingResult:
+    def process_directory(
+        self,
+        directory: str,
+        *,
+        already_indexed: Optional[Set[str]] = None,
+    ) -> ProcessingResult:
         """
         Process all supported files in a directory.
 
@@ -163,6 +194,11 @@ class DocumentProcessor:
 
         Args:
             directory: Absolute path to the directory.
+            already_indexed: Optional set of content hashes already present
+                in persistent stores. Files whose computed hash matches an
+                entry are skipped before the LLM summary call — incremental
+                indexing. The summary call dominates ingest cost for large
+                corpora; skipping unchanged files makes re-ingest cheap.
 
         Returns:
             ProcessingResult with documents and statistics.
@@ -170,12 +206,18 @@ class DocumentProcessor:
         t0 = time.time()
         result = ProcessingResult()
         dir_path = Path(directory)
+        already_indexed = already_indexed or set()
 
         if not dir_path.is_dir():
             raise IngestionError(
                 f"Not a directory: {directory}",
                 details={"directory": directory},
             )
+
+        # `_seen_hashes` is intra-batch dedup. Without resetting, the cached
+        # processor instance carries stale hashes across calls and a
+        # post-clear re-ingest silently drops every document as "duplicate".
+        self._seen_hashes.clear()
 
         logger.info(f"Processing directory: {directory}")
 
@@ -195,6 +237,20 @@ class DocumentProcessor:
 
         # Step 2: Process each document through the pipeline
         for doc in raw_documents:
+            # Incremental skip: same content_hash = same content; nothing in
+            # ToC/Sections/Summary depends on path or mtime, so the existing
+            # store entry is still correct. Cheaper than the dedup check
+            # below because it short-circuits before any LLM call.
+            content_hash = doc.metadata.content_hash
+            if content_hash in already_indexed:
+                result.documents_unchanged += 1
+                if doc.metadata.file_path:
+                    result.unchanged_paths.append(str(doc.metadata.file_path))
+                logger.debug(
+                    f"Unchanged (skip): {doc.metadata.file_path} ({content_hash[:12]})"
+                )
+                continue
+
             try:
                 processed = self._process_single_document(doc)
                 if processed is None:
@@ -213,6 +269,7 @@ class DocumentProcessor:
         logger.info(
             f"Directory processing complete: "
             f"{result.documents_processed} processed, "
+            f"{result.documents_unchanged} unchanged, "
             f"{result.documents_skipped} skipped, "
             f"{result.documents_failed} failed "
             f"({result.elapsed_ms:.0f}ms)"
@@ -231,6 +288,10 @@ class DocumentProcessor:
             Fully processed Document, or None if skipped (e.g. duplicate).
         """
         logger.debug(f"Processing file: {file_path}")
+
+        # Single-file ingestion never needs cross-call dedup; the
+        # pipeline.ingest_file() caller handles existing-doc removal first.
+        self._seen_hashes.clear()
 
         # Load
         try:

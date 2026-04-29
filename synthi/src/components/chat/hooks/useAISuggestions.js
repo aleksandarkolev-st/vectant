@@ -176,6 +176,7 @@ export const useAISuggestions = ({
     dispatch,
     aiModel = null,
     aiApiKey = null,
+    aiProvider = null,
 }) => {
     const clientReady = true;
     const [isLoading, setIsLoading] = useState(false);
@@ -1889,6 +1890,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                     focusPath: includeActiveFile ? (activeFile?.path || activeFile?.name || null) : null,
                     model: aiModel,
                     apiKey: aiApiKey,
+                    provider: aiProvider || undefined,
                     // Code intelligence integration
                     workspacePath: workspaceSlug || null,
                     useCodeIntel: !isRunOnly,
@@ -2082,6 +2084,24 @@ If image attachments are present, read/ocr the images and extract any text or co
                             }
                         } catch (fbErr) {
                             console.error('[AI Chat] Failed to process fileBlocks:', fbErr);
+                        }
+                        continue;
+                    }
+                    // ── Synthi Genome — shadow verification job started ──
+                    // Wave 1 of synthi-genome-master-plan.md. Render a
+                    // <MultiverseCard jobId={...} /> in the chat timeline.
+                    if (parsed?.shadowJob && activeSession) {
+                        try {
+                            appendMessagesToSession(activeSession.id, [{
+                                id: `shadow-${parsed.shadowJob}`,
+                                role: 'shadow',
+                                timestamp: new Date(),
+                                shadowJob: parsed.shadowJob,
+                                tier: parsed.tier || null,
+                                estimatedCostUsd: parsed.estimatedCostUsd ?? null,
+                            }]);
+                        } catch (shErr) {
+                            console.warn('[AI Chat] Failed to record shadowJob:', shErr);
                         }
                         continue;
                     }

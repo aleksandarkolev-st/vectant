@@ -262,6 +262,9 @@ const GIT_ACTION_PERMISSIONS = Object.freeze({
   'resolve-theirs':'canGit',
   'mark-resolved': 'canGit',
   'abort-merge':   'canGit',
+  // Synthi Genome — shadow verification apply path. Submits a verified
+  // text diff as Yjs ops + writes the result to disk. Wave 1.
+  'apply-shadow-patch': 'canFileOps',
 
   // File mutations → canFileOps
   'write-file':        'canFileOps',

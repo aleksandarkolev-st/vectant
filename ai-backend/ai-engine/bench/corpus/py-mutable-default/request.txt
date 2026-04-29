@@ -1,0 +1,1 @@
+Calling `add_item("a")` then `add_item("b")` returns `["a", "b"]` instead of `["b"]`. The mutable-default-argument anti-pattern is leaking state between calls. Replace the mutable default with `None` and lazily initialize inside the function.

@@ -1,0 +1,1 @@
+Convert loadProfile in loadProfile.js from a promise chain to async/await. Preserve the existing behaviour: on success return { user, orgs }, on failure return { user: null, orgs: [], error: err.message }. Keep the require + module.exports surface.

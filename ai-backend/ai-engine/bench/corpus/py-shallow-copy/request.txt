@@ -1,0 +1,1 @@
+`without_first(seq)` is supposed to return the input list with the first element removed *without* mutating the input. Right now it deletes from the original because `out = seq` aliases instead of copying. Fix it so the input is preserved and a new list is returned.

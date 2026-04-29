@@ -1,0 +1,1 @@
+parseAge crashes when input is null or undefined. Add a null guard so it returns null in those cases, and keep the trim+parseInt behaviour for valid string inputs.

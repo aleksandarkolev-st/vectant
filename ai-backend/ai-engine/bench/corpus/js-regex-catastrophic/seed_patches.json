@@ -1,0 +1,6 @@
+[
+  {
+    "path": "email.js",
+    "new_content": "// Anchored linear-time pattern; rejects nested quantifiers entirely.\nconst RX = /^[a-zA-Z0-9._-]+@[a-zA-Z0-9-]+\\.[a-zA-Z]{2,}$/;\n\nfunction isValidEmail(s) {\n  return RX.test(s);\n}\n\nmodule.exports = { isValidEmail };\n"
+  }
+]

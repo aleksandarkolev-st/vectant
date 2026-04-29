@@ -1,0 +1,6 @@
+[
+  {
+    "path": "factorial.py",
+    "new_content": "# Off-by-one in `factorial(n)` — returns the wrong value for n=0 and n=1.\n\ndef factorial(n):\n    \"\"\"Return n! for non-negative integers.\"\"\"\n    if n < 0:\n        raise ValueError(\"n must be >= 0\")\n    result = 1\n    for i in range(1, n + 1):\n        result *= i\n    return result\n"
+  }
+]

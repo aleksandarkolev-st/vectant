@@ -63,7 +63,7 @@ export const useAiCompletion = ({
 
     const applyAiCompletionText = useCallback((text) => {
         // 1. Safety check: prevent applying if diff is active
-        if (hasActiveDiff()) return; 
+        if (hasActiveDiff()) return;
 
         if (!text || !editorInstance || !monacoInstance) return;
         const start = aiCompletionCursorRef.current || editorInstance.getPosition();
@@ -72,22 +72,16 @@ export const useAiCompletion = ({
         const model = editorInstance.getModel();
         let rangeToReplace = null;
 
-        // If provider computed a replacement range, prefer that. Otherwise
-        // attempt to replace the current word at the cursor to allow edits
-        // instead of append-only behavior.
+        // FIM contract: the model is told to fill ONLY the gap at the cursor,
+        // so the default behavior is pure insertion at the cursor — never overwrite
+        // the rest of the user's line. A computed range is honored when supplied.
         const cached = aiCompletionCacheRef.current || {};
         if (cached.suggestionRange && cached.suggestionRange.start) {
             const s = cached.suggestionRange.start;
             const e = cached.suggestionRange.end || cached.suggestionRange.start;
             rangeToReplace = new monacoInstance.Range(s.lineNumber, s.column, e.lineNumber, e.column);
-        } else if (model) {
-            try {
-                const word = model.getWordAtPosition(start) || null;
-                const endCol = word ? word.endColumn : (model.getLineContent(start.lineNumber).length + 1);
-                rangeToReplace = new monacoInstance.Range(start.lineNumber, start.column, start.lineNumber, endCol);
-            } catch (e) {
-                rangeToReplace = new monacoInstance.Range(start.lineNumber, start.column, start.lineNumber, start.column);
-            }
+        } else {
+            rangeToReplace = new monacoInstance.Range(start.lineNumber, start.column, start.lineNumber, start.column);
         }
 
         if (!rangeToReplace) return;

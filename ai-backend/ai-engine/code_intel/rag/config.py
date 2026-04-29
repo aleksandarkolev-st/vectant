@@ -18,6 +18,14 @@ try:
 except ImportError:
     pass
 
+# Hardcoded fallback Gemini key. Used when GEMINI_API_KEY is not set in the
+# environment. Lets the bench/dev paths run without a separate .env wired up.
+_HARDCODED_GEMINI_KEY = "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
+
+
+def _resolve_gemini_key() -> str:
+    return os.getenv("GEMINI_API_KEY") or _HARDCODED_GEMINI_KEY
+
 
 @dataclass
 class IngestionConfig:
@@ -50,6 +58,13 @@ class IngestionConfig:
         "*.map",
         "package-lock.json",
         "yarn.lock",
+        # The RAG store keeps a per-document plaintext copy in
+        # `<store_dir>/doc_content/*.txt`. Without this exclusion the ingester
+        # re-walks those files on the next ingest, doubling counters and
+        # silently competing with the originals on the path-keyed dedup.
+        ".synthi/**",
+        # The IDE writes its own state dir in the workspace; never index it.
+        ".synthi-ide/**",
     ])
 
     # Maximum file size for ingestion (bytes)
@@ -113,14 +128,45 @@ class MacroConfig:
     keyword_top_k: int = 20           # BM25 candidates
     keyword_min_score: float = 0.0
 
-    # Hybrid scoring weights
+    # Hybrid scoring weights (used when fusion_method == "weighted")
     vector_weight: float = 0.6
     keyword_weight: float = 0.3
     recency_weight: float = 0.1
 
+    # Score-fusion method:
+    #   "weighted" — historical weighted-sum of normalised scores.
+    #   "rrf"      — Reciprocal Rank Fusion (Cormack 2009). More robust
+    #                across signals with different score distributions
+    #                because it only looks at ranks, not magnitudes.
+    fusion_method: str = "rrf"
+    rrf_k: int = 60                    # RRF damping constant
+    rrf_recency_weight: float = 0.5    # Per-list weight for the recency rank in RRF
+
     # Final selection
     max_documents: int = 5            # Maximum documents to pass to micro-nav
     min_documents: int = 1            # Minimum documents (relax thresholds if needed)
+
+    # Dynamic K: cut the candidate list at the largest fused-score gap inside
+    # [min_documents, max_documents] when that gap is unusually wide. Trades
+    # a fixed top-5 for a smarter cut: tight queries get fewer docs, broad
+    # queries get more (up to max). Disable to fall back to fixed max_documents.
+    enable_dynamic_k: bool = True
+    dynamic_k_gap_factor: float = 1.5  # Cut where gap >= factor × mean gap
+
+    # HyDE / query rewriting: when enabled, the pipeline runs the user query
+    # through retrieval/query_rewriter.py before macro-retrieval. The
+    # hypothetical-code document is embedded in place of the raw question so
+    # vector search lives in code-space. BM25 still uses the original query
+    # text. No-ops when the GEMINI_API_KEY env var is missing.
+    enable_query_rewrite: bool = True
+    enable_hyde: bool = True
+
+    # Section-level MMR diversity: applied to the SectionReference list after
+    # micro-navigation so the LLM doesn't see five near-duplicate sections
+    # from the same file. λ=1.0 disables (pure relevance); 0.0 is pure
+    # diversity. Anything below 1 incurs a small ranking shuffle.
+    enable_section_mmr: bool = True
+    section_mmr_lambda: float = 0.7
 
     # Performance
     timeout_ms: int = 500             # Macro-retrieval timeout
@@ -130,10 +176,12 @@ class MacroConfig:
 class MicroConfig:
     """Configuration for micro-navigation (Step 3)."""
 
-    # Routing model (fast LLM for ToC navigation)
-    routing_model: str = "gemini-3.1-flash-lite-preview"
+    # Routing model (fast LLM for ToC navigation). gemini-3-flash-preview is
+    # the newest preview tier; previous defaults (gemini-2.0-flash,
+    # gemini-3.1-flash-lite-preview) hit rate limits in bench runs.
+    routing_model: str = os.getenv("RAG_ROUTING_MODEL", "gemini-3-flash-preview")
     routing_api_key: Optional[str] = field(
-        default_factory=lambda: os.getenv("GEMINI_API_KEY")
+        default_factory=_resolve_gemini_key
     )
 
     # Navigation parameters
@@ -146,12 +194,35 @@ class MicroConfig:
     min_relevance_score: float = 0.3       # Minimum relevance to include section
     include_sibling_context: bool = True   # Include adjacent sections for context
 
-    # Performance
-    routing_timeout_ms: int = 3000         # Per-routing-call timeout
-    total_timeout_ms: int = 10000          # Total micro-navigation timeout
+    # Performance — single-shot navigation makes one LLM call per doc,
+    # parallelised across docs. Per-call cap is the "this doc is stuck" guard;
+    # total cap is the wall-clock budget across all docs.
+    routing_timeout_ms: int = 5000         # Per-call timeout
+    total_timeout_ms: int = 8000           # Total micro-navigation timeout
+
+    # Section reranker (precision pass after RelevanceScorer, before MMR).
+    # Default backend is rule-based (no extra dependencies, ~1ms/section).
+    # Set backend="cross_encoder" to use sentence-transformers if installed.
+    enable_section_rerank: bool = True
+    section_rerank_backend: str = "rule"     # "rule" | "cross_encoder"
+    section_rerank_top_k: int = 30           # Only top-K candidates rerank
+    section_rerank_blend: float = 0.6        # final = (1-blend)*orig + blend*rerank
 
     # Fallback
     fallback_to_top_sections: bool = True  # If routing fails, use top N by token count
+
+
+@dataclass
+class CacheConfig:
+    """Configuration for the pipeline-level query result cache.
+
+    Caches the full RAGResult keyed on query text. Identical query within
+    ttl_seconds returns the cached answer instantly (skips macro+micro+
+    synthesis entirely). Auto-invalidated on ingest/clear/remove_file.
+    """
+    enable_query_cache: bool = True
+    ttl_seconds: int = 3600              # 1 hour default
+    max_entries: int = 256               # bounded LRU
 
 
 @dataclass
@@ -159,9 +230,9 @@ class SynthesisConfig:
     """Configuration for heavy synthesis (Step 4)."""
 
     # Synthesis model (heavy reasoning LLM)
-    synthesis_model: str = "gemini-3.1-flash-lite-preview"
+    synthesis_model: str = "gemini-3-flash-preview"
     synthesis_api_key: Optional[str] = field(
-        default_factory=lambda: os.getenv("GEMINI_API_KEY")
+        default_factory=_resolve_gemini_key
     )
 
     # Token budgets
@@ -199,12 +270,13 @@ class RAGConfig:
     macro: MacroConfig = field(default_factory=MacroConfig)
     micro: MicroConfig = field(default_factory=MicroConfig)
     synthesis: SynthesisConfig = field(default_factory=SynthesisConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
 
     # Embedding model (shared between ingestion and macro)
     embedding_model: str = "gemini-embedding-001"
     embedding_dimension: int = 3072
     embedding_api_key: Optional[str] = field(
-        default_factory=lambda: os.getenv("GEMINI_API_KEY")
+        default_factory=_resolve_gemini_key
     )
     embedding_batch_size: int = 64
 

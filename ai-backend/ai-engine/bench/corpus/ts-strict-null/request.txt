@@ -1,0 +1,1 @@
+`firstChar(s)` accesses `s[0].toUpperCase()` even when `s` may be undefined or empty, producing TS strictNullChecks errors and runtime "Cannot read property 'toUpperCase' of undefined". Add the missing nullable handling so the function returns "" for undefined/empty.

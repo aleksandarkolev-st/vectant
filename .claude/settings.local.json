@@ -15,7 +15,17 @@
       "mcp__synthi__synthi_screenshot",
       "mcp__synthi__synthi_describe",
       "Bash(cmd.exe *)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Bash(grep -E \"\\\\.\\(py|ts|js\\)$\")",
+      "Bash(python -m bench.synthi_report --out bench/synthi_report.md)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(python -m bench.synthi_report --workspace \"C:/Users/dev/AppData/Local/Temp/synthi_report_ws_wjapybn4\" --no-cleanup --out bench/synthi_report.md)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(timeout 180 python -u -m bench.synthi_report --workspace \"C:/Users/dev/AppData/Local/Temp/synthi_report_ws_wjapybn4\" --no-cleanup --out bench/synthi_report.md)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(python -c ' *)"
     ]
   }
 }

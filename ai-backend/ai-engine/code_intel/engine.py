@@ -79,6 +79,7 @@ from .summaries.facts_store import FactsStore
 # Retrieval
 from .retrieval.pipeline import RetrievalPipeline
 from .retrieval.query_processor import QueryProcessor
+from .retrieval.query_rewriter import QueryRewriter, RewrittenQuery
 from .retrieval.retriever import ContextRetriever
 from .retrieval.graph_expander import GraphExpander
 from .retrieval.ranker import ContextRanker
@@ -180,10 +181,24 @@ class CodeIntelEngine:
 
         # RAG (4-step retrieval-augmented generation)
         self._rag_pipeline: Optional[RAGPipeline] = None
-        
+
+        # Query rewriter (HyDE + chat-history rewrite). Initialised lazily so
+        # tests/offline runs without an API key still construct the engine.
+        self._query_rewriter: Optional[QueryRewriter] = None
+
         # State
         self._initialized = False
         self._stats = EngineStats()
+
+    def _get_query_rewriter(self) -> QueryRewriter:
+        """Lazy singleton — keeps the LLM client out of the cold path."""
+        if self._query_rewriter is None:
+            api_key = (
+                getattr(self.config, "gemini_api_key", None)
+                or getattr(self.config.indexer, "embedding_api_key", None)
+            )
+            self._query_rewriter = QueryRewriter(api_key=api_key)
+        return self._query_rewriter
     
     @classmethod
     def create(
@@ -602,32 +617,84 @@ class CodeIntelEngine:
     ) -> RetrievalResult:
         """
         Get relevant context for a query.
-        
-        This is the main API for context assembly.
-        Uses the RAG pipeline (Steps 2+3: Macro-Retrieval + Micro-Navigation)
-        when available. Falls back to the old retrieval pipeline otherwise.
-        
+
+        Steps:
+          1. Rewrite the query via QueryRewriter — folds in chat history and
+             produces a HyDE document. Both pieces dramatically lift recall
+             on conversational follow-ups and concept-level questions.
+          2. Run the RAG pipeline (Macro-Retrieval + Micro-Navigation) if it
+             has indexed documents; otherwise fall back to the legacy
+             retrieval pipeline.
+
         Args:
             query: User query or intent
             max_tokens: Maximum tokens in context
-            conversation_history: Previous messages for stability
-            
+            conversation_history: Previous chat turns
+
         Returns:
             RetrievalResult with assembled context and sufficiency indicator
         """
         self._initialize_components()
-        
-        # ── Try RAG pipeline first (superior retrieval) ──────────────────
+
+        # ── Stage 1: Rewrite the query (best-effort) ────────────────────
+        rewritten: Optional[RewrittenQuery] = None
+        try:
+            rewriter = self._get_query_rewriter()
+            rewritten = rewriter.rewrite(
+                query,
+                conversation_history=conversation_history,
+                enable_hyde=True,
+            )
+            if rewritten and (rewritten.used_history or rewritten.used_hyde):
+                logger.info(
+                    "[QueryRewriter] history=%s hyde=%s elapsed=%.0fms "
+                    "before=%r after=%r",
+                    rewritten.used_history,
+                    rewritten.used_hyde,
+                    rewritten.elapsed_ms,
+                    query[:80],
+                    rewritten.rewritten[:80],
+                )
+        except Exception as e:
+            logger.debug("Query rewrite skipped: %s", e)
+            rewritten = None
+
+        effective_query = rewritten.rewritten if (rewritten and rewritten.rewritten) else query
+        # search_text combines rewrite + HyDE doc when present — lexical
+        # retrieval (BM25) benefits from the HyDE tokens as keywords.
+        effective_search_text = rewritten.search_text if rewritten else query
+
+        # ── Stage 2: Run the right pipeline ─────────────────────────────
         if self._rag_pipeline and self._rag_pipeline.document_store.count() > 0:
-            return await self._get_context_via_rag(query, max_tokens)
-        
-        # ── Fallback: old retrieval pipeline ─────────────────────────────
-        return await self._get_context_via_old_pipeline(query, max_tokens)
+            result = await self._get_context_via_rag(
+                effective_query, max_tokens, search_text=effective_search_text,
+            )
+        else:
+            result = await self._get_context_via_old_pipeline(
+                effective_query, max_tokens, search_text=effective_search_text,
+            )
+
+        # Surface rewrite metadata for observability (chat route logs this).
+        if rewritten and (rewritten.used_history or rewritten.used_hyde):
+            try:
+                debug = dict(result.debug or {})
+                debug["query_rewrite"] = {
+                    "used_history": rewritten.used_history,
+                    "used_hyde": rewritten.used_hyde,
+                    "rewritten": rewritten.rewritten,
+                    "elapsed_ms": rewritten.elapsed_ms,
+                }
+                result.debug = debug
+            except Exception:
+                pass
+
+        return result
 
     async def _get_context_via_rag(
         self,
         query: str,
         max_tokens: int,
+        search_text: Optional[str] = None,
     ) -> RetrievalResult:
         """
         Context retrieval using the new 4-step RAG pipeline (Steps 2+3 only).
@@ -640,9 +707,12 @@ class CodeIntelEngine:
         budget = ContextBudget(max_tokens=max_tokens)
         
         loop = asyncio.get_event_loop()
+        # Pass the HyDE-augmented search text only when the RAG pipeline
+        # accepts it; older pipelines silently ignore the kwarg via signature.
+        retrieval_query = search_text or query
         rag_ctx = await loop.run_in_executor(
             None,
-            lambda: self._rag_pipeline.retrieve_context(query, max_tokens=max_tokens)
+            lambda: self._rag_pipeline.retrieve_context(retrieval_query, max_tokens=max_tokens)
         )
         
         context_text = rag_ctx.get("context_text", "")
@@ -705,6 +775,7 @@ class CodeIntelEngine:
         self,
         query: str,
         max_tokens: int,
+        search_text: Optional[str] = None,
     ) -> RetrievalResult:
         """
         Context retrieval using the legacy retrieval pipeline.
@@ -738,11 +809,15 @@ class CodeIntelEngine:
         except Exception as e:
             logger.debug(f"Failed to update summaries for retrieval: {e}")
         
-        # Run retrieval pipeline (synchronous, so run in executor)
+        # Run retrieval pipeline (synchronous, so run in executor).
+        # When the rewriter produced a HyDE document, feed the augmented text
+        # in as the query so BM25 + vector search both pick up the synthetic
+        # code tokens. Symbol/intent extraction tolerates the longer string.
+        retrieval_query = search_text or query
         loop = asyncio.get_event_loop()
         pipeline_result = await loop.run_in_executor(
             None,
-            lambda: self._retrieval_pipeline.retrieve(query=query, budget=budget)
+            lambda: self._retrieval_pipeline.retrieve(query=retrieval_query, budget=budget)
         )
         
         # Extract data from pipeline result

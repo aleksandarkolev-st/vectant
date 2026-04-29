@@ -1,0 +1,1 @@
+`average([])` raises ZeroDivisionError. Return `0.0` for an empty input list instead of crashing. Don't swallow other exceptions.

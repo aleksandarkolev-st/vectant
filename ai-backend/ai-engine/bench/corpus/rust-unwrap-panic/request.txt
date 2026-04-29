@@ -1,0 +1,1 @@
+`parse_pos(s)` calls .unwrap() on str::parse, which panics on bad input. Return Result<u32, ParseIntError> instead so callers can decide. The `is_pos` helper should keep its bool signature but answer false on parse failure.

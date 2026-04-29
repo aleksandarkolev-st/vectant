@@ -1,0 +1,1 @@
+`merge(a, b)` uses Object.assign, which does a shallow merge. The tests require a deep merge — overlapping nested objects should be merged key-by-key, not replaced wholesale. Implement deepMerge for plain objects (arrays + primitives are still last-wins).

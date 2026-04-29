@@ -1,0 +1,6 @@
+[
+  {
+    "path": "cfg.py",
+    "new_content": "import json\n\n\ndef load_config(text):\n    \"\"\"Parse a JSON config payload. Returns {} on decode failure.\"\"\"\n    try:\n        return json.loads(text)\n    except json.JSONDecodeError:\n        return {}\n"
+  }
+]

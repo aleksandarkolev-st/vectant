@@ -2152,6 +2152,28 @@ except ImportError as e:
 
 
 # =============================================================================
+# Synthi Genome — shadow verification subsystem (Wave 1)
+# =============================================================================
+try:
+    from shadow import shadow_router
+    app.include_router(shadow_router)
+    logger.info("Shadow verification module loaded")
+except ImportError as e:
+    logger.warning(f"Shadow verification module not available: {e}")
+
+
+# =============================================================================
+# Synthi Genome — continuous shadow (Wave 4)
+# =============================================================================
+try:
+    from shadow_continuous.api import router as shadow_continuous_router
+    app.include_router(shadow_continuous_router)
+    logger.info("Continuous shadow module loaded")
+except ImportError as e:
+    logger.warning(f"Continuous shadow module not available: {e}")
+
+
+# =============================================================================
 # Self-Healing System
 # =============================================================================
 from analyzer.proactive.healing import SelfHealingEngine, HealingConfig

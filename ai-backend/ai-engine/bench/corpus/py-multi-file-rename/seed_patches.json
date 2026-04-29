@@ -1,0 +1,10 @@
+[
+  {
+    "path": "auth.py",
+    "new_content": "\"\"\"Auth utilities.\"\"\"\n\n\ndef is_token_valid(token: str) -> bool:\n    return isinstance(token, str) and len(token) >= 8\n"
+  },
+  {
+    "path": "api.py",
+    "new_content": "from auth import is_token_valid\n\n\ndef authorize(token: str) -> str:\n    return \"ok\" if is_token_valid(token) else \"denied\"\n"
+  }
+]

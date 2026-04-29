@@ -1,0 +1,6 @@
+[
+  {
+    "path": "cart.py",
+    "new_content": "def add_item(item, basket=None):\n    \"\"\"Append `item` to a basket and return the basket.\"\"\"\n    if basket is None:\n        basket = []\n    basket.append(item)\n    return basket\n"
+  }
+]
