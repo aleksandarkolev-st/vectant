@@ -190,17 +190,70 @@ export const maybeRunKillSwitch = () => {
 /**
  * Synchronous kill check — read at every NEP fire so a tripped session
  * stops issuing requests immediately.
+ *
+ * Honours BOTH the local rolling-window kill (this browser's session has
+ * a bad accept_rate) and a cached server-side kill (ops flipped the global
+ * flag via /api/next-edit/flag). The server-side check is fetched
+ * asynchronously by checkServerKill below; this function is the synchronous
+ * gate that reads the cached result.
  */
 export const isNepKilled = () => {
   if (!isBrowser()) return false;
+  // Local kill.
   try {
     const raw = window.localStorage.getItem(KILL_KEY);
-    if (!raw) return false;
-    const parsed = JSON.parse(raw);
-    return Boolean(parsed?.at);
-  } catch (_) {
-    return false;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.at) return true;
+    }
+  } catch (_) { /* fall through to server-cache check */ }
+  // Server kill (cached).
+  if (_serverKillCache && Date.now() < _serverKillExpiry && _serverKillCache.killed) {
+    return true;
   }
+  return false;
+};
+
+// Server-side kill cache. checkServerKill() refreshes this on a TTL.
+let _serverKillCache = null;
+let _serverKillExpiry = 0;
+let _serverKillInflight = null;
+
+/**
+ * Refresh the server-side kill cache. Call before every NEP fire — the
+ * function is cheap on cache hit (a Date.now() compare) and on miss it
+ * issues a single GET that's cacheable on the edge.
+ *
+ * Returns the current effective kill state.
+ */
+export const checkServerKill = async () => {
+  if (!isBrowser()) return false;
+  if (Date.now() < _serverKillExpiry && _serverKillCache) {
+    return _serverKillCache.killed;
+  }
+  if (_serverKillInflight) return _serverKillInflight;
+  _serverKillInflight = (async () => {
+    try {
+      const res = await fetch('/api/next-edit/flag', { method: 'GET' });
+      if (!res.ok) return false;
+      const data = await res.json();
+      const ttlMs = Math.max(15, Number(data?.cache_ttl_seconds || 60)) * 1000;
+      _serverKillCache = {
+        killed: data?.enabled === false,
+        reason: data?.reason || null,
+      };
+      _serverKillExpiry = Date.now() + ttlMs;
+      return _serverKillCache.killed;
+    } catch (_) {
+      // On network error keep last-known state. If we've never fetched,
+      // default to NOT killed — a transient flag-endpoint outage shouldn't
+      // disable NEP for everyone.
+      return _serverKillCache?.killed || false;
+    } finally {
+      _serverKillInflight = null;
+    }
+  })();
+  return _serverKillInflight;
 };
 
 /**

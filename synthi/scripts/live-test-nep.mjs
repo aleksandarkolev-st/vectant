@@ -780,6 +780,20 @@ const phaseI = async () => {
   assert('I', 'aggregate.accepted >= 1', (getBody?.aggregate?.accepted ?? 0) >= 1);
   assert('I', 'aggregate.reasons includes no_match', Boolean(getBody?.aggregate?.reasons?.no_match));
   log('info', `  emitted=${getBody.aggregate.emitted} validated=${getBody.aggregate.validated} accepted=${getBody.aggregate.accepted}`);
+
+  // Server-side kill-switch flag endpoint roundtrip.
+  const flagUrl = `${CFG.frontendUrl}/api/next-edit/flag`;
+  log('info', `GET ${flagUrl}`);
+  const flagRes = await fetch(flagUrl);
+  assert('I', 'GET /api/next-edit/flag returns 200', flagRes.ok, `status=${flagRes.status}`);
+  if (flagRes.ok) {
+    const flagBody = await flagRes.json();
+    assert('I', 'flag response has `enabled` boolean', typeof flagBody?.enabled === 'boolean',
+      `enabled=${flagBody?.enabled}`);
+    assert('I', 'flag response has `cache_ttl_seconds`',
+      typeof flagBody?.cache_ttl_seconds === 'number');
+    log('info', `  enabled=${flagBody.enabled} reason=${flagBody.reason ?? 'null'} ttl=${flagBody.cache_ttl_seconds}s`);
+  }
 };
 
 // ───────────────────────── Phase J: replay harness smoke ─────────────────────────

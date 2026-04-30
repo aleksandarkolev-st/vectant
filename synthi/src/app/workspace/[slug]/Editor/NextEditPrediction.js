@@ -39,7 +39,7 @@ import {
   renderRecentEditsBlock,
 } from '@/utils/nepRecentEdits';
 import { classifyEdit } from '@/lib/editKindClassifier';
-import { recordNepEvent, isNepKilled } from '@/lib/nepTelemetry';
+import { recordNepEvent, isNepKilled, checkServerKill } from '@/lib/nepTelemetry';
 import { gitClient } from '@/services/gitClient';
 
 const NEP_DEBOUNCE_MS = 600;
@@ -325,6 +325,10 @@ export const useNextEditPrediction = ({
   const fireNep = useCallback(async () => {
     if (!enabled) return;
     if (!editorInstance || !activeFile) return;
+    // Refresh server-kill cache (60s TTL — cheap on hit). Awaited so the
+    // first fire after a flag flip blocks until the response lands; every
+    // subsequent fire within the TTL window is a Date.now() compare.
+    try { await checkServerKill(); } catch (_) { /* network — ignored */ }
     if (isNepKilled()) return;
     if (sessionFireCountRef.current >= NEP_PER_SESSION_FIRE_CAP) return;
 
