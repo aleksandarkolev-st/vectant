@@ -40,6 +40,7 @@ import {
 } from '@/utils/nepRecentEdits';
 import { classifyEdit } from '@/lib/editKindClassifier';
 import { recordNepEvent, isNepKilled } from '@/lib/nepTelemetry';
+import { gitClient } from '@/services/gitClient';
 
 const NEP_DEBOUNCE_MS = 600;
 const NEP_MIN_INTERVAL_MS = 1500; // floor between auto-fires (rate limit)
@@ -487,23 +488,76 @@ export const useNextEditPrediction = ({
 
   useEffect(() => { fireNepRef.current = fireNep; }, [fireNep]);
 
-  // ── apply helpers ───────────────────────────────────────────────────────
-  const applySearchBlock = useCallback((entry) => {
-    const next = applyBlock(entry.block, getLiveFileContent);
-    const path = entry.block.path;
+  // ── write helper ────────────────────────────────────────────────────────
+  // The collab-server is the source of truth. Three write paths:
+  //   1. Active file → setValue on the active model (current Yjs binding
+  //      broadcasts through collab-server).
+  //   2. Other open file (user has it in another tab) → setValue on that
+  //      tab's model so the user sees the change immediately and Yjs
+  //      reconciles via collab-server.
+  //   3. Closed file → gitClient.writeFile, which hits collab-server's
+  //      /git/:slug/write-file. The next time the user opens the file they
+  //      see the new content. We do NOT touch Monaco's RegisteredMemoryFile
+  //      cache — collab-server is authoritative; the cache reloads on open.
+  const findOpenModel = useCallback((targetPath) => {
+    if (!monacoInstance || !targetPath) return null;
+    try {
+      const models = monacoInstance.editor.getModels?.() || [];
+      for (const m of models) {
+        const uri = m.uri;
+        if (!uri) continue;
+        const uriPath = (uri.path || '').replace(/^\/+/, '');
+        const fsPath = (uri.fsPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+        if (uriPath === targetPath || fsPath === targetPath || uriPath.endsWith('/' + targetPath)) {
+          return m;
+        }
+      }
+    } catch (_) { /* ignored */ }
+    return null;
+  }, [monacoInstance]);
+
+  const writeFileContent = useCallback(async (targetPath, content) => {
     const activePath = activeFile?.path || activeFile?.name;
-    if (path === activePath) {
-      const model = editorInstance.getModel?.();
-      if (model) model.setValue(next);
-    } else {
-      // Cross-file apply lands when we wire VFS write here. For now log;
-      // the prediction was already validated, so when the wiring lands we
-      // know it'll succeed.
-      if (typeof console !== 'undefined') {
-        console.debug('[NEP] cross-file apply pending VFS hookup', path);
+    // (1) Active file → write through the active model. Most common path.
+    if (targetPath === activePath) {
+      const model = editorInstance?.getModel?.();
+      if (model) {
+        model.setValue(content);
+        return { via: 'active_model' };
       }
     }
-    // Classify + stash for the next NEP fire's appliedEdit.
+    // (2) Other open file → write through its model.
+    const openModel = findOpenModel(targetPath);
+    if (openModel) {
+      try { openModel.setValue(content); return { via: 'open_model' }; }
+      catch (_) { /* fall through to disk write */ }
+    }
+    // (3) Closed file → hit collab-server directly.
+    if (!workspaceSlug) {
+      throw new Error('cannot write to closed file: no workspaceSlug');
+    }
+    await gitClient.writeFile(workspaceSlug, targetPath, content);
+    return { via: 'collab_server' };
+  }, [editorInstance, activeFile, monacoInstance, workspaceSlug, findOpenModel]);
+
+  // ── apply helpers ───────────────────────────────────────────────────────
+  const applySearchBlock = useCallback(async (entry) => {
+    const next = applyBlock(entry.block, getLiveFileContent);
+    const path = entry.block.path;
+    let writeResult;
+    try {
+      writeResult = await writeFileContent(path, next);
+    } catch (err) {
+      // Apply failed at the write layer — surface to telemetry and bail.
+      // The prediction was already validated, so this is an infrastructure
+      // failure (collab-server unreachable, permissions, etc), not a model
+      // quality issue.
+      recordNepEvent('rejected', { reason: 'write_failed', detail: err?.message, path });
+      throw err;
+    }
+    // Classify + stash for the next NEP fire's appliedEdit. This is what
+    // closes the cross-file refactor-chase loop: Phase 2 prompt sees the
+    // applied edit, /code-intel/edit-impact returns the next sites.
     try {
       const cls = classifyEdit({
         search: entry.block.search,
@@ -524,33 +578,31 @@ export const useNextEditPrediction = ({
         replace: entry.block.replace,
       };
     }
-    recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH, path });
-  }, [editorInstance, activeFile, getLiveFileContent]);
+    recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH, path, via: writeResult?.via });
+  }, [getLiveFileContent, writeFileContent]);
 
   /**
    * Apply a SEARCH ALL block at a SINGLE site identified by byte-offset.
    * Used by the per-site confirmation flow. Re-validates by recomputing the
    * offset against the LIVE file (in case prior accepts shifted text).
+   *
+   * Cross-file aware via writeFileContent.
    */
-  const applySearchAllSite = useCallback((entry, siteIdx) => {
+  const applySearchAllSite = useCallback(async (entry, siteIdx) => {
     const path = entry.block.path;
     const live = getLiveFileContent ? getLiveFileContent(path) : null;
     if (typeof live !== 'string') throw new Error('live content missing for ' + path);
     const offsets = findAllOffsets(live, entry.block.search);
     if (siteIdx >= offsets.length) {
-      // The site we wanted is gone (prior accept shifted text and removed
-      // this match). Skip silently.
+      // Site is gone (prior accept shifted text and removed this match).
+      // Skip silently.
       return live;
     }
     const offset = offsets[siteIdx];
     const next = live.slice(0, offset) + entry.block.replace + live.slice(offset + entry.block.search.length);
-    const activePath = activeFile?.path || activeFile?.name;
-    if (path === activePath) {
-      const model = editorInstance.getModel?.();
-      if (model) model.setValue(next);
-    }
+    await writeFileContent(path, next);
     return next;
-  }, [editorInstance, activeFile, getLiveFileContent]);
+  }, [getLiveFileContent, writeFileContent]);
 
   // ── Tab cascade ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -584,25 +636,27 @@ export const useNextEditPrediction = ({
           // Tab → accept this site, advance.
           e.preventDefault();
           e.stopPropagation();
-          try {
-            applySearchAllSite(entry, entry.cursor ?? 0);
-            recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH_ALL, path: entry.block.path });
-          } catch (err) {
-            recordNepEvent('rejected', { reason: 'apply_failed', detail: err?.message });
-            resetToIdle('apply-failed');
-            return;
-          }
-          // Re-locate sites against the LIVE file (offsets just shifted).
-          const live = getLiveFileContent ? getLiveFileContent(entry.block.path) : null;
-          if (typeof live === 'string' && live.indexOf(entry.block.search) !== -1) {
-            entry.sites = findAllOffsets(live, entry.block.search).map((off) => ({
-              offset: off, line: offsetToLine(live, off),
-            }));
-            entry.cursor = 0;
-            renderJumpHint(entry, { confirm: true });
-          } else {
-            advanceQueue();
-          }
+          (async () => {
+            try {
+              await applySearchAllSite(entry, entry.cursor ?? 0);
+              recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH_ALL, path: entry.block.path });
+            } catch (err) {
+              recordNepEvent('rejected', { reason: 'apply_failed', detail: err?.message });
+              resetToIdle('apply-failed');
+              return;
+            }
+            // Re-locate sites against the LIVE file (offsets just shifted).
+            const live = getLiveFileContent ? getLiveFileContent(entry.block.path) : null;
+            if (typeof live === 'string' && live.indexOf(entry.block.search) !== -1) {
+              entry.sites = findAllOffsets(live, entry.block.search).map((off) => ({
+                offset: off, line: offsetToLine(live, off),
+              }));
+              entry.cursor = 0;
+              renderJumpHint(entry, { confirm: true });
+            } else {
+              advanceQueue();
+            }
+          })();
           return;
         }
         if (e.code === 'Tab' && e.shiftKey) {
@@ -621,16 +675,18 @@ export const useNextEditPrediction = ({
           // 'A' → apply all REMAINING sites in this batch.
           e.preventDefault();
           e.stopPropagation();
-          let safety = 200;
-          let live = getLiveFileContent ? getLiveFileContent(entry.block.path) : null;
-          while (typeof live === 'string' && live.indexOf(entry.block.search) !== -1 && safety-- > 0) {
-            try {
-              applySearchAllSite(entry, 0);
-              recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH_ALL, path: entry.block.path, batch: true });
-            } catch (err) { break; }
-            live = getLiveFileContent ? getLiveFileContent(entry.block.path) : null;
-          }
-          advanceQueue();
+          (async () => {
+            let safety = 200;
+            let live = getLiveFileContent ? getLiveFileContent(entry.block.path) : null;
+            while (typeof live === 'string' && live.indexOf(entry.block.search) !== -1 && safety-- > 0) {
+              try {
+                await applySearchAllSite(entry, 0);
+                recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH_ALL, path: entry.block.path, batch: true });
+              } catch (err) { break; }
+              live = getLiveFileContent ? getLiveFileContent(entry.block.path) : null;
+            }
+            advanceQueue();
+          })();
           return;
         }
         if (e.code === 'Escape') {
@@ -666,13 +722,15 @@ export const useNextEditPrediction = ({
         if (nepState === STATE.ARMED_CURRENT) {
           e.preventDefault();
           e.stopPropagation();
-          try {
-            applySearchBlock(entry);
-            advanceQueue();
-          } catch (err) {
-            recordNepEvent('rejected', { reason: 'revalidate_failed', detail: err?.message });
-            resetToIdle('revalidate-failed');
-          }
+          (async () => {
+            try {
+              await applySearchBlock(entry);
+              advanceQueue();
+            } catch (err) {
+              recordNepEvent('rejected', { reason: 'revalidate_failed', detail: err?.message });
+              resetToIdle('revalidate-failed');
+            }
+          })();
           return;
         }
       }
