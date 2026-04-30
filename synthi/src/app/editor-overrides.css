@@ -647,3 +647,25 @@
     border-top: 1px solid var(--border-subtle) !important;
     padding: 4px 8px !important;
 }
+
+/* Next-Edit Prediction (NEP) — Phase 1 jump-hint UI.
+ * The gutter dot signals "predicted next edit available, press Tab to jump".
+ * The whole-line highlight comes alive in the armed-current state once the
+ * cursor has actually jumped, so the user sees what's about to be replaced. */
+.synthi-nep-gutter-dot {
+    background: radial-gradient(circle at 50% 50%,
+        color-mix(in srgb, var(--accent-primary, #6f7eff) 90%, transparent) 0,
+        color-mix(in srgb, var(--accent-primary, #6f7eff) 90%, transparent) 35%,
+        transparent 60%);
+    width: 8px !important;
+    height: 8px !important;
+    margin-left: 4px;
+    margin-top: 6px;
+    border-radius: 50%;
+    box-shadow: 0 0 6px color-mix(in srgb, var(--accent-primary, #6f7eff) 70%, transparent);
+}
+
+.synthi-nep-target-line {
+    background: color-mix(in srgb, var(--accent-primary, #6f7eff) 12%, transparent) !important;
+    border-left: 2px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 80%, transparent);
+}

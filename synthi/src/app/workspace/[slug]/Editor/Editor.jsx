@@ -49,6 +49,7 @@ import {
 import { EDITOR_OPTIONS, getResponsiveEditorOverrides } from './options';
 import { useViewport } from '@/hooks/useViewport';
 import { useAiCompletion } from './AICompletion';
+import { useNextEditPrediction } from './NextEditPrediction';
 import { useDiffManager } from './diffManager';
 import { useGitGutter } from './gitGutterService';
 import { useEditorProviders } from './providers';
@@ -2568,6 +2569,39 @@ const EditorPanel = ({
         getFileCacheEntries: () => fileCacheEntriesRef.current || [],
         workspaceSlug: slug,
         hasActiveDiff: () => false,
+    });
+
+    // --- Next-Edit Prediction (NEP) — Phase 1, feature-flagged off by default ---
+    // Enable via NEXT_PUBLIC_NEXT_EDIT_PREDICTION=1 or window.__SYNTHI_NEP_ENABLED__.
+    useNextEditPrediction({
+        editorInstance,
+        monacoInstance,
+        activeFile,
+        activeLanguage,
+        workspaceSlug: slug,
+        getFileCacheEntries: () => fileCacheEntriesRef.current || [],
+        // Read live model contents — falls back to the file cache for files
+        // we've seen but don't currently have a model open for.
+        getLiveFileContent: (path) => {
+            try {
+                if (!path) return null;
+                const activePath = activeFile?.path || activeFile?.name;
+                if (path === activePath) {
+                    const m = editorInstance?.getModel?.();
+                    if (m) return m.getValue();
+                }
+                const entries = fileCacheEntriesRef.current || [];
+                for (const [p, content] of entries) {
+                    if (p === path && typeof content === 'string') return content;
+                }
+                return null;
+            } catch (_) {
+                return null;
+            }
+        },
+        // Plan Q1: NEP shares the workspace-switch reset hook with the primary
+        // buffer. Slug change → both buffers drop.
+        workspaceResetKey: slug,
     });
 
     const {
