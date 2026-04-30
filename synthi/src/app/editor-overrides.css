@@ -669,3 +669,11 @@
     background: color-mix(in srgb, var(--accent-primary, #6f7eff) 12%, transparent) !important;
     border-left: 2px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 80%, transparent);
 }
+
+/* SEARCH ALL per-site confirmation (Phase 2). Different colour from the
+ * single-site armed-line so the user can tell at a glance that THIS line
+ * is one of N sites in a batch under review, not a single accepted edit. */
+.synthi-nep-confirm-line {
+    background: color-mix(in srgb, var(--accent-secondary, #4aba9a) 14%, transparent) !important;
+    border-left: 2px solid color-mix(in srgb, var(--accent-secondary, #4aba9a) 90%, transparent);
+}

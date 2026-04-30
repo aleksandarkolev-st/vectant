@@ -36,16 +36,20 @@
 
 import net from 'node:net';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Pull the parser + validator + buffer modules straight from the source tree.
-// They're plain ESM with no imports, so Node ESM resolves them fine.
-const nextEdit = await import(path.resolve(__dirname, '../src/lib/nextEdit.js'));
-const nepBuffer = await import(path.resolve(__dirname, '../src/utils/nepRecentEdits.js'));
+// They're plain ESM with no imports, so Node ESM resolves them fine. Wrap the
+// absolute path in pathToFileURL because Windows absolute paths (`C:\...`)
+// aren't valid ESM specifiers — Node requires file:// URLs.
+const importLocal = (rel) =>
+  import(pathToFileURL(path.resolve(__dirname, rel)).href);
+const nextEdit = await importLocal('../src/lib/nextEdit.js');
+const nepBuffer = await importLocal('../src/utils/nepRecentEdits.js');
 
 const {
   createStreamParser,
