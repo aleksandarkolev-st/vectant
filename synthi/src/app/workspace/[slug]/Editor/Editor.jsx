@@ -61,7 +61,7 @@ import { ConflictBanner } from './ConflictBanner';
 import MergeConflictEditor from '@/components/git/MergeConflictEditor';
 import UnsavedChangesDialog from '@/components/ui/UnsavedChangesDialog';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
-import { initSynthiFileSystem, updateFile as updateVirtualFile, disposeSynthiFileSystem } from './SynthiFileSystemProvider';
+import { initSynthiFileSystem, updateFile as updateVirtualFile, disposeSynthiFileSystem, registerSystemFile, hasSystemFile } from './SynthiFileSystemProvider';
 import { registerMonarchTokenizers } from './languageTokenizers';
 import * as monaco from '@codingame/monaco-vscode-editor-api';
 import { toast } from 'sonner';
@@ -494,6 +494,47 @@ const EditorPanel = ({
             console.warn('[SynthiFS] Failed to init virtual filesystem:', e)
         );
     }, [servicesReady, fileCacheEntries, rawFiles]);
+
+    // ── Worker file-sync seeding ────────────────────────────────
+    // Push every cached workspace file to the worker disk as soon as the
+    // file-sync DataChannel opens. Without this clangd / pyright / etc.
+    // only see the active file (via didOpen) plus whatever
+    // storage::download pulled from GCS, so cross-file symbol lookups
+    // ("undefined reference to compute") fail for files the user opened
+    // but never saved.
+    const fileSyncSeededRef = useRef(false);
+    useEffect(() => {
+        if (!compilerClient) return undefined;
+        if (compilerStatus !== CompilerStatus.CONNECTED) {
+            fileSyncSeededRef.current = false;
+            return undefined;
+        }
+        const seed = () => {
+            if (fileSyncSeededRef.current) return;
+            const entries = fileCacheEntriesRef.current || [];
+            if (!entries || entries.length === 0) return;
+            try {
+                compilerClient.syncAllFiles(entries);
+                fileSyncSeededRef.current = true;
+            } catch (e) {
+                console.warn('[Editor] syncAllFiles failed:', e?.message);
+            }
+        };
+        const dispose = compilerClient.onFileSyncOpen(seed);
+        // Channel may already be open (reconnect path) — call seed() once.
+        if (compilerClient.fileSyncChannel?.readyState === 'open') seed();
+        return () => { try { dispose?.(); } catch (_) { /* ignored */ } };
+    }, [compilerClient, compilerStatus]);
+
+    // Re-seed whenever the file cache grows so newly-loaded tabs land on
+    // the worker without waiting for save.
+    useEffect(() => {
+        if (!compilerClient) return;
+        if (compilerStatus !== CompilerStatus.CONNECTED) return;
+        if (compilerClient.fileSyncChannel?.readyState !== 'open') return;
+        try { compilerClient.syncAllFiles(fileCacheEntries || []); }
+        catch (_) { /* best-effort */ }
+    }, [compilerClient, compilerStatus, fileCacheEntries]);
 
     useEffect(() => {
         console.log('[LSP-EFFECT] Guard check:', {
@@ -939,6 +980,85 @@ const EditorPanel = ({
             // access it.
             let _lastDidChangeTs = 0;
 
+            // Pre-load any URIs in an LSP navigation response that point at
+            // the worker's filesystem outside of /synthi/ (system headers,
+            // stdlib source). Without this Monaco's default file service
+            // tries to read e.g. /usr/include/c++/11/iostream from the
+            // user's local disk and fails. We fetch via the file-sync
+            // `read` op and register the content in the FS overlay so the
+            // subsequent open call resolves cleanly.
+            const SYSTEM_URI_RE = /^file:\/\/(?!\/synthi\/)\/[^?#]+/;
+            const seenSystemPathsThisSession = new Set();
+
+            const collectSystemUrisFromValue = (value, out) => {
+                if (!value) return;
+                if (typeof value === 'string') {
+                    if (SYSTEM_URI_RE.test(value)) out.add(value);
+                    return;
+                }
+                if (Array.isArray(value)) {
+                    for (const v of value) collectSystemUrisFromValue(v, out);
+                    return;
+                }
+                if (typeof value === 'object') {
+                    // monaco-languageclient surfaces locations as
+                    // { uri: Uri, range }, { targetUri: Uri, ... } objects
+                    // where Uri has a .toString() method we want to use.
+                    if (value.uri) {
+                        const s = typeof value.uri === 'string' ? value.uri : value.uri.toString?.();
+                        if (s && SYSTEM_URI_RE.test(s)) out.add(s);
+                    }
+                    if (value.targetUri) {
+                        const s = typeof value.targetUri === 'string' ? value.targetUri : value.targetUri.toString?.();
+                        if (s && SYSTEM_URI_RE.test(s)) out.add(s);
+                    }
+                    for (const k of Object.keys(value)) {
+                        if (k === 'uri' || k === 'targetUri') continue;
+                        collectSystemUrisFromValue(value[k], out);
+                    }
+                }
+            };
+
+            const preloadSystemUris = async (result) => {
+                if (!result) return;
+                if (!compilerClient || typeof compilerClient.readRemoteFile !== 'function') return;
+                const uris = new Set();
+                collectSystemUrisFromValue(result, uris);
+                if (uris.size === 0) return;
+                await Promise.all(Array.from(uris).map(async (uriStr) => {
+                    const m = uriStr.match(/^file:\/\/(\/[^?#]+)/);
+                    if (!m) return;
+                    const absPath = decodeURIComponent(m[1]);
+                    if (seenSystemPathsThisSession.has(absPath)) return;
+                    if (hasSystemFile(absPath)) {
+                        seenSystemPathsThisSession.add(absPath);
+                        return;
+                    }
+                    try {
+                        const res = await compilerClient.readRemoteFile(absPath);
+                        if (res?.ok && typeof res.content === 'string') {
+                            await registerSystemFile(absPath, res.content, uriStr);
+                            seenSystemPathsThisSession.add(absPath);
+                        } else if (res?.error) {
+                            console.warn(`[LSP] readRemoteFile(${absPath}) failed: ${res.error}`);
+                        }
+                    } catch (e) {
+                        console.warn(`[LSP] system-uri preload threw for ${absPath}:`, e?.message);
+                    }
+                }));
+            };
+
+            const navMiddleware = async (document, position, token, next) => {
+                const result = await next(document, position, token);
+                try { await preloadSystemUris(result); } catch (_) { /* best-effort */ }
+                return result;
+            };
+            const referencesMiddleware = async (document, position, context, token, next) => {
+                const result = await next(document, position, context, token);
+                try { await preloadSystemUris(result); } catch (_) { /* best-effort */ }
+                return result;
+            };
+
             const languageClient = new SynthiLanguageClient({
                 name: `Synthi Language Client (${backendLang})`,
                 clientOptions: {
@@ -972,6 +1092,16 @@ const EditorPanel = ({
                             console.log('[LSP] middleware didSave', uri);
                             return next(document);
                         },
+                        // Pre-load system header / stdlib source URIs so
+                        // Monaco's open-editor flow doesn't try to read
+                        // them from the user's local disk and fail. Hooked
+                        // into every navigation response that may contain
+                        // a non-/synthi/ URI.
+                        provideDefinition: navMiddleware,
+                        provideDeclaration: navMiddleware,
+                        provideTypeDefinition: navMiddleware,
+                        provideImplementation: navMiddleware,
+                        provideReferences: referencesMiddleware,
                         // NOTE: provideCompletionItem middleware is NOT needed —
                         // CompletionItemFeature is skipped entirely in
                         // registerFeature() above, so the built-in bridge

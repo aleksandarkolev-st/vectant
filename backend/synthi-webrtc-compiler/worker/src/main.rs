@@ -3365,9 +3365,16 @@ async fn wire_peer_channels(
                 //
                 // Paths are workspace-relative (same convention as LSP URIs
                 // without the `file:///synthi/` prefix).
+                //
+                // The `read` op is the exception — it accepts an absolute
+                // path (e.g. /usr/include/c++/11/iostream) and replies on
+                // the same channel so the frontend can resolve LSP
+                // navigation responses pointing to system headers.
                 let workspace_path_for_sync = workspace_path_for_dc.clone();
+                let dc_for_sync = dc.clone();
                 dc.on_message(Box::new(move |msg| {
                     let ws_path = workspace_path_for_sync.clone();
+                    let dc_reply = dc_for_sync.clone();
                     async move {
                         let data = if msg.is_string {
                             msg.data.clone()
@@ -3492,6 +3499,80 @@ async fn wire_peer_channels(
                                         Ok(()) => debug_log!("[file-sync] ✓ mkdir {}", rel),
                                         Err(e) => debug_log!("[file-sync] ✗ mkdir {}: {}", rel, e),
                                     }
+                                }
+                            }
+                            "read" => {
+                                // Read an absolute path (system header, stdlib
+                                // source, etc.) and reply with its content.
+                                // Used by the frontend to resolve LSP
+                                // go-to-definition results that point outside
+                                // the workspace.
+                                let req_id = json
+                                    .get("requestId")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let raw_path = json.get("path").and_then(|p| p.as_str()).unwrap_or("");
+                                if raw_path.is_empty() {
+                                    let reply = serde_json::json!({
+                                        "op": "read-result",
+                                        "requestId": req_id,
+                                        "error": "missing path",
+                                    });
+                                    if let Ok(text) = serde_json::to_string(&reply) {
+                                        let _ = dc_reply.send_text(text).await;
+                                    }
+                                    return;
+                                }
+                                // Allow only well-known read-only roots so the
+                                // channel can't be turned into an arbitrary
+                                // disk-read primitive.
+                                const READ_ALLOWED_PREFIXES: &[&str] = &[
+                                    "/usr/include/",
+                                    "/usr/lib/",
+                                    "/usr/local/include/",
+                                    "/usr/local/lib/",
+                                    "/opt/",
+                                    "/lib/",
+                                    "/lib64/",
+                                    "/root/.cargo/",
+                                    "/root/.rustup/",
+                                ];
+                                let abs = if raw_path.starts_with('/') {
+                                    raw_path.to_string()
+                                } else {
+                                    format!("/{}", raw_path)
+                                };
+                                let allowed = READ_ALLOWED_PREFIXES.iter().any(|p| abs.starts_with(p));
+                                if !allowed || abs.contains("..") {
+                                    let reply = serde_json::json!({
+                                        "op": "read-result",
+                                        "requestId": req_id,
+                                        "path": abs,
+                                        "error": "path not allowed",
+                                    });
+                                    if let Ok(text) = serde_json::to_string(&reply) {
+                                        let _ = dc_reply.send_text(text).await;
+                                    }
+                                    return;
+                                }
+                                let read_path = std::path::PathBuf::from(&abs);
+                                let reply = match tokio::fs::read_to_string(&read_path).await {
+                                    Ok(content) => serde_json::json!({
+                                        "op": "read-result",
+                                        "requestId": req_id,
+                                        "path": abs,
+                                        "content": content,
+                                    }),
+                                    Err(e) => serde_json::json!({
+                                        "op": "read-result",
+                                        "requestId": req_id,
+                                        "path": abs,
+                                        "error": e.to_string(),
+                                    }),
+                                };
+                                if let Ok(text) = serde_json::to_string(&reply) {
+                                    let _ = dc_reply.send_text(text).await;
                                 }
                             }
                             _ => {
