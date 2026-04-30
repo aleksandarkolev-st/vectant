@@ -146,6 +146,32 @@ class ContextRequest(BaseModel):
     )
 
 
+class FastContextRequest(BaseModel):
+    """Request for fast retrieval-only context (inline completion path)."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    query: str = Field("", description="Free-text query — usually the last few lines of cursor context")
+    symbols: Optional[List[str]] = Field(None, description="Identifiers extracted from the cursor neighborhood")
+    language: Optional[str] = Field(None, description="Filter chunks to this language")
+    max_chunks: int = Field(5, description="Hard cap on returned chunks")
+    max_chars_per_chunk: int = Field(320, description="Truncate each chunk's snippet to this many chars")
+
+
+class FastContextChunk(BaseModel):
+    """A single retrieved chunk in the fast-context response."""
+    file: str
+    snippet: str
+    start_line: int
+    end_line: int
+    symbol: str = ""
+    score: float = 0.0
+
+
+class FastContextResponse(BaseModel):
+    """Response from fast-context retrieval."""
+    chunks: List[FastContextChunk]
+    elapsed_ms: float
+
+
 class ContextResponse(BaseModel):
     """Response with assembled context."""
     context: str = Field(..., description="Assembled context for LLM")
@@ -561,6 +587,100 @@ async def get_context(request: ContextRequest, http_request: Request) -> Context
     except Exception as e:
         logger.exception("Context retrieval failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/context/fast", response_model=FastContextResponse)
+async def get_context_fast(request: FastContextRequest, http_request: Request) -> FastContextResponse:
+    """
+    Fast retrieval-only context for inline completions.
+
+    Hits the retrieval pipeline's BM25 + symbol-search fast path — no LLM, no
+    embedding generation (uses cached embeddings only when available). The
+    full /context endpoint goes through macro + micro-navigation which is
+    LLM-driven and benchmarks at ~8.5 s; this path targets ~50–150 ms so it
+    can sit on the critical path for keystroke-driven completions.
+
+    Returns a small set of relevant code chunks; the caller (typically the
+    Next.js /api/completion route) injects them into the FIM prompt as
+    targeted reference snippets.
+    """
+    import time
+    t0 = time.time()
+    try:
+        _require_api_key(http_request)
+        engine = get_engine(request.workspace_path)
+
+        # Make sure the pipeline is initialized; if the workspace was never
+        # indexed we just return an empty result rather than failing — the
+        # caller treats absence of refs as a normal case.
+        try:
+            engine._initialize_components()
+        except Exception:
+            pass
+
+        pipeline = getattr(engine, "_retrieval_pipeline", None)
+        if pipeline is None:
+            return FastContextResponse(chunks=[], elapsed_ms=(time.time() - t0) * 1000)
+
+        # Try to grab a cached embedding for this query — if present, the
+        # fast path can do a quick vector pass alongside BM25/symbol. If not
+        # (the common case for a never-seen prefix), fast path stays purely
+        # lexical and skips the embedding network call.
+        cached_emb = None
+        try:
+            embedder = getattr(pipeline, "embedder", None)
+            if embedder is not None and hasattr(embedder, "get_cached_query_embedding"):
+                cached_emb = embedder.get_cached_query_embedding(request.query or "")
+        except Exception:
+            cached_emb = None
+
+        try:
+            candidates, _stats = pipeline._fast_retrieve(
+                cached_embedding=cached_emb,
+                query_text=request.query or "",
+                query_symbols=list(request.symbols or []),
+                query_files=[],
+                filter_language=request.language,
+                include_tests=False,
+                folder_scope=None,
+                module_scope=None,
+                index_kind=None,
+            )
+        except Exception as fast_err:
+            logger.warning(f"Fast retrieve failed, returning empty: {fast_err}")
+            return FastContextResponse(chunks=[], elapsed_ms=(time.time() - t0) * 1000)
+
+        # Convert candidates → response chunks. SemanticChunk's body is held
+        # in `_code_body` (exposed via `code_body` property) — typically loaded
+        # at index time. If not loaded we skip the chunk: lazy disk reads on
+        # the keystroke path would defeat the latency budget.
+        chunks: List[FastContextChunk] = []
+        max_chars = max(80, int(request.max_chars_per_chunk or 320))
+        for cand in candidates[: max(1, int(request.max_chunks or 5))]:
+            sc = getattr(cand, "chunk", None)
+            if sc is None:
+                continue
+            body = getattr(sc, "code_body", "") or getattr(sc, "_code_body", "") or ""
+            if not body:
+                continue
+            snippet = body if len(body) <= max_chars else body[:max_chars] + "\n…"
+            chunks.append(FastContextChunk(
+                file=sc.metadata.file_path or "",
+                snippet=snippet,
+                start_line=int(sc.metadata.start_line or 0),
+                end_line=int(sc.metadata.end_line or 0),
+                symbol=str(sc.metadata.symbol_name or ""),
+                score=float(getattr(cand, "combined_score", 0.0) or getattr(cand, "keyword_score", 0.0) or 0.0),
+            ))
+
+        return FastContextResponse(chunks=chunks, elapsed_ms=(time.time() - t0) * 1000)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Fast context retrieval failed")
+        # Don't fail the inline-completion request on a backend hiccup —
+        # the caller treats an empty payload as "no extra context available".
+        return FastContextResponse(chunks=[], elapsed_ms=(time.time() - t0) * 1000)
 
 
 @router.post("/tools/definitions", response_model=ToolDefinitionsResponse)

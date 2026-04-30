@@ -27,6 +27,7 @@ export const useAiCompletion = ({
     editorInstance,
     monacoInstance,
     getFileCacheEntries,
+    workspaceSlug = null,
     hasActiveDiff,
 }) => {
     const [aiCompletionState, setAiCompletionState] = useState('idle');
@@ -262,6 +263,9 @@ export const useAiCompletion = ({
         const payload = {
             code: context,
             language: activeLanguage,
+            // Workspace identifier so the API route can hit the RAG
+            // fast-context endpoint for this workspace's index.
+            workspaceSlug: workspaceSlug || null,
             cursor: cursorPosition ? { line: cursorPosition.lineNumber, column: cursorPosition.column } : null,
             contextBlocks: {
                 beforeCursor,

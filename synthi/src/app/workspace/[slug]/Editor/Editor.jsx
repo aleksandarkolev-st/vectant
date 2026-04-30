@@ -2566,6 +2566,7 @@ const EditorPanel = ({
         // time the file cache mutates. The hook reads through this ref on
         // each request so it always sees the latest workspace contents.
         getFileCacheEntries: () => fileCacheEntriesRef.current || [],
+        workspaceSlug: slug,
         hasActiveDiff: () => false,
     });
 

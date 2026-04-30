@@ -15,6 +15,167 @@ const COMPLETION_TIMEOUT_MS = 12_000;
 const MAX_BLOCK_CHARS = 4800;
 const HALF_BLOCK_CHARS = Math.floor(MAX_BLOCK_CHARS / 2);
 
+// ── RAG fast-context wiring ──────────────────────────────────────────────
+// We call ai-backend's /code-intel/context/fast endpoint to pull symbol /
+// BM25-ranked snippets from the workspace's index. That endpoint is
+// LLM-free and benchmarks at ~50–150ms; we still cap the wait so a slow
+// backend can't hold up the keystroke path.
+const CODE_INTEL_URL = process.env.CODE_INTEL_URL
+  || process.env.NEXT_PUBLIC_CODE_INTEL_URL
+  || 'http://localhost:8000';
+const CODE_INTEL_API_KEY = process.env.CODE_INTEL_API_KEY || '';
+const RAG_FETCH_TIMEOUT_MS = 200;
+const RAG_CACHE_TTL_MS = 30_000;
+const RAG_CACHE_MAX_ENTRIES = 256;
+
+// Tiny LRU keyed by workspace + a fingerprint of the query. Cursor / Copilot
+// hide their per-keystroke retrieval cost behind exactly this kind of cache —
+// pay the latency tax once per ~30s window, then it's free for every
+// subsequent completion that hits a similar query.
+const ragCache = new Map();
+const ragInflight = new Map(); // dedup concurrent requests for the same key
+
+const ragCacheGet = (key) => {
+  const entry = ragCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > RAG_CACHE_TTL_MS) {
+    ragCache.delete(key);
+    return null;
+  }
+  // Refresh LRU position.
+  ragCache.delete(key);
+  ragCache.set(key, entry);
+  return entry.value;
+};
+
+const ragCacheSet = (key, value) => {
+  ragCache.set(key, { value, ts: Date.now() });
+  while (ragCache.size > RAG_CACHE_MAX_ENTRIES) {
+    const oldest = ragCache.keys().next().value;
+    if (oldest === undefined) break;
+    ragCache.delete(oldest);
+  }
+};
+
+// Fingerprint just enough of the prefix that small typing changes hit the
+// same cache entry. We slice to the last ~120 chars and strip whitespace —
+// this means typing one extra character usually still cache-hits.
+const fingerprintQuery = (query) => {
+  const s = (query || '').replace(/\s+/g, ' ').trim();
+  return s.slice(Math.max(0, s.length - 120));
+};
+
+const RAG_IDENT_RE = /[A-Za-z_][A-Za-z0-9_]{1,}/g;
+const extractQuerySymbols = (text) => {
+  if (!text) return [];
+  const seen = new Map();
+  let m;
+  RAG_IDENT_RE.lastIndex = 0;
+  // Walk back-to-front so the cursor's neighborhood biases the symbol list.
+  const slice = text.slice(Math.max(0, text.length - 600));
+  while ((m = RAG_IDENT_RE.exec(slice))) {
+    const ident = m[0];
+    if (ident.length < 3) continue;
+    seen.set(ident, (seen.get(ident) || 0) + 1);
+  }
+  return [...seen.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([s]) => s);
+};
+
+/**
+ * Hit /code-intel/context/fast with a hard timeout. Returns an array of
+ * reference shapes ready for buildPrompt, or [] on miss / timeout / failure —
+ * inline completions never block on this path.
+ */
+const fetchRagReferences = async ({ workspaceSlug, query, language }) => {
+  if (!workspaceSlug || !query) return [];
+
+  const key = `${workspaceSlug}::${language || ''}::${fingerprintQuery(query)}`;
+  const cached = ragCacheGet(key);
+  if (cached) return cached;
+
+  const inflight = ragInflight.get(key);
+  if (inflight) return inflight;
+
+  const symbols = extractQuerySymbols(query);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort('rag-timeout'), RAG_FETCH_TIMEOUT_MS);
+
+  const promise = (async () => {
+    try {
+      const res = await fetch(`${CODE_INTEL_URL}/code-intel/context/fast`, {
+        method: 'POST',
+        signal: ctrl.signal,
+        headers: {
+          'content-type': 'application/json',
+          ...(CODE_INTEL_API_KEY ? { 'x-code-intel-key': CODE_INTEL_API_KEY } : {}),
+        },
+        body: JSON.stringify({
+          workspace_path: workspaceSlug,
+          query,
+          symbols,
+          language: language || null,
+          max_chunks: 5,
+          max_chars_per_chunk: 320,
+        }),
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      const refs = Array.isArray(data?.chunks)
+        ? data.chunks.map((c) => ({
+            path: c.file || 'unknown',
+            snippet: c.snippet || '',
+            startLine: c.start_line || 0,
+            symbol: c.symbol || '',
+            kind: 'rag',
+          }))
+        : [];
+      ragCacheSet(key, refs);
+      return refs;
+    } catch (_) {
+      // Timeout, network, or upstream failure — silent. The local refs the
+      // client already attached are sufficient.
+      return [];
+    } finally {
+      clearTimeout(timer);
+      ragInflight.delete(key);
+    }
+  })();
+
+  ragInflight.set(key, promise);
+  return promise;
+};
+
+/**
+ * Merge client-supplied (local-grep) references with RAG-supplied references,
+ * dedup by `path + symbol` (or `path + startLine` for recent-edit shapes),
+ * and prefer the entry with more useful metadata when both sides cover the
+ * same chunk.
+ */
+const mergeReferences = (clientRefs = [], ragRefs = []) => {
+  const out = [];
+  const seen = new Set();
+  const keyOf = (r) => {
+    if (!r) return '';
+    if (r.symbol) return `${r.path || ''}::${r.symbol}`;
+    return `${r.path || ''}::${r.startLine || 0}`;
+  };
+  // Recent-edit refs go first (strongest "what's relevant right now" signal),
+  // then RAG (workspace-wide), then local symbol greps (subset of RAG most
+  // of the time but cheap insurance).
+  const recentEdits = clientRefs.filter((r) => r?.kind === 'recent-edit');
+  const localSymbols = clientRefs.filter((r) => r?.kind !== 'recent-edit');
+  for (const r of [...recentEdits, ...ragRefs, ...localSymbols]) {
+    const k = keyOf(r);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(r);
+  }
+  return out;
+};
+
 const limitText = (value, { max = MAX_BLOCK_CHARS, fromEnd = false } = {}) => {
   if (typeof value !== 'string' || !value.trim()) return '';
   if (value.length <= max) return value;
@@ -174,7 +335,20 @@ export async function POST(request) {
     ? suffix.slice(0, AI_COMPLETION_MAX_INPUT_CHARS)
     : suffix;
 
-  const references = Array.isArray(body?.references) ? body.references : [];
+  const clientRefs = Array.isArray(body?.references) ? body.references : [];
+
+  // RAG fast-context fetch: hit ai-backend's /code-intel/context/fast in
+  // parallel with prompt prep. Cache hits return synchronously; misses race
+  // a 200ms timeout. We use the trailing prefix as the query so the index's
+  // BM25 + symbol search can rank chunks by what the user is currently
+  // working on.
+  const workspaceSlug = typeof body?.workspaceSlug === 'string' ? body.workspaceSlug : '';
+  const ragQuery = trimmedPrefix.slice(Math.max(0, trimmedPrefix.length - 600));
+  const ragRefs = workspaceSlug
+    ? await fetchRagReferences({ workspaceSlug, query: ragQuery, language })
+    : [];
+
+  const references = mergeReferences(clientRefs, ragRefs);
   const prompt = buildPrompt({
     prefix: trimmedPrefix,
     suffix: trimmedSuffix,
