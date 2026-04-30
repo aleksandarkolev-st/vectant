@@ -1655,7 +1655,10 @@ export default function EditorPage({ params }) {
                             }
                             endProactive();
                         });
-                }, 100); // 100ms debounce for responsiveness
+                }, 600); // 600ms debounce: long enough that mid-word pauses don't fire,
+                         // short enough to feel responsive once the user stops typing.
+                         // (was 100ms — fired on every keystroke pause, leaving the
+                         // "Analyzing…" indicator effectively always-on.)
             }
         }
 

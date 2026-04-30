@@ -92,15 +92,46 @@
  * exactly). The built-in ghost text is kept as the data backing for Monaco's
  * accept/partial-accept actions but rendered transparent so we never see the
  * harsh neon-green default flashing through.
+ *
+ * Monaco 0.50+ introduced two new families of decoration classes that were
+ * not covered before, which is why the harsh default still leaked through:
+ *   - .inline-completion-text          (inline completion preview)
+ *   - .inline-edit-decoration*         (inline edit suggestions)
+ *   - .inline-edits-*                  (Cursor-style inline edits widget)
+ * They all need to render transparent so the tokenized overlay below is the
+ * only visible layer.
  */
 .monaco-editor .ghost-text,
 .monaco-editor .ghost-text-decoration,
 .monaco-editor .ghost-text-decoration-preview,
-.monaco-editor .suggest-preview-text .ghost-text {
+.monaco-editor .suggest-preview-text .ghost-text,
+.monaco-editor .inline-completion-text,
+.monaco-editor .inline-edit-decoration,
+.monaco-editor .inline-edit-decoration-preview,
+.monaco-editor .inline-edits-line-replacement,
+.monaco-editor .inline-edits-deletion,
+.monaco-editor .inline-edits-insertion {
     color: transparent !important;
+    background: transparent !important;
+    border-color: transparent !important;
     /* preserve glyph dimensions so the cursor reserves the right amount of
      * horizontal space for the overlay */
     text-shadow: none !important;
+}
+
+/* Belt-and-braces: override Monaco's CSS variables for ghost / inline-edit
+ * styling so even if a class slips past the selectors above, the colour falls
+ * back to a muted theme-foreground tint (set by the theme engine) instead of
+ * the harsh built-in green/red. */
+.monaco-editor {
+    --vscode-editorGhostText-foreground: color-mix(in srgb, var(--text-primary, #f4f5f8) 40%, transparent);
+    --vscode-editorGhostText-background: transparent;
+    --vscode-editorGhostText-border: transparent;
+    --vscode-editorInlineEdit-foreground: color-mix(in srgb, var(--text-primary, #f4f5f8) 40%, transparent);
+    --vscode-editorInlineEdit-background: transparent;
+    --vscode-editorInlineEdit-border: transparent;
+    --vscode-editorInlineEdit-modifiedBackground: transparent;
+    --vscode-editorInlineEdit-originalBackground: transparent;
 }
 
 /* The tokenized overlay widget. Monaco's `colorize` emits per-token spans

@@ -245,11 +245,16 @@ export async function POST(request) {
   try {
     let completionText = '';
     try {
+      // The @google/genai SDK takes generation parameters under `config`, not
+      // `generationConfig` (that's the legacy `@google/generative-ai` shape).
+      // Passing the wrong key silently drops temperature / maxOutputTokens /
+      // stopSequences, which is why completions came back unbounded and
+      // wandered far past the requested gap.
       const stream = await withTimeout(
         ai.models.generateContentStream({
           model: 'gemini-3.1-flash-lite-preview',
           contents: prompt,
-          generationConfig: {
+          config: {
             maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
             temperature: 0.15, // tighter — we want deterministic, focused completions
             stopSequences: [COMPLETION_CLOSE, FIM_PREFIX, FIM_SUFFIX],
@@ -266,7 +271,7 @@ export async function POST(request) {
         ai.models.generateContent({
           model: 'gemini-3.1-flash-lite-preview',
           contents: prompt,
-          generationConfig: {
+          config: {
             maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
             temperature: 0.15,
             stopSequences: [COMPLETION_CLOSE, FIM_PREFIX, FIM_SUFFIX],
