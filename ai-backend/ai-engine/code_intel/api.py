@@ -177,6 +177,56 @@ class FastContextResponse(BaseModel):
     elapsed_ms: float
 
 
+class EditImpactRequest(BaseModel):
+    """Request for cross-file impact prediction given an APPLIED edit (NEP Phase 2).
+
+    The endpoint walks the symbol-dependency graph (caller→callee, importer→
+    imported, sibling members) BFS depth 2 from seed symbols extracted from the
+    edit, then ranks the resulting file/symbol pairs as likely follow-up edit
+    sites.
+
+    Concrete spec (the original NEP plan flagged "edit-impact graph edges are
+    underspecified"):
+      - depth-1 expansions: incoming/outgoing CALLS edges, IMPORTS edges,
+        INHERITS edges, sibling symbols (same file_path AND same parent symbol)
+      - depth-2: re-expand each depth-1 hit by the SAME edge set
+      - ranking: edge-weighted (CALLS=3, IMPORTS=2, INHERITS=2, sibling=1),
+        plus a co-change boost from ChangeImpactModel when git history exists
+      - cap: max_candidates results, default 12
+    """
+    workspace_path: str = Field(..., description="Path to workspace")
+    file_path: str = Field(..., description="Relative path of the file the edit was applied to")
+    search: str = Field(..., description="The SEARCH text of the applied edit")
+    replace: str = Field("", description="The REPLACE text of the applied edit")
+    edit_kind: Optional[str] = Field(
+        None,
+        description="Optional client-side classifier hint: rename | signature_change | import_change | type_change | local_logic",
+    )
+    seed_symbols: Optional[List[str]] = Field(
+        None,
+        description="Optional explicit seed identifiers; if absent, the server extracts them from the SEARCH/REPLACE text",
+    )
+    max_candidates: int = Field(12, description="Hard cap on returned candidates")
+    max_depth: int = Field(2, description="BFS depth, 1 or 2; rename/signature default to 2, local_logic to 1")
+
+
+class EditImpactCandidate(BaseModel):
+    """A predicted follow-up edit site."""
+    file: str
+    symbol: str = ""
+    score: float = 0.0
+    reasons: List[str] = Field(default_factory=list, description="Edge types that produced this candidate, ranked")
+    distance: int = Field(1, description="BFS depth at which this candidate was reached")
+
+
+class EditImpactResponse(BaseModel):
+    """Ranked list of likely follow-up edit sites."""
+    candidates: List[EditImpactCandidate]
+    seeds_used: List[str]
+    edit_kind_inferred: Optional[str] = None
+    elapsed_ms: float
+
+
 class ContextResponse(BaseModel):
     """Response with assembled context."""
     context: str = Field(..., description="Assembled context for LLM")
@@ -729,6 +779,283 @@ async def get_context_fast(request: FastContextRequest, http_request: Request) -
         # Don't fail the inline-completion request on a backend hiccup —
         # the caller treats an empty payload as "no extra context available".
         return FastContextResponse(chunks=[], elapsed_ms=(time.time() - t0) * 1000)
+
+
+# ============================================================================
+# Edit-Impact (NEP Phase 2)
+# ============================================================================
+
+# Edge weights for ranking. CALLS dominates because a renamed/resignatured
+# function pulls call sites first; IMPORTS and INHERITS are near-tie because
+# they signal coupling at module/type granularity; sibling is the weakest
+# because two symbols sharing a parent doesn't strongly predict co-edit.
+_IMPACT_EDGE_WEIGHTS = {
+    "calls": 3.0,
+    "imports": 2.0,
+    "inherits": 2.0,
+    "sibling": 1.0,
+    "co_change": 1.5,
+}
+
+_IMPACT_KEYWORDS = {
+    # Common JS/TS/Python/C++ keywords. Intentionally non-exhaustive — the
+    # goal is to drop top-frequency noise from BFS seeds, not be precise.
+    "if", "else", "for", "while", "do", "switch", "case", "break",
+    "continue", "return", "function", "def", "class", "struct", "enum",
+    "interface", "type", "const", "let", "var", "int", "float", "double",
+    "char", "bool", "void", "true", "false", "null", "None", "True",
+    "False", "this", "self", "new", "delete", "import", "from", "as",
+    "in", "of", "is", "not", "and", "or", "yield", "await", "async",
+    "throw", "try", "catch", "finally", "with", "use", "using",
+    "public", "private", "protected", "static", "final", "abstract",
+    "override", "virtual", "extends", "implements", "namespace", "include",
+}
+
+
+def _impact_extract_seed_symbols(text: str) -> List[str]:
+    """Pull candidate identifiers from a SEARCH/REPLACE block."""
+    import re as _re
+    if not text:
+        return []
+    out: List[str] = []
+    seen = set()
+    for m in _re.finditer(r"[A-Za-z_][A-Za-z0-9_]*", text):
+        ident = m.group(0)
+        if len(ident) < 3:
+            continue
+        if ident in _IMPACT_KEYWORDS:
+            continue
+        if ident in seen:
+            continue
+        seen.add(ident)
+        out.append(ident)
+    return out
+
+
+def _impact_kind_to_depth(kind: Optional[str], default_depth: int) -> int:
+    """rename + signature_change want depth 2 (chase the change); local_logic
+    wants depth 1 (don't propagate edits the user didn't ask to propagate).
+    """
+    if not kind:
+        return default_depth
+    k = (kind or "").strip().lower()
+    if k in ("rename", "signature_change"):
+        return 2
+    if k == "local_logic":
+        return 1
+    return default_depth
+
+
+def _impact_walk(
+    structural_index,
+    seeds: List[str],
+    max_depth: int,
+) -> Dict[tuple, Dict[str, Any]]:
+    """BFS depth-`max_depth` over the symbol graph.
+
+    Returns a dict keyed by `(file, symbol)` of `{score, reasons, distance}`.
+    Same symbol reached via two edges accumulates score on a single node — the
+    ranking signal we want is "how strongly does this site couple to the
+    seed?", and an edge-count tally is the cheap proxy.
+    """
+    if not structural_index:
+        return {}
+    symbol_graph = getattr(structural_index, "symbol_graph", None)
+    if not symbol_graph:
+        return {}
+
+    nodes_attr = getattr(symbol_graph, "nodes", {})
+    valid_seeds = [s for s in seeds if s in nodes_attr]
+
+    out: Dict[tuple, Dict[str, Any]] = {}
+
+    def add(file_path: Optional[str], symbol: str, edge_kind: str, distance: int) -> None:
+        key = (file_path or "", symbol)
+        weight = _IMPACT_EDGE_WEIGHTS.get(edge_kind, 1.0)
+        # Distance damping: depth-2 edges are weaker than depth-1.
+        damped = weight / (1.0 + 0.6 * (distance - 1))
+        rec = out.get(key)
+        if rec is None:
+            out[key] = {"score": damped, "reasons": [edge_kind], "distance": distance}
+        else:
+            rec["score"] += damped
+            if edge_kind not in rec["reasons"]:
+                rec["reasons"].append(edge_kind)
+            rec["distance"] = min(rec["distance"], distance)
+
+    def siblings_of(symbol: str) -> List[tuple]:
+        """Same file_path AND same parent symbol — the plan called this out as
+        under-specified; this is the concrete rule.
+        """
+        n = nodes_attr.get(symbol)
+        if n is None:
+            return []
+        file_path = getattr(n, "file_path", None)
+        parent = getattr(n, "parent", None)
+        sibs = []
+        for other_name, other_node in nodes_attr.items():
+            if other_name == symbol:
+                continue
+            if getattr(other_node, "file_path", None) != file_path:
+                continue
+            if getattr(other_node, "parent", None) != parent:
+                continue
+            sibs.append((other_name, file_path))
+        return sibs
+
+    frontier = list(valid_seeds)
+    seen = set(frontier)
+    for distance in range(1, max_depth + 1):
+        next_frontier: List[str] = []
+        for sym in frontier:
+            # Outgoing edges (callees, imported modules, inherited bases).
+            try:
+                for edge in symbol_graph.get_edges_from(sym):
+                    target = getattr(edge, "target", None)
+                    if not target:
+                        continue
+                    target_node = nodes_attr.get(target)
+                    target_file = getattr(target_node, "file_path", None) if target_node else None
+                    et = getattr(edge, "edge_type", None)
+                    et_val = getattr(et, "value", str(et) if et else "")
+                    if et_val == "calls":
+                        add(target_file, target, "calls", distance)
+                    elif et_val == "imports":
+                        add(target_file, target, "imports", distance)
+                    elif et_val == "inherits":
+                        add(target_file, target, "inherits", distance)
+                    if target not in seen:
+                        seen.add(target)
+                        next_frontier.append(target)
+            except Exception:
+                pass
+            # Incoming edges (callers, importers, subclasses) — dominant
+            # signal for rename intent.
+            try:
+                for edge in symbol_graph.get_edges_to(sym):
+                    source = getattr(edge, "source", None)
+                    if not source:
+                        continue
+                    source_node = nodes_attr.get(source)
+                    source_file = getattr(source_node, "file_path", None) if source_node else None
+                    et = getattr(edge, "edge_type", None)
+                    et_val = getattr(et, "value", str(et) if et else "")
+                    if et_val == "calls":
+                        add(source_file, source, "calls", distance)
+                    elif et_val == "imports":
+                        add(source_file, source, "imports", distance)
+                    elif et_val == "inherits":
+                        add(source_file, source, "inherits", distance)
+                    if source not in seen:
+                        seen.add(source)
+                        next_frontier.append(source)
+            except Exception:
+                pass
+            # Sibling members.
+            for sib_name, sib_file in siblings_of(sym):
+                add(sib_file, sib_name, "sibling", distance)
+                if sib_name not in seen:
+                    seen.add(sib_name)
+                    next_frontier.append(sib_name)
+        frontier = next_frontier
+        if not frontier:
+            break
+
+    return out
+
+
+@router.post("/edit-impact", response_model=EditImpactResponse)
+async def edit_impact(request: EditImpactRequest, http_request: Request) -> EditImpactResponse:
+    """Predict likely follow-up edit sites for an applied edit.
+
+    Phase 2 NEP: when the user accepts a SEARCH→REPLACE block, the editor
+    pings this endpoint with the applied edit and merges the candidates into
+    the next NEP request's prompt context, so the model can pre-stage cross-
+    file blocks.
+    """
+    import time as _time
+    _require_api_key(http_request)
+    t0 = _time.time()
+    try:
+        engine = get_engine(request.workspace_path)
+    except HTTPException:
+        raise
+    except Exception:
+        # Engine/index may not be ready (cold cache); return empty rather than
+        # fail — the editor treats this as "no impact data, proceed without".
+        return EditImpactResponse(
+            candidates=[], seeds_used=[], edit_kind_inferred=None,
+            elapsed_ms=(_time.time() - t0) * 1000,
+        )
+
+    structural_index = getattr(engine, "_structural_index", None)
+
+    # Seed extraction. Prefer explicit seeds; otherwise pull identifiers from
+    # both SEARCH and REPLACE — including REPLACE catches new identifiers the
+    # user just introduced (their not-yet-existing call sites in OTHER files
+    # don't matter, but their new module imports do).
+    explicit = list(request.seed_symbols or [])
+    seeds = explicit or (
+        _impact_extract_seed_symbols(request.search)
+        + _impact_extract_seed_symbols(request.replace)
+    )
+    seen_seeds = set()
+    seeds = [s for s in seeds if not (s in seen_seeds or seen_seeds.add(s))]
+
+    depth = _impact_kind_to_depth(request.edit_kind, default_depth=request.max_depth)
+    walked = _impact_walk(structural_index, seeds, max_depth=depth)
+
+    # Co-change boost. ChangeImpactModel is a separate, file-level signal
+    # ("these files are commonly edited together"). Useful fallback when the
+    # symbol graph is sparse, and a useful tie-breaker even when it isn't.
+    try:
+        from .routing.change_impact import ChangeImpactModel
+        cim = ChangeImpactModel(workspace_root=getattr(engine, "_workspace_root", request.workspace_path))
+        cim.build()
+        co_neighbors = cim.get_neighbors([request.file_path]) or []
+        for i, neighbor_file in enumerate(co_neighbors[:8]):
+            damped = _IMPACT_EDGE_WEIGHTS["co_change"] / (1.0 + 0.4 * i)
+            key = (neighbor_file, "")
+            rec = walked.get(key)
+            if rec is None:
+                walked[key] = {"score": damped, "reasons": ["co_change"], "distance": 1}
+            else:
+                rec["score"] += damped
+                if "co_change" not in rec["reasons"]:
+                    rec["reasons"].append("co_change")
+    except Exception:
+        # ChangeImpactModel is best-effort; never fail the request on it.
+        pass
+
+    # Drop the originating file — the editor already has it open and the
+    # impact endpoint is for OTHER follow-up sites. Edits that loop back to
+    # the same file ride the recent-edits ring buffer, not the impact graph.
+    walked = {
+        (file_path, symbol): rec
+        for (file_path, symbol), rec in walked.items()
+        if file_path != request.file_path
+    }
+
+    ranked = sorted(walked.items(), key=lambda kv: kv[1]["score"], reverse=True)
+    ranked = ranked[: max(1, request.max_candidates)]
+
+    candidates = [
+        EditImpactCandidate(
+            file=fp,
+            symbol=sym,
+            score=round(rec["score"], 3),
+            reasons=rec["reasons"],
+            distance=rec["distance"],
+        )
+        for (fp, sym), rec in ranked
+    ]
+
+    return EditImpactResponse(
+        candidates=candidates,
+        seeds_used=seeds,
+        edit_kind_inferred=request.edit_kind,
+        elapsed_ms=(_time.time() - t0) * 1000,
+    )
 
 
 @router.post("/tools/definitions", response_model=ToolDefinitionsResponse)
