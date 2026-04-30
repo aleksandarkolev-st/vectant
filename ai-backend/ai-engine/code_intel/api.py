@@ -154,6 +154,11 @@ class FastContextRequest(BaseModel):
     language: Optional[str] = Field(None, description="Filter chunks to this language")
     max_chunks: int = Field(5, description="Hard cap on returned chunks")
     max_chars_per_chunk: int = Field(320, description="Truncate each chunk's snippet to this many chars")
+    # Hybrid retrieval knob: how long the server may wait for an inline query
+    # embedding before falling back to lexical-only. 0 disables inline embedding
+    # entirely (cache-only). Default 120 ms is enough for a warm regional embed
+    # call without blowing the 200–350 ms client-side budget.
+    embed_timeout_ms: int = Field(120, description="Hard timeout for inline query embedding; 0 disables")
 
 
 class FastContextChunk(BaseModel):
@@ -589,16 +594,58 @@ async def get_context(request: ContextRequest, http_request: Request) -> Context
         raise HTTPException(status_code=500, detail=str(e))
 
 
+async def _maybe_embed_query_for_fast_path(pipeline: Any, query: str, timeout_ms: int) -> Optional[List[float]]:
+    """Resolve a query embedding for the fast retrieval path.
+
+    Returns a vector when one is available within the time budget; ``None``
+    otherwise. ``None`` is the "lexical-only" signal — `_fast_retrieve` accepts
+    it and will skip the dense pass.
+
+    Order of operations:
+      1. Cache hit on the embedder's query cache (zero network).
+      2. Inline `embed_query` call wrapped in `asyncio.wait_for(timeout)`.
+      3. On timeout/error, give up. The background thread keeps running and
+         the embedder's cache fills for the next call.
+    """
+    if not query or not query.strip():
+        return None
+    embedder = getattr(pipeline, "embedder", None)
+    if embedder is None:
+        return None
+    # 1) Cache lookup (covers warm queries / fingerprint hits).
+    try:
+        if hasattr(embedder, "get_cached_query_embedding"):
+            cached = embedder.get_cached_query_embedding(query)
+            if cached is not None:
+                return cached
+    except Exception:
+        pass
+    # 2) Bounded inline embed.
+    if timeout_ms <= 0 or not hasattr(embedder, "embed_query"):
+        return None
+    try:
+        import asyncio
+        return await asyncio.wait_for(
+            asyncio.to_thread(embedder.embed_query, query),
+            timeout=max(0.001, timeout_ms / 1000.0),
+        )
+    except Exception:
+        # asyncio.TimeoutError, network errors, missing API key — all fall
+        # through to lexical-only without surfacing to the user.
+        return None
+
+
 @router.post("/context/fast", response_model=FastContextResponse)
 async def get_context_fast(request: FastContextRequest, http_request: Request) -> FastContextResponse:
     """
     Fast retrieval-only context for inline completions.
 
-    Hits the retrieval pipeline's BM25 + symbol-search fast path — no LLM, no
-    embedding generation (uses cached embeddings only when available). The
-    full /context endpoint goes through macro + micro-navigation which is
-    LLM-driven and benchmarks at ~8.5 s; this path targets ~50–150 ms so it
-    can sit on the critical path for keystroke-driven completions.
+    Hits the retrieval pipeline's hybrid fast path — BM25 + symbol search,
+    plus a dense pass when a query embedding is available within
+    ``embed_timeout_ms``. No LLM. The full /context endpoint goes through
+    macro + micro-navigation which is LLM-driven and benchmarks at ~8.5 s;
+    this path targets ~50–250 ms so it can sit on the critical path for
+    keystroke-driven completions.
 
     Returns a small set of relevant code chunks; the caller (typically the
     Next.js /api/completion route) injects them into the FIM prompt as
@@ -622,17 +669,18 @@ async def get_context_fast(request: FastContextRequest, http_request: Request) -
         if pipeline is None:
             return FastContextResponse(chunks=[], elapsed_ms=(time.time() - t0) * 1000)
 
-        # Try to grab a cached embedding for this query — if present, the
-        # fast path can do a quick vector pass alongside BM25/symbol. If not
-        # (the common case for a never-seen prefix), fast path stays purely
-        # lexical and skips the embedding network call.
-        cached_emb = None
-        try:
-            embedder = getattr(pipeline, "embedder", None)
-            if embedder is not None and hasattr(embedder, "get_cached_query_embedding"):
-                cached_emb = embedder.get_cached_query_embedding(request.query or "")
-        except Exception:
-            cached_emb = None
+        # Hybrid step: try to obtain a query embedding so `_fast_retrieve` can
+        # take its dense+lexical+symbol path instead of falling back to pure
+        # lexical. Order: cache hit → bounded inline embed → give up.
+        # The inline embed is run in a worker thread with a hard timeout —
+        # if it doesn't return in time we fall through to lexical-only, but
+        # the embedding call keeps running in the background and warms the
+        # query cache for the next keystroke.
+        cached_emb = await _maybe_embed_query_for_fast_path(
+            pipeline=pipeline,
+            query=request.query or "",
+            timeout_ms=int(request.embed_timeout_ms or 0),
+        )
 
         try:
             candidates, _stats = pipeline._fast_retrieve(

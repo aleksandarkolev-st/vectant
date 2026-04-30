@@ -54,7 +54,7 @@ export const useAiCompletion = ({
     useEffect(() => {
         if (!editorInstance) return undefined;
         const RECENT_EDIT_THROTTLE_MS = 600;
-        const disposable = editorInstance.onDidChangeModelContent?.(() => {
+        const disposable = editorInstance.onDidChangeModelContent?.((event) => {
             const now = Date.now();
             if (now - lastRecentEditPushRef.current < RECENT_EDIT_THROTTLE_MS) return;
             lastRecentEditPushRef.current = now;
@@ -64,20 +64,81 @@ export const useAiCompletion = ({
                 if (!model) return;
                 const path = activeFile?.path || activeFile?.name || null;
                 if (!path) return;
-                const pos = editorInstance.getPosition?.();
-                if (!pos) return;
-                // Snapshot a small window around the cursor — the recently-
-                // changed neighborhood is what we want as context next time
-                // the user types in a different file.
-                const startLine = Math.max(1, pos.lineNumber - 8);
-                const endLine = Math.min(model.getLineCount?.() ?? pos.lineNumber, pos.lineNumber + 4);
-                const snippet = model.getValueInRange?.({
-                    startLineNumber: startLine,
-                    startColumn: 1,
-                    endLineNumber: endLine,
-                    endColumn: model.getLineMaxColumn?.(endLine) ?? 1,
-                }) || '';
-                if (!snippet.trim()) return;
+
+                // Cursor-style diff capture: encode the recent edit as the
+                // inserted text plus a few unchanged lines on either side,
+                // rendered with a `+` marker. This signals INTENT (what the
+                // user just produced) rather than just position, which is
+                // what static window snapshots gave us.
+                const changes = Array.isArray(event?.changes) ? event.changes : [];
+                if (!changes.length) return;
+
+                // Aggregate inserted text across all changes in the event;
+                // sort by range so multi-cursor edits read top-to-bottom.
+                const sorted = [...changes].sort((a, b) => {
+                    const al = a?.range?.startLineNumber ?? 0;
+                    const bl = b?.range?.startLineNumber ?? 0;
+                    if (al !== bl) return al - bl;
+                    return (a?.range?.startColumn ?? 0) - (b?.range?.startColumn ?? 0);
+                });
+                const insertedText = sorted.map((c) => c?.text || '').join('').replace(/\s+$/u, '');
+                if (!insertedText.trim()) return;
+
+                const firstRange = sorted[0]?.range;
+                const lastRange = sorted[sorted.length - 1]?.range || firstRange;
+                if (!firstRange || !lastRange) return;
+
+                // Post-change line span. Monaco's range is in pre-change coords,
+                // but for display purposes the start line is stable. We grow the
+                // end-line by the newline count in the inserted text so we can
+                // render trailing context that lives just below the new code.
+                const startLine = Math.max(1, firstRange.startLineNumber || 1);
+                const insertedNewlines = (insertedText.match(/\n/g) || []).length;
+                const endLine = Math.max(
+                    startLine,
+                    (lastRange.endLineNumber || startLine) + insertedNewlines,
+                );
+
+                const totalLines = model.getLineCount?.() ?? endLine;
+                const ctxStart = Math.max(1, startLine - 3);
+                const ctxEnd = Math.min(totalLines, endLine + 3);
+
+                const readLines = (from, to) => {
+                    if (from > to) return '';
+                    try {
+                        return model.getValueInRange({
+                            startLineNumber: from,
+                            startColumn: 1,
+                            endLineNumber: to,
+                            endColumn: model.getLineMaxColumn?.(to) ?? 1,
+                        }) || '';
+                    } catch (_) {
+                        return '';
+                    }
+                };
+
+                const before = readLines(ctxStart, Math.max(ctxStart, startLine - 1));
+                const after = readLines(Math.min(totalLines, endLine + 1), ctxEnd);
+
+                // Render diff-style. Each line of the inserted text gets a `+`
+                // marker; surrounding context is two leading spaces. The total
+                // string is capped by pushRecentEdit, so we don't need to be
+                // precise about its size here.
+                const markInserted = (text) =>
+                    text.split('\n').map((l) => `+ ${l}`).join('\n');
+                const markContext = (text) => {
+                    if (!text) return '';
+                    return text.split('\n').map((l) => `  ${l}`).join('\n');
+                };
+
+                const headerLine = `@@ ${path} L${startLine}-${endLine} @@`;
+                const snippet = [
+                    headerLine,
+                    markContext(before),
+                    markInserted(insertedText),
+                    markContext(after),
+                ].filter(Boolean).join('\n');
+
                 recentEditsRef.current = pushRecentEdit(recentEditsRef.current, { path, snippet });
             } catch (_) { /* recent-edit tracking is best-effort */ }
         });

@@ -40,10 +40,14 @@ const MAX_SYMBOLS = 6;
 // Per-chunk budget when extracting a declaration's surrounding lines.
 const CHUNK_LINE_BUDGET = 16;
 const CHUNK_CHAR_BUDGET = 320;
-// Total reference budget across all chunks.
-const TOTAL_REF_CHAR_BUDGET = 1200;
-// Recent-edit context budget per entry.
-const RECENT_EDIT_CHAR_BUDGET = 320;
+// Total reference budget across all chunks. Server caps at MAX_REFS_CHARS
+// (~5 KB) so we leave the higher cap for RAG-supplied snippets and keep the
+// client-side bag tighter.
+const TOTAL_REF_CHAR_BUDGET = 2200;
+// Recent-edit context budget per entry. A diff-style entry is roughly
+// "header + 3 lines context + n inserted lines + 3 lines context"; 480 fits
+// most realistic edits without truncating the inserted text.
+const RECENT_EDIT_CHAR_BUDGET = 480;
 const RECENT_EDIT_TTL_MS = 60_000;
 const RECENT_EDIT_MAX_ENTRIES = 4;
 
@@ -267,9 +271,46 @@ export const findDeclarationChunks = (symbols, cacheEntries, activePath, languag
 export const pushRecentEdit = (buffer, entry) => {
     if (!Array.isArray(buffer) || !entry?.path || !entry?.snippet) return buffer;
     const now = Date.now();
-    const trimmedSnippet = entry.snippet.length > RECENT_EDIT_CHAR_BUDGET
-        ? entry.snippet.slice(entry.snippet.length - RECENT_EDIT_CHAR_BUDGET)
-        : entry.snippet;
+    // Diff-shaped snippets start with `@@` and have inserted lines marked
+    // with `+ `. When we have to truncate, keep the header and the inserted
+    // lines (the actual signal) over surrounding context. Falls back to a
+    // simple head-slice for anything else.
+    const trim = (text) => {
+        if (text.length <= RECENT_EDIT_CHAR_BUDGET) return text;
+        if (text.startsWith('@@')) {
+            const lines = text.split('\n');
+            const header = lines[0];
+            const inserted = lines.filter((l) => l.startsWith('+ '));
+            const ctx = lines.filter((l) => !l.startsWith('+ ') && l !== header);
+            const out = [header];
+            let used = header.length + 1;
+            const fit = (line) => {
+                const room = RECENT_EDIT_CHAR_BUDGET - used - 1;
+                if (room <= 0) return false;
+                if (line.length + 1 <= room) {
+                    out.push(line);
+                    used += line.length + 1;
+                    return true;
+                }
+                // Single line over budget — truncate from the head: an inserted
+                // line's prefix carries the strongest "what is being typed"
+                // signal, and we'd rather keep partial intent than nothing.
+                out.push(line.slice(0, room - 1) + '…');
+                used += room;
+                return false;
+            };
+            // Inserted lines first (the actual change); then as much context as fits.
+            for (const line of inserted) {
+                if (!fit(line)) break;
+            }
+            for (const line of ctx) {
+                if (!fit(line)) break;
+            }
+            return out.join('\n');
+        }
+        return text.slice(0, RECENT_EDIT_CHAR_BUDGET);
+    };
+    const trimmedSnippet = trim(entry.snippet);
     // Coalesce repeated edits to the same file into the most recent snippet.
     const next = buffer.filter(e => e.path !== entry.path && (now - e.ts) < RECENT_EDIT_TTL_MS);
     next.push({ path: entry.path, snippet: trimmedSnippet, ts: now });

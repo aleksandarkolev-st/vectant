@@ -16,15 +16,23 @@ const MAX_BLOCK_CHARS = 4800;
 const HALF_BLOCK_CHARS = Math.floor(MAX_BLOCK_CHARS / 2);
 
 // ── RAG fast-context wiring ──────────────────────────────────────────────
-// We call ai-backend's /code-intel/context/fast endpoint to pull symbol /
-// BM25-ranked snippets from the workspace's index. That endpoint is
-// LLM-free and benchmarks at ~50–150ms; we still cap the wait so a slow
-// backend can't hold up the keystroke path.
+// We call ai-backend's /code-intel/context/fast endpoint to pull hybrid
+// (BM25 + dense + symbol) snippets from the workspace's index. The endpoint
+// is LLM-free and benchmarks at ~50–250ms (the upper end is when an inline
+// query embedding has to be computed; cache hits are sub-30ms). We still
+// cap the wait so a slow backend can't hold up the keystroke path.
 const CODE_INTEL_URL = process.env.CODE_INTEL_URL
   || process.env.NEXT_PUBLIC_CODE_INTEL_URL
   || 'http://localhost:8000';
 const CODE_INTEL_API_KEY = process.env.CODE_INTEL_API_KEY || '';
-const RAG_FETCH_TIMEOUT_MS = 200;
+// 350ms gives the inline-embed step room (~120ms cap server-side) plus
+// retrieval and round-trip without the user feeling the wait. Cache hits
+// return well under this regardless.
+const RAG_FETCH_TIMEOUT_MS = 350;
+// Server-side embed budget. The first time we see a new query fingerprint
+// the backend pays this cost; every subsequent keystroke within ~30s reuses
+// the cached embedding. 0 disables inline embedding entirely.
+const RAG_EMBED_TIMEOUT_MS = 120;
 const RAG_CACHE_TTL_MS = 30_000;
 const RAG_CACHE_MAX_ENTRIES = 256;
 
@@ -117,8 +125,12 @@ const fetchRagReferences = async ({ workspaceSlug, query, language }) => {
           query,
           symbols,
           language: language || null,
-          max_chunks: 5,
-          max_chars_per_chunk: 320,
+          // 8 chunks * up to 480 chars each gives the merge step diverse
+          // candidates to dedup/MMR over while staying under the 5 KB refs
+          // budget rendered into the prompt.
+          max_chunks: 8,
+          max_chars_per_chunk: 480,
+          embed_timeout_ms: RAG_EMBED_TIMEOUT_MS,
         }),
       });
       if (!res.ok) return [];
@@ -233,9 +245,11 @@ const buildFimContext = (blocks = {}, body = {}) => {
   };
 };
 
-// Total budget for `references` content. Caps the worst-case prompt size
-// even if the client over-shares; the client also clamps below this.
-const MAX_REFS_CHARS = 1400;
+// Total budget for `references` content rendered into the CONTEXT block.
+// Flash-Lite happily eats 32k+ tokens; modern inline-completion pipelines
+// (Cursor, Continue) routinely ship 4–10 KB of retrieval context. 5 KB hits
+// the sweet spot between recall and prompt cost.
+const MAX_REFS_CHARS = 5000;
 
 /**
  * Render a small set of caller-supplied references (symbol declarations and
@@ -278,7 +292,7 @@ const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
     '- Match the existing indentation and code style exactly.',
     '- No explanations, no markdown fences, no commentary.',
     refBlock
-      ? '- The CONTEXT block below shows symbols and recent edits from OTHER files. Use it for type and signature info ONLY. Do not copy from it.'
+      ? '- The CONTEXT block below shows related symbols (for type/signature info — do not copy literally) and recent-edit hunks (lines marked with `+ ` show what was just typed elsewhere — they signal user intent and may suggest matching patterns).'
       : null,
     '',
     'OUTPUT FORMAT',

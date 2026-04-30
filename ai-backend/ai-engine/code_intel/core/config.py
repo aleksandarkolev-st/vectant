@@ -187,6 +187,13 @@ class RetrievalConfig:
     recency_decay_hours: float = 72.0
     recency_max_boost: float = 0.25
 
+    # Hybrid fusion (Reciprocal Rank Fusion + Maximal Marginal Relevance).
+    # mmr_head_size caps how many top-RRF candidates we diversify — MMR is
+    # O(K^2) so we don't rerun it over the long tail. mmr_lambda balances
+    # relevance vs. novelty; 0.7 is the standard code-search default.
+    mmr_head_size: int = 32
+    mmr_lambda: float = 0.7
+
     # Change impact neighborhoods (git history)
     enable_change_impact: bool = True
     change_impact_commits: int = 200
