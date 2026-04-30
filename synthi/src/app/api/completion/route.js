@@ -11,9 +11,6 @@ const COMPLETION_TIMEOUT_MS = 12_000;
 const MAX_BLOCK_CHARS = 2200;
 const HALF_BLOCK_CHARS = Math.floor(MAX_BLOCK_CHARS / 2);
 
-const FIM_PREFIX = '<|fim_prefix|>';
-const FIM_SUFFIX = '<|fim_suffix|>';
-const FIM_MIDDLE = '<|fim_middle|>';
 const COMPLETION_OPEN = '<|completion|>';
 const COMPLETION_CLOSE = '<|/completion|>';
 
@@ -31,15 +28,6 @@ const withTimeout = (promise, timeoutMs = COMPLETION_TIMEOUT_MS) => {
       (err)   => { clearTimeout(timeoutId); reject(err); }
     );
   });
-};
-
-const collectFileText = (file) => {
-  if (!file || typeof file !== 'object') return '';
-  if (typeof file.content === 'string') return file.content;
-  if (typeof file.text    === 'string') return file.text;
-  if (typeof file.value   === 'string') return file.value;
-  if (typeof file.source  === 'string') return file.source;
-  return '';
 };
 
 const extractText = (resp) => {
@@ -93,43 +81,40 @@ const buildFimContext = (blocks = {}, body = {}) => {
   };
 };
 
-const collectReferenceFiles = (body) => {
-  const refs = [];
-  if (Array.isArray(body?.files)) {
-    for (const file of body.files) {
-      const text = collectFileText(file);
-      if (!text.trim()) continue;
-      const path = file?.path || file?.name || 'unknown';
-      refs.push({ path, text: limitText(text, { max: 1200 }) });
-    }
-  }
-  return refs.slice(0, 3); // hard cap — references add noise quickly
-};
-
-const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
-  const refSection = references.length
-    ? references.map(r => `// === reference: ${r.path} ===\n${r.text}`).join('\n\n')
-    : '';
-
+const buildPrompt = ({ prefix, suffix, language, filePath }) => {
   return [
-    'You are an expert programmer providing a single inline code completion.',
+    'You are an inline code completion engine. Continue the code at the cursor.',
     `Language: ${language}`,
     filePath ? `File: ${filePath}` : null,
     '',
-    'TASK',
-    `Produce ONLY the text that fills the gap between ${FIM_PREFIX} and ${FIM_SUFFIX}.`,
-    'Do not repeat any code from the prefix or suffix. Do not add explanations, comments, or backticks.',
-    'Stop as soon as a single coherent unit (statement, expression, or block) is finished — usually one to a few lines.',
-    'If nothing useful can be added (e.g. the surrounding code is already complete), respond with an empty completion.',
-    'Match the existing indentation and code style exactly.',
+    'RULES',
+    '- Output ONLY the text that goes between BEFORE and AFTER. Never repeat code from either side.',
+    '- Stop after one coherent unit (a statement, expression, or short block) — usually 1–3 lines.',
+    '- If nothing useful would fit (the surrounding code is already complete), output an empty completion.',
+    '- Match the existing indentation and code style exactly.',
+    '- No explanations, no markdown fences, no commentary.',
     '',
     'OUTPUT FORMAT',
-    `Wrap the completion in ${COMPLETION_OPEN}...${COMPLETION_CLOSE}. No other output.`,
+    `Wrap the inserted text in ${COMPLETION_OPEN}...${COMPLETION_CLOSE}. Output nothing else.`,
     '',
-    refSection ? `REFERENCES (read-only — for symbol/type names only)\n${refSection}\n` : null,
-    'CONTEXT',
-    `${FIM_PREFIX}${prefix}${FIM_SUFFIX}${suffix}${FIM_MIDDLE}`,
-  ].filter(Boolean).join('\n');
+    'EXAMPLE',
+    'BEFORE:',
+    'function add(a, b) {',
+    '  return ',
+    'AFTER:',
+    '}',
+    '',
+    `OUTPUT: ${COMPLETION_OPEN}a + b;${COMPLETION_CLOSE}`,
+    '',
+    '---',
+    '',
+    'BEFORE:',
+    prefix,
+    'AFTER:',
+    suffix,
+    '',
+    'OUTPUT:',
+  ].filter(line => line !== null).join('\n');
 };
 
 /**
@@ -138,8 +123,19 @@ const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
  */
 const extractCompletion = (raw) => {
   if (!raw) return '';
+
+  // Full envelope.
   const tagged = raw.match(/<\|completion\|>([\s\S]*?)<\|\/completion\|>/);
   if (tagged) return tagged[1];
+
+  // Half-open: `<|completion|>foo` — happens when stopSequences=[COMPLETION_CLOSE]
+  // truncates the trailing marker before it reaches us.
+  const openIdx = raw.indexOf('<|completion|>');
+  if (openIdx !== -1) return raw.slice(openIdx + '<|completion|>'.length);
+
+  // Half-close: `foo<|/completion|>` — model omitted the opener.
+  const closeIdx = raw.indexOf('<|/completion|>');
+  if (closeIdx !== -1) return raw.slice(0, closeIdx);
 
   // Fallback 1: stripped markdown fence
   const fence = raw.match(/```[a-zA-Z0-9_+-]*\n?([\s\S]*?)```/);
@@ -168,6 +164,12 @@ const sanitize = (text, { prefix = '' } = {}) => {
 
   // Remove markdown fences if a wrapper slipped through.
   out = out.replace(/^```[a-zA-Z0-9_+-]*\n?/, '').replace(/```\s*$/, '');
+
+  // Strip a leading "OUTPUT:" the model echoed from the prompt template.
+  out = out.replace(/^\s*output\s*:\s*/i, '');
+
+  // Strip stray envelope markers if either half slipped through earlier extraction.
+  out = out.replace(/<\|\/?completion\|>/g, '');
 
   // Drop leading "Here's the completion:" style preludes.
   out = out.replace(/^\s*(here(?:'s| is)|the completion|sure[,!:])[^\n]*\n/i, '');
@@ -233,13 +235,15 @@ export async function POST(request) {
     ? suffix.slice(0, AI_COMPLETION_MAX_INPUT_CHARS)
     : suffix;
 
-  const references = collectReferenceFiles(body);
+  // Multi-file references were dropped: they polluted the FIM context with
+  // unrelated code from sibling files (often dirty buffers), causing the model
+  // to echo from refs or hallucinate cross-file symbols. The local prefix/suffix
+  // already contains every symbol the user has actually used in this file.
   const prompt = buildPrompt({
     prefix: trimmedPrefix,
     suffix: trimmedSuffix,
     language,
     filePath: body?.contextBlocks?.filePath || null,
-    references,
   });
 
   try {
@@ -257,7 +261,7 @@ export async function POST(request) {
           config: {
             maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
             temperature: 0.15, // tighter — we want deterministic, focused completions
-            stopSequences: [COMPLETION_CLOSE, FIM_PREFIX, FIM_SUFFIX],
+            stopSequences: [COMPLETION_CLOSE, '\nBEFORE:', '\nAFTER:'],
           },
         }),
         COMPLETION_TIMEOUT_MS
@@ -274,7 +278,7 @@ export async function POST(request) {
           config: {
             maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
             temperature: 0.15,
-            stopSequences: [COMPLETION_CLOSE, FIM_PREFIX, FIM_SUFFIX],
+            stopSequences: [COMPLETION_CLOSE, '\nBEFORE:', '\nAFTER:'],
           },
         }),
         COMPLETION_TIMEOUT_MS

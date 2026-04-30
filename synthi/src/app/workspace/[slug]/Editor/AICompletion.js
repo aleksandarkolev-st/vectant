@@ -1,7 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { AI_COMPLETION_STOP_SEQUENCE, API_COMPLETION_ROUTE } from '@/lib/completion';
 import SynthiException from '@/components/SynthiException.js';
-import { buildFilesPayload } from '@/utils/multiFileContext';
 import {
     trimCompletionContext,
     takeLastChars,
@@ -19,8 +18,7 @@ export const useAiCompletion = ({
     code,
     editorInstance,
     monacoInstance,
-    fileCacheEntries,
-    hasActiveDiff
+    hasActiveDiff,
 }) => {
     const [aiCompletionState, setAiCompletionState] = useState('idle');
 
@@ -236,20 +234,11 @@ export const useAiCompletion = ({
             if (metadata) payload.prompt = metadata;
         }
 
-        const filesPayload = buildFilesPayload({
-            activeFile,
-            fullDocument,
-            beforeCursor,
-            afterCursor,
-            fileHeader,
-            fileTail,
-            cacheEntries: fileCacheEntries,
-        });
-        if (filesPayload.length) {
-            payload.files = filesPayload;
-            const multiFileNote = 'Multi-file context attached. Reference related files by their provided paths.';
-            payload.prompt = payload.prompt ? `${payload.prompt}\n${multiFileNote}` : multiFileNote;
-        }
+        // Inline completions intentionally ship ONLY the active file's local
+        // context (prefix/suffix). Including sibling files' contents — especially
+        // their dirty unsaved buffers — confuses the FIM model: it tends to
+        // echo from references or hallucinate cross-file symbols. The local
+        // neighborhood already contains every symbol the user has used here.
 
         fetch(API_COMPLETION_ROUTE, {
             method: 'POST',
@@ -308,7 +297,7 @@ export const useAiCompletion = ({
                 setAiCompletionState('idle');
             }
         });
-    }, [activeFile, activeLanguage, breadcrumb, cancelActiveCompletion, code, editorInstance, fileCacheEntries, hasActiveDiff]);
+    }, [activeFile, activeLanguage, breadcrumb, cancelActiveCompletion, code, editorInstance, hasActiveDiff]);
 
     return {
         aiCompletionState,
