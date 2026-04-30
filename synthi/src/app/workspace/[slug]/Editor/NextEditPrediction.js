@@ -64,11 +64,23 @@ const STATE = {
   ARMED_CONFIRM: 'armed-confirm',
 };
 
+const NEP_LOCAL_STORAGE_KEY = 'synthi.nep.enabled';
+
 const isNepEnabled = () => {
-  if (typeof window !== 'undefined' && window.__SYNTHI_NEP_ENABLED__) return true;
+  if (typeof window !== 'undefined') {
+    if (window.__SYNTHI_NEP_ENABLED__ === false) return false;
+    if (window.__SYNTHI_NEP_ENABLED__) return true;
+    try {
+      const stored = window.localStorage?.getItem?.(NEP_LOCAL_STORAGE_KEY);
+      if (stored === '1' || stored === 'true') return true;
+      if (stored === '0' || stored === 'false') return false;
+    } catch (_) { /* SSR / private mode */ }
+  }
   if (typeof process !== 'undefined') {
     const v = process.env?.NEXT_PUBLIC_NEXT_EDIT_PREDICTION;
     if (v === '1' || v === 'true') return true;
+    if (v === '0' || v === 'false') return false;
+    if (process.env?.NODE_ENV === 'development') return true;
   }
   return false;
 };
@@ -152,6 +164,28 @@ export const useNextEditPrediction = ({
 
   useEffect(() => {
     setEnabled(isNepEnabled());
+    if (typeof window === 'undefined') return undefined;
+    // Expose a stable toggle on window so users can flip NEP without
+    // touching DevTools' source. `synthiNep.enable()`/`disable()`/`toggle()`
+    // persist in localStorage and update React state immediately.
+    const toggle = (next) => {
+      const v = next ?? !isNepEnabled();
+      try { window.localStorage?.setItem?.(NEP_LOCAL_STORAGE_KEY, v ? '1' : '0'); }
+      catch (_) { /* ignored */ }
+      window.__SYNTHI_NEP_ENABLED__ = !!v;
+      setEnabled(!!v);
+      console.log(`[NEP] ${v ? 'enabled' : 'disabled'}`);
+      return !!v;
+    };
+    window.synthiNep = {
+      enable: () => toggle(true),
+      disable: () => toggle(false),
+      toggle: () => toggle(),
+      status: () => isNepEnabled(),
+    };
+    return () => {
+      try { delete window.synthiNep; } catch (_) { /* ignored */ }
+    };
   }, []);
 
   // ── helpers ─────────────────────────────────────────────────────────────
