@@ -32,6 +32,18 @@ const NEP_CONTEXT_CHARS = 3000;
 const NEP_FILES_BUDGET_CHARS = 6000;
 const NEP_PER_FILE_CHARS = 2000;
 
+// Phase 2: cross-file impact endpoint hookup. When the client sends an
+// `appliedEdit` (the edit the user just accepted), we ping ai-backend's
+// /code-intel/edit-impact for ranked follow-up sites and inject them into
+// the prompt as <impact_candidates>. The endpoint is best-effort and
+// timeout-bounded — NEP must never wait on it.
+const CODE_INTEL_URL = process.env.CODE_INTEL_URL
+  || process.env.NEXT_PUBLIC_CODE_INTEL_URL
+  || 'http://localhost:8000';
+const CODE_INTEL_API_KEY = process.env.CODE_INTEL_API_KEY || '';
+const NEP_IMPACT_TIMEOUT_MS = 350;
+const NEP_IMPACT_MAX_CANDIDATES = 8;
+
 const RECENT_EDITS_OPEN = '<recent_edits>';
 const RECENT_EDITS_CLOSE = '</recent_edits>';
 
@@ -98,7 +110,58 @@ const renderContext = (references) => {
   return sections.join('\n\n');
 };
 
-const buildPrompt = ({ recentEditsBlock, filesBlock, contextBlock, language, activePath, cursor }) => {
+/**
+ * Hit ai-backend's /code-intel/edit-impact for ranked follow-up sites.
+ * Returns [] on timeout / error / no-applied-edit. Logged at debug only —
+ * the prompt simply omits the <impact_candidates> block.
+ */
+const fetchImpactCandidates = async ({ workspaceSlug, appliedEdit }) => {
+  if (!workspaceSlug || !appliedEdit?.path || !appliedEdit?.search) return [];
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort('impact-timeout'), NEP_IMPACT_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${CODE_INTEL_URL}/code-intel/edit-impact`, {
+      method: 'POST',
+      signal: ctrl.signal,
+      headers: {
+        'content-type': 'application/json',
+        ...(CODE_INTEL_API_KEY ? { 'x-code-intel-key': CODE_INTEL_API_KEY } : {}),
+      },
+      body: JSON.stringify({
+        workspace_path: workspaceSlug,
+        file_path: appliedEdit.path,
+        search: appliedEdit.search,
+        replace: appliedEdit.replace || '',
+        edit_kind: appliedEdit.kind || null,
+        max_candidates: NEP_IMPACT_MAX_CANDIDATES,
+        max_depth: appliedEdit.kind === 'local_logic' ? 1 : 2,
+      }),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.candidates) ? data.candidates : [];
+  } catch (_) {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const renderImpactBlock = (candidates) => {
+  if (!Array.isArray(candidates) || !candidates.length) return '';
+  // Compact format. The model treats these as hints about which OTHER files
+  // are likely to need follow-up edits, not as authoritative content. Score
+  // is rounded; reasons joined with `+`.
+  const lines = candidates.map((c) => {
+    const sym = c.symbol ? `:${c.symbol}` : '';
+    const reasons = Array.isArray(c.reasons) ? c.reasons.join('+') : '';
+    const score = typeof c.score === 'number' ? c.score.toFixed(2) : c.score;
+    return `- ${c.file}${sym}  (score=${score}, ${reasons || 'unknown'})`;
+  });
+  return ['<impact_candidates>', ...lines, '</impact_candidates>'].join('\n');
+};
+
+const buildPrompt = ({ recentEditsBlock, filesBlock, contextBlock, impactBlock, language, activePath, cursor }) => {
   // The format spec teaches the model both `SEARCH` and `SEARCH ALL` so the
   // wire format is in distribution from day one — Phase 1 logs `SEARCH ALL`
   // with `phase2_required` instead of executing it (Section 1 / Section 5).
@@ -141,6 +204,9 @@ const buildPrompt = ({ recentEditsBlock, filesBlock, contextBlock, language, act
     '',
     recentEditsBlock || null,
     recentEditsBlock ? '' : null,
+    impactBlock ? 'CROSS-FILE IMPACT CANDIDATES (read-only, ranked by symbol-graph proximity to the user’s last accepted edit; emit blocks against these files when the trajectory suggests a refactor chain):' : null,
+    impactBlock || null,
+    impactBlock ? '' : null,
     filesBlock ? 'CURRENT FILE CONTENTS (read-only):' : null,
     filesBlock || null,
     filesBlock ? '' : null,
@@ -198,10 +264,24 @@ export async function POST(request) {
     });
   }
 
+  // Phase 2: optional cross-file impact lookup. Race a hard 350 ms timeout —
+  // if the symbol index is cold or unreachable, the prompt simply omits
+  // <impact_candidates>. The model still has the recent-edits trajectory and
+  // the file contents to work from.
+  const appliedEdit = body?.appliedEdit && typeof body.appliedEdit === 'object'
+    ? body.appliedEdit
+    : null;
+  const workspaceSlug = typeof body?.workspaceSlug === 'string' ? body.workspaceSlug : '';
+  const impactCandidates = appliedEdit
+    ? await fetchImpactCandidates({ workspaceSlug, appliedEdit })
+    : [];
+  const impactBlock = renderImpactBlock(impactCandidates);
+
   const prompt = buildPrompt({
     recentEditsBlock,
     filesBlock,
     contextBlock,
+    impactBlock,
     language,
     activePath,
     cursor,
