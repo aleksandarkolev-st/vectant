@@ -489,6 +489,12 @@ export default function EditorPage({ params }) {
     const lastActiveFilePathRef = useRef('');
     const proactiveInFlightRef = useRef(0);
 
+    // Idle-driven analysis: only fire after the user has been quiet for this
+    // long. Per-keystroke triggering wasted analyzer calls on transient
+    // mid-typing states that immediately got superseded.
+    const ANALYSIS_IDLE_MS = 1500;
+    const analysisIdleTimerRef = useRef(null);
+
     const normalizePath = useCallback((p) => {
         if (!p) return '';
         return p.replace(/^[./\\]+/, '').replace(/\\/g, '/').toLowerCase();
@@ -1210,24 +1216,43 @@ export default function EditorPage({ params }) {
         }
     }, [activeFile, rawFiles, slug, getLatestCurrentContent]);
 
-    // Subscribe to editor changes to force re-analysis even for remote changes or undo/redo
+    // Re-analyze on three events: idle (user paused typing), file-switch,
+    // and save. We deliberately do NOT analyze on every keystroke — partial
+    // mid-typing code produces transient errors that get superseded a moment
+    // later, so each of those analyses is wasted work and makes the status
+    // bar feel like it's "constantly analyzing".
+    //
+    // The idle timer below resets on every edit (local or remote — Monaco
+    // fires onDidChangeModelContent for both) and only fires once the user
+    // has been quiet for ANALYSIS_IDLE_MS. The content-hash dedup inside
+    // triggerAnalysisRef.current still skips no-op runs.
     useEffect(() => {
         if (!activeFile || !hasLoadedInitialFile) return;
         if (!connectionMeta?.isConnected) return;
         if (!editor) return;
 
-        const disposable = editor.onDidChangeModelContent(() => {
-            if (triggerAnalysisRef.current) triggerAnalysisRef.current();
-        });
+        const scheduleIdleAnalysis = () => {
+            if (analysisIdleTimerRef.current) {
+                clearTimeout(analysisIdleTimerRef.current);
+            }
+            analysisIdleTimerRef.current = setTimeout(() => {
+                analysisIdleTimerRef.current = null;
+                triggerAnalysisRef.current?.();
+            }, ANALYSIS_IDLE_MS);
+        };
 
-        if (triggerAnalysisRef.current) triggerAnalysisRef.current();
-        const recheckTimer = setTimeout(() => {
-            if (triggerAnalysisRef.current) triggerAnalysisRef.current();
-        }, 250);
+        const disposable = editor.onDidChangeModelContent(scheduleIdleAnalysis);
+
+        // File-open / file-switch: analyze immediately so existing diagnostics
+        // surface without forcing the user to type-then-pause to see them.
+        triggerAnalysisRef.current?.();
 
         return () => {
             disposable.dispose();
-            clearTimeout(recheckTimer);
+            if (analysisIdleTimerRef.current) {
+                clearTimeout(analysisIdleTimerRef.current);
+                analysisIdleTimerRef.current = null;
+            }
         };
     }, [editor, activeFile, hasLoadedInitialFile, connectionMeta?.isConnected]);
 
@@ -1655,7 +1680,10 @@ export default function EditorPage({ params }) {
                             }
                             endProactive();
                         });
-                }, 100); // 100ms debounce for responsiveness
+                }, 0); // No inner debounce: the outer idle timer (ANALYSIS_IDLE_MS)
+                       // already ensures we only get here once the user has paused.
+                       // setTimeout(0) is kept just so the analysis runs after any
+                       // pending React state flush, not as a debounce.
             }
         }
 
@@ -2375,6 +2403,15 @@ export default function EditorPage({ params }) {
     const handleSave = useCallback(async (latestCode) => {
         console.log('[HMR] handleSave called with activeFile:', activeFile?.name);
         if (!activeFile) return;
+
+        // Save is one of the explicit "analyze now" triggers in the
+        // idle-driven scheme (alongside file-switch and 1.5s of typing
+        // quiet). Cancel any pending idle timer so we don't run twice.
+        if (analysisIdleTimerRef.current) {
+            clearTimeout(analysisIdleTimerRef.current);
+            analysisIdleTimerRef.current = null;
+        }
+        triggerAnalysisRef.current?.();
 
         // If HMR is disabled, skip recompilation on save
         if (!hmrEnabled) {
