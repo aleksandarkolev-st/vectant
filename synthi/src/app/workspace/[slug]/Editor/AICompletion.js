@@ -1,10 +1,14 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
     API_COMPLETION_ROUTE,
     extractCompletion,
     sanitizeCompletion,
     isCompletionEcho,
 } from '@/lib/completion';
+import {
+    buildCompletionReferences,
+    pushRecentEdit,
+} from '@/utils/completionContext';
 import {
     trimCompletionContext,
     takeLastChars,
@@ -22,6 +26,7 @@ export const useAiCompletion = ({
     code,
     editorInstance,
     monacoInstance,
+    getFileCacheEntries,
     hasActiveDiff,
 }) => {
     const [aiCompletionState, setAiCompletionState] = useState('idle');
@@ -37,6 +42,46 @@ export const useAiCompletion = ({
     const aiLastAutoRef = useRef(0);
     const aiDebounceTimerRef = useRef(null);
     const inlineAcceptCommandIdRef = useRef(null);
+
+    // Ring buffer of recent edits across files. Each completion request reads
+    // this so the model knows what the user just touched — the strongest
+    // signal for "what context is currently relevant?"  Throttled so we
+    // don't churn on every keystroke.
+    const recentEditsRef = useRef([]);
+    const lastRecentEditPushRef = useRef(0);
+
+    useEffect(() => {
+        if (!editorInstance) return undefined;
+        const RECENT_EDIT_THROTTLE_MS = 600;
+        const disposable = editorInstance.onDidChangeModelContent?.(() => {
+            const now = Date.now();
+            if (now - lastRecentEditPushRef.current < RECENT_EDIT_THROTTLE_MS) return;
+            lastRecentEditPushRef.current = now;
+
+            try {
+                const model = editorInstance.getModel?.();
+                if (!model) return;
+                const path = activeFile?.path || activeFile?.name || null;
+                if (!path) return;
+                const pos = editorInstance.getPosition?.();
+                if (!pos) return;
+                // Snapshot a small window around the cursor — the recently-
+                // changed neighborhood is what we want as context next time
+                // the user types in a different file.
+                const startLine = Math.max(1, pos.lineNumber - 8);
+                const endLine = Math.min(model.getLineCount?.() ?? pos.lineNumber, pos.lineNumber + 4);
+                const snippet = model.getValueInRange?.({
+                    startLineNumber: startLine,
+                    startColumn: 1,
+                    endLineNumber: endLine,
+                    endColumn: model.getLineMaxColumn?.(endLine) ?? 1,
+                }) || '';
+                if (!snippet.trim()) return;
+                recentEditsRef.current = pushRecentEdit(recentEditsRef.current, { path, snippet });
+            } catch (_) { /* recent-edit tracking is best-effort */ }
+        });
+        return () => { try { disposable?.dispose?.(); } catch (_) { /* ignore */ } };
+    }, [editorInstance, activeFile]);
 
     const cancelActiveCompletion = useCallback(({ resetSuggestion = true, reason = 'user-cancelled' } = {}) => {
         let changed = false;
@@ -238,11 +283,27 @@ export const useAiCompletion = ({
             if (metadata) payload.prompt = metadata;
         }
 
-        // Inline completions intentionally ship ONLY the active file's local
-        // context (prefix/suffix). Including sibling files' contents — especially
-        // their dirty unsaved buffers — confuses the FIM model: it tends to
-        // echo from references or hallucinate cross-file symbols. The local
-        // neighborhood already contains every symbol the user has used here.
+        // Local symbol-aware references: extract identifiers near the cursor
+        // and grep the workspace's file cache for their declarations. We send
+        // ONLY targeted snippets (≤ ~1.2 KB total) — never whole files. This
+        // is the difference between "shove three files in" (echo-prone noise)
+        // and "here's the type signature of the symbol the user just typed".
+        try {
+            const cacheEntries = typeof getFileCacheEntries === 'function'
+                ? getFileCacheEntries()
+                : [];
+            const refs = buildCompletionReferences({
+                prefix: beforeCursor,
+                language: activeLanguage,
+                activePath: activeFile?.path || activeFile?.name || null,
+                cacheEntries,
+                recentEdits: recentEditsRef.current,
+            });
+            if (refs.length) payload.references = refs;
+        } catch (e) {
+            // Reference assembly is best-effort — never block a completion on it.
+            console.debug('[AICompletion] reference assembly failed:', e?.message);
+        }
 
         // Stream the completion: render partial ghost text as Gemini emits it,
         // Cursor / Copilot style. The /api/completion route returns a chunked

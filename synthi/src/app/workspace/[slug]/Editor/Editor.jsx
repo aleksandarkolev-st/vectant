@@ -2562,6 +2562,10 @@ const EditorPanel = ({
         code,
         editorInstance,
         monacoInstance,
+        // Lazy getter: avoids recreating the inline-completion callback every
+        // time the file cache mutates. The hook reads through this ref on
+        // each request so it always sees the latest workspace contents.
+        getFileCacheEntries: () => fileCacheEntriesRef.current || [],
         hasActiveDiff: () => false,
     });
 

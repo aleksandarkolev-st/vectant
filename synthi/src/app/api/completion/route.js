@@ -72,7 +72,39 @@ const buildFimContext = (blocks = {}, body = {}) => {
   };
 };
 
-const buildPrompt = ({ prefix, suffix, language, filePath }) => {
+// Total budget for `references` content. Caps the worst-case prompt size
+// even if the client over-shares; the client also clamps below this.
+const MAX_REFS_CHARS = 1400;
+
+/**
+ * Render a small set of caller-supplied references (symbol declarations and
+ * recent edits in OTHER files) into a compact CONTEXT block. We get one
+ * targeted snippet per relevant symbol — never a whole file — so the model
+ * sees the type/signature info without the noise that the previous
+ * "ship every open file" payload caused.
+ */
+const formatReferences = (refs) => {
+  if (!Array.isArray(refs) || !refs.length) return '';
+  const sections = [];
+  let used = 0;
+  for (const ref of refs) {
+    if (!ref || typeof ref.snippet !== 'string' || !ref.snippet.trim()) continue;
+    if (used >= MAX_REFS_CHARS) break;
+    const remaining = MAX_REFS_CHARS - used;
+    const snippet = ref.snippet.length > remaining
+      ? ref.snippet.slice(0, remaining) + '\n…'
+      : ref.snippet;
+    const tag = ref.kind === 'recent-edit'
+      ? `recent edit · ${ref.path || 'unknown'}`
+      : `${ref.symbol ? `symbol ${ref.symbol} · ` : ''}${ref.path || 'unknown'}${ref.startLine ? ` (line ${ref.startLine})` : ''}`;
+    sections.push(`// === ${tag} ===\n${snippet}`);
+    used += snippet.length;
+  }
+  return sections.join('\n\n');
+};
+
+const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
+  const refBlock = formatReferences(references);
   return [
     'You are an inline code completion engine. Continue the code at the cursor.',
     `Language: ${language}`,
@@ -84,6 +116,9 @@ const buildPrompt = ({ prefix, suffix, language, filePath }) => {
     '- If nothing useful would fit (the surrounding code is already complete), output an empty completion.',
     '- Match the existing indentation and code style exactly.',
     '- No explanations, no markdown fences, no commentary.',
+    refBlock
+      ? '- The CONTEXT block below shows symbols and recent edits from OTHER files. Use it for type and signature info ONLY. Do not copy from it.'
+      : null,
     '',
     'OUTPUT FORMAT',
     `Wrap the inserted text in ${COMPLETION_OPEN}...${COMPLETION_CLOSE}. Output nothing else.`,
@@ -99,6 +134,9 @@ const buildPrompt = ({ prefix, suffix, language, filePath }) => {
     '',
     '---',
     '',
+    refBlock ? 'CONTEXT (read-only, from other files):' : null,
+    refBlock || null,
+    refBlock ? '' : null,
     'BEFORE:',
     prefix,
     'AFTER:',
@@ -136,11 +174,13 @@ export async function POST(request) {
     ? suffix.slice(0, AI_COMPLETION_MAX_INPUT_CHARS)
     : suffix;
 
+  const references = Array.isArray(body?.references) ? body.references : [];
   const prompt = buildPrompt({
     prefix: trimmedPrefix,
     suffix: trimmedSuffix,
     language,
     filePath: body?.contextBlocks?.filePath || null,
+    references,
   });
 
   // Streaming response: pipe each Gemini chunk straight to the client. The
