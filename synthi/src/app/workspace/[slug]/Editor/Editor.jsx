@@ -2562,8 +2562,7 @@ const EditorPanel = ({
         code,
         editorInstance,
         monacoInstance,
-        fileCacheEntries,
-        hasActiveDiff: () => false
+        hasActiveDiff: () => false,
     });
 
     const {

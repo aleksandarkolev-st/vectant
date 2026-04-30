@@ -103,7 +103,17 @@ export function useProactiveAnalysis({
   const lastAiRequestRef = useRef(0);
   const abortControllerRef = useRef(null);
   const pendingRequestRef = useRef(null);
-  
+  // Mirror analysisResult into a ref so analyzeQuick can read the cached
+  // result without listing it as a hook dependency. Listing it caused the
+  // callback to be recreated after every successful analysis (because the
+  // callback itself sets analysisResult), which in turn recreated
+  // triggerAnalysis and any consumer effect that depended on it — feeding
+  // the "constantly analyzing" loop downstream.
+  const analysisResultRef = useRef(null);
+  useEffect(() => {
+    analysisResultRef.current = analysisResult;
+  }, [analysisResult]);
+
   /**
    * Perform quick analysis (static + semantic only)
    * This is optimized for real-time feedback during typing
@@ -112,38 +122,38 @@ export function useProactiveAnalysis({
     if (!clientRef.current) {
       throw new SynthiException('Gateway client is not ready');
     }
-    
+
     const contentHash = computeContentHash(code);
-    
+
     // Skip if content hasn't changed
     if (contentHash === lastContentHashRef.current) {
-      return analysisResult;
+      return analysisResultRef.current;
     }
-    
+
     lastContentHashRef.current = contentHash;
     setIsAnalyzing(true);
     setLastError(null);
-    
+
     // Update tier statuses
     setTierStatus(prev => ({
       ...prev,
       static: { status: 'running', elapsed: 0 },
       semantic: { status: 'running', elapsed: 0 },
     }));
-    
+
     try {
       const response = await clientRef.current._sendRequest('analyze/proactive/quick', {
         code,
         lang,
         filePath,
       });
-      
+
       const data = response?.data ?? response;
       const newDiagnostics = data?.diagnostics || [];
-      
+
       setDiagnostics(newDiagnostics);
       setAnalysisResult(data);
-      
+
       // Update tier statuses from response
       if (data?.tier) {
         setTierStatus(prev => ({
@@ -152,7 +162,7 @@ export function useProactiveAnalysis({
           semantic: { status: 'completed', elapsed: 0 },
         }));
       }
-      
+
       return data;
     } catch (error) {
       setLastError(error);
@@ -160,7 +170,7 @@ export function useProactiveAnalysis({
     } finally {
       setIsAnalyzing(false);
     }
-  }, [analysisResult]);
+  }, []);
   
   /**
    * Perform full proactive analysis (including AI if enabled)

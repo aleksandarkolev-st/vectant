@@ -164,7 +164,13 @@ export function ProactiveAnalysisProvider({
     }
     
     return () => unregisterEditor(modelUri);
-  }, [diagnostics, settings.enabled, triggerAnalysis]);
+    // NOTE: do NOT depend on `diagnostics` here. `diagnostics` flips after
+    // every analysis result; including it would recreate registerEditor every
+    // time, which (when consumers list it as an effect dep) tears down the
+    // listener and re-runs the "initial analysis" branch below — feeding an
+    // infinite analyze loop. We don't read diagnostics inside this function
+    // anyway.
+  }, [settings.enabled, triggerAnalysis]);
   
   /**
    * Unregister a Monaco editor
