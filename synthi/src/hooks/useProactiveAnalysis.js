@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAnalyzerGateway } from './useAnalyzerGateway';
+import { getSharedAnalyzerClient, GatewayStatus } from '@/services/analyzerGatewayClient';
 import SynthiException from '@/components/SynthiException';
 
 /**
@@ -424,37 +425,39 @@ export function useProactiveAnalysis({
 }
 
 /**
- * Internal hook to access gateway client
- * This wraps useAnalyzerGateway to expose the client ref
+ * Internal hook to access gateway client.
+ *
+ * Routes through the shared singleton from analyzerGatewayClient.js so all
+ * consumers share one WebSocket and component unmounts no longer reject
+ * in-flight requests. The previous implementation `new`'d its own client on
+ * every mount and additionally returned its cleanup from inside an async
+ * `.then()` — which React useEffect ignores — so the old client was leaking
+ * in addition to fragmenting the connection pool.
  */
 function useAnalyzerGatewayInternal() {
   const clientRef = useRef(null);
   const [connectionStatus, setConnectionStatus] = useState('idle');
   const [clientReady, setClientReady] = useState(false);
-  
+
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    
-    // Dynamically import to avoid SSR issues
-    import('@/services/analyzerGatewayClient').then(({ AnalyzerGatewayClient, GatewayStatus }) => {
-      const client = new AnalyzerGatewayClient();
-      clientRef.current = client;
-      
-      const unsubscribe = client.onStatusChange((status) => {
-        setConnectionStatus(status);
-        setClientReady(status === GatewayStatus.CONNECTED);
-      });
-      
-      client.start();
-      
-      return () => {
-        unsubscribe?.();
-        client.dispose();
-        clientRef.current = null;
-      };
+    if (typeof window === 'undefined') return undefined;
+
+    const client = getSharedAnalyzerClient();
+    if (!client) return undefined;
+    clientRef.current = client;
+
+    const unsubscribe = client.onStatusChange((status) => {
+      setConnectionStatus(status);
+      setClientReady(status === GatewayStatus.CONNECTED);
     });
+
+    client.start();
+
+    return () => {
+      unsubscribe?.();
+    };
   }, []);
-  
+
   return { clientRef, connectionStatus, clientReady };
 }
 
