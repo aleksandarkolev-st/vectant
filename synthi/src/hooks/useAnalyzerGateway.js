@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AnalyzerGatewayClient,
   GatewayStatus,
+  getSharedAnalyzerClient,
 } from '@/services/analyzerGatewayClient';
 import SynthiException from '@/components/SynthiException';
 
@@ -30,7 +30,13 @@ export function useAnalyzerGateway({
       return undefined;
     }
 
-    const client = new AnalyzerGatewayClient({ url });
+    // Share one client across all consumers — see notes on
+    // `getSharedAnalyzerClient` in analyzerGatewayClient.js. The cleanup only
+    // tears down listeners; the client itself outlives the component so that
+    // unmount/remount cycles (React Strict Mode, hot reload, navigation) do
+    // not reject in-flight requests with "Gateway disposed".
+    const client = getSharedAnalyzerClient({ url });
+    if (!client) return undefined;
     clientRef.current = client;
 
     const unsubscribeStatus = client.onStatusChange((status) => {
@@ -43,8 +49,6 @@ export function useAnalyzerGateway({
 
     return () => {
       unsubscribeStatus?.();
-      client.dispose();
-      clientRef.current = null;
     };
   }, [autoConnect, url]);
 

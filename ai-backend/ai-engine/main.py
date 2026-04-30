@@ -1893,12 +1893,18 @@ async def refactor_diff_patch(req: DiffPatchRequest):
     """
     start_time = time.time()
 
-    provider = get_provider(provider_name='gemini', use_custom=bool(req.api_key))
+    provider_name = os.getenv("SYNTHI_DIFF_PATCH_PROVIDER", "gemini").lower()
+    provider = get_provider(provider_name=provider_name, use_custom=bool(req.api_key))
     prompt = _build_full_diff_patch_prompt(req)
     if req.architecture and req.architecture.strip():
         print(f"[DiffPatch] architecture hint ({len(req.architecture)} chars) injected into prompt")
     else:
         print(f"[DiffPatch] no architecture hint (fallback to generic prompt)")
+
+    if provider_name == "openai":
+        default_model = os.getenv("SYNTHI_OPENAI_MODEL", "qwen2.5-coder:7b")
+    else:
+        default_model = "gemini-3.1-flash-lite-preview"
 
     try:
         ai_response = await provider.ask_llm(
@@ -1906,11 +1912,7 @@ async def refactor_diff_patch(req: DiffPatchRequest):
             "cpp",
             None,
             mode="delta",
-            # Pro for diff patches — we want high-quality anchor selection
-            # and correct merging into split-module conventions. With the
-            # edit-list output format, the pro-call output is short
-            # (~100 tokens) so this is 1-2s of generation, not 30.
-            model=req.model or "gemini-3.1-flash-lite-preview",
+            model=req.model or default_model,
             api_key=req.api_key,
         )
 

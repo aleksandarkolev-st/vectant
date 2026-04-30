@@ -32,10 +32,16 @@ class OpenAIProvider(AiProvider):
 
     def _get_client(self, api_key: Optional[str] = None):
         from openai import AsyncOpenAI
+        base_url = os.getenv("OPENAI_BASE_URL") or None
         key = api_key or os.getenv("OPENAI_API_KEY")
+        # Local OpenAI-compatible servers (llama.cpp, Ollama, LM Studio, vLLM)
+        # don't require a real key — the SDK still demands a non-empty string.
         if not key:
-            raise ValueError("OPENAI_API_KEY is not set and no api_key provided.")
-        return AsyncOpenAI(api_key=key)
+            if base_url:
+                key = "local"
+            else:
+                raise ValueError("OPENAI_API_KEY is not set and no api_key provided.")
+        return AsyncOpenAI(api_key=key, base_url=base_url)
 
     async def ask_llm(
         self,
@@ -50,10 +56,21 @@ class OpenAIProvider(AiProvider):
     ) -> str:
         client = self._get_client(api_key)
         target = model or self.model_name
-        user_text = (prompt or "").strip()
-        if code:
-            fence = f"```{lang}\n{code}\n```"
-            user_text = f"{user_text}\n\n{fence}" if user_text else fence
+        mode_lower = mode.lower() if mode and isinstance(mode, str) else ''
+
+        # Mirror gemini.py mode handling so callers (diff_patch uses 'delta',
+        # heal/refactor use 'patch'/'fullfile') get the same prompt shape they
+        # would from Gemini. Without this the local model loses the JSON-only
+        # suffix and emits prose, breaking the edit-list parser.
+        if mode_lower == 'delta':
+            user_text = (code or '') + "\n\nRespond with ONLY the JSON object. No explanation."
+        elif mode_lower == 'rule_translate':
+            user_text = (prompt or '').strip()
+        else:
+            user_text = (prompt or "").strip()
+            if code:
+                fence = f"```{lang}\n{code}\n```"
+                user_text = f"{user_text}\n\n{fence}" if user_text else fence
 
         resp = await client.chat.completions.create(
             model=target,

@@ -227,6 +227,12 @@ export const useEditorProviders = ({
     // token gets the same `mtkN` class Monaco uses for the editor body —
     // meaning the preview inherits the active theme's syntax colours instead
     // of the harsh built-in default.
+    //
+    // The widget anchors to the LIVE editor cursor (not the request-time cursor),
+    // and slices off any prefix the user has already typed, so the visible
+    // overlay stays glued to where Monaco's invisible inline-completion ghost
+    // text actually is. Anchoring to the frozen request-time cursor produced
+    // the "homeless" drift where the preview floated next to a stale spot.
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
 
@@ -236,15 +242,49 @@ export const useEditorProviders = ({
         const node = document.createElement('span');
         node.className = 'synthi-ghost-tokenized';
 
+        // Compute what should be visible right now: the suggestion minus any
+        // matching prefix the user has typed since the request fired. Returns
+        // '' when the suggestion no longer applies (line changed, cursor moved
+        // backward, or user typed off-script).
+        const computeVisibleSuggestion = () => {
+            const cached = aiCompletionCacheRef.current;
+            const requestCursor = aiCompletionCursorRef.current;
+            const suggestion = cached?.suggestion || '';
+            if (!suggestion) return '';
+            const livePos = editorInstance.getPosition();
+            if (!livePos) return '';
+            if (!requestCursor) return suggestion;
+            if (livePos.lineNumber !== requestCursor.lineNumber) return '';
+            if (livePos.column < requestCursor.column) return '';
+            const model = editorInstance.getModel();
+            if (!model) return suggestion;
+            try {
+                const startOffset = model.getOffsetAt({
+                    lineNumber: requestCursor.lineNumber,
+                    column: requestCursor.column,
+                });
+                const endOffset = model.getOffsetAt(livePos);
+                if (endOffset < startOffset) return '';
+                if (endOffset === startOffset) return suggestion;
+                const typedSince = model.getValue().substring(startOffset, endOffset);
+                if (suggestion.startsWith(typedSince)) {
+                    return suggestion.slice(typedSince.length);
+                }
+                return '';
+            } catch (e) {
+                return suggestion;
+            }
+        };
+
         const widget = {
             getId: () => 'synthi.ghost.tokenizer',
             getDomNode: () => node,
             getPosition: () => {
-                const cached = aiCompletionCacheRef.current;
-                const cursor = aiCompletionCursorRef.current;
-                if (!cached?.suggestion || !cursor) return null;
+                if (!computeVisibleSuggestion()) return null;
+                const livePos = editorInstance.getPosition();
+                if (!livePos) return null;
                 return {
-                    position: { lineNumber: cursor.lineNumber, column: cursor.column },
+                    position: { lineNumber: livePos.lineNumber, column: livePos.column },
                     preference: [monacoInstance.editor.ContentWidgetPositionPreference.EXACT],
                 };
             },
@@ -254,13 +294,21 @@ export const useEditorProviders = ({
         tokenizerWidgetRef.current = widget;
 
         const renderTokenized = async () => {
-            const cached = aiCompletionCacheRef.current;
-            const suggestion = cached?.suggestion || '';
-            if (!suggestion) {
+            const visible = computeVisibleSuggestion();
+            if (!visible) {
                 node.innerHTML = '';
+                node.dataset.visible = '';
                 editorInstance.layoutContentWidget(widget);
                 return;
             }
+
+            if (node.dataset.visible === visible) {
+                // Same content already painted — just re-anchor in case the
+                // cursor moved.
+                editorInstance.layoutContentWidget(widget);
+                return;
+            }
+            node.dataset.visible = visible;
 
             // Cancel any in-flight colorize call — we only care about the latest.
             const id = ++tokenizerColorizeIdRef.current;
@@ -270,7 +318,7 @@ export const useEditorProviders = ({
                 // active theme's syntax colours. This is the same tokenizer
                 // used everywhere else in the editor.
                 const html = await monacoInstance.editor.colorize(
-                    suggestion,
+                    visible,
                     activeLanguage || 'plaintext',
                     { tabSize: 4 }
                 );
@@ -288,27 +336,38 @@ export const useEditorProviders = ({
                         node.innerHTML = html;
                     }
                 } else {
-                    node.textContent = suggestion;
+                    node.textContent = visible;
                 }
             } catch (e) {
                 // Fall back to plain escaped text if colorize ever fails.
-                node.innerHTML = escape(suggestion);
+                node.innerHTML = escape(visible);
             }
             editorInstance.layoutContentWidget(widget);
         };
 
-        // Re-render whenever the suggestion or cursor changes.
-        const interval = setInterval(() => {
-            const cached = aiCompletionCacheRef.current;
-            const next = cached?.suggestion || '';
-            if (node.dataset.suggestion !== next) {
-                node.dataset.suggestion = next;
-                renderTokenized();
-            }
+        // Reactive triggers: cursor moves and content edits reposition / reslice
+        // the overlay so it stays glued to the live caret.
+        const cursorDispose = editorInstance.onDidChangeCursorPosition(() => {
+            renderTokenized();
+        });
+        const contentDispose = editorInstance.onDidChangeModelContent(() => {
+            renderTokenized();
+        });
+
+        // The cache lives in a ref, so React won't re-run this effect when a
+        // new suggestion arrives. Poll just to catch that arrival; the work
+        // inside is gated by `dataset.visible` so it only repaints on change.
+        const cacheCheckInterval = setInterval(() => {
+            renderTokenized();
         }, 80);
 
+        // Initial paint.
+        renderTokenized();
+
         return () => {
-            clearInterval(interval);
+            clearInterval(cacheCheckInterval);
+            try { cursorDispose?.dispose(); } catch (_) { /* disposed */ }
+            try { contentDispose?.dispose(); } catch (_) { /* disposed */ }
             try { editorInstance.removeContentWidget(widget); } catch (_) { /* disposed */ }
             tokenizerWidgetRef.current = null;
         };
