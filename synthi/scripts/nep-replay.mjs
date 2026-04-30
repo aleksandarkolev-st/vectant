@@ -89,11 +89,8 @@ const offsetToLine = (content, offset) => {
 };
 
 /**
- * ±N-line window around the SEARCH region. Plan: AST-window IoU primary,
- * line-window IoU fallback. Without an AST parser bundled, we only
- * implement the fallback — the score is still correct on the median
- * "predicted line 40, actual line 42" case the plan flagged, just less
- * tight on syntactically-distinct edits at adjacent lines.
+ * ±N-line window around the SEARCH region. Plan's stated FALLBACK when
+ * structural detection (below) doesn't produce an enclosing block.
  *
  * Returns [startLine, endLine] inclusive, 1-indexed.
  */
@@ -107,6 +104,132 @@ const lineWindow = (content, search, windowLines) => {
     Math.max(1, startLine - windowLines),
     endLine + windowLines,
   ];
+};
+
+const isWhiteish = (ch) => ch === ' ' || ch === '\t';
+
+/**
+ * Smallest enclosing brace block around `offset`. Walks backwards counting
+ * balanced `}` / `{` to find the open brace, then forwards to find the
+ * matching close. Returns null when no enclosing block is detectable
+ * (top-level code, no braces in file).
+ *
+ * Naive: doesn't strip strings/comments. Acceptable for a replay-harness
+ * heuristic — false matches on `{` inside a string are rare in real code
+ * and produce graceful degradation (the block boundary is wrong but the
+ * IoU calculation still works).
+ */
+const enclosingBraceBlock = (content, offset) => {
+  let depth = 0;
+  let openIdx = -1;
+  for (let i = offset; i >= 0; i--) {
+    const c = content[i];
+    if (c === '}') depth += 1;
+    else if (c === '{') {
+      if (depth === 0) { openIdx = i; break; }
+      depth -= 1;
+    }
+  }
+  if (openIdx === -1) return null;
+  let dep = 0;
+  let closeIdx = -1;
+  for (let i = openIdx; i < content.length; i++) {
+    const c = content[i];
+    if (c === '{') dep += 1;
+    else if (c === '}') {
+      dep -= 1;
+      if (dep === 0) { closeIdx = i; break; }
+    }
+  }
+  if (closeIdx === -1) return null;
+  return { open: openIdx, close: closeIdx };
+};
+
+/**
+ * Smallest enclosing indent-based block around `offset`. For Python /
+ * YAML / Makefile-style files where braces don't delimit blocks. Walks
+ * backwards looking for a line at strictly LESS indent than the edit's
+ * line — that line is the block header; the block runs forward until
+ * the indent returns to ≤ header-indent.
+ *
+ * Returns null when no enclosing block can be inferred (top-level code,
+ * file is one indent level).
+ */
+const enclosingIndentBlock = (content, offset) => {
+  const lines = content.split('\n');
+  let runningOffset = 0;
+  let editLineIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const next = runningOffset + lines[i].length + 1; // +1 for the \n
+    if (offset < next) { editLineIdx = i; break; }
+    runningOffset = next;
+  }
+  if (editLineIdx === -1) return null;
+  const lineIndent = (line) => {
+    let n = 0;
+    for (const c of line) {
+      if (!isWhiteish(c)) break;
+      n += 1;
+    }
+    return line.trim().length === 0 ? -1 : n;
+  };
+  const editIndent = lineIndent(lines[editLineIdx]);
+  if (editIndent <= 0) return null;
+  // Find header (less indent than edit line).
+  let headerIdx = -1;
+  for (let i = editLineIdx - 1; i >= 0; i--) {
+    const ind = lineIndent(lines[i]);
+    if (ind === -1) continue;
+    if (ind < editIndent) { headerIdx = i; break; }
+  }
+  if (headerIdx === -1) return null;
+  const headerIndent = lineIndent(lines[headerIdx]);
+  // Find tail (next line with indent ≤ headerIndent that isn't blank).
+  let tailIdx = lines.length - 1;
+  for (let i = editLineIdx + 1; i < lines.length; i++) {
+    const ind = lineIndent(lines[i]);
+    if (ind === -1) continue;
+    if (ind <= headerIndent) { tailIdx = i - 1; break; }
+  }
+  return { startLine: headerIdx + 1, endLine: tailIdx + 1 };
+};
+
+/**
+ * Compute the smallest enclosing AST-window for an edit. Plan: "IoU is
+ * computed over the smallest enclosing AST node of each edit. Union and
+ * intersection are over node IDENTITY, not character ranges."
+ *
+ * Without bundling per-language parsers, we approximate "node identity"
+ * with `(startLine, endLine)` of the smallest enclosing structural block:
+ *   - Brace-bounded block (C/C++/Java/JS/TS/Go/Rust/...)  → primary
+ *   - Indent-bounded block (Python/YAML/Makefile/...)     → fallback
+ *   - null (no enclosing block detectable)                → caller falls
+ *                                                            back to ±N-line
+ *
+ * Returns { startLine, endLine, source: 'brace' | 'indent' } or null.
+ */
+const enclosingAstWindow = (content, offset) => {
+  const brace = enclosingBraceBlock(content, offset);
+  if (brace) {
+    return {
+      startLine: offsetToLine(content, brace.open),
+      endLine: offsetToLine(content, brace.close),
+      source: 'brace',
+    };
+  }
+  const indent = enclosingIndentBlock(content, offset);
+  if (indent) return { ...indent, source: 'indent' };
+  return null;
+};
+
+/**
+ * AST-IoU as defined by the plan: 1.0 if both edits land in the SAME
+ * enclosing block (by line-range identity), else 0.0. The line-window
+ * fallback handles the soft-scoring case.
+ */
+const astBlockIoU = (a, b) => {
+  if (!a || !b) return 0;
+  return (a.startLine === b.startLine && a.endLine === b.endLine) ? 1.0 : 0.0;
 };
 
 const rangeIoU = (a, b) => {
@@ -169,15 +292,38 @@ const textSimilarity = (a, b) => {
 };
 
 const scorePrediction = ({ prediction, groundTruth, files, alpha, beta, windowLines }) => {
-  if (!prediction || !groundTruth) return { score: 0, region_iou: 0, text_sim: 0 };
+  if (!prediction || !groundTruth) return { score: 0, region_iou: 0, text_sim: 0, iou_source: 'none' };
   const file = files?.[prediction.path] ?? files?.[groundTruth.path];
-  if (!file) return { score: 0, region_iou: 0, text_sim: 0 };
-  const predRegion = lineWindow(file, prediction.search, windowLines);
-  const gtRegion = lineWindow(file, groundTruth.search, windowLines);
-  const region_iou = rangeIoU(predRegion, gtRegion);
+  if (!file) return { score: 0, region_iou: 0, text_sim: 0, iou_source: 'none' };
+
+  // Try AST-window first (plan primary). Falls back to ±N-line window only
+  // when the structural detector returns null on either side.
+  const predOffset = findOffset(file, prediction.search);
+  const gtOffset = findOffset(file, groundTruth.search);
+  let region_iou = 0;
+  let iou_source = 'none';
+  if (predOffset !== -1 && gtOffset !== -1) {
+    const predBlock = enclosingAstWindow(file, predOffset);
+    const gtBlock = enclosingAstWindow(file, gtOffset);
+    if (predBlock && gtBlock) {
+      region_iou = astBlockIoU(predBlock, gtBlock);
+      iou_source = predBlock.source === gtBlock.source ? predBlock.source : 'mixed';
+    } else {
+      const predRegion = lineWindow(file, prediction.search, windowLines);
+      const gtRegion = lineWindow(file, groundTruth.search, windowLines);
+      region_iou = rangeIoU(predRegion, gtRegion);
+      iou_source = 'line_window';
+    }
+  } else {
+    const predRegion = lineWindow(file, prediction.search, windowLines);
+    const gtRegion = lineWindow(file, groundTruth.search, windowLines);
+    region_iou = rangeIoU(predRegion, gtRegion);
+    iou_source = 'line_window';
+  }
+
   const text_sim = textSimilarity(prediction.replace || '', groundTruth.replace || '');
   const score = alpha * region_iou + beta * text_sim;
-  return { score, region_iou, text_sim };
+  return { score, region_iou, text_sim, iou_source };
 };
 
 const overlapsAppliedRegion = ({ groundTruth, applied, files, windowLines }) => {

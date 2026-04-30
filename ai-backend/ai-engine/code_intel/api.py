@@ -964,14 +964,73 @@ def _impact_walk(
     return out
 
 
+# Tracks workspaces that already have a cold-warm index build in flight, so
+# repeated /edit-impact hits during the build don't re-fire the same indexer.
+# Keyed by resolved workspace path.
+_impact_warm_in_flight: set = set()
+
+
+async def _impact_warm_index(workspace_path: str) -> None:
+    """Background-task wrapper around engine.index_workspace.
+
+    Re-entry guard prevents stampedes when a fresh workspace gets several
+    /edit-impact hits in the first few seconds (the editor will fire one
+    per accepted edit). The lock is best-effort — we don't care about
+    cross-process correctness, just about not starting two indexers in
+    the same process.
+    """
+    if workspace_path in _impact_warm_in_flight:
+        return
+    _impact_warm_in_flight.add(workspace_path)
+    try:
+        engine = get_engine(workspace_path)
+        await engine.index_workspace(incremental=False)
+        logger.info("[edit-impact] cold-warm index complete for %s", workspace_path)
+    except Exception:
+        logger.exception("[edit-impact] cold-warm index failed for %s", workspace_path)
+    finally:
+        _impact_warm_in_flight.discard(workspace_path)
+
+
+def _impact_index_is_cold(structural_index) -> bool:
+    """A structural index is "cold" when its symbol graph has zero nodes
+    (never indexed) or the attribute is missing entirely. We don't probe
+    deeper — a partial index returns sparse candidates rather than empty,
+    which is still useful.
+    """
+    if structural_index is None:
+        return True
+    sg = getattr(structural_index, "symbol_graph", None)
+    if sg is None:
+        return True
+    nodes = getattr(sg, "nodes", None)
+    if nodes is None:
+        return True
+    try:
+        return len(nodes) == 0
+    except Exception:
+        return False
+
+
 @router.post("/edit-impact", response_model=EditImpactResponse)
-async def edit_impact(request: EditImpactRequest, http_request: Request) -> EditImpactResponse:
+async def edit_impact(
+    request: EditImpactRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+) -> EditImpactResponse:
     """Predict likely follow-up edit sites for an applied edit.
 
     Phase 2 NEP: when the user accepts a SEARCH→REPLACE block, the editor
     pings this endpoint with the applied edit and merges the candidates into
     the next NEP request's prompt context, so the model can pre-stage cross-
     file blocks.
+
+    Cold-index warming: when called against a workspace whose structural
+    index hasn't been built (e.g., fresh workspace, no prior /index call),
+    we return empty candidates immediately and schedule a background index
+    build via FastAPI's BackgroundTasks. The next /edit-impact call has
+    real data to walk. Re-entry guarded so multiple hits during the build
+    don't stampede the indexer.
     """
     import time as _time
     _require_api_key(http_request)
@@ -981,14 +1040,26 @@ async def edit_impact(request: EditImpactRequest, http_request: Request) -> Edit
     except HTTPException:
         raise
     except Exception:
-        # Engine/index may not be ready (cold cache); return empty rather than
-        # fail — the editor treats this as "no impact data, proceed without".
+        # Engine creation failed — return empty rather than fail. Don't
+        # schedule warming because we don't have a usable engine handle.
         return EditImpactResponse(
             candidates=[], seeds_used=[], edit_kind_inferred=None,
             elapsed_ms=(_time.time() - t0) * 1000,
         )
 
     structural_index = getattr(engine, "_structural_index", None)
+
+    # Cold-index detection. If the symbol graph has no nodes the BFS would
+    # walk produce zero candidates anyway — fire a background index build
+    # so the next call lands on warm data. This addresses the plan-grade
+    # gap: "/edit-impact returns empty on cold cache".
+    if _impact_index_is_cold(structural_index):
+        background_tasks.add_task(_impact_warm_index, request.workspace_path)
+        logger.info("[edit-impact] scheduled background index for cold workspace %s", request.workspace_path)
+        return EditImpactResponse(
+            candidates=[], seeds_used=[], edit_kind_inferred=request.edit_kind,
+            elapsed_ms=(_time.time() - t0) * 1000,
+        )
 
     # Seed extraction. Prefer explicit seeds; otherwise pull identifiers from
     # both SEARCH and REPLACE — including REPLACE catches new identifiers the
