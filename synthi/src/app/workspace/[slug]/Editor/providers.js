@@ -482,17 +482,22 @@ export const useEditorProviders = ({
                     }
                 }
                 
-                // Show fix info with keyboard shortcuts
+                // Surface the fix in the hover tooltip — but DO NOT auto-show the
+                // strikethrough+replacement preview here. Auto-previewing on plain
+                // mouse hover is destructive-looking (it overlays valid code with
+                // a strikethrough) and fired even for low-quality fixes. VSCode's
+                // standard pattern is: hover shows that a quick-fix exists, the
+                // user explicitly invokes it via Tab (apply) or Ctrl+. (preview).
                 if (firstFixDiagnostic && firstFixRange) {
                     const fix = firstFixDiagnostic.fixes[0];
-                    
-                    // Store pending fix for keyboard shortcuts
+
+                    // Store pending fix so Tab + Ctrl+. shortcuts can act on it.
                     pendingFixRef.current = { fix, range: firstFixRange, diagnostic: firstFixDiagnostic };
-                    
-                    contents.push({ value: '\n\n**💡 Quick Fix Available**\n\nPress `Tab` to apply fix immediately.' });
-                    
-                    // Show preview immediately while hovering
-                    showFixPreview(fix, firstFixRange);
+
+                    const fixTitle = fix.description || 'Quick fix available';
+                    contents.push({
+                        value: `\n\n**💡 ${fixTitle}**\n\nPress \`Tab\` to apply, or \`Ctrl+Shift+.\` to preview.`,
+                    });
                 }
 
                 const range = new monacoInstance.Range(

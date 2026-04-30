@@ -1,33 +1,24 @@
 import { NextResponse } from 'next/server';
 import {
   AI_COMPLETION_MAX_INPUT_CHARS,
-  AI_COMPLETION_STOP_SEQUENCE,
   AI_COMPLETION_MAX_OUTPUT_TOKENS,
+  COMPLETION_OPEN,
+  COMPLETION_CLOSE,
 } from '@/lib/completion';
 import { GoogleGenAI } from "@google/genai";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const COMPLETION_TIMEOUT_MS = 12_000;
-const MAX_BLOCK_CHARS = 2200;
+// We dropped the multi-file references, so we have token budget back.
+// 4.8 KB total context fits flash-lite comfortably and gives the model
+// enough header/class context for typed languages like C++.
+const MAX_BLOCK_CHARS = 4800;
 const HALF_BLOCK_CHARS = Math.floor(MAX_BLOCK_CHARS / 2);
-
-const COMPLETION_OPEN = '<|completion|>';
-const COMPLETION_CLOSE = '<|/completion|>';
 
 const limitText = (value, { max = MAX_BLOCK_CHARS, fromEnd = false } = {}) => {
   if (typeof value !== 'string' || !value.trim()) return '';
   if (value.length <= max) return value;
   return fromEnd ? value.slice(value.length - max) : value.slice(0, max);
-};
-
-const withTimeout = (promise, timeoutMs = COMPLETION_TIMEOUT_MS) => {
-  return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => reject(new Error('AI completion timed out')), timeoutMs);
-    promise.then(
-      (value) => { clearTimeout(timeoutId); resolve(value); },
-      (err)   => { clearTimeout(timeoutId); reject(err); }
-    );
-  });
 };
 
 const extractText = (resp) => {
@@ -97,7 +88,7 @@ const buildPrompt = ({ prefix, suffix, language, filePath }) => {
     'OUTPUT FORMAT',
     `Wrap the inserted text in ${COMPLETION_OPEN}...${COMPLETION_CLOSE}. Output nothing else.`,
     '',
-    'EXAMPLE',
+    'EXAMPLE (illustrative — match the actual language above, not this one)',
     'BEFORE:',
     'function add(a, b) {',
     '  return ',
@@ -117,99 +108,6 @@ const buildPrompt = ({ prefix, suffix, language, filePath }) => {
   ].filter(line => line !== null).join('\n');
 };
 
-/**
- * Strip everything outside <|completion|>...<|/completion|>. Falls back gracefully
- * when the model omits the markers (common with Gemini Flash under load).
- */
-const extractCompletion = (raw) => {
-  if (!raw) return '';
-
-  // Full envelope.
-  const tagged = raw.match(/<\|completion\|>([\s\S]*?)<\|\/completion\|>/);
-  if (tagged) return tagged[1];
-
-  // Half-open: `<|completion|>foo` — happens when stopSequences=[COMPLETION_CLOSE]
-  // truncates the trailing marker before it reaches us.
-  const openIdx = raw.indexOf('<|completion|>');
-  if (openIdx !== -1) return raw.slice(openIdx + '<|completion|>'.length);
-
-  // Half-close: `foo<|/completion|>` — model omitted the opener.
-  const closeIdx = raw.indexOf('<|/completion|>');
-  if (closeIdx !== -1) return raw.slice(0, closeIdx);
-
-  // Fallback 1: stripped markdown fence
-  const fence = raw.match(/```[a-zA-Z0-9_+-]*\n?([\s\S]*?)```/);
-  if (fence) return fence[1];
-
-  // Fallback 2: legacy JSON envelope (in case the model regresses to old prompt style)
-  const json = raw.match(/<JSON>([\s\S]*?)<\/JSON>/i);
-  if (json) {
-    try {
-      const parsed = JSON.parse(json[1]);
-      if (parsed && typeof parsed.text === 'string') return parsed.text;
-    } catch (_) { /* ignore */ }
-  }
-
-  // Last resort: return the whole thing minus obvious chatter.
-  return raw;
-};
-
-/**
- * Clean the completion: strip leading/trailing fences, leading "Here is..." chatter,
- * trailing stop sequences, and de-duplicate any prefix overlap with the cursor's line.
- */
-const sanitize = (text, { prefix = '' } = {}) => {
-  if (!text) return '';
-  let out = String(text);
-
-  // Remove markdown fences if a wrapper slipped through.
-  out = out.replace(/^```[a-zA-Z0-9_+-]*\n?/, '').replace(/```\s*$/, '');
-
-  // Strip a leading "OUTPUT:" the model echoed from the prompt template.
-  out = out.replace(/^\s*output\s*:\s*/i, '');
-
-  // Strip stray envelope markers if either half slipped through earlier extraction.
-  out = out.replace(/<\|\/?completion\|>/g, '');
-
-  // Drop leading "Here's the completion:" style preludes.
-  out = out.replace(/^\s*(here(?:'s| is)|the completion|sure[,!:])[^\n]*\n/i, '');
-
-  // Strip the explicit stop sequence we inject.
-  out = out.split(AI_COMPLETION_STOP_SEQUENCE)[0];
-
-  // Normalise carriage returns.
-  out = out.replace(/\r/g, '');
-
-  // De-duplicate: if the model started by re-printing the tail of the prefix, trim it.
-  if (prefix && out.length) {
-    const tail = prefix.slice(-Math.min(prefix.length, 80));
-    for (let n = Math.min(tail.length, out.length); n >= 4; n--) {
-      if (out.startsWith(tail.slice(-n))) {
-        out = out.slice(n);
-        break;
-      }
-    }
-  }
-
-  // Don't return only whitespace.
-  if (!out.trim()) return '';
-
-  // Trim a single trailing newline (Monaco re-adds when it inserts).
-  return out.replace(/\n+$/, '\n').replace(/\n$/, '');
-};
-
-/**
- * Suppress a suggestion that already appears verbatim in the surrounding context —
- * this is the #1 source of "ugly" inline completions that just echo what the user typed.
- */
-const isEcho = (suggestion, prefix, suffix) => {
-  if (!suggestion?.trim()) return true;
-  const trimmed = suggestion.trim();
-  if (prefix && prefix.includes(trimmed)) return true;
-  if (suffix && suffix.includes(trimmed)) return true;
-  return false;
-};
-
 export async function POST(request) {
   let body;
   try {
@@ -225,7 +123,10 @@ export async function POST(request) {
   const { prefix, suffix } = buildFimContext(body?.contextBlocks, body);
 
   if (!prefix && !suffix) {
-    return NextResponse.json({ completion: '' }, { status: 200 });
+    return new Response('', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    });
   }
 
   const trimmedPrefix = prefix.length > AI_COMPLETION_MAX_INPUT_CHARS
@@ -235,10 +136,6 @@ export async function POST(request) {
     ? suffix.slice(0, AI_COMPLETION_MAX_INPUT_CHARS)
     : suffix;
 
-  // Multi-file references were dropped: they polluted the FIM context with
-  // unrelated code from sibling files (often dirty buffers), causing the model
-  // to echo from refs or hallucinate cross-file symbols. The local prefix/suffix
-  // already contains every symbol the user has actually used in this file.
   const prompt = buildPrompt({
     prefix: trimmedPrefix,
     suffix: trimmedSuffix,
@@ -246,55 +143,76 @@ export async function POST(request) {
     filePath: body?.contextBlocks?.filePath || null,
   });
 
-  try {
-    let completionText = '';
-    try {
-      // The @google/genai SDK takes generation parameters under `config`, not
-      // `generationConfig` (that's the legacy `@google/generative-ai` shape).
-      // Passing the wrong key silently drops temperature / maxOutputTokens /
-      // stopSequences, which is why completions came back unbounded and
-      // wandered far past the requested gap.
-      const stream = await withTimeout(
-        ai.models.generateContentStream({
-          model: 'gemini-3.1-flash-lite-preview',
-          contents: prompt,
-          config: {
-            maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
-            temperature: 0.15, // tighter — we want deterministic, focused completions
-            stopSequences: [COMPLETION_CLOSE, '\nBEFORE:', '\nAFTER:'],
-          },
-        }),
-        COMPLETION_TIMEOUT_MS
-      );
-      for await (const chunk of stream) {
-        const t = extractText(chunk);
-        if (t) completionText += t;
+  // Streaming response: pipe each Gemini chunk straight to the client. The
+  // client owns extraction/sanitization (logic lives in @/lib/completion) so
+  // it can render partial text while the stream is still arriving — Cursor /
+  // Copilot style. The full-buffer fallback path collapses to a single push
+  // when streaming isn't supported.
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      let timer = null;
+      let cancelled = false;
+
+      const cancel = (err) => {
+        if (cancelled) return;
+        cancelled = true;
+        if (timer) clearTimeout(timer);
+        try { controller.error(err); } catch (_) { /* already closed */ }
+      };
+
+      timer = setTimeout(() => cancel(new Error('AI completion timed out')), COMPLETION_TIMEOUT_MS);
+
+      try {
+        let geminiStream;
+        try {
+          geminiStream = await ai.models.generateContentStream({
+            model: 'gemini-3.1-flash-lite-preview',
+            contents: prompt,
+            config: {
+              maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
+              temperature: 0.15,
+              stopSequences: [COMPLETION_CLOSE, '\nBEFORE:', '\nAFTER:'],
+            },
+          });
+        } catch (streamErr) {
+          // SDK didn't stream — fall back to a single shot and emit it as one chunk.
+          const response = await ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite-preview',
+            contents: prompt,
+            config: {
+              maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
+              temperature: 0.15,
+              stopSequences: [COMPLETION_CLOSE, '\nBEFORE:', '\nAFTER:'],
+            },
+          });
+          const text = extractText(response);
+          if (text) controller.enqueue(encoder.encode(text));
+          if (timer) clearTimeout(timer);
+          controller.close();
+          return;
+        }
+
+        for await (const chunk of geminiStream) {
+          if (cancelled) return;
+          const t = extractText(chunk);
+          if (t) controller.enqueue(encoder.encode(t));
+        }
+        if (timer) clearTimeout(timer);
+        controller.close();
+      } catch (e) {
+        cancel(e);
       }
-    } catch (streamErr) {
-      const response = await withTimeout(
-        ai.models.generateContent({
-          model: 'gemini-3.1-flash-lite-preview',
-          contents: prompt,
-          config: {
-            maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
-            temperature: 0.15,
-            stopSequences: [COMPLETION_CLOSE, '\nBEFORE:', '\nAFTER:'],
-          },
-        }),
-        COMPLETION_TIMEOUT_MS
-      );
-      completionText = extractText(response);
-    }
+    },
+  });
 
-    const inner = extractCompletion(completionText);
-    const cleaned = sanitize(inner, { prefix: trimmedPrefix });
-
-    if (!cleaned || isEcho(cleaned, trimmedPrefix, trimmedSuffix)) {
-      return NextResponse.json({ completion: '' }, { status: 200 });
-    }
-
-    return NextResponse.json({ completion: cleaned }, { status: 200 });
-  } catch (e) {
-    return NextResponse.json({ error: 'Service error', detail: e.message }, { status: 502 });
-  }
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+    },
+  });
 }

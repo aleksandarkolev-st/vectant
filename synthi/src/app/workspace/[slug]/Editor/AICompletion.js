@@ -1,6 +1,10 @@
 import { useCallback, useRef, useState } from 'react';
-import { AI_COMPLETION_STOP_SEQUENCE, API_COMPLETION_ROUTE } from '@/lib/completion';
-import SynthiException from '@/components/SynthiException.js';
+import {
+    API_COMPLETION_ROUTE,
+    extractCompletion,
+    sanitizeCompletion,
+    isCompletionEcho,
+} from '@/lib/completion';
 import {
     trimCompletionContext,
     takeLastChars,
@@ -22,8 +26,10 @@ export const useAiCompletion = ({
 }) => {
     const [aiCompletionState, setAiCompletionState] = useState('idle');
 
-    // P1: Reduced from 1200ms to 700ms for faster AI suggestions
-    const MIN_AUTO_INTERVAL_MS = 700;
+    // Cooldown between auto-triggered requests. Streaming hides most of the
+    // perceived latency, so we can be more aggressive than the old 700ms
+    // gate without flooding the model.
+    const MIN_AUTO_INTERVAL_MS = 350;
     const aiCompletionCacheRef = useRef({ context: '', language: '', suggestion: '' });
     const aiCompletionCursorRef = useRef(null);
     const aiCompletionAbortControllerRef = useRef(null);
@@ -145,13 +151,11 @@ export const useAiCompletion = ({
              }
         }
 
-        if (isAutoTrigger) {
-            const lastChar = rawContext.slice(-1);
-            const isPauseTrigger = Boolean(meta?.pauseTrigger);
-            if (!isPauseTrigger && !/[\s\(\{\[\.;,:]/.test(lastChar)) {
-                return;
-            }
-        }
+        // No "last char" gate. Cursor / Copilot style: any keystroke can
+        // trigger a completion (gated by MIN_AUTO_INTERVAL_MS + the dedup
+        // cache below). The previous gate skipped triggers mid-identifier,
+        // which made completions feel arbitrary — e.g. `SDL_Cre|` produced
+        // nothing because the last char wasn't punctuation.
 
         const cached = aiCompletionCacheRef.current;
         if (cached?.suggestion && cached.context === context && cached.language === activeLanguage) return;
@@ -240,63 +244,125 @@ export const useAiCompletion = ({
         // echo from references or hallucinate cross-file symbols. The local
         // neighborhood already contains every symbol the user has used here.
 
-        fetch(API_COMPLETION_ROUTE, {
-            method: 'POST',
-            signal: controller.signal,
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(payload),
-        })
-        .then(async (res) => {
-            if (!res.ok) throw new SynthiException('AI completion request failed', `The AI service responded with status ${res.status}. Please try again later.`);
-            return res.json();
-        })
-        .then((data) => {
-            if (controller.signal.aborted) return;
+        // Stream the completion: render partial ghost text as Gemini emits it,
+        // Cursor / Copilot style. The /api/completion route returns a chunked
+        // text/plain stream of raw model text; we keep a buffer of accumulated
+        // chunks and re-derive the visible suggestion (envelope-stripped,
+        // sanitized, echo-checked) on every chunk before pushing into the
+        // inline-completion cache.
+        const pushSuggestion = (visible) => {
+            let suggestionRange = null;
+            try {
+                const cursor = aiCompletionCursorRef.current;
+                const model = editorInstance.getModel();
+                if (cursor && model) {
+                    const word = model.getWordAtPosition(cursor) || null;
+                    const endCol = word ? word.endColumn : (model.getLineContent(cursor.lineNumber).length + 1);
+                    suggestionRange = {
+                        start: { lineNumber: cursor.lineNumber, column: cursor.column },
+                        end:   { lineNumber: cursor.lineNumber, column: endCol },
+                    };
+                }
+            } catch (e) { /* ignore */ }
 
-            // Check 2: If the user switched to Diff Mode while the request was in flight, discard the result.
-            if (hasActiveDiff()) {
-                setAiCompletionState('idle');
+            aiCompletionCacheRef.current = {
+                context,
+                language: activeLanguage,
+                suggestion: visible,
+                suggestionRange,
+            };
+            setAiCompletionState('ready');
+
+            try {
+                const action = editorInstance.getAction?.('editor.action.inlineSuggest.trigger');
+                if (action?.run) {
+                    Promise.resolve(action.run()).catch(() => {});
+                } else {
+                    const p = editorInstance.trigger('ai-inline', 'editor.action.inlineSuggest.trigger', {});
+                    if (p && typeof p.then === 'function') Promise.resolve(p).catch(() => {});
+                }
+            } catch (e) { /* monaco trigger threw — non-fatal */ }
+        };
+
+        (async () => {
+            let res;
+            try {
+                res = await fetch(API_COMPLETION_ROUTE, {
+                    method: 'POST',
+                    signal: controller.signal,
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+            } catch (e) {
+                if (!controller.signal.aborted) setAiCompletionState('idle');
                 return;
             }
 
-            const raw = data?.completion || '';
-            const sanitized = raw.split(AI_COMPLETION_STOP_SEQUENCE)[0].replace(/\r/g, '').trimEnd();
+            if (!res.ok) {
+                if (!controller.signal.aborted) setAiCompletionState('idle');
+                return;
+            }
 
-            if (sanitized) {
-                let suggestionRange = data?.suggestionRange || null;
+            const reader = res.body?.getReader?.();
+            if (!reader) {
+                // No streaming support — fall back to reading the whole body.
                 try {
-                    if (!suggestionRange) {
-                        const cursor = aiCompletionCursorRef.current;
-                        const model = editorInstance.getModel();
-                        if (cursor && model) {
-                            const word = model.getWordAtPosition(cursor) || null;
-                            const endCol = word ? word.endColumn : (model.getLineContent(cursor.lineNumber).length + 1);
-                            suggestionRange = { start: { lineNumber: cursor.lineNumber, column: cursor.column }, end: { lineNumber: cursor.lineNumber, column: endCol } };
-                        }
+                    const text = await res.text();
+                    if (controller.signal.aborted || hasActiveDiff()) {
+                        setAiCompletionState('idle');
+                        return;
                     }
-                } catch (e) { /* ignore */ }
-
-                aiCompletionCacheRef.current = { context, language: activeLanguage, suggestion: sanitized, suggestionRange };
-                setAiCompletionState('ready');
-                
-                try {
-                    const action = editorInstance.getAction?.('editor.action.inlineSuggest.trigger');
-                    if (action?.run) {
-                        Promise.resolve(action.run()).catch(() => {});
+                    const visible = sanitizeCompletion(extractCompletion(text), { prefix: beforeCursor });
+                    if (visible && !isCompletionEcho(visible, beforeCursor, afterCursor)) {
+                        pushSuggestion(visible);
                     } else {
-                        const p = editorInstance.trigger('ai-inline', 'editor.action.inlineSuggest.trigger', {});
-                        if (p && typeof p.then === 'function') Promise.resolve(p).catch(() => {});
+                        setAiCompletionState('idle');
                     }
-                } catch(e){}
-            } else {
-                setAiCompletionState('idle');
+                } catch (_) {
+                    if (!controller.signal.aborted) setAiCompletionState('idle');
+                }
+                return;
             }
-        })
-        .catch((e) => {
-            if (!controller.signal.aborted) {
-                setAiCompletionState('idle');
+
+            const decoder = new TextDecoder();
+            let raw = '';
+            let lastVisible = '';
+
+            try {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (controller.signal.aborted) {
+                        try { reader.cancel(); } catch (_) { /* ignore */ }
+                        return;
+                    }
+                    if (done) break;
+                    raw += decoder.decode(value, { stream: true });
+
+                    if (hasActiveDiff()) {
+                        try { reader.cancel(); } catch (_) { /* ignore */ }
+                        setAiCompletionState('idle');
+                        return;
+                    }
+
+                    const visible = sanitizeCompletion(extractCompletion(raw), { prefix: beforeCursor });
+                    if (visible && visible !== lastVisible && !isCompletionEcho(visible, beforeCursor, afterCursor)) {
+                        lastVisible = visible;
+                        pushSuggestion(visible);
+                    }
+                }
+
+                // Flush any remaining bytes in the decoder.
+                raw += decoder.decode();
+                const visible = sanitizeCompletion(extractCompletion(raw), { prefix: beforeCursor });
+                if (visible && visible !== lastVisible && !isCompletionEcho(visible, beforeCursor, afterCursor)) {
+                    pushSuggestion(visible);
+                } else if (!visible && !lastVisible) {
+                    setAiCompletionState('idle');
+                }
+            } catch (e) {
+                if (!controller.signal.aborted) setAiCompletionState('idle');
             }
-        });
+        })();
     }, [activeFile, activeLanguage, breadcrumb, cancelActiveCompletion, code, editorInstance, hasActiveDiff]);
 
     return {
