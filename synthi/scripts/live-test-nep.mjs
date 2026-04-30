@@ -50,6 +50,7 @@ const importLocal = (rel) =>
   import(pathToFileURL(path.resolve(__dirname, rel)).href);
 const nextEdit = await importLocal('../src/lib/nextEdit.js');
 const nepBuffer = await importLocal('../src/utils/nepRecentEdits.js');
+const classifier = await importLocal('../src/lib/editKindClassifier.js');
 
 const {
   createStreamParser,
@@ -622,6 +623,205 @@ const phaseF = async () => {
   log('info', 'Then make an edit in src/calc.h that resembles a refactor and watch for the gutter dot in src/main.cpp.');
 };
 
+// ───────────────────────── Phase G: edit-kind classifier ─────────────────────────
+
+const phaseG = () => {
+  console.log(`\n${color.bold}━━━ Phase G: edit-kind classifier ━━━${color.reset}`);
+  const { classifyEdit, EDIT_KIND, seedSymbolsForEdit } = classifier;
+
+  // G1. Rename: identifier-for-identifier swap.
+  {
+    const c = classifyEdit({
+      search: 'int compute(int a, int b);',
+      replace: 'int multiply(int a, int b);',
+    });
+    assert('G', 'rename: compute->multiply', c.kind === EDIT_KIND.RENAME, `confidence=${c.confidence}`);
+    const seeds = seedSymbolsForEdit({ kind: c.kind, search: 'int compute(int a, int b);', replace: 'int multiply(int a, int b);' });
+    assert('G', 'rename seeds the OLD identifier (compute)', seeds.includes('compute'));
+  }
+
+  // G2. Signature change: parameter list differs.
+  {
+    const c = classifyEdit({
+      search: 'function fetch(url) {',
+      replace: 'function fetch(url, options) {',
+    });
+    assert('G', 'signature_change: param added', c.kind === EDIT_KIND.SIGNATURE_CHANGE);
+  }
+
+  // G3. Import change: import-shaped line on either side.
+  {
+    const c = classifyEdit({
+      search: 'import { foo } from "./a";',
+      replace: 'import { foo, bar } from "./a";',
+    });
+    assert('G', 'import_change: named imports diff', c.kind === EDIT_KIND.IMPORT_CHANGE);
+  }
+
+  // G4. Type change: annotation differs.
+  {
+    const c = classifyEdit({
+      search: 'const x: number = 5;',
+      replace: 'const x: bigint = 5n;',
+    });
+    assert('G', 'type_change: annotation differs', c.kind === EDIT_KIND.TYPE_CHANGE);
+  }
+
+  // G5. Local logic: body change with no structural shape.
+  {
+    const c = classifyEdit({
+      search: 'if (x > 0) doThing();',
+      replace: 'if (x > 0 && enabled) doThing();',
+    });
+    assert('G', 'local_logic: condition tweak', c.kind === EDIT_KIND.LOCAL_LOGIC);
+  }
+
+  // G6. Empty/garbage input doesn't throw.
+  {
+    const c = classifyEdit({ search: '', replace: '' });
+    assert('G', 'empty input falls through to local_logic', c.kind === EDIT_KIND.LOCAL_LOGIC);
+  }
+};
+
+// ───────────────────────── Phase H: /code-intel/edit-impact (live) ─────────────────────────
+
+const phaseH = async () => {
+  console.log(`\n${color.bold}━━━ Phase H: /code-intel/edit-impact (live) ━━━${color.reset}`);
+  const codeIntelUrl = process.env.CODE_INTEL_URL || 'http://localhost:8000';
+
+  const ci = parseUrl(codeIntelUrl);
+  const ciOk = await tcpPing(ci.host, ci.port);
+  if (!ciOk) {
+    log('warn', `code-intel not reachable on ${codeIntelUrl} — skipping Phase H`);
+    record('H', 'preflight code-intel reachable', 'warn', `unreachable at ${codeIntelUrl}`);
+    return;
+  }
+
+  const url = `${codeIntelUrl}/code-intel/edit-impact`;
+  const payload = {
+    workspace_path: CFG.slug,
+    file_path: 'src/calc.h',
+    search: 'int compute(int a, int b);',
+    replace: 'int multiply(int a, int b);',
+    edit_kind: 'rename',
+    max_candidates: 8,
+    max_depth: 2,
+  };
+
+  log('info', `POST ${url}`);
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    log('warn', `fetch failed: ${e.message}`);
+    record('H', 'POST /code-intel/edit-impact', 'warn', e.message);
+    return;
+  }
+  // 200 expected; the engine may return zero candidates if the workspace
+  // hasn't been indexed yet (cold cache) — that's a `pass` for endpoint
+  // shape, just no domain assertion to make against the candidates.
+  assert('H', 'POST /code-intel/edit-impact responds 200', res.ok, `status=${res.status}`);
+  if (!res.ok) return;
+  const body = await res.json();
+  assert('H', 'response has `candidates` array',
+    Array.isArray(body?.candidates), `keys=${Object.keys(body || {}).join(',')}`);
+  assert('H', 'response echoes seeds_used',
+    Array.isArray(body?.seeds_used) && body.seeds_used.length >= 1,
+    `seeds=${(body?.seeds_used || []).join(',')}`);
+  assert('H', 'elapsed_ms reported', typeof body?.elapsed_ms === 'number');
+  log('info', `  candidates=${body.candidates.length} seeds=[${(body.seeds_used || []).join(',')}] elapsed=${(body.elapsed_ms || 0).toFixed(1)}ms`);
+};
+
+// ───────────────────────── Phase I: telemetry roundtrip ─────────────────────────
+
+const phaseI = async () => {
+  console.log(`\n${color.bold}━━━ Phase I: telemetry POST/GET roundtrip ━━━${color.reset}`);
+  const url = `${CFG.frontendUrl}/api/next-edit/telemetry`;
+
+  const events = [
+    { ts: Date.now(), kind: 'fire' },
+    { ts: Date.now(), kind: 'emitted' },
+    { ts: Date.now(), kind: 'validated', kind_block: 'SEARCH' },
+    { ts: Date.now(), kind: 'accepted', path: 'src/main.cpp' },
+    { ts: Date.now(), kind: 'rejected', reason: 'no_match' },
+  ];
+
+  log('info', `POST ${url} (${events.length} events)`);
+  let postRes;
+  try {
+    postRes = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ events }),
+    });
+  } catch (e) {
+    log('fail', `POST failed: ${e.message}`);
+    record('I', 'POST /api/next-edit/telemetry', 'fail', e.message);
+    return;
+  }
+  assert('I', 'POST returns 200', postRes.ok, `status=${postRes.status}`);
+  if (!postRes.ok) return;
+  const postBody = await postRes.json();
+  assert('I', 'POST acknowledges all events', postBody?.accepted === events.length,
+    `accepted=${postBody?.accepted}`);
+
+  // GET should return the aggregate including the events we just posted.
+  log('info', `GET ${url}`);
+  const getRes = await fetch(url);
+  assert('I', 'GET returns 200', getRes.ok, `status=${getRes.status}`);
+  if (!getRes.ok) return;
+  const getBody = await getRes.json();
+  assert('I', 'aggregate.emitted >= 1', (getBody?.aggregate?.emitted ?? 0) >= 1,
+    `emitted=${getBody?.aggregate?.emitted}`);
+  assert('I', 'aggregate.accepted >= 1', (getBody?.aggregate?.accepted ?? 0) >= 1);
+  assert('I', 'aggregate.reasons includes no_match', Boolean(getBody?.aggregate?.reasons?.no_match));
+  log('info', `  emitted=${getBody.aggregate.emitted} validated=${getBody.aggregate.validated} accepted=${getBody.aggregate.accepted}`);
+};
+
+// ───────────────────────── Phase J: replay harness smoke ─────────────────────────
+
+const phaseJ = async () => {
+  console.log(`\n${color.bold}━━━ Phase J: replay harness smoke ━━━${color.reset}`);
+  const fixturePath = path.resolve(__dirname, 'nep-replay-fixture.jsonl');
+  if (!await fileExists(fixturePath)) {
+    record('J', 'replay fixture exists', 'warn', `missing: ${fixturePath}`);
+    return;
+  }
+  // Run nep-replay.mjs as a child process with the fixture, parse the
+  // summary line. We don't need a heavy assertion — the fact that the
+  // harness loads the source modules and runs the scoring loop end-to-end
+  // is the smoke; the fixture is constructed to score 1.0 so a regression
+  // in scoring stands out.
+  const replayPath = path.resolve(__dirname, 'nep-replay.mjs');
+  const { spawn } = await import('node:child_process');
+  await new Promise((resolve) => {
+    const proc = spawn(process.execPath, [replayPath, '--log', fixturePath], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let out = '';
+    proc.stdout.on('data', (d) => { out += d.toString(); });
+    proc.stderr.on('data', (d) => { out += d.toString(); });
+    proc.on('close', (code) => {
+      const meanMatch = out.match(/mean best score:\s+([0-9.]+)/);
+      const meanScore = meanMatch ? Number(meanMatch[1]) : null;
+      assert('J', 'replay harness runs to completion', code === 0, `exit=${code}`);
+      assert('J', 'replay scores fixture rename at >= 0.95',
+        meanScore !== null && meanScore >= 0.95, `mean=${meanScore}`);
+      log('info', `  mean=${meanScore} (rename fixture)`);
+      resolve();
+    });
+  });
+};
+
+const fileExists = async (p) => {
+  try { await (await import('node:fs/promises')).access(p); return true; }
+  catch { return false; }
+};
+
 // ───────────────────────── main ─────────────────────────
 
 const summarize = () => {
@@ -645,9 +845,11 @@ const main = async () => {
   phaseA();
   phaseB();
   phaseC();
+  phaseG();
+  await phaseJ();
 
   if (OFFLINE) {
-    log('info', '--offline: skipping phases D–F');
+    log('info', '--offline: skipping live phases (D, E, F, H, I)');
     summarize();
     process.exit(exitCode);
     return;
@@ -660,6 +862,8 @@ const main = async () => {
     return;
   }
   await phaseE();
+  await phaseH();
+  await phaseI();
   if (SEED_WORKSPACE) await phaseF();
 
   summarize();
