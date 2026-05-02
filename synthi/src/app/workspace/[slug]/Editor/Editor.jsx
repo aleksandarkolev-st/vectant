@@ -62,6 +62,7 @@ import MergeConflictEditor from '@/components/git/MergeConflictEditor';
 import UnsavedChangesDialog from '@/components/ui/UnsavedChangesDialog';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { initSynthiFileSystem, updateFile as updateVirtualFile, disposeSynthiFileSystem, registerSystemFile, hasSystemFile } from './SynthiFileSystemProvider';
+import { fileCache } from '@/services/fileCache';
 import { registerMonarchTokenizers } from './languageTokenizers';
 import * as monaco from '@codingame/monaco-vscode-editor-api';
 import { toast } from 'sonner';
@@ -917,17 +918,39 @@ const EditorPanel = ({
                 // results instantly (via middleware returning []), which
                 // causes VS Code's suggest model to dismiss the widget
                 // before our async provider's 34 items arrive.
+                //
+                // Also skip the built-in InlineCompletionItemFeature. LSPs
+                // that advertise `inlineCompletionProvider` capability
+                // (newer rust-analyzer, gopls, etc.) would otherwise
+                // register a Monaco inline-completion provider for the
+                // same languages as Synthi's AI ghost-text provider.
+                // Monaco merges results from all registered inline
+                // providers; an LSP returning [] interleaves with our AI
+                // suggestion and dismisses it.
                 registerFeature(feature) {
                     // Use multiple checks — instanceof can fail when
                     // bundlers duplicate the vscode-languageclient module.
+                    const ctorName = feature?.constructor?.name;
+                    const method = feature?.registrationType?.method;
+
                     const isCompletionFeature =
                         feature instanceof CompletionItemFeature ||
-                        feature?.constructor?.name === 'CompletionItemFeature' ||
-                        feature?.registrationType?.method === 'textDocument/completion';
+                        ctorName === 'CompletionItemFeature' ||
+                        method === 'textDocument/completion';
                     if (isCompletionFeature) {
                         console.log('[LSP] Skipping built-in CompletionItemFeature — using direct provider');
                         return;
                     }
+
+                    const isInlineCompletionFeature =
+                        ctorName === 'InlineCompletionItemFeature' ||
+                        ctorName === 'InlineCompletionFeature' ||
+                        method === 'textDocument/inlineCompletion';
+                    if (isInlineCompletionFeature) {
+                        console.log('[LSP] Skipping built-in InlineCompletionItemFeature — Synthi AI owns inline completions');
+                        return;
+                    }
+
                     super.registerFeature(feature);
                 }
             }
@@ -2778,6 +2801,119 @@ const EditorPanel = ({
         slug,
     });
 
+    // System-header opener.
+    //
+    // When the user Ctrl+clicks an `#include <iostream>` or `#include "config.h"`
+    // that doesn't resolve in the workspace tree, ask the active LSP client
+    // for the absolute path, fetch the contents from the worker, prime the
+    // file cache, and return a synthetic file node the events handler can
+    // dispatch through selectFileThunk so the file lands in a proper Synthi
+    // tab (with our editor pane, not Monaco's hidden internal one).
+    const resolveSystemHeader = useCallback(async ({ importPath, position, modelUri }) => {
+        try {
+            if (!compilerClient || typeof compilerClient.readRemoteFile !== 'function') {
+                console.warn('[SystemHeader] compilerClient not ready');
+                return null;
+            }
+
+            // Find any running LSP client. Most C/C++ workspaces only have
+            // clangd, but a multi-language workspace might have several —
+            // we want one that's actually able to answer textDocument/definition.
+            let client = null;
+            for (const c of languageClientsRef.current.values()) {
+                if (c?.isRunning?.()) { client = c; break; }
+            }
+            if (!client) {
+                console.warn('[SystemHeader] no running LSP client to resolve include');
+                return null;
+            }
+
+            let defResult = null;
+            try {
+                defResult = await client.sendRequest('textDocument/definition', {
+                    textDocument: { uri: modelUri },
+                    position: { line: position.lineNumber - 1, character: position.column - 1 },
+                });
+            } catch (e) {
+                console.warn('[SystemHeader] textDocument/definition failed:', e?.message);
+                return null;
+            }
+            if (!defResult) return null;
+
+            const locs = Array.isArray(defResult) ? defResult : [defResult];
+            let absPath = null;
+            let originalUri = null;
+            for (const loc of locs) {
+                const uriStr = loc?.uri ?? loc?.targetUri ?? null;
+                if (!uriStr) continue;
+                const m = String(uriStr).match(/^file:\/\/(\/[^?#]+)/);
+                if (!m) continue;
+                const p = decodeURIComponent(m[1]);
+                // Pick the first non-`/synthi/` URI — those are the ones
+                // that point at the LSP worker's real filesystem (system
+                // headers, stdlib source). `/synthi/...` URIs would just
+                // bounce us back to a workspace file, which findTargetFile
+                // already handled before we got here.
+                if (!p.startsWith('/synthi/')) {
+                    absPath = p;
+                    originalUri = String(uriStr);
+                    break;
+                }
+            }
+            if (!absPath) {
+                console.warn(`[SystemHeader] LSP returned no system-path location for include "${importPath}"`);
+                return null;
+            }
+
+            let content;
+            try {
+                const res = await compilerClient.readRemoteFile(absPath);
+                if (!res?.ok || typeof res.content !== 'string') {
+                    console.warn('[SystemHeader] readRemoteFile failed:', res?.error || 'unknown');
+                    return null;
+                }
+                content = res.content;
+            } catch (e) {
+                console.warn('[SystemHeader] readRemoteFile threw:', e?.message);
+                return null;
+            }
+
+            // Prime the per-session file cache so selectFileThunk's
+            // cache-hit path returns the system file's content directly,
+            // skipping the workspace loadScheduler (which has no concept
+            // of `/usr/include/...` paths).
+            try { fileCache.set(absPath, content); } catch (_) { /* best-effort */ }
+
+            // Also register in the Monaco filesystem overlay so any
+            // subsequent LSP-driven navigation (clangd "go to definition"
+            // jumping inside iostream) resolves cleanly.
+            try { await registerSystemFile(absPath, content, originalUri); } catch (_) { /* best-effort */ }
+
+            const name = absPath.split('/').filter(Boolean).pop() || importPath;
+            // Pick a sensible language for syntax highlighting. Files like
+            // `iostream` / `vector` have no extension, so getMonacoLanguage
+            // falls back to plaintext — but they're C++ headers, so use the
+            // calling file's language as a hint.
+            let language = getMonacoLanguage(name);
+            if (language === 'plaintext' && activeFile?.name) {
+                const callerLang = getMonacoLanguage(activeFile.name);
+                if (callerLang === 'cpp' || callerLang === 'c') language = callerLang;
+            }
+
+            return {
+                name,
+                type: 'file',
+                path: absPath,
+                language,
+                isSystem: true,
+                readOnly: true,
+            };
+        } catch (e) {
+            console.warn('[SystemHeader] resolve threw:', e?.message);
+            return null;
+        }
+    }, [compilerClient, activeFile]);
+
     // --- Event Handlers ---
     useEditorEvents({
         editorInstance,
@@ -2789,7 +2925,8 @@ const EditorPanel = ({
         rawFiles,
         fileCacheEntries,
         dispatch,
-        activeFile
+        activeFile,
+        resolveSystemHeader,
     });
 
     useEffect(() => {
