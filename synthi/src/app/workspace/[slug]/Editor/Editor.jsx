@@ -2726,7 +2726,7 @@ const EditorPanel = ({
 
     // --- Next-Edit Prediction (NEP) — Phase 1, feature-flagged off by default ---
     // Enable via NEXT_PUBLIC_NEXT_EDIT_PREDICTION=1 or window.__SYNTHI_NEP_ENABLED__.
-    useNextEditPrediction({
+    const { predictedPaths: nepPredictedPaths } = useNextEditPrediction({
         editorInstance,
         monacoInstance,
         activeFile,
@@ -3909,6 +3909,25 @@ const EditorPanel = ({
                                                     <span className={`flex-shrink-0 text-sm ${isActive ? 'opacity-90' : 'opacity-50'}`} aria-hidden="true">
                                                         {loadingFiles.includes(file.path) ? <Loader2 className="w-4 h-4 animate-spin" style={{ color: TAB_TOKENS.primary }} /> : fileIcon}
                                                     </span>
+                                                    {/* NEP prediction badge: a queued next-edit prediction
+                                                        targets this file. The gutter dot is only visible
+                                                        in the active editor, so without this the user has
+                                                        no way to know there's a Tab-actionable prediction
+                                                        waiting in a hidden tab. Hidden on the active tab
+                                                        because the gutter dot already signals "look here". */}
+                                                    {nepPredictedPaths?.has?.(file.path) && !isActive && (
+                                                        <span
+                                                            aria-label="Next-edit prediction queued for this file"
+                                                            title="Next-edit prediction queued · open this tab to Tab-jump"
+                                                            className="flex-shrink-0 rounded-full"
+                                                            style={{
+                                                                width: 6,
+                                                                height: 6,
+                                                                background: 'var(--accent-primary, #6f7eff)',
+                                                                boxShadow: '0 0 5px color-mix(in srgb, var(--accent-primary, #6f7eff) 70%, transparent)',
+                                                            }}
+                                                        />
+                                                    )}
                                                     <div className="flex flex-col min-w-0 overflow-hidden">
                                                         <span className={`text-[13px] truncate ${isActive ? 'font-semibold' : 'font-normal'}`} style={{ color: isActive ? TAB_TOKENS.textPrimary : TAB_TOKENS.textSecondary }}>
                                                             {file.name}

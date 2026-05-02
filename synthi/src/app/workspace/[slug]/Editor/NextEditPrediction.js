@@ -148,6 +148,11 @@ export const useNextEditPrediction = ({
 }) => {
   const [enabled, setEnabled] = useState(() => isNepEnabled());
   const [nepState, setNepState] = useState(STATE.IDLE);
+  // Paths with at least one queued NEP prediction. The tab bar reads this
+  // to badge tabs whose file has a pending prediction the user can't see
+  // unless they switch to it (the gutter dot only renders against the
+  // active editor's model). Recomputed every time the queue mutates.
+  const [predictedPaths, setPredictedPaths] = useState(() => new Set());
 
   const recentEditsRef = useRef([]);
   const lastFireRef = useRef(0);
@@ -188,6 +193,7 @@ export const useNextEditPrediction = ({
     queueIndexRef.current = 0;
     lastAppliedEditRef.current = null;
     sessionFireCountRef.current = 0;
+    setPredictedPaths((prev) => (prev.size ? new Set() : prev));
     if (abortRef.current) {
       try { abortRef.current.abort('workspace-reset'); } catch (_) { /* ignored */ }
       abortRef.current = null;
@@ -352,12 +358,38 @@ export const useNextEditPrediction = ({
     }
   }, []);
 
+  // Recompute the predictedPaths set from the queue's REMAINING entries
+  // (cursor onwards). Called after every queue mutation (push / advance /
+  // clear) so the tab-bar badge tracks reality — a path stays predicted
+  // only while at least one entry at-or-after the cursor still references
+  // it. Already-accepted entries don't count.
+  const syncPredictedPaths = useCallback(() => {
+    const set = new Set();
+    const start = queueIndexRef.current;
+    for (let i = start; i < queueRef.current.length; i++) {
+      const entry = queueRef.current[i];
+      const p = entry?.kind === NEP_BLOCK_KIND.SEARCH
+        ? entry.location?.path
+        : entry?.block?.path;
+      if (p) set.add(p);
+    }
+    setPredictedPaths((prev) => {
+      // Skip the state update when nothing actually changed — this keeps
+      // the tab bar from re-rendering on every keystroke that fires a
+      // sync no-op.
+      if (prev.size !== set.size) return set;
+      for (const p of set) if (!prev.has(p)) return set;
+      return prev;
+    });
+  }, []);
+
   const resetToIdle = useCallback((reason = 'reset') => {
     cancelInflight(reason);
     queueRef.current = [];
     queueIndexRef.current = 0;
     pendingJumpRef.current = null;
     clearDecorations();
+    setPredictedPaths((prev) => (prev.size ? new Set() : prev));
     setNepState(STATE.IDLE);
   }, [cancelInflight, clearDecorations]);
 
@@ -616,6 +648,7 @@ export const useNextEditPrediction = ({
         }
         if (!entry) continue;
         queueRef.current.push(entry);
+        syncPredictedPaths();
         if (!armedYet) {
           armedYet = true;
           queueIndexRef.current = 0;
@@ -650,6 +683,7 @@ export const useNextEditPrediction = ({
   }, [
     enabled, editorInstance, activeFile, activeLanguage, workspaceSlug,
     getFileCacheEntries, getLiveFileContent, cancelInflight, renderJumpHint,
+    syncPredictedPaths,
   ]);
 
   useEffect(() => { fireNepRef.current = fireNep; }, [fireNep]);
@@ -782,6 +816,9 @@ export const useNextEditPrediction = ({
 
       const advanceQueue = () => {
         queueIndexRef.current += 1;
+        // Recompute predicted-paths so the tab badge for an accepted
+        // entry's file disappears once nothing else is queued for it.
+        syncPredictedPaths();
         if (queueIndexRef.current < queueRef.current.length) {
           const nextEntry = queueRef.current[queueIndexRef.current];
           if (nextEntry.kind === NEP_BLOCK_KIND.SEARCH_ALL) {
@@ -879,21 +916,27 @@ export const useNextEditPrediction = ({
               editorInstance.revealLineInCenter(line);
               editorInstance.setPosition({ lineNumber: line, column: 1 });
             } catch (_) { /* ignored */ }
-          } else if (path && line && dispatch && Array.isArray(rawFiles)) {
-            // Cross-file jump. Find the file node, dispatch selectFileThunk
-            // to switch tabs, and stash the jump so the activeFile-watching
-            // effect can finish revealing+positioning once the editor has
-            // bound the new model.
-            const targetNode = findNodeByPath(rawFiles, path);
-            if (targetNode) {
-              pendingJumpRef.current = { path, line };
-              try { dispatch(selectFileThunk(targetNode)); }
-              catch (err) {
-                console.warn('[NEP] cross-file selectFileThunk threw:', err?.message);
-                pendingJumpRef.current = null;
-              }
-            } else {
-              console.warn(`[NEP] target file "${path}" not found in workspace tree — cannot switch tabs`);
+          } else if (path && line && dispatch) {
+            // Cross-file jump. Try the workspace tree first; fall back to a
+            // synthetic file node when the path isn't represented there
+            // (freshly-created files not yet reflected in `rawFiles`,
+            // anything outside the user-visible tree). selectFileThunk
+            // only needs `.path` to load — name/type are for display, and
+            // the loadScheduler will fetch content from the collab-server
+            // disk on cache miss. If the file genuinely doesn't exist on
+            // disk the thunk rejects silently, same as if a manual file
+            // open had been attempted.
+            const targetNode = (Array.isArray(rawFiles) ? findNodeByPath(rawFiles, path) : null)
+              || {
+                name: path.split('/').filter(Boolean).pop() || path,
+                type: 'file',
+                path,
+              };
+            pendingJumpRef.current = { path, line };
+            try { dispatch(selectFileThunk(targetNode)); }
+            catch (err) {
+              console.warn('[NEP] cross-file selectFileThunk threw:', err?.message);
+              pendingJumpRef.current = null;
             }
           }
           setNepState(STATE.ARMED_CURRENT);
@@ -923,13 +966,17 @@ export const useNextEditPrediction = ({
   }, [
     enabled, editorInstance, nepState, activeFile, getLiveFileContent,
     renderJumpHint, resetToIdle, applySearchBlock, applySearchAllSite,
-    dispatch, rawFiles,
+    dispatch, rawFiles, syncPredictedPaths,
   ]);
 
   return {
     nepState,
     enabled,
     setEnabled,
+    // Set of file paths with at least one queued NEP prediction. The
+    // tab-bar consumer reads this to badge tabs whose dot-on-the-gutter
+    // can't be seen because the user isn't currently viewing that file.
+    predictedPaths,
     _internals: {
       recentEditsRef,
       queueRef,
