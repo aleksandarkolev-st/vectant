@@ -2732,6 +2732,14 @@ const EditorPanel = ({
         activeFile,
         activeLanguage,
         workspaceSlug: slug,
+        // Cross-file unblock: NEP can now decorate predictions targeting
+        // any file (not just the active one) by writing decorations to the
+        // file's Monaco model, and on Tab it dispatches selectFileThunk to
+        // switch tabs when the target isn't already active. dispatch +
+        // rawFiles power that path; without them NEP falls back to the
+        // old active-file-only behaviour.
+        dispatch,
+        rawFiles,
         getFileCacheEntries: () => fileCacheEntriesRef.current || [],
         // Read live model contents — falls back to the file cache for files
         // we've seen but don't currently have a model open for.

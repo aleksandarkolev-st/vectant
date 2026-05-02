@@ -41,6 +41,7 @@ import {
 import { classifyEdit } from '@/lib/editKindClassifier';
 import { recordNepEvent, isNepKilled, checkServerKill } from '@/lib/nepTelemetry';
 import { gitClient } from '@/services/gitClient';
+import { selectFileThunk } from '@/redux/workspaceSlice';
 
 const NEP_DEBOUNCE_MS = 600;
 const NEP_MIN_INTERVAL_MS = 1500; // floor between auto-fires (rate limit)
@@ -111,6 +112,25 @@ const offsetToLine = (content, offset) => {
   return line;
 };
 
+// Walk a workspace file tree (rawFiles) looking for the first node whose
+// path matches `targetPath` exactly. Used by the Tab cascade to convert a
+// path string from a NEP block into a real file-tree node so we can dispatch
+// selectFileThunk and switch tabs to a non-active prediction target.
+const findNodeByPath = (nodes, targetPath) => {
+  if (!Array.isArray(nodes) || !targetPath) return null;
+  const stack = [...nodes];
+  while (stack.length) {
+    const n = stack.pop();
+    if (!n) continue;
+    if (n.isFolder) {
+      if (Array.isArray(n.children)) stack.push(...n.children);
+    } else if (n.path === targetPath) {
+      return n;
+    }
+  }
+  return null;
+};
+
 export const useNextEditPrediction = ({
   editorInstance,
   monacoInstance,
@@ -120,6 +140,11 @@ export const useNextEditPrediction = ({
   getFileCacheEntries,
   getLiveFileContent,
   workspaceResetKey,
+  // Optional cross-file enablers. When both are provided, NEP can decorate
+  // and jump to predictions in files other than the currently-active one.
+  // (`dispatch` is the redux dispatch; `rawFiles` is the workspace tree.)
+  dispatch = null,
+  rawFiles = [],
 }) => {
   const [enabled, setEnabled] = useState(() => isNepEnabled());
   const [nepState, setNepState] = useState(STATE.IDLE);
@@ -141,8 +166,20 @@ export const useNextEditPrediction = ({
   // next NEP request as `appliedEdit` so /api/next-edit can pull impact.
   const lastAppliedEditRef = useRef(null);
 
-  // Decoration ids for the gutter dot + line highlight.
-  const decorationIdsRef = useRef([]);
+  // Per-model decoration ids for the gutter dot + line highlight.
+  // Keyed by `model.uri.toString()` so a prediction targeting a non-active
+  // file can decorate that file's Monaco model directly — the dot becomes
+  // visible whenever the user switches to that tab. Decorations on a model
+  // survive editor remounts because they're attached to the model itself,
+  // not to the editor instance.
+  const decorationIdsByModelRef = useRef(new Map());
+
+  // Pending cross-file jump. When the Tab cascade fires for a prediction
+  // whose target path isn't the active file, we dispatch selectFileThunk
+  // to switch tabs and stash the jump details here. The activeFile-watching
+  // effect below catches the switch and applies the reveal+setPosition
+  // once Editor.jsx's model effect has had a chance to bind the new model.
+  const pendingJumpRef = useRef(null);
 
   // ── lifecycle: workspace reset ──────────────────────────────────────────
   useEffect(() => {
@@ -189,17 +226,56 @@ export const useNextEditPrediction = ({
   }, []);
 
   // ── helpers ─────────────────────────────────────────────────────────────
+
+  // Find the Monaco model for a workspace-relative path. Tries the canonical
+  // `file:///synthi/<path>` URI shape Editor.jsx creates, then falls back to
+  // a scan over all live models for a matching path/fsPath suffix.
+  const findModelForPath = useCallback((targetPath) => {
+    if (!monacoInstance || !targetPath) return null;
+    try {
+      const norm = targetPath.startsWith('/') ? targetPath.slice(1) : targetPath;
+      const uri = monacoInstance.Uri.parse(`file:///synthi/${norm}`);
+      const direct = monacoInstance.editor.getModel(uri);
+      if (direct) return direct;
+    } catch (_) { /* fall through */ }
+    try {
+      const models = monacoInstance.editor.getModels?.() || [];
+      for (const m of models) {
+        const u = m.uri;
+        if (!u) continue;
+        const uriPath = (u.path || '').replace(/^\/+/, '');
+        const fsPath = (u.fsPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+        if (uriPath === targetPath || fsPath === targetPath
+            || uriPath.endsWith('/' + targetPath) || fsPath.endsWith('/' + targetPath)) {
+          return m;
+        }
+        // Also recognize the synthi-prefixed shape: `synthi/<targetPath>`.
+        if (uriPath === `synthi/${targetPath}` || uriPath.endsWith(`/synthi/${targetPath}`)) {
+          return m;
+        }
+      }
+    } catch (_) { /* ignored */ }
+    return null;
+  }, [monacoInstance]);
+
   const clearDecorations = useCallback(() => {
-    if (!editorInstance) return;
-    if (decorationIdsRef.current.length) {
+    if (!monacoInstance) return;
+    const map = decorationIdsByModelRef.current;
+    for (const [uriStr, ids] of map) {
+      if (!ids?.length) continue;
       try {
-        decorationIdsRef.current = editorInstance.deltaDecorations(decorationIdsRef.current, []);
+        const uri = monacoInstance.Uri.parse(uriStr);
+        const model = monacoInstance.editor.getModel(uri);
+        if (model) {
+          model.deltaDecorations(ids, []);
+        }
       } catch (_) { /* model gone */ }
     }
-  }, [editorInstance]);
+    map.clear();
+  }, [monacoInstance]);
 
   const renderJumpHint = useCallback((entry, opts = {}) => {
-    if (!editorInstance || !monacoInstance || !entry) {
+    if (!monacoInstance || !entry) {
       clearDecorations();
       return;
     }
@@ -217,11 +293,25 @@ export const useNextEditPrediction = ({
       clearDecorations();
       return;
     }
-    const activePath = activeFile?.path || activeFile?.name;
-    if (path !== activePath) {
-      clearDecorations();
+
+    // Always start from a clean slate so decorations from a previous
+    // queue entry (possibly in a different file) don't linger.
+    clearDecorations();
+
+    const model = findModelForPath(path);
+    if (!model) {
+      // Predicted file isn't open as a tab yet, so its model doesn't
+      // exist — there's nothing to decorate. Tab still works: the
+      // cascade dispatches selectFileThunk, the editor remounts, and
+      // the activeFile-watching effect below re-runs renderJumpHint
+      // against the now-existing model.
+      const activePath = activeFile?.path || activeFile?.name;
+      if (path !== activePath) {
+        console.log(`[NEP] prediction queued for ${path} (file not currently open) — Tab to jump`);
+      }
       return;
     }
+
     try {
       const Range = monacoInstance.Range;
       const lineCls = opts.confirm ? NEP_CONFIRM_LINE_CLASS : NEP_LINE_CLASS;
@@ -246,12 +336,10 @@ export const useNextEditPrediction = ({
           },
         },
       ];
-      decorationIdsRef.current = editorInstance.deltaDecorations(
-        decorationIdsRef.current,
-        newDecorations,
-      );
+      const newIds = model.deltaDecorations([], newDecorations);
+      decorationIdsByModelRef.current.set(model.uri.toString(), newIds);
     } catch (_) { /* decoration churn is best-effort */ }
-  }, [editorInstance, monacoInstance, activeFile, clearDecorations]);
+  }, [monacoInstance, clearDecorations, findModelForPath, activeFile]);
 
   const cancelInflight = useCallback((reason = 'cancel') => {
     if (abortRef.current) {
@@ -268,9 +356,49 @@ export const useNextEditPrediction = ({
     cancelInflight(reason);
     queueRef.current = [];
     queueIndexRef.current = 0;
+    pendingJumpRef.current = null;
     clearDecorations();
     setNepState(STATE.IDLE);
   }, [cancelInflight, clearDecorations]);
+
+  // Cross-file jump completion. After Tab dispatches selectFileThunk for a
+  // prediction in a non-active file, Editor.jsx remounts the editor with
+  // the new model on the next render. We watch activeFile and, once it
+  // matches the queued jump, finish the reveal+setPosition and re-render
+  // the gutter dot against the now-existing model.
+  useEffect(() => {
+    const pending = pendingJumpRef.current;
+    if (!pending || !editorInstance) return;
+    const currentPath = activeFile?.path || activeFile?.name;
+    if (!currentPath || currentPath !== pending.path) return;
+
+    pendingJumpRef.current = null;
+
+    // Defer one tick so Editor.jsx's `setModel` effect has had a chance to
+    // bind the target model to the editor instance — without this we'd
+    // call revealLineInCenter on the previous file's model.
+    const timer = setTimeout(() => {
+      try {
+        editorInstance.revealLineInCenter(pending.line);
+        editorInstance.setPosition({ lineNumber: pending.line, column: 1 });
+        editorInstance.focus?.();
+      } catch (_) { /* model not ready yet */ }
+
+      // Re-render decorations: the model only just came into existence, so
+      // the renderJumpHint call from when the prediction landed had nothing
+      // to decorate against. Replay against the current queue entry so the
+      // dot + line tint show up after the tab switch.
+      const idx = queueIndexRef.current;
+      const entry = queueRef.current[idx];
+      if (entry) {
+        renderJumpHint(entry, {
+          confirm: nepState === STATE.ARMED_CONFIRM,
+        });
+      }
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [activeFile, editorInstance, renderJumpHint, nepState]);
 
   // Forward decl so the recent-edit listener can call it before fireNep is
   // declared via useCallback below.
@@ -744,15 +872,29 @@ export const useNextEditPrediction = ({
           e.preventDefault();
           e.stopPropagation();
           const path = entry.location?.path;
+          const line = entry.location?.line;
           const activePath = activeFile?.path || activeFile?.name;
-          if (path === activePath) {
+          if (path && path === activePath) {
             try {
-              editorInstance.revealLineInCenter(entry.location.line);
-              editorInstance.setPosition({
-                lineNumber: entry.location.line,
-                column: 1,
-              });
+              editorInstance.revealLineInCenter(line);
+              editorInstance.setPosition({ lineNumber: line, column: 1 });
             } catch (_) { /* ignored */ }
+          } else if (path && line && dispatch && Array.isArray(rawFiles)) {
+            // Cross-file jump. Find the file node, dispatch selectFileThunk
+            // to switch tabs, and stash the jump so the activeFile-watching
+            // effect can finish revealing+positioning once the editor has
+            // bound the new model.
+            const targetNode = findNodeByPath(rawFiles, path);
+            if (targetNode) {
+              pendingJumpRef.current = { path, line };
+              try { dispatch(selectFileThunk(targetNode)); }
+              catch (err) {
+                console.warn('[NEP] cross-file selectFileThunk threw:', err?.message);
+                pendingJumpRef.current = null;
+              }
+            } else {
+              console.warn(`[NEP] target file "${path}" not found in workspace tree — cannot switch tabs`);
+            }
           }
           setNepState(STATE.ARMED_CURRENT);
           return;
@@ -781,6 +923,7 @@ export const useNextEditPrediction = ({
   }, [
     enabled, editorInstance, nepState, activeFile, getLiveFileContent,
     renderJumpHint, resetToIdle, applySearchBlock, applySearchAllSite,
+    dispatch, rawFiles,
   ]);
 
   return {
