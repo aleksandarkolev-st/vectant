@@ -146,17 +146,42 @@
 /* The tokenized overlay widget. Monaco's `colorize` emits per-token spans
  * with classes mtk1..mtkN whose colours are defined by the active theme, so
  * by rendering the suggestion through that pipeline the ghost text inherits
- * the editor's syntax highlighting exactly. */
+ * the editor's syntax highlighting exactly.
+ *
+ * Font metrics (font-family, font-size, line-height, letter-spacing,
+ * font-feature-settings) are applied inline at runtime by providers.js
+ * from the editor's resolved fontInfo, because `fixedOverflowWidgets: true`
+ * hoists this widget into a body-level overflow container that doesn't
+ * inherit the editor's font cascade. Don't set those here or they'd
+ * fight the inline values. */
 .synthi-ghost-tokenized {
     pointer-events: none;
     user-select: none;
     white-space: pre;
-    opacity: 0.55;
-    font-style: italic;
-    font-family: var(--monaco-monospace-font, 'JetBrains Mono', 'Fira Code', 'Consolas', monospace);
-    line-height: inherit;
+    /* Bump opacity from 0.55 → 0.62 — the previous value was readable on
+     * very-bright themes but washed out on dark Synthi defaults. 0.62 keeps
+     * the ghost obviously distinct from accepted code while staying legible
+     * on every shipped theme. */
+    opacity: 0.62;
+    /* Industry-grade ghost text (Copilot, Cursor) is NOT italicised — the
+     * font-style flip introduces a glyph-shape mismatch with the surrounding
+     * code that makes the preview feel like an alien overlay rather than
+     * "what your next keystroke would type". Drop the italic. */
+    /* Box layout: align widget content to the line baseline so the colorized
+     * span sits exactly where Monaco's hidden inline-completion ghost text
+     * sits. `vertical-align: top` plus the inline height set by providers.js
+     * prevents the "floating above the line" drift the user reported. */
+    display: inline-block;
+    vertical-align: top;
     /* Slightly de-emphasise so accepted text feels different from preview. */
-    filter: saturate(0.85);
+    filter: saturate(0.92);
+    /* Subtle fade-in so a streaming completion doesn't "pop" in. */
+    animation: synthi-ghost-fadein 120ms ease-out;
+}
+
+@keyframes synthi-ghost-fadein {
+    from { opacity: 0; }
+    to   { opacity: 0.62; }
 }
 
 .synthi-ghost-tokenized .mtk1,
@@ -188,15 +213,46 @@
     margin-left: 0;
 }
 
+/* "+N lines · Tab" pill hint. Keep visually compact and clearly secondary
+ * (lower opacity, smaller font) so it reads as metadata instead of code. */
 .synthi-ghost-tokenized__hint {
-    margin-left: 8px;
-    padding: 0 6px;
-    border-radius: 3px;
-    font-size: 0.78em;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 10px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    /* Explicit small font — the parent inline span carries the editor's
+     * full font-size, but the pill should be UI-sized. */
+    font-size: 10.5px;
     font-style: normal;
-    color: color-mix(in srgb, var(--accent-secondary, #4aba9a) 85%, transparent);
-    background: color-mix(in srgb, var(--accent-secondary, #4aba9a) 10%, transparent);
+    font-weight: 500;
+    line-height: 16px;
+    letter-spacing: 0.2px;
+    color: color-mix(in srgb, var(--accent-secondary, #4aba9a) 95%, transparent);
+    background: color-mix(in srgb, var(--accent-secondary, #4aba9a) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-secondary, #4aba9a) 28%, transparent);
     vertical-align: middle;
+    /* Reset the parent's italic / saturation tweak — the pill is UI chrome,
+     * not code. */
+    filter: none;
+    opacity: 0.92;
+    /* Use the UI font, not the monospace one. */
+    font-family: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.synthi-ghost-tokenized__hint kbd {
+    display: inline-block;
+    padding: 0 4px;
+    font-size: 9.5px;
+    font-family: inherit;
+    font-weight: 600;
+    color: var(--accent-primary, #6f7eff);
+    background: color-mix(in srgb, var(--accent-primary, #6f7eff) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 35%, transparent);
+    border-radius: 3px;
+    line-height: 14px;
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--accent-primary, #6f7eff) 40%, transparent);
 }
 
 /* ============================================

@@ -233,6 +233,17 @@ export const useEditorProviders = ({
     // overlay stays glued to where Monaco's invisible inline-completion ghost
     // text actually is. Anchoring to the frozen request-time cursor produced
     // the "homeless" drift where the preview floated next to a stale spot.
+    //
+    // Font-metric note (the "small text between the lines" bug): with
+    // `fixedOverflowWidgets: true` (see options.js), Monaco hoists content
+    // widgets into `.monaco-editor-overflow-widgets`, which is rendered
+    // OUTSIDE the editor DOM at the document body level. None of the editor's
+    // font-size / line-height / letter-spacing cascade reaches the widget,
+    // so the previous CSS-only style (`line-height: inherit`, no font-size)
+    // produced text at browser default 16px UI font, vertically squished
+    // between the editor's 24.5px line boxes. Fix is to read the editor's
+    // resolved `fontInfo` and apply its metrics inline on the widget node,
+    // and re-apply on configuration changes (zoom, font-size override, etc.).
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
 
@@ -241,6 +252,53 @@ export const useEditorProviders = ({
 
         const node = document.createElement('span');
         node.className = 'synthi-ghost-tokenized';
+
+        // Apply the editor's resolved font metrics to the widget node so the
+        // ghost text matches the surrounding code byte-for-byte (same glyph
+        // size, same baseline, same advance width). Reads through monaco's
+        // `EditorOption` enum to survive Monaco version bumps that renumber
+        // the option ids.
+        const applyFontMetrics = () => {
+            try {
+                const EditorOption = monacoInstance.editor.EditorOption;
+                if (!EditorOption) return;
+                const fontInfo = editorInstance.getOption(EditorOption.fontInfo);
+                if (fontInfo) {
+                    if (fontInfo.fontFamily) node.style.fontFamily = fontInfo.fontFamily;
+                    if (fontInfo.fontWeight) node.style.fontWeight = fontInfo.fontWeight;
+                    if (typeof fontInfo.fontSize === 'number' && fontInfo.fontSize > 0) {
+                        node.style.fontSize = fontInfo.fontSize + 'px';
+                    }
+                    if (typeof fontInfo.lineHeight === 'number' && fontInfo.lineHeight > 0) {
+                        node.style.lineHeight = fontInfo.lineHeight + 'px';
+                        // Reserve the full line box so the widget sits on the
+                        // same baseline as the editor's view-line glyphs
+                        // instead of the implicit ascent/descent of the span.
+                        node.style.height = fontInfo.lineHeight + 'px';
+                    }
+                    if (typeof fontInfo.letterSpacing === 'number') {
+                        node.style.letterSpacing = fontInfo.letterSpacing + 'px';
+                    }
+                    if (fontInfo.fontFeatureSettings) {
+                        node.style.fontFeatureSettings = fontInfo.fontFeatureSettings;
+                    }
+                }
+            } catch (_) { /* metrics best-effort */ }
+        };
+        applyFontMetrics();
+        const fontConfigDispose = editorInstance.onDidChangeConfiguration?.((e) => {
+            try {
+                const EditorOption = monacoInstance.editor.EditorOption;
+                if (!EditorOption) return;
+                if (e.hasChanged(EditorOption.fontInfo)
+                    || e.hasChanged(EditorOption.fontSize)
+                    || e.hasChanged(EditorOption.fontFamily)
+                    || e.hasChanged(EditorOption.lineHeight)
+                    || e.hasChanged(EditorOption.letterSpacing)) {
+                    applyFontMetrics();
+                }
+            } catch (_) { /* ignored */ }
+        });
 
         // Compute what should be visible right now: the suggestion minus any
         // matching prefix the user has typed since the request fired. Returns
@@ -342,14 +400,14 @@ export const useEditorProviders = ({
                     ? html.replace(/<br\s*\/?>\s*$/i, '')
                     : escape(firstLine);
                 const hint = restCount > 0
-                    ? `<span class="synthi-ghost-tokenized__hint">↵ +${restCount} ${restCount === 1 ? 'line' : 'lines'} · Tab</span>`
-                    : '';
+                    ? `<span class="synthi-ghost-tokenized__hint">+${restCount} ${restCount === 1 ? 'line' : 'lines'} <kbd>Tab</kbd></span>`
+                    : `<span class="synthi-ghost-tokenized__hint"><kbd>Tab</kbd></span>`;
                 node.innerHTML = cleaned + hint;
             } catch (e) {
                 // Fall back to plain escaped text if colorize ever fails.
                 const hint = restCount > 0
-                    ? `<span class="synthi-ghost-tokenized__hint">↵ +${restCount} ${restCount === 1 ? 'line' : 'lines'} · Tab</span>`
-                    : '';
+                    ? `<span class="synthi-ghost-tokenized__hint">+${restCount} ${restCount === 1 ? 'line' : 'lines'} <kbd>Tab</kbd></span>`
+                    : `<span class="synthi-ghost-tokenized__hint"><kbd>Tab</kbd></span>`;
                 node.innerHTML = escape(firstLine) + hint;
             }
             editorInstance.layoutContentWidget(widget);
@@ -378,6 +436,7 @@ export const useEditorProviders = ({
             clearInterval(cacheCheckInterval);
             try { cursorDispose?.dispose(); } catch (_) { /* disposed */ }
             try { contentDispose?.dispose(); } catch (_) { /* disposed */ }
+            try { fontConfigDispose?.dispose(); } catch (_) { /* disposed */ }
             try { editorInstance.removeContentWidget(widget); } catch (_) { /* disposed */ }
             tokenizerWidgetRef.current = null;
         };
