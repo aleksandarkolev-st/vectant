@@ -101,47 +101,22 @@
  * They all need to render transparent so the tokenized overlay below is the
  * only visible layer.
  */
-.monaco-editor .ghost-text,
-.monaco-editor .ghost-text-decoration,
-.monaco-editor .ghost-text-decoration-preview,
-.monaco-editor .suggest-preview-text .ghost-text,
-.monaco-editor .inline-completion-text,
-.monaco-editor .inline-edit-decoration,
-.monaco-editor .inline-edit-decoration-preview,
-.monaco-editor .inline-edits-line-replacement,
-.monaco-editor .inline-edits-deletion,
-.monaco-editor .inline-edits-insertion,
-/* Monaco 0.50+ inline-edit (Cursor-style multi-line replacement) overlays.
- * These render the FULL post-edit line as ghost text in addition to the
- * regular inline-completion preview, producing the "two ghosts on one line"
- * artefact when both Synthi's tokenized widget and Monaco's native inline-
- * edit fire for the same suggestion. Forcing them transparent leaves Synthi's
- * widget as the only visible layer. */
-.monaco-editor .inline-edit,
-.monaco-editor .inline-edit.ghost-text,
-.monaco-editor .inline-edit.ghost-text-decoration,
-.monaco-editor .inline-edit.ghost-text-decoration-preview,
-.monaco-editor .inline-edit.modified-background.ghost-text,
-.monaco-editor .inline-edit.modified-background.ghost-text-decoration,
-.monaco-editor .inline-edit.modified-background.ghost-text-decoration-preview,
-.monaco-editor .inline-edit.suggest-preview-text .ghost-text,
-.monaco-editor .inlineCompletions-line-insert,
-.monaco-editor .inlineCompletions-line-delete,
-.monaco-editor .inlineCompletions-char-insert,
-.monaco-editor .inlineCompletions-char-delete,
-.monaco-editor .inlineCompletions-modified-bubble,
-.monaco-editor .inlineCompletions-original-bubble,
-.monaco-editor .inlineCompletions-original-lines,
-.monaco-editor .inlineCompletions.strike-through,
-.monaco-editor .inline-edits-view,
-.monaco-editor .inline-edits-view .editorContainer,
-.monaco-editor .inline-edits-view-zone {
+/* Pattern-based blanket: any Monaco descendant whose class name contains
+ * `ghost-text`, `inline-edit`, `inline-completion`, or `inlineCompletions`
+ * renders transparent. This is the only way to keep up with Monaco's
+ * shipping-train naming churn (0.50 added inline-edits-*, 0.51 added
+ * inlineCompletions-*) without re-listing every selector each release.
+ * The `:not([class*="synthi-"])` guard protects our own decorations
+ * (synthi-ghost-tokenized, synthi-nep-* etc.) from getting nuked. */
+.monaco-editor [class*="ghost-text"]:not([class*="synthi-"]),
+.monaco-editor [class*="inline-edit"]:not([class*="synthi-"]),
+.monaco-editor [class*="inline-completion"]:not([class*="synthi-"]),
+.monaco-editor [class*="inlineCompletions"]:not([class*="synthi-"]),
+.monaco-editor [class*="inlineEdit"]:not([class*="synthi-"]) {
     color: transparent !important;
     background: transparent !important;
     border-color: transparent !important;
     text-decoration: none !important;
-    /* preserve glyph dimensions so the cursor reserves the right amount of
-     * horizontal space for the overlay */
     text-shadow: none !important;
 }
 

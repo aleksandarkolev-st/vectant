@@ -581,6 +581,58 @@ export const useNextEditPrediction = ({
       ? getLiveFileContent(activePath)
       : (editorInstance.getModel?.()?.getValue?.() ?? '');
 
+    // Eager neighbour prefetch: race the workspace's likely cross-file
+    // targets into the cache before we send the prompt, so the model has a
+    // substrate to predict against. Without this, the prefetch that
+    // selectFileThunk schedules at medium priority often hasn't completed
+    // yet when the user finishes typing, and NEP's payload only contains
+    // the active file. Bounded by a hard 250 ms timeout — if files don't
+    // land in time we fire with what we have and let the validator's
+    // hydrateFile fallback fetch each block's target on demand.
+    if (workspaceSlug && Array.isArray(rawFiles) && rawFiles.length) {
+      const dir = activePath && activePath.includes('/')
+        ? activePath.slice(0, activePath.lastIndexOf('/'))
+        : '';
+      const collected = [];
+      const stack = [...rawFiles];
+      while (stack.length && collected.length < 12) {
+        const n = stack.pop();
+        if (!n) continue;
+        if (n.isFolder) {
+          if (Array.isArray(n.children)) stack.push(...n.children);
+          continue;
+        }
+        if (!n.path || n.path === activePath) continue;
+        const parent = n.path.includes('/') ? n.path.slice(0, n.path.lastIndexOf('/')) : '';
+        // Same-directory siblings first; recently-edited paths next.
+        if (parent === dir) collected.push(n.path);
+      }
+      // Also prioritise paths that already showed up in the recent-edit
+      // ring buffer — the user touched them, the model is most likely to
+      // chase a refactor across them.
+      const editPaths = new Set(
+        (recentEditsRef.current || []).map((e) => e?.path).filter(Boolean)
+      );
+      for (const p of editPaths) {
+        if (p !== activePath && !collected.includes(p)) collected.push(p);
+      }
+      const toFetch = collected
+        .filter((p) => typeof fileCache.get(p) !== 'string')
+        .slice(0, 8);
+      if (toFetch.length) {
+        try {
+          await Promise.race([
+            Promise.all(toFetch.map((p) =>
+              loadScheduler.requestFileContent(workspaceSlug, p, { priority: 'high' })
+                .catch(() => null)
+            )),
+            new Promise((resolve) => setTimeout(resolve, 250)),
+          ]);
+        } catch (_) { /* best-effort */ }
+        if (controller.signal.aborted) return;
+      }
+    }
+
     const cacheEntries = typeof getFileCacheEntries === 'function'
       ? getFileCacheEntries() : [];
     const files = {};
@@ -594,6 +646,10 @@ export const useNextEditPrediction = ({
         if (p === activePath) continue;
         files[p] = content;
       }
+    }
+
+    if (typeof console !== 'undefined' && console.info) {
+      console.info(`[NEP] fire — workspace=${workspaceSlug || '?'} active=${activePath} files=${Object.keys(files).length} recentEdits=${recentEditsRef.current.length}`);
     }
 
     const cursor = editorInstance.getPosition?.()
@@ -709,6 +765,9 @@ export const useNextEditPrediction = ({
             reason: result.reason || REJECT_REASONS.PARSE_ERROR,
             detail: result.detail,
           });
+          if (typeof console !== 'undefined' && console.info) {
+            console.info(`[NEP] block parse-rejected: reason=${result.reason} detail=${result.detail || ''}`);
+          }
           continue;
         }
         recordNepEvent('emitted');
@@ -721,12 +780,18 @@ export const useNextEditPrediction = ({
         if (block.kind === NEP_BLOCK_KIND.SEARCH) {
           if (!v.ok) {
             recordNepEvent('rejected', { reason: v.reason, path: v.path || block.path });
+            if (typeof console !== 'undefined' && console.info) {
+              console.info(`[NEP] block validate-rejected: path=${block.path} reason=${v.reason} cross_file=${block.path !== activePath}`);
+            }
             continue;
           }
           recordNepEvent('validated', { kind: block.kind });
           const line = locateBlock(block, liveReader);
           if (!line) continue;
           entry = { kind: NEP_BLOCK_KIND.SEARCH, block, location: { path: block.path, line } };
+          if (typeof console !== 'undefined' && console.info) {
+            console.info(`[NEP] block validated: path=${block.path}:${line} cross_file=${block.path !== activePath}`);
+          }
         } else if (block.kind === NEP_BLOCK_KIND.SEARCH_ALL) {
           // Phase 2 treats phase2_required as the OPPORTUNITY to enter the
           // confirm flow — the validator's "reject" was the Phase 1 stub.
@@ -741,6 +806,9 @@ export const useNextEditPrediction = ({
           if (offsets.length === 0) continue;
           const sites = offsets.map((offset) => ({ offset, line: offsetToLine(live, offset) }));
           entry = { kind: NEP_BLOCK_KIND.SEARCH_ALL, block, sites, cursor: 0 };
+          if (typeof console !== 'undefined' && console.info) {
+            console.info(`[NEP] SEARCH ALL validated: path=${block.path} sites=${sites.length}`);
+          }
         } else {
           continue;
         }
@@ -1036,6 +1104,9 @@ export const useNextEditPrediction = ({
                 path,
               };
             pendingJumpRef.current = { path, line };
+            if (typeof console !== 'undefined' && console.info) {
+              console.info(`[NEP] cross-file jump: ${activePath} → ${path}:${line}`);
+            }
             try { dispatch(selectFileThunk(targetNode)); }
             catch (err) {
               console.warn('[NEP] cross-file selectFileThunk threw:', err?.message);

@@ -310,6 +310,18 @@ export const useEditorProviders = ({
             }
             node.dataset.visible = visible;
 
+            // Render only the FIRST line as ghost text. Multi-line ghost
+            // overlays can't anchor cleanly: Monaco's content widget pins to
+            // the cursor's pixel position, but each subsequent suggestion
+            // line carries its own leading whitespace from the model, which
+            // the widget renders verbatim under `white-space: pre`. The
+            // result is the staggered/garbled stack the user reported. Tab
+            // still applies the full multi-line suggestion via the cached
+            // value — we just don't try to draw the full thing as ghost.
+            const lines = visible.split('\n');
+            const firstLine = lines[0];
+            const restCount = lines.length - 1;
+
             // Cancel any in-flight colorize call — we only care about the latest.
             const id = ++tokenizerColorizeIdRef.current;
             try {
@@ -318,29 +330,27 @@ export const useEditorProviders = ({
                 // active theme's syntax colours. This is the same tokenizer
                 // used everywhere else in the editor.
                 const html = await monacoInstance.editor.colorize(
-                    visible,
+                    firstLine,
                     activeLanguage || 'plaintext',
                     { tabSize: 4 }
                 );
                 if (id !== tokenizerColorizeIdRef.current) return; // superseded
-                if (typeof html === 'string' && html.length) {
-                    // monaco.editor.colorize wraps lines in <br/>; replace the
-                    // first line break with a tail span so multi-line previews
-                    // render directly under the cursor instead of overflowing
-                    // the line.
-                    const split = html.split(/<br\s*\/?>(.*)/s);
-                    if (split.length >= 2) {
-                        node.innerHTML = split[0]
-                            + `<span class="synthi-ghost-tokenized__tail">${split[1]}</span>`;
-                    } else {
-                        node.innerHTML = html;
-                    }
-                } else {
-                    node.textContent = visible;
-                }
+                // colorize() emits a trailing <br/> after each line — strip
+                // it so it doesn't push our content-widget down a row inside
+                // the editor's overlay layer.
+                const cleaned = (typeof html === 'string' && html.length)
+                    ? html.replace(/<br\s*\/?>\s*$/i, '')
+                    : escape(firstLine);
+                const hint = restCount > 0
+                    ? `<span class="synthi-ghost-tokenized__hint">↵ +${restCount} ${restCount === 1 ? 'line' : 'lines'} · Tab</span>`
+                    : '';
+                node.innerHTML = cleaned + hint;
             } catch (e) {
                 // Fall back to plain escaped text if colorize ever fails.
-                node.innerHTML = escape(visible);
+                const hint = restCount > 0
+                    ? `<span class="synthi-ghost-tokenized__hint">↵ +${restCount} ${restCount === 1 ? 'line' : 'lines'} · Tab</span>`
+                    : '';
+                node.innerHTML = escape(firstLine) + hint;
             }
             editorInstance.layoutContentWidget(widget);
         };
