@@ -189,6 +189,7 @@ export const useEditorProviders = ({
     //      the surrounding code.
     const tokenizerWidgetRef = useRef(null);
     const tokenizerColorizeIdRef = useRef(0);
+    const loadingIndicatorWidgetRef = useRef(null);
 
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
@@ -441,6 +442,76 @@ export const useEditorProviders = ({
             tokenizerWidgetRef.current = null;
         };
     }, [editorInstance, monacoInstance, activeLanguage, aiCompletionCacheRef, aiCompletionCursorRef]);
+
+    // 1c. Loading indicator near cursor.
+    //
+    // The window between "user pauses → debounce fires → request fires" and
+    // "first model token arrives" is typically 300–700ms. Without any visual
+    // cue in that window the IDE feels frozen — the user can't tell whether
+    // a suggestion is on the way or no completion will appear at all. A
+    // small pulsing pill anchored at the cursor closes that gap.
+    //
+    // Mounts a content widget that renders only when state === 'loading'
+    // and no visible suggestion has streamed yet. Once the first token lands
+    // (state flips to 'ready' AND the cache has a suggestion), the
+    // tokenized ghost widget takes over and we hide the pill.
+    useEffect(() => {
+        if (!editorInstance || !monacoInstance) return;
+
+        const node = document.createElement('span');
+        node.className = 'synthi-ai-loading-pill';
+        node.innerHTML = `
+            <span class="synthi-ai-loading-pill__dot"></span>
+            <span class="synthi-ai-loading-pill__dot"></span>
+            <span class="synthi-ai-loading-pill__dot"></span>
+            <span class="synthi-ai-loading-pill__label">AI</span>
+        `;
+        node.style.display = 'none';
+
+        const widget = {
+            getId: () => 'synthi.ai.loading',
+            getDomNode: () => node,
+            getPosition: () => {
+                const livePos = editorInstance.getPosition?.();
+                if (!livePos) return null;
+                return {
+                    position: { lineNumber: livePos.lineNumber, column: livePos.column },
+                    preference: [
+                        monacoInstance.editor.ContentWidgetPositionPreference.EXACT,
+                    ],
+                };
+            },
+        };
+
+        editorInstance.addContentWidget(widget);
+        loadingIndicatorWidgetRef.current = widget;
+
+        // Decide visibility on every cursor move / cache poll. The completion
+        // state lives in React; we read the cache ref to know whether a
+        // suggestion has already streamed (in which case the ghost widget
+        // is already showing and the pill should yield to it).
+        const update = () => {
+            const cached = aiCompletionCacheRef.current;
+            const hasSuggestion = !!cached?.suggestion;
+            const isLoading = aiCompletionState === 'loading';
+            const visible = isLoading && !hasSuggestion;
+            node.style.display = visible ? 'inline-flex' : 'none';
+            if (visible) {
+                editorInstance.layoutContentWidget(widget);
+            }
+        };
+
+        update();
+        const cursorDispose = editorInstance.onDidChangeCursorPosition?.(update);
+        const tick = setInterval(update, 100);
+
+        return () => {
+            clearInterval(tick);
+            try { cursorDispose?.dispose(); } catch (_) { /* disposed */ }
+            try { editorInstance.removeContentWidget(widget); } catch (_) { /* disposed */ }
+            loadingIndicatorWidgetRef.current = null;
+        };
+    }, [editorInstance, monacoInstance, aiCompletionState, aiCompletionCacheRef]);
 
     // 2. Register Command for Accept
     useEffect(() => {
