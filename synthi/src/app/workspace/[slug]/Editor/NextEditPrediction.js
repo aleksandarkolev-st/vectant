@@ -882,21 +882,43 @@ export const useNextEditPrediction = ({
     return null;
   }, [monacoInstance]);
 
+  // Replace a model's full content via pushEditOperations. We can't use
+  // model.setValue here: setValue raises onDidChangeContent with
+  // e.isFlush=true, and collabClient's local-change listener (collabClient.js:128)
+  // bails on flush events. The result is the user-reported bug — the
+  // edit shows up in the editor but never broadcasts through Yjs to
+  // collab-server, so on reload the file reverts to its pre-edit
+  // content. pushEditOperations fires a normal (isFlush=false) change,
+  // which the collab listener picks up and forwards to the worker /
+  // y-sweet, persisting the edit on disk.
+  const replaceModelContent = useCallback((model, newContent) => {
+    if (!model) return false;
+    try {
+      const range = model.getFullModelRange();
+      model.pushEditOperations(
+        [],
+        [{ range, text: newContent, forceMoveMarkers: true }],
+        () => null,
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }, []);
+
   const writeFileContent = useCallback(async (targetPath, content) => {
     const activePath = activeFile?.path || activeFile?.name;
     // (1) Active file → write through the active model. Most common path.
     if (targetPath === activePath) {
       const model = editorInstance?.getModel?.();
-      if (model) {
-        model.setValue(content);
+      if (model && replaceModelContent(model, content)) {
         return { via: 'active_model' };
       }
     }
     // (2) Other open file → write through its model.
     const openModel = findOpenModel(targetPath);
-    if (openModel) {
-      try { openModel.setValue(content); return { via: 'open_model' }; }
-      catch (_) { /* fall through to disk write */ }
+    if (openModel && replaceModelContent(openModel, content)) {
+      return { via: 'open_model' };
     }
     // (3) Closed file → hit collab-server directly.
     if (!workspaceSlug) {
@@ -909,7 +931,7 @@ export const useNextEditPrediction = ({
     // singleton) and the second block in the chain rejects as no_match.
     try { fileCache.set(targetPath, content); } catch (_) { /* best-effort */ }
     return { via: 'collab_server' };
-  }, [editorInstance, activeFile, monacoInstance, workspaceSlug, findOpenModel]);
+  }, [editorInstance, activeFile, monacoInstance, workspaceSlug, findOpenModel, replaceModelContent]);
 
   // ── apply helpers ───────────────────────────────────────────────────────
   const applySearchBlock = useCallback(async (entry) => {

@@ -59,9 +59,20 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ── System compilers & language runtimes ────────────────────────────────────
+# We need GCC 14 for C++26 support — Ubuntu 22.04's stock g++ is GCC 11,
+# which rejects `-std=c++26` outright. The Ubuntu Toolchain PPA ships
+# backports of GCC 14, which recognises both `-std=c++26` and `-std=c++2c`
+# and supports the bulk of the C++26 language features that have landed
+# upstream so far. We point the unversioned `g++` / `gcc` aliases at the
+# new binaries via update-alternatives so every downstream invocation
+# (compile_core, compile_gui, host_runner, the LSP's compile_flags.txt)
+# picks up the upgrade without needing to know the version explicitly.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # C/C++
-    g++ gcc clang make cmake \
+    software-properties-common gnupg ca-certificates \
+    && add-apt-repository -y ppa:ubuntu-toolchain-r/test \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    # C/C++ — GCC 14 for C++26
+    gcc-14 g++-14 clang make cmake \
     # Java
     openjdk-17-jdk-headless \
     # Python
@@ -69,7 +80,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # SDL2
     libsdl2-2.0-0 libsdl2-dev \
     # Runtime utilities used by language runtimes and downloads
-    curl ca-certificates xz-utils \
+    curl xz-utils \
+    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 \
+    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100 \
+    && update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 100 \
+    && update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-14 100 \
     && rm -rf /var/lib/apt/lists/*
 
 ARG NODE_VERSION=20.20.2
