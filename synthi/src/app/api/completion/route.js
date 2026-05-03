@@ -1,33 +1,197 @@
 import { NextResponse } from 'next/server';
 import {
   AI_COMPLETION_MAX_INPUT_CHARS,
-  AI_COMPLETION_STOP_SEQUENCE,
   AI_COMPLETION_MAX_OUTPUT_TOKENS,
+  COMPLETION_OPEN,
+  COMPLETION_CLOSE,
 } from '@/lib/completion';
 import { GoogleGenAI } from "@google/genai";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const COMPLETION_TIMEOUT_MS = 12_000;
-const MAX_BLOCK_CHARS = 2200;
+// We dropped the multi-file references, so we have token budget back.
+// 4.8 KB total context fits flash-lite comfortably and gives the model
+// enough header/class context for typed languages like C++.
+const MAX_BLOCK_CHARS = 4800;
 const HALF_BLOCK_CHARS = Math.floor(MAX_BLOCK_CHARS / 2);
 
-const COMPLETION_OPEN = '<|completion|>';
-const COMPLETION_CLOSE = '<|/completion|>';
+// ── RAG fast-context wiring ──────────────────────────────────────────────
+// We call ai-backend's /code-intel/context/fast endpoint to pull hybrid
+// (BM25 + dense + symbol) snippets from the workspace's index. The endpoint
+// is LLM-free and benchmarks at ~50–250ms (the upper end is when an inline
+// query embedding has to be computed; cache hits are sub-30ms). We still
+// cap the wait so a slow backend can't hold up the keystroke path.
+const CODE_INTEL_URL = process.env.CODE_INTEL_URL
+  || process.env.NEXT_PUBLIC_CODE_INTEL_URL
+  || 'http://localhost:8000';
+const CODE_INTEL_API_KEY = process.env.CODE_INTEL_API_KEY || '';
+// 350ms gives the inline-embed step room (~120ms cap server-side) plus
+// retrieval and round-trip without the user feeling the wait. Cache hits
+// return well under this regardless.
+const RAG_FETCH_TIMEOUT_MS = 350;
+// Server-side embed budget. The first time we see a new query fingerprint
+// the backend pays this cost; every subsequent keystroke within ~30s reuses
+// the cached embedding. 0 disables inline embedding entirely.
+const RAG_EMBED_TIMEOUT_MS = 120;
+const RAG_CACHE_TTL_MS = 30_000;
+const RAG_CACHE_MAX_ENTRIES = 256;
+
+// Tiny LRU keyed by workspace + a fingerprint of the query. Cursor / Copilot
+// hide their per-keystroke retrieval cost behind exactly this kind of cache —
+// pay the latency tax once per ~30s window, then it's free for every
+// subsequent completion that hits a similar query.
+const ragCache = new Map();
+const ragInflight = new Map(); // dedup concurrent requests for the same key
+
+const ragCacheGet = (key) => {
+  const entry = ragCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > RAG_CACHE_TTL_MS) {
+    ragCache.delete(key);
+    return null;
+  }
+  // Refresh LRU position.
+  ragCache.delete(key);
+  ragCache.set(key, entry);
+  return entry.value;
+};
+
+const ragCacheSet = (key, value) => {
+  ragCache.set(key, { value, ts: Date.now() });
+  while (ragCache.size > RAG_CACHE_MAX_ENTRIES) {
+    const oldest = ragCache.keys().next().value;
+    if (oldest === undefined) break;
+    ragCache.delete(oldest);
+  }
+};
+
+// Fingerprint just enough of the prefix that small typing changes hit the
+// same cache entry. We slice to the last ~120 chars and strip whitespace —
+// this means typing one extra character usually still cache-hits.
+const fingerprintQuery = (query) => {
+  const s = (query || '').replace(/\s+/g, ' ').trim();
+  return s.slice(Math.max(0, s.length - 120));
+};
+
+const RAG_IDENT_RE = /[A-Za-z_][A-Za-z0-9_]{1,}/g;
+const extractQuerySymbols = (text) => {
+  if (!text) return [];
+  const seen = new Map();
+  let m;
+  RAG_IDENT_RE.lastIndex = 0;
+  // Walk back-to-front so the cursor's neighborhood biases the symbol list.
+  const slice = text.slice(Math.max(0, text.length - 600));
+  while ((m = RAG_IDENT_RE.exec(slice))) {
+    const ident = m[0];
+    if (ident.length < 3) continue;
+    seen.set(ident, (seen.get(ident) || 0) + 1);
+  }
+  return [...seen.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([s]) => s);
+};
+
+/**
+ * Hit /code-intel/context/fast with a hard timeout. Returns an array of
+ * reference shapes ready for buildPrompt, or [] on miss / timeout / failure —
+ * inline completions never block on this path.
+ */
+const fetchRagReferences = async ({ workspaceSlug, query, language }) => {
+  if (!workspaceSlug || !query) return [];
+
+  const key = `${workspaceSlug}::${language || ''}::${fingerprintQuery(query)}`;
+  const cached = ragCacheGet(key);
+  if (cached) return cached;
+
+  const inflight = ragInflight.get(key);
+  if (inflight) return inflight;
+
+  const symbols = extractQuerySymbols(query);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort('rag-timeout'), RAG_FETCH_TIMEOUT_MS);
+
+  const promise = (async () => {
+    try {
+      const res = await fetch(`${CODE_INTEL_URL}/code-intel/context/fast`, {
+        method: 'POST',
+        signal: ctrl.signal,
+        headers: {
+          'content-type': 'application/json',
+          ...(CODE_INTEL_API_KEY ? { 'x-code-intel-key': CODE_INTEL_API_KEY } : {}),
+        },
+        body: JSON.stringify({
+          workspace_path: workspaceSlug,
+          query,
+          symbols,
+          language: language || null,
+          // 8 chunks * up to 480 chars each gives the merge step diverse
+          // candidates to dedup/MMR over while staying under the 5 KB refs
+          // budget rendered into the prompt.
+          max_chunks: 8,
+          max_chars_per_chunk: 480,
+          embed_timeout_ms: RAG_EMBED_TIMEOUT_MS,
+        }),
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      const refs = Array.isArray(data?.chunks)
+        ? data.chunks.map((c) => ({
+            path: c.file || 'unknown',
+            snippet: c.snippet || '',
+            startLine: c.start_line || 0,
+            symbol: c.symbol || '',
+            kind: 'rag',
+          }))
+        : [];
+      ragCacheSet(key, refs);
+      return refs;
+    } catch (_) {
+      // Timeout, network, or upstream failure — silent. The local refs the
+      // client already attached are sufficient.
+      return [];
+    } finally {
+      clearTimeout(timer);
+      ragInflight.delete(key);
+    }
+  })();
+
+  ragInflight.set(key, promise);
+  return promise;
+};
+
+/**
+ * Merge client-supplied (local-grep) references with RAG-supplied references,
+ * dedup by `path + symbol` (or `path + startLine` for recent-edit shapes),
+ * and prefer the entry with more useful metadata when both sides cover the
+ * same chunk.
+ */
+const mergeReferences = (clientRefs = [], ragRefs = []) => {
+  const out = [];
+  const seen = new Set();
+  const keyOf = (r) => {
+    if (!r) return '';
+    if (r.symbol) return `${r.path || ''}::${r.symbol}`;
+    return `${r.path || ''}::${r.startLine || 0}`;
+  };
+  // Recent-edit refs go first (strongest "what's relevant right now" signal),
+  // then RAG (workspace-wide), then local symbol greps (subset of RAG most
+  // of the time but cheap insurance).
+  const recentEdits = clientRefs.filter((r) => r?.kind === 'recent-edit');
+  const localSymbols = clientRefs.filter((r) => r?.kind !== 'recent-edit');
+  for (const r of [...recentEdits, ...ragRefs, ...localSymbols]) {
+    const k = keyOf(r);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(r);
+  }
+  return out;
+};
 
 const limitText = (value, { max = MAX_BLOCK_CHARS, fromEnd = false } = {}) => {
   if (typeof value !== 'string' || !value.trim()) return '';
   if (value.length <= max) return value;
   return fromEnd ? value.slice(value.length - max) : value.slice(0, max);
-};
-
-const withTimeout = (promise, timeoutMs = COMPLETION_TIMEOUT_MS) => {
-  return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => reject(new Error('AI completion timed out')), timeoutMs);
-    promise.then(
-      (value) => { clearTimeout(timeoutId); resolve(value); },
-      (err)   => { clearTimeout(timeoutId); reject(err); }
-    );
-  });
 };
 
 const extractText = (resp) => {
@@ -81,7 +245,41 @@ const buildFimContext = (blocks = {}, body = {}) => {
   };
 };
 
-const buildPrompt = ({ prefix, suffix, language, filePath }) => {
+// Total budget for `references` content rendered into the CONTEXT block.
+// Flash-Lite happily eats 32k+ tokens; modern inline-completion pipelines
+// (Cursor, Continue) routinely ship 4–10 KB of retrieval context. 5 KB hits
+// the sweet spot between recall and prompt cost.
+const MAX_REFS_CHARS = 5000;
+
+/**
+ * Render a small set of caller-supplied references (symbol declarations and
+ * recent edits in OTHER files) into a compact CONTEXT block. We get one
+ * targeted snippet per relevant symbol — never a whole file — so the model
+ * sees the type/signature info without the noise that the previous
+ * "ship every open file" payload caused.
+ */
+const formatReferences = (refs) => {
+  if (!Array.isArray(refs) || !refs.length) return '';
+  const sections = [];
+  let used = 0;
+  for (const ref of refs) {
+    if (!ref || typeof ref.snippet !== 'string' || !ref.snippet.trim()) continue;
+    if (used >= MAX_REFS_CHARS) break;
+    const remaining = MAX_REFS_CHARS - used;
+    const snippet = ref.snippet.length > remaining
+      ? ref.snippet.slice(0, remaining) + '\n…'
+      : ref.snippet;
+    const tag = ref.kind === 'recent-edit'
+      ? `recent edit · ${ref.path || 'unknown'}`
+      : `${ref.symbol ? `symbol ${ref.symbol} · ` : ''}${ref.path || 'unknown'}${ref.startLine ? ` (line ${ref.startLine})` : ''}`;
+    sections.push(`// === ${tag} ===\n${snippet}`);
+    used += snippet.length;
+  }
+  return sections.join('\n\n');
+};
+
+const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
+  const refBlock = formatReferences(references);
   return [
     'You are an inline code completion engine. Continue the code at the cursor.',
     `Language: ${language}`,
@@ -93,11 +291,14 @@ const buildPrompt = ({ prefix, suffix, language, filePath }) => {
     '- If nothing useful would fit (the surrounding code is already complete), output an empty completion.',
     '- Match the existing indentation and code style exactly.',
     '- No explanations, no markdown fences, no commentary.',
+    refBlock
+      ? '- The CONTEXT block below shows related symbols (for type/signature info — do not copy literally) and recent-edit hunks (lines marked with `+ ` show what was just typed elsewhere — they signal user intent and may suggest matching patterns).'
+      : null,
     '',
     'OUTPUT FORMAT',
     `Wrap the inserted text in ${COMPLETION_OPEN}...${COMPLETION_CLOSE}. Output nothing else.`,
     '',
-    'EXAMPLE',
+    'EXAMPLE (illustrative — match the actual language above, not this one)',
     'BEFORE:',
     'function add(a, b) {',
     '  return ',
@@ -108,6 +309,9 @@ const buildPrompt = ({ prefix, suffix, language, filePath }) => {
     '',
     '---',
     '',
+    refBlock ? 'CONTEXT (read-only, from other files):' : null,
+    refBlock || null,
+    refBlock ? '' : null,
     'BEFORE:',
     prefix,
     'AFTER:',
@@ -115,99 +319,6 @@ const buildPrompt = ({ prefix, suffix, language, filePath }) => {
     '',
     'OUTPUT:',
   ].filter(line => line !== null).join('\n');
-};
-
-/**
- * Strip everything outside <|completion|>...<|/completion|>. Falls back gracefully
- * when the model omits the markers (common with Gemini Flash under load).
- */
-const extractCompletion = (raw) => {
-  if (!raw) return '';
-
-  // Full envelope.
-  const tagged = raw.match(/<\|completion\|>([\s\S]*?)<\|\/completion\|>/);
-  if (tagged) return tagged[1];
-
-  // Half-open: `<|completion|>foo` — happens when stopSequences=[COMPLETION_CLOSE]
-  // truncates the trailing marker before it reaches us.
-  const openIdx = raw.indexOf('<|completion|>');
-  if (openIdx !== -1) return raw.slice(openIdx + '<|completion|>'.length);
-
-  // Half-close: `foo<|/completion|>` — model omitted the opener.
-  const closeIdx = raw.indexOf('<|/completion|>');
-  if (closeIdx !== -1) return raw.slice(0, closeIdx);
-
-  // Fallback 1: stripped markdown fence
-  const fence = raw.match(/```[a-zA-Z0-9_+-]*\n?([\s\S]*?)```/);
-  if (fence) return fence[1];
-
-  // Fallback 2: legacy JSON envelope (in case the model regresses to old prompt style)
-  const json = raw.match(/<JSON>([\s\S]*?)<\/JSON>/i);
-  if (json) {
-    try {
-      const parsed = JSON.parse(json[1]);
-      if (parsed && typeof parsed.text === 'string') return parsed.text;
-    } catch (_) { /* ignore */ }
-  }
-
-  // Last resort: return the whole thing minus obvious chatter.
-  return raw;
-};
-
-/**
- * Clean the completion: strip leading/trailing fences, leading "Here is..." chatter,
- * trailing stop sequences, and de-duplicate any prefix overlap with the cursor's line.
- */
-const sanitize = (text, { prefix = '' } = {}) => {
-  if (!text) return '';
-  let out = String(text);
-
-  // Remove markdown fences if a wrapper slipped through.
-  out = out.replace(/^```[a-zA-Z0-9_+-]*\n?/, '').replace(/```\s*$/, '');
-
-  // Strip a leading "OUTPUT:" the model echoed from the prompt template.
-  out = out.replace(/^\s*output\s*:\s*/i, '');
-
-  // Strip stray envelope markers if either half slipped through earlier extraction.
-  out = out.replace(/<\|\/?completion\|>/g, '');
-
-  // Drop leading "Here's the completion:" style preludes.
-  out = out.replace(/^\s*(here(?:'s| is)|the completion|sure[,!:])[^\n]*\n/i, '');
-
-  // Strip the explicit stop sequence we inject.
-  out = out.split(AI_COMPLETION_STOP_SEQUENCE)[0];
-
-  // Normalise carriage returns.
-  out = out.replace(/\r/g, '');
-
-  // De-duplicate: if the model started by re-printing the tail of the prefix, trim it.
-  if (prefix && out.length) {
-    const tail = prefix.slice(-Math.min(prefix.length, 80));
-    for (let n = Math.min(tail.length, out.length); n >= 4; n--) {
-      if (out.startsWith(tail.slice(-n))) {
-        out = out.slice(n);
-        break;
-      }
-    }
-  }
-
-  // Don't return only whitespace.
-  if (!out.trim()) return '';
-
-  // Trim a single trailing newline (Monaco re-adds when it inserts).
-  return out.replace(/\n+$/, '\n').replace(/\n$/, '');
-};
-
-/**
- * Suppress a suggestion that already appears verbatim in the surrounding context —
- * this is the #1 source of "ugly" inline completions that just echo what the user typed.
- */
-const isEcho = (suggestion, prefix, suffix) => {
-  if (!suggestion?.trim()) return true;
-  const trimmed = suggestion.trim();
-  if (prefix && prefix.includes(trimmed)) return true;
-  if (suffix && suffix.includes(trimmed)) return true;
-  return false;
 };
 
 export async function POST(request) {
@@ -225,7 +336,10 @@ export async function POST(request) {
   const { prefix, suffix } = buildFimContext(body?.contextBlocks, body);
 
   if (!prefix && !suffix) {
-    return NextResponse.json({ completion: '' }, { status: 200 });
+    return new Response('', {
+      status: 200,
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+    });
   }
 
   const trimmedPrefix = prefix.length > AI_COMPLETION_MAX_INPUT_CHARS
@@ -235,66 +349,98 @@ export async function POST(request) {
     ? suffix.slice(0, AI_COMPLETION_MAX_INPUT_CHARS)
     : suffix;
 
-  // Multi-file references were dropped: they polluted the FIM context with
-  // unrelated code from sibling files (often dirty buffers), causing the model
-  // to echo from refs or hallucinate cross-file symbols. The local prefix/suffix
-  // already contains every symbol the user has actually used in this file.
+  const clientRefs = Array.isArray(body?.references) ? body.references : [];
+
+  // RAG fast-context fetch: hit ai-backend's /code-intel/context/fast in
+  // parallel with prompt prep. Cache hits return synchronously; misses race
+  // a 200ms timeout. We use the trailing prefix as the query so the index's
+  // BM25 + symbol search can rank chunks by what the user is currently
+  // working on.
+  const workspaceSlug = typeof body?.workspaceSlug === 'string' ? body.workspaceSlug : '';
+  const ragQuery = trimmedPrefix.slice(Math.max(0, trimmedPrefix.length - 600));
+  const ragRefs = workspaceSlug
+    ? await fetchRagReferences({ workspaceSlug, query: ragQuery, language })
+    : [];
+
+  const references = mergeReferences(clientRefs, ragRefs);
   const prompt = buildPrompt({
     prefix: trimmedPrefix,
     suffix: trimmedSuffix,
     language,
     filePath: body?.contextBlocks?.filePath || null,
+    references,
   });
 
-  try {
-    let completionText = '';
-    try {
-      // The @google/genai SDK takes generation parameters under `config`, not
-      // `generationConfig` (that's the legacy `@google/generative-ai` shape).
-      // Passing the wrong key silently drops temperature / maxOutputTokens /
-      // stopSequences, which is why completions came back unbounded and
-      // wandered far past the requested gap.
-      const stream = await withTimeout(
-        ai.models.generateContentStream({
-          model: 'gemini-3.1-flash-lite-preview',
-          contents: prompt,
-          config: {
-            maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
-            temperature: 0.15, // tighter — we want deterministic, focused completions
-            stopSequences: [COMPLETION_CLOSE, '\nBEFORE:', '\nAFTER:'],
-          },
-        }),
-        COMPLETION_TIMEOUT_MS
-      );
-      for await (const chunk of stream) {
-        const t = extractText(chunk);
-        if (t) completionText += t;
+  // Streaming response: pipe each Gemini chunk straight to the client. The
+  // client owns extraction/sanitization (logic lives in @/lib/completion) so
+  // it can render partial text while the stream is still arriving — Cursor /
+  // Copilot style. The full-buffer fallback path collapses to a single push
+  // when streaming isn't supported.
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      let timer = null;
+      let cancelled = false;
+
+      const cancel = (err) => {
+        if (cancelled) return;
+        cancelled = true;
+        if (timer) clearTimeout(timer);
+        try { controller.error(err); } catch (_) { /* already closed */ }
+      };
+
+      timer = setTimeout(() => cancel(new Error('AI completion timed out')), COMPLETION_TIMEOUT_MS);
+
+      try {
+        let geminiStream;
+        try {
+          geminiStream = await ai.models.generateContentStream({
+            model: 'gemini-3.1-flash-lite-preview',
+            contents: prompt,
+            config: {
+              maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
+              temperature: 0.15,
+              stopSequences: [COMPLETION_CLOSE, '\nBEFORE:', '\nAFTER:'],
+            },
+          });
+        } catch (streamErr) {
+          // SDK didn't stream — fall back to a single shot and emit it as one chunk.
+          const response = await ai.models.generateContent({
+            model: 'gemini-3.1-flash-lite-preview',
+            contents: prompt,
+            config: {
+              maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
+              temperature: 0.15,
+              stopSequences: [COMPLETION_CLOSE, '\nBEFORE:', '\nAFTER:'],
+            },
+          });
+          const text = extractText(response);
+          if (text) controller.enqueue(encoder.encode(text));
+          if (timer) clearTimeout(timer);
+          controller.close();
+          return;
+        }
+
+        for await (const chunk of geminiStream) {
+          if (cancelled) return;
+          const t = extractText(chunk);
+          if (t) controller.enqueue(encoder.encode(t));
+        }
+        if (timer) clearTimeout(timer);
+        controller.close();
+      } catch (e) {
+        cancel(e);
       }
-    } catch (streamErr) {
-      const response = await withTimeout(
-        ai.models.generateContent({
-          model: 'gemini-3.1-flash-lite-preview',
-          contents: prompt,
-          config: {
-            maxOutputTokens: AI_COMPLETION_MAX_OUTPUT_TOKENS,
-            temperature: 0.15,
-            stopSequences: [COMPLETION_CLOSE, '\nBEFORE:', '\nAFTER:'],
-          },
-        }),
-        COMPLETION_TIMEOUT_MS
-      );
-      completionText = extractText(response);
-    }
+    },
+  });
 
-    const inner = extractCompletion(completionText);
-    const cleaned = sanitize(inner, { prefix: trimmedPrefix });
-
-    if (!cleaned || isEcho(cleaned, trimmedPrefix, trimmedSuffix)) {
-      return NextResponse.json({ completion: '' }, { status: 200 });
-    }
-
-    return NextResponse.json({ completion: cleaned }, { status: 200 });
-  } catch (e) {
-    return NextResponse.json({ error: 'Service error', detail: e.message }, { status: 502 });
-  }
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+    },
+  });
 }

@@ -149,6 +149,17 @@ export class FileCache {
     this._snapshots.clear();
   }
 
+  /**
+   * Iterate over [path, content] pairs for every cached file. Used by NEP
+   * to send all prefetched files (not just the user-selected ones in the
+   * Redux fileContentCache) so cross-file predictions have a substrate.
+   */
+  *entries() {
+    for (const [path, entry] of this._map) {
+      yield [path, entry.content];
+    }
+  }
+
   _evictIfNeeded() {
     if (this._bytes <= this.maxBytes) return;
 

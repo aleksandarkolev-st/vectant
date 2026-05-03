@@ -132,6 +132,92 @@ export function removeFile(path) {
 }
 
 /**
+ * Register an absolute system path (e.g. /usr/include/c++/11/iostream)
+ * with the overlay so Monaco's file service can resolve it the next time
+ * a feature (go-to-definition, hover) navigates there. The URI scheme is
+ * always `file:` because clangd and other servers emit `file://` URIs;
+ * intercepting before Monaco gets the open request avoids a default
+ * filesystem fallback that fails on Windows for Linux paths.
+ *
+ * Two URIs are registered for each path: the canonical `URI.file(absPath)`
+ * form Monaco produces for go-to-definition and the verbatim URI string
+ * the LSP returned (if different). Encoding round-trips between clangd
+ * and Monaco can otherwise produce two URI strings that compare unequal
+ * but resolve to the same file.
+ *
+ * @param {string} absPath Absolute path on the worker
+ * @param {string} content File contents
+ * @param {string} [originalUri] The exact URI string the LSP emitted
+ * @returns {Promise<boolean>} true on success
+ */
+export async function registerSystemFile(absPath, content, originalUri) {
+    if (!fileProvider) {
+        // initSynthiFileSystem hasn't run yet; the overlay isn't installed.
+        return false;
+    }
+    if (!absPath || typeof content !== 'string') return false;
+    const {
+        RegisteredMemoryFile,
+    } = await import('@codingame/monaco-vscode-files-service-override');
+    const { URI } = await import('@codingame/monaco-vscode-api/vscode/vs/base/common/uri');
+
+    // Re-register if we already have it so the latest content wins.
+    const dispose = (key) => {
+        const old = fileDisposables.get(key);
+        if (old) {
+            try { old.dispose(); } catch (_) { /* ignored */ }
+            fileDisposables.delete(key);
+        }
+    };
+    const tryRegister = (uri, key) => {
+        try {
+            const file = new RegisteredMemoryFile(uri, content);
+            const disposable = fileProvider.registerFile(file);
+            fileDisposables.set(key, disposable);
+            return true;
+        } catch (e) {
+            console.warn('[SynthiFS] registerSystemFile failed:', key, e?.message);
+            return false;
+        }
+    };
+
+    let ok = false;
+    try {
+        const canonical = URI.file(absPath);
+        const canonicalKey = `sys:${canonical.toString()}`;
+        dispose(canonicalKey);
+        ok = tryRegister(canonical, canonicalKey) || ok;
+    } catch (e) {
+        console.warn('[SynthiFS] URI.file failed for', absPath, e?.message);
+    }
+
+    if (originalUri) {
+        try {
+            const verbatim = URI.parse(originalUri);
+            const verbatimKey = `sys:${verbatim.toString()}`;
+            if (!fileDisposables.has(verbatimKey)) {
+                dispose(verbatimKey);
+                ok = tryRegister(verbatim, verbatimKey) || ok;
+            }
+        } catch (e) {
+            console.warn('[SynthiFS] URI.parse failed for', originalUri, e?.message);
+        }
+    }
+
+    if (ok) fileDisposables.set(`syspath:${absPath}`, { dispose: () => {} });
+    return ok;
+}
+
+/**
+ * Has a system file already been registered? Lets callers skip a
+ * round-trip to the worker for files we've cached this session.
+ * @param {string} absPath
+ */
+export function hasSystemFile(absPath) {
+    return fileDisposables.has(`syspath:${absPath}`);
+}
+
+/**
  * Tear down the overlay (e.g. on unmount).
  */
 export function disposeSynthiFileSystem() {

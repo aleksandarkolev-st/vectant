@@ -83,9 +83,18 @@ services:
       LOCAL_TURN_CREDENTIAL: "synthi"
       # Public URLs
       NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
+      # AI — used by /api/completion, /api/next-edit, /api/chat, /api/theme-generate.
+      # Without this the SDK falls back to ADC and throws
+      # "Could not load the default credentials".
+      GEMINI_API_KEY: "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
+      # Inside the compose network the ai-engine is reachable as `ai-engine:8000`,
+      # not localhost. Used by RAG fast-context, NEP edit-impact, shadow flows, agent.
+      CODE_INTEL_URL: "http://ai-engine:8000"
     depends_on:
       postgres:
         condition: service_healthy
+      ai-engine:
+        condition: service_started
 
   collab-server:
     build:
@@ -148,12 +157,24 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    # ai-engine needs read access to the same workspace files collab-server
+    # writes. Without this mount, /code-intel/edit-impact can't index any
+    # workspace and returns empty candidates — NEP loses the entire cross-
+    # file impact graph. Read-only is enough; the engine never writes back.
+    volumes:
+      - collab-data:/data:ro
     environment:
       # API Keys
-      GOOGLE_AI_API_KEY: "AIzaSyBFGyMQ7muhz_vz5E8Ug5uFoRtSZLTK4ys"
-      GEMINI_API_KEY: "AIzaSyBFGyMQ7muhz_vz5E8Ug5uFoRtSZLTK4ys"
+      GOOGLE_AI_API_KEY: "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
+      GEMINI_API_KEY: "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
       SYNTHI_AI_MODEL: "gemini-3-flash-preview-preview"
       OPENAI_API_KEY: "dummy"
+      # Tell resolve_workspace_path() where to find slug-rooted repos.
+      # The collab-data named volume is shared with collab-server (which
+      # writes); we don't need depends_on because the volume is created
+      # independently of service startup order — and adding one would cycle
+      # against collab-server's existing depends_on: ai-engine.
+      SYNTHI_REPOS_PATH: "/data/repos"
 
   ai-gateway:
     build:

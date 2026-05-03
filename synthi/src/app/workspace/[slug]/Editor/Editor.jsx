@@ -49,6 +49,7 @@ import {
 import { EDITOR_OPTIONS, getResponsiveEditorOverrides } from './options';
 import { useViewport } from '@/hooks/useViewport';
 import { useAiCompletion } from './AICompletion';
+import { useNextEditPrediction } from './NextEditPrediction';
 import { useDiffManager } from './diffManager';
 import { useGitGutter } from './gitGutterService';
 import { useEditorProviders } from './providers';
@@ -60,7 +61,8 @@ import { ConflictBanner } from './ConflictBanner';
 import MergeConflictEditor from '@/components/git/MergeConflictEditor';
 import UnsavedChangesDialog from '@/components/ui/UnsavedChangesDialog';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
-import { initSynthiFileSystem, updateFile as updateVirtualFile, disposeSynthiFileSystem } from './SynthiFileSystemProvider';
+import { initSynthiFileSystem, updateFile as updateVirtualFile, disposeSynthiFileSystem, registerSystemFile, hasSystemFile } from './SynthiFileSystemProvider';
+import { fileCache } from '@/services/fileCache';
 import { registerMonarchTokenizers } from './languageTokenizers';
 import * as monaco from '@codingame/monaco-vscode-editor-api';
 import { toast } from 'sonner';
@@ -494,6 +496,47 @@ const EditorPanel = ({
         );
     }, [servicesReady, fileCacheEntries, rawFiles]);
 
+    // ── Worker file-sync seeding ────────────────────────────────
+    // Push every cached workspace file to the worker disk as soon as the
+    // file-sync DataChannel opens. Without this clangd / pyright / etc.
+    // only see the active file (via didOpen) plus whatever
+    // storage::download pulled from GCS, so cross-file symbol lookups
+    // ("undefined reference to compute") fail for files the user opened
+    // but never saved.
+    const fileSyncSeededRef = useRef(false);
+    useEffect(() => {
+        if (!compilerClient) return undefined;
+        if (compilerStatus !== CompilerStatus.CONNECTED) {
+            fileSyncSeededRef.current = false;
+            return undefined;
+        }
+        const seed = () => {
+            if (fileSyncSeededRef.current) return;
+            const entries = fileCacheEntriesRef.current || [];
+            if (!entries || entries.length === 0) return;
+            try {
+                compilerClient.syncAllFiles(entries);
+                fileSyncSeededRef.current = true;
+            } catch (e) {
+                console.warn('[Editor] syncAllFiles failed:', e?.message);
+            }
+        };
+        const dispose = compilerClient.onFileSyncOpen(seed);
+        // Channel may already be open (reconnect path) — call seed() once.
+        if (compilerClient.fileSyncChannel?.readyState === 'open') seed();
+        return () => { try { dispose?.(); } catch (_) { /* ignored */ } };
+    }, [compilerClient, compilerStatus]);
+
+    // Re-seed whenever the file cache grows so newly-loaded tabs land on
+    // the worker without waiting for save.
+    useEffect(() => {
+        if (!compilerClient) return;
+        if (compilerStatus !== CompilerStatus.CONNECTED) return;
+        if (compilerClient.fileSyncChannel?.readyState !== 'open') return;
+        try { compilerClient.syncAllFiles(fileCacheEntries || []); }
+        catch (_) { /* best-effort */ }
+    }, [compilerClient, compilerStatus, fileCacheEntries]);
+
     useEffect(() => {
         console.log('[LSP-EFFECT] Guard check:', {
             monacoInstance: !!monacoInstance,
@@ -875,17 +918,39 @@ const EditorPanel = ({
                 // results instantly (via middleware returning []), which
                 // causes VS Code's suggest model to dismiss the widget
                 // before our async provider's 34 items arrive.
+                //
+                // Also skip the built-in InlineCompletionItemFeature. LSPs
+                // that advertise `inlineCompletionProvider` capability
+                // (newer rust-analyzer, gopls, etc.) would otherwise
+                // register a Monaco inline-completion provider for the
+                // same languages as Synthi's AI ghost-text provider.
+                // Monaco merges results from all registered inline
+                // providers; an LSP returning [] interleaves with our AI
+                // suggestion and dismisses it.
                 registerFeature(feature) {
                     // Use multiple checks — instanceof can fail when
                     // bundlers duplicate the vscode-languageclient module.
+                    const ctorName = feature?.constructor?.name;
+                    const method = feature?.registrationType?.method;
+
                     const isCompletionFeature =
                         feature instanceof CompletionItemFeature ||
-                        feature?.constructor?.name === 'CompletionItemFeature' ||
-                        feature?.registrationType?.method === 'textDocument/completion';
+                        ctorName === 'CompletionItemFeature' ||
+                        method === 'textDocument/completion';
                     if (isCompletionFeature) {
                         console.log('[LSP] Skipping built-in CompletionItemFeature — using direct provider');
                         return;
                     }
+
+                    const isInlineCompletionFeature =
+                        ctorName === 'InlineCompletionItemFeature' ||
+                        ctorName === 'InlineCompletionFeature' ||
+                        method === 'textDocument/inlineCompletion';
+                    if (isInlineCompletionFeature) {
+                        console.log('[LSP] Skipping built-in InlineCompletionItemFeature — Synthi AI owns inline completions');
+                        return;
+                    }
+
                     super.registerFeature(feature);
                 }
             }
@@ -938,6 +1003,85 @@ const EditorPanel = ({
             // access it.
             let _lastDidChangeTs = 0;
 
+            // Pre-load any URIs in an LSP navigation response that point at
+            // the worker's filesystem outside of /synthi/ (system headers,
+            // stdlib source). Without this Monaco's default file service
+            // tries to read e.g. /usr/include/c++/11/iostream from the
+            // user's local disk and fails. We fetch via the file-sync
+            // `read` op and register the content in the FS overlay so the
+            // subsequent open call resolves cleanly.
+            const SYSTEM_URI_RE = /^file:\/\/(?!\/synthi\/)\/[^?#]+/;
+            const seenSystemPathsThisSession = new Set();
+
+            const collectSystemUrisFromValue = (value, out) => {
+                if (!value) return;
+                if (typeof value === 'string') {
+                    if (SYSTEM_URI_RE.test(value)) out.add(value);
+                    return;
+                }
+                if (Array.isArray(value)) {
+                    for (const v of value) collectSystemUrisFromValue(v, out);
+                    return;
+                }
+                if (typeof value === 'object') {
+                    // monaco-languageclient surfaces locations as
+                    // { uri: Uri, range }, { targetUri: Uri, ... } objects
+                    // where Uri has a .toString() method we want to use.
+                    if (value.uri) {
+                        const s = typeof value.uri === 'string' ? value.uri : value.uri.toString?.();
+                        if (s && SYSTEM_URI_RE.test(s)) out.add(s);
+                    }
+                    if (value.targetUri) {
+                        const s = typeof value.targetUri === 'string' ? value.targetUri : value.targetUri.toString?.();
+                        if (s && SYSTEM_URI_RE.test(s)) out.add(s);
+                    }
+                    for (const k of Object.keys(value)) {
+                        if (k === 'uri' || k === 'targetUri') continue;
+                        collectSystemUrisFromValue(value[k], out);
+                    }
+                }
+            };
+
+            const preloadSystemUris = async (result) => {
+                if (!result) return;
+                if (!compilerClient || typeof compilerClient.readRemoteFile !== 'function') return;
+                const uris = new Set();
+                collectSystemUrisFromValue(result, uris);
+                if (uris.size === 0) return;
+                await Promise.all(Array.from(uris).map(async (uriStr) => {
+                    const m = uriStr.match(/^file:\/\/(\/[^?#]+)/);
+                    if (!m) return;
+                    const absPath = decodeURIComponent(m[1]);
+                    if (seenSystemPathsThisSession.has(absPath)) return;
+                    if (hasSystemFile(absPath)) {
+                        seenSystemPathsThisSession.add(absPath);
+                        return;
+                    }
+                    try {
+                        const res = await compilerClient.readRemoteFile(absPath);
+                        if (res?.ok && typeof res.content === 'string') {
+                            await registerSystemFile(absPath, res.content, uriStr);
+                            seenSystemPathsThisSession.add(absPath);
+                        } else if (res?.error) {
+                            console.warn(`[LSP] readRemoteFile(${absPath}) failed: ${res.error}`);
+                        }
+                    } catch (e) {
+                        console.warn(`[LSP] system-uri preload threw for ${absPath}:`, e?.message);
+                    }
+                }));
+            };
+
+            const navMiddleware = async (document, position, token, next) => {
+                const result = await next(document, position, token);
+                try { await preloadSystemUris(result); } catch (_) { /* best-effort */ }
+                return result;
+            };
+            const referencesMiddleware = async (document, position, context, token, next) => {
+                const result = await next(document, position, context, token);
+                try { await preloadSystemUris(result); } catch (_) { /* best-effort */ }
+                return result;
+            };
+
             const languageClient = new SynthiLanguageClient({
                 name: `Synthi Language Client (${backendLang})`,
                 clientOptions: {
@@ -971,6 +1115,16 @@ const EditorPanel = ({
                             console.log('[LSP] middleware didSave', uri);
                             return next(document);
                         },
+                        // Pre-load system header / stdlib source URIs so
+                        // Monaco's open-editor flow doesn't try to read
+                        // them from the user's local disk and fail. Hooked
+                        // into every navigation response that may contain
+                        // a non-/synthi/ URI.
+                        provideDefinition: navMiddleware,
+                        provideDeclaration: navMiddleware,
+                        provideTypeDefinition: navMiddleware,
+                        provideImplementation: navMiddleware,
+                        provideReferences: referencesMiddleware,
                         // NOTE: provideCompletionItem middleware is NOT needed —
                         // CompletionItemFeature is skipped entirely in
                         // registerFeature() above, so the built-in bridge
@@ -2522,8 +2676,14 @@ const EditorPanel = ({
     // instead of destroying and recreating the editor.
     useEffect(() => {
         if (!editorInstance || !monacoInstance || !activeFile) return;
-        const filePath = activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path;
-        const uri = monacoInstance.Uri.parse(`file:///synthi/${filePath}`);
+        // System headers (isSystem=true, e.g. /usr/include/c++/11/iostream)
+        // live in the worker's filesystem, not under /synthi/. Use URI.file
+        // so the model URI matches what SynthiFileSystemProvider registered
+        // via registerSystemFile — otherwise Monaco's default file service
+        // tries to read /synthi/usr/include/... from local disk and fails.
+        const uri = activeFile.isSystem
+            ? monacoInstance.Uri.file(activeFile.path)
+            : monacoInstance.Uri.parse(`file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}`);
         let model = monacoInstance.editor.getModel(uri);
         if (!model) {
             // Pre-create the model with cached content so there's no blank
@@ -2562,7 +2722,77 @@ const EditorPanel = ({
         code,
         editorInstance,
         monacoInstance,
+        // Lazy getter: avoids recreating the inline-completion callback every
+        // time the file cache mutates. The hook reads through this ref on
+        // each request so it always sees the latest workspace contents.
+        getFileCacheEntries: () => fileCacheEntriesRef.current || [],
+        workspaceSlug: slug,
         hasActiveDiff: () => false,
+    });
+
+    // --- Next-Edit Prediction (NEP) — Phase 1, feature-flagged off by default ---
+    // Enable via NEXT_PUBLIC_NEXT_EDIT_PREDICTION=1 or window.__SYNTHI_NEP_ENABLED__.
+    const { predictedPaths: nepPredictedPaths } = useNextEditPrediction({
+        editorInstance,
+        monacoInstance,
+        activeFile,
+        activeLanguage,
+        workspaceSlug: slug,
+        // Cross-file unblock: NEP can now decorate predictions targeting
+        // any file (not just the active one) by writing decorations to the
+        // file's Monaco model, and on Tab it dispatches selectFileThunk to
+        // switch tabs when the target isn't already active. dispatch +
+        // rawFiles power that path; without them NEP falls back to the
+        // old active-file-only behaviour.
+        dispatch,
+        rawFiles,
+        // Read from the singleton fileCache, not just Redux. loadScheduler
+        // populates the singleton with every fetched file (active + sibling
+        // prefetch + impact-driven hydration), but the Redux Map only sees
+        // explicit selectFileThunk fulfillments. NEP needs the broader set
+        // so its prompt actually contains the workspace files the user
+        // hasn't manually opened yet — that's where most cross-file
+        // predictions land.
+        getFileCacheEntries: () => {
+            try {
+                const merged = new Map();
+                for (const [p, c] of fileCache.entries()) {
+                    if (typeof c === 'string') merged.set(p, c);
+                }
+                for (const [p, c] of (fileCacheEntriesRef.current || [])) {
+                    if (typeof c === 'string' && !merged.has(p)) merged.set(p, c);
+                }
+                return Array.from(merged.entries());
+            } catch (_) {
+                return fileCacheEntriesRef.current || [];
+            }
+        },
+        // Read live model contents — falls back to the Redux file cache,
+        // then to the singleton fileCache (loadScheduler-populated). The
+        // singleton fallback is what lets NEP read content for any file in
+        // the workspace, not just ones the user has opened as tabs.
+        getLiveFileContent: (path) => {
+            try {
+                if (!path) return null;
+                const activePath = activeFile?.path || activeFile?.name;
+                if (path === activePath) {
+                    const m = editorInstance?.getModel?.();
+                    if (m) return m.getValue();
+                }
+                const entries = fileCacheEntriesRef.current || [];
+                for (const [p, content] of entries) {
+                    if (p === path && typeof content === 'string') return content;
+                }
+                const fromSingleton = fileCache.get(path);
+                if (typeof fromSingleton === 'string') return fromSingleton;
+                return null;
+            } catch (_) {
+                return null;
+            }
+        },
+        // Plan Q1: NEP shares the workspace-switch reset hook with the primary
+        // buffer. Slug change → both buffers drop.
+        workspaceResetKey: slug,
     });
 
     const {
@@ -2609,6 +2839,119 @@ const EditorPanel = ({
         slug,
     });
 
+    // System-header opener.
+    //
+    // When the user Ctrl+clicks an `#include <iostream>` or `#include "config.h"`
+    // that doesn't resolve in the workspace tree, ask the active LSP client
+    // for the absolute path, fetch the contents from the worker, prime the
+    // file cache, and return a synthetic file node the events handler can
+    // dispatch through selectFileThunk so the file lands in a proper Synthi
+    // tab (with our editor pane, not Monaco's hidden internal one).
+    const resolveSystemHeader = useCallback(async ({ importPath, position, modelUri }) => {
+        try {
+            if (!compilerClient || typeof compilerClient.readRemoteFile !== 'function') {
+                console.warn('[SystemHeader] compilerClient not ready');
+                return null;
+            }
+
+            // Find any running LSP client. Most C/C++ workspaces only have
+            // clangd, but a multi-language workspace might have several —
+            // we want one that's actually able to answer textDocument/definition.
+            let client = null;
+            for (const c of languageClientsRef.current.values()) {
+                if (c?.isRunning?.()) { client = c; break; }
+            }
+            if (!client) {
+                console.warn('[SystemHeader] no running LSP client to resolve include');
+                return null;
+            }
+
+            let defResult = null;
+            try {
+                defResult = await client.sendRequest('textDocument/definition', {
+                    textDocument: { uri: modelUri },
+                    position: { line: position.lineNumber - 1, character: position.column - 1 },
+                });
+            } catch (e) {
+                console.warn('[SystemHeader] textDocument/definition failed:', e?.message);
+                return null;
+            }
+            if (!defResult) return null;
+
+            const locs = Array.isArray(defResult) ? defResult : [defResult];
+            let absPath = null;
+            let originalUri = null;
+            for (const loc of locs) {
+                const uriStr = loc?.uri ?? loc?.targetUri ?? null;
+                if (!uriStr) continue;
+                const m = String(uriStr).match(/^file:\/\/(\/[^?#]+)/);
+                if (!m) continue;
+                const p = decodeURIComponent(m[1]);
+                // Pick the first non-`/synthi/` URI — those are the ones
+                // that point at the LSP worker's real filesystem (system
+                // headers, stdlib source). `/synthi/...` URIs would just
+                // bounce us back to a workspace file, which findTargetFile
+                // already handled before we got here.
+                if (!p.startsWith('/synthi/')) {
+                    absPath = p;
+                    originalUri = String(uriStr);
+                    break;
+                }
+            }
+            if (!absPath) {
+                console.warn(`[SystemHeader] LSP returned no system-path location for include "${importPath}"`);
+                return null;
+            }
+
+            let content;
+            try {
+                const res = await compilerClient.readRemoteFile(absPath);
+                if (!res?.ok || typeof res.content !== 'string') {
+                    console.warn('[SystemHeader] readRemoteFile failed:', res?.error || 'unknown');
+                    return null;
+                }
+                content = res.content;
+            } catch (e) {
+                console.warn('[SystemHeader] readRemoteFile threw:', e?.message);
+                return null;
+            }
+
+            // Prime the per-session file cache so selectFileThunk's
+            // cache-hit path returns the system file's content directly,
+            // skipping the workspace loadScheduler (which has no concept
+            // of `/usr/include/...` paths).
+            try { fileCache.set(absPath, content); } catch (_) { /* best-effort */ }
+
+            // Also register in the Monaco filesystem overlay so any
+            // subsequent LSP-driven navigation (clangd "go to definition"
+            // jumping inside iostream) resolves cleanly.
+            try { await registerSystemFile(absPath, content, originalUri); } catch (_) { /* best-effort */ }
+
+            const name = absPath.split('/').filter(Boolean).pop() || importPath;
+            // Pick a sensible language for syntax highlighting. Files like
+            // `iostream` / `vector` have no extension, so getMonacoLanguage
+            // falls back to plaintext — but they're C++ headers, so use the
+            // calling file's language as a hint.
+            let language = getMonacoLanguage(name);
+            if (language === 'plaintext' && activeFile?.name) {
+                const callerLang = getMonacoLanguage(activeFile.name);
+                if (callerLang === 'cpp' || callerLang === 'c') language = callerLang;
+            }
+
+            return {
+                name,
+                type: 'file',
+                path: absPath,
+                language,
+                isSystem: true,
+                readOnly: true,
+            };
+        } catch (e) {
+            console.warn('[SystemHeader] resolve threw:', e?.message);
+            return null;
+        }
+    }, [compilerClient, activeFile]);
+
     // --- Event Handlers ---
     useEditorEvents({
         editorInstance,
@@ -2620,7 +2963,8 @@ const EditorPanel = ({
         rawFiles,
         fileCacheEntries,
         dispatch,
-        activeFile
+        activeFile,
+        resolveSystemHeader,
     });
 
     useEffect(() => {
@@ -2772,8 +3116,11 @@ const EditorPanel = ({
         if (activeFile?.path) {
             updateVirtualFile(activeFile.path, latestCodeRef.current ?? code).catch(() => {});
         }
-        // P1: Send textDocument/didSave to LSP servers so they re-index
-        if (activeFile?.path) {
+        // P1: Send textDocument/didSave to LSP servers so they re-index.
+        // Skip system headers — they're read-only and live outside the
+        // workspace, so a save event with a /synthi/-prefixed URI would
+        // confuse the LSP server's indexer.
+        if (activeFile?.path && !activeFile.isSystem) {
             const safePath = activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path;
             const fileUri = `file:///synthi/${safePath}`;
             languageClientsRef.current.forEach((client, lang) => {
@@ -3595,6 +3942,25 @@ const EditorPanel = ({
                                                     <span className={`flex-shrink-0 text-sm ${isActive ? 'opacity-90' : 'opacity-50'}`} aria-hidden="true">
                                                         {loadingFiles.includes(file.path) ? <Loader2 className="w-4 h-4 animate-spin" style={{ color: TAB_TOKENS.primary }} /> : fileIcon}
                                                     </span>
+                                                    {/* NEP prediction badge: a queued next-edit prediction
+                                                        targets this file. The gutter dot is only visible
+                                                        in the active editor, so without this the user has
+                                                        no way to know there's a Tab-actionable prediction
+                                                        waiting in a hidden tab. Hidden on the active tab
+                                                        because the gutter dot already signals "look here". */}
+                                                    {nepPredictedPaths?.has?.(file.path) && !isActive && (
+                                                        <span
+                                                            aria-label="Next-edit prediction queued for this file"
+                                                            title="Next-edit prediction queued · open this tab to Tab-jump"
+                                                            className="flex-shrink-0 rounded-full"
+                                                            style={{
+                                                                width: 6,
+                                                                height: 6,
+                                                                background: 'var(--accent-primary, #6f7eff)',
+                                                                boxShadow: '0 0 5px color-mix(in srgb, var(--accent-primary, #6f7eff) 70%, transparent)',
+                                                            }}
+                                                        />
+                                                    )}
                                                     <div className="flex flex-col min-w-0 overflow-hidden">
                                                         <span className={`text-[13px] truncate ${isActive ? 'font-semibold' : 'font-normal'}`} style={{ color: isActive ? TAB_TOKENS.textPrimary : TAB_TOKENS.textSecondary }}>
                                                             {file.name}
@@ -4001,7 +4367,11 @@ const EditorPanel = ({
                                         <div className="h-full w-full" style={{ display: diffMode ? 'none' : undefined }}>
                                             <Editor
                                                 height="100%"
-                                                path={activeFile ? `file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
+                                                path={activeFile
+                                                    ? (activeFile.isSystem && monacoInstance
+                                                        ? monacoInstance.Uri.file(activeFile.path).toString()
+                                                        : `file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}`)
+                                                    : undefined}
                                                 // Model caching: the editor instance stays alive across file switches.
                                                 // Models are pre-created and switched via editor.setModel() in the
                                                 // useEffect above, so there is no blank flash between tab switches.

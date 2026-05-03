@@ -98,6 +98,12 @@ export class CompilerClient {
         this.emulatorInputChannel = null;
         this.lspChannel = null;
         this.fileSyncChannel = null;
+        // Outstanding read-file requests keyed by requestId.
+        // Resolved by the file-sync channel onmessage handler.
+        this._fileReadPending = new Map();
+        this._fileReadCounter = 0;
+        // Listeners notified once when fileSyncChannel transitions to 'open'.
+        this._fileSyncOpenListeners = new Set();
         this.readyPromise = null;
         this.currentStreams = [];
         this.logHandlers = new Set();
@@ -907,8 +913,32 @@ export class CompilerClient {
                 this.terminalChannel = this.pc.createDataChannel('terminal', { ordered: true });
                 // Emulator input backchannel (Android)
                 this.emulatorInputChannel = this.pc.createDataChannel('emulator-input', { ordered: true });
-                // File-sync channel: pushes file create/edit/delete/rename to worker disk
+                // File-sync channel: pushes file create/edit/delete/rename to worker disk.
+                // Also handles `read` requests for absolute paths so the frontend can
+                // resolve LSP go-to-definition results pointing at system headers.
                 this.fileSyncChannel = this.pc.createDataChannel('file-sync', { ordered: true });
+                this.fileSyncChannel.onopen = () => {
+                    const listeners = Array.from(this._fileSyncOpenListeners);
+                    this._fileSyncOpenListeners.clear();
+                    for (const cb of listeners) {
+                        try { cb(); } catch (e) { console.warn('[CompilerClient] fileSync open listener threw', e); }
+                    }
+                };
+                this.fileSyncChannel.onmessage = (evt) => {
+                    let msg;
+                    try {
+                        msg = typeof evt.data === 'string' ? JSON.parse(evt.data) : null;
+                    } catch (_) { return; }
+                    if (!msg || msg.op !== 'read-result') return;
+                    const reqId = msg.requestId;
+                    if (!reqId) return;
+                    const pending = this._fileReadPending.get(reqId);
+                    if (!pending) return;
+                    this._fileReadPending.delete(reqId);
+                    clearTimeout(pending.timeoutId);
+                    if (msg.error) pending.resolve({ ok: false, error: msg.error, path: msg.path });
+                    else pending.resolve({ ok: true, content: msg.content, path: msg.path });
+                };
 
                 // VS Code Server Manager channel — pre-created in SDP
                 // to avoid unreliable DCEP in-band negotiation.
@@ -1262,6 +1292,79 @@ export class CompilerClient {
     }
 
     /**
+     * Push every entry in `entries` to the worker's disk in a single batch.
+     * Used at file-sync channel open time to give the language server a
+     * complete view of the workspace before any cross-file feature is
+     * exercised.
+     * @param {Iterable<[string, string]>} entries
+     */
+    syncAllFiles(entries) {
+        if (!this.fileSyncChannel || this.fileSyncChannel.readyState !== 'open') return 0;
+        let count = 0;
+        for (const [path, content] of entries) {
+            if (!path || typeof content !== 'string') continue;
+            this.syncFile(path, content);
+            count += 1;
+        }
+        if (count > 0) {
+            console.log(`[CompilerClient] file-sync: pushed ${count} files at startup`);
+        }
+        return count;
+    }
+
+    /**
+     * Register a callback that fires once when the file-sync channel becomes
+     * available. Already-open channels invoke the callback synchronously
+     * (deferred via microtask so callers don't accidentally re-enter).
+     * @param {() => void} cb
+     */
+    onFileSyncOpen(cb) {
+        if (typeof cb !== 'function') return () => {};
+        if (this.fileSyncChannel?.readyState === 'open') {
+            queueMicrotask(() => { try { cb(); } catch (_) { /* ignored */ } });
+            return () => {};
+        }
+        this._fileSyncOpenListeners.add(cb);
+        return () => this._fileSyncOpenListeners.delete(cb);
+    }
+
+    /**
+     * Read an absolute path on the worker (system headers, stdlib source,
+     * etc.). Resolves with `{ ok, content, error, path }`. The worker
+     * enforces a read-only allowlist; out-of-allowlist paths reject with
+     * `error: 'path not allowed'`.
+     *
+     * @param {string} absPath  Absolute path on the worker (e.g. /usr/include/c++/11/iostream)
+     * @param {{ timeoutMs?: number }} [opts]
+     * @returns {Promise<{ ok: boolean, content?: string, error?: string, path?: string }>}
+     */
+    readRemoteFile(absPath, opts = {}) {
+        const timeoutMs = opts.timeoutMs ?? 5000;
+        if (!this.fileSyncChannel || this.fileSyncChannel.readyState !== 'open') {
+            return Promise.resolve({ ok: false, error: 'file-sync channel not open' });
+        }
+        const reqId = `r${++this._fileReadCounter}-${Date.now()}`;
+        return new Promise((resolve) => {
+            const timeoutId = setTimeout(() => {
+                this._fileReadPending.delete(reqId);
+                resolve({ ok: false, error: 'timeout', path: absPath });
+            }, timeoutMs);
+            this._fileReadPending.set(reqId, { resolve, timeoutId });
+            try {
+                this.fileSyncChannel.send(JSON.stringify({
+                    op: 'read',
+                    path: absPath,
+                    requestId: reqId,
+                }));
+            } catch (e) {
+                clearTimeout(timeoutId);
+                this._fileReadPending.delete(reqId);
+                resolve({ ok: false, error: e?.message || 'send failed', path: absPath });
+            }
+        });
+    }
+
+    /**
      * Lightweight reconnect: tears down the local PeerConnection and
      * signaling WebSocket, then re-establishes a new connection,
      * WITHOUT sending a "reset" to the worker.  This preserves the
@@ -1307,11 +1410,26 @@ export class CompilerClient {
         this.emulatorInputChannel = null;
         this.lspChannel = null;
         this.fileSyncChannel = null;
+        this._abortPendingFileReads('disconnect');
+        this._fileSyncOpenListeners.clear();
         this.readyPromise = null;
         this._setStatus(CompilerStatus.IDLE);
         this.currentStreams = [];
 
         return this.connect();
+    }
+
+    /**
+     * Reject any in-flight readRemoteFile promises with the given reason.
+     * Safe to call multiple times.
+     * @param {string} reason
+     */
+    _abortPendingFileReads(reason) {
+        for (const [, pending] of this._fileReadPending) {
+            try { clearTimeout(pending.timeoutId); } catch (_) { /* ignored */ }
+            try { pending.resolve({ ok: false, error: reason }); } catch (_) { /* ignored */ }
+        }
+        this._fileReadPending.clear();
     }
 
     async reconnect() {
@@ -1363,6 +1481,8 @@ export class CompilerClient {
         this.emulatorInputChannel = null;
         this.lspChannel = null;
         this.fileSyncChannel = null;
+        this._abortPendingFileReads('reconnect');
+        this._fileSyncOpenListeners.clear();
         this.readyPromise = null;
         this._setStatus(CompilerStatus.IDLE);
 

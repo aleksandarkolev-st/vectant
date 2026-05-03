@@ -32,7 +32,13 @@ export const useEditorEvents = ({
     rawFiles = [],
     dispatch,
     activeFile,
-    fileCacheEntries = []
+    fileCacheEntries = [],
+    // Async fallback for `#include <iostream>` / `#include "..."` references
+    // that don't resolve to a workspace file. Returns a synthetic file node
+    // (with content already primed in fileCache) ready to dispatch through
+    // selectFileThunk, or null on failure. Provided by Editor.jsx; absent in
+    // test contexts.
+    resolveSystemHeader = null,
 }) => {
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
@@ -141,20 +147,57 @@ export const useEditorEvents = ({
             const model = editorInstance.getModel();
             if (!model) return null;
             const lineContent = model.getLineContent(position.lineNumber);
-            
-            // Simple regex to extract string literals on the line
+
+            // Look for include-style references on this line. Two shapes:
+            //   `…"foo.h"…`   → quoted form, usually workspace-relative
+            //   `#include <iostream>`  → angle-bracket form, system header
+            // We collect both kinds of hits, see which one the cursor is
+            // inside, then try a workspace lookup; if the file isn't in the
+            // workspace tree we fall through to a `systemInclude` marker so
+            // the click handler can resolve it via the LSP.
+            const inclusionMatches = [];
             const stringRegex = /["']([^"']+)["']/g;
-            let match;
-            while ((match = stringRegex.exec(lineContent)) !== null) {
-                const startCol = match.index + 1;
-                const endCol = match.index + match[0].length + 1;
-                
-                // Check if position is within the string
-                if (position.column >= startCol && position.column <= endCol) {
-                    const importPath = match[1];
+            let m;
+            while ((m = stringRegex.exec(lineContent)) !== null) {
+                inclusionMatches.push({
+                    importPath: m[1],
+                    startCol: m.index + 1,
+                    endCol: m.index + m[0].length + 1,
+                    isAngleBracket: false,
+                });
+            }
+            // `<...>` only counts as an include when the line begins with
+            // `#include` (or its variants like `# include`, `# include  <…>`).
+            // Without that gate, expressions like `if (a < b > c)` would
+            // false-match and break Ctrl+click on regular code.
+            if (/^\s*#\s*include\b/.test(lineContent)) {
+                const angleRegex = /<([^<>]+)>/g;
+                while ((m = angleRegex.exec(lineContent)) !== null) {
+                    inclusionMatches.push({
+                        importPath: m[1],
+                        startCol: m.index + 1,
+                        endCol: m.index + m[0].length + 1,
+                        isAngleBracket: true,
+                    });
+                }
+            }
+
+            for (const inc of inclusionMatches) {
+                if (position.column < inc.startCol || position.column > inc.endCol) continue;
+                const { importPath, startCol, endCol, isAngleBracket } = inc;
+
+                const range = new monacoInstance.Range(
+                    position.lineNumber, startCol + 1,
+                    position.lineNumber, endCol - 1
+                );
+
+                // Workspace lookup — only for the quoted form. Angle-bracket
+                // includes go straight to the system resolver: clangd's
+                // include search path determines the right answer, and our
+                // fileMap probe would either miss or accidentally match a
+                // similarly-named workspace file.
+                if (!isAngleBracket) {
                     const currentPath = activeFile?.path || '';
-                    
-                    // Resolve path
                     const candidates = [];
                     candidates.push(resolvePath(currentPath, importPath));
                     if (!importPath.startsWith('./') && !importPath.startsWith('../')) {
@@ -163,13 +206,11 @@ export const useEditorEvents = ({
 
                     const fileMap = flattenFiles(rawFiles);
                     let foundNode = null;
-                    
                     for (const candidatePath of candidates) {
                         if (fileMap.has(candidatePath)) {
                             foundNode = fileMap.get(candidatePath);
                             break;
                         }
-                        // Try extensions
                         const extensions = ['.ts', '.tsx', '.js', '.jsx', '.hpp', '.h', '.cpp', '.c'];
                         for (const ext of extensions) {
                             if (fileMap.has(candidatePath + ext)) {
@@ -181,15 +222,25 @@ export const useEditorEvents = ({
                     }
 
                     if (foundNode) {
-                        return {
-                            node: foundNode,
-                            range: new monacoInstance.Range(position.lineNumber, startCol + 1, position.lineNumber, endCol - 1)
-                        };
+                        return { kind: 'workspace', node: foundNode, range };
                     }
                 }
+
+                // Either an angle-bracket include or a quoted include the
+                // workspace doesn't have — defer resolution to the LSP. The
+                // click handler awaits resolveSystemHeader; the underline
+                // decoration shows immediately so the user gets the same
+                // visual affordance as workspace includes.
+                return {
+                    kind: 'systemInclude',
+                    importPath,
+                    position: { lineNumber: position.lineNumber, column: position.column },
+                    range,
+                };
             }
 
-            // Check for symbols
+            // Check for symbols (function / class definitions) elsewhere
+            // in the workspace.
             const wordInfo = model.getWordAtPosition(position);
             if (wordInfo) {
                 const word = wordInfo.word;
@@ -197,6 +248,7 @@ export const useEditorEvents = ({
                     const definition = findSymbolDefinition(word);
                     if (definition) {
                         return {
+                            kind: 'workspace',
                             node: definition.node,
                             range: new monacoInstance.Range(position.lineNumber, wordInfo.startColumn, position.lineNumber, wordInfo.endColumn),
                             targetLine: definition.lineNumber
@@ -238,14 +290,39 @@ export const useEditorEvents = ({
 
                 if (event.ctrlKey && target.type === 6 /* monaco.editor.MouseTargetType.CONTENT_TEXT */) {
                     const result = findTargetFile(target.position);
-                    if (result) {
-                        event.preventDefault();
+                    if (!result) return;
+                    event.preventDefault();
+
+                    if (result.kind === 'workspace') {
                         if (result.node.path === activeFile?.path && result.targetLine) {
                             editorInstance.revealLineInCenter(result.targetLine);
                             editorInstance.setPosition({ lineNumber: result.targetLine, column: 1 });
                         } else {
                             dispatch(selectFileThunk(result.node));
                         }
+                        return;
+                    }
+
+                    if (result.kind === 'systemInclude') {
+                        if (typeof resolveSystemHeader !== 'function') {
+                            console.warn('[events] system include click but no resolveSystemHeader prop wired');
+                            return;
+                        }
+                        // Capture the model URI now — by the time the LSP
+                        // round-trip resolves, the user could have switched
+                        // tabs, and editorInstance.getModel() would point at
+                        // the wrong document.
+                        const modelUri = editorInstance.getModel()?.uri?.toString?.();
+                        if (!modelUri) return;
+                        Promise.resolve(resolveSystemHeader({
+                            importPath: result.importPath,
+                            position: result.position,
+                            modelUri,
+                        })).then((node) => {
+                            if (node) dispatch(selectFileThunk(node));
+                        }).catch((err) => {
+                            console.warn('[events] resolveSystemHeader threw:', err?.message);
+                        });
                     }
                 }
             }));
@@ -301,15 +378,41 @@ export const useEditorEvents = ({
             }});
 
             disposables.push(editorInstance.onDidType((text) => {
-                cancelActiveCompletion({ resetSuggestion: true, reason: 'typing' });
-                const lastChar = (text || '').slice(-1);
-                const isPunctuation = /[\(\)\{\}\[\];,]/.test(lastChar);
-                const isEnter = lastChar === '\n';
-                if (hasActiveDiff()) return;
-                if (!aiAutoEnabled) return;
-                if (isPunctuation || isEnter) {
-                    requestAiCompletion(true, null, { reason: isEnter ? 'enter' : 'punctuation', enterTrigger: isEnter });
+                // When AI completions are unavailable (diff mode active or
+                // user toggled auto off), wipe any leftover cache so stale
+                // ghost text can't linger as the user keeps typing.
+                if (hasActiveDiff()) {
+                    cancelActiveCompletion({ resetSuggestion: true, reason: 'diff-active' });
+                    return;
                 }
+                if (!aiAutoEnabled) {
+                    cancelActiveCompletion({ resetSuggestion: true, reason: 'ai-disabled' });
+                    return;
+                }
+
+                // AI is active — keep the cache. The inline-completion
+                // provider's prefix-matching (computeVisibleSuggestion in
+                // providers.js) re-slices the visible ghost text as the
+                // user types along the suggestion. Resetting on every
+                // keystroke erased the suggestion before the user could
+                // accept it, which made AI completions feel like they
+                // "never showed". We still abort any in-flight stream —
+                // the prompt context just changed, so requestAiCompletion
+                // below fires a fresh one.
+                cancelActiveCompletion({ resetSuggestion: false, reason: 'typing' });
+
+                // Cursor / Copilot style: any keystroke can trigger a
+                // completion. Rate-limiting and dedup live inside
+                // requestAiCompletion (MIN_AUTO_INTERVAL_MS cooldown +
+                // context-equality cache check), so cheap requests get
+                // skipped automatically without us gating on punctuation.
+                const lastChar = (text || '').slice(-1);
+                const isEnter = lastChar === '\n';
+                const isPunctuation = /[\(\)\{\}\[\];,]/.test(lastChar);
+                requestAiCompletion(true, null, {
+                    reason: isEnter ? 'enter' : (isPunctuation ? 'punctuation' : 'typing'),
+                    enterTrigger: isEnter,
+                });
             }));
             disposables.push(editorInstance.onDidChangeCursorSelection((e) => {
                 // Ignore cursor moves that come from normal typing; only cancel if the
@@ -328,5 +431,5 @@ export const useEditorEvents = ({
         return () => {
             disposables.forEach((disposable) => disposable?.dispose?.());
         };
-    }, [editorInstance, monacoInstance, cancelActiveCompletion, requestAiCompletion, hasActiveDiff, aiAutoEnabled, rawFiles, dispatch, activeFile, fileCacheEntries]);
+    }, [editorInstance, monacoInstance, cancelActiveCompletion, requestAiCompletion, hasActiveDiff, aiAutoEnabled, rawFiles, dispatch, activeFile, fileCacheEntries, resolveSystemHeader]);
 };
