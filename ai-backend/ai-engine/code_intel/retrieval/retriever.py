@@ -20,6 +20,7 @@ import numpy as np
 
 from ..core.types import SemanticChunk, ChunkMetadata
 from ..core.config import RetrievalConfig
+from .fusion import reciprocal_rank_fusion, mmr, cosine_similarity, jaccard_similarity
 
 
 logger = logging.getLogger("code_intel.retrieval.retriever")
@@ -445,69 +446,129 @@ class ContextRetriever:
         file_results: List[RetrievalCandidate],
     ) -> List[RetrievalCandidate]:
         """
-        Merge results from different sources.
-        
-        Uses Reciprocal Rank Fusion (RRF) to combine rankings.
-        """
-        # Collect all unique chunks
-        chunk_map: Dict[str, RetrievalCandidate] = {}
-        
-        # Process vector results
-        for i, cand in enumerate(vector_results):
-            chunk_id = cand.chunk.id
-            if chunk_id not in chunk_map:
-                chunk_map[chunk_id] = cand
-            else:
-                # Update scores
-                chunk_map[chunk_id].vector_score = max(
-                    chunk_map[chunk_id].vector_score,
-                    cand.vector_score,
-                )
+        Merge ranked lists from different retrieval sources.
 
-        # Process lexical results
-        for i, cand in enumerate(lexical_results):
-            chunk_id = cand.chunk.id
-            if chunk_id not in chunk_map:
-                chunk_map[chunk_id] = cand
-            else:
-                chunk_map[chunk_id].keyword_score = max(
-                    chunk_map[chunk_id].keyword_score,
-                    cand.keyword_score,
-                )
-        
-        # Process symbol results
-        for i, cand in enumerate(symbol_results):
-            chunk_id = cand.chunk.id
-            if chunk_id not in chunk_map:
-                chunk_map[chunk_id] = cand
-            else:
-                chunk_map[chunk_id].keyword_score = max(
-                    chunk_map[chunk_id].keyword_score,
-                    cand.keyword_score,
-                )
-        
-        # Process file results
-        for i, cand in enumerate(file_results):
-            chunk_id = cand.chunk.id
-            if chunk_id not in chunk_map:
-                chunk_map[chunk_id] = cand
-            else:
-                chunk_map[chunk_id].keyword_score = max(
-                    chunk_map[chunk_id].keyword_score,
-                    cand.keyword_score,
-                )
-        
-        # Compute combined scores using weighted sum
-        vector_weight = 0.7
-        keyword_weight = 0.3
-        
-        for chunk_id, cand in chunk_map.items():
-            cand.combined_score = (
-                vector_weight * cand.vector_score +
-                keyword_weight * cand.keyword_score
-            )
-        
-        return list(chunk_map.values())
+        We use Reciprocal Rank Fusion (RRF) to combine rankings rather than a
+        weighted sum of raw scores: cosine similarity, normalised BM25, symbol
+        match boost, and file-path heuristics all live on different scales, so
+        any fixed weighted-sum is fragile against distribution shift. RRF only
+        looks at each item's *rank* within each list, which is robust.
+
+        After fusion we run Maximal Marginal Relevance (MMR) over the top-K to
+        diversify — the head of an unfused ranking often piles up near-duplicate
+        chunks from the same file/class, which starves the downstream prompt
+        on signal. MMR penalises picks that are too similar to already-picked
+        candidates so the LLM gets a more representative spread.
+        """
+        # 1) Collect every candidate keyed by chunk id, accumulating per-source
+        #    scores. Source-specific score fields stay populated so downstream
+        #    consumers (ranker, budget_enforcer) can read them.
+        chunk_map: Dict[str, RetrievalCandidate] = {}
+        for source_results in (vector_results, lexical_results, symbol_results, file_results):
+            for cand in source_results:
+                cid = cand.chunk.id
+                if cid not in chunk_map:
+                    chunk_map[cid] = cand
+                else:
+                    existing = chunk_map[cid]
+                    existing.vector_score = max(existing.vector_score, cand.vector_score)
+                    existing.keyword_score = max(existing.keyword_score, cand.keyword_score)
+
+        if not chunk_map:
+            return []
+
+        # 2) Build per-source ranked lists of chunk ids. Each upstream search
+        #    already returns results sorted by score descending.
+        ranked_lists = [
+            [c.chunk.id for c in vector_results],
+            [c.chunk.id for c in lexical_results],
+            [c.chunk.id for c in symbol_results],
+            [c.chunk.id for c in file_results],
+        ]
+        # Drop empty lists so RRF weights aren't diluted.
+        ranked_lists = [r for r in ranked_lists if r]
+
+        # 3) Fuse with RRF. k=60 is the SIGIR-standard damping constant.
+        fused: List[Tuple[str, float]] = []
+        if ranked_lists:
+            fused = reciprocal_rank_fusion(ranked_lists, k=60)
+
+        # 4) Normalise RRF scores into [0, 1] so combined_score stays
+        #    comparable with prior code that thresholds against ~0.0..1.0.
+        max_fused = fused[0][1] if fused else 1.0
+        if max_fused <= 0:
+            max_fused = 1.0
+        for cid, score in fused:
+            cand = chunk_map.get(cid)
+            if cand is None:
+                continue
+            cand.combined_score = score / max_fused
+
+        # Any candidate that somehow never appeared in any input list gets a
+        # tiny fallback combined_score so it doesn't disappear silently.
+        for cid, cand in chunk_map.items():
+            if cand.combined_score <= 0:
+                cand.combined_score = 0.4 * cand.vector_score + 0.6 * cand.keyword_score
+
+        # 5) Build the ordered candidate list by RRF rank, then run MMR over
+        #    the head of the list to diversify. We diversify only the head
+        #    (~32 candidates) because MMR is O(K^2 * D) per call and we don't
+        #    need diversity in the long tail.
+        ordered = sorted(chunk_map.values(), key=lambda c: c.combined_score, reverse=True)
+        head_size = min(len(ordered), max(8, getattr(self.config, "mmr_head_size", 32)))
+        head = ordered[:head_size]
+        tail = ordered[head_size:]
+
+        diversified = self._mmr_rerank(head)
+        return diversified + tail
+
+    def _mmr_rerank(self, candidates: List[RetrievalCandidate]) -> List[RetrievalCandidate]:
+        """Apply MMR over a small candidate head for diversity.
+
+        Similarity prefers cosine over chunk embeddings when both candidates
+        carry a vector; otherwise falls back to Jaccard over a small token bag
+        (symbol name + first identifiers in the chunk body). Both are cheap.
+        """
+        if len(candidates) <= 1:
+            return list(candidates)
+
+        lambda_ = float(getattr(self.config, "mmr_lambda", 0.7))
+
+        # Pre-compute token bags for the Jaccard fallback so we don't redo the
+        # work on every similarity comparison inside the MMR loop.
+        token_bags: Dict[str, set] = {}
+        for c in candidates:
+            tokens = set()
+            sym = getattr(c.chunk.metadata, "symbol_name", "") or ""
+            if sym:
+                tokens.add(sym.lower())
+            body = getattr(c.chunk, "code_body", None) or getattr(c.chunk, "_code_body", "") or ""
+            if body:
+                # Cheap token bag — first 200 chars worth of identifier-ish tokens.
+                head_text = body[:200]
+                for tok in head_text.replace("(", " ").replace(")", " ").replace("{", " ").replace("}", " ").split():
+                    t = tok.strip(".,;:[]<>=").lower()
+                    if 2 <= len(t) <= 40:
+                        tokens.add(t)
+            token_bags[c.chunk.id] = tokens
+
+        def _similarity(a: RetrievalCandidate, b: RetrievalCandidate) -> float:
+            emb_a = getattr(a.chunk, "embedding", None)
+            emb_b = getattr(b.chunk, "embedding", None)
+            if emb_a is not None and emb_b is not None:
+                try:
+                    return cosine_similarity(emb_a, emb_b)
+                except Exception:
+                    pass
+            return jaccard_similarity(token_bags.get(a.chunk.id, set()), token_bags.get(b.chunk.id, set()))
+
+        return mmr(
+            candidates,
+            relevance_fn=lambda c: float(c.combined_score),
+            similarity_fn=_similarity,
+            lambda_=lambda_,
+            top_k=len(candidates),
+        )
 
 
 def retrieve_context(

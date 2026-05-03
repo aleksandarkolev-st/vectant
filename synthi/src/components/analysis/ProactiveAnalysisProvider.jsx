@@ -137,29 +137,19 @@ export function ProactiveAnalysisProvider({
     
     // NOTE: Code action provider for quick fixes is registered in Editor/providers.js
     // to avoid duplicate registrations. Do NOT register another one here.
-    
-    // Listen for content changes to trigger analysis
-    const contentChangeDisposable = model.onDidChangeContent(() => {
-      if (!settings.enabled) return;
-      
-      const content = model.getValue();
-      const language = model.getLanguageId();
-      const path = modelUri;
-      
-      setCurrentFile({ path, language, content });
-      triggerAnalysis({ code: content, lang: language, filePath: path });
-    });
-    
-    // Store disposables for cleanup
-    const entry = editorsRef.current.get(modelUri);
-    if (entry) {
-      entry.disposables = [contentChangeDisposable];
-    }
-    
-    // Initial analysis
+
+    // NOTE: We deliberately do NOT attach `model.onDidChangeContent` here.
+    // The workspace page (page.jsx) owns the analyzer trigger via an idle
+    // timer (ANALYSIS_IDLE_MS). Listening here as well would re-fire on
+    // every keystroke and bypass that gate — which was the entire reason
+    // the analyzer felt "always running" even after the idle switch.
+
+    // Initial analysis — runs once when the file is opened so diagnostics
+    // appear immediately. Edits are gated by page.jsx's idle timer.
     if (settings.enabled) {
       const content = model.getValue();
       const language = model.getLanguageId();
+      setCurrentFile({ path: modelUri, language, content });
       triggerAnalysis({ code: content, lang: language, filePath: modelUri });
     }
     

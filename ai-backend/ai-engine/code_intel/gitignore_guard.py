@@ -46,6 +46,13 @@ def ensure_gitignore(workspace_root: str | Path, extra: Sequence[str] = ()) -> b
         already contained all required entries.
     """
     root = Path(workspace_root)
+    # Workspace directory may not exist on disk — common for synthetic test
+    # slugs (e.g. nep-livetest-*) that exercise endpoint shape without
+    # materialising a repo. Without this guard the `.open("a")` below raises
+    # FileNotFoundError and floods logs with tracebacks.
+    if not root.is_dir():
+        logger.debug("Skipping gitignore update: %s is not a directory", root)
+        return False
     gitignore = root / ".gitignore"
 
     required = set(AI_IGNORE_ENTRIES)

@@ -146,6 +146,87 @@ class ContextRequest(BaseModel):
     )
 
 
+class FastContextRequest(BaseModel):
+    """Request for fast retrieval-only context (inline completion path)."""
+    workspace_path: str = Field(..., description="Path to workspace")
+    query: str = Field("", description="Free-text query — usually the last few lines of cursor context")
+    symbols: Optional[List[str]] = Field(None, description="Identifiers extracted from the cursor neighborhood")
+    language: Optional[str] = Field(None, description="Filter chunks to this language")
+    max_chunks: int = Field(5, description="Hard cap on returned chunks")
+    max_chars_per_chunk: int = Field(320, description="Truncate each chunk's snippet to this many chars")
+    # Hybrid retrieval knob: how long the server may wait for an inline query
+    # embedding before falling back to lexical-only. 0 disables inline embedding
+    # entirely (cache-only). Default 120 ms is enough for a warm regional embed
+    # call without blowing the 200–350 ms client-side budget.
+    embed_timeout_ms: int = Field(120, description="Hard timeout for inline query embedding; 0 disables")
+
+
+class FastContextChunk(BaseModel):
+    """A single retrieved chunk in the fast-context response."""
+    file: str
+    snippet: str
+    start_line: int
+    end_line: int
+    symbol: str = ""
+    score: float = 0.0
+
+
+class FastContextResponse(BaseModel):
+    """Response from fast-context retrieval."""
+    chunks: List[FastContextChunk]
+    elapsed_ms: float
+
+
+class EditImpactRequest(BaseModel):
+    """Request for cross-file impact prediction given an APPLIED edit (NEP Phase 2).
+
+    The endpoint walks the symbol-dependency graph (caller→callee, importer→
+    imported, sibling members) BFS depth 2 from seed symbols extracted from the
+    edit, then ranks the resulting file/symbol pairs as likely follow-up edit
+    sites.
+
+    Concrete spec (the original NEP plan flagged "edit-impact graph edges are
+    underspecified"):
+      - depth-1 expansions: incoming/outgoing CALLS edges, IMPORTS edges,
+        INHERITS edges, sibling symbols (same file_path AND same parent symbol)
+      - depth-2: re-expand each depth-1 hit by the SAME edge set
+      - ranking: edge-weighted (CALLS=3, IMPORTS=2, INHERITS=2, sibling=1),
+        plus a co-change boost from ChangeImpactModel when git history exists
+      - cap: max_candidates results, default 12
+    """
+    workspace_path: str = Field(..., description="Path to workspace")
+    file_path: str = Field(..., description="Relative path of the file the edit was applied to")
+    search: str = Field(..., description="The SEARCH text of the applied edit")
+    replace: str = Field("", description="The REPLACE text of the applied edit")
+    edit_kind: Optional[str] = Field(
+        None,
+        description="Optional client-side classifier hint: rename | signature_change | import_change | type_change | local_logic",
+    )
+    seed_symbols: Optional[List[str]] = Field(
+        None,
+        description="Optional explicit seed identifiers; if absent, the server extracts them from the SEARCH/REPLACE text",
+    )
+    max_candidates: int = Field(12, description="Hard cap on returned candidates")
+    max_depth: int = Field(2, description="BFS depth, 1 or 2; rename/signature default to 2, local_logic to 1")
+
+
+class EditImpactCandidate(BaseModel):
+    """A predicted follow-up edit site."""
+    file: str
+    symbol: str = ""
+    score: float = 0.0
+    reasons: List[str] = Field(default_factory=list, description="Edge types that produced this candidate, ranked")
+    distance: int = Field(1, description="BFS depth at which this candidate was reached")
+
+
+class EditImpactResponse(BaseModel):
+    """Ranked list of likely follow-up edit sites."""
+    candidates: List[EditImpactCandidate]
+    seeds_used: List[str]
+    edit_kind_inferred: Optional[str] = None
+    elapsed_ms: float
+
+
 class ContextResponse(BaseModel):
     """Response with assembled context."""
     context: str = Field(..., description="Assembled context for LLM")
@@ -561,6 +642,491 @@ async def get_context(request: ContextRequest, http_request: Request) -> Context
     except Exception as e:
         logger.exception("Context retrieval failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _maybe_embed_query_for_fast_path(pipeline: Any, query: str, timeout_ms: int) -> Optional[List[float]]:
+    """Resolve a query embedding for the fast retrieval path.
+
+    Returns a vector when one is available within the time budget; ``None``
+    otherwise. ``None`` is the "lexical-only" signal — `_fast_retrieve` accepts
+    it and will skip the dense pass.
+
+    Order of operations:
+      1. Cache hit on the embedder's query cache (zero network).
+      2. Inline `embed_query` call wrapped in `asyncio.wait_for(timeout)`.
+      3. On timeout/error, give up. The background thread keeps running and
+         the embedder's cache fills for the next call.
+    """
+    if not query or not query.strip():
+        return None
+    embedder = getattr(pipeline, "embedder", None)
+    if embedder is None:
+        return None
+    # 1) Cache lookup (covers warm queries / fingerprint hits).
+    try:
+        if hasattr(embedder, "get_cached_query_embedding"):
+            cached = embedder.get_cached_query_embedding(query)
+            if cached is not None:
+                return cached
+    except Exception:
+        pass
+    # 2) Bounded inline embed.
+    if timeout_ms <= 0 or not hasattr(embedder, "embed_query"):
+        return None
+    try:
+        import asyncio
+        return await asyncio.wait_for(
+            asyncio.to_thread(embedder.embed_query, query),
+            timeout=max(0.001, timeout_ms / 1000.0),
+        )
+    except Exception:
+        # asyncio.TimeoutError, network errors, missing API key — all fall
+        # through to lexical-only without surfacing to the user.
+        return None
+
+
+@router.post("/context/fast", response_model=FastContextResponse)
+async def get_context_fast(request: FastContextRequest, http_request: Request) -> FastContextResponse:
+    """
+    Fast retrieval-only context for inline completions.
+
+    Hits the retrieval pipeline's hybrid fast path — BM25 + symbol search,
+    plus a dense pass when a query embedding is available within
+    ``embed_timeout_ms``. No LLM. The full /context endpoint goes through
+    macro + micro-navigation which is LLM-driven and benchmarks at ~8.5 s;
+    this path targets ~50–250 ms so it can sit on the critical path for
+    keystroke-driven completions.
+
+    Returns a small set of relevant code chunks; the caller (typically the
+    Next.js /api/completion route) injects them into the FIM prompt as
+    targeted reference snippets.
+    """
+    import time
+    t0 = time.time()
+    try:
+        _require_api_key(http_request)
+        engine = get_engine(request.workspace_path)
+
+        # Make sure the pipeline is initialized; if the workspace was never
+        # indexed we just return an empty result rather than failing — the
+        # caller treats absence of refs as a normal case.
+        try:
+            engine._initialize_components()
+        except Exception:
+            pass
+
+        pipeline = getattr(engine, "_retrieval_pipeline", None)
+        if pipeline is None:
+            return FastContextResponse(chunks=[], elapsed_ms=(time.time() - t0) * 1000)
+
+        # Hybrid step: try to obtain a query embedding so `_fast_retrieve` can
+        # take its dense+lexical+symbol path instead of falling back to pure
+        # lexical. Order: cache hit → bounded inline embed → give up.
+        # The inline embed is run in a worker thread with a hard timeout —
+        # if it doesn't return in time we fall through to lexical-only, but
+        # the embedding call keeps running in the background and warms the
+        # query cache for the next keystroke.
+        cached_emb = await _maybe_embed_query_for_fast_path(
+            pipeline=pipeline,
+            query=request.query or "",
+            timeout_ms=int(request.embed_timeout_ms or 0),
+        )
+
+        try:
+            candidates, _stats = pipeline._fast_retrieve(
+                cached_embedding=cached_emb,
+                query_text=request.query or "",
+                query_symbols=list(request.symbols or []),
+                query_files=[],
+                filter_language=request.language,
+                include_tests=False,
+                folder_scope=None,
+                module_scope=None,
+                index_kind=None,
+            )
+        except Exception as fast_err:
+            logger.warning(f"Fast retrieve failed, returning empty: {fast_err}")
+            return FastContextResponse(chunks=[], elapsed_ms=(time.time() - t0) * 1000)
+
+        # Convert candidates → response chunks. SemanticChunk's body is held
+        # in `_code_body` (exposed via `code_body` property) — typically loaded
+        # at index time. If not loaded we skip the chunk: lazy disk reads on
+        # the keystroke path would defeat the latency budget.
+        chunks: List[FastContextChunk] = []
+        max_chars = max(80, int(request.max_chars_per_chunk or 320))
+        for cand in candidates[: max(1, int(request.max_chunks or 5))]:
+            sc = getattr(cand, "chunk", None)
+            if sc is None:
+                continue
+            body = getattr(sc, "code_body", "") or getattr(sc, "_code_body", "") or ""
+            if not body:
+                continue
+            snippet = body if len(body) <= max_chars else body[:max_chars] + "\n…"
+            chunks.append(FastContextChunk(
+                file=sc.metadata.file_path or "",
+                snippet=snippet,
+                start_line=int(sc.metadata.start_line or 0),
+                end_line=int(sc.metadata.end_line or 0),
+                symbol=str(sc.metadata.symbol_name or ""),
+                score=float(getattr(cand, "combined_score", 0.0) or getattr(cand, "keyword_score", 0.0) or 0.0),
+            ))
+
+        return FastContextResponse(chunks=chunks, elapsed_ms=(time.time() - t0) * 1000)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Fast context retrieval failed")
+        # Don't fail the inline-completion request on a backend hiccup —
+        # the caller treats an empty payload as "no extra context available".
+        return FastContextResponse(chunks=[], elapsed_ms=(time.time() - t0) * 1000)
+
+
+# ============================================================================
+# Edit-Impact (NEP Phase 2)
+# ============================================================================
+
+# Edge weights for ranking. CALLS dominates because a renamed/resignatured
+# function pulls call sites first; IMPORTS and INHERITS are near-tie because
+# they signal coupling at module/type granularity; sibling is the weakest
+# because two symbols sharing a parent doesn't strongly predict co-edit.
+_IMPACT_EDGE_WEIGHTS = {
+    "calls": 3.0,
+    "imports": 2.0,
+    "inherits": 2.0,
+    "sibling": 1.0,
+    "co_change": 1.5,
+}
+
+_IMPACT_KEYWORDS = {
+    # Common JS/TS/Python/C++ keywords. Intentionally non-exhaustive — the
+    # goal is to drop top-frequency noise from BFS seeds, not be precise.
+    "if", "else", "for", "while", "do", "switch", "case", "break",
+    "continue", "return", "function", "def", "class", "struct", "enum",
+    "interface", "type", "const", "let", "var", "int", "float", "double",
+    "char", "bool", "void", "true", "false", "null", "None", "True",
+    "False", "this", "self", "new", "delete", "import", "from", "as",
+    "in", "of", "is", "not", "and", "or", "yield", "await", "async",
+    "throw", "try", "catch", "finally", "with", "use", "using",
+    "public", "private", "protected", "static", "final", "abstract",
+    "override", "virtual", "extends", "implements", "namespace", "include",
+}
+
+
+def _impact_extract_seed_symbols(text: str) -> List[str]:
+    """Pull candidate identifiers from a SEARCH/REPLACE block."""
+    import re as _re
+    if not text:
+        return []
+    out: List[str] = []
+    seen = set()
+    for m in _re.finditer(r"[A-Za-z_][A-Za-z0-9_]*", text):
+        ident = m.group(0)
+        if len(ident) < 3:
+            continue
+        if ident in _IMPACT_KEYWORDS:
+            continue
+        if ident in seen:
+            continue
+        seen.add(ident)
+        out.append(ident)
+    return out
+
+
+def _impact_kind_to_depth(kind: Optional[str], default_depth: int) -> int:
+    """rename + signature_change want depth 2 (chase the change); local_logic
+    wants depth 1 (don't propagate edits the user didn't ask to propagate).
+    """
+    if not kind:
+        return default_depth
+    k = (kind or "").strip().lower()
+    if k in ("rename", "signature_change"):
+        return 2
+    if k == "local_logic":
+        return 1
+    return default_depth
+
+
+def _impact_walk(
+    structural_index,
+    seeds: List[str],
+    max_depth: int,
+) -> Dict[tuple, Dict[str, Any]]:
+    """BFS depth-`max_depth` over the symbol graph.
+
+    Returns a dict keyed by `(file, symbol)` of `{score, reasons, distance}`.
+    Same symbol reached via two edges accumulates score on a single node — the
+    ranking signal we want is "how strongly does this site couple to the
+    seed?", and an edge-count tally is the cheap proxy.
+    """
+    if not structural_index:
+        return {}
+    symbol_graph = getattr(structural_index, "symbol_graph", None)
+    if not symbol_graph:
+        return {}
+
+    nodes_attr = getattr(symbol_graph, "nodes", {})
+    valid_seeds = [s for s in seeds if s in nodes_attr]
+
+    out: Dict[tuple, Dict[str, Any]] = {}
+
+    def add(file_path: Optional[str], symbol: str, edge_kind: str, distance: int) -> None:
+        key = (file_path or "", symbol)
+        weight = _IMPACT_EDGE_WEIGHTS.get(edge_kind, 1.0)
+        # Distance damping: depth-2 edges are weaker than depth-1.
+        damped = weight / (1.0 + 0.6 * (distance - 1))
+        rec = out.get(key)
+        if rec is None:
+            out[key] = {"score": damped, "reasons": [edge_kind], "distance": distance}
+        else:
+            rec["score"] += damped
+            if edge_kind not in rec["reasons"]:
+                rec["reasons"].append(edge_kind)
+            rec["distance"] = min(rec["distance"], distance)
+
+    def siblings_of(symbol: str) -> List[tuple]:
+        """Same file_path AND same parent symbol — the plan called this out as
+        under-specified; this is the concrete rule.
+        """
+        n = nodes_attr.get(symbol)
+        if n is None:
+            return []
+        file_path = getattr(n, "file_path", None)
+        parent = getattr(n, "parent", None)
+        sibs = []
+        for other_name, other_node in nodes_attr.items():
+            if other_name == symbol:
+                continue
+            if getattr(other_node, "file_path", None) != file_path:
+                continue
+            if getattr(other_node, "parent", None) != parent:
+                continue
+            sibs.append((other_name, file_path))
+        return sibs
+
+    frontier = list(valid_seeds)
+    seen = set(frontier)
+    for distance in range(1, max_depth + 1):
+        next_frontier: List[str] = []
+        for sym in frontier:
+            # Outgoing edges (callees, imported modules, inherited bases).
+            try:
+                for edge in symbol_graph.get_edges_from(sym):
+                    target = getattr(edge, "target", None)
+                    if not target:
+                        continue
+                    target_node = nodes_attr.get(target)
+                    target_file = getattr(target_node, "file_path", None) if target_node else None
+                    et = getattr(edge, "edge_type", None)
+                    et_val = getattr(et, "value", str(et) if et else "")
+                    if et_val == "calls":
+                        add(target_file, target, "calls", distance)
+                    elif et_val == "imports":
+                        add(target_file, target, "imports", distance)
+                    elif et_val == "inherits":
+                        add(target_file, target, "inherits", distance)
+                    if target not in seen:
+                        seen.add(target)
+                        next_frontier.append(target)
+            except Exception:
+                pass
+            # Incoming edges (callers, importers, subclasses) — dominant
+            # signal for rename intent.
+            try:
+                for edge in symbol_graph.get_edges_to(sym):
+                    source = getattr(edge, "source", None)
+                    if not source:
+                        continue
+                    source_node = nodes_attr.get(source)
+                    source_file = getattr(source_node, "file_path", None) if source_node else None
+                    et = getattr(edge, "edge_type", None)
+                    et_val = getattr(et, "value", str(et) if et else "")
+                    if et_val == "calls":
+                        add(source_file, source, "calls", distance)
+                    elif et_val == "imports":
+                        add(source_file, source, "imports", distance)
+                    elif et_val == "inherits":
+                        add(source_file, source, "inherits", distance)
+                    if source not in seen:
+                        seen.add(source)
+                        next_frontier.append(source)
+            except Exception:
+                pass
+            # Sibling members.
+            for sib_name, sib_file in siblings_of(sym):
+                add(sib_file, sib_name, "sibling", distance)
+                if sib_name not in seen:
+                    seen.add(sib_name)
+                    next_frontier.append(sib_name)
+        frontier = next_frontier
+        if not frontier:
+            break
+
+    return out
+
+
+# Tracks workspaces that already have a cold-warm index build in flight, so
+# repeated /edit-impact hits during the build don't re-fire the same indexer.
+# Keyed by resolved workspace path.
+_impact_warm_in_flight: set = set()
+
+
+async def _impact_warm_index(workspace_path: str) -> None:
+    """Background-task wrapper around engine.index_workspace.
+
+    Re-entry guard prevents stampedes when a fresh workspace gets several
+    /edit-impact hits in the first few seconds (the editor will fire one
+    per accepted edit). The lock is best-effort — we don't care about
+    cross-process correctness, just about not starting two indexers in
+    the same process.
+    """
+    if workspace_path in _impact_warm_in_flight:
+        return
+    _impact_warm_in_flight.add(workspace_path)
+    try:
+        engine = get_engine(workspace_path)
+        await engine.index_workspace(incremental=False)
+        logger.info("[edit-impact] cold-warm index complete for %s", workspace_path)
+    except Exception:
+        logger.exception("[edit-impact] cold-warm index failed for %s", workspace_path)
+    finally:
+        _impact_warm_in_flight.discard(workspace_path)
+
+
+def _impact_index_is_cold(structural_index) -> bool:
+    """A structural index is "cold" when its symbol graph has zero nodes
+    (never indexed) or the attribute is missing entirely. We don't probe
+    deeper — a partial index returns sparse candidates rather than empty,
+    which is still useful.
+    """
+    if structural_index is None:
+        return True
+    sg = getattr(structural_index, "symbol_graph", None)
+    if sg is None:
+        return True
+    nodes = getattr(sg, "nodes", None)
+    if nodes is None:
+        return True
+    try:
+        return len(nodes) == 0
+    except Exception:
+        return False
+
+
+@router.post("/edit-impact", response_model=EditImpactResponse)
+async def edit_impact(
+    request: EditImpactRequest,
+    http_request: Request,
+    background_tasks: BackgroundTasks,
+) -> EditImpactResponse:
+    """Predict likely follow-up edit sites for an applied edit.
+
+    Phase 2 NEP: when the user accepts a SEARCH→REPLACE block, the editor
+    pings this endpoint with the applied edit and merges the candidates into
+    the next NEP request's prompt context, so the model can pre-stage cross-
+    file blocks.
+
+    Cold-index warming: when called against a workspace whose structural
+    index hasn't been built (e.g., fresh workspace, no prior /index call),
+    we return empty candidates immediately and schedule a background index
+    build via FastAPI's BackgroundTasks. The next /edit-impact call has
+    real data to walk. Re-entry guarded so multiple hits during the build
+    don't stampede the indexer.
+    """
+    import time as _time
+    _require_api_key(http_request)
+    t0 = _time.time()
+    try:
+        engine = get_engine(request.workspace_path)
+    except HTTPException:
+        raise
+    except Exception:
+        # Engine creation failed — return empty rather than fail. Don't
+        # schedule warming because we don't have a usable engine handle.
+        return EditImpactResponse(
+            candidates=[], seeds_used=[], edit_kind_inferred=None,
+            elapsed_ms=(_time.time() - t0) * 1000,
+        )
+
+    structural_index = getattr(engine, "_structural_index", None)
+
+    # Cold-index detection. If the symbol graph has no nodes the BFS would
+    # walk produce zero candidates anyway — fire a background index build
+    # so the next call lands on warm data. This addresses the plan-grade
+    # gap: "/edit-impact returns empty on cold cache".
+    if _impact_index_is_cold(structural_index):
+        background_tasks.add_task(_impact_warm_index, request.workspace_path)
+        logger.info("[edit-impact] scheduled background index for cold workspace %s", request.workspace_path)
+        return EditImpactResponse(
+            candidates=[], seeds_used=[], edit_kind_inferred=request.edit_kind,
+            elapsed_ms=(_time.time() - t0) * 1000,
+        )
+
+    # Seed extraction. Prefer explicit seeds; otherwise pull identifiers from
+    # both SEARCH and REPLACE — including REPLACE catches new identifiers the
+    # user just introduced (their not-yet-existing call sites in OTHER files
+    # don't matter, but their new module imports do).
+    explicit = list(request.seed_symbols or [])
+    seeds = explicit or (
+        _impact_extract_seed_symbols(request.search)
+        + _impact_extract_seed_symbols(request.replace)
+    )
+    seen_seeds = set()
+    seeds = [s for s in seeds if not (s in seen_seeds or seen_seeds.add(s))]
+
+    depth = _impact_kind_to_depth(request.edit_kind, default_depth=request.max_depth)
+    walked = _impact_walk(structural_index, seeds, max_depth=depth)
+
+    # Co-change boost. ChangeImpactModel is a separate, file-level signal
+    # ("these files are commonly edited together"). Useful fallback when the
+    # symbol graph is sparse, and a useful tie-breaker even when it isn't.
+    try:
+        from .routing.change_impact import ChangeImpactModel
+        cim = ChangeImpactModel(workspace_root=getattr(engine, "_workspace_root", request.workspace_path))
+        cim.build()
+        co_neighbors = cim.get_neighbors([request.file_path]) or []
+        for i, neighbor_file in enumerate(co_neighbors[:8]):
+            damped = _IMPACT_EDGE_WEIGHTS["co_change"] / (1.0 + 0.4 * i)
+            key = (neighbor_file, "")
+            rec = walked.get(key)
+            if rec is None:
+                walked[key] = {"score": damped, "reasons": ["co_change"], "distance": 1}
+            else:
+                rec["score"] += damped
+                if "co_change" not in rec["reasons"]:
+                    rec["reasons"].append("co_change")
+    except Exception:
+        # ChangeImpactModel is best-effort; never fail the request on it.
+        pass
+
+    # Drop the originating file — the editor already has it open and the
+    # impact endpoint is for OTHER follow-up sites. Edits that loop back to
+    # the same file ride the recent-edits ring buffer, not the impact graph.
+    walked = {
+        (file_path, symbol): rec
+        for (file_path, symbol), rec in walked.items()
+        if file_path != request.file_path
+    }
+
+    ranked = sorted(walked.items(), key=lambda kv: kv[1]["score"], reverse=True)
+    ranked = ranked[: max(1, request.max_candidates)]
+
+    candidates = [
+        EditImpactCandidate(
+            file=fp,
+            symbol=sym,
+            score=round(rec["score"], 3),
+            reasons=rec["reasons"],
+            distance=rec["distance"],
+        )
+        for (fp, sym), rec in ranked
+    ]
+
+    return EditImpactResponse(
+        candidates=candidates,
+        seeds_used=seeds,
+        edit_kind_inferred=request.edit_kind,
+        elapsed_ms=(_time.time() - t0) * 1000,
+    )
 
 
 @router.post("/tools/definitions", response_model=ToolDefinitionsResponse)

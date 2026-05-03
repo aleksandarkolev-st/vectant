@@ -101,22 +101,31 @@
  * They all need to render transparent so the tokenized overlay below is the
  * only visible layer.
  */
-.monaco-editor .ghost-text,
-.monaco-editor .ghost-text-decoration,
-.monaco-editor .ghost-text-decoration-preview,
-.monaco-editor .suggest-preview-text .ghost-text,
-.monaco-editor .inline-completion-text,
-.monaco-editor .inline-edit-decoration,
-.monaco-editor .inline-edit-decoration-preview,
-.monaco-editor .inline-edits-line-replacement,
-.monaco-editor .inline-edits-deletion,
-.monaco-editor .inline-edits-insertion {
+/* Pattern-based blanket: any Monaco descendant whose class name contains
+ * `ghost-text`, `inline-edit`, `inline-completion`, or `inlineCompletions`
+ * renders transparent. This is the only way to keep up with Monaco's
+ * shipping-train naming churn (0.50 added inline-edits-*, 0.51 added
+ * inlineCompletions-*) without re-listing every selector each release.
+ * The `:not([class*="synthi-"])` guard protects our own decorations
+ * (synthi-ghost-tokenized, synthi-nep-* etc.) from getting nuked. */
+.monaco-editor [class*="ghost-text"]:not([class*="synthi-"]),
+.monaco-editor [class*="inline-edit"]:not([class*="synthi-"]),
+.monaco-editor [class*="inline-completion"]:not([class*="synthi-"]),
+.monaco-editor [class*="inlineCompletions"]:not([class*="synthi-"]),
+.monaco-editor [class*="inlineEdit"]:not([class*="synthi-"]) {
     color: transparent !important;
     background: transparent !important;
     border-color: transparent !important;
-    /* preserve glyph dimensions so the cursor reserves the right amount of
-     * horizontal space for the overlay */
+    text-decoration: none !important;
     text-shadow: none !important;
+}
+
+/* The gutter-side "inline edit available" indicator that Monaco animates
+ * next to the line is its own widget, not a text decoration — hiding it
+ * with `display: none` instead of `color: transparent` so it doesn't take
+ * up gutter space at all. Synthi's gutter is reserved for git + NEP dots. */
+.monaco-editor .inline-edits-view-indicator {
+    display: none !important;
 }
 
 /* Belt-and-braces: override Monaco's CSS variables for ghost / inline-edit
@@ -646,4 +655,48 @@
     background-color: var(--bg-surface) !important;
     border-top: 1px solid var(--border-subtle) !important;
     padding: 4px 8px !important;
+}
+
+/* Next-Edit Prediction (NEP) — Phase 1 jump-hint UI.
+ * The gutter dot signals "predicted next edit available, press Tab to jump".
+ * The whole-line highlight comes alive in the armed-current state once the
+ * cursor has actually jumped, so the user sees what's about to be replaced. */
+.synthi-nep-gutter-dot {
+    background: radial-gradient(circle at 50% 50%,
+        color-mix(in srgb, var(--accent-primary, #6f7eff) 90%, transparent) 0,
+        color-mix(in srgb, var(--accent-primary, #6f7eff) 90%, transparent) 35%,
+        transparent 60%);
+    width: 8px !important;
+    height: 8px !important;
+    margin-left: 4px;
+    margin-top: 6px;
+    border-radius: 50%;
+    box-shadow: 0 0 6px color-mix(in srgb, var(--accent-primary, #6f7eff) 70%, transparent);
+}
+
+.synthi-nep-target-line {
+    background: color-mix(in srgb, var(--accent-primary, #6f7eff) 12%, transparent) !important;
+    border-left: 2px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 80%, transparent);
+}
+
+/* SEARCH ALL per-site confirmation (Phase 2). Different colour from the
+ * single-site armed-line so the user can tell at a glance that THIS line
+ * is one of N sites in a batch under review, not a single accepted edit. */
+.synthi-nep-confirm-line {
+    background: color-mix(in srgb, var(--accent-secondary, #4aba9a) 14%, transparent) !important;
+    border-left: 2px solid color-mix(in srgb, var(--accent-secondary, #4aba9a) 90%, transparent);
+}
+
+/* Cross-file hint dot: prediction targets a closed file. The dot lands in
+ * the active editor's gutter at the cursor line so the user gets a visible
+ * "Tab to jump" cue. Hollow ring distinguishes it from the solid target dot. */
+.synthi-nep-gutter-dot-crossfile {
+    background: transparent;
+    border: 1.5px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 80%, transparent);
+    width: 8px !important;
+    height: 8px !important;
+    margin-left: 4px;
+    margin-top: 6px;
+    border-radius: 50%;
+    box-shadow: 0 0 5px color-mix(in srgb, var(--accent-primary, #6f7eff) 50%, transparent);
 }
