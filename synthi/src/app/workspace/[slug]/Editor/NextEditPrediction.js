@@ -41,6 +41,8 @@ import {
 import { classifyEdit } from '@/lib/editKindClassifier';
 import { recordNepEvent, isNepKilled, checkServerKill } from '@/lib/nepTelemetry';
 import { gitClient } from '@/services/gitClient';
+import { fileCache } from '@/services/fileCache';
+import { loadScheduler } from '@/services/loadScheduler';
 import { selectFileThunk } from '@/redux/workspaceSlice';
 
 const NEP_DEBOUNCE_MS = 600;
@@ -53,6 +55,11 @@ const NEP_PER_SESSION_FIRE_CAP = 200;
 const NEP_GUTTER_CLASS = 'synthi-nep-gutter-dot';
 const NEP_LINE_CLASS = 'synthi-nep-target-line';
 const NEP_CONFIRM_LINE_CLASS = 'synthi-nep-confirm-line';
+// Cross-file hint dot: the prediction targets a file that isn't open as a
+// tab, so the primary gutter dot has nothing to decorate. We fall back to a
+// dot in the active editor's gutter at the user's cursor line so the user
+// gets a visible signal that Tab will jump to a prediction elsewhere.
+const NEP_CROSSFILE_GUTTER_CLASS = 'synthi-nep-gutter-dot-crossfile';
 
 const STATE = {
   IDLE: 'idle',
@@ -67,6 +74,11 @@ const STATE = {
 
 const NEP_LOCAL_STORAGE_KEY = 'synthi.nep.enabled';
 
+// NEP is on by default. Explicit opt-out paths (in priority order):
+//   1. window.__SYNTHI_NEP_ENABLED__ = false
+//   2. localStorage `synthi.nep.enabled` = "0" / "false"
+//   3. NEXT_PUBLIC_NEXT_EDIT_PREDICTION = "0" / "false"
+// Anything else falls through to enabled.
 const isNepEnabled = () => {
   if (typeof window !== 'undefined') {
     if (window.__SYNTHI_NEP_ENABLED__ === false) return false;
@@ -81,9 +93,8 @@ const isNepEnabled = () => {
     const v = process.env?.NEXT_PUBLIC_NEXT_EDIT_PREDICTION;
     if (v === '1' || v === 'true') return true;
     if (v === '0' || v === 'false') return false;
-    if (process.env?.NODE_ENV === 'development') return true;
   }
-  return false;
+  return true;
 };
 
 /**
@@ -306,15 +317,34 @@ export const useNextEditPrediction = ({
 
     const model = findModelForPath(path);
     if (!model) {
-      // Predicted file isn't open as a tab yet, so its model doesn't
-      // exist — there's nothing to decorate. Tab still works: the
-      // cascade dispatches selectFileThunk, the editor remounts, and
-      // the activeFile-watching effect below re-runs renderJumpHint
-      // against the now-existing model.
-      const activePath = activeFile?.path || activeFile?.name;
-      if (path !== activePath) {
-        console.log(`[NEP] prediction queued for ${path} (file not currently open) — Tab to jump`);
-      }
+      // Predicted file isn't open as a tab — its Monaco model doesn't
+      // exist, so the primary gutter dot has nothing to bind to. Fall back
+      // to a hint dot in the ACTIVE editor's gutter at the user's cursor
+      // line so they have a visible "Tab to jump" signal. Without this the
+      // prediction is silently invisible until the user opens the target
+      // tab. Tab itself still works via the cross-file selectFileThunk
+      // path; once the new tab's model exists the activeFile-watching
+      // effect re-runs renderJumpHint against it and the proper dot lands.
+      try {
+        const fallbackModel = editorInstance?.getModel?.();
+        if (!fallbackModel) return;
+        const cursor = editorInstance.getPosition?.();
+        const hintLine = Math.max(1, cursor?.lineNumber || 1);
+        const Range = monacoInstance.Range;
+        const target = path.split('/').filter(Boolean).pop() || path;
+        const newDecorations = [{
+          range: new Range(hintLine, 1, hintLine, 1),
+          options: {
+            isWholeLine: false,
+            glyphMarginClassName: NEP_CROSSFILE_GUTTER_CLASS,
+            glyphMarginHoverMessage: {
+              value: `Next-edit prediction queued for **${target}** (line ${line}) — Tab to jump`,
+            },
+          },
+        }];
+        const newIds = fallbackModel.deltaDecorations([], newDecorations);
+        decorationIdsByModelRef.current.set(fallbackModel.uri.toString(), newIds);
+      } catch (_) { /* decoration churn is best-effort */ }
       return;
     }
 
@@ -493,7 +523,16 @@ export const useNextEditPrediction = ({
           markContext(after),
         ].filter(Boolean).join('\n');
 
-        recentEditsRef.current = pushNepEdit(recentEditsRef.current, { path, snippet });
+        recentEditsRef.current = pushNepEdit(recentEditsRef.current, {
+          path,
+          snippet,
+          // Stash the raw inserted text so fireNep can synthesise an
+          // appliedEdit for the impact endpoint when the user hasn't
+          // accepted a NEP block yet. Without this, the very first NEP
+          // fire (and every fire until an apply lands) skips edit-impact
+          // and the model sees no cross-file candidates.
+          insertedText,
+        });
 
         if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
         debounceTimerRef.current = setTimeout(() => {
@@ -564,6 +603,27 @@ export const useNextEditPrediction = ({
         }
       : null;
 
+    // Synthesise an appliedEdit from the most recent keystroke-driven edit
+    // when no NEP block has been accepted yet. The impact endpoint extracts
+    // identifiers from `search` to seed the symbol-graph BFS, so passing
+    // the freshly-typed text is enough to find cross-file candidates —
+    // we don't have the pre-edit text on hand for a synthetic `replace`,
+    // and the endpoint tolerates equal search/replace (it just unions the
+    // identifiers). Real applied edits always win when present.
+    let appliedEdit = lastAppliedEditRef.current;
+    if (!appliedEdit) {
+      const buf = recentEditsRef.current;
+      if (Array.isArray(buf) && buf.length) {
+        const last = buf[buf.length - 1];
+        const text = (typeof last?.insertedText === 'string' && last.insertedText.trim())
+          ? last.insertedText
+          : null;
+        if (last?.path && text) {
+          appliedEdit = { path: last.path, search: text, replace: text, kind: null };
+        }
+      }
+    }
+
     const payload = {
       workspaceSlug: workspaceSlug || null,
       language: activeLanguage || 'plaintext',
@@ -573,10 +633,16 @@ export const useNextEditPrediction = ({
       files,
       // Phase 2: send the last applied edit so the route can pull impact
       // candidates from the symbol graph and inject them into the prompt.
-      appliedEdit: lastAppliedEditRef.current,
+      // Falls back to a synthetic edit derived from the user's last
+      // keystroke so the cross-file path bootstraps without needing an
+      // earlier NEP accept.
+      appliedEdit,
     };
 
-    recordNepEvent('fire', { has_applied_edit: Boolean(lastAppliedEditRef.current) });
+    recordNepEvent('fire', {
+      has_applied_edit: Boolean(lastAppliedEditRef.current),
+      has_synthetic_edit: Boolean(appliedEdit) && !lastAppliedEditRef.current,
+    });
 
     let res;
     try {
@@ -599,15 +665,45 @@ export const useNextEditPrediction = ({
     const decoder = new TextDecoder();
     let armedYet = false;
 
-    const fallbackGet = (p) => {
-      if (p === activePath) return liveActiveContent;
-      const v = files[p];
-      return typeof v === 'string' ? v : null;
+    // Cross-file unblock (NEP plan §6, Phase 2): the validator must be able
+    // to read any workspace file, not just ones the user has open. Falls
+    // back to the singleton fileCache (loadScheduler-populated) so prefetch
+    // and on-demand fetches both feed validation. Without this every block
+    // targeting a closed file would reject as `file_missing`.
+    const liveReader = (p) => {
+      if (!p) return null;
+      if (typeof getLiveFileContent === 'function') {
+        const v = getLiveFileContent(p);
+        if (typeof v === 'string') return v;
+      }
+      if (p === activePath && typeof liveActiveContent === 'string') {
+        return liveActiveContent;
+      }
+      const fromPayload = files[p];
+      if (typeof fromPayload === 'string') return fromPayload;
+      try {
+        const v = fileCache.get(p);
+        if (typeof v === 'string') return v;
+      } catch (_) { /* singleton miss */ }
+      return null;
     };
-    const liveReader = getLiveFileContent || fallbackGet;
 
-    const ingest = (results) => {
+    // Best-effort async hydration: if a block lands for a file we don't have
+    // content for yet, fetch it via loadScheduler (which hits collab-server
+    // and populates the singleton fileCache that liveReader reads from).
+    // Bounded by the abort controller — if the stream tore or the user
+    // typed, we stop fetching. Errors fall through to file_missing.
+    const hydrateFile = async (path) => {
+      if (!path || !workspaceSlug) return;
+      if (typeof liveReader(path) === 'string') return;
+      try {
+        await loadScheduler.requestFileContent(workspaceSlug, path, { priority: 'high' });
+      } catch (_) { /* validator will reject as file_missing */ }
+    };
+
+    const ingest = async (results) => {
       for (const result of results) {
+        if (controller.signal.aborted) return;
         if (!result.ok) {
           recordNepEvent('rejected', {
             reason: result.reason || REJECT_REASONS.PARSE_ERROR,
@@ -617,6 +713,8 @@ export const useNextEditPrediction = ({
         }
         recordNepEvent('emitted');
         const block = result.block;
+        await hydrateFile(block.path);
+        if (controller.signal.aborted) return;
         const v = validateBlock(block, liveReader);
 
         let entry = null;
@@ -671,10 +769,10 @@ export const useNextEditPrediction = ({
           return;
         }
         if (done) break;
-        ingest(parser.feed(decoder.decode(value, { stream: true })));
+        await ingest(parser.feed(decoder.decode(value, { stream: true })));
       }
-      ingest(parser.feed(decoder.decode()));
-      ingest(parser.flush());
+      await ingest(parser.feed(decoder.decode()));
+      await ingest(parser.flush());
     } catch (_) {
       // Stream tore mid-block — anything we already armed is still valid.
     }
@@ -737,6 +835,11 @@ export const useNextEditPrediction = ({
       throw new Error('cannot write to closed file: no workspaceSlug');
     }
     await gitClient.writeFile(workspaceSlug, targetPath, content);
+    // Update the singleton cache so the next NEP fire sees the post-edit
+    // content. Without this, validateBlock for chained refactors keeps
+    // matching against pre-edit text (since liveReader falls back to the
+    // singleton) and the second block in the chain rejects as no_match.
+    try { fileCache.set(targetPath, content); } catch (_) { /* best-effort */ }
     return { via: 'collab_server' };
   }, [editorInstance, activeFile, monacoInstance, workspaceSlug, findOpenModel]);
 

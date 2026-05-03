@@ -110,13 +110,47 @@
 .monaco-editor .inline-edit-decoration-preview,
 .monaco-editor .inline-edits-line-replacement,
 .monaco-editor .inline-edits-deletion,
-.monaco-editor .inline-edits-insertion {
+.monaco-editor .inline-edits-insertion,
+/* Monaco 0.50+ inline-edit (Cursor-style multi-line replacement) overlays.
+ * These render the FULL post-edit line as ghost text in addition to the
+ * regular inline-completion preview, producing the "two ghosts on one line"
+ * artefact when both Synthi's tokenized widget and Monaco's native inline-
+ * edit fire for the same suggestion. Forcing them transparent leaves Synthi's
+ * widget as the only visible layer. */
+.monaco-editor .inline-edit,
+.monaco-editor .inline-edit.ghost-text,
+.monaco-editor .inline-edit.ghost-text-decoration,
+.monaco-editor .inline-edit.ghost-text-decoration-preview,
+.monaco-editor .inline-edit.modified-background.ghost-text,
+.monaco-editor .inline-edit.modified-background.ghost-text-decoration,
+.monaco-editor .inline-edit.modified-background.ghost-text-decoration-preview,
+.monaco-editor .inline-edit.suggest-preview-text .ghost-text,
+.monaco-editor .inlineCompletions-line-insert,
+.monaco-editor .inlineCompletions-line-delete,
+.monaco-editor .inlineCompletions-char-insert,
+.monaco-editor .inlineCompletions-char-delete,
+.monaco-editor .inlineCompletions-modified-bubble,
+.monaco-editor .inlineCompletions-original-bubble,
+.monaco-editor .inlineCompletions-original-lines,
+.monaco-editor .inlineCompletions.strike-through,
+.monaco-editor .inline-edits-view,
+.monaco-editor .inline-edits-view .editorContainer,
+.monaco-editor .inline-edits-view-zone {
     color: transparent !important;
     background: transparent !important;
     border-color: transparent !important;
+    text-decoration: none !important;
     /* preserve glyph dimensions so the cursor reserves the right amount of
      * horizontal space for the overlay */
     text-shadow: none !important;
+}
+
+/* The gutter-side "inline edit available" indicator that Monaco animates
+ * next to the line is its own widget, not a text decoration — hiding it
+ * with `display: none` instead of `color: transparent` so it doesn't take
+ * up gutter space at all. Synthi's gutter is reserved for git + NEP dots. */
+.monaco-editor .inline-edits-view-indicator {
+    display: none !important;
 }
 
 /* Belt-and-braces: override Monaco's CSS variables for ghost / inline-edit
@@ -676,4 +710,18 @@
 .synthi-nep-confirm-line {
     background: color-mix(in srgb, var(--accent-secondary, #4aba9a) 14%, transparent) !important;
     border-left: 2px solid color-mix(in srgb, var(--accent-secondary, #4aba9a) 90%, transparent);
+}
+
+/* Cross-file hint dot: prediction targets a closed file. The dot lands in
+ * the active editor's gutter at the cursor line so the user gets a visible
+ * "Tab to jump" cue. Hollow ring distinguishes it from the solid target dot. */
+.synthi-nep-gutter-dot-crossfile {
+    background: transparent;
+    border: 1.5px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 80%, transparent);
+    width: 8px !important;
+    height: 8px !important;
+    margin-left: 4px;
+    margin-top: 6px;
+    border-radius: 50%;
+    box-shadow: 0 0 5px color-mix(in srgb, var(--accent-primary, #6f7eff) 50%, transparent);
 }

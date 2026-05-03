@@ -27,10 +27,12 @@ const NEP_MAX_OUTPUT_TOKENS = 1024;
 const NEP_CONTEXT_CHARS = 3000;
 
 // Files block — the model needs to see the current contents of any file it
-// might emit a SEARCH against. We accept up to ~6 KB total and split that
-// budget across the supplied files (most-recently-edited first).
-const NEP_FILES_BUDGET_CHARS = 6000;
-const NEP_PER_FILE_CHARS = 2000;
+// might emit a SEARCH against. The total budget is split across cached
+// files (sent by the client) and impact-candidate files (hydrated server-
+// side from the symbol graph). Per-file cap is on the smaller side so
+// adding cross-file context doesn't push the active file out of the prompt.
+const NEP_FILES_BUDGET_CHARS = 8000;
+const NEP_PER_FILE_CHARS = 1500;
 
 // Phase 2: cross-file impact endpoint hookup. When the client sends an
 // `appliedEdit` (the edit the user just accepted), we ping ai-backend's
@@ -43,6 +45,19 @@ const CODE_INTEL_URL = process.env.CODE_INTEL_URL
 const CODE_INTEL_API_KEY = process.env.CODE_INTEL_API_KEY || '';
 const NEP_IMPACT_TIMEOUT_MS = 350;
 const NEP_IMPACT_MAX_CANDIDATES = 8;
+
+// Collab-server is the source of truth for workspace file contents. After
+// /code-intel/edit-impact returns a ranked list of cross-file candidates,
+// we hydrate the top-N with actual content here so the model can emit
+// SEARCH blocks against files the user has never opened. Without this the
+// prompt only contains the cached files the client knows about — the very
+// constraint the Phase 2 design ("predictions can chase a refactor across
+// files") was meant to lift.
+const COLLAB_URL = process.env.COLLAB_URL
+  || process.env.NEXT_PUBLIC_COLLAB_URL
+  || 'http://localhost:1234';
+const NEP_IMPACT_CONTENT_TOPN = 4;
+const NEP_IMPACT_CONTENT_TIMEOUT_MS = 400;
 
 const RECENT_EDITS_OPEN = '<recent_edits>';
 const RECENT_EDITS_CLOSE = '</recent_edits>';
@@ -142,6 +157,53 @@ const fetchImpactCandidates = async ({ workspaceSlug, appliedEdit }) => {
     return Array.isArray(data?.candidates) ? data.candidates : [];
   } catch (_) {
     return [];
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+/**
+ * Hydrate the top-N impact candidates with their file contents from the
+ * collab-server. Bounded by a hard timeout so a slow/dead collab-server can
+ * never stall the NEP request — on miss we just skip that candidate's
+ * content (the path still appears in <impact_candidates> as a hint).
+ *
+ * Returns a `{ path: content }` map of successfully fetched files.
+ */
+const fetchImpactCandidateContents = async ({ workspaceSlug, candidates, skipPaths }) => {
+  if (!workspaceSlug || !Array.isArray(candidates) || !candidates.length) return {};
+  const skip = skipPaths instanceof Set ? skipPaths : new Set(skipPaths || []);
+  const targets = [];
+  for (const c of candidates) {
+    if (!c?.file || skip.has(c.file)) continue;
+    targets.push(c.file);
+    if (targets.length >= NEP_IMPACT_CONTENT_TOPN) break;
+  }
+  if (!targets.length) return {};
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort('impact-content-timeout'), NEP_IMPACT_CONTENT_TIMEOUT_MS);
+  try {
+    const results = await Promise.all(targets.map(async (path) => {
+      try {
+        const res = await fetch(`${COLLAB_URL}/git/${encodeURIComponent(workspaceSlug)}/file`, {
+          method: 'POST',
+          signal: ctrl.signal,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path }),
+        });
+        if (!res.ok) return [path, null];
+        const data = await res.json();
+        return [path, typeof data?.content === 'string' ? data.content : null];
+      } catch (_) {
+        return [path, null];
+      }
+    }));
+    const out = {};
+    for (const [p, c] of results) {
+      if (typeof c === 'string') out[p] = c;
+    }
+    return out;
   } finally {
     clearTimeout(timer);
   }
@@ -252,12 +314,13 @@ export async function POST(request) {
   const cursor = body?.cursor && typeof body.cursor === 'object' ? body.cursor : null;
 
   const recentEditsBlock = renderRecentEdits(body?.recentEdits || []);
-  const filesBlock = renderFiles(body?.files || {});
   const contextBlock = renderContext(body?.references || []);
 
   // Bail early: NEP needs at least a recent-edits trajectory or the file
   // contents to predict against. Without either, the model is just guessing.
-  if (!recentEditsBlock && !filesBlock) {
+  const cachedFiles = (body?.files && typeof body.files === 'object') ? body.files : {};
+  const hasAnyContent = recentEditsBlock || Object.keys(cachedFiles).length > 0;
+  if (!hasAnyContent) {
     return new Response('', {
       status: 200,
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },
@@ -275,6 +338,25 @@ export async function POST(request) {
   const impactCandidates = appliedEdit
     ? await fetchImpactCandidates({ workspaceSlug, appliedEdit })
     : [];
+
+  // Hydrate the top impact candidates with their actual contents so the
+  // model can emit precise SEARCH blocks against files outside the user's
+  // open tabs. Skip candidates we already have cached (the client already
+  // sent those) so we spend the budget on genuinely new files.
+  const impactContents = impactCandidates.length
+    ? await fetchImpactCandidateContents({
+        workspaceSlug,
+        candidates: impactCandidates,
+        skipPaths: Object.keys(cachedFiles),
+      })
+    : {};
+
+  // Cached files first (most-relevant: the user has them open or recently
+  // touched), then impact-candidate hydration. renderFiles applies the
+  // shared budget in this order, so cached content always wins on contention.
+  const filesForPrompt = { ...cachedFiles, ...impactContents };
+  const filesBlock = renderFiles(filesForPrompt);
+
   const impactBlock = renderImpactBlock(impactCandidates);
 
   const prompt = buildPrompt({

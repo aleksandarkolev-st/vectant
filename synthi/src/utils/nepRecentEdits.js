@@ -96,7 +96,15 @@ export const pushNepEdit = (buffer, entry) => {
   if (!entry?.path || !entry?.snippet) return buffer;
   const trimmed = trimEntry(entry.snippet);
   const next = buffer.slice();
-  next.push({ path: entry.path, snippet: trimmed, ts: entry.ts ?? Date.now() });
+  next.push({
+    path: entry.path,
+    snippet: trimmed,
+    ts: entry.ts ?? Date.now(),
+    // Preserve insertedText when supplied so NEP can synthesise an
+    // appliedEdit for the impact endpoint without re-parsing the snippet.
+    // Optional — falls through to undefined for callers that don't pass it.
+    insertedText: typeof entry.insertedText === 'string' ? entry.insertedText : undefined,
+  });
 
   // Evict from the FRONT (oldest) until the byte budget fits. The newest
   // entry is the most informative; if even one entry exceeds the total budget

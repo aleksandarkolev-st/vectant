@@ -2676,8 +2676,14 @@ const EditorPanel = ({
     // instead of destroying and recreating the editor.
     useEffect(() => {
         if (!editorInstance || !monacoInstance || !activeFile) return;
-        const filePath = activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path;
-        const uri = monacoInstance.Uri.parse(`file:///synthi/${filePath}`);
+        // System headers (isSystem=true, e.g. /usr/include/c++/11/iostream)
+        // live in the worker's filesystem, not under /synthi/. Use URI.file
+        // so the model URI matches what SynthiFileSystemProvider registered
+        // via registerSystemFile — otherwise Monaco's default file service
+        // tries to read /synthi/usr/include/... from local disk and fails.
+        const uri = activeFile.isSystem
+            ? monacoInstance.Uri.file(activeFile.path)
+            : monacoInstance.Uri.parse(`file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}`);
         let model = monacoInstance.editor.getModel(uri);
         if (!model) {
             // Pre-create the model with cached content so there's no blank
@@ -2740,9 +2746,31 @@ const EditorPanel = ({
         // old active-file-only behaviour.
         dispatch,
         rawFiles,
-        getFileCacheEntries: () => fileCacheEntriesRef.current || [],
-        // Read live model contents — falls back to the file cache for files
-        // we've seen but don't currently have a model open for.
+        // Read from the singleton fileCache, not just Redux. loadScheduler
+        // populates the singleton with every fetched file (active + sibling
+        // prefetch + impact-driven hydration), but the Redux Map only sees
+        // explicit selectFileThunk fulfillments. NEP needs the broader set
+        // so its prompt actually contains the workspace files the user
+        // hasn't manually opened yet — that's where most cross-file
+        // predictions land.
+        getFileCacheEntries: () => {
+            try {
+                const merged = new Map();
+                for (const [p, c] of fileCache.entries()) {
+                    if (typeof c === 'string') merged.set(p, c);
+                }
+                for (const [p, c] of (fileCacheEntriesRef.current || [])) {
+                    if (typeof c === 'string' && !merged.has(p)) merged.set(p, c);
+                }
+                return Array.from(merged.entries());
+            } catch (_) {
+                return fileCacheEntriesRef.current || [];
+            }
+        },
+        // Read live model contents — falls back to the Redux file cache,
+        // then to the singleton fileCache (loadScheduler-populated). The
+        // singleton fallback is what lets NEP read content for any file in
+        // the workspace, not just ones the user has opened as tabs.
         getLiveFileContent: (path) => {
             try {
                 if (!path) return null;
@@ -2755,6 +2783,8 @@ const EditorPanel = ({
                 for (const [p, content] of entries) {
                     if (p === path && typeof content === 'string') return content;
                 }
+                const fromSingleton = fileCache.get(path);
+                if (typeof fromSingleton === 'string') return fromSingleton;
                 return null;
             } catch (_) {
                 return null;
@@ -3086,8 +3116,11 @@ const EditorPanel = ({
         if (activeFile?.path) {
             updateVirtualFile(activeFile.path, latestCodeRef.current ?? code).catch(() => {});
         }
-        // P1: Send textDocument/didSave to LSP servers so they re-index
-        if (activeFile?.path) {
+        // P1: Send textDocument/didSave to LSP servers so they re-index.
+        // Skip system headers — they're read-only and live outside the
+        // workspace, so a save event with a /synthi/-prefixed URI would
+        // confuse the LSP server's indexer.
+        if (activeFile?.path && !activeFile.isSystem) {
             const safePath = activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path;
             const fileUri = `file:///synthi/${safePath}`;
             languageClientsRef.current.forEach((client, lang) => {
@@ -4334,7 +4367,11 @@ const EditorPanel = ({
                                         <div className="h-full w-full" style={{ display: diffMode ? 'none' : undefined }}>
                                             <Editor
                                                 height="100%"
-                                                path={activeFile ? `file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}` : undefined}
+                                                path={activeFile
+                                                    ? (activeFile.isSystem && monacoInstance
+                                                        ? monacoInstance.Uri.file(activeFile.path).toString()
+                                                        : `file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}`)
+                                                    : undefined}
                                                 // Model caching: the editor instance stays alive across file switches.
                                                 // Models are pre-created and switched via editor.setModel() in the
                                                 // useEffect above, so there is no blank flash between tab switches.
