@@ -83,9 +83,18 @@ services:
       LOCAL_TURN_CREDENTIAL: "synthi"
       # Public URLs
       NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
+      # AI — used by /api/completion, /api/next-edit, /api/chat, /api/theme-generate.
+      # Without this the SDK falls back to ADC and throws
+      # "Could not load the default credentials".
+      GEMINI_API_KEY: "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
+      # Inside the compose network the ai-engine is reachable as `ai-engine:8000`,
+      # not localhost. Used by RAG fast-context, NEP edit-impact, shadow flows, agent.
+      CODE_INTEL_URL: "http://ai-engine:8000"
     depends_on:
       postgres:
         condition: service_healthy
+      ai-engine:
+        condition: service_started
 
   collab-server:
     build:
@@ -150,8 +159,8 @@ services:
       - "8000:8000"
     environment:
       # API Keys
-      GOOGLE_AI_API_KEY: "AIzaSyBFGyMQ7muhz_vz5E8Ug5uFoRtSZLTK4ys"
-      GEMINI_API_KEY: "AIzaSyBFGyMQ7muhz_vz5E8Ug5uFoRtSZLTK4ys"
+      GOOGLE_AI_API_KEY: "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
+      GEMINI_API_KEY: "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
       SYNTHI_AI_MODEL: "gemini-3-flash-preview-preview"
       OPENAI_API_KEY: "dummy"
 
