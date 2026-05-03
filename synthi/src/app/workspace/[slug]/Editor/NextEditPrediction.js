@@ -156,6 +156,11 @@ export const useNextEditPrediction = ({
   // (`dispatch` is the redux dispatch; `rawFiles` is the workspace tree.)
   dispatch = null,
   rawFiles = [],
+  // After-apply hook — fires once a NEP block has been written into the
+  // model. Editor.jsx wires this to the same Ctrl+S pipeline (collab-server
+  // REST save, worker disk sync, LSP didSave, HMR compile) so a NEP-applied
+  // edit lands durably in the cloud instead of relying on Yjs flush timing.
+  onApply = null,
 }) => {
   const [enabled, setEnabled] = useState(() => isNepEnabled());
   const [nepState, setNepState] = useState(STATE.IDLE);
@@ -933,6 +938,20 @@ export const useNextEditPrediction = ({
     return { via: 'collab_server' };
   }, [editorInstance, activeFile, monacoInstance, workspaceSlug, findOpenModel, replaceModelContent]);
 
+  // Run the host-supplied save pipeline (REST persist, worker disk sync,
+  // LSP didSave, HMR retrigger) once an apply has landed. Best-effort —
+  // a thrown onApply must not prevent the queue from advancing, the
+  // model already has the edit and Yjs will eventually broadcast it.
+  const runOnApply = useCallback(async (path, content) => {
+    if (typeof onApply !== 'function') return;
+    try { await onApply(path, content); }
+    catch (err) {
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn(`[NEP] onApply threw for ${path}:`, err?.message || err);
+      }
+    }
+  }, [onApply]);
+
   // ── apply helpers ───────────────────────────────────────────────────────
   const applySearchBlock = useCallback(async (entry) => {
     const next = applyBlock(entry.block, getLiveFileContent);
@@ -948,6 +967,7 @@ export const useNextEditPrediction = ({
       recordNepEvent('rejected', { reason: 'write_failed', detail: err?.message, path });
       throw err;
     }
+    await runOnApply(path, next);
     // Classify + stash for the next NEP fire's appliedEdit. This is what
     // closes the cross-file refactor-chase loop: Phase 2 prompt sees the
     // applied edit, /code-intel/edit-impact returns the next sites.
@@ -972,7 +992,7 @@ export const useNextEditPrediction = ({
       };
     }
     recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH, path, via: writeResult?.via });
-  }, [getLiveFileContent, writeFileContent]);
+  }, [getLiveFileContent, writeFileContent, runOnApply]);
 
   /**
    * Apply a SEARCH ALL block at a SINGLE site identified by byte-offset.
@@ -994,8 +1014,9 @@ export const useNextEditPrediction = ({
     const offset = offsets[siteIdx];
     const next = live.slice(0, offset) + entry.block.replace + live.slice(offset + entry.block.search.length);
     await writeFileContent(path, next);
+    await runOnApply(path, next);
     return next;
-  }, [getLiveFileContent, writeFileContent]);
+  }, [getLiveFileContent, writeFileContent, runOnApply]);
 
   // ── Tab cascade ─────────────────────────────────────────────────────────
   useEffect(() => {

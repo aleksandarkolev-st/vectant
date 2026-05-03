@@ -2732,6 +2732,11 @@ const EditorPanel = ({
 
     // --- Next-Edit Prediction (NEP) — Phase 1, feature-flagged off by default ---
     // Enable via NEXT_PUBLIC_NEXT_EDIT_PREDICTION=1 or window.__SYNTHI_NEP_ENABLED__.
+    // Forward ref for persistNepApply, which is defined further down because
+    // it depends on `compilerClient` (a useState) and shares structure with
+    // handleSave. The ref lets the NEP hook above call into it without us
+    // having to hoist the whole save pipeline above the hook chain.
+    const persistNepApplyRef = useRef(null);
     const { predictedPaths: nepPredictedPaths } = useNextEditPrediction({
         editorInstance,
         monacoInstance,
@@ -2793,6 +2798,15 @@ const EditorPanel = ({
         // Plan Q1: NEP shares the workspace-switch reset hook with the primary
         // buffer. Slug change → both buffers drop.
         workspaceResetKey: slug,
+        // Run the full Ctrl+S save pipeline after every NEP apply so the
+        // edit gets durable cloud persistence + LSP didSave + HMR retrigger,
+        // not just a Yjs broadcast that y-sweet flushes on its own schedule.
+        // The wrapper hops through the ref because persistNepApply itself is
+        // defined further down (closures over compilerClient + onSave).
+        onApply: (path, content) => {
+            const fn = persistNepApplyRef.current;
+            return fn ? fn(path, content) : Promise.resolve();
+        },
     });
 
     const {
@@ -3140,6 +3154,75 @@ const EditorPanel = ({
         console.log('[Editor] Calling onSave prop with latest code');
         if (onSave) onSave(latestCodeRef.current ?? code);
     }, [activeFile, dispatch, onSave, compilerClient, slug]);
+
+    // Mirror handleSave for the NEP apply path. The Yjs broadcast that
+    // pushEditOperations triggers gets the edit into the CRDT, but cloud
+    // durability and the editor's other "saved!" side effects (REST save,
+    // worker disk sync, LSP didSave, HMR compile) only land if we run the
+    // same pipeline Ctrl+S runs. The signature takes (path, content)
+    // explicitly so we don't depend on `latestCodeRef`, which is racey
+    // immediately after a programmatic model edit (the React render that
+    // refreshes the ref hasn't run yet when this is invoked).
+    const persistNepApply = useCallback(async (path, content) => {
+        if (!path || typeof content !== 'string') return;
+        const activePath = activeFile?.path || activeFile?.name;
+        const isActive = path === activePath;
+
+        // 1. REST save → collab-server. Active file goes through the
+        //    Redux thunk so optimistic isUnsaved + savedContent updates
+        //    happen exactly like a Ctrl+S would. Non-active paths take
+        //    the per-path write API.
+        if (isActive) {
+            try { dispatch(saveFileContentThunk()); }
+            catch (_) { /* best-effort */ }
+        } else if (slug) {
+            try { await gitClient.writeFile(slug, path, content); }
+            catch (_) { /* best-effort — Yjs broadcast is the fallback */ }
+        }
+
+        // 2. Worker disk sync — the LSP server reads from worker disk
+        //    for cross-file indexing; without this a NEP-applied rename
+        //    that touches a non-active file leaves the index stale.
+        if (compilerClient && typeof compilerClient.syncFile === 'function') {
+            try { compilerClient.syncFile(path, content); }
+            catch (_) { /* best-effort */ }
+        }
+
+        // 3. Monaco virtual filesystem overlay refresh.
+        try { await updateVirtualFile(path, content); } catch (_) { /* best-effort */ }
+
+        // 4. LSP didSave — re-index trigger. Match the URI shape the rest
+        //    of the editor uses (file:///synthi/<rel>). Skip system
+        //    headers (read-only, not part of the workspace).
+        const isSystemPath = path.startsWith('/') && !path.startsWith('/synthi/');
+        if (!isSystemPath) {
+            const safePath = path.startsWith('/') ? path.slice(1) : path;
+            const fileUri = `file:///synthi/${safePath}`;
+            languageClientsRef.current?.forEach((client) => {
+                if (client?.isRunning?.()) {
+                    try {
+                        client.sendNotification('textDocument/didSave', {
+                            textDocument: { uri: fileUri },
+                            text: content,
+                        });
+                    } catch (_) { /* best-effort */ }
+                }
+            });
+        }
+
+        // 5. HMR / compile trigger. Only meaningful for the active file —
+        //    `onSave` is the page-level pipeline that recompiles whatever
+        //    the user is currently looking at. Non-active applies skip
+        //    this and let the worker pick up the change on next compile.
+        if (isActive && typeof onSave === 'function') {
+            try { onSave(content); } catch (_) { /* best-effort */ }
+        }
+    }, [activeFile, slug, dispatch, compilerClient, onSave]);
+
+    // Plug the implementation into the ref the NEP hook reads through.
+    useEffect(() => {
+        persistNepApplyRef.current = persistNepApply;
+    }, [persistNepApply]);
 
     // ── Close-tab guard: prompt when a file has unsaved changes ──────
     // For the *active* file we check the live `isUnsaved` selector.
