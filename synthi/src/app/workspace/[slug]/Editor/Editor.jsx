@@ -3087,14 +3087,21 @@ const EditorPanel = ({
 
         cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
 
-        // Debounce AI Auto-Complete (The "Cursor" experience)
+        // Debounce AI Auto-Complete. The previous 900ms wait was the dominant
+        // contributor to perceived completion latency: with a typical 500-800ms
+        // model+network roundtrip, total time-to-first-ghost was 1.5-2s, which
+        // reads as broken rather than as "AI assistance". 350ms matches the
+        // Copilot/Cursor band — short enough that the suggestion appears
+        // shortly after a natural typing pause, long enough that it doesn't
+        // fire mid-token. The MIN_AUTO_INTERVAL_MS rate-limit in AICompletion.js
+        // (350ms) acts as a floor against burst-typing flooding the API.
         if (aiDebounceTimerRef.current) clearTimeout(aiDebounceTimerRef.current);
         if (!aiAutoEnabled) return;
         aiDebounceTimerRef.current = setTimeout(() => {
             if (!activeDiffCheck()) {
                 requestAiCompletion(true, latestCodeRef.current, { reason: 'pause', pauseTrigger: true, recentEditSnippet: takeLastChars(latestCodeRef.current, 512) });
             }
-        }, 900);
+        }, 350);
     }, [activeFile, aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion, collabConnected]);
 
     // Keep a ref to the latest handleCodeChange to avoid stale closures in the editor onMount listener
