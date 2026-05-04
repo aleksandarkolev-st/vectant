@@ -45,8 +45,8 @@ import { fileCache } from '@/services/fileCache';
 import { loadScheduler } from '@/services/loadScheduler';
 import { selectFileThunk } from '@/redux/workspaceSlice';
 
-const NEP_DEBOUNCE_MS = 600;
-const NEP_MIN_INTERVAL_MS = 1500; // floor between auto-fires (rate limit)
+const NEP_DEBOUNCE_MS = 400;
+const NEP_MIN_INTERVAL_MS = 800; // floor between auto-fires (rate limit)
 // Per-session cap on NEP fires. Heavy refactor sessions could otherwise blow
 // API budget. Plan-grade gap "cost ceiling / rate limit per session is
 // absent" — addressed by this cap. Resets on workspace switch.
