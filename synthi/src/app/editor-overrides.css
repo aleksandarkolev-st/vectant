@@ -913,19 +913,58 @@
 }
 
 /* The colorized code body — Monaco's `colorize` outputs <span class="mtkN">…
- * which the active theme already styles. We just need the right padding,
- * monospace font (set inline by the JS), and a "code came from a diff"
- * accent on the left edge of each line. */
+ * which the active theme already styles. The body holds individual line
+ * rows (`.synthi-nep-replace-preview__line`) which carry their own padding
+ * + tint, so the container itself stays flush. */
 .synthi-nep-replace-preview__code {
-    padding: 0 14px 0 14px;
-    white-space: pre;
+    padding: 0;
     color: color-mix(in srgb, var(--accent-secondary, #4aba9a) 90%, var(--text-primary, #f4f5f8));
     /* Slight transparency so it reads as preview, not committed code. */
     opacity: 0.92;
 }
 
-.synthi-nep-replace-preview__code br + br {
-    /* Monaco's colorize emits <br/> between lines — give them the editor's
-     * line-height (set inline on the parent) without injecting extra space. */
-    display: block;
+/* Each line in the preview is its own row so we can tint added lines green
+ * and reserve space for a leading `+` / ` ` marker column — the user sees a
+ * proper unified-diff-style preview instead of an undifferentiated block of
+ * "this is what it'll be." */
+.synthi-nep-replace-preview__line {
+    display: flex;
+    align-items: baseline;
+    padding: 0 12px;
+    /* Monospace whitespace inside the colorized text span — see ::__line-text
+     * below. The line itself is a flex row so leading whitespace in the code
+     * doesn't push the marker out of alignment. */
+    white-space: nowrap;
+}
+
+.synthi-nep-replace-preview__line--added {
+    /* Same green family the editor uses elsewhere for "added" diffs. Kept
+     * subtle so the row reads as preview, not committed code. */
+    background: color-mix(in srgb, #4ade80 14%, transparent);
+}
+
+.synthi-nep-replace-preview__marker {
+    flex: 0 0 auto;
+    display: inline-block;
+    width: 12px;
+    margin-right: 6px;
+    font-family: inherit;
+    font-weight: 700;
+    text-align: center;
+    user-select: none;
+    /* Default: invisible (preserves the column for unchanged lines). The
+     * --added rule below repaints it green for added lines. */
+    color: transparent;
+}
+
+.synthi-nep-replace-preview__line--added .synthi-nep-replace-preview__marker {
+    color: color-mix(in srgb, #4ade80 95%, transparent);
+}
+
+.synthi-nep-replace-preview__line-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    /* The colorized code itself preserves whitespace so indentation lands
+     * exactly as Monaco's tokenizer rendered it. */
+    white-space: pre;
 }

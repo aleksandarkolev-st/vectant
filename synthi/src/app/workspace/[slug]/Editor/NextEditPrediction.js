@@ -164,6 +164,45 @@ const classifyEditDiff = (search, replace) => {
   return { kind: 'modify' };
 };
 
+// Line-level diff for the REPLACE preview. Returns an array of REPLACE-side
+// line entries tagged with whether they're new (`added: true`) versus
+// preserved from SEARCH (`added: false`). Removed lines aren't emitted —
+// they're visualised in-place by the strikethrough decoration.
+//
+// Uses a standard LCS so that a renamed line surrounded by unchanged
+// context reports the rename as `added` (and the removal as a strike),
+// not as an entire run of unrelated edits.
+const computeLineDiff = (search, replace) => {
+  const a = (search || '').split('\n');
+  const b = (replace || '').split('\n');
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1;
+      else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  const out = [];
+  let i = m;
+  let j = n;
+  while (j > 0) {
+    if (i > 0 && a[i - 1] === b[j - 1]) {
+      out.unshift({ added: false, line: b[j - 1] });
+      i--; j--;
+    } else if (i === 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+      out.unshift({ added: true, line: b[j - 1] });
+      j--;
+    } else {
+      // Line removed from SEARCH — visualised in-place by the strike,
+      // skip from REPLACE-side preview.
+      i--;
+    }
+  }
+  return out;
+};
+
 // Walk a workspace file tree (rawFiles) looking for the first node whose
 // path matches `targetPath` exactly. Used by the Tab cascade to convert a
 // path string from a NEP block into a real file-tree node so we can dispatch
@@ -391,25 +430,62 @@ export const useNextEditPrediction = ({
     }
   }, [editorInstance, monacoInstance]);
 
-  // Render the inline diff preview as a Monaco view zone showing some
-  // ghost-tokenized text at a chosen line. The caller picks the text and
-  // placement based on the edit kind — see renderJumpHint for the dispatch:
-  // 'modify' shows the full REPLACE below the SEARCH range, 'append' shows
-  // only the added tail, 'prepend' shows only the added head above. Only
-  // ever attached to the active editor.
+  // Render the inline diff preview as a Monaco view zone. Each line in the
+  // placement carries an `added` flag — added lines get a green '+' marker
+  // and a soft green tint so the user sees exactly what's being inserted.
+  // Unchanged lines (the `false` case) only appear for 'modify' edits, where
+  // they sit alongside added lines as context for the replacement; 'append'
+  // and 'prepend' edits set `added: true` on every line so the entire zone
+  // reads as an insert.
   //
-  // placement: { afterLineNumber: number, text: string, label: string }
-  //   afterLineNumber follows Monaco's view-zone semantics: 0 places the
-  //   zone above line 1, N places it after line N.
+  // placement: {
+  //   afterLineNumber: number,             // Monaco view-zone semantics: 0 = above line 1.
+  //   lines: [{ added: bool, line: string }],
+  //   label: string,
+  // }
   const renderEditPreview = useCallback(async (placement) => {
     if (!editorInstance || !monacoInstance || !placement) return;
-    const text = placement.text || '';
-    if (!text) return;
+    const lines = Array.isArray(placement.lines) ? placement.lines : null;
+    if (!lines || lines.length === 0) return;
     const afterLineNumber = placement.afterLineNumber;
     if (typeof afterLineNumber !== 'number' || afterLineNumber < 0) return;
     const labelText = placement.label || 'Next edit';
 
     const metrics = getEditorFontMetrics();
+
+    const escapeHtml = (s) => s
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // Per-line colorize. Loses cross-line tokenizer state (multi-line
+    // strings/comments fall back to default colors) but keeps the per-line
+    // structure we need to tint added rows green. NEP REPLACE blocks are
+    // small enough that the parallel cost is negligible.
+    const colorizeLine = async (text) => {
+      if (!text) return '';
+      try {
+        const html = await monacoInstance.editor.colorize(
+          text,
+          activeLanguage || 'plaintext',
+          { tabSize: 4 },
+        );
+        return typeof html === 'string'
+          ? html.replace(/<br\s*\/?>\s*$/i, '')
+          : escapeHtml(text);
+      } catch (_) {
+        return escapeHtml(text);
+      }
+    };
+
+    const renderedLines = await Promise.all(
+      lines.map(async (entry) => {
+        const inner = await colorizeLine(entry.line);
+        const cls = entry.added
+          ? 'synthi-nep-replace-preview__line synthi-nep-replace-preview__line--added'
+          : 'synthi-nep-replace-preview__line';
+        const marker = entry.added ? '+' : ' ';
+        return `<div class="${cls}"><span class="synthi-nep-replace-preview__marker">${marker}</span><span class="synthi-nep-replace-preview__line-text">${inner || '&nbsp;'}</span></div>`;
+      }),
+    );
 
     const zoneNode = document.createElement('div');
     zoneNode.className = 'synthi-nep-replace-preview';
@@ -421,26 +497,6 @@ export const useNextEditPrediction = ({
       if (metrics.fontFeatureSettings) zoneNode.style.fontFeatureSettings = metrics.fontFeatureSettings;
     }
 
-    const lines = text.split('\n');
-    const heightInLines = Math.max(1, lines.length);
-
-    let colorized = '';
-    try {
-      const html = await monacoInstance.editor.colorize(
-        text,
-        activeLanguage || 'plaintext',
-        { tabSize: 4 },
-      );
-      colorized = typeof html === 'string' ? html : '';
-    } catch (_) { /* fallthrough to plain-text fallback */ }
-
-    const escapeHtml = (s) => s
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-    if (!colorized) {
-      colorized = lines.map((l) => escapeHtml(l)).join('<br/>');
-    }
-
     zoneNode.innerHTML = `
       <div class="synthi-nep-replace-preview__rail" aria-hidden="true"></div>
       <div class="synthi-nep-replace-preview__body">
@@ -448,7 +504,7 @@ export const useNextEditPrediction = ({
           <span class="synthi-nep-replace-preview__icon">↳</span>
           <span>${escapeHtml(labelText)} · <kbd>Tab</kbd> to apply</span>
         </div>
-        <div class="synthi-nep-replace-preview__code">${colorized}</div>
+        <div class="synthi-nep-replace-preview__code">${renderedLines.join('')}</div>
       </div>
     `;
 
@@ -457,7 +513,7 @@ export const useNextEditPrediction = ({
       editorInstance.changeViewZones((accessor) => {
         zoneId = accessor.addZone({
           afterLineNumber,
-          heightInLines,
+          heightInLines: lines.length,
           domNode: zoneNode,
           suppressMouseDown: true,
         });
@@ -599,16 +655,18 @@ export const useNextEditPrediction = ({
               },
             });
             if (isActiveTarget) {
+              // Per-line diff so the user sees + markers on the actually-new
+              // lines rather than a wall of green claiming "everything is new".
               placement = {
                 afterLineNumber: endLine,
-                text: entry.block.replace,
+                lines: computeLineDiff(entry.block.search, entry.block.replace),
                 label: 'Replace',
               };
             }
           } else if (diff.kind === 'append' && isActiveTarget) {
             placement = {
               afterLineNumber: endLine,
-              text: diff.added,
+              lines: diff.added.split('\n').map((line) => ({ added: true, line })),
               label: 'Insert',
             };
           } else if (diff.kind === 'prepend' && isActiveTarget) {
@@ -618,7 +676,7 @@ export const useNextEditPrediction = ({
             // line 1").
             placement = {
               afterLineNumber: Math.max(0, startLine - 1),
-              text: diff.added,
+              lines: diff.added.split('\n').map((line) => ({ added: true, line })),
               label: 'Insert',
             };
           }
