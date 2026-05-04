@@ -213,6 +213,24 @@
     margin-left: 0;
 }
 
+/* View zone showing continuation lines (lines 2+) of a multi-line inline
+ * completion suggestion. Rendered directly in the editor's view-zones layer
+ * so the text aligns with the natural indentation of the code column, not
+ * the cursor's inline X position. Same opacity/filter as the inline ghost. */
+.synthi-ghost-continuation {
+    pointer-events: none;
+    user-select: none;
+    white-space: pre;
+    opacity: 0.62;
+    filter: saturate(0.92);
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    /* padding-left is applied inline from Monaco's getLayoutInfo().contentLeft
+     * so the text aligns with the code column. */
+    animation: synthi-ghost-fadein 120ms ease-out;
+}
+
 /* "+N lines · Tab" pill hint. Keep visually compact and clearly secondary
  * (lower opacity, smaller font) so it reads as metadata instead of code. */
 .synthi-ghost-tokenized__hint {
@@ -239,57 +257,6 @@
     opacity: 0.92;
     /* Use the UI font, not the monospace one. */
     font-family: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-}
-
-/* "AI is thinking" loading pill anchored at the cursor. Renders during the
- * gap between completion-request-fires and first-token-arrives, then yields
- * to the tokenized ghost widget. Three pulsing dots + a small "AI" label,
- * styled as a subtle pill so it reads as activity indicator, not a button. */
-.synthi-ai-loading-pill {
-    display: none; /* JS flips to inline-flex when active */
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    margin-left: 4px;
-    border-radius: 999px;
-    pointer-events: none;
-    user-select: none;
-    /* UI font, NOT inherited monospace — this is chrome, not code. */
-    font-family: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    font-size: 10px;
-    font-weight: 600;
-    line-height: 14px;
-    letter-spacing: 0.4px;
-    text-transform: uppercase;
-    color: color-mix(in srgb, var(--accent-primary, #6f7eff) 95%, transparent);
-    background: color-mix(in srgb, var(--accent-primary, #6f7eff) 10%, transparent);
-    border: 1px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 28%, transparent);
-    /* Match the editor's line baseline. The widget anchors to the cursor's
-     * visual line and we want the pill to ride alongside the caret rather
-     * than float a few pixels up or down. */
-    vertical-align: middle;
-    backdrop-filter: blur(2px);
-}
-
-.synthi-ai-loading-pill__dot {
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--accent-primary, #6f7eff) 90%, transparent);
-    animation: synthi-ai-loading-bounce 1.0s ease-in-out infinite;
-}
-
-.synthi-ai-loading-pill__dot:nth-child(2) { animation-delay: 0.15s; }
-.synthi-ai-loading-pill__dot:nth-child(3) { animation-delay: 0.30s; }
-
-@keyframes synthi-ai-loading-bounce {
-    0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
-    40%           { opacity: 1.0; transform: translateY(-2px); }
-}
-
-.synthi-ai-loading-pill__label {
-    margin-left: 2px;
-    color: color-mix(in srgb, var(--accent-primary, #6f7eff) 75%, transparent);
 }
 
 .synthi-ghost-tokenized__hint kbd {

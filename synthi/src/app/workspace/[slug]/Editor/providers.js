@@ -189,7 +189,7 @@ export const useEditorProviders = ({
     //      the surrounding code.
     const tokenizerWidgetRef = useRef(null);
     const tokenizerColorizeIdRef = useRef(0);
-    const loadingIndicatorWidgetRef = useRef(null);
+    const ghostZoneIdRef = useRef(null);
 
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
@@ -287,6 +287,19 @@ export const useEditorProviders = ({
             } catch (_) { /* metrics best-effort */ }
         };
         applyFontMetrics();
+
+        // Helper: remove the ghost-text continuation view zone.
+        const clearGhostZone = () => {
+            if (ghostZoneIdRef.current !== null) {
+                try {
+                    editorInstance.changeViewZones((accessor) => {
+                        accessor.removeZone(ghostZoneIdRef.current);
+                    });
+                } catch (_) { /* zone already gone */ }
+                ghostZoneIdRef.current = null;
+            }
+        };
+
         const fontConfigDispose = editorInstance.onDidChangeConfiguration?.((e) => {
             try {
                 const EditorOption = monacoInstance.editor.EditorOption;
@@ -357,46 +370,31 @@ export const useEditorProviders = ({
             if (!visible) {
                 node.innerHTML = '';
                 node.dataset.visible = '';
+                clearGhostZone();
                 editorInstance.layoutContentWidget(widget);
                 return;
             }
 
             if (node.dataset.visible === visible) {
-                // Same content already painted — just re-anchor in case the
-                // cursor moved.
                 editorInstance.layoutContentWidget(widget);
                 return;
             }
             node.dataset.visible = visible;
 
-            // Render only the FIRST line as ghost text. Multi-line ghost
-            // overlays can't anchor cleanly: Monaco's content widget pins to
-            // the cursor's pixel position, but each subsequent suggestion
-            // line carries its own leading whitespace from the model, which
-            // the widget renders verbatim under `white-space: pre`. The
-            // result is the staggered/garbled stack the user reported. Tab
-            // still applies the full multi-line suggestion via the cached
-            // value — we just don't try to draw the full thing as ghost.
             const lines = visible.split('\n');
             const firstLine = lines[0];
-            const restCount = lines.length - 1;
+            const restLines = lines.slice(1);
+            const restCount = restLines.length;
 
             // Cancel any in-flight colorize call — we only care about the latest.
             const id = ++tokenizerColorizeIdRef.current;
             try {
-                // Monaco returns colorized HTML using its own per-theme `mtkN`
-                // classes, which the editor stylesheet already maps to the
-                // active theme's syntax colours. This is the same tokenizer
-                // used everywhere else in the editor.
                 const html = await monacoInstance.editor.colorize(
                     firstLine,
                     activeLanguage || 'plaintext',
                     { tabSize: 4 }
                 );
-                if (id !== tokenizerColorizeIdRef.current) return; // superseded
-                // colorize() emits a trailing <br/> after each line — strip
-                // it so it doesn't push our content-widget down a row inside
-                // the editor's overlay layer.
+                if (id !== tokenizerColorizeIdRef.current) return;
                 const cleaned = (typeof html === 'string' && html.length)
                     ? html.replace(/<br\s*\/?>\s*$/i, '')
                     : escape(firstLine);
@@ -404,8 +402,62 @@ export const useEditorProviders = ({
                     ? `<span class="synthi-ghost-tokenized__hint">+${restCount} ${restCount === 1 ? 'line' : 'lines'} <kbd>Tab</kbd></span>`
                     : `<span class="synthi-ghost-tokenized__hint"><kbd>Tab</kbd></span>`;
                 node.innerHTML = cleaned + hint;
+
+                // Render continuation lines in a view zone immediately below
+                // the cursor line. This shows the full suggestion diff without
+                // overlapping the editor's existing content.
+                clearGhostZone();
+                if (restCount > 0) {
+                    const livePos = editorInstance.getPosition();
+                    if (livePos) {
+                        const restHtml = await monacoInstance.editor.colorize(
+                            restLines.join('\n'),
+                            activeLanguage || 'plaintext',
+                            { tabSize: 4 }
+                        );
+                        if (id !== tokenizerColorizeIdRef.current) return;
+                        const cleanedRest = (typeof restHtml === 'string' && restHtml.length)
+                            ? restHtml.replace(/<br\s*\/?>\s*$/i, '')
+                            : restLines.map(escape).join('<br/>');
+
+                        const zoneNode = document.createElement('div');
+                        zoneNode.className = 'synthi-ghost-continuation';
+                        // Apply editor font metrics + content column offset so
+                        // the continuation text aligns with the surrounding code.
+                        try {
+                            const EditorOption = monacoInstance.editor.EditorOption;
+                            if (EditorOption) {
+                                const fi = editorInstance.getOption(EditorOption.fontInfo);
+                                if (fi) {
+                                    if (fi.fontFamily) zoneNode.style.fontFamily = fi.fontFamily;
+                                    if (typeof fi.fontSize === 'number') zoneNode.style.fontSize = fi.fontSize + 'px';
+                                    if (typeof fi.lineHeight === 'number') zoneNode.style.lineHeight = fi.lineHeight + 'px';
+                                    if (typeof fi.letterSpacing === 'number') zoneNode.style.letterSpacing = fi.letterSpacing + 'px';
+                                }
+                            }
+                            const layout = editorInstance.getLayoutInfo?.();
+                            if (layout && typeof layout.contentLeft === 'number') {
+                                zoneNode.style.paddingLeft = layout.contentLeft + 'px';
+                            }
+                        } catch (_) { /* best-effort */ }
+                        zoneNode.innerHTML = cleanedRest;
+
+                        let zoneId = null;
+                        try {
+                            editorInstance.changeViewZones((accessor) => {
+                                zoneId = accessor.addZone({
+                                    afterLineNumber: livePos.lineNumber,
+                                    heightInLines: restCount,
+                                    domNode: zoneNode,
+                                    suppressMouseDown: true,
+                                });
+                            });
+                            ghostZoneIdRef.current = zoneId;
+                        } catch (_) { /* view zone failed */ }
+                    }
+                }
             } catch (e) {
-                // Fall back to plain escaped text if colorize ever fails.
+                clearGhostZone();
                 const hint = restCount > 0
                     ? `<span class="synthi-ghost-tokenized__hint">+${restCount} ${restCount === 1 ? 'line' : 'lines'} <kbd>Tab</kbd></span>`
                     : `<span class="synthi-ghost-tokenized__hint"><kbd>Tab</kbd></span>`;
@@ -439,79 +491,18 @@ export const useEditorProviders = ({
             try { contentDispose?.dispose(); } catch (_) { /* disposed */ }
             try { fontConfigDispose?.dispose(); } catch (_) { /* disposed */ }
             try { editorInstance.removeContentWidget(widget); } catch (_) { /* disposed */ }
+            // Clear the continuation view zone
+            if (ghostZoneIdRef.current !== null) {
+                try {
+                    editorInstance.changeViewZones((accessor) => {
+                        accessor.removeZone(ghostZoneIdRef.current);
+                    });
+                } catch (_) { /* zone already gone */ }
+                ghostZoneIdRef.current = null;
+            }
             tokenizerWidgetRef.current = null;
         };
     }, [editorInstance, monacoInstance, activeLanguage, aiCompletionCacheRef, aiCompletionCursorRef]);
-
-    // 1c. Loading indicator near cursor.
-    //
-    // The window between "user pauses → debounce fires → request fires" and
-    // "first model token arrives" is typically 300–700ms. Without any visual
-    // cue in that window the IDE feels frozen — the user can't tell whether
-    // a suggestion is on the way or no completion will appear at all. A
-    // small pulsing pill anchored at the cursor closes that gap.
-    //
-    // Mounts a content widget that renders only when state === 'loading'
-    // and no visible suggestion has streamed yet. Once the first token lands
-    // (state flips to 'ready' AND the cache has a suggestion), the
-    // tokenized ghost widget takes over and we hide the pill.
-    useEffect(() => {
-        if (!editorInstance || !monacoInstance) return;
-
-        const node = document.createElement('span');
-        node.className = 'synthi-ai-loading-pill';
-        node.innerHTML = `
-            <span class="synthi-ai-loading-pill__dot"></span>
-            <span class="synthi-ai-loading-pill__dot"></span>
-            <span class="synthi-ai-loading-pill__dot"></span>
-            <span class="synthi-ai-loading-pill__label">AI</span>
-        `;
-        node.style.display = 'none';
-
-        const widget = {
-            getId: () => 'synthi.ai.loading',
-            getDomNode: () => node,
-            getPosition: () => {
-                const livePos = editorInstance.getPosition?.();
-                if (!livePos) return null;
-                return {
-                    position: { lineNumber: livePos.lineNumber, column: livePos.column },
-                    preference: [
-                        monacoInstance.editor.ContentWidgetPositionPreference.EXACT,
-                    ],
-                };
-            },
-        };
-
-        editorInstance.addContentWidget(widget);
-        loadingIndicatorWidgetRef.current = widget;
-
-        // Decide visibility on every cursor move / cache poll. The completion
-        // state lives in React; we read the cache ref to know whether a
-        // suggestion has already streamed (in which case the ghost widget
-        // is already showing and the pill should yield to it).
-        const update = () => {
-            const cached = aiCompletionCacheRef.current;
-            const hasSuggestion = !!cached?.suggestion;
-            const isLoading = aiCompletionState === 'loading';
-            const visible = isLoading && !hasSuggestion;
-            node.style.display = visible ? 'inline-flex' : 'none';
-            if (visible) {
-                editorInstance.layoutContentWidget(widget);
-            }
-        };
-
-        update();
-        const cursorDispose = editorInstance.onDidChangeCursorPosition?.(update);
-        const tick = setInterval(update, 100);
-
-        return () => {
-            clearInterval(tick);
-            try { cursorDispose?.dispose(); } catch (_) { /* disposed */ }
-            try { editorInstance.removeContentWidget(widget); } catch (_) { /* disposed */ }
-            loadingIndicatorWidgetRef.current = null;
-        };
-    }, [editorInstance, monacoInstance, aiCompletionState, aiCompletionCacheRef]);
 
     // 2. Register Command for Accept
     useEffect(() => {

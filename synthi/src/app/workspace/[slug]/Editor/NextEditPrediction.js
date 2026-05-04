@@ -1329,6 +1329,12 @@ export const useNextEditPrediction = ({
         if (nepState === STATE.ARMED) {
           e.preventDefault();
           e.stopPropagation();
+          // Dismiss any active inline-completion suggestion so Tab doesn't
+          // simultaneously commit ghost text AND jump to the NEP site. Monaco's
+          // keybinding system for "editor.action.inlineSuggest.commit" fires
+          // after onKeyDown listeners and is not stopped by e.stopPropagation(),
+          // so we explicitly hide the inline suggest before it can commit.
+          try { editorInstance.trigger('nep', 'editor.action.inlineSuggest.hide', null); } catch (_) {}
           const path = entry.location?.path;
           const line = entry.location?.line;
           const activePath = activeFile?.path || activeFile?.name;
