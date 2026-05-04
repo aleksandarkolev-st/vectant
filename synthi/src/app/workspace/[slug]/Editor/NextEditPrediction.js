@@ -127,6 +127,43 @@ const offsetToLine = (content, offset) => {
   return line;
 };
 
+// Classify a SEARCH/REPLACE pair so the UI can choose between strike-and-
+// replace versus pure-insert visualisation. The previous implementation
+// always struck the SEARCH range and showed the full REPLACE text below —
+// which read as "this is being deleted" even when the model was just
+// inserting new lines after a piece of unchanged code. Detect that case
+// and skip the strike.
+//
+//   - 'noop'    : SEARCH === REPLACE (or trivial). Nothing to render.
+//   - 'append'  : REPLACE.startsWith(SEARCH). Show only the added tail
+//                 below the SEARCH range, no strikethrough.
+//   - 'prepend' : REPLACE.endsWith(SEARCH). Show only the added head
+//                 above the SEARCH range, no strikethrough.
+//   - 'modify'  : the SEARCH text genuinely changes. Strike + full REPLACE
+//                 preview, the original behaviour.
+const classifyEditDiff = (search, replace) => {
+  if (typeof search !== 'string' || typeof replace !== 'string') {
+    return { kind: 'modify' };
+  }
+  if (search === replace) return { kind: 'noop' };
+  if (replace.startsWith(search)) {
+    let added = replace.slice(search.length);
+    // Strip exactly one leading newline — the view zone sits visually
+    // below the SEARCH end line, so the line break separating SEARCH
+    // from the added tail is implicit in the zone's placement.
+    if (added.startsWith('\n')) added = added.slice(1);
+    if (!added) return { kind: 'noop' };
+    return { kind: 'append', added };
+  }
+  if (replace.endsWith(search)) {
+    let added = replace.slice(0, replace.length - search.length);
+    if (added.endsWith('\n')) added = added.slice(0, -1);
+    if (!added) return { kind: 'noop' };
+    return { kind: 'prepend', added };
+  }
+  return { kind: 'modify' };
+};
+
 // Walk a workspace file tree (rawFiles) looking for the first node whose
 // path matches `targetPath` exactly. Used by the Tab cascade to convert a
 // path string from a NEP block into a real file-tree node so we can dispatch
@@ -354,61 +391,26 @@ export const useNextEditPrediction = ({
     }
   }, [editorInstance, monacoInstance]);
 
-  // Build the strikethrough decoration for the SEARCH text range. Returns
-  // a Monaco decoration descriptor (range + options) when the SEARCH text
-  // is present in the model, otherwise null.
-  const buildSearchStrike = useCallback((model, searchText) => {
-    if (!model || !searchText) return null;
-    try {
-      const value = model.getValue();
-      const offset = value.indexOf(searchText);
-      if (offset < 0) return null;
-      const startPos = model.getPositionAt(offset);
-      const endPos = model.getPositionAt(offset + searchText.length);
-      const Range = monacoInstance.Range;
-      return {
-        range: new Range(
-          startPos.lineNumber, startPos.column,
-          endPos.lineNumber, endPos.column,
-        ),
-        options: {
-          inlineClassName: NEP_SEARCH_STRIKE_CLASS,
-          hoverMessage: { value: 'Next-edit prediction will replace this text — Tab to apply' },
-        },
-        // Endpoint info exposed for the view-zone placement below.
-        _endLine: endPos.lineNumber,
-        _endCol: endPos.column,
-      };
-    } catch (_) {
-      return null;
-    }
-  }, [monacoInstance]);
-
-  // Render the inline diff preview: a Monaco view zone immediately after
-  // the SEARCH range showing the REPLACE text in tokenized ghost form, plus
-  // a small "Tab to apply" content-widget pill. The preview lives only on
-  // the active editor's model — cross-file predictions get nothing here
-  // (the gutter dot in the active editor + the tab badge handle that case
-  // until the user jumps).
-  const renderEditPreview = useCallback(async (entry, endLine) => {
-    if (!editorInstance || !monacoInstance) return;
-    if (!entry || entry.kind !== NEP_BLOCK_KIND.SEARCH) return;
-    const block = entry.block;
-    const replaceText = block?.replace ?? '';
-    if (!replaceText) return;
-
-    // Active editor's model only. Cross-file predictions render no preview.
-    const activePath = activeFile?.path || activeFile?.name;
-    const targetPath = entry.location?.path;
-    if (!targetPath || targetPath !== activePath) return;
-    const model = editorInstance.getModel?.();
-    if (!model) return;
+  // Render the inline diff preview as a Monaco view zone showing some
+  // ghost-tokenized text at a chosen line. The caller picks the text and
+  // placement based on the edit kind — see renderJumpHint for the dispatch:
+  // 'modify' shows the full REPLACE below the SEARCH range, 'append' shows
+  // only the added tail, 'prepend' shows only the added head above. Only
+  // ever attached to the active editor.
+  //
+  // placement: { afterLineNumber: number, text: string, label: string }
+  //   afterLineNumber follows Monaco's view-zone semantics: 0 places the
+  //   zone above line 1, N places it after line N.
+  const renderEditPreview = useCallback(async (placement) => {
+    if (!editorInstance || !monacoInstance || !placement) return;
+    const text = placement.text || '';
+    if (!text) return;
+    const afterLineNumber = placement.afterLineNumber;
+    if (typeof afterLineNumber !== 'number' || afterLineNumber < 0) return;
+    const labelText = placement.label || 'Next edit';
 
     const metrics = getEditorFontMetrics();
 
-    // Build the view zone's DOM. Container holds a "+" gutter strip, a
-    // colorized code body, and (only when the change is interesting) a
-    // small inline label "Replace · Tab to apply" anchored at the right.
     const zoneNode = document.createElement('div');
     zoneNode.className = 'synthi-nep-replace-preview';
     if (metrics) {
@@ -419,26 +421,24 @@ export const useNextEditPrediction = ({
       if (metrics.fontFeatureSettings) zoneNode.style.fontFeatureSettings = metrics.fontFeatureSettings;
     }
 
-    const replaceLines = replaceText.split('\n');
-    const heightInLines = Math.max(1, replaceLines.length);
+    const lines = text.split('\n');
+    const heightInLines = Math.max(1, lines.length);
 
-    // Colorize the REPLACE text using Monaco's tokenizer so it inherits
-    // the active theme's syntax colours, the same approach the inline
-    // completion ghost widget uses.
     let colorized = '';
     try {
       const html = await monacoInstance.editor.colorize(
-        replaceText,
+        text,
         activeLanguage || 'plaintext',
         { tabSize: 4 },
       );
       colorized = typeof html === 'string' ? html : '';
     } catch (_) { /* fallthrough to plain-text fallback */ }
 
+    const escapeHtml = (s) => s
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
     if (!colorized) {
-      const escape = (s) => s
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      colorized = replaceLines.map((l) => escape(l)).join('<br/>');
+      colorized = lines.map((l) => escapeHtml(l)).join('<br/>');
     }
 
     zoneNode.innerHTML = `
@@ -446,21 +446,17 @@ export const useNextEditPrediction = ({
       <div class="synthi-nep-replace-preview__body">
         <div class="synthi-nep-replace-preview__label">
           <span class="synthi-nep-replace-preview__icon">↳</span>
-          <span>Next edit · <kbd>Tab</kbd> to apply</span>
+          <span>${escapeHtml(labelText)} · <kbd>Tab</kbd> to apply</span>
         </div>
         <div class="synthi-nep-replace-preview__code">${colorized}</div>
       </div>
     `;
 
-    // Insert the view zone after the SEARCH end-line. afterLineNumber is
-    // 0-based-ish in Monaco's API: 0 → before the first line, N → after
-    // line N. We use endLine directly so the preview appears immediately
-    // beneath the line containing the end of the SEARCH range.
     let zoneId = null;
     try {
       editorInstance.changeViewZones((accessor) => {
         zoneId = accessor.addZone({
-          afterLineNumber: endLine,
+          afterLineNumber,
           heightInLines,
           domNode: zoneNode,
           suppressMouseDown: true,
@@ -473,7 +469,7 @@ export const useNextEditPrediction = ({
       widget: previewArtifactsRef.current.widget,
       zoneNode,
     };
-  }, [editorInstance, monacoInstance, activeFile, activeLanguage, getEditorFontMetrics]);
+  }, [editorInstance, monacoInstance, activeLanguage, getEditorFontMetrics]);
 
   const renderJumpHint = useCallback((entry, opts = {}) => {
     if (!monacoInstance || !entry) {
@@ -560,33 +556,86 @@ export const useNextEditPrediction = ({
         },
       ];
 
-      // Strikethrough decoration on the SEARCH range — visualises what the
-      // edit will remove. Only attach for single-site SEARCH blocks; the
-      // SEARCH ALL flow has its own per-site visualisation, and we don't
-      // want to bake the strike into every confirm cycle.
-      let searchStrike = null;
+      // Edit-kind dispatch. Pure additive edits (REPLACE = SEARCH + tail or
+      // head + SEARCH) don't get a strikethrough — slashing through code the
+      // model is keeping verbatim was reading as "this is being deleted"
+      // when the model was just inserting new lines around it. Modifying
+      // edits keep the strike + full REPLACE preview behaviour.
+      let placement = null;
       if (entry.kind === NEP_BLOCK_KIND.SEARCH && !opts.confirm) {
-        searchStrike = buildSearchStrike(model, entry.block?.search);
-        if (searchStrike) {
-          newDecorations.push({ range: searchStrike.range, options: searchStrike.options });
+        const activePath = activeFile?.path || activeFile?.name;
+        const isActiveTarget = entry.location?.path && entry.location.path === activePath;
+
+        // Locate the SEARCH range in the target model so we know where to
+        // anchor the preview view zone (above or below) and, for 'modify',
+        // where to draw the strike.
+        let startLine = null;
+        let endLine = null;
+        let searchRange = null;
+        try {
+          const value = model.getValue();
+          const offset = value.indexOf(entry.block?.search ?? '');
+          if (offset >= 0 && entry.block?.search) {
+            const startPos = model.getPositionAt(offset);
+            const endPos = model.getPositionAt(offset + entry.block.search.length);
+            startLine = startPos.lineNumber;
+            endLine = endPos.lineNumber;
+            searchRange = new Range(
+              startPos.lineNumber, startPos.column,
+              endPos.lineNumber, endPos.column,
+            );
+          }
+        } catch (_) { /* model out of sync */ }
+
+        if (searchRange) {
+          const diff = classifyEditDiff(entry.block?.search, entry.block?.replace);
+
+          if (diff.kind === 'modify') {
+            newDecorations.push({
+              range: searchRange,
+              options: {
+                inlineClassName: NEP_SEARCH_STRIKE_CLASS,
+                hoverMessage: { value: 'Next-edit prediction will replace this text — Tab to apply' },
+              },
+            });
+            if (isActiveTarget) {
+              placement = {
+                afterLineNumber: endLine,
+                text: entry.block.replace,
+                label: 'Replace',
+              };
+            }
+          } else if (diff.kind === 'append' && isActiveTarget) {
+            placement = {
+              afterLineNumber: endLine,
+              text: diff.added,
+              label: 'Insert',
+            };
+          } else if (diff.kind === 'prepend' && isActiveTarget) {
+            // afterLineNumber = startLine - 1 places the zone immediately
+            // above the SEARCH range. Clamp at 0 so a prediction at line 1
+            // still renders (Monaco treats afterLineNumber: 0 as "above
+            // line 1").
+            placement = {
+              afterLineNumber: Math.max(0, startLine - 1),
+              text: diff.added,
+              label: 'Insert',
+            };
+          }
         }
       }
 
       const newIds = model.deltaDecorations([], newDecorations);
       decorationIdsByModelRef.current.set(model.uri.toString(), newIds);
 
-      // Render the inline diff preview view-zone immediately below the
-      // SEARCH range (only for SEARCH single-site, only when the prediction
-      // targets the active file). Fire-and-forget — the await is on
-      // colorize() which happens off the React render path.
-      if (searchStrike && entry.kind === NEP_BLOCK_KIND.SEARCH) {
-        renderEditPreview(entry, searchStrike._endLine).catch(() => {
-          /* preview is decorative; never block on it */
-        });
+      // Fire-and-forget — colorize() is async but the preview is purely
+      // decorative; we never block the Tab cascade on it.
+      if (placement) {
+        renderEditPreview(placement).catch(() => { /* preview is decorative */ });
       }
     } catch (_) { /* decoration churn is best-effort */ }
   }, [monacoInstance, clearDecorations, clearEditPreview, findModelForPath,
-      activeFile, buildSearchStrike, renderEditPreview]);
+      activeFile, renderEditPreview]);
 
   const cancelInflight = useCallback((reason = 'cancel') => {
     if (abortRef.current) {
