@@ -30,6 +30,7 @@ import {
   validateBlock,
   applyBlock,
   locateBlock,
+  findIndentTolerantMatch,
   NEP_BLOCK_KIND,
   REJECT_REASONS,
 } from '@/lib/nextEdit';
@@ -634,12 +635,29 @@ export const useNextEditPrediction = ({
         let startLine = null;
         let endLine = null;
         let searchRange = null;
+        let matchedFileText = null;
         try {
           const value = model.getValue();
-          const offset = value.indexOf(entry.block?.search ?? '');
-          if (offset >= 0 && entry.block?.search) {
+          const search = entry.block?.search ?? '';
+          let offset = search ? value.indexOf(search) : -1;
+          let length = search.length;
+          if (offset >= 0) {
+            matchedFileText = search;
+          } else if (search) {
+            // Fall back to the indent-tolerant matcher so additive/replace
+            // visualisation still renders for matches the validator
+            // accepted via the relaxed path. Without this the strike would
+            // silently drop and the user sees REPLACE-only.
+            const indent = findIndentTolerantMatch(value, search);
+            if (indent.ok) {
+              offset = indent.offset;
+              length = indent.length;
+              matchedFileText = indent.fileText;
+            }
+          }
+          if (offset >= 0 && search) {
             const startPos = model.getPositionAt(offset);
-            const endPos = model.getPositionAt(offset + entry.block.search.length);
+            const endPos = model.getPositionAt(offset + length);
             startLine = startPos.lineNumber;
             endLine = endPos.lineNumber;
             searchRange = new Range(
