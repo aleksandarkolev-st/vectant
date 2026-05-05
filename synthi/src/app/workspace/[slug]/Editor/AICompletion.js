@@ -9,6 +9,7 @@ import {
     buildCompletionReferences,
     pushRecentEdit,
 } from '@/utils/completionContext';
+import { recordAiCompletionEvent } from '@/lib/aiCompletionTelemetry';
 import {
     trimCompletionContext,
     takeLastChars,
@@ -203,6 +204,7 @@ export const useAiCompletion = ({
             }
             aiCompletionAbortControllerRef.current = null;
             changed = true;
+            recordAiCompletionEvent('cancelled', { reason });
         }
 
         if (resetSuggestion) {
@@ -285,6 +287,7 @@ export const useAiCompletion = ({
         aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
         notifyCompletionCacheChange();
         setAiCompletionState('applied');
+        recordAiCompletionEvent('accepted');
     }, [editorInstance, monacoInstance, hasActiveDiff]); // Added dependency
 
     const requestAiCompletion = useCallback((isAutoTrigger = false, manualContext = null, meta = {}) => {
@@ -322,6 +325,7 @@ export const useAiCompletion = ({
         // the inline-suggest UI without round-tripping the model.
         const lruHit = lruLookup(context, activeLanguage);
         if (lruHit) {
+            recordAiCompletionEvent('cache_hit', { language: activeLanguage });
             aiCompletionCursorRef.current = cursorPosition ? { ...cursorPosition } : null;
             aiCompletionCacheRef.current = lruHit;
             notifyCompletionCacheChange();
@@ -357,6 +361,8 @@ export const useAiCompletion = ({
         const controller = new AbortController();
         aiCompletionAbortControllerRef.current = controller;
         setAiCompletionState('loading');
+        const fireStartedAt = Date.now();
+        recordAiCompletionEvent('fire', { language: activeLanguage, source: isAutoTrigger ? 'auto' : 'manual' });
 
         const model = editorInstance.getModel();
         const fullDocument = typeof manualContext === 'string' ? manualContext : (model?.getValue?.() ?? rawContext);
@@ -468,10 +474,18 @@ export const useAiCompletion = ({
                 suggestion: visible,
                 suggestionRange,
             };
+            const isFirstVisible = !aiCompletionCacheRef.current?.suggestion
+                || aiCompletionCacheRef.current.context !== context;
             aiCompletionCacheRef.current = newEntry;
             lruInsert(newEntry);
             notifyCompletionCacheChange();
             setAiCompletionState('ready');
+            if (isFirstVisible) {
+                recordAiCompletionEvent('visible', {
+                    language: activeLanguage,
+                    latency_ms: Date.now() - fireStartedAt,
+                });
+            }
 
             try {
                 const action = editorInstance.getAction?.('editor.action.inlineSuggest.trigger');
@@ -517,6 +531,10 @@ export const useAiCompletion = ({
                         pushSuggestion(visible);
                     } else {
                         setAiCompletionState('idle');
+                        recordAiCompletionEvent('rejected', {
+                            reason: !text.trim() ? 'empty_response' : 'echo_or_unsanitized',
+                            latency_ms: Date.now() - fireStartedAt,
+                        });
                     }
                 } catch (_) {
                     if (!controller.signal.aborted) setAiCompletionState('idle');
@@ -558,6 +576,10 @@ export const useAiCompletion = ({
                     pushSuggestion(visible);
                 } else if (!visible && !lastVisible) {
                     setAiCompletionState('idle');
+                    recordAiCompletionEvent('rejected', {
+                        reason: !raw.trim() ? 'empty_response' : 'echo_or_unsanitized',
+                        latency_ms: Date.now() - fireStartedAt,
+                    });
                 }
             } catch (e) {
                 if (!controller.signal.aborted) setAiCompletionState('idle');
