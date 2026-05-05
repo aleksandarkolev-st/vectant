@@ -873,11 +873,26 @@ export const useNextEditPrediction = ({
         ) {
           resetToIdle('user-typed');
         }
+        // Typing during PENDING means the in-flight stream is parsing
+        // against stale file contents — its SEARCH text was selected
+        // before the new keystroke landed. Cut the fetch now so the
+        // debounce timer above (which we just refreshed) gets to fire
+        // with the post-keystroke state. Without this we waste tokens
+        // on a request the validator will mostly reject.
+        if (nepState === STATE.PENDING) {
+          cancelInflight('user-typed-during-pending');
+          setNepState(STATE.IDLE);
+        }
       } catch (_) { /* recent-edit capture is best-effort */ }
     });
     return () => { try { disposable?.dispose?.(); } catch (_) { /* ignored */ } };
+    // nepState is intentionally a dep — the listener reads it to decide
+    // whether to drop the queue or cancel a PENDING fetch. Without this dep
+    // the closure freezes on STATE.IDLE and both code paths become dead.
+    // The cost is one Monaco listener re-bind per state transition, which
+    // is cheap compared to firing wasted token budget at the API.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, editorInstance, activeFile]);
+  }, [enabled, editorInstance, activeFile, nepState, cancelInflight, resetToIdle]);
 
   // ── fire NEP ────────────────────────────────────────────────────────────
   const fireNep = useCallback(async () => {
