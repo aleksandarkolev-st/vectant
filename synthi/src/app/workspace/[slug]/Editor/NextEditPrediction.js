@@ -249,6 +249,11 @@ export const useNextEditPrediction = ({
   // unless they switch to it (the gutter dot only renders against the
   // active editor's model). Recomputed every time the queue mutates.
   const [predictedPaths, setPredictedPaths] = useState(() => new Set());
+  // True once we've hit NEP_PER_SESSION_FIRE_CAP and silently stopped
+  // firing. The consumer (Editor.jsx) reads this and renders a non-blocking
+  // notice — the previous behaviour (silent stop) made it look like the
+  // feature had broken. Resets on workspace switch.
+  const [fireCapReached, setFireCapReached] = useState(false);
 
   const recentEditsRef = useRef([]);
   const lastFireRef = useRef(0);
@@ -300,6 +305,7 @@ export const useNextEditPrediction = ({
     lastAppliedEditRef.current = null;
     sessionFireCountRef.current = 0;
     setPredictedPaths((prev) => (prev.size ? new Set() : prev));
+    setFireCapReached(false);
     if (abortRef.current) {
       try { abortRef.current.abort('workspace-reset'); } catch (_) { /* ignored */ }
       abortRef.current = null;
@@ -882,7 +888,17 @@ export const useNextEditPrediction = ({
     // subsequent fire within the TTL window is a Date.now() compare.
     try { await checkServerKill(); } catch (_) { /* network — ignored */ }
     if (isNepKilled()) return;
-    if (sessionFireCountRef.current >= NEP_PER_SESSION_FIRE_CAP) return;
+    if (sessionFireCountRef.current >= NEP_PER_SESSION_FIRE_CAP) {
+      // First-time hit emits a single telemetry event so we can see how
+      // often users actually saturate the cap; subsequent fires within the
+      // session are silently dropped. The functional setter dedups so the
+      // event fires once per session even though we read no state here.
+      setFireCapReached((prev) => {
+        if (!prev) recordNepEvent('rejected', { reason: 'session_cap', cap: NEP_PER_SESSION_FIRE_CAP });
+        return true;
+      });
+      return;
+    }
 
     const now = Date.now();
     if (now - lastFireRef.current < NEP_MIN_INTERVAL_MS) return;
@@ -1510,6 +1526,11 @@ export const useNextEditPrediction = ({
     nepState,
     enabled,
     setEnabled,
+    // True once the per-session fire cap has been hit. The UI surface is
+    // a non-blocking notice — we're not pausing input, just signaling that
+    // automatic predictions are off until the workspace reloads.
+    fireCapReached,
+    fireCap: NEP_PER_SESSION_FIRE_CAP,
     // Set of file paths with at least one queued NEP prediction. The
     // tab-bar consumer reads this to badge tabs whose dot-on-the-gutter
     // can't be seen because the user isn't currently viewing that file.

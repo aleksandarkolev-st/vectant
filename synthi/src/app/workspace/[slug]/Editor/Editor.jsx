@@ -2737,7 +2737,11 @@ const EditorPanel = ({
     // handleSave. The ref lets the NEP hook above call into it without us
     // having to hoist the whole save pipeline above the hook chain.
     const persistNepApplyRef = useRef(null);
-    const { predictedPaths: nepPredictedPaths } = useNextEditPrediction({
+    const {
+        predictedPaths: nepPredictedPaths,
+        fireCapReached: nepFireCapReached,
+        fireCap: nepFireCap,
+    } = useNextEditPrediction({
         editorInstance,
         monacoInstance,
         activeFile,
@@ -4653,6 +4657,15 @@ const EditorPanel = ({
                             </ContextMenu>
                         </div>
                         </div>
+                        {nepFireCapReached && (
+                            <div className="synthi-nep-cap-notice" role="status" aria-live="polite">
+                                <span className="synthi-nep-cap-notice__dot" aria-hidden="true" />
+                                <span className="synthi-nep-cap-notice__text">
+                                    Next-edit predictions paused — session limit ({nepFireCap}) reached.
+                                    Reload the workspace to resume.
+                                </span>
+                            </div>
+                        )}
                     </div>
     );
 
