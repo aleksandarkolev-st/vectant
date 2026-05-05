@@ -38,6 +38,20 @@ export const useAiCompletion = ({
     const MIN_AUTO_INTERVAL_MS = 350;
     const aiCompletionCacheRef = useRef({ context: '', language: '', suggestion: '' });
     const aiCompletionCursorRef = useRef(null);
+
+    // Notify subscribers (notably providers.js's tokenized ghost overlay)
+    // whenever the cache mutates. The cache lives in a ref so React's
+    // render tree never sees these changes; the consumer used to poll at
+    // 80ms to catch new suggestions, which burned a CPU wakeup 12.5×/s
+    // even with no edits. A custom DOM event is one-shot, lazy, and
+    // exactly as cheap as a function call when nobody is listening.
+    const notifyCompletionCacheChange = () => {
+        try {
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('synthi:ai-completion:cache-change'));
+            }
+        } catch (_) { /* SSR / event constructor unavailable */ }
+    };
     const aiCompletionAbortControllerRef = useRef(null);
     const aiLastRequestRef = useRef({ context: '', time: 0 });
     const aiLastAutoRef = useRef(0);
@@ -163,6 +177,7 @@ export const useAiCompletion = ({
                 aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
                 aiCompletionCursorRef.current = null;
                 changed = true;
+                notifyCompletionCacheChange();
             }
             setAiCompletionState(prev => (prev === 'idle' ? prev : 'idle'));
         } else if (changed) {
@@ -219,6 +234,7 @@ export const useAiCompletion = ({
             if (!text) {
                 // Nothing to insert after trimming — consider applied
                 aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
+                notifyCompletionCacheChange();
                 setAiCompletionState('applied');
                 return;
             }
@@ -234,6 +250,7 @@ export const useAiCompletion = ({
         // Reset state
         aiCompletionCursorRef.current = null;
         aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
+        notifyCompletionCacheChange();
         setAiCompletionState('applied');
     }, [editorInstance, monacoInstance, hasActiveDiff]); // Added dependency
 
@@ -397,6 +414,7 @@ export const useAiCompletion = ({
                 suggestion: visible,
                 suggestionRange,
             };
+            notifyCompletionCacheChange();
             setAiCompletionState('ready');
 
             try {

@@ -476,17 +476,22 @@ export const useEditorProviders = ({
         });
 
         // The cache lives in a ref, so React won't re-run this effect when a
-        // new suggestion arrives. Poll just to catch that arrival; the work
-        // inside is gated by `dataset.visible` so it only repaints on change.
-        const cacheCheckInterval = setInterval(() => {
-            renderTokenized();
-        }, 80);
+        // new suggestion arrives. AICompletion fires a custom DOM event on
+        // every cache mutation; we repaint on receipt. Replaces the prior
+        // 80 ms polling loop, which woke up 12.5×/s for the lifetime of the
+        // editor regardless of whether anything changed.
+        const onCacheChange = () => renderTokenized();
+        if (typeof window !== 'undefined') {
+            window.addEventListener('synthi:ai-completion:cache-change', onCacheChange);
+        }
 
         // Initial paint.
         renderTokenized();
 
         return () => {
-            clearInterval(cacheCheckInterval);
+            if (typeof window !== 'undefined') {
+                window.removeEventListener('synthi:ai-completion:cache-change', onCacheChange);
+            }
             try { cursorDispose?.dispose(); } catch (_) { /* disposed */ }
             try { contentDispose?.dispose(); } catch (_) { /* disposed */ }
             try { fontConfigDispose?.dispose(); } catch (_) { /* disposed */ }
