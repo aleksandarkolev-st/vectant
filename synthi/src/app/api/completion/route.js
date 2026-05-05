@@ -65,12 +65,23 @@ const ragCacheSet = (key, value) => {
   }
 };
 
-// Fingerprint just enough of the prefix that small typing changes hit the
-// same cache entry. We slice to the last ~120 chars and strip whitespace —
-// this means typing one extra character usually still cache-hits.
-const fingerprintQuery = (query) => {
-  const s = (query || '').replace(/\s+/g, ' ').trim();
-  return s.slice(Math.max(0, s.length - 120));
+// Fingerprint enough of the cursor's neighbourhood that small typing
+// changes hit the same cache entry, but distinct contexts don't collide.
+// Includes a chunk of the trailing prefix, a chunk of the leading suffix,
+// and the top-K symbols extracted from the prefix.
+//
+// Prefix-only fingerprinting (the previous form) collided when the user
+// edited around a long template that left the trailing prefix unchanged,
+// or moved the cursor to a different function whose suffix shape differed
+// substantially. Suffix + symbols give the cache more discriminative power
+// without blowing up the key space (symbols are already deduped + capped).
+const fingerprintQuery = (prefix, suffix, symbols) => {
+  const cleanPrefix = (prefix || '').replace(/\s+/g, ' ').trim();
+  const cleanSuffix = (suffix || '').replace(/\s+/g, ' ').trim();
+  const tail = cleanPrefix.slice(Math.max(0, cleanPrefix.length - 80));
+  const head = cleanSuffix.slice(0, 40);
+  const sym = (Array.isArray(symbols) ? symbols : []).join(',');
+  return `${tail}|${head}|${sym}`;
 };
 
 const RAG_IDENT_RE = /[A-Za-z_][A-Za-z0-9_]{1,}/g;
@@ -97,17 +108,17 @@ const extractQuerySymbols = (text) => {
  * reference shapes ready for buildPrompt, or [] on miss / timeout / failure —
  * inline completions never block on this path.
  */
-const fetchRagReferences = async ({ workspaceSlug, query, language }) => {
+const fetchRagReferences = async ({ workspaceSlug, query, suffix, language }) => {
   if (!workspaceSlug || !query) return [];
 
-  const key = `${workspaceSlug}::${language || ''}::${fingerprintQuery(query)}`;
+  const symbols = extractQuerySymbols(query);
+  const key = `${workspaceSlug}::${language || ''}::${fingerprintQuery(query, suffix, symbols)}`;
   const cached = ragCacheGet(key);
   if (cached) return cached;
 
   const inflight = ragInflight.get(key);
   if (inflight) return inflight;
 
-  const symbols = extractQuerySymbols(query);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort('rag-timeout'), RAG_FETCH_TIMEOUT_MS);
 
@@ -350,8 +361,9 @@ export async function POST(request) {
   // working on.
   const workspaceSlug = typeof body?.workspaceSlug === 'string' ? body.workspaceSlug : '';
   const ragQuery = trimmedPrefix.slice(Math.max(0, trimmedPrefix.length - 600));
+  const ragSuffix = trimmedSuffix.slice(0, 200);
   const ragRefs = workspaceSlug
-    ? await fetchRagReferences({ workspaceSlug, query: ragQuery, language })
+    ? await fetchRagReferences({ workspaceSlug, query: ragQuery, suffix: ragSuffix, language })
     : [];
 
   const references = mergeReferences(clientRefs, ragRefs);
