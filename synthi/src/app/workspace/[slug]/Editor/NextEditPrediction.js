@@ -298,6 +298,12 @@ export const useNextEditPrediction = ({
   // once Editor.jsx's model effect has had a chance to bind the new model.
   const pendingJumpRef = useRef(null);
 
+  // Cursor-anchored "predicting next edit…" indicator. Mounted only while
+  // nepState === PENDING so the user knows a prediction is being computed.
+  // Without this, the ~300-700 ms gap between debounce-fire and the first
+  // armed gutter dot felt like the feature was simply not engaging.
+  const pendingWidgetRef = useRef(null);
+
   // ── lifecycle: workspace reset ──────────────────────────────────────────
   useEffect(() => {
     recentEditsRef.current = resetNepBuffer();
@@ -343,6 +349,57 @@ export const useNextEditPrediction = ({
       try { delete window.synthiNep; } catch (_) { /* ignored */ }
     };
   }, []);
+
+  // ── pending indicator ───────────────────────────────────────────────────
+  // Mount a small cursor-anchored content widget while NEP is fetching so
+  // the user sees the feature engaging instead of guessing whether it
+  // bailed. Tear down on every other state.
+  useEffect(() => {
+    if (!editorInstance || !monacoInstance) return undefined;
+    if (nepState !== STATE.PENDING) {
+      const w = pendingWidgetRef.current;
+      if (w) {
+        try { editorInstance.removeContentWidget(w); } catch (_) { /* ignored */ }
+        pendingWidgetRef.current = null;
+      }
+      return undefined;
+    }
+    const node = document.createElement('span');
+    node.className = 'synthi-nep-pending-pill';
+    node.setAttribute('aria-hidden', 'true');
+    node.innerHTML = '<span class="synthi-nep-pending-pill__dot"></span>'
+      + '<span class="synthi-nep-pending-pill__dot"></span>'
+      + '<span class="synthi-nep-pending-pill__dot"></span>'
+      + '<span class="synthi-nep-pending-pill__label">NEP</span>';
+    const widget = {
+      getId: () => 'synthi.nep.pending',
+      getDomNode: () => node,
+      getPosition: () => {
+        const pos = editorInstance.getPosition?.();
+        if (!pos) return null;
+        return {
+          position: { lineNumber: pos.lineNumber, column: pos.column },
+          preference: [
+            monacoInstance.editor.ContentWidgetPositionPreference.EXACT,
+            monacoInstance.editor.ContentWidgetPositionPreference.BELOW,
+          ],
+        };
+      },
+    };
+    try { editorInstance.addContentWidget(widget); } catch (_) { /* ignored */ }
+    pendingWidgetRef.current = widget;
+
+    // Re-layout on cursor moves so the pill chases the caret.
+    const layoutDispose = editorInstance.onDidChangeCursorPosition?.(() => {
+      try { editorInstance.layoutContentWidget(widget); } catch (_) { /* ignored */ }
+    });
+
+    return () => {
+      try { layoutDispose?.dispose?.(); } catch (_) { /* ignored */ }
+      try { editorInstance.removeContentWidget(widget); } catch (_) { /* ignored */ }
+      if (pendingWidgetRef.current === widget) pendingWidgetRef.current = null;
+    };
+  }, [editorInstance, monacoInstance, nepState]);
 
   // ── helpers ─────────────────────────────────────────────────────────────
 
