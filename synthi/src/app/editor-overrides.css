@@ -745,11 +745,14 @@
     margin-left: 4px;
     margin-top: 5px;
     border-radius: 50%;
-    /* Pulsing accent draws the eye to the prediction site without being
-     * obnoxious — 1.6s cycle, easeInOut. The animation runs forever while
-     * the decoration is mounted; once the user accepts/cancels we drop the
-     * decoration entirely so the pulse stops with it. */
-    animation: synthi-nep-pulse 1.6s ease-in-out infinite;
+    /* Pulse 5 cycles (~8s) then settle into the steady glow. Forever-pulsing
+     * dots became background noise on long-armed predictions and made it
+     * harder to scan for genuinely new ones. animation-fill-mode: forwards
+     * locks in the final keyframe (steady mid-glow) so the dot is still
+     * clearly visible after the pulse ends. */
+    animation: synthi-nep-pulse 1.6s ease-in-out 5;
+    animation-fill-mode: forwards;
+    box-shadow: 0 0 6px color-mix(in srgb, var(--accent-primary, #6f7eff) 55%, transparent);
 }
 
 .synthi-nep-target-line {
