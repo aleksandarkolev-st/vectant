@@ -31,6 +31,7 @@ import {
   applyBlock,
   locateBlock,
   findIndentTolerantMatch,
+  reindentReplace,
   NEP_BLOCK_KIND,
   REJECT_REASONS,
 } from '@/lib/nextEdit';
@@ -742,7 +743,22 @@ export const useNextEditPrediction = ({
         } catch (_) { /* model out of sync */ }
 
         if (searchRange) {
-          const diff = classifyEditDiff(entry.block?.search, entry.block?.replace);
+          // Re-indent the model's REPLACE against the file's actual indent
+          // so the preview matches what applyBlock will land. Without this,
+          // an indent-tolerant match shows the model's hallucinated indent
+          // — and when the model emits cumulative leading whitespace the
+          // preview rows scatter across the viewport instead of stacking
+          // at a consistent column. classifyEditDiff and computeLineDiff
+          // both compare against matchedFileText (the file's actual text
+          // for the SEARCH range) so the append/prepend prefix checks
+          // succeed against post-reindent content.
+          const previewBefore = matchedFileText !== null
+            ? matchedFileText
+            : (entry.block?.search ?? '');
+          const previewAfter = (matchedFileText !== null && entry.block?.replace != null)
+            ? reindentReplace(entry.block.search, entry.block.replace, matchedFileText)
+            : (entry.block?.replace ?? '');
+          const diff = classifyEditDiff(previewBefore, previewAfter);
 
           if (diff.kind === 'modify') {
             newDecorations.push({
@@ -757,7 +773,7 @@ export const useNextEditPrediction = ({
               // lines rather than a wall of green claiming "everything is new".
               placement = {
                 afterLineNumber: endLine,
-                lines: computeLineDiff(entry.block.search, entry.block.replace),
+                lines: computeLineDiff(previewBefore, previewAfter),
                 label: 'Replace',
               };
             }

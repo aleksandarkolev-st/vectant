@@ -1,7 +1,12 @@
 // Shared constants and helpers for the AI code completion flow.
 export const AI_COMPLETION_STOP_SEQUENCE = '<!-- ai-completion-stop -->';
-// Keep completions short so the model responds faster.
-export const AI_COMPLETION_MAX_OUTPUT_TOKENS = 256;
+// Output budget. Sized to fit a complete method/function body with signature
+// and braces (~10–14 lines of typical C++/JS). 256 was tight enough that
+// flash-lite truncated mid-block on full-method predictions, so the user
+// only ever saw FIM-style "fix the current line" completions and never the
+// "next sibling method" suggestions Cursor / Copilot produce. Latency cost
+// of the bump is bounded by the temperature + stop-sequences, not the cap.
+export const AI_COMPLETION_MAX_OUTPUT_TOKENS = 512;
 // Limit context size to reduce latency without losing the local neighborhood.
 export const AI_COMPLETION_MAX_INPUT_CHARS = 3500;
 export const API_COMPLETION_ROUTE = '/api/completion';

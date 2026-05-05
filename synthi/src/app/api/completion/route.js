@@ -291,23 +291,32 @@ const formatReferences = (refs) => {
 
 const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
   const refBlock = formatReferences(references);
-  // Compact form. The illustrative example block (~110 tokens) is gone —
-  // flash-lite-preview generalises the wrap-in-tags rule from a single
-  // OUTPUT FORMAT line, and the example pinned the model to JavaScript
-  // syntax for languages where it shouldn't have. The CONTEXT-block
-  // explanation is collapsed into a single trailing sentence on the
-  // tag line, only when references are present.
+  // Cursor / Copilot-style: the model should both continue the current
+  // expression AND, when the cursor sits at a natural extension point
+  // (end of a class body, after a function, blank line at file scope
+  // following a definition pattern), proactively scaffold the next
+  // sibling — the obvious next method, the matching declaration, the
+  // symmetric struct field. The previous "1–3 lines, output empty if
+  // complete" framing collapsed every completion to FIM-only and made
+  // the feature feel like glorified word-completion. The model still
+  // gets the FIM signal (BEFORE / AFTER) so mid-line continuation
+  // remains its default; the loosened rules just unlock block-level
+  // output when the surrounding pattern justifies it.
   return [
-    'You are an inline code completion engine. Continue the code at the cursor.',
+    'You are an inline code completion engine. Predict the user\'s next edit at the cursor — either continue the current line/expression, or scaffold the next coherent unit (a sibling method, the matching declaration, the next struct field) when the surrounding pattern points to an obvious next step.',
     `Language: ${language}`,
     filePath ? `File: ${filePath}` : null,
     '',
     'RULES',
-    '- Output ONLY the text between BEFORE and AFTER. Never repeat code from either side.',
-    '- Stop after one coherent unit (statement, expression, or short block) — usually 1–3 lines.',
-    '- If the surrounding code is already complete, output an empty completion.',
-    '- Match existing indentation and style. No explanations, no fences, no commentary.',
-    `- Wrap the inserted text in ${COMPLETION_OPEN}...${COMPLETION_CLOSE} and output nothing else.`,
+    '- Output ONLY the text that should appear between BEFORE and AFTER. Never repeat code from either side.',
+    '- Choose the smallest output that is genuinely useful:',
+    '    · Mid-line / mid-expression cursor → finish the line or short block (1–3 lines).',
+    '    · End-of-line after a complete statement → suggest the next statement that the surrounding pattern implies.',
+    '    · Cursor at a natural extension point (inside a class body after one method, after a function definition at file scope, at the next slot in a list of declarations) → emit the next coherent unit, including a full method/function (signature + body + closing brace) that follows the local pattern. Up to ~12 lines is fine if the unit is a complete method.',
+    '- Match the surrounding naming, indentation, brace style, and access-level conventions. If the existing methods are `compute(int a, int b)`-shaped, sibling methods should match.',
+    '- Do not invent unrelated APIs. If you can\'t identify a clear next unit from the context, fall back to the smallest useful continuation. Output empty only when truly nothing useful follows.',
+    '- No explanations, no fences, no commentary, no leading/trailing blank lines.',
+    `- Wrap the entire output in ${COMPLETION_OPEN}...${COMPLETION_CLOSE} and emit nothing else.`,
     refBlock
       ? '- CONTEXT below = related symbols (for types) + recent edits (lines starting `+ ` show what was just typed and signal user intent).'
       : null,
