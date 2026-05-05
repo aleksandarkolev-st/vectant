@@ -386,6 +386,20 @@ export async function POST(request) {
       };
       timer = setTimeout(() => cancel(new Error('NEP request timed out')), NEP_TIMEOUT_MS);
 
+      // Hook the client's AbortController. Superseded NEP fires (the user
+      // typed again, the workspace switched) need to actually cut the
+      // stream — without this we keep generating into a closed socket and
+      // burning Gemini tokens.
+      const onClientAbort = () => cancel(new Error('client aborted'));
+      const clientSignal = request.signal;
+      if (clientSignal) {
+        if (clientSignal.aborted) {
+          cancel(new Error('client aborted before start'));
+          return;
+        }
+        try { clientSignal.addEventListener('abort', onClientAbort); } catch (_) { /* unsupported */ }
+      }
+
       try {
         let geminiStream;
         try {
@@ -402,6 +416,7 @@ export async function POST(request) {
           });
         } catch (streamErr) {
           // SDK didn't stream — fall back to a single shot.
+          if (cancelled) return;
           const response = await ai.models.generateContent({
             model: 'gemini-3.1-flash-lite-preview',
             contents: prompt,
@@ -410,6 +425,7 @@ export async function POST(request) {
               temperature: 0.2,
             },
           });
+          if (cancelled) return;
           const text = extractText(response);
           if (text) controller.enqueue(encoder.encode(text));
           if (timer) clearTimeout(timer);
@@ -423,9 +439,13 @@ export async function POST(request) {
           if (t) controller.enqueue(encoder.encode(t));
         }
         if (timer) clearTimeout(timer);
-        controller.close();
+        if (!cancelled) controller.close();
       } catch (e) {
         cancel(e);
+      } finally {
+        if (clientSignal) {
+          try { clientSignal.removeEventListener('abort', onClientAbort); } catch (_) { /* ignored */ }
+        }
       }
     },
   });

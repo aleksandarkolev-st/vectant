@@ -392,6 +392,19 @@ export async function POST(request) {
 
       timer = setTimeout(() => cancel(new Error('AI completion timed out')), COMPLETION_TIMEOUT_MS);
 
+      // Hook the client's AbortController so superseded keystrokes and
+      // navigation actually tear down the stream and stop the Gemini token
+      // bill. Without this the route keeps generating into a closed socket.
+      const onClientAbort = () => cancel(new Error('client aborted'));
+      const clientSignal = request.signal;
+      if (clientSignal) {
+        if (clientSignal.aborted) {
+          cancel(new Error('client aborted before start'));
+          return;
+        }
+        try { clientSignal.addEventListener('abort', onClientAbort); } catch (_) { /* unsupported */ }
+      }
+
       try {
         let geminiStream;
         try {
@@ -406,6 +419,7 @@ export async function POST(request) {
           });
         } catch (streamErr) {
           // SDK didn't stream — fall back to a single shot and emit it as one chunk.
+          if (cancelled) return;
           const response = await ai.models.generateContent({
             model: 'gemini-3.1-flash-lite-preview',
             contents: prompt,
@@ -415,6 +429,7 @@ export async function POST(request) {
               stopSequences: [COMPLETION_CLOSE, '\nBEFORE:', '\nAFTER:'],
             },
           });
+          if (cancelled) return;
           const text = extractText(response);
           if (text) controller.enqueue(encoder.encode(text));
           if (timer) clearTimeout(timer);
@@ -428,9 +443,13 @@ export async function POST(request) {
           if (t) controller.enqueue(encoder.encode(t));
         }
         if (timer) clearTimeout(timer);
-        controller.close();
+        if (!cancelled) controller.close();
       } catch (e) {
         cancel(e);
+      } finally {
+        if (clientSignal) {
+          try { clientSignal.removeEventListener('abort', onClientAbort); } catch (_) { /* ignored */ }
+        }
       }
     },
   });
