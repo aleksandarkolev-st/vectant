@@ -38,6 +38,39 @@ export const useAiCompletion = ({
     const MIN_AUTO_INTERVAL_MS = 350;
     const aiCompletionCacheRef = useRef({ context: '', language: '', suggestion: '' });
     const aiCompletionCursorRef = useRef(null);
+    // Small LRU of recent (context, language) → suggestion entries. The
+    // active cache is single-slot, but cursor wander (move away, type
+    // somewhere else, come back) used to throw away a perfectly usable
+    // suggestion and force a re-request. With a small LRU the round-trip
+    // is skipped when the user revisits a context we already answered.
+    const aiCompletionLruRef = useRef([]);
+    const AI_COMPLETION_LRU_MAX = 8;
+    const lruLookup = (context, language) => {
+        const lru = aiCompletionLruRef.current;
+        for (let i = 0; i < lru.length; i++) {
+            const e = lru[i];
+            if (e.context === context && e.language === language) {
+                if (i > 0) {
+                    lru.splice(i, 1);
+                    lru.unshift(e);
+                }
+                return e;
+            }
+        }
+        return null;
+    };
+    const lruInsert = (entry) => {
+        if (!entry?.suggestion || !entry?.context) return;
+        const lru = aiCompletionLruRef.current;
+        for (let i = 0; i < lru.length; i++) {
+            if (lru[i].context === entry.context && lru[i].language === entry.language) {
+                lru.splice(i, 1);
+                break;
+            }
+        }
+        lru.unshift(entry);
+        if (lru.length > AI_COMPLETION_LRU_MAX) lru.length = AI_COMPLETION_LRU_MAX;
+    };
 
     // Notify subscribers (notably providers.js's tokenized ghost overlay)
     // whenever the cache mutates. The cache lives in a ref so React's
@@ -284,6 +317,27 @@ export const useAiCompletion = ({
         const cached = aiCompletionCacheRef.current;
         if (cached?.suggestion && cached.context === context && cached.language === activeLanguage) return;
 
+        // LRU hit: the user's current context matches a suggestion we
+        // already produced. Promote it to the active cache and trigger
+        // the inline-suggest UI without round-tripping the model.
+        const lruHit = lruLookup(context, activeLanguage);
+        if (lruHit) {
+            aiCompletionCursorRef.current = cursorPosition ? { ...cursorPosition } : null;
+            aiCompletionCacheRef.current = lruHit;
+            notifyCompletionCacheChange();
+            setAiCompletionState('ready');
+            try {
+                const action = editorInstance.getAction?.('editor.action.inlineSuggest.trigger');
+                if (action?.run) {
+                    Promise.resolve(action.run()).catch(() => {});
+                } else {
+                    const p = editorInstance.trigger('ai-inline', 'editor.action.inlineSuggest.trigger', {});
+                    if (p && typeof p.then === 'function') Promise.resolve(p).catch(() => {});
+                }
+            } catch (e) { /* ignored */ }
+            return;
+        }
+
         const now = Date.now();
         if (isAutoTrigger) {
             if (now - aiLastAutoRef.current < MIN_AUTO_INTERVAL_MS) {
@@ -408,12 +462,14 @@ export const useAiCompletion = ({
                 }
             } catch (e) { /* ignore */ }
 
-            aiCompletionCacheRef.current = {
+            const newEntry = {
                 context,
                 language: activeLanguage,
                 suggestion: visible,
                 suggestionRange,
             };
+            aiCompletionCacheRef.current = newEntry;
+            lruInsert(newEntry);
             notifyCompletionCacheChange();
             setAiCompletionState('ready');
 
