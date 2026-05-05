@@ -1598,7 +1598,24 @@ export const useNextEditPrediction = ({
           const path = entry.location?.path;
           const line = entry.location?.line;
           const activePath = activeFile?.path || activeFile?.name;
+          // Single-Tab apply when the cursor is already at the prediction
+          // line in the active file. The "jump" half of the cascade is
+          // wasted in that case — the user's eyes are already on the
+          // armed line, asking them to Tab twice is just friction.
           if (path && path === activePath) {
+            const cursor = editorInstance.getPosition?.();
+            if (cursor && cursor.lineNumber === line) {
+              (async () => {
+                try {
+                  await applySearchBlock(entry);
+                  advanceQueue();
+                } catch (err) {
+                  recordNepEvent('rejected', { reason: 'revalidate_failed', detail: err?.message });
+                  resetToIdle('revalidate-failed');
+                }
+              })();
+              return;
+            }
             try {
               editorInstance.revealLineInCenter(line);
               editorInstance.setPosition({ lineNumber: line, column: 1 });
