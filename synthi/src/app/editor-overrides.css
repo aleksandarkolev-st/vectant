@@ -964,6 +964,20 @@
     color: color-mix(in srgb, #4ade80 95%, transparent);
 }
 
+/* Overflow tail row: "+N more lines". Rendered when the REPLACE has more
+ * lines than the preview cap. The full replacement is still applied on
+ * Tab — the visualization is informational, capped to keep the view zone
+ * from eating the whole viewport. */
+.synthi-nep-replace-preview__line--overflow {
+    font-style: italic;
+    opacity: 0.72;
+    color: color-mix(in srgb, var(--accent-primary, #6f7eff) 60%, var(--text-primary, #f4f5f8));
+}
+
+.synthi-nep-replace-preview__line--overflow .synthi-nep-replace-preview__marker {
+    color: color-mix(in srgb, var(--accent-primary, #6f7eff) 70%, transparent);
+}
+
 .synthi-nep-replace-preview__line-text {
     flex: 1 1 auto;
     min-width: 0;

@@ -520,6 +520,14 @@ export const useNextEditPrediction = ({
     const escapeHtml = (s) => s
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+    // Cap the visible height. A REPLACE bigger than this is summarised
+    // with a "+N more lines" tail row so the preview never eats more than
+    // a screenful of viewport. Tab still applies the full block — the
+    // visualisation is informational, not authoritative.
+    const PREVIEW_MAX_LINES = 12;
+    const overflowCount = Math.max(0, lines.length - PREVIEW_MAX_LINES);
+    const visibleLines = overflowCount > 0 ? lines.slice(0, PREVIEW_MAX_LINES) : lines;
+
     // Per-line colorize. Loses cross-line tokenizer state (multi-line
     // strings/comments fall back to default colors) but keeps the per-line
     // structure we need to tint added rows green. NEP REPLACE blocks are
@@ -541,7 +549,7 @@ export const useNextEditPrediction = ({
     };
 
     const renderedLines = await Promise.all(
-      lines.map(async (entry) => {
+      visibleLines.map(async (entry) => {
         const inner = await colorizeLine(entry.line);
         const cls = entry.added
           ? 'synthi-nep-replace-preview__line synthi-nep-replace-preview__line--added'
@@ -550,6 +558,15 @@ export const useNextEditPrediction = ({
         return `<div class="${cls}"><span class="synthi-nep-replace-preview__marker">${marker}</span><span class="synthi-nep-replace-preview__line-text">${inner || '&nbsp;'}</span></div>`;
       }),
     );
+
+    if (overflowCount > 0) {
+      renderedLines.push(
+        `<div class="synthi-nep-replace-preview__line synthi-nep-replace-preview__line--overflow">`
+        + `<span class="synthi-nep-replace-preview__marker">…</span>`
+        + `<span class="synthi-nep-replace-preview__line-text">+${overflowCount} more line${overflowCount === 1 ? '' : 's'}</span>`
+        + `</div>`,
+      );
+    }
 
     const zoneNode = document.createElement('div');
     zoneNode.className = 'synthi-nep-replace-preview';
@@ -577,7 +594,7 @@ export const useNextEditPrediction = ({
       editorInstance.changeViewZones((accessor) => {
         zoneId = accessor.addZone({
           afterLineNumber,
-          heightInLines: lines.length,
+          heightInLines: visibleLines.length + (overflowCount > 0 ? 1 : 0),
           domNode: zoneNode,
           suppressMouseDown: true,
         });
