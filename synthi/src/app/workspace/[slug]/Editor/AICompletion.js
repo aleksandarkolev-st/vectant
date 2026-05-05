@@ -4,6 +4,9 @@ import {
     extractCompletion,
     sanitizeCompletion,
     isCompletionEcho,
+    truncateToFirstUnit,
+    countSuggestionLines,
+    lastCompletePrefix,
 } from '@/lib/completion';
 import {
     buildCompletionReferences,
@@ -237,6 +240,34 @@ export const useAiCompletion = ({
         // so the default behavior is pure insertion at the cursor — never overwrite
         // the rest of the user's line. A computed range is honored when supplied.
         const cached = aiCompletionCacheRef.current || {};
+
+        // Accept-time stability gate. The render pipeline pushes partial
+        // chunks to the ghost overlay for snappy time-to-glass, which means
+        // the user can Tab on a suggestion that is syntactically open
+        // (e.g., `int add() {\n    if (a) {`). For multi-line suggestions
+        // we require a stable cache (truncator boundary fired OR stream
+        // ended). If the cache isn't stable yet, we accept the longest
+        // prefix that ends on a complete statement (`;` / `}`). If even
+        // that doesn't exist, block the accept silently — the user's next
+        // Tab will succeed once more chunks arrive.
+        //
+        // Single-line suggestions skip this entirely: the user can see the
+        // entire suggestion before pressing Tab, so commit semantics match
+        // their intent.
+        if (text.includes('\n') && cached.stable === false) {
+            const safe = lastCompletePrefix(text);
+            if (!safe) {
+                recordAiCompletionEvent('cancelled', { reason: 'accept_blocked_unstable' });
+                return;
+            }
+            recordAiCompletionEvent('cancelled', {
+                reason: 'accept_truncated_to_stable_prefix',
+                accepted_lines: countSuggestionLines(safe),
+                suggested_lines: countSuggestionLines(text),
+            });
+            text = safe;
+        }
+
         if (cached.suggestionRange && cached.suggestionRange.start) {
             const s = cached.suggestionRange.start;
             const e = cached.suggestionRange.end || cached.suggestionRange.start;
@@ -281,13 +312,18 @@ export const useAiCompletion = ({
             const fallbackRange = new monacoInstance.Range(start.lineNumber, start.column, start.lineNumber, start.column);
             try { editorInstance.executeEdits('ai', [{ range: fallbackRange, text, forceMoveMarkers: true }]); } catch (e2) {}
         }
-        
+
+        // Capture lines BEFORE we wipe the cache, so the telemetry event
+        // reflects what the user actually accepted. Multi-line acceptance
+        // rate is the headline metric for tuning sibling-scaffold behavior.
+        const acceptedLines = countSuggestionLines(text);
+
         // Reset state
         aiCompletionCursorRef.current = null;
         aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
         notifyCompletionCacheChange();
         setAiCompletionState('applied');
-        recordAiCompletionEvent('accepted');
+        recordAiCompletionEvent('accepted', { lines: acceptedLines });
     }, [editorInstance, monacoInstance, hasActiveDiff]); // Added dependency
 
     const requestAiCompletion = useCallback((isAutoTrigger = false, manualContext = null, meta = {}) => {
@@ -453,7 +489,7 @@ export const useAiCompletion = ({
         // chunks and re-derive the visible suggestion (envelope-stripped,
         // sanitized, echo-checked) on every chunk before pushing into the
         // inline-completion cache.
-        const pushSuggestion = (visible) => {
+        const pushSuggestion = (visible, { stable = false } = {}) => {
             let suggestionRange = null;
             try {
                 const cursor = aiCompletionCursorRef.current;
@@ -468,14 +504,20 @@ export const useAiCompletion = ({
                 }
             } catch (e) { /* ignore */ }
 
+            // Stability is monotonic — once true, never flips back to false
+            // for the same suggestion text. Stream-end re-pushes upgrade
+            // mid-stream entries to stable:true.
+            const prev = aiCompletionCacheRef.current;
+            const stickyStable = stable
+                || (prev?.context === context && prev?.suggestion === visible && prev?.stable === true);
             const newEntry = {
                 context,
                 language: activeLanguage,
                 suggestion: visible,
                 suggestionRange,
+                stable: stickyStable,
             };
-            const isFirstVisible = !aiCompletionCacheRef.current?.suggestion
-                || aiCompletionCacheRef.current.context !== context;
+            const isFirstVisible = !prev?.suggestion || prev.context !== context;
             aiCompletionCacheRef.current = newEntry;
             lruInsert(newEntry);
             notifyCompletionCacheChange();
@@ -484,6 +526,7 @@ export const useAiCompletion = ({
                 recordAiCompletionEvent('visible', {
                     language: activeLanguage,
                     latency_ms: Date.now() - fireStartedAt,
+                    lines: countSuggestionLines(visible),
                 });
             }
 
@@ -517,22 +560,48 @@ export const useAiCompletion = ({
                 return;
             }
 
+            // FIM post-process: every cumulative buffer goes through
+            // extract → sanitize → truncateToFirstUnit before becoming the
+            // user-visible suggestion. truncateToFirstUnit is the hard cap
+            // that enforces "AT MOST ONE new unit per response" — the prompt
+            // asks for it, but Flash-Lite routinely overshoots once it has
+            // a sibling pattern. Applied per-chunk so streaming partials
+            // are also bounded.
+            //
+            // `stable` returns true when the truncator actually cut the
+            // sanitized text, meaning a structural boundary (closing brace
+            // at baseline, sibling start at baseline, or 14-line cap) was
+            // reached. The accept-time guard in applyAiCompletionText reads
+            // this flag to decide whether a multi-line Tab is safe to apply
+            // wholesale or needs to fall back to the longest complete
+            // prefix.
+            const renderVisible = (rawBuf) => {
+                const sanitized = sanitizeCompletion(
+                    extractCompletion(rawBuf),
+                    { prefix: beforeCursor },
+                );
+                const text = truncateToFirstUnit(sanitized, { prefix: beforeCursor });
+                return { text, stable: text.length < sanitized.length };
+            };
+
             const reader = res.body?.getReader?.();
             if (!reader) {
                 // No streaming support — fall back to reading the whole body.
                 try {
-                    const text = await res.text();
+                    const body = await res.text();
                     if (controller.signal.aborted || hasActiveDiff()) {
                         setAiCompletionState('idle');
                         return;
                     }
-                    const visible = sanitizeCompletion(extractCompletion(text), { prefix: beforeCursor });
+                    const { text: visible } = renderVisible(body);
                     if (visible && !isCompletionEcho(visible, beforeCursor, afterCursor)) {
-                        pushSuggestion(visible);
+                        // Non-streaming response is the entire body — always
+                        // stable, no further chunks coming.
+                        pushSuggestion(visible, { stable: true });
                     } else {
                         setAiCompletionState('idle');
                         recordAiCompletionEvent('rejected', {
-                            reason: !text.trim() ? 'empty_response' : 'echo_or_unsanitized',
+                            reason: !body.trim() ? 'empty_response' : 'echo_or_unsanitized',
                             latency_ms: Date.now() - fireStartedAt,
                         });
                     }
@@ -562,18 +631,21 @@ export const useAiCompletion = ({
                         return;
                     }
 
-                    const visible = sanitizeCompletion(extractCompletion(raw), { prefix: beforeCursor });
+                    const { text: visible, stable } = renderVisible(raw);
                     if (visible && visible !== lastVisible && !isCompletionEcho(visible, beforeCursor, afterCursor)) {
                         lastVisible = visible;
-                        pushSuggestion(visible);
+                        pushSuggestion(visible, { stable });
                     }
                 }
 
-                // Flush any remaining bytes in the decoder.
+                // Flush any remaining bytes in the decoder. Stream just ended
+                // so anything still in flight is now stable — re-push to
+                // upgrade the cache flag even if the visible text didn't
+                // change in this final pass.
                 raw += decoder.decode();
-                const visible = sanitizeCompletion(extractCompletion(raw), { prefix: beforeCursor });
-                if (visible && visible !== lastVisible && !isCompletionEcho(visible, beforeCursor, afterCursor)) {
-                    pushSuggestion(visible);
+                const { text: visible } = renderVisible(raw);
+                if (visible && !isCompletionEcho(visible, beforeCursor, afterCursor)) {
+                    pushSuggestion(visible, { stable: true });
                 } else if (!visible && !lastVisible) {
                     setAiCompletionState('idle');
                     recordAiCompletionEvent('rejected', {

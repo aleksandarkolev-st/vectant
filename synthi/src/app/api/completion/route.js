@@ -291,31 +291,38 @@ const formatReferences = (refs) => {
 
 const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
   const refBlock = formatReferences(references);
-  // Cursor / Copilot-style: the model should both continue the current
-  // expression AND, when the cursor sits at a natural extension point
-  // (end of a class body, after a function, blank line at file scope
-  // following a definition pattern), proactively scaffold the next
-  // sibling — the obvious next method, the matching declaration, the
-  // symmetric struct field. The previous "1–3 lines, output empty if
-  // complete" framing collapsed every completion to FIM-only and made
-  // the feature feel like glorified word-completion. The model still
-  // gets the FIM signal (BEFORE / AFTER) so mid-line continuation
-  // remains its default; the loosened rules just unlock block-level
-  // output when the surrounding pattern justifies it.
+  // Fill-in-the-middle framing for an instruction-tuned model. Flash-Lite
+  // has no FIM tokens (`<|fim_prefix|>` etc.), so we approximate the task
+  // through natural-language BEFORE/AFTER labels and rely on the model's
+  // chat-instruction priors.
+  //
+  // Two prior framings failed: (1) "1–3 lines, output empty if complete"
+  // collapsed everything to single-line edits and made the feature feel
+  // like word-completion; (2) "scaffold the next coherent unit at extension
+  // points" pushed Flash-Lite into speculative sibling generation gated on
+  // fragile cursor-position heuristics — and once it had a pattern it
+  // rolled into 2–3 siblings the user did not ask for.
+  //
+  // Current framing: keep it FIM-pure. The default is a short continuation.
+  // A new declaration is permitted only when BEFORE itself establishes the
+  // pattern (≥1 nearby sibling of matching shape) — that is evidence the
+  // model can verify, unlike "the cursor is on a blank line". The "AT MOST
+  // ONE new unit" rule is also enforced client-side by truncateToFirstUnit
+  // (lib/completion.js) — the prompt is the soft layer; the post-process
+  // is the hard cap.
   return [
-    'You are an inline code completion engine. Predict the user\'s next edit at the cursor — either continue the current line/expression, or scaffold the next coherent unit (a sibling method, the matching declaration, the next struct field) when the surrounding pattern points to an obvious next step.',
+    'You are a fill-in-the-middle code completion engine. Output exactly the text that belongs between BEFORE (code preceding the cursor) and AFTER (code following the cursor).',
     `Language: ${language}`,
     filePath ? `File: ${filePath}` : null,
     '',
     'RULES',
-    '- Output ONLY the text that should appear between BEFORE and AFTER. Never repeat code from either side.',
-    '- Choose the smallest output that is genuinely useful:',
-    '    · Mid-line / mid-expression cursor → finish the line or short block (1–3 lines).',
-    '    · End-of-line after a complete statement → suggest the next statement that the surrounding pattern implies.',
-    '    · Cursor at a natural extension point (inside a class body after one method, after a function definition at file scope, at the next slot in a list of declarations) → emit the next coherent unit, including a full method/function (signature + body + closing brace) that follows the local pattern. Up to ~12 lines is fine if the unit is a complete method.',
-    '- Match the surrounding naming, indentation, brace style, and access-level conventions. If the existing methods are `compute(int a, int b)`-shaped, sibling methods should match.',
-    '- Do not invent unrelated APIs. If you can\'t identify a clear next unit from the context, fall back to the smallest useful continuation. Output empty only when truly nothing useful follows.',
-    '- No explanations, no fences, no commentary, no leading/trailing blank lines.',
+    '- Output ONLY the gap text. Never repeat any code from BEFORE or AFTER.',
+    '- Default behavior: a short continuation (typically 1–3 lines) — finish the current expression, complete the missing arguments, or emit the next obviously-implied statement.',
+    '- A new declaration (sibling method, function, struct field, type) is only appropriate when BEFORE clearly establishes the pattern: at least one nearby sibling at the same scope with a matching signature/shape, naming convention, and visibility. Without that evidence, fall back to a continuation — never invent.',
+    '- AT MOST ONE new unit per response. Stop after its closing brace at its own indent level. Do not start a second sibling.',
+    '- Match the surrounding naming, indentation, brace style, and access-level conventions exactly.',
+    '- If you cannot identify a clear gap to fill, output empty.',
+    '- No explanations, no fences, no commentary, no leading or trailing blank lines.',
     `- Wrap the entire output in ${COMPLETION_OPEN}...${COMPLETION_CLOSE} and emit nothing else.`,
     refBlock
       ? '- CONTEXT below = related symbols (for types) + recent edits (lines starting `+ ` show what was just typed and signal user intent).'

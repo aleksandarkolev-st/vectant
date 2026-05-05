@@ -89,18 +89,36 @@ export const recordAiCompletionEvent = (kind, payload = {}) => {
  * Rolling-window aggregates over the last WINDOW_MS. The accept-rate
  * denominator is `visible` (a request that never produced visible text
  * couldn't have been accepted). Cache-hit rate is over fires.
+ *
+ * Multi-line stats split visible/accepted by suggestion size (lines > 1)
+ * so we can measure the cost of letting the model emit full units. If
+ * `multiline_accept_rate` falls well below `accept_rate`, the structural
+ * cap in truncateToFirstUnit is too generous and we're surfacing
+ * speculative siblings the user routinely rejects.
  */
 export const aiCompletionRollingStats = () => {
   const s = state();
   const cutoff = Date.now() - WINDOW_MS;
   const counts = { fire: 0, cache_hit: 0, visible: 0, accepted: 0, cancelled: 0, rejected: 0 };
+  let multiline_visible = 0;
+  let multiline_accepted = 0;
   for (const e of s.events) {
     if (e.ts < cutoff) continue;
     if (counts[e.kind] !== undefined) counts[e.kind] += 1;
+    if (e.kind === 'visible' && (e.lines || 0) > 1) multiline_visible += 1;
+    if (e.kind === 'accepted' && (e.lines || 0) > 1) multiline_accepted += 1;
   }
   const accept_rate = counts.visible > 0 ? counts.accepted / counts.visible : null;
   const cache_hit_rate = counts.fire > 0 ? counts.cache_hit / (counts.fire + counts.cache_hit) : null;
-  return { ...counts, accept_rate, cache_hit_rate };
+  const multiline_accept_rate = multiline_visible > 0 ? multiline_accepted / multiline_visible : null;
+  return {
+    ...counts,
+    accept_rate,
+    cache_hit_rate,
+    multiline_visible,
+    multiline_accepted,
+    multiline_accept_rate,
+  };
 };
 
 export const aiCompletionSnapshot = () => {
