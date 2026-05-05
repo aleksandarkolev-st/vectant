@@ -1453,17 +1453,41 @@ export const useNextEditPrediction = ({
         }
         if (e.code === 'KeyA') {
           // 'A' → apply all REMAINING sites in this batch.
+          // Single writeFileContent call → single pushEditOperations →
+          // single undo entry. Previously this was N sequential applies
+          // and Ctrl+Z had to be pressed N times to back out the batch.
           e.preventDefault();
           e.stopPropagation();
           (async () => {
-            let safety = 200;
-            let live = getLiveFileContent ? getLiveFileContent(entry.block.path) : null;
-            while (typeof live === 'string' && live.indexOf(entry.block.search) !== -1 && safety-- > 0) {
-              try {
-                await applySearchAllSite(entry, 0);
-                recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH_ALL, path: entry.block.path, batch: true });
-              } catch (err) { break; }
-              live = getLiveFileContent ? getLiveFileContent(entry.block.path) : null;
+            const path = entry.block.path;
+            const search = entry.block.search;
+            const replace = entry.block.replace;
+            const live = getLiveFileContent ? getLiveFileContent(path) : null;
+            if (typeof live !== 'string' || !search) {
+              advanceQueue();
+              return;
+            }
+            let count = 0;
+            {
+              let pos = 0;
+              while ((pos = live.indexOf(search, pos)) !== -1) {
+                count += 1;
+                pos += search.length;
+              }
+            }
+            if (count === 0) {
+              advanceQueue();
+              return;
+            }
+            const next = live.split(search).join(replace);
+            try {
+              await writeFileContent(path, next);
+              await runOnApply(path, next);
+              for (let i = 0; i < count; i++) {
+                recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH_ALL, path, batch: true });
+              }
+            } catch (err) {
+              recordNepEvent('rejected', { reason: 'apply_failed', detail: err?.message });
             }
             advanceQueue();
           })();
@@ -1552,7 +1576,7 @@ export const useNextEditPrediction = ({
   }, [
     enabled, editorInstance, nepState, activeFile, getLiveFileContent,
     renderJumpHint, resetToIdle, applySearchBlock, applySearchAllSite,
-    dispatch, rawFiles, syncPredictedPaths,
+    dispatch, rawFiles, syncPredictedPaths, writeFileContent, runOnApply,
   ]);
 
   return {
