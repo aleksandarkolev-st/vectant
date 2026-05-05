@@ -280,34 +280,26 @@ const formatReferences = (refs) => {
 
 const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
   const refBlock = formatReferences(references);
+  // Compact form. The illustrative example block (~110 tokens) is gone —
+  // flash-lite-preview generalises the wrap-in-tags rule from a single
+  // OUTPUT FORMAT line, and the example pinned the model to JavaScript
+  // syntax for languages where it shouldn't have. The CONTEXT-block
+  // explanation is collapsed into a single trailing sentence on the
+  // tag line, only when references are present.
   return [
     'You are an inline code completion engine. Continue the code at the cursor.',
     `Language: ${language}`,
     filePath ? `File: ${filePath}` : null,
     '',
     'RULES',
-    '- Output ONLY the text that goes between BEFORE and AFTER. Never repeat code from either side.',
-    '- Stop after one coherent unit (a statement, expression, or short block) — usually 1–3 lines.',
-    '- If nothing useful would fit (the surrounding code is already complete), output an empty completion.',
-    '- Match the existing indentation and code style exactly.',
-    '- No explanations, no markdown fences, no commentary.',
+    '- Output ONLY the text between BEFORE and AFTER. Never repeat code from either side.',
+    '- Stop after one coherent unit (statement, expression, or short block) — usually 1–3 lines.',
+    '- If the surrounding code is already complete, output an empty completion.',
+    '- Match existing indentation and style. No explanations, no fences, no commentary.',
+    `- Wrap the inserted text in ${COMPLETION_OPEN}...${COMPLETION_CLOSE} and output nothing else.`,
     refBlock
-      ? '- The CONTEXT block below shows related symbols (for type/signature info — do not copy literally) and recent-edit hunks (lines marked with `+ ` show what was just typed elsewhere — they signal user intent and may suggest matching patterns).'
+      ? '- CONTEXT below = related symbols (for types) + recent edits (lines starting `+ ` show what was just typed and signal user intent).'
       : null,
-    '',
-    'OUTPUT FORMAT',
-    `Wrap the inserted text in ${COMPLETION_OPEN}...${COMPLETION_CLOSE}. Output nothing else.`,
-    '',
-    'EXAMPLE (illustrative — match the actual language above, not this one)',
-    'BEFORE:',
-    'function add(a, b) {',
-    '  return ',
-    'AFTER:',
-    '}',
-    '',
-    `OUTPUT: ${COMPLETION_OPEN}a + b;${COMPLETION_CLOSE}`,
-    '',
-    '---',
     '',
     refBlock ? 'CONTEXT (read-only, from other files):' : null,
     refBlock || null,
