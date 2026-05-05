@@ -1181,6 +1181,29 @@ export const useNextEditPrediction = ({
           continue;
         }
         if (!entry) continue;
+        // Dedup: a stream can re-emit the same block (model retry, partial
+        // emission then re-flush) and the queue would stack identical
+        // jumps that the user has to Tab past for no reason. Match by
+        // kind + path + search + replace — anything that produces the
+        // same edit at the same site is a duplicate. We only check the
+        // remaining queue (cursor onwards) so accepted/skipped entries
+        // don't suppress a legitimate re-emission later.
+        const isDuplicate = (() => {
+          for (let i = queueIndexRef.current; i < queueRef.current.length; i++) {
+            const existing = queueRef.current[i];
+            if (!existing || existing.kind !== entry.kind) continue;
+            const a = existing.block || {};
+            const b = entry.block || {};
+            if (a.path === b.path && a.search === b.search && a.replace === b.replace) {
+              return true;
+            }
+          }
+          return false;
+        })();
+        if (isDuplicate) {
+          recordNepEvent('rejected', { reason: 'duplicate', path: entry.block?.path });
+          continue;
+        }
         queueRef.current.push(entry);
         syncPredictedPaths();
         if (!armedYet) {
