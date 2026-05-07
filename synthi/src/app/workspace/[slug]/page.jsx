@@ -492,7 +492,9 @@ export default function EditorPage({ params }) {
     // Idle-driven analysis: only fire after the user has been quiet for this
     // long. Per-keystroke triggering wasted analyzer calls on transient
     // mid-typing states that immediately got superseded.
-    const ANALYSIS_IDLE_MS = 1500;
+    // AI rate-limiting now lives inside useWorkspaceAnalysis (10 s floor
+    // between AI passes) — we don't track an AI-completion timestamp here.
+    const ANALYSIS_IDLE_MS = 3000;
     const analysisIdleTimerRef = useRef(null);
 
     const normalizePath = useCallback((p) => {
@@ -569,8 +571,14 @@ export default function EditorPage({ params }) {
         clientReady: workspaceClientReady,
     } = useWorkspaceAnalysis({
         workspaceId: slug || '',
-        debounceMs: 1200,  // Slightly longer debounce for workspace-level analysis
-        includeAi: false,  // Disabled by default, can be enabled via settings
+        // Outer 3s idle gate (ANALYSIS_IDLE_MS) already paces the trigger.
+        // Setting inner debounce to 0 means triggerWorkspaceAnalysis just
+        // defers to next tick instead of stacking on top of the outer gate.
+        debounceMs: 0,
+        // Workspace pass runs AI on changed files + their dependents and
+        // returns crossFileDiagnostics for the rest of the tree. The hook
+        // still rate-limits AI to AI_RATE_LIMIT_MS (10s) internally.
+        includeAi: true,
     });
 
     // ── Problems panel imperative expand/collapse ───────────────────────
@@ -1687,210 +1695,22 @@ export default function EditorPage({ params }) {
             }
         }
 
-        // AI analysis is scheduled separately and later.
-        const scheduledAiSignature = `ai::${slug}::${currentFilePath}::${contentHash}`;
-        if (shouldRunAi) {
-            if (!(aiTimeoutRef.current && pendingAiSignatureRef.current === scheduledAiSignature)) {
-                if (aiTimeoutRef.current) {
-                    clearTimeout(aiTimeoutRef.current);
-                    aiTimeoutRef.current = null;
-                }
-                pendingAiSignatureRef.current = scheduledAiSignature;
-
-                // Cancel any in-flight AI processing when content changes
-                if (aiAnalysisRef.current) {
-                    aiAnalysisRef.current.cancelled = true;
-                }
-
-                aiTimeoutRef.current = setTimeout(async () => {
-                    const freshContent = getContentToAnalyze();
-                    const freshContentHash = computeContentHash(freshContent);
-
-                    if (freshContent.length === 0) {
-                        console.log('[page.jsx] Skipping AI analysis - content became empty, waiting for sync');
-                        aiTimeoutRef.current = null;
-                        return;
-                    }
-
-                    const langSource =
-                        activeFile.language ||
-                        (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
-                        'plaintext';
-                    const normalizedLang = langSource.toLowerCase();
-                    const signature = `ai::${slug}::${currentFilePath}::${freshContentHash}`;
-
-                    if (lastAiSignatureRef.current === signature) {
-                        aiTimeoutRef.current = null;
-                        return;
-                    }
-
-                    const token = { cancelled: false };
-                    aiAnalysisRef.current = token;
-
-                    beginProactive();
-
-                    console.log('[page.jsx] === AI ANALYSIS START ===');
-                    console.log('[page.jsx] Slug:', slug);
-                    console.log('[page.jsx] File:', currentFilePath);
-                    console.log('[page.jsx] Language:', normalizedLang);
-                    console.log('[page.jsx] Version:', requestVersion);
-
-                    analyzeUnified({
-                        slug,
-                        filePath: currentFilePath,
-                        lang: normalizedLang,
-                        content: freshContent,
-                        layers: ['ai'],
-                        triggerAiOnErrors: false,
-                        includeAi: true,
-                        version: freshContentHash,
-                    })
-                        .then((result) => {
-                            aiTimeoutRef.current = null;
-                            if (token.cancelled) {
-                                endProactive();
-                                return;
-                            }
-
-                            const currentEditorContent = getLatestCurrentContent();
-                            const currentEditorHash = computeContentHash(currentEditorContent);
-
-                            if (result?.version !== undefined && result.version !== currentEditorHash) {
-                                console.log(`[page.jsx] Ignoring stale AI diagnostics (hash ${result.version} != current ${currentEditorHash})`);
-                                endProactive();
-                                return;
-                            }
-
-                            console.log('[page.jsx] === AI ANALYSIS RESULT ===');
-                            const diags = result?.diagnostics || [];
-
-                            const sourceLines = (typeof currentEditorContent === 'string' ? currentEditorContent : '').split('\n');
-                            const countLeadingEmpty = (lines) => {
-                                let n = 0;
-                                while (n < lines.length && lines[n] === '') n++;
-                                return n;
-                            };
-                            const editorLeadingEmpty = countLeadingEmpty(sourceLines);
-                            const backendDebug = result?.content_debug;
-                            if (
-                                backendDebug &&
-                                (backendDebug.line_count !== sourceLines.length || backendDebug.leading_blank_lines !== editorLeadingEmpty)
-                            ) {
-                                console.warn('[page.jsx] Rejecting AI diagnostics: backend analyzed different content fingerprint than Monaco shows');
-                                lastAiHashMapRef.current.delete(currentFilePath);
-                                endProactive();
-                                setTimeout(() => setEditorVersion(v => v + 1), 50);
-                                return;
-                            }
-
-                            let codeMismatchCount = 0;
-                            diags.forEach((d) => {
-                                const lineIdx = d.range?.start ?? d.location?.line ?? 0;
-                                const codeLine = sourceLines[lineIdx] ?? "";
-                                if (codeLine.trim() !== (d.codeAtLine || '').trim()) {
-                                    codeMismatchCount++;
-                                }
-                            });
-                            if (codeMismatchCount > 0) {
-                                console.warn(`[page.jsx] Rejecting AI diagnostics due to ${codeMismatchCount} codeAtLine mismatches`);
-                                lastAiHashMapRef.current.delete(currentFilePath);
-                                endProactive();
-                                setTimeout(() => setEditorVersion(v => v + 1), 50);
-                                return;
-                            }
-
-                            const filteredDiags = diags.filter(d => {
-                                if (!d.originalText) return true;
-
-                                const loc = d.location || {};
-                                const lineNum = loc.line ?? 0;
-                                const endLineNum = loc.endLine ?? lineNum;
-                                const col = loc.column ?? 0;
-                                const endCol = loc.endColumn ?? col;
-
-                                let currentTextAtLocation = '';
-                                try {
-                                    if (lineNum === endLineNum && lineNum < sourceLines.length) {
-                                        currentTextAtLocation = sourceLines[lineNum].substring(col, endCol);
-                                    } else if (lineNum < sourceLines.length) {
-                                        const textParts = [];
-                                        for (let i = lineNum; i <= Math.min(endLineNum, sourceLines.length - 1); i++) {
-                                            if (i === lineNum) textParts.push(sourceLines[i].substring(col));
-                                            else if (i === endLineNum) textParts.push(sourceLines[i].substring(0, endCol));
-                                            else textParts.push(sourceLines[i]);
-                                        }
-                                        currentTextAtLocation = textParts.join('\n');
-                                    }
-                                } catch (e) {
-                                    return true;
-                                }
-
-                                // Filter ghost AI diagnostics on whitespace
-                                if (!currentTextAtLocation.trim()) {
-                                    return false;
-                                }
-
-                                const isStale = currentTextAtLocation !== d.originalText;
-                                return !isStale;
-                            });
-
-                            const normalizedDiags = filteredDiags.map((d, idx) => ({
-                                ...d,
-                                __analysisVersion: result?.version ?? freshContentHash,
-                                __id: d.__id || d.id || `${freshContentHash}::ai::${idx}`,
-                                filePath: d.filePath || d.file || currentFilePath,
-                                location: d.location || {
-                                    line: d.range?.start ?? 0,
-                                    column: d.range?.startColumn ?? 0,
-                                    endLine: d.range?.end ?? d.range?.start ?? 0,
-                                    endColumn: d.range?.endColumn ?? 0,
-                                },
-                                tier: 'ai',
-                            }));
-
-                            // PERF: startTransition — AI diagnostic rendering is lower-priority than typing
-                            startTransition(() => {
-                            setDiagnostics(prev => {
-                                const currentNorm = normalizePath(currentFilePath || '');
-                                const otherFileDiags = prev.filter(d => normalizePath(d.filePath || '') !== currentNorm);
-                                const sameFileNonAi = prev.filter(d => {
-                                    const isSameFile = normalizePath(d.filePath || '') === currentNorm;
-                                    if (!isSameFile) return false;
-                                    const isAi = d.tier === 'ai' || (d.source && String(d.source).toLowerCase().includes('ai'));
-                                    return !isAi;
-                                });
-                                return [...otherFileDiags, ...sameFileNonAi, ...normalizedDiags];
-                            });
-                            });
-
-                            // ─── Auto-heal AI quick-fixes ──────────────────────────
-                            const fixableAiDiags = normalizedDiags.filter(
-                                (d) => d.fixes?.length > 0 && d.fixes.some((f) => f.replacementText != null)
-                            );
-                            if (fixableAiDiags.length > 0) {
-                                // healFromDiagnostics self-gates on the Redux `enabled` flag.
-                                setTimeout(() => healFromDiagnostics(fixableAiDiags), 60);
-                            }
-
-                            lastAiHashMapRef.current.set(currentFilePath, freshContentHash);
-                            if (pendingAiSignatureRef.current === scheduledAiSignature) {
-                                pendingAiSignatureRef.current = '';
-                            }
-                            lastAiSignatureRef.current = signature;
-                            endProactive();
-                        })
-                        .catch((err) => {
-                            aiTimeoutRef.current = null;
-                            console.error('[page.jsx] AI analysis failed:', err);
-                            lastAiHashMapRef.current.delete(currentFilePath);
-                            if (pendingAiSignatureRef.current === scheduledAiSignature) {
-                                pendingAiSignatureRef.current = '';
-                            }
-                            endProactive();
-                        });
-                }, 900); // AI debounce (slower)
-            }
-        }
+        // Workspace incremental pass: covers AI on the changed file +
+        // its dependents, plus cross-file diagnostics across the whole
+        // tree. Replaces the old per-file AI block. The workspace endpoint
+        // is fed only the delta (changedFiles) plus a capped (50-file)
+        // snapshot for context (allFiles), so we don't re-send every file
+        // on every edit. The AI tier inside the hook is rate-limited to
+        // AI_RATE_LIMIT_MS (10 s) internally; trackFileChange is content-
+        // hash gated; runIncrementalAnalysis short-circuits on empty
+        // changedFiles. So calling these unconditionally is safe.
+        const langSourceWS = (
+            activeFile.language ||
+            (activeFile.name ? getFileLanguage(activeFile.name) : undefined) ||
+            'plaintext'
+        ).toLowerCase();
+        trackFileChange(currentFilePath, contentToAnalyze, langSourceWS);
+        triggerWorkspaceAnalysis();
 
         }; // end of triggerAnalysisRef.current function
     }); // Runs on every render without deps so it captures fresh scope!
