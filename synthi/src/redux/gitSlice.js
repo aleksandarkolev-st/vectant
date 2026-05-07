@@ -1,16 +1,15 @@
 import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import { gitClient } from '@/services/gitClient';
 import collabClient from '@/services/collabClient';
+import { getGithubToken } from '@/lib/githubToken';
 
 /**
- * Read the global GitHub token from localStorage.
- * Falls back to the per-workspace PR token if no global token is set.
+ * Returns the current user's GitHub token (PAT > GitHub OAuth) sourced from
+ * the NextAuth session via the in-memory bridge. Workspace slug is no longer
+ * relevant — tokens are per-user, not per-workspace.
  */
-function getGitToken(slug) {
-    if (typeof window === 'undefined') return null;
-    return localStorage.getItem('synthi:global-github-token')
-        || localStorage.getItem(`synthi:github-token:${slug}`)
-        || null;
+function getGitToken(_slug) {
+    return getGithubToken();
 }
 
 // Track a queued re-fetch so that when a fetchGitStatus is in-flight and

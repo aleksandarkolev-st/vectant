@@ -2955,14 +2955,15 @@ const server = http.createServer(async (req, res) => {
             // under the guest's GitHub identity.
             const decodeHeader = (raw) => {
                 if (!raw || typeof raw !== 'string') return '';
-                // Safe-decode a header value that the frontend
-                // base64-encodes (so non-ASCII names don't violate
-                // RFC 7230 token chars). Falls back to the raw value
-                // if decoding produces nothing useful.
-                try {
-                    const decoded = Buffer.from(raw, 'base64').toString('utf8');
-                    if (decoded && /[\w@.+\- ]/.test(decoded)) return decoded.trim();
-                } catch (_) {}
+                // The frontend prefixes non-ASCII values with "b64:" before
+                // base64-encoding them. Plain ASCII names are passed through
+                // unchanged. This avoids mis-decoding ASCII names that happen
+                // to be valid base64 (e.g. "AMKolev22" → garbage bytes).
+                if (raw.startsWith('b64:')) {
+                    try {
+                        return Buffer.from(raw.slice(4), 'base64').toString('utf8').trim();
+                    } catch (_) {}
+                }
                 return raw.trim();
             };
             const reqName  = decodeHeader(req.headers['x-user-name']);

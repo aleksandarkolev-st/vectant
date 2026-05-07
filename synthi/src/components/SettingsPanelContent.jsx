@@ -5,10 +5,11 @@
  * the legacy sidebar (page.jsx) and the docking WM (SettingsPanelWrapper).
  *
  * Contains toggle controls for Auto Save, AI Auto Completion,
- * a button to open the Theme Picker, and Global GitHub Token management.
+ * a button to open the Theme Picker, and per-user GitHub Token management.
  */
 
 import { useState, useEffect, useCallback } from 'react';
+import { useSession } from 'next-auth/react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import {
   toggleAutoSave,
@@ -22,32 +23,23 @@ import { useThemePicker } from '@/components/ThemePicker';
 import { toast } from 'sonner';
 import { Key, Eye, EyeOff, Check, Trash2, AlertCircle, FlaskConical, Loader2, X } from 'lucide-react';
 
-// ── Global token helpers ────────────────────────────────────────────
-const GLOBAL_TOKEN_KEY = 'synthi:global-github-token';
-
-function getGlobalToken() {
-  if (typeof window === 'undefined') return '';
-  return localStorage.getItem(GLOBAL_TOKEN_KEY) || '';
-}
-function setGlobalToken(token) {
-  if (typeof window === 'undefined') return;
-  if (token) localStorage.setItem(GLOBAL_TOKEN_KEY, token);
-  else localStorage.removeItem(GLOBAL_TOKEN_KEY);
-}
-
-async function validateGitHubToken(token) {
-  try {
-    const res = await fetch('https://api.github.com/user', {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
-    });
-    if (res.ok) {
-      const data = await res.json();
-      return { valid: true, login: data.login, name: data.name };
-    }
-    return { valid: false, error: res.status === 401 ? 'Invalid token' : `GitHub returned ${res.status}` };
-  } catch {
-    return { valid: false, error: 'Network error' };
+// ── Server-side per-user PAT API ───────────────────────────────────
+async function apiSaveToken(token) {
+  const res = await fetch('/api/user/github-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { valid: false, error: data?.message || data?.error || `Server returned ${res.status}` };
   }
+  return { valid: true, login: data.login, name: data.name };
+}
+
+async function apiClearToken() {
+  const res = await fetch('/api/user/github-token', { method: 'DELETE' });
+  return res.ok;
 }
 
 // ── Hardcoded end-to-end token test ────────────────────────────────
@@ -64,10 +56,10 @@ async function runTokenTestPlan(token, onStep) {
     'X-GitHub-Api-Version': '2022-11-28',
   };
 
-  // 1. Storage read (trivial — but confirms the panel found the token)
+  // 1. Source check (confirms the panel resolved a token from session/PAT)
   onStep({
     key: 'storage',
-    label: 'Read token from localStorage',
+    label: 'Resolve token from session',
     status: 'ok',
     detail: `Found ${token.length}-char token, prefix "${token.slice(0, 4)}…"`,
   });
@@ -190,56 +182,59 @@ export function SettingsPanelContent() {
   const autoCompletionEnabled = useAppSelector(selectAutoCompletionEnabled);
   const byorEnabled = useAppSelector(selectBringYourOwnRunnerEnabled);
   const { open: openThemePicker } = useThemePicker();
+  const { data: session, status: sessionStatus, update: refreshSession } = useSession();
 
-  // ── Global GitHub Token state ───────
+  // ── Per-user GitHub Token state ─────
   const [tokenInput, setTokenInput] = useState('');
   const [showToken, setShowToken] = useState(false);
-  const [tokenUser, setTokenUser] = useState(null); // { login, name }
   const [tokenSaving, setTokenSaving] = useState(false);
   const [tokenError, setTokenError] = useState('');
   const [testRunning, setTestRunning] = useState(false);
   const [testResults, setTestResults] = useState(null); // null | array of step results
-  const hasStoredToken = !!getGlobalToken();
 
-  // Load token info on mount
-  useEffect(() => {
-    const stored = getGlobalToken();
-    if (stored) {
-      setTokenInput(stored);
-      validateGitHubToken(stored).then(result => {
-        if (result.valid) setTokenUser({ login: result.login, name: result.name });
-      });
-    }
-  }, []);
+  // Whether the user has a server-side PAT configured
+  const hasStoredToken = session?.githubTokenSource === 'pat';
+  // Whatever token will currently be used for git/PR ops (PAT > OAuth)
+  const activeToken = session?.githubToken || null;
+  const tokenUser = session?.githubLogin
+    ? { login: session.githubLogin, name: null }
+    : null;
+  const tokenSource = session?.githubTokenSource || null;
 
   const handleSaveToken = useCallback(async () => {
-    if (!tokenInput.trim()) return;
+    const trimmed = tokenInput.trim();
+    if (!trimmed) return;
     setTokenSaving(true);
     setTokenError('');
-    const result = await validateGitHubToken(tokenInput.trim());
+    const result = await apiSaveToken(trimmed);
     setTokenSaving(false);
     if (result.valid) {
-      setGlobalToken(tokenInput.trim());
-      setTokenUser({ login: result.login, name: result.name });
+      setTokenInput('');
+      // Refresh the session so session.githubToken / session.githubLogin update
+      try { await refreshSession(); } catch (_) {}
       toast.success(`GitHub token saved — authenticated as ${result.login}`);
     } else {
       setTokenError(result.error || 'Validation failed');
     }
-  }, [tokenInput]);
+  }, [tokenInput, refreshSession]);
 
-  const handleClearToken = useCallback(() => {
-    setGlobalToken('');
-    setTokenInput('');
-    setTokenUser(null);
-    setTokenError('');
-    setTestResults(null);
-    toast('GitHub token removed');
-  }, []);
+  const handleClearToken = useCallback(async () => {
+    const ok = await apiClearToken();
+    if (ok) {
+      setTokenInput('');
+      setTokenError('');
+      setTestResults(null);
+      try { await refreshSession(); } catch (_) {}
+      toast('GitHub token removed');
+    } else {
+      toast.error('Failed to remove token');
+    }
+  }, [refreshSession]);
 
   const handleRunTest = useCallback(async () => {
-    const token = (tokenInput.trim() || getGlobalToken()).trim();
+    const token = (tokenInput.trim() || activeToken || '').trim();
     if (!token) {
-      setTestResults([{ key: 'storage', label: 'Read token from localStorage', status: 'fail', detail: 'No token configured — save one first.' }]);
+      setTestResults([{ key: 'storage', label: 'Resolve token from session', status: 'fail', detail: 'No token configured — save one first or sign in with GitHub.' }]);
       return;
     }
     setTestRunning(true);
@@ -255,7 +250,7 @@ export function SettingsPanelContent() {
     if (failed > 0) toast.error(`Token test failed (${failed} failure${failed > 1 ? 's' : ''})`);
     else if (warned > 0) toast(`Token test passed with ${warned} warning${warned > 1 ? 's' : ''}`);
     else toast.success('Token test passed — all checks green');
-  }, [tokenInput]);
+  }, [tokenInput, activeToken]);
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-y-auto p-3 gap-3" style={{ color: 'var(--text-primary)' }}>
@@ -340,20 +335,38 @@ export function SettingsPanelContent() {
 
       <div className="border-t my-1" style={{ borderColor: 'var(--border-subtle)' }} />
 
-      {/* ── Global GitHub Token ─────────────────── */}
+      {/* ── Per-user GitHub Token ─────────────────── */}
       <div className="text-xs font-semibold uppercase tracking-wider mt-1" style={{ color: 'var(--text-muted)' }}>
         GitHub Token
       </div>
       <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-        Set a Personal Access Token used for git push, pull, fetch and PR operations.
-        Without a token, git operations rely on your system's credential manager.
+        A Personal Access Token tied to your account, used for git push, pull, fetch and PR operations.
+        Stored encrypted on the server; never written to localStorage. If you signed in with GitHub, your OAuth token is used unless you save a PAT here.
       </p>
 
       {/* Token status */}
-      {tokenUser && (
+      {sessionStatus === 'authenticated' && tokenSource === 'pat' && (
         <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'color-mix(in srgb, var(--accent-primary) 8%, transparent)', color: 'var(--text-primary)' }}>
           <Check className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--accent-primary)' }} />
-          <span>Authenticated as <strong>{tokenUser.login}</strong>{tokenUser.name ? ` (${tokenUser.name})` : ''}</span>
+          <span>PAT active{tokenUser?.login ? <> — authenticated as <strong>{tokenUser.login}</strong></> : null}</span>
+        </div>
+      )}
+      {sessionStatus === 'authenticated' && tokenSource === 'oauth' && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'var(--bg-input, var(--bg-editor))', color: 'var(--text-primary)' }}>
+          <Check className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--text-muted)' }} />
+          <span>Using GitHub OAuth token from sign-in. Save a PAT below to override.</span>
+        </div>
+      )}
+      {sessionStatus === 'authenticated' && !tokenSource && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'color-mix(in srgb, #ef4444 6%, transparent)', color: 'var(--text-primary)' }}>
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" style={{ color: '#f87171' }} />
+          <span>No GitHub access. Save a PAT below to enable git/PR features.</span>
+        </div>
+      )}
+      {sessionStatus === 'unauthenticated' && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'var(--bg-input, var(--bg-editor))', color: 'var(--text-muted)' }}>
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+          <span>Sign in to manage your GitHub token.</span>
         </div>
       )}
 
@@ -385,7 +398,7 @@ export function SettingsPanelContent() {
         </div>
         <button
           onClick={handleSaveToken}
-          disabled={!tokenInput.trim() || tokenSaving}
+          disabled={!tokenInput.trim() || tokenSaving || sessionStatus !== 'authenticated'}
           className="px-2.5 py-1.5 text-xs rounded border transition-colors disabled:opacity-40"
           style={{ borderColor: 'var(--accent-primary)', color: 'var(--accent-primary)' }}
         >
@@ -396,7 +409,7 @@ export function SettingsPanelContent() {
             onClick={handleClearToken}
             className="p-1.5 rounded border transition-colors hover:opacity-80"
             style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}
-            title="Remove token"
+            title="Remove PAT (OAuth token, if any, will be used as fallback)"
           >
             <Trash2 className="w-3 h-3" />
           </button>
@@ -415,7 +428,7 @@ export function SettingsPanelContent() {
       <div className="flex items-center gap-1.5">
         <button
           onClick={handleRunTest}
-          disabled={testRunning || (!tokenInput.trim() && !hasStoredToken)}
+          disabled={testRunning || (!tokenInput.trim() && !activeToken)}
           className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded border transition-colors disabled:opacity-40"
           style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
           title="Run a hardcoded end-to-end test against the GitHub API using the saved token"
