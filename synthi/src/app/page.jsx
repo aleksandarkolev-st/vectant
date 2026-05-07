@@ -20,7 +20,6 @@ import {
 import AIJumpstartSection from "@/components/dashboard/AIJumpstartSection";
 import { storeJumpstartPayload } from "@/lib/ai-jumpstart-session";
 import { resolveCollabHttpUrl } from "@/lib/collab-url";
-import { storeToken } from "@/services/prClient";
 import { toast } from "sonner";
 
 /* ──────────────────────────── helpers ──────────────────────────── */
@@ -157,10 +156,6 @@ export default function Dashboard() {
       if (res.ok) {
         await ensureWorkspaceRecord({ slug, name, repoUrl });
 
-        // Store the OAuth token for subsequent git operations
-        if (session?.accessToken) {
-          try { storeToken(slug, session.accessToken); } catch (_) {}
-        }
         if (session?.user?.email) {
           await fetchWorkspaces(session.user.email);
         }
@@ -254,12 +249,6 @@ export default function Dashboard() {
           name: repo.name,
           repoUrl: repo.cloneUrl,
         });
-
-        // Store the OAuth token so subsequent git operations (push, pull,
-        // fetch) can authenticate without prompting the user for a PAT.
-        if (session?.accessToken) {
-          try { storeToken(slug, session.accessToken); } catch (_) {}
-        }
 
         if (session?.user?.email) {
           await fetchWorkspaces(session.user.email);

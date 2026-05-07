@@ -2349,11 +2349,11 @@ async fn wire_peer_channels(
                     debug_log!("Starting LSP for language: {}", lang);
                     let mut cmd = match lang.as_str() {
                         "cpp" | "c" => {
-                            // Create compile_flags.txt to enforce C++17
+                            // Create compile_flags.txt to enforce C++26
                             let flags_path = workspace_path.join("compile_flags.txt");
                             if let Ok(mut file) = std::fs::File::create(&flags_path) {
                                 use std::io::Write;
-                                let _ = writeln!(file, "-std=c++17");
+                                let _ = writeln!(file, "-std=c++26");
                                 // Force C++ mode to ensure headers are treated correctly
                                 let _ = writeln!(file, "-xc++");
                             }

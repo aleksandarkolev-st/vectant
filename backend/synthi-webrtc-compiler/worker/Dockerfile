@@ -54,14 +54,28 @@ RUN touch src/main.rs src/lib.rs && \
     cargo build --release
 
 # ── Stage 2: Runtime ────────────────────────────────────────────────────────
-FROM ubuntu:22.04
+FROM ubuntu:25.10
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ── System compilers & language runtimes ────────────────────────────────────
+# We need the latest GCC for C++26 — gcc-14 only recognises the `-std=c++26`
+# flag but implements very little of the actual feature set (no reflection,
+# no contracts, no pack indexing, etc.). Ubuntu 25.10 (Questing) ships
+# gcc-15 in its main archive, which is the latest stable release and lands
+# the bulk of the C++26 features that have been voted into the working
+# draft. No third-party PPA required — using ppa:ubuntu-toolchain-r/test
+# on older Ubuntu was fragile (the launchpad CDN occasionally refuses
+# connections during builds, killing the image).
+#
+# We point the unversioned `g++` / `gcc` aliases at the new binaries via
+# update-alternatives so every downstream invocation (compile_core,
+# compile_gui, host_runner, the LSP's compile_flags.txt) picks up GCC 15
+# without needing to know the version explicitly.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # C/C++
-    g++ gcc clang make cmake \
+    ca-certificates \
+    # C/C++ — GCC 15 for C++26
+    gcc-15 g++-15 clang make cmake \
     # Java
     openjdk-17-jdk-headless \
     # Python
@@ -69,7 +83,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # SDL2
     libsdl2-2.0-0 libsdl2-dev \
     # Runtime utilities used by language runtimes and downloads
-    curl ca-certificates xz-utils \
+    curl xz-utils \
+    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-15 100 \
+    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-15 100 \
+    && update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-15 100 \
+    && update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-15 100 \
     && rm -rf /var/lib/apt/lists/*
 
 ARG NODE_VERSION=20.20.2
@@ -130,7 +148,11 @@ COPY ext-host-preload.js /usr/local/bin/ext-host-preload.js
 COPY esm-vscode-hook.mjs /usr/local/bin/esm-vscode-hook.mjs
 
 # ── Security hardening ─────────────────────────────────────────────────────
-RUN useradd -m -s /bin/bash runner
+# Ubuntu 24.04 ships with a default `ubuntu` user at UID 1000. Drop it so
+# our `runner` user inherits UID 1000 — keeps parity with the 22.04 image
+# and any host-side tooling that assumes that UID.
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 runner
 # Create writable directories the worker needs
 RUN mkdir -p /tmp/synthi /home/runner/.cache && \
     chown -R runner:runner /home/runner /tmp/synthi

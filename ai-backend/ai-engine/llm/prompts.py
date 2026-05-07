@@ -3569,7 +3569,7 @@ int main(int argc, char** argv) {
 ```
 
 The reference above is ~250 lines and compiles with:
-    g++ -std=c++17 -g host_runner.cpp -I. -o host_runner \\
+    g++ -std=c++26 -g host_runner.cpp -I. -o host_runner \\
         -lSDL2 -ldl -lpthread -rdynamic
 
 The worker adds `-pthread` and `-ldl` automatically for per-project
@@ -3759,7 +3759,7 @@ AppState* state = (AppState*)state_ptr;
 <synthi_build_manifest>
 {
   "compiler": "g++",
-  "std": "c++17",
+  "std": "c++26",
   "common_flags": ["-shared", "-fPIC", "-g", "-fno-omit-frame-pointer",
                    "-fdiagnostics-format=json"],
   "core_link_flags": [],

@@ -421,8 +421,28 @@ export const useEditorEvents = ({
                 const selection = e?.selection;
                 const hasSelection = selection && !selection.isEmpty();
                 const isMouse = source === 'mouse';
-                if (!isMouse && !hasSelection) return;
-                cancelActiveCompletion({ resetSuggestion: true, reason: isMouse ? 'cursor-move' : 'selection-change' });
+
+                // Detect a line change between old and new cursor positions.
+                // Monaco fires this event for typing too, with source === 'modelChange';
+                // we let those pass so the typing handler manages the cache.
+                // Keyboard navigation (arrow keys, Page Up/Down, Home/End that
+                // crosses a line) lands here with source === 'keyboard' and a
+                // different startLineNumber — without this the cached suggestion
+                // stays bound to the old line and re-renders if the user bounces
+                // back, which the user reads as "completions for another line
+                // still showing". computeVisibleSuggestion guards on line, but
+                // clearing the cache makes the staleness durable across moves.
+                const oldLine = e?.oldSelections?.[0]?.startLineNumber ?? null;
+                const newLine = selection?.startLineNumber ?? null;
+                const lineChanged = oldLine !== null && newLine !== null && oldLine !== newLine;
+
+                if (isMouse || hasSelection) {
+                    cancelActiveCompletion({ resetSuggestion: true, reason: isMouse ? 'cursor-move' : 'selection-change' });
+                    return;
+                }
+                if (lineChanged && source !== 'modelChange') {
+                    cancelActiveCompletion({ resetSuggestion: true, reason: 'line-change' });
+                }
             }));
         } catch (e) {
             // ignore if monaco is missing APIs

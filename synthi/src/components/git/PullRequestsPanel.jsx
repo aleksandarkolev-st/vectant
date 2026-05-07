@@ -3,9 +3,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   fetchGithubInfo, fetchPRList, setActivePR, setPRListState,
-  setHasToken,
 } from '@/redux/prSlice';
-import { getStoredToken } from '@/services/prClient';
 import { GitHubTokenModal } from './GitHubTokenModal';
 import { CreatePRForm } from './CreatePRForm';
 import { PRDetail } from './PRDetail';
@@ -215,11 +213,12 @@ export function PullRequestsPanel({ slug }) {
   const isGitHub = provider === 'github';
 
   // ── Initialise ───────────────────────────────────────────────────────────────
+  // Token state (pr.hasToken) is owned by <SessionTokenHydrator/>, so we only
+  // need to fetch the workspace's GitHub info here. The PR-list effect below
+  // (keyed on hasToken) auto-fires the moment the token becomes available,
+  // whether on first session load or after the user saves a PAT in Settings.
   useEffect(() => {
     dispatch(fetchGithubInfo(slug));
-    // Check stored token
-    const stored = getStoredToken(slug);
-    if (stored) dispatch(setHasToken(true));
   }, [slug, dispatch]);
 
   // Load PRs when we have both token and repo info
@@ -500,30 +499,11 @@ export function PullRequestsPanel({ slug }) {
         )}
       </div>
 
-      {/* Token modal */}
+      {/* Token modal — purely informational; once the user saves a PAT in
+          Settings, <SessionTokenHydrator/> updates pr.hasToken and the
+          fetchPRList effect re-fires automatically. */}
       {showTokenModal && (
-        <GitHubTokenModal
-          slug={slug}
-          onClose={() => setShowTokenModal(false)}
-          onSuccess={() => {
-            setShowTokenModal(false);
-            dispatch(setHasToken(true));
-            // Fetch github info if not loaded yet, then fetch PRs
-            if (owner && repo) {
-              dispatch(fetchPRList({ owner, repo, state: prListState, slug }));
-            } else {
-              // Need to load github info first
-              dispatch(fetchGithubInfo(slug)).then(result => {
-                if (fetchGithubInfo.fulfilled.match(result)) {
-                  const info = result.payload;
-                  if (info?.owner && info.repo) {
-                    dispatch(fetchPRList({ owner: info.owner, repo: info.repo, state: prListState, slug }));
-                  }
-                }
-              });
-            }
-          }}
-        />
+        <GitHubTokenModal onClose={() => setShowTokenModal(false)} />
       )}
     </div>
   );

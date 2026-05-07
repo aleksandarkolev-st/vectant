@@ -180,7 +180,7 @@ pub struct CompileManifest {
 }
 
 fn default_std() -> String {
-    "c++17".to_string()
+    "c++26".to_string()
 }
 
 impl CompileManifest {
@@ -191,7 +191,7 @@ impl CompileManifest {
     pub fn sdl2_default() -> Self {
         Self {
             compiler: Compiler::GccPlusPlus,
-            std: "c++17".to_string(),
+            std: "c++26".to_string(),
             common_flags: vec![
                 "-shared".to_string(),
                 "-fPIC".to_string(),

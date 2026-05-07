@@ -189,6 +189,7 @@ export const useEditorProviders = ({
     //      the surrounding code.
     const tokenizerWidgetRef = useRef(null);
     const tokenizerColorizeIdRef = useRef(0);
+    const ghostZoneIdRef = useRef(null);
 
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
@@ -233,6 +234,17 @@ export const useEditorProviders = ({
     // overlay stays glued to where Monaco's invisible inline-completion ghost
     // text actually is. Anchoring to the frozen request-time cursor produced
     // the "homeless" drift where the preview floated next to a stale spot.
+    //
+    // Font-metric note (the "small text between the lines" bug): with
+    // `fixedOverflowWidgets: true` (see options.js), Monaco hoists content
+    // widgets into `.monaco-editor-overflow-widgets`, which is rendered
+    // OUTSIDE the editor DOM at the document body level. None of the editor's
+    // font-size / line-height / letter-spacing cascade reaches the widget,
+    // so the previous CSS-only style (`line-height: inherit`, no font-size)
+    // produced text at browser default 16px UI font, vertically squished
+    // between the editor's 24.5px line boxes. Fix is to read the editor's
+    // resolved `fontInfo` and apply its metrics inline on the widget node,
+    // and re-apply on configuration changes (zoom, font-size override, etc.).
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
 
@@ -241,6 +253,66 @@ export const useEditorProviders = ({
 
         const node = document.createElement('span');
         node.className = 'synthi-ghost-tokenized';
+
+        // Apply the editor's resolved font metrics to the widget node so the
+        // ghost text matches the surrounding code byte-for-byte (same glyph
+        // size, same baseline, same advance width). Reads through monaco's
+        // `EditorOption` enum to survive Monaco version bumps that renumber
+        // the option ids.
+        const applyFontMetrics = () => {
+            try {
+                const EditorOption = monacoInstance.editor.EditorOption;
+                if (!EditorOption) return;
+                const fontInfo = editorInstance.getOption(EditorOption.fontInfo);
+                if (fontInfo) {
+                    if (fontInfo.fontFamily) node.style.fontFamily = fontInfo.fontFamily;
+                    if (fontInfo.fontWeight) node.style.fontWeight = fontInfo.fontWeight;
+                    if (typeof fontInfo.fontSize === 'number' && fontInfo.fontSize > 0) {
+                        node.style.fontSize = fontInfo.fontSize + 'px';
+                    }
+                    if (typeof fontInfo.lineHeight === 'number' && fontInfo.lineHeight > 0) {
+                        node.style.lineHeight = fontInfo.lineHeight + 'px';
+                        // Reserve the full line box so the widget sits on the
+                        // same baseline as the editor's view-line glyphs
+                        // instead of the implicit ascent/descent of the span.
+                        node.style.height = fontInfo.lineHeight + 'px';
+                    }
+                    if (typeof fontInfo.letterSpacing === 'number') {
+                        node.style.letterSpacing = fontInfo.letterSpacing + 'px';
+                    }
+                    if (fontInfo.fontFeatureSettings) {
+                        node.style.fontFeatureSettings = fontInfo.fontFeatureSettings;
+                    }
+                }
+            } catch (_) { /* metrics best-effort */ }
+        };
+        applyFontMetrics();
+
+        // Helper: remove the ghost-text continuation view zone.
+        const clearGhostZone = () => {
+            if (ghostZoneIdRef.current !== null) {
+                try {
+                    editorInstance.changeViewZones((accessor) => {
+                        accessor.removeZone(ghostZoneIdRef.current);
+                    });
+                } catch (_) { /* zone already gone */ }
+                ghostZoneIdRef.current = null;
+            }
+        };
+
+        const fontConfigDispose = editorInstance.onDidChangeConfiguration?.((e) => {
+            try {
+                const EditorOption = monacoInstance.editor.EditorOption;
+                if (!EditorOption) return;
+                if (e.hasChanged(EditorOption.fontInfo)
+                    || e.hasChanged(EditorOption.fontSize)
+                    || e.hasChanged(EditorOption.fontFamily)
+                    || e.hasChanged(EditorOption.lineHeight)
+                    || e.hasChanged(EditorOption.letterSpacing)) {
+                    applyFontMetrics();
+                }
+            } catch (_) { /* ignored */ }
+        });
 
         // Compute what should be visible right now: the suggestion minus any
         // matching prefix the user has typed since the request fired. Returns
@@ -298,58 +370,97 @@ export const useEditorProviders = ({
             if (!visible) {
                 node.innerHTML = '';
                 node.dataset.visible = '';
+                clearGhostZone();
                 editorInstance.layoutContentWidget(widget);
                 return;
             }
 
             if (node.dataset.visible === visible) {
-                // Same content already painted — just re-anchor in case the
-                // cursor moved.
                 editorInstance.layoutContentWidget(widget);
                 return;
             }
             node.dataset.visible = visible;
 
-            // Render only the FIRST line as ghost text. Multi-line ghost
-            // overlays can't anchor cleanly: Monaco's content widget pins to
-            // the cursor's pixel position, but each subsequent suggestion
-            // line carries its own leading whitespace from the model, which
-            // the widget renders verbatim under `white-space: pre`. The
-            // result is the staggered/garbled stack the user reported. Tab
-            // still applies the full multi-line suggestion via the cached
-            // value — we just don't try to draw the full thing as ghost.
             const lines = visible.split('\n');
             const firstLine = lines[0];
-            const restCount = lines.length - 1;
+            const restLines = lines.slice(1);
+            const restCount = restLines.length;
 
             // Cancel any in-flight colorize call — we only care about the latest.
             const id = ++tokenizerColorizeIdRef.current;
             try {
-                // Monaco returns colorized HTML using its own per-theme `mtkN`
-                // classes, which the editor stylesheet already maps to the
-                // active theme's syntax colours. This is the same tokenizer
-                // used everywhere else in the editor.
                 const html = await monacoInstance.editor.colorize(
                     firstLine,
                     activeLanguage || 'plaintext',
                     { tabSize: 4 }
                 );
-                if (id !== tokenizerColorizeIdRef.current) return; // superseded
-                // colorize() emits a trailing <br/> after each line — strip
-                // it so it doesn't push our content-widget down a row inside
-                // the editor's overlay layer.
+                if (id !== tokenizerColorizeIdRef.current) return;
                 const cleaned = (typeof html === 'string' && html.length)
                     ? html.replace(/<br\s*\/?>\s*$/i, '')
                     : escape(firstLine);
                 const hint = restCount > 0
-                    ? `<span class="synthi-ghost-tokenized__hint">↵ +${restCount} ${restCount === 1 ? 'line' : 'lines'} · Tab</span>`
-                    : '';
+                    ? `<span class="synthi-ghost-tokenized__hint">+${restCount} ${restCount === 1 ? 'line' : 'lines'} <kbd>Tab</kbd></span>`
+                    : `<span class="synthi-ghost-tokenized__hint"><kbd>Tab</kbd></span>`;
                 node.innerHTML = cleaned + hint;
+
+                // Render continuation lines in a view zone immediately below
+                // the cursor line. This shows the full suggestion diff without
+                // overlapping the editor's existing content.
+                clearGhostZone();
+                if (restCount > 0) {
+                    const livePos = editorInstance.getPosition();
+                    if (livePos) {
+                        const restHtml = await monacoInstance.editor.colorize(
+                            restLines.join('\n'),
+                            activeLanguage || 'plaintext',
+                            { tabSize: 4 }
+                        );
+                        if (id !== tokenizerColorizeIdRef.current) return;
+                        const cleanedRest = (typeof restHtml === 'string' && restHtml.length)
+                            ? restHtml.replace(/<br\s*\/?>\s*$/i, '')
+                            : restLines.map(escape).join('<br/>');
+
+                        const zoneNode = document.createElement('div');
+                        zoneNode.className = 'synthi-ghost-continuation';
+                        // Apply editor font metrics + content column offset so
+                        // the continuation text aligns with the surrounding code.
+                        try {
+                            const EditorOption = monacoInstance.editor.EditorOption;
+                            if (EditorOption) {
+                                const fi = editorInstance.getOption(EditorOption.fontInfo);
+                                if (fi) {
+                                    if (fi.fontFamily) zoneNode.style.fontFamily = fi.fontFamily;
+                                    if (typeof fi.fontSize === 'number') zoneNode.style.fontSize = fi.fontSize + 'px';
+                                    if (typeof fi.lineHeight === 'number') zoneNode.style.lineHeight = fi.lineHeight + 'px';
+                                    if (typeof fi.letterSpacing === 'number') zoneNode.style.letterSpacing = fi.letterSpacing + 'px';
+                                }
+                            }
+                            const layout = editorInstance.getLayoutInfo?.();
+                            if (layout && typeof layout.contentLeft === 'number') {
+                                zoneNode.style.paddingLeft = layout.contentLeft + 'px';
+                            }
+                        } catch (_) { /* best-effort */ }
+                        zoneNode.innerHTML = cleanedRest;
+
+                        let zoneId = null;
+                        try {
+                            editorInstance.changeViewZones((accessor) => {
+                                zoneId = accessor.addZone({
+                                    afterLineNumber: livePos.lineNumber,
+                                    heightInLines: restCount,
+                                    domNode: zoneNode,
+                                    suppressMouseDown: true,
+                                });
+                            });
+                            ghostZoneIdRef.current = zoneId;
+                        } catch (_) { /* view zone failed */ }
+                    }
+                }
             } catch (e) {
-                // Fall back to plain escaped text if colorize ever fails.
+                clearGhostZone();
                 const hint = restCount > 0
-                    ? `<span class="synthi-ghost-tokenized__hint">↵ +${restCount} ${restCount === 1 ? 'line' : 'lines'} · Tab</span>`
-                    : '';
+                    ? `<span class="synthi-ghost-tokenized__hint">+${restCount} ${restCount === 1 ? 'line' : 'lines'} <kbd>Tab</kbd></span>`
+                    : `<span class="synthi-ghost-tokenized__hint"><kbd>Tab</kbd></span>`;
                 node.innerHTML = escape(firstLine) + hint;
             }
             editorInstance.layoutContentWidget(widget);
@@ -365,20 +476,35 @@ export const useEditorProviders = ({
         });
 
         // The cache lives in a ref, so React won't re-run this effect when a
-        // new suggestion arrives. Poll just to catch that arrival; the work
-        // inside is gated by `dataset.visible` so it only repaints on change.
-        const cacheCheckInterval = setInterval(() => {
-            renderTokenized();
-        }, 80);
+        // new suggestion arrives. AICompletion fires a custom DOM event on
+        // every cache mutation; we repaint on receipt. Replaces the prior
+        // 80 ms polling loop, which woke up 12.5×/s for the lifetime of the
+        // editor regardless of whether anything changed.
+        const onCacheChange = () => renderTokenized();
+        if (typeof window !== 'undefined') {
+            window.addEventListener('synthi:ai-completion:cache-change', onCacheChange);
+        }
 
         // Initial paint.
         renderTokenized();
 
         return () => {
-            clearInterval(cacheCheckInterval);
+            if (typeof window !== 'undefined') {
+                window.removeEventListener('synthi:ai-completion:cache-change', onCacheChange);
+            }
             try { cursorDispose?.dispose(); } catch (_) { /* disposed */ }
             try { contentDispose?.dispose(); } catch (_) { /* disposed */ }
+            try { fontConfigDispose?.dispose(); } catch (_) { /* disposed */ }
             try { editorInstance.removeContentWidget(widget); } catch (_) { /* disposed */ }
+            // Clear the continuation view zone
+            if (ghostZoneIdRef.current !== null) {
+                try {
+                    editorInstance.changeViewZones((accessor) => {
+                        accessor.removeZone(ghostZoneIdRef.current);
+                    });
+                } catch (_) { /* zone already gone */ }
+                ghostZoneIdRef.current = null;
+            }
             tokenizerWidgetRef.current = null;
         };
     }, [editorInstance, monacoInstance, activeLanguage, aiCompletionCacheRef, aiCompletionCursorRef]);

@@ -5,10 +5,11 @@
  * the legacy sidebar (page.jsx) and the docking WM (SettingsPanelWrapper).
  *
  * Contains toggle controls for Auto Save, AI Auto Completion,
- * a button to open the Theme Picker, and Global GitHub Token management.
+ * a button to open the Theme Picker, and per-user GitHub Token management.
  */
 
 import { useState, useEffect, useCallback } from 'react';
+import { useSession } from 'next-auth/react';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import {
   toggleAutoSave,
@@ -20,33 +21,158 @@ import {
 } from '@/redux/uiSlice';
 import { useThemePicker } from '@/components/ThemePicker';
 import { toast } from 'sonner';
-import { Key, Eye, EyeOff, Check, Trash2, AlertCircle } from 'lucide-react';
+import { Key, Eye, EyeOff, Check, Trash2, AlertCircle, FlaskConical, Loader2, X } from 'lucide-react';
 
-// ── Global token helpers ────────────────────────────────────────────
-const GLOBAL_TOKEN_KEY = 'synthi:global-github-token';
-
-function getGlobalToken() {
-  if (typeof window === 'undefined') return '';
-  return localStorage.getItem(GLOBAL_TOKEN_KEY) || '';
+// ── Server-side per-user PAT API ───────────────────────────────────
+async function apiSaveToken(token) {
+  const res = await fetch('/api/user/github-token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { valid: false, error: data?.message || data?.error || `Server returned ${res.status}` };
+  }
+  return { valid: true, login: data.login, name: data.name };
 }
-function setGlobalToken(token) {
-  if (typeof window === 'undefined') return;
-  if (token) localStorage.setItem(GLOBAL_TOKEN_KEY, token);
-  else localStorage.removeItem(GLOBAL_TOKEN_KEY);
+
+async function apiClearToken() {
+  const res = await fetch('/api/user/github-token', { method: 'DELETE' });
+  return res.ok;
 }
 
-async function validateGitHubToken(token) {
+// ── Hardcoded end-to-end token test ────────────────────────────────
+// Exercises the full read→auth→scope→rate-limit→list path against the
+// real GitHub API using whatever token the user saved in the settings
+// panel above. Each step pushes a result so the user can see exactly
+// where the token works and where it falls over.
+async function runTokenTestPlan(token, onStep) {
+  const GH = 'https://api.github.com';
+  const required = ['repo'];
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+
+  // 1. Source check (confirms the panel resolved a token from session/PAT)
+  onStep({
+    key: 'storage',
+    label: 'Resolve token from session',
+    status: 'ok',
+    detail: `Found ${token.length}-char token, prefix "${token.slice(0, 4)}…"`,
+  });
+
+  // 2. GET /user — verifies the token authenticates at all
+  let userRes;
   try {
-    const res = await fetch('https://api.github.com/user', {
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+    userRes = await fetch(`${GH}/user`, { headers });
+  } catch (e) {
+    onStep({ key: 'auth', label: 'GET /user (authenticate)', status: 'fail', detail: `Network error: ${e.message}` });
+    return;
+  }
+  let user = null;
+  try { user = await userRes.json(); } catch {}
+  if (!userRes.ok) {
+    onStep({
+      key: 'auth',
+      label: 'GET /user (authenticate)',
+      status: 'fail',
+      detail: `HTTP ${userRes.status} — ${user?.message || userRes.statusText}`,
     });
-    if (res.ok) {
-      const data = await res.json();
-      return { valid: true, login: data.login, name: data.name };
+    return;
+  }
+  onStep({
+    key: 'auth',
+    label: 'GET /user (authenticate)',
+    status: 'ok',
+    detail: `Authenticated as ${user.login}${user.name ? ` (${user.name})` : ''} · id=${user.id}`,
+  });
+
+  // 3. Inspect X-OAuth-Scopes header — verifies the token has `repo`
+  // (Fine-grained tokens omit this header — treat that as a soft warning.)
+  const scopeHeader = userRes.headers.get('x-oauth-scopes');
+  if (scopeHeader === null) {
+    onStep({
+      key: 'scopes',
+      label: 'Verify token scopes',
+      status: 'warn',
+      detail: 'No X-OAuth-Scopes header — likely a fine-grained PAT. Synthi assumes `repo` scope; verify manually that the token can read/write the target repo.',
+    });
+  } else {
+    const scopes = scopeHeader.split(',').map(s => s.trim()).filter(Boolean);
+    const missing = required.filter(r => !scopes.includes(r) && !scopes.some(s => s === 'repo'));
+    if (missing.length) {
+      onStep({
+        key: 'scopes',
+        label: 'Verify token scopes',
+        status: 'fail',
+        detail: `Missing required scope(s): ${missing.join(', ')}. Got: [${scopes.join(', ') || '∅'}]`,
+      });
+    } else {
+      onStep({
+        key: 'scopes',
+        label: 'Verify token scopes',
+        status: 'ok',
+        detail: `Scopes: [${scopes.join(', ')}]`,
+      });
     }
-    return { valid: false, error: res.status === 401 ? 'Invalid token' : `GitHub returned ${res.status}` };
-  } catch {
-    return { valid: false, error: 'Network error' };
+  }
+
+  // 4. GET /rate_limit — surfaces remaining budget so a failing push
+  //    doesn't get blamed on the token when it's actually a 403/rate.
+  try {
+    const rlRes = await fetch(`${GH}/rate_limit`, { headers });
+    const rl = await rlRes.json();
+    if (rlRes.ok && rl?.resources?.core) {
+      const c = rl.resources.core;
+      const reset = new Date(c.reset * 1000).toLocaleTimeString();
+      onStep({
+        key: 'budget',
+        label: 'GET /rate_limit (API budget)',
+        status: c.remaining < 50 ? 'warn' : 'ok',
+        detail: `core: ${c.remaining}/${c.limit} remaining, resets at ${reset}`,
+      });
+    } else {
+      onStep({ key: 'budget', label: 'GET /rate_limit (API budget)', status: 'warn', detail: `Could not read rate limit (HTTP ${rlRes.status})` });
+    }
+  } catch (e) {
+    onStep({ key: 'budget', label: 'GET /rate_limit (API budget)', status: 'warn', detail: `Network error: ${e.message}` });
+  }
+
+  // 5. GET /user/repos — exercises the same call gitClient/prClient need:
+  //    list a repo to prove the token can actually see something.
+  try {
+    const repoRes = await fetch(`${GH}/user/repos?per_page=1&sort=updated`, { headers });
+    const repos = await repoRes.json();
+    if (!repoRes.ok) {
+      onStep({
+        key: 'list',
+        label: 'GET /user/repos (list permission)',
+        status: 'fail',
+        detail: `HTTP ${repoRes.status} — ${repos?.message || repoRes.statusText}`,
+      });
+      return;
+    }
+    if (!Array.isArray(repos) || repos.length === 0) {
+      onStep({
+        key: 'list',
+        label: 'GET /user/repos (list permission)',
+        status: 'warn',
+        detail: 'Token works, but no accessible repos — push/pull will fail until a repo is reachable.',
+      });
+    } else {
+      const r = repos[0];
+      onStep({
+        key: 'list',
+        label: 'GET /user/repos (list permission)',
+        status: 'ok',
+        detail: `Most recent: ${r.full_name} (${r.private ? 'private' : 'public'}, default=${r.default_branch})`,
+      });
+    }
+  } catch (e) {
+    onStep({ key: 'list', label: 'GET /user/repos (list permission)', status: 'fail', detail: `Network error: ${e.message}` });
   }
 }
 
@@ -56,48 +182,75 @@ export function SettingsPanelContent() {
   const autoCompletionEnabled = useAppSelector(selectAutoCompletionEnabled);
   const byorEnabled = useAppSelector(selectBringYourOwnRunnerEnabled);
   const { open: openThemePicker } = useThemePicker();
+  const { data: session, status: sessionStatus, update: refreshSession } = useSession();
 
-  // ── Global GitHub Token state ───────
+  // ── Per-user GitHub Token state ─────
   const [tokenInput, setTokenInput] = useState('');
   const [showToken, setShowToken] = useState(false);
-  const [tokenUser, setTokenUser] = useState(null); // { login, name }
   const [tokenSaving, setTokenSaving] = useState(false);
   const [tokenError, setTokenError] = useState('');
-  const hasStoredToken = !!getGlobalToken();
+  const [testRunning, setTestRunning] = useState(false);
+  const [testResults, setTestResults] = useState(null); // null | array of step results
 
-  // Load token info on mount
-  useEffect(() => {
-    const stored = getGlobalToken();
-    if (stored) {
-      setTokenInput(stored);
-      validateGitHubToken(stored).then(result => {
-        if (result.valid) setTokenUser({ login: result.login, name: result.name });
-      });
-    }
-  }, []);
+  // Whether the user has a server-side PAT configured
+  const hasStoredToken = session?.githubTokenSource === 'pat';
+  // Whatever token will currently be used for git/PR ops (PAT > OAuth)
+  const activeToken = session?.githubToken || null;
+  const tokenUser = session?.githubLogin
+    ? { login: session.githubLogin, name: null }
+    : null;
+  const tokenSource = session?.githubTokenSource || null;
 
   const handleSaveToken = useCallback(async () => {
-    if (!tokenInput.trim()) return;
+    const trimmed = tokenInput.trim();
+    if (!trimmed) return;
     setTokenSaving(true);
     setTokenError('');
-    const result = await validateGitHubToken(tokenInput.trim());
+    const result = await apiSaveToken(trimmed);
     setTokenSaving(false);
     if (result.valid) {
-      setGlobalToken(tokenInput.trim());
-      setTokenUser({ login: result.login, name: result.name });
+      setTokenInput('');
+      // Refresh the session so session.githubToken / session.githubLogin update
+      try { await refreshSession(); } catch (_) {}
       toast.success(`GitHub token saved — authenticated as ${result.login}`);
     } else {
       setTokenError(result.error || 'Validation failed');
     }
-  }, [tokenInput]);
+  }, [tokenInput, refreshSession]);
 
-  const handleClearToken = useCallback(() => {
-    setGlobalToken('');
-    setTokenInput('');
-    setTokenUser(null);
-    setTokenError('');
-    toast('GitHub token removed');
-  }, []);
+  const handleClearToken = useCallback(async () => {
+    const ok = await apiClearToken();
+    if (ok) {
+      setTokenInput('');
+      setTokenError('');
+      setTestResults(null);
+      try { await refreshSession(); } catch (_) {}
+      toast('GitHub token removed');
+    } else {
+      toast.error('Failed to remove token');
+    }
+  }, [refreshSession]);
+
+  const handleRunTest = useCallback(async () => {
+    const token = (tokenInput.trim() || activeToken || '').trim();
+    if (!token) {
+      setTestResults([{ key: 'storage', label: 'Resolve token from session', status: 'fail', detail: 'No token configured — save one first or sign in with GitHub.' }]);
+      return;
+    }
+    setTestRunning(true);
+    setTestResults([]);
+    const collected = [];
+    await runTokenTestPlan(token, step => {
+      collected.push(step);
+      setTestResults([...collected]);
+    });
+    setTestRunning(false);
+    const failed = collected.filter(s => s.status === 'fail').length;
+    const warned = collected.filter(s => s.status === 'warn').length;
+    if (failed > 0) toast.error(`Token test failed (${failed} failure${failed > 1 ? 's' : ''})`);
+    else if (warned > 0) toast(`Token test passed with ${warned} warning${warned > 1 ? 's' : ''}`);
+    else toast.success('Token test passed — all checks green');
+  }, [tokenInput, activeToken]);
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-y-auto p-3 gap-3" style={{ color: 'var(--text-primary)' }}>
@@ -182,20 +335,38 @@ export function SettingsPanelContent() {
 
       <div className="border-t my-1" style={{ borderColor: 'var(--border-subtle)' }} />
 
-      {/* ── Global GitHub Token ─────────────────── */}
+      {/* ── Per-user GitHub Token ─────────────────── */}
       <div className="text-xs font-semibold uppercase tracking-wider mt-1" style={{ color: 'var(--text-muted)' }}>
         GitHub Token
       </div>
       <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-        Set a Personal Access Token used for git push, pull, fetch and PR operations.
-        Without a token, git operations rely on your system's credential manager.
+        A Personal Access Token tied to your account, used for git push, pull, fetch and PR operations.
+        Stored encrypted on the server; never written to localStorage. If you signed in with GitHub, your OAuth token is used unless you save a PAT here.
       </p>
 
       {/* Token status */}
-      {tokenUser && (
+      {sessionStatus === 'authenticated' && tokenSource === 'pat' && (
         <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'color-mix(in srgb, var(--accent-primary) 8%, transparent)', color: 'var(--text-primary)' }}>
           <Check className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--accent-primary)' }} />
-          <span>Authenticated as <strong>{tokenUser.login}</strong>{tokenUser.name ? ` (${tokenUser.name})` : ''}</span>
+          <span>PAT active{tokenUser?.login ? <> — authenticated as <strong>{tokenUser.login}</strong></> : null}</span>
+        </div>
+      )}
+      {sessionStatus === 'authenticated' && tokenSource === 'oauth' && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'var(--bg-input, var(--bg-editor))', color: 'var(--text-primary)' }}>
+          <Check className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--text-muted)' }} />
+          <span>Using GitHub OAuth token from sign-in. Save a PAT below to override.</span>
+        </div>
+      )}
+      {sessionStatus === 'authenticated' && !tokenSource && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'color-mix(in srgb, #ef4444 6%, transparent)', color: 'var(--text-primary)' }}>
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" style={{ color: '#f87171' }} />
+          <span>No GitHub access. Save a PAT below to enable git/PR features.</span>
+        </div>
+      )}
+      {sessionStatus === 'unauthenticated' && (
+        <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: 'var(--bg-input, var(--bg-editor))', color: 'var(--text-muted)' }}>
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+          <span>Sign in to manage your GitHub token.</span>
         </div>
       )}
 
@@ -227,7 +398,7 @@ export function SettingsPanelContent() {
         </div>
         <button
           onClick={handleSaveToken}
-          disabled={!tokenInput.trim() || tokenSaving}
+          disabled={!tokenInput.trim() || tokenSaving || sessionStatus !== 'authenticated'}
           className="px-2.5 py-1.5 text-xs rounded border transition-colors disabled:opacity-40"
           style={{ borderColor: 'var(--accent-primary)', color: 'var(--accent-primary)' }}
         >
@@ -238,7 +409,7 @@ export function SettingsPanelContent() {
             onClick={handleClearToken}
             className="p-1.5 rounded border transition-colors hover:opacity-80"
             style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}
-            title="Remove token"
+            title="Remove PAT (OAuth token, if any, will be used as fallback)"
           >
             <Trash2 className="w-3 h-3" />
           </button>
@@ -249,6 +420,58 @@ export function SettingsPanelContent() {
         <div className="flex items-center gap-1.5 text-[11px]" style={{ color: '#f87171' }}>
           <AlertCircle className="w-3 h-3 flex-shrink-0" />
           {tokenError}
+        </div>
+      )}
+
+      {/* Hardcoded end-to-end test — verifies the saved token against the real
+          GitHub API: storage → auth → scopes → rate limit → list permission. */}
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={handleRunTest}
+          disabled={testRunning || (!tokenInput.trim() && !activeToken)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded border transition-colors disabled:opacity-40"
+          style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
+          title="Run a hardcoded end-to-end test against the GitHub API using the saved token"
+        >
+          {testRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <FlaskConical className="w-3 h-3" />}
+          {testRunning ? 'Testing…' : 'Test Token'}
+        </button>
+        {testResults && !testRunning && (
+          <button
+            onClick={() => setTestResults(null)}
+            className="p-1.5 rounded border transition-colors hover:opacity-80"
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}
+            title="Clear test results"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        )}
+      </div>
+
+      {testResults && testResults.length > 0 && (
+        <div
+          className="flex flex-col gap-1 px-2 py-2 rounded border text-[11px] font-mono"
+          style={{ background: 'var(--bg-input, var(--bg-editor))', borderColor: 'var(--border-subtle)' }}
+        >
+          {testResults.map((step, i) => {
+            const colour =
+              step.status === 'ok' ? '#4ade80' :
+              step.status === 'warn' ? '#fbbf24' :
+              step.status === 'fail' ? '#f87171' : 'var(--text-muted)';
+            const glyph =
+              step.status === 'ok' ? '✓' :
+              step.status === 'warn' ? '!' :
+              step.status === 'fail' ? '✕' : '·';
+            return (
+              <div key={`${step.key}-${i}`} className="flex gap-2">
+                <span style={{ color: colour, width: '1ch', flexShrink: 0 }}>{glyph}</span>
+                <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+                  <span style={{ color: 'var(--text-primary)' }}>{step.label}</span>
+                  <span className="break-words" style={{ color: 'var(--text-muted)' }}>{step.detail}</span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 

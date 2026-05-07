@@ -1,43 +1,25 @@
 /**
  * prClient.js — GitHub REST API client for Pull Request management.
  *
- * Calls the GitHub API directly from the browser using the user's PAT
- * (stored in localStorage per workspace).  Works with GitHub.com only;
- * GitLab / Bitbucket support can be added later.
- *
- * Token storage key: `synthi:github-token:<slug>`
+ * Tokens are resolved per-user through the NextAuth session (a server-side
+ * encrypted PAT, falling back to the GitHub OAuth token). The browser-side
+ * cache is hydrated by <SessionTokenHydrator/>; nothing here uses localStorage.
  */
+
+import { getGithubToken } from '@/lib/githubToken';
 
 const GITHUB_API = 'https://api.github.com';
 
 // ── Token helpers ─────────────────────────────────────────────────────────────
 
-const GLOBAL_TOKEN_KEY = 'synthi:global-github-token';
-
-export function getStoredToken(slug) {
-  if (typeof window === 'undefined') return null;
-  // Per-workspace token takes priority, then fall back to global token
-  return localStorage.getItem(`synthi:github-token:${slug}`)
-    || localStorage.getItem(GLOBAL_TOKEN_KEY)
-    || null;
-}
-
-export function getGlobalToken() {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(GLOBAL_TOKEN_KEY) || null;
-}
-
-export function storeToken(slug, token) {
-  if (typeof window === 'undefined') return;
-  if (token) {
-    localStorage.setItem(`synthi:github-token:${slug}`, token);
-  } else {
-    localStorage.removeItem(`synthi:github-token:${slug}`);
-  }
-}
-
-export function clearToken(slug) {
-  storeToken(slug, null);
+/**
+ * Returns the current user's GitHub token, or null if not authenticated /
+ * no token configured. The `slug` argument is accepted for backwards
+ * compatibility with existing call sites and is ignored — tokens are now
+ * scoped to the user, not the workspace.
+ */
+export function getStoredToken(_slug) {
+  return getGithubToken();
 }
 
 // ── Core fetch wrapper ────────────────────────────────────────────────────────

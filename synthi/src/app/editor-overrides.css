@@ -146,17 +146,42 @@
 /* The tokenized overlay widget. Monaco's `colorize` emits per-token spans
  * with classes mtk1..mtkN whose colours are defined by the active theme, so
  * by rendering the suggestion through that pipeline the ghost text inherits
- * the editor's syntax highlighting exactly. */
+ * the editor's syntax highlighting exactly.
+ *
+ * Font metrics (font-family, font-size, line-height, letter-spacing,
+ * font-feature-settings) are applied inline at runtime by providers.js
+ * from the editor's resolved fontInfo, because `fixedOverflowWidgets: true`
+ * hoists this widget into a body-level overflow container that doesn't
+ * inherit the editor's font cascade. Don't set those here or they'd
+ * fight the inline values. */
 .synthi-ghost-tokenized {
     pointer-events: none;
     user-select: none;
     white-space: pre;
-    opacity: 0.55;
-    font-style: italic;
-    font-family: var(--monaco-monospace-font, 'JetBrains Mono', 'Fira Code', 'Consolas', monospace);
-    line-height: inherit;
+    /* Bump opacity from 0.55 → 0.62 — the previous value was readable on
+     * very-bright themes but washed out on dark Synthi defaults. 0.62 keeps
+     * the ghost obviously distinct from accepted code while staying legible
+     * on every shipped theme. */
+    opacity: 0.62;
+    /* Industry-grade ghost text (Copilot, Cursor) is NOT italicised — the
+     * font-style flip introduces a glyph-shape mismatch with the surrounding
+     * code that makes the preview feel like an alien overlay rather than
+     * "what your next keystroke would type". Drop the italic. */
+    /* Box layout: align widget content to the line baseline so the colorized
+     * span sits exactly where Monaco's hidden inline-completion ghost text
+     * sits. `vertical-align: top` plus the inline height set by providers.js
+     * prevents the "floating above the line" drift the user reported. */
+    display: inline-block;
+    vertical-align: top;
     /* Slightly de-emphasise so accepted text feels different from preview. */
-    filter: saturate(0.85);
+    filter: saturate(0.92);
+    /* Subtle fade-in so a streaming completion doesn't "pop" in. */
+    animation: synthi-ghost-fadein 120ms ease-out;
+}
+
+@keyframes synthi-ghost-fadein {
+    from { opacity: 0; }
+    to   { opacity: 0.62; }
 }
 
 .synthi-ghost-tokenized .mtk1,
@@ -188,15 +213,64 @@
     margin-left: 0;
 }
 
+/* View zone showing continuation lines (lines 2+) of a multi-line inline
+ * completion suggestion. Rendered directly in the editor's view-zones layer
+ * so the text aligns with the natural indentation of the code column, not
+ * the cursor's inline X position. Same opacity/filter as the inline ghost. */
+.synthi-ghost-continuation {
+    pointer-events: none;
+    user-select: none;
+    white-space: pre;
+    opacity: 0.62;
+    filter: saturate(0.92);
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    /* padding-left is applied inline from Monaco's getLayoutInfo().contentLeft
+     * so the text aligns with the code column. */
+    animation: synthi-ghost-fadein 120ms ease-out;
+}
+
+/* "+N lines · Tab" pill hint. Keep visually compact and clearly secondary
+ * (lower opacity, smaller font) so it reads as metadata instead of code. */
 .synthi-ghost-tokenized__hint {
-    margin-left: 8px;
-    padding: 0 6px;
-    border-radius: 3px;
-    font-size: 0.78em;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 10px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    /* Explicit small font — the parent inline span carries the editor's
+     * full font-size, but the pill should be UI-sized. */
+    font-size: 10.5px;
     font-style: normal;
-    color: color-mix(in srgb, var(--accent-secondary, #4aba9a) 85%, transparent);
-    background: color-mix(in srgb, var(--accent-secondary, #4aba9a) 10%, transparent);
+    font-weight: 500;
+    line-height: 16px;
+    letter-spacing: 0.2px;
+    color: color-mix(in srgb, var(--accent-secondary, #4aba9a) 95%, transparent);
+    background: color-mix(in srgb, var(--accent-secondary, #4aba9a) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-secondary, #4aba9a) 28%, transparent);
     vertical-align: middle;
+    /* Reset the parent's italic / saturation tweak — the pill is UI chrome,
+     * not code. */
+    filter: none;
+    opacity: 0.92;
+    /* Use the UI font, not the monospace one. */
+    font-family: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.synthi-ghost-tokenized__hint kbd {
+    display: inline-block;
+    padding: 0 4px;
+    font-size: 9.5px;
+    font-family: inherit;
+    font-weight: 600;
+    color: var(--accent-primary, #6f7eff);
+    background: color-mix(in srgb, var(--accent-primary, #6f7eff) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 35%, transparent);
+    border-radius: 3px;
+    line-height: 14px;
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--accent-primary, #6f7eff) 40%, transparent);
 }
 
 /* ============================================
@@ -663,28 +737,50 @@
  * cursor has actually jumped, so the user sees what's about to be replaced. */
 .synthi-nep-gutter-dot {
     background: radial-gradient(circle at 50% 50%,
-        color-mix(in srgb, var(--accent-primary, #6f7eff) 90%, transparent) 0,
+        color-mix(in srgb, var(--accent-primary, #6f7eff) 95%, transparent) 0,
         color-mix(in srgb, var(--accent-primary, #6f7eff) 90%, transparent) 35%,
         transparent 60%);
-    width: 8px !important;
-    height: 8px !important;
+    width: 9px !important;
+    height: 9px !important;
     margin-left: 4px;
-    margin-top: 6px;
+    margin-top: 5px;
     border-radius: 50%;
-    box-shadow: 0 0 6px color-mix(in srgb, var(--accent-primary, #6f7eff) 70%, transparent);
+    /* Pulse 5 cycles (~8s) then settle into the steady glow. Forever-pulsing
+     * dots became background noise on long-armed predictions and made it
+     * harder to scan for genuinely new ones. animation-fill-mode: forwards
+     * locks in the final keyframe (steady mid-glow) so the dot is still
+     * clearly visible after the pulse ends. */
+    animation: synthi-nep-pulse 1.6s ease-in-out 5;
+    animation-fill-mode: forwards;
+    box-shadow: 0 0 6px color-mix(in srgb, var(--accent-primary, #6f7eff) 55%, transparent);
 }
 
 .synthi-nep-target-line {
-    background: color-mix(in srgb, var(--accent-primary, #6f7eff) 12%, transparent) !important;
-    border-left: 2px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 80%, transparent);
+    /* Soft accent gradient that fades from a tinted left edge to clear on
+     * the right — preserves the "this line is the one" cue without painting
+     * the whole row a solid block of colour. */
+    background: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--accent-primary, #6f7eff) 16%, transparent),
+        color-mix(in srgb, var(--accent-primary, #6f7eff) 6%, transparent) 70%,
+        transparent
+    ) !important;
+    border-left: 2px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 85%, transparent);
+    transition: background 160ms ease-out;
 }
 
 /* SEARCH ALL per-site confirmation (Phase 2). Different colour from the
  * single-site armed-line so the user can tell at a glance that THIS line
  * is one of N sites in a batch under review, not a single accepted edit. */
 .synthi-nep-confirm-line {
-    background: color-mix(in srgb, var(--accent-secondary, #4aba9a) 14%, transparent) !important;
+    background: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--accent-secondary, #4aba9a) 18%, transparent),
+        color-mix(in srgb, var(--accent-secondary, #4aba9a) 7%, transparent) 70%,
+        transparent
+    ) !important;
     border-left: 2px solid color-mix(in srgb, var(--accent-secondary, #4aba9a) 90%, transparent);
+    transition: background 160ms ease-out;
 }
 
 /* Cross-file hint dot: prediction targets a closed file. The dot lands in
@@ -699,4 +795,290 @@
     margin-top: 6px;
     border-radius: 50%;
     box-shadow: 0 0 5px color-mix(in srgb, var(--accent-primary, #6f7eff) 50%, transparent);
+}
+
+/* ============================================
+   NEP — Inline diff preview (Cursor-style)
+   ============================================
+   Strikethrough on the SEARCH range + a view zone immediately below
+   showing the REPLACE text in tokenized ghost form. This is what makes
+   NEP actually feel "industry-grade": the user sees both halves of the
+   edit before deciding to apply. */
+
+.synthi-nep-search-strike {
+    /* Strike the to-be-removed text with the same red used for delete diffs
+     * elsewhere in the editor, but at lower saturation so it reads as
+     * "preview" rather than "compile error". */
+    text-decoration: line-through 1.5px color-mix(in srgb, #f87171 70%, transparent) !important;
+    background: color-mix(in srgb, #f87171 10%, transparent) !important;
+    /* The line decoration's accent already tints the line — keep the strike
+     * subtle so the overall feel stays calm. */
+    border-radius: 2px;
+}
+
+/* Pulsing accent stripe rendered in the line gutter so the user's eye is
+ * pulled to the prediction site. Keep the keyframes short — a long pulse
+ * becomes background noise. */
+@keyframes synthi-nep-pulse {
+    0%   { box-shadow: 0 0 4px color-mix(in srgb, var(--accent-primary, #6f7eff) 40%, transparent); }
+    50%  { box-shadow: 0 0 10px color-mix(in srgb, var(--accent-primary, #6f7eff) 85%, transparent); }
+    100% { box-shadow: 0 0 4px color-mix(in srgb, var(--accent-primary, #6f7eff) 40%, transparent); }
+}
+
+@keyframes synthi-nep-preview-fadein {
+    from { opacity: 0; transform: translateY(-2px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* The view-zone container itself. Monaco places this element as a child of
+ * `.view-zones`, which sits between the editor's view-lines layer and the
+ * cursor. Layout: a 3px accent rail on the left, then a label + code body. */
+.synthi-nep-replace-preview {
+    display: flex;
+    align-items: stretch;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    /* Soft accent gradient — the column-of-green-pluses look from the old
+     * fix-preview-zone reads "diff" but is heavy. Subtle gradient + accent
+     * rail is calmer and matches the rest of the Synthi panel chrome. */
+    background: linear-gradient(
+        90deg,
+        color-mix(in srgb, var(--accent-primary, #6f7eff) 11%, transparent),
+        color-mix(in srgb, var(--accent-primary, #6f7eff) 5%, transparent) 60%,
+        transparent
+    );
+    border-top: 1px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 30%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 18%, transparent);
+    overflow: hidden;
+    animation: synthi-nep-preview-fadein 140ms ease-out;
+    pointer-events: none;
+    user-select: none;
+}
+
+.synthi-nep-replace-preview__rail {
+    flex: 0 0 3px;
+    background: linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--accent-primary, #6f7eff) 80%, transparent),
+        color-mix(in srgb, var(--accent-secondary, #4aba9a) 60%, transparent)
+    );
+}
+
+.synthi-nep-replace-preview__body {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    padding: 2px 0 4px 0;
+}
+
+.synthi-nep-replace-preview__label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    align-self: flex-start;
+    margin: 2px 0 4px 14px;
+    padding: 1px 9px;
+    border-radius: 999px;
+    /* UI font, NOT inherited monospace — the label is chrome. */
+    font-family: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 10.5px;
+    font-weight: 600;
+    line-height: 16px;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    color: color-mix(in srgb, var(--accent-primary, #6f7eff) 95%, transparent);
+    background: color-mix(in srgb, var(--accent-primary, #6f7eff) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 30%, transparent);
+}
+
+.synthi-nep-replace-preview__icon {
+    font-family: var(--monaco-monospace-font, 'JetBrains Mono', monospace);
+    font-size: 12px;
+    color: color-mix(in srgb, var(--accent-secondary, #4aba9a) 90%, transparent);
+}
+
+.synthi-nep-replace-preview__label kbd {
+    display: inline-block;
+    padding: 0 5px;
+    font-size: 9.5px;
+    font-family: inherit;
+    font-weight: 700;
+    color: var(--accent-primary, #6f7eff);
+    background: color-mix(in srgb, var(--accent-primary, #6f7eff) 22%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 45%, transparent);
+    border-radius: 3px;
+    line-height: 14px;
+    text-transform: none;
+    letter-spacing: 0;
+    box-shadow: 0 1px 0 color-mix(in srgb, var(--accent-primary, #6f7eff) 50%, transparent);
+}
+
+/* The colorized code body — Monaco's `colorize` outputs <span class="mtkN">…
+ * which the active theme already styles. The body holds individual line
+ * rows (`.synthi-nep-replace-preview__line`) which carry their own padding
+ * + tint, so the container itself stays flush. */
+.synthi-nep-replace-preview__code {
+    padding: 0;
+    color: color-mix(in srgb, var(--accent-secondary, #4aba9a) 90%, var(--text-primary, #f4f5f8));
+    /* Slight transparency so it reads as preview, not committed code. */
+    opacity: 0.92;
+}
+
+/* Each line in the preview is its own row so we can tint added lines green
+ * and reserve space for a leading `+` / ` ` marker column — the user sees a
+ * proper unified-diff-style preview instead of an undifferentiated block of
+ * "this is what it'll be." */
+.synthi-nep-replace-preview__line {
+    display: flex;
+    align-items: baseline;
+    padding: 0 12px;
+    /* Monospace whitespace inside the colorized text span — see ::__line-text
+     * below. The line itself is a flex row so leading whitespace in the code
+     * doesn't push the marker out of alignment. */
+    white-space: nowrap;
+}
+
+.synthi-nep-replace-preview__line--added {
+    /* Same green family the editor uses elsewhere for "added" diffs. Kept
+     * subtle so the row reads as preview, not committed code. */
+    background: color-mix(in srgb, #4ade80 14%, transparent);
+}
+
+.synthi-nep-replace-preview__marker {
+    flex: 0 0 auto;
+    display: inline-block;
+    width: 12px;
+    margin-right: 6px;
+    font-family: inherit;
+    font-weight: 700;
+    text-align: center;
+    user-select: none;
+    /* Default: invisible (preserves the column for unchanged lines). The
+     * --added rule below repaints it green for added lines. */
+    color: transparent;
+}
+
+.synthi-nep-replace-preview__line--added .synthi-nep-replace-preview__marker {
+    color: color-mix(in srgb, #4ade80 95%, transparent);
+}
+
+/* Overflow tail row: "+N more lines". Rendered when the REPLACE has more
+ * lines than the preview cap. The full replacement is still applied on
+ * Tab — the visualization is informational, capped to keep the view zone
+ * from eating the whole viewport. */
+.synthi-nep-replace-preview__line--overflow {
+    font-style: italic;
+    opacity: 0.72;
+    color: color-mix(in srgb, var(--accent-primary, #6f7eff) 60%, var(--text-primary, #f4f5f8));
+}
+
+.synthi-nep-replace-preview__line--overflow .synthi-nep-replace-preview__marker {
+    color: color-mix(in srgb, var(--accent-primary, #6f7eff) 70%, transparent);
+}
+
+.synthi-nep-replace-preview__line-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    /* The colorized code itself preserves whitespace so indentation lands
+     * exactly as Monaco's tokenizer rendered it. */
+    white-space: pre;
+}
+
+/* Per-session fire-cap notice. Floats in the bottom-left of the editor pane
+ * so it never sits on top of code the user is reading. Non-blocking — Tab,
+ * cursor, and editing continue to work; only auto-prediction is paused. */
+.synthi-nep-cap-notice {
+    position: fixed;
+    bottom: 16px;
+    left: 16px;
+    z-index: 800;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-family: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.1px;
+    color: color-mix(in srgb, var(--text-primary, #f4f5f8) 88%, transparent);
+    background: color-mix(in srgb, var(--bg-panel, #1a1b1e) 92%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 35%, transparent);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(6px);
+    pointer-events: none;
+    user-select: none;
+    animation: synthi-ghost-fadein 220ms ease-out;
+}
+
+.synthi-nep-cap-notice__dot {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: color-mix(in srgb, #f59e0b 90%, transparent);
+    box-shadow: 0 0 6px color-mix(in srgb, #f59e0b 60%, transparent);
+}
+
+.synthi-nep-cap-notice__text {
+    line-height: 16px;
+}
+
+/* PENDING-state cursor pill: three bouncing dots + "NEP" label, anchored
+ * at the cursor while a prediction is being computed. The visible gap
+ * between debounce-fire and the first armed gutter dot is otherwise
+ * silent and the feature feels like it bailed; this signals "we're on it". */
+.synthi-nep-pending-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: 8px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    pointer-events: none;
+    user-select: none;
+    font-family: var(--font-inter), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 9.5px;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: color-mix(in srgb, var(--accent-primary, #6f7eff) 95%, transparent);
+    background: color-mix(in srgb, var(--bg-panel, #1a1b1e) 85%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-primary, #6f7eff) 35%, transparent);
+    backdrop-filter: blur(6px);
+    box-shadow: 0 2px 8px color-mix(in srgb, var(--accent-primary, #6f7eff) 20%, transparent);
+    opacity: 0.95;
+    animation: synthi-ghost-fadein 140ms ease-out;
+    vertical-align: middle;
+}
+
+.synthi-nep-pending-pill__dot {
+    display: inline-block;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--accent-primary, #6f7eff) 90%, transparent);
+    animation: synthi-nep-pending-bounce 1s ease-in-out infinite;
+}
+
+.synthi-nep-pending-pill__dot:nth-child(2) {
+    animation-delay: 0.18s;
+    background: color-mix(in srgb, var(--accent-secondary, #4aba9a) 90%, transparent);
+}
+
+.synthi-nep-pending-pill__dot:nth-child(3) {
+    animation-delay: 0.36s;
+}
+
+.synthi-nep-pending-pill__label {
+    margin-left: 2px;
+    color: color-mix(in srgb, var(--text-primary, #f4f5f8) 70%, transparent);
+}
+
+@keyframes synthi-nep-pending-bounce {
+    0%, 70%, 100% { transform: translateY(0); opacity: 0.55; }
+    35%           { transform: translateY(-3px); opacity: 1; }
 }
