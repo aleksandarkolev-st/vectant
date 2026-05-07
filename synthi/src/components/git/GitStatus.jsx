@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef, memo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useSession } from 'next-auth/react';
 import { Virtuoso } from 'react-virtuoso';
 import {
   fetchGitStatus, fetchRemote, commitChanges, pushChanges, pullChanges,
@@ -18,7 +19,7 @@ import {
   AlertTriangle, GitMerge, X, Edit3, Search, ChevronDown, ChevronRight, ShieldAlert,
   ExternalLink, ArrowUpCircle, ArrowDownCircle, GitPullRequest, Key, Maximize2
 } from 'lucide-react';
-import { fetchGithubInfo, fetchPRList, setActivePR, setHasToken } from '@/redux/prSlice';
+import { fetchGithubInfo, fetchPRList, setActivePR } from '@/redux/prSlice';
 import { getStoredToken } from '@/services/prClient';
 import { GitHubTokenModal } from './GitHubTokenModal';
 import { toast } from 'sonner';
@@ -163,6 +164,7 @@ function TokenSecurityAlert({ remotes, onDismiss }) {
 
 function GitStatusInner({ slug }) {
   const dispatch = useDispatch();
+  const { update: refreshSession } = useSession();
   const loading = useSelector(selectGitLoading);
   const {
     status, error, actionError, actionErrorCode,
@@ -170,6 +172,23 @@ function GitStatusInner({ slug }) {
   } = useSelector(s => s.git);
   const { githubInfo, prList, prListLoading, hasToken: prHasToken } = useSelector(s => s.pr);
   const [showTokenModalFromSCM, setShowTokenModalFromSCM] = useState(false);
+
+  // When a user pastes a URL with an embedded PAT, save it as their per-user
+  // PAT instead of writing it to localStorage. Fire-and-forget; the in-flight
+  // git op already has the token via the dispatch payload.
+  const persistEmbeddedToken = useCallback(async (token) => {
+    if (!token) return;
+    try {
+      const res = await fetch('/api/user/github-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      });
+      if (res.ok) {
+        try { await refreshSession(); } catch (_) {}
+      }
+    } catch (_) { /* network failure is non-fatal — git op still has the token */ }
+  }, [refreshSession]);
 
   const [message, setMessage] = useState('');
   const [commitBody, setCommitBody] = useState('');
@@ -298,10 +317,10 @@ function GitStatusInner({ slug }) {
     dispatch(fetchIncomingCommits({ slug, max: 50 }));
     dispatch(fetchStashList(slug));
     
-    // Check stored token
+    // Token state (pr.hasToken) is owned by <SessionTokenHydrator/>; we just
+    // read the current value sync to gate the PR list fetch below.
     const storedToken = getStoredToken(slug);
-    if (storedToken) dispatch(setHasToken(true));
-    
+
     // Also fetch PR info if available
     const infoResult = await dispatch(fetchGithubInfo(slug));
     if (fetchGithubInfo.fulfilled.match(infoResult)) {
@@ -356,14 +375,12 @@ function GitStatusInner({ slug }) {
     const valid = trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://') || trimmedUrl.includes('@');
     if (!valid) { toast.error('Please enter a valid remote URL (https://... or git@...)'); return; }
     // Pull any embedded PAT off the URL so the clean URL is what gets
-    // stored on disk and the token is stored separately. Mirror the
-    // clone flow's behavior of saving it as the global token so future
-    // operations on this workspace don't have to be re-authenticated.
+    // stored on disk and the token is sent separately. The token is also
+    // saved server-side as the user's PAT so future operations are
+    // authenticated without forcing them to re-enter credentials.
     const embeddedToken = extractTokenFromUrl(trimmedUrl);
     const cleanUrl = embeddedToken ? stripTokenFromUrl(trimmedUrl) : trimmedUrl;
-    if (embeddedToken) {
-      try { localStorage.setItem('synthi:global-github-token', embeddedToken); } catch { /* ignore quota */ }
-    }
+    if (embeddedToken) persistEmbeddedToken(embeddedToken);
     const result = await dispatch(addRemote({ slug, name: newRemoteName, url: cleanUrl, token: embeddedToken || undefined }));
     if (addRemote.fulfilled.match(result)) {
       toast.success(`Remote '${newRemoteName}' added`);
@@ -392,14 +409,12 @@ function GitStatusInner({ slug }) {
     const valid = trimmedUrl.startsWith('http://') || trimmedUrl.startsWith('https://') || trimmedUrl.includes('@');
     if (!valid) { toast.error('Please enter a valid remote URL (https://... or git@...)'); return; }
     // Same pattern as handleAddRemote: peel off any inline token, save it
-    // as the global PAT, and ship a clean URL + token pair to the server.
+    // as the user's PAT, and ship a clean URL + token pair to the server.
     // Without this, "edit remote" pointed at a different repo never
     // re-bound the token, and the next push silently lost auth.
     const embeddedToken = extractTokenFromUrl(trimmedUrl);
     const cleanUrl = embeddedToken ? stripTokenFromUrl(trimmedUrl) : trimmedUrl;
-    if (embeddedToken) {
-      try { localStorage.setItem('synthi:global-github-token', embeddedToken); } catch { /* ignore quota */ }
-    }
+    if (embeddedToken) persistEmbeddedToken(embeddedToken);
     const result = await dispatch(setRemoteUrl({ slug, name: editingRemote, url: cleanUrl, token: embeddedToken || undefined }));
     if (setRemoteUrl.fulfilled.match(result)) {
       toast.success(`Remote '${editingRemote}' URL updated`);
@@ -611,14 +626,12 @@ function GitStatusInner({ slug }) {
     try {
       // Extract token from URL (if embedded) and pass it separately so the
       // clean URL is what we send to the server. Persist any embedded PAT
-      // as the global token immediately — even if the clone fails, this
-      // means the user's next attempt (or a manual retry) already has the
-      // token cached and won't need them to re-paste credentials.
+      // server-side as the user's token immediately — even if the clone
+      // fails, the user's next attempt (or a manual retry) is already
+      // authenticated and won't need them to re-paste credentials.
       const embeddedToken = extractTokenFromUrl(trimmedUrl);
       const cleanUrl = embeddedToken ? stripTokenFromUrl(trimmedUrl) : trimmedUrl;
-      if (embeddedToken) {
-        try { localStorage.setItem('synthi:global-github-token', embeddedToken); } catch { /* ignore quota */ }
-      }
+      if (embeddedToken) persistEmbeddedToken(embeddedToken);
       const result = await dispatch(cloneRepo({ slug, repoUrl: cleanUrl, token: embeddedToken || undefined }));
       if (cloneRepo.rejected.match(result)) {
         toast.error(result?.error?.message || 'Clone failed');
@@ -1587,16 +1600,11 @@ function GitStatusInner({ slug }) {
       )}
     </div>
 
-    {/* Token modal from SCM panel */}
+    {/* Token modal from SCM panel — purely informational; the PR list will
+        auto-refresh once the user saves a PAT in Settings, since
+        <SessionTokenHydrator/> drives pr.hasToken from the session. */}
     {showTokenModalFromSCM && (
-      <GitHubTokenModal
-        slug={slug}
-        onClose={() => setShowTokenModalFromSCM(false)}
-        onSuccess={() => {
-          setShowTokenModalFromSCM(false);
-          handleRefreshPRs();
-        }}
-      />
+      <GitHubTokenModal onClose={() => setShowTokenModalFromSCM(false)} />
     )}
     </>
   );

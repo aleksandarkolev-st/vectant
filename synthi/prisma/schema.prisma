@@ -25,7 +25,13 @@ model Workspace {
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
-  
+
+  // AES-256-GCM blob for the user's GitHub PAT, format: "<iv_b64>:<authTag_b64>:<ciphertext_b64>".
+  // Decrypted on the server only (in NextAuth session callback) and never persisted in the JWT.
+  githubTokenCipher String?
+  // Cached GitHub login captured at validation time, shown in Settings without needing a fresh API call.
+  githubLogin       String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

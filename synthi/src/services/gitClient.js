@@ -31,7 +31,7 @@ function _encodeHeader(value) {
     if (value == null) return null;
     const s = String(value).trim();
     if (!s) return null;
-    // Pure ASCII (no controls, no high-bit) — pass through.
+    // Pure ASCII (no controls, no high-bit) — pass through as-is.
     // eslint-disable-next-line no-control-regex
     if (/^[\x20-\x7E]+$/.test(s)) return s;
     if (typeof window === 'undefined') return s; // SSR safety
@@ -39,7 +39,9 @@ function _encodeHeader(value) {
         const bytes = new TextEncoder().encode(s);
         let bin = '';
         for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-        return btoa(bin);
+        // Prefix with "b64:" so the server knows this was encoded and won't
+        // attempt to base64-decode plain ASCII names that happen to be valid base64.
+        return 'b64:' + btoa(bin);
     } catch {
         return s;
     }

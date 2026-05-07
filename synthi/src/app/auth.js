@@ -1,5 +1,9 @@
 import GoogleProvider from "next-auth/providers/google";
 import GitHubProvider from "next-auth/providers/github";
+import { PrismaClient } from "@prisma/client";
+import { decryptToken } from "@/lib/tokenCrypto";
+
+const prisma = new PrismaClient();
 
 export const authOptions = {
   session: {
@@ -51,6 +55,38 @@ export const authOptions = {
       if (token.picture) {
         session.user.image = token.picture;
       }
+
+      // Resolve the per-user GitHub token: a saved PAT wins; otherwise fall
+      // back to the GitHub OAuth access token (only present for users who
+      // signed in via the GitHub provider). Lookup by email since that's the
+      // canonical user identifier used elsewhere in the app.
+      session.githubToken = null;
+      session.githubTokenSource = null;
+      session.githubLogin = null;
+      if (session.user?.email) {
+        try {
+          const dbUser = await prisma.user.findUnique({
+            where: { email: session.user.email },
+            select: { githubTokenCipher: true, githubLogin: true },
+          });
+          if (dbUser?.githubTokenCipher) {
+            try {
+              session.githubToken = decryptToken(dbUser.githubTokenCipher);
+              session.githubTokenSource = "pat";
+              session.githubLogin = dbUser.githubLogin || null;
+            } catch (_) {
+              // Stale ciphertext (e.g. AUTH_SECRET rotated) — treat as no PAT
+            }
+          }
+        } catch (_) {
+          // DB unavailable — fall through to OAuth token
+        }
+      }
+      if (!session.githubToken && session.accessToken) {
+        session.githubToken = session.accessToken;
+        session.githubTokenSource = "oauth";
+      }
+
       return session;
     },
   },
