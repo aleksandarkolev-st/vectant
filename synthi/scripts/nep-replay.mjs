@@ -116,7 +116,7 @@ const isWhiteish = (ch) => ch === ' ' || ch === '\t';
  *
  * Naive: doesn't strip strings/comments. Acceptable for a replay-harness
  * heuristic — false matches on `{` inside a string are rare in real code
- * and produce graceful degradation (the block boundary is wrong but the
+ * and produce graceful degradation (the block boundary is wrong but thepush
  * IoU calculation still works).
  */
 const enclosingBraceBlock = (content, offset) => {

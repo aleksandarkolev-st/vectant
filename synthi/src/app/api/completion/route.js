@@ -65,12 +65,23 @@ const ragCacheSet = (key, value) => {
   }
 };
 
-// Fingerprint just enough of the prefix that small typing changes hit the
-// same cache entry. We slice to the last ~120 chars and strip whitespace —
-// this means typing one extra character usually still cache-hits.
-const fingerprintQuery = (query) => {
-  const s = (query || '').replace(/\s+/g, ' ').trim();
-  return s.slice(Math.max(0, s.length - 120));
+// Fingerprint enough of the cursor's neighbourhood that small typing
+// changes hit the same cache entry, but distinct contexts don't collide.
+// Includes a chunk of the trailing prefix, a chunk of the leading suffix,
+// and the top-K symbols extracted from the prefix.
+//
+// Prefix-only fingerprinting (the previous form) collided when the user
+// edited around a long template that left the trailing prefix unchanged,
+// or moved the cursor to a different function whose suffix shape differed
+// substantially. Suffix + symbols give the cache more discriminative power
+// without blowing up the key space (symbols are already deduped + capped).
+const fingerprintQuery = (prefix, suffix, symbols) => {
+  const cleanPrefix = (prefix || '').replace(/\s+/g, ' ').trim();
+  const cleanSuffix = (suffix || '').replace(/\s+/g, ' ').trim();
+  const tail = cleanPrefix.slice(Math.max(0, cleanPrefix.length - 80));
+  const head = cleanSuffix.slice(0, 40);
+  const sym = (Array.isArray(symbols) ? symbols : []).join(',');
+  return `${tail}|${head}|${sym}`;
 };
 
 const RAG_IDENT_RE = /[A-Za-z_][A-Za-z0-9_]{1,}/g;
@@ -97,17 +108,17 @@ const extractQuerySymbols = (text) => {
  * reference shapes ready for buildPrompt, or [] on miss / timeout / failure —
  * inline completions never block on this path.
  */
-const fetchRagReferences = async ({ workspaceSlug, query, language }) => {
+const fetchRagReferences = async ({ workspaceSlug, query, suffix, language }) => {
   if (!workspaceSlug || !query) return [];
 
-  const key = `${workspaceSlug}::${language || ''}::${fingerprintQuery(query)}`;
+  const symbols = extractQuerySymbols(query);
+  const key = `${workspaceSlug}::${language || ''}::${fingerprintQuery(query, suffix, symbols)}`;
   const cached = ragCacheGet(key);
   if (cached) return cached;
 
   const inflight = ragInflight.get(key);
   if (inflight) return inflight;
 
-  const symbols = extractQuerySymbols(query);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort('rag-timeout'), RAG_FETCH_TIMEOUT_MS);
 
@@ -280,34 +291,42 @@ const formatReferences = (refs) => {
 
 const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
   const refBlock = formatReferences(references);
+  // Fill-in-the-middle framing for an instruction-tuned model. Flash-Lite
+  // has no FIM tokens (`<|fim_prefix|>` etc.), so we approximate the task
+  // through natural-language BEFORE/AFTER labels and rely on the model's
+  // chat-instruction priors.
+  //
+  // Two prior framings failed: (1) "1–3 lines, output empty if complete"
+  // collapsed everything to single-line edits and made the feature feel
+  // like word-completion; (2) "scaffold the next coherent unit at extension
+  // points" pushed Flash-Lite into speculative sibling generation gated on
+  // fragile cursor-position heuristics — and once it had a pattern it
+  // rolled into 2–3 siblings the user did not ask for.
+  //
+  // Current framing: keep it FIM-pure. The default is a short continuation.
+  // A new declaration is permitted only when BEFORE itself establishes the
+  // pattern (≥1 nearby sibling of matching shape) — that is evidence the
+  // model can verify, unlike "the cursor is on a blank line". The "AT MOST
+  // ONE new unit" rule is also enforced client-side by truncateToFirstUnit
+  // (lib/completion.js) — the prompt is the soft layer; the post-process
+  // is the hard cap.
   return [
-    'You are an inline code completion engine. Continue the code at the cursor.',
+    'You are a fill-in-the-middle code completion engine. Output exactly the text that belongs between BEFORE (code preceding the cursor) and AFTER (code following the cursor).',
     `Language: ${language}`,
     filePath ? `File: ${filePath}` : null,
     '',
     'RULES',
-    '- Output ONLY the text that goes between BEFORE and AFTER. Never repeat code from either side.',
-    '- Stop after one coherent unit (a statement, expression, or short block) — usually 1–3 lines.',
-    '- If nothing useful would fit (the surrounding code is already complete), output an empty completion.',
-    '- Match the existing indentation and code style exactly.',
-    '- No explanations, no markdown fences, no commentary.',
+    '- Output ONLY the gap text. Never repeat any code from BEFORE or AFTER.',
+    '- Default behavior: a short continuation (typically 1–3 lines) — finish the current expression, complete the missing arguments, or emit the next obviously-implied statement.',
+    '- A new declaration (sibling method, function, struct field, type) is only appropriate when BEFORE clearly establishes the pattern: at least one nearby sibling at the same scope with a matching signature/shape, naming convention, and visibility. Without that evidence, fall back to a continuation — never invent.',
+    '- AT MOST ONE new unit per response. Stop after its closing brace at its own indent level. Do not start a second sibling.',
+    '- Match the surrounding naming, indentation, brace style, and access-level conventions exactly.',
+    '- If you cannot identify a clear gap to fill, output empty.',
+    '- No explanations, no fences, no commentary, no leading or trailing blank lines.',
+    `- Wrap the entire output in ${COMPLETION_OPEN}...${COMPLETION_CLOSE} and emit nothing else.`,
     refBlock
-      ? '- The CONTEXT block below shows related symbols (for type/signature info — do not copy literally) and recent-edit hunks (lines marked with `+ ` show what was just typed elsewhere — they signal user intent and may suggest matching patterns).'
+      ? '- CONTEXT below = related symbols (for types) + recent edits (lines starting `+ ` show what was just typed and signal user intent).'
       : null,
-    '',
-    'OUTPUT FORMAT',
-    `Wrap the inserted text in ${COMPLETION_OPEN}...${COMPLETION_CLOSE}. Output nothing else.`,
-    '',
-    'EXAMPLE (illustrative — match the actual language above, not this one)',
-    'BEFORE:',
-    'function add(a, b) {',
-    '  return ',
-    'AFTER:',
-    '}',
-    '',
-    `OUTPUT: ${COMPLETION_OPEN}a + b;${COMPLETION_CLOSE}`,
-    '',
-    '---',
     '',
     refBlock ? 'CONTEXT (read-only, from other files):' : null,
     refBlock || null,
@@ -358,8 +377,9 @@ export async function POST(request) {
   // working on.
   const workspaceSlug = typeof body?.workspaceSlug === 'string' ? body.workspaceSlug : '';
   const ragQuery = trimmedPrefix.slice(Math.max(0, trimmedPrefix.length - 600));
+  const ragSuffix = trimmedSuffix.slice(0, 200);
   const ragRefs = workspaceSlug
-    ? await fetchRagReferences({ workspaceSlug, query: ragQuery, language })
+    ? await fetchRagReferences({ workspaceSlug, query: ragQuery, suffix: ragSuffix, language })
     : [];
 
   const references = mergeReferences(clientRefs, ragRefs);
@@ -392,6 +412,19 @@ export async function POST(request) {
 
       timer = setTimeout(() => cancel(new Error('AI completion timed out')), COMPLETION_TIMEOUT_MS);
 
+      // Hook the client's AbortController so superseded keystrokes and
+      // navigation actually tear down the stream and stop the Gemini token
+      // bill. Without this the route keeps generating into a closed socket.
+      const onClientAbort = () => cancel(new Error('client aborted'));
+      const clientSignal = request.signal;
+      if (clientSignal) {
+        if (clientSignal.aborted) {
+          cancel(new Error('client aborted before start'));
+          return;
+        }
+        try { clientSignal.addEventListener('abort', onClientAbort); } catch (_) { /* unsupported */ }
+      }
+
       try {
         let geminiStream;
         try {
@@ -406,6 +439,7 @@ export async function POST(request) {
           });
         } catch (streamErr) {
           // SDK didn't stream — fall back to a single shot and emit it as one chunk.
+          if (cancelled) return;
           const response = await ai.models.generateContent({
             model: 'gemini-3.1-flash-lite-preview',
             contents: prompt,
@@ -415,6 +449,7 @@ export async function POST(request) {
               stopSequences: [COMPLETION_CLOSE, '\nBEFORE:', '\nAFTER:'],
             },
           });
+          if (cancelled) return;
           const text = extractText(response);
           if (text) controller.enqueue(encoder.encode(text));
           if (timer) clearTimeout(timer);
@@ -428,9 +463,13 @@ export async function POST(request) {
           if (t) controller.enqueue(encoder.encode(t));
         }
         if (timer) clearTimeout(timer);
-        controller.close();
+        if (!cancelled) controller.close();
       } catch (e) {
         cancel(e);
+      } finally {
+        if (clientSignal) {
+          try { clientSignal.removeEventListener('abort', onClientAbort); } catch (_) { /* ignored */ }
+        }
       }
     },
   });

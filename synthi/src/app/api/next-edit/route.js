@@ -45,6 +45,14 @@ const CODE_INTEL_URL = process.env.CODE_INTEL_URL
 const CODE_INTEL_API_KEY = process.env.CODE_INTEL_API_KEY || '';
 const NEP_IMPACT_TIMEOUT_MS = 350;
 const NEP_IMPACT_MAX_CANDIDATES = 8;
+// Wall-clock cap on the COMBINED candidates + content fetch chain.
+// Without this, the worst case is 350ms (candidates) + 400ms (contents) =
+// 750ms of pre-model latency, all of which the user feels as keystroke
+// lag because the route hasn't started streaming Gemini yet. Capping at
+// 500ms cuts that worst case by a third — when contents would have
+// finished anyway it's a no-op, and when contents would have run long
+// we trade some cross-file recall for snappier streams.
+const NEP_PRE_MODEL_BUDGET_MS = 500;
 
 // Collab-server is the source of truth for workspace file contents. After
 // /code-intel/edit-impact returns a ranked list of cross-file candidates,
@@ -170,7 +178,7 @@ const fetchImpactCandidates = async ({ workspaceSlug, appliedEdit }) => {
  *
  * Returns a `{ path: content }` map of successfully fetched files.
  */
-const fetchImpactCandidateContents = async ({ workspaceSlug, candidates, skipPaths }) => {
+const fetchImpactCandidateContents = async ({ workspaceSlug, candidates, skipPaths, timeoutMs }) => {
   if (!workspaceSlug || !Array.isArray(candidates) || !candidates.length) return {};
   const skip = skipPaths instanceof Set ? skipPaths : new Set(skipPaths || []);
   const targets = [];
@@ -181,8 +189,11 @@ const fetchImpactCandidateContents = async ({ workspaceSlug, candidates, skipPat
   }
   if (!targets.length) return {};
 
+  const effectiveTimeout = typeof timeoutMs === 'number' && timeoutMs > 0
+    ? Math.min(timeoutMs, NEP_IMPACT_CONTENT_TIMEOUT_MS)
+    : NEP_IMPACT_CONTENT_TIMEOUT_MS;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort('impact-content-timeout'), NEP_IMPACT_CONTENT_TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort('impact-content-timeout'), effectiveTimeout);
   try {
     const results = await Promise.all(targets.map(async (path) => {
       try {
@@ -336,6 +347,14 @@ export async function POST(request) {
     ? body.appliedEdit
     : null;
   const workspaceSlug = typeof body?.workspaceSlug === 'string' ? body.workspaceSlug : '';
+
+  // Wall-clock budget for the full impact chain. If candidates take 340 ms,
+  // contents only get 160 ms before being abandoned — bounding total
+  // pre-model latency rather than letting two cascading 350+400 ms
+  // timeouts compound into a 750 ms tax on every NEP fire.
+  const preModelStart = Date.now();
+  const remainingBudget = () => Math.max(0, NEP_PRE_MODEL_BUDGET_MS - (Date.now() - preModelStart));
+
   const impactCandidates = appliedEdit
     ? await fetchImpactCandidates({ workspaceSlug, appliedEdit })
     : [];
@@ -344,11 +363,16 @@ export async function POST(request) {
   // model can emit precise SEARCH blocks against files outside the user's
   // open tabs. Skip candidates we already have cached (the client already
   // sent those) so we spend the budget on genuinely new files.
-  const impactContents = impactCandidates.length
+  // Skip the contents fetch entirely if we've already burnt the wall-clock
+  // budget on candidates — the prompt still has the candidate file paths
+  // (renderImpactBlock) so the model gets the hint even without contents.
+  const contentsBudget = remainingBudget();
+  const impactContents = (impactCandidates.length && contentsBudget > 50)
     ? await fetchImpactCandidateContents({
         workspaceSlug,
         candidates: impactCandidates,
         skipPaths: Object.keys(cachedFiles),
+        timeoutMs: contentsBudget,
       })
     : {};
 
@@ -386,6 +410,20 @@ export async function POST(request) {
       };
       timer = setTimeout(() => cancel(new Error('NEP request timed out')), NEP_TIMEOUT_MS);
 
+      // Hook the client's AbortController. Superseded NEP fires (the user
+      // typed again, the workspace switched) need to actually cut the
+      // stream — without this we keep generating into a closed socket and
+      // burning Gemini tokens.
+      const onClientAbort = () => cancel(new Error('client aborted'));
+      const clientSignal = request.signal;
+      if (clientSignal) {
+        if (clientSignal.aborted) {
+          cancel(new Error('client aborted before start'));
+          return;
+        }
+        try { clientSignal.addEventListener('abort', onClientAbort); } catch (_) { /* unsupported */ }
+      }
+
       try {
         let geminiStream;
         try {
@@ -402,6 +440,7 @@ export async function POST(request) {
           });
         } catch (streamErr) {
           // SDK didn't stream — fall back to a single shot.
+          if (cancelled) return;
           const response = await ai.models.generateContent({
             model: 'gemini-3.1-flash-lite-preview',
             contents: prompt,
@@ -410,6 +449,7 @@ export async function POST(request) {
               temperature: 0.2,
             },
           });
+          if (cancelled) return;
           const text = extractText(response);
           if (text) controller.enqueue(encoder.encode(text));
           if (timer) clearTimeout(timer);
@@ -423,9 +463,13 @@ export async function POST(request) {
           if (t) controller.enqueue(encoder.encode(t));
         }
         if (timer) clearTimeout(timer);
-        controller.close();
+        if (!cancelled) controller.close();
       } catch (e) {
         cancel(e);
+      } finally {
+        if (clientSignal) {
+          try { clientSignal.removeEventListener('abort', onClientAbort); } catch (_) { /* ignored */ }
+        }
       }
     },
   });

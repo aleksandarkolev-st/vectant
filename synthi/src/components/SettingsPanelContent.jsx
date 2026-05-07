@@ -20,7 +20,7 @@ import {
 } from '@/redux/uiSlice';
 import { useThemePicker } from '@/components/ThemePicker';
 import { toast } from 'sonner';
-import { Key, Eye, EyeOff, Check, Trash2, AlertCircle } from 'lucide-react';
+import { Key, Eye, EyeOff, Check, Trash2, AlertCircle, FlaskConical, Loader2, X } from 'lucide-react';
 
 // ── Global token helpers ────────────────────────────────────────────
 const GLOBAL_TOKEN_KEY = 'synthi:global-github-token';
@@ -50,6 +50,140 @@ async function validateGitHubToken(token) {
   }
 }
 
+// ── Hardcoded end-to-end token test ────────────────────────────────
+// Exercises the full read→auth→scope→rate-limit→list path against the
+// real GitHub API using whatever token the user saved in the settings
+// panel above. Each step pushes a result so the user can see exactly
+// where the token works and where it falls over.
+async function runTokenTestPlan(token, onStep) {
+  const GH = 'https://api.github.com';
+  const required = ['repo'];
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+
+  // 1. Storage read (trivial — but confirms the panel found the token)
+  onStep({
+    key: 'storage',
+    label: 'Read token from localStorage',
+    status: 'ok',
+    detail: `Found ${token.length}-char token, prefix "${token.slice(0, 4)}…"`,
+  });
+
+  // 2. GET /user — verifies the token authenticates at all
+  let userRes;
+  try {
+    userRes = await fetch(`${GH}/user`, { headers });
+  } catch (e) {
+    onStep({ key: 'auth', label: 'GET /user (authenticate)', status: 'fail', detail: `Network error: ${e.message}` });
+    return;
+  }
+  let user = null;
+  try { user = await userRes.json(); } catch {}
+  if (!userRes.ok) {
+    onStep({
+      key: 'auth',
+      label: 'GET /user (authenticate)',
+      status: 'fail',
+      detail: `HTTP ${userRes.status} — ${user?.message || userRes.statusText}`,
+    });
+    return;
+  }
+  onStep({
+    key: 'auth',
+    label: 'GET /user (authenticate)',
+    status: 'ok',
+    detail: `Authenticated as ${user.login}${user.name ? ` (${user.name})` : ''} · id=${user.id}`,
+  });
+
+  // 3. Inspect X-OAuth-Scopes header — verifies the token has `repo`
+  // (Fine-grained tokens omit this header — treat that as a soft warning.)
+  const scopeHeader = userRes.headers.get('x-oauth-scopes');
+  if (scopeHeader === null) {
+    onStep({
+      key: 'scopes',
+      label: 'Verify token scopes',
+      status: 'warn',
+      detail: 'No X-OAuth-Scopes header — likely a fine-grained PAT. Synthi assumes `repo` scope; verify manually that the token can read/write the target repo.',
+    });
+  } else {
+    const scopes = scopeHeader.split(',').map(s => s.trim()).filter(Boolean);
+    const missing = required.filter(r => !scopes.includes(r) && !scopes.some(s => s === 'repo'));
+    if (missing.length) {
+      onStep({
+        key: 'scopes',
+        label: 'Verify token scopes',
+        status: 'fail',
+        detail: `Missing required scope(s): ${missing.join(', ')}. Got: [${scopes.join(', ') || '∅'}]`,
+      });
+    } else {
+      onStep({
+        key: 'scopes',
+        label: 'Verify token scopes',
+        status: 'ok',
+        detail: `Scopes: [${scopes.join(', ')}]`,
+      });
+    }
+  }
+
+  // 4. GET /rate_limit — surfaces remaining budget so a failing push
+  //    doesn't get blamed on the token when it's actually a 403/rate.
+  try {
+    const rlRes = await fetch(`${GH}/rate_limit`, { headers });
+    const rl = await rlRes.json();
+    if (rlRes.ok && rl?.resources?.core) {
+      const c = rl.resources.core;
+      const reset = new Date(c.reset * 1000).toLocaleTimeString();
+      onStep({
+        key: 'budget',
+        label: 'GET /rate_limit (API budget)',
+        status: c.remaining < 50 ? 'warn' : 'ok',
+        detail: `core: ${c.remaining}/${c.limit} remaining, resets at ${reset}`,
+      });
+    } else {
+      onStep({ key: 'budget', label: 'GET /rate_limit (API budget)', status: 'warn', detail: `Could not read rate limit (HTTP ${rlRes.status})` });
+    }
+  } catch (e) {
+    onStep({ key: 'budget', label: 'GET /rate_limit (API budget)', status: 'warn', detail: `Network error: ${e.message}` });
+  }
+
+  // 5. GET /user/repos — exercises the same call gitClient/prClient need:
+  //    list a repo to prove the token can actually see something.
+  try {
+    const repoRes = await fetch(`${GH}/user/repos?per_page=1&sort=updated`, { headers });
+    const repos = await repoRes.json();
+    if (!repoRes.ok) {
+      onStep({
+        key: 'list',
+        label: 'GET /user/repos (list permission)',
+        status: 'fail',
+        detail: `HTTP ${repoRes.status} — ${repos?.message || repoRes.statusText}`,
+      });
+      return;
+    }
+    if (!Array.isArray(repos) || repos.length === 0) {
+      onStep({
+        key: 'list',
+        label: 'GET /user/repos (list permission)',
+        status: 'warn',
+        detail: 'Token works, but no accessible repos — push/pull will fail until a repo is reachable.',
+      });
+    } else {
+      const r = repos[0];
+      onStep({
+        key: 'list',
+        label: 'GET /user/repos (list permission)',
+        status: 'ok',
+        detail: `Most recent: ${r.full_name} (${r.private ? 'private' : 'public'}, default=${r.default_branch})`,
+      });
+    }
+  } catch (e) {
+    onStep({ key: 'list', label: 'GET /user/repos (list permission)', status: 'fail', detail: `Network error: ${e.message}` });
+  }
+}
+
 export function SettingsPanelContent() {
   const dispatch = useAppDispatch();
   const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
@@ -63,6 +197,8 @@ export function SettingsPanelContent() {
   const [tokenUser, setTokenUser] = useState(null); // { login, name }
   const [tokenSaving, setTokenSaving] = useState(false);
   const [tokenError, setTokenError] = useState('');
+  const [testRunning, setTestRunning] = useState(false);
+  const [testResults, setTestResults] = useState(null); // null | array of step results
   const hasStoredToken = !!getGlobalToken();
 
   // Load token info on mount
@@ -96,8 +232,30 @@ export function SettingsPanelContent() {
     setTokenInput('');
     setTokenUser(null);
     setTokenError('');
+    setTestResults(null);
     toast('GitHub token removed');
   }, []);
+
+  const handleRunTest = useCallback(async () => {
+    const token = (tokenInput.trim() || getGlobalToken()).trim();
+    if (!token) {
+      setTestResults([{ key: 'storage', label: 'Read token from localStorage', status: 'fail', detail: 'No token configured — save one first.' }]);
+      return;
+    }
+    setTestRunning(true);
+    setTestResults([]);
+    const collected = [];
+    await runTokenTestPlan(token, step => {
+      collected.push(step);
+      setTestResults([...collected]);
+    });
+    setTestRunning(false);
+    const failed = collected.filter(s => s.status === 'fail').length;
+    const warned = collected.filter(s => s.status === 'warn').length;
+    if (failed > 0) toast.error(`Token test failed (${failed} failure${failed > 1 ? 's' : ''})`);
+    else if (warned > 0) toast(`Token test passed with ${warned} warning${warned > 1 ? 's' : ''}`);
+    else toast.success('Token test passed — all checks green');
+  }, [tokenInput]);
 
   return (
     <div className="flex flex-col h-full min-h-0 overflow-y-auto p-3 gap-3" style={{ color: 'var(--text-primary)' }}>
@@ -249,6 +407,58 @@ export function SettingsPanelContent() {
         <div className="flex items-center gap-1.5 text-[11px]" style={{ color: '#f87171' }}>
           <AlertCircle className="w-3 h-3 flex-shrink-0" />
           {tokenError}
+        </div>
+      )}
+
+      {/* Hardcoded end-to-end test — verifies the saved token against the real
+          GitHub API: storage → auth → scopes → rate limit → list permission. */}
+      <div className="flex items-center gap-1.5">
+        <button
+          onClick={handleRunTest}
+          disabled={testRunning || (!tokenInput.trim() && !hasStoredToken)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded border transition-colors disabled:opacity-40"
+          style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
+          title="Run a hardcoded end-to-end test against the GitHub API using the saved token"
+        >
+          {testRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <FlaskConical className="w-3 h-3" />}
+          {testRunning ? 'Testing…' : 'Test Token'}
+        </button>
+        {testResults && !testRunning && (
+          <button
+            onClick={() => setTestResults(null)}
+            className="p-1.5 rounded border transition-colors hover:opacity-80"
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}
+            title="Clear test results"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        )}
+      </div>
+
+      {testResults && testResults.length > 0 && (
+        <div
+          className="flex flex-col gap-1 px-2 py-2 rounded border text-[11px] font-mono"
+          style={{ background: 'var(--bg-input, var(--bg-editor))', borderColor: 'var(--border-subtle)' }}
+        >
+          {testResults.map((step, i) => {
+            const colour =
+              step.status === 'ok' ? '#4ade80' :
+              step.status === 'warn' ? '#fbbf24' :
+              step.status === 'fail' ? '#f87171' : 'var(--text-muted)';
+            const glyph =
+              step.status === 'ok' ? '✓' :
+              step.status === 'warn' ? '!' :
+              step.status === 'fail' ? '✕' : '·';
+            return (
+              <div key={`${step.key}-${i}`} className="flex gap-2">
+                <span style={{ color: colour, width: '1ch', flexShrink: 0 }}>{glyph}</span>
+                <div className="flex flex-col gap-0.5 min-w-0 flex-1">
+                  <span style={{ color: 'var(--text-primary)' }}>{step.label}</span>
+                  <span className="break-words" style={{ color: 'var(--text-muted)' }}>{step.detail}</span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 

@@ -30,6 +30,8 @@ import {
   validateBlock,
   applyBlock,
   locateBlock,
+  findIndentTolerantMatch,
+  reindentReplace,
   NEP_BLOCK_KIND,
   REJECT_REASONS,
 } from '@/lib/nextEdit';
@@ -45,8 +47,8 @@ import { fileCache } from '@/services/fileCache';
 import { loadScheduler } from '@/services/loadScheduler';
 import { selectFileThunk } from '@/redux/workspaceSlice';
 
-const NEP_DEBOUNCE_MS = 600;
-const NEP_MIN_INTERVAL_MS = 1500; // floor between auto-fires (rate limit)
+const NEP_DEBOUNCE_MS = 400;
+const NEP_MIN_INTERVAL_MS = 800; // floor between auto-fires (rate limit)
 // Per-session cap on NEP fires. Heavy refactor sessions could otherwise blow
 // API budget. Plan-grade gap "cost ceiling / rate limit per session is
 // absent" — addressed by this cap. Resets on workspace switch.
@@ -55,6 +57,10 @@ const NEP_PER_SESSION_FIRE_CAP = 200;
 const NEP_GUTTER_CLASS = 'synthi-nep-gutter-dot';
 const NEP_LINE_CLASS = 'synthi-nep-target-line';
 const NEP_CONFIRM_LINE_CLASS = 'synthi-nep-confirm-line';
+// Strikethrough on the SEARCH range — visualises what the prediction will
+// remove. Combined with the REPLACE preview view zone below, the user sees
+// the full edit *before* committing it.
+const NEP_SEARCH_STRIKE_CLASS = 'synthi-nep-search-strike';
 // Cross-file hint dot: the prediction targets a file that isn't open as a
 // tab, so the primary gutter dot has nothing to decorate. We fall back to a
 // dot in the active editor's gutter at the user's cursor line so the user
@@ -123,6 +129,82 @@ const offsetToLine = (content, offset) => {
   return line;
 };
 
+// Classify a SEARCH/REPLACE pair so the UI can choose between strike-and-
+// replace versus pure-insert visualisation. The previous implementation
+// always struck the SEARCH range and showed the full REPLACE text below —
+// which read as "this is being deleted" even when the model was just
+// inserting new lines after a piece of unchanged code. Detect that case
+// and skip the strike.
+//
+//   - 'noop'    : SEARCH === REPLACE (or trivial). Nothing to render.
+//   - 'append'  : REPLACE.startsWith(SEARCH). Show only the added tail
+//                 below the SEARCH range, no strikethrough.
+//   - 'prepend' : REPLACE.endsWith(SEARCH). Show only the added head
+//                 above the SEARCH range, no strikethrough.
+//   - 'modify'  : the SEARCH text genuinely changes. Strike + full REPLACE
+//                 preview, the original behaviour.
+const classifyEditDiff = (search, replace) => {
+  if (typeof search !== 'string' || typeof replace !== 'string') {
+    return { kind: 'modify' };
+  }
+  if (search === replace) return { kind: 'noop' };
+  if (replace.startsWith(search)) {
+    let added = replace.slice(search.length);
+    // Strip exactly one leading newline — the view zone sits visually
+    // below the SEARCH end line, so the line break separating SEARCH
+    // from the added tail is implicit in the zone's placement.
+    if (added.startsWith('\n')) added = added.slice(1);
+    if (!added) return { kind: 'noop' };
+    return { kind: 'append', added };
+  }
+  if (replace.endsWith(search)) {
+    let added = replace.slice(0, replace.length - search.length);
+    if (added.endsWith('\n')) added = added.slice(0, -1);
+    if (!added) return { kind: 'noop' };
+    return { kind: 'prepend', added };
+  }
+  return { kind: 'modify' };
+};
+
+// Line-level diff for the REPLACE preview. Returns an array of REPLACE-side
+// line entries tagged with whether they're new (`added: true`) versus
+// preserved from SEARCH (`added: false`). Removed lines aren't emitted —
+// they're visualised in-place by the strikethrough decoration.
+//
+// Uses a standard LCS so that a renamed line surrounded by unchanged
+// context reports the rename as `added` (and the removal as a strike),
+// not as an entire run of unrelated edits.
+const computeLineDiff = (search, replace) => {
+  const a = (search || '').split('\n');
+  const b = (replace || '').split('\n');
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1;
+      else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  const out = [];
+  let i = m;
+  let j = n;
+  while (j > 0) {
+    if (i > 0 && a[i - 1] === b[j - 1]) {
+      out.unshift({ added: false, line: b[j - 1] });
+      i--; j--;
+    } else if (i === 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+      out.unshift({ added: true, line: b[j - 1] });
+      j--;
+    } else {
+      // Line removed from SEARCH — visualised in-place by the strike,
+      // skip from REPLACE-side preview.
+      i--;
+    }
+  }
+  return out;
+};
+
 // Walk a workspace file tree (rawFiles) looking for the first node whose
 // path matches `targetPath` exactly. Used by the Tab cascade to convert a
 // path string from a NEP block into a real file-tree node so we can dispatch
@@ -156,6 +238,11 @@ export const useNextEditPrediction = ({
   // (`dispatch` is the redux dispatch; `rawFiles` is the workspace tree.)
   dispatch = null,
   rawFiles = [],
+  // After-apply hook — fires once a NEP block has been written into the
+  // model. Editor.jsx wires this to the same Ctrl+S pipeline (collab-server
+  // REST save, worker disk sync, LSP didSave, HMR compile) so a NEP-applied
+  // edit lands durably in the cloud instead of relying on Yjs flush timing.
+  onApply = null,
 }) => {
   const [enabled, setEnabled] = useState(() => isNepEnabled());
   const [nepState, setNepState] = useState(STATE.IDLE);
@@ -164,6 +251,11 @@ export const useNextEditPrediction = ({
   // unless they switch to it (the gutter dot only renders against the
   // active editor's model). Recomputed every time the queue mutates.
   const [predictedPaths, setPredictedPaths] = useState(() => new Set());
+  // True once we've hit NEP_PER_SESSION_FIRE_CAP and silently stopped
+  // firing. The consumer (Editor.jsx) reads this and renders a non-blocking
+  // notice — the previous behaviour (silent stop) made it look like the
+  // feature had broken. Resets on workspace switch.
+  const [fireCapReached, setFireCapReached] = useState(false);
 
   const recentEditsRef = useRef([]);
   const lastFireRef = useRef(0);
@@ -190,12 +282,28 @@ export const useNextEditPrediction = ({
   // not to the editor instance.
   const decorationIdsByModelRef = useRef(new Map());
 
+  // Inline diff-preview artifacts: a Monaco view zone (multi-line ghost
+  // box below the SEARCH range showing the REPLACE text) + a content widget
+  // (the floating "Tab to apply" hint). Tracked here so they can be torn
+  // down on state transitions, queue advance, workspace reset, and
+  // cross-file jumps. Only ever bound to the ACTIVE editor's model — the
+  // strikethrough/preview only renders for predictions in the active file;
+  // cross-file predictions get the gutter dot + tab badge until the user
+  // jumps and the active model becomes the prediction's target.
+  const previewArtifactsRef = useRef({ zoneId: null, widget: null, zoneNode: null });
+
   // Pending cross-file jump. When the Tab cascade fires for a prediction
   // whose target path isn't the active file, we dispatch selectFileThunk
   // to switch tabs and stash the jump details here. The activeFile-watching
   // effect below catches the switch and applies the reveal+setPosition
   // once Editor.jsx's model effect has had a chance to bind the new model.
   const pendingJumpRef = useRef(null);
+
+  // Cursor-anchored "predicting next edit…" indicator. Mounted only while
+  // nepState === PENDING so the user knows a prediction is being computed.
+  // Without this, the ~300-700 ms gap between debounce-fire and the first
+  // armed gutter dot felt like the feature was simply not engaging.
+  const pendingWidgetRef = useRef(null);
 
   // ── lifecycle: workspace reset ──────────────────────────────────────────
   useEffect(() => {
@@ -205,6 +313,7 @@ export const useNextEditPrediction = ({
     lastAppliedEditRef.current = null;
     sessionFireCountRef.current = 0;
     setPredictedPaths((prev) => (prev.size ? new Set() : prev));
+    setFireCapReached(false);
     if (abortRef.current) {
       try { abortRef.current.abort('workspace-reset'); } catch (_) { /* ignored */ }
       abortRef.current = null;
@@ -241,6 +350,57 @@ export const useNextEditPrediction = ({
       try { delete window.synthiNep; } catch (_) { /* ignored */ }
     };
   }, []);
+
+  // ── pending indicator ───────────────────────────────────────────────────
+  // Mount a small cursor-anchored content widget while NEP is fetching so
+  // the user sees the feature engaging instead of guessing whether it
+  // bailed. Tear down on every other state.
+  useEffect(() => {
+    if (!editorInstance || !monacoInstance) return undefined;
+    if (nepState !== STATE.PENDING) {
+      const w = pendingWidgetRef.current;
+      if (w) {
+        try { editorInstance.removeContentWidget(w); } catch (_) { /* ignored */ }
+        pendingWidgetRef.current = null;
+      }
+      return undefined;
+    }
+    const node = document.createElement('span');
+    node.className = 'synthi-nep-pending-pill';
+    node.setAttribute('aria-hidden', 'true');
+    node.innerHTML = '<span class="synthi-nep-pending-pill__dot"></span>'
+      + '<span class="synthi-nep-pending-pill__dot"></span>'
+      + '<span class="synthi-nep-pending-pill__dot"></span>'
+      + '<span class="synthi-nep-pending-pill__label">NEP</span>';
+    const widget = {
+      getId: () => 'synthi.nep.pending',
+      getDomNode: () => node,
+      getPosition: () => {
+        const pos = editorInstance.getPosition?.();
+        if (!pos) return null;
+        return {
+          position: { lineNumber: pos.lineNumber, column: pos.column },
+          preference: [
+            monacoInstance.editor.ContentWidgetPositionPreference.EXACT,
+            monacoInstance.editor.ContentWidgetPositionPreference.BELOW,
+          ],
+        };
+      },
+    };
+    try { editorInstance.addContentWidget(widget); } catch (_) { /* ignored */ }
+    pendingWidgetRef.current = widget;
+
+    // Re-layout on cursor moves so the pill chases the caret.
+    const layoutDispose = editorInstance.onDidChangeCursorPosition?.(() => {
+      try { editorInstance.layoutContentWidget(widget); } catch (_) { /* ignored */ }
+    });
+
+    return () => {
+      try { layoutDispose?.dispose?.(); } catch (_) { /* ignored */ }
+      try { editorInstance.removeContentWidget(widget); } catch (_) { /* ignored */ }
+      if (pendingWidgetRef.current === widget) pendingWidgetRef.current = null;
+    };
+  }, [editorInstance, monacoInstance, nepState]);
 
   // ── helpers ─────────────────────────────────────────────────────────────
 
@@ -291,9 +451,168 @@ export const useNextEditPrediction = ({
     map.clear();
   }, [monacoInstance]);
 
+  // Tear down the inline diff-preview view-zone + content widget. Safe to
+  // call when nothing is mounted (no-op).
+  const clearEditPreview = useCallback(() => {
+    const { zoneId, widget } = previewArtifactsRef.current;
+    if (editorInstance) {
+      if (zoneId !== null) {
+        try {
+          editorInstance.changeViewZones((accessor) => {
+            accessor.removeZone(zoneId);
+          });
+        } catch (_) { /* zone already gone */ }
+      }
+      if (widget) {
+        try { editorInstance.removeContentWidget(widget); } catch (_) { /* widget already gone */ }
+      }
+    }
+    previewArtifactsRef.current = { zoneId: null, widget: null, zoneNode: null };
+  }, [editorInstance]);
+
+  // Read the editor's resolved fontInfo so the preview's monospace text
+  // matches the surrounding code metrics — same fix as the inline-completion
+  // ghost text (see providers.js). Without this the view-zone DOM lives
+  // outside the editor's font cascade and renders at browser-default size,
+  // which is what made the user describe everything as "tiny".
+  const getEditorFontMetrics = useCallback(() => {
+    if (!editorInstance || !monacoInstance) return null;
+    try {
+      const EditorOption = monacoInstance.editor.EditorOption;
+      if (!EditorOption) return null;
+      const fontInfo = editorInstance.getOption(EditorOption.fontInfo);
+      if (!fontInfo) return null;
+      return {
+        fontFamily: fontInfo.fontFamily,
+        fontWeight: fontInfo.fontWeight,
+        fontSize: fontInfo.fontSize,
+        lineHeight: fontInfo.lineHeight,
+        letterSpacing: fontInfo.letterSpacing,
+        fontFeatureSettings: fontInfo.fontFeatureSettings,
+      };
+    } catch (_) {
+      return null;
+    }
+  }, [editorInstance, monacoInstance]);
+
+  // Render the inline diff preview as a Monaco view zone. Each line in the
+  // placement carries an `added` flag — added lines get a green '+' marker
+  // and a soft green tint so the user sees exactly what's being inserted.
+  // Unchanged lines (the `false` case) only appear for 'modify' edits, where
+  // they sit alongside added lines as context for the replacement; 'append'
+  // and 'prepend' edits set `added: true` on every line so the entire zone
+  // reads as an insert.
+  //
+  // placement: {
+  //   afterLineNumber: number,             // Monaco view-zone semantics: 0 = above line 1.
+  //   lines: [{ added: bool, line: string }],
+  //   label: string,
+  // }
+  const renderEditPreview = useCallback(async (placement) => {
+    if (!editorInstance || !monacoInstance || !placement) return;
+    const lines = Array.isArray(placement.lines) ? placement.lines : null;
+    if (!lines || lines.length === 0) return;
+    const afterLineNumber = placement.afterLineNumber;
+    if (typeof afterLineNumber !== 'number' || afterLineNumber < 0) return;
+    const labelText = placement.label || 'Next edit';
+
+    const metrics = getEditorFontMetrics();
+
+    const escapeHtml = (s) => s
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    // Cap the visible height. A REPLACE bigger than this is summarised
+    // with a "+N more lines" tail row so the preview never eats more than
+    // a screenful of viewport. Tab still applies the full block — the
+    // visualisation is informational, not authoritative.
+    const PREVIEW_MAX_LINES = 12;
+    const overflowCount = Math.max(0, lines.length - PREVIEW_MAX_LINES);
+    const visibleLines = overflowCount > 0 ? lines.slice(0, PREVIEW_MAX_LINES) : lines;
+
+    // Per-line colorize. Loses cross-line tokenizer state (multi-line
+    // strings/comments fall back to default colors) but keeps the per-line
+    // structure we need to tint added rows green. NEP REPLACE blocks are
+    // small enough that the parallel cost is negligible.
+    const colorizeLine = async (text) => {
+      if (!text) return '';
+      try {
+        const html = await monacoInstance.editor.colorize(
+          text,
+          activeLanguage || 'plaintext',
+          { tabSize: 4 },
+        );
+        return typeof html === 'string'
+          ? html.replace(/<br\s*\/?>\s*$/i, '')
+          : escapeHtml(text);
+      } catch (_) {
+        return escapeHtml(text);
+      }
+    };
+
+    const renderedLines = await Promise.all(
+      visibleLines.map(async (entry) => {
+        const inner = await colorizeLine(entry.line);
+        const cls = entry.added
+          ? 'synthi-nep-replace-preview__line synthi-nep-replace-preview__line--added'
+          : 'synthi-nep-replace-preview__line';
+        const marker = entry.added ? '+' : ' ';
+        return `<div class="${cls}"><span class="synthi-nep-replace-preview__marker">${marker}</span><span class="synthi-nep-replace-preview__line-text">${inner || '&nbsp;'}</span></div>`;
+      }),
+    );
+
+    if (overflowCount > 0) {
+      renderedLines.push(
+        `<div class="synthi-nep-replace-preview__line synthi-nep-replace-preview__line--overflow">`
+        + `<span class="synthi-nep-replace-preview__marker">…</span>`
+        + `<span class="synthi-nep-replace-preview__line-text">+${overflowCount} more line${overflowCount === 1 ? '' : 's'}</span>`
+        + `</div>`,
+      );
+    }
+
+    const zoneNode = document.createElement('div');
+    zoneNode.className = 'synthi-nep-replace-preview';
+    if (metrics) {
+      if (metrics.fontFamily) zoneNode.style.fontFamily = metrics.fontFamily;
+      if (typeof metrics.fontSize === 'number') zoneNode.style.fontSize = metrics.fontSize + 'px';
+      if (typeof metrics.lineHeight === 'number') zoneNode.style.lineHeight = metrics.lineHeight + 'px';
+      if (typeof metrics.letterSpacing === 'number') zoneNode.style.letterSpacing = metrics.letterSpacing + 'px';
+      if (metrics.fontFeatureSettings) zoneNode.style.fontFeatureSettings = metrics.fontFeatureSettings;
+    }
+
+    zoneNode.innerHTML = `
+      <div class="synthi-nep-replace-preview__rail" aria-hidden="true"></div>
+      <div class="synthi-nep-replace-preview__body">
+        <div class="synthi-nep-replace-preview__label">
+          <span class="synthi-nep-replace-preview__icon">↳</span>
+          <span>${escapeHtml(labelText)} · <kbd>Tab</kbd> to apply</span>
+        </div>
+        <div class="synthi-nep-replace-preview__code">${renderedLines.join('')}</div>
+      </div>
+    `;
+
+    let zoneId = null;
+    try {
+      editorInstance.changeViewZones((accessor) => {
+        zoneId = accessor.addZone({
+          afterLineNumber,
+          heightInLines: visibleLines.length + (overflowCount > 0 ? 1 : 0),
+          domNode: zoneNode,
+          suppressMouseDown: true,
+        });
+      });
+    } catch (_) { /* view zone failed to attach — fall back to no preview */ }
+
+    previewArtifactsRef.current = {
+      zoneId,
+      widget: previewArtifactsRef.current.widget,
+      zoneNode,
+    };
+  }, [editorInstance, monacoInstance, activeLanguage, getEditorFontMetrics]);
+
   const renderJumpHint = useCallback((entry, opts = {}) => {
     if (!monacoInstance || !entry) {
       clearDecorations();
+      clearEditPreview();
       return;
     }
     let line = null;
@@ -308,12 +627,14 @@ export const useNextEditPrediction = ({
     }
     if (!line || !path) {
       clearDecorations();
+      clearEditPreview();
       return;
     }
 
     // Always start from a clean slate so decorations from a previous
     // queue entry (possibly in a different file) don't linger.
     clearDecorations();
+    clearEditPreview();
 
     const model = findModelForPath(path);
     if (!model) {
@@ -372,10 +693,121 @@ export const useNextEditPrediction = ({
           },
         },
       ];
+
+      // Edit-kind dispatch. Pure additive edits (REPLACE = SEARCH + tail or
+      // head + SEARCH) don't get a strikethrough — slashing through code the
+      // model is keeping verbatim was reading as "this is being deleted"
+      // when the model was just inserting new lines around it. Modifying
+      // edits keep the strike + full REPLACE preview behaviour.
+      let placement = null;
+      if (entry.kind === NEP_BLOCK_KIND.SEARCH && !opts.confirm) {
+        const activePath = activeFile?.path || activeFile?.name;
+        const isActiveTarget = entry.location?.path && entry.location.path === activePath;
+
+        // Locate the SEARCH range in the target model so we know where to
+        // anchor the preview view zone (above or below) and, for 'modify',
+        // where to draw the strike.
+        let startLine = null;
+        let endLine = null;
+        let searchRange = null;
+        let matchedFileText = null;
+        try {
+          const value = model.getValue();
+          const search = entry.block?.search ?? '';
+          let offset = search ? value.indexOf(search) : -1;
+          let length = search.length;
+          if (offset >= 0) {
+            matchedFileText = search;
+          } else if (search) {
+            // Fall back to the indent-tolerant matcher so additive/replace
+            // visualisation still renders for matches the validator
+            // accepted via the relaxed path. Without this the strike would
+            // silently drop and the user sees REPLACE-only.
+            const indent = findIndentTolerantMatch(value, search);
+            if (indent.ok) {
+              offset = indent.offset;
+              length = indent.length;
+              matchedFileText = indent.fileText;
+            }
+          }
+          if (offset >= 0 && search) {
+            const startPos = model.getPositionAt(offset);
+            const endPos = model.getPositionAt(offset + length);
+            startLine = startPos.lineNumber;
+            endLine = endPos.lineNumber;
+            searchRange = new Range(
+              startPos.lineNumber, startPos.column,
+              endPos.lineNumber, endPos.column,
+            );
+          }
+        } catch (_) { /* model out of sync */ }
+
+        if (searchRange) {
+          // Re-indent the model's REPLACE against the file's actual indent
+          // so the preview matches what applyBlock will land. Without this,
+          // an indent-tolerant match shows the model's hallucinated indent
+          // — and when the model emits cumulative leading whitespace the
+          // preview rows scatter across the viewport instead of stacking
+          // at a consistent column. classifyEditDiff and computeLineDiff
+          // both compare against matchedFileText (the file's actual text
+          // for the SEARCH range) so the append/prepend prefix checks
+          // succeed against post-reindent content.
+          const previewBefore = matchedFileText !== null
+            ? matchedFileText
+            : (entry.block?.search ?? '');
+          const previewAfter = (matchedFileText !== null && entry.block?.replace != null)
+            ? reindentReplace(entry.block.search, entry.block.replace, matchedFileText)
+            : (entry.block?.replace ?? '');
+          const diff = classifyEditDiff(previewBefore, previewAfter);
+
+          if (diff.kind === 'modify') {
+            newDecorations.push({
+              range: searchRange,
+              options: {
+                inlineClassName: NEP_SEARCH_STRIKE_CLASS,
+                hoverMessage: { value: 'Next-edit prediction will replace this text — Tab to apply' },
+              },
+            });
+            if (isActiveTarget) {
+              // Per-line diff so the user sees + markers on the actually-new
+              // lines rather than a wall of green claiming "everything is new".
+              placement = {
+                afterLineNumber: endLine,
+                lines: computeLineDiff(previewBefore, previewAfter),
+                label: 'Replace',
+              };
+            }
+          } else if (diff.kind === 'append' && isActiveTarget) {
+            placement = {
+              afterLineNumber: endLine,
+              lines: diff.added.split('\n').map((line) => ({ added: true, line })),
+              label: 'Insert',
+            };
+          } else if (diff.kind === 'prepend' && isActiveTarget) {
+            // afterLineNumber = startLine - 1 places the zone immediately
+            // above the SEARCH range. Clamp at 0 so a prediction at line 1
+            // still renders (Monaco treats afterLineNumber: 0 as "above
+            // line 1").
+            placement = {
+              afterLineNumber: Math.max(0, startLine - 1),
+              lines: diff.added.split('\n').map((line) => ({ added: true, line })),
+              label: 'Insert',
+            };
+          }
+        }
+      }
+
       const newIds = model.deltaDecorations([], newDecorations);
       decorationIdsByModelRef.current.set(model.uri.toString(), newIds);
+
+      // Fire-and-forget — colorize() is async but the preview is purely
+      // decorative; we never block the Tab cascade on it.
+      if (placement) {
+        renderEditPreview(placement).catch(() => { /* preview is decorative */ });
+      }
     } catch (_) { /* decoration churn is best-effort */ }
-  }, [monacoInstance, clearDecorations, findModelForPath, activeFile]);
+  }, [monacoInstance, clearDecorations, clearEditPreview, findModelForPath,
+      activeFile, renderEditPreview]);
 
   const cancelInflight = useCallback((reason = 'cancel') => {
     if (abortRef.current) {
@@ -419,9 +851,10 @@ export const useNextEditPrediction = ({
     queueIndexRef.current = 0;
     pendingJumpRef.current = null;
     clearDecorations();
+    clearEditPreview();
     setPredictedPaths((prev) => (prev.size ? new Set() : prev));
     setNepState(STATE.IDLE);
-  }, [cancelInflight, clearDecorations]);
+  }, [cancelInflight, clearDecorations, clearEditPreview]);
 
   // Cross-file jump completion. After Tab dispatches selectFileThunk for a
   // prediction in a non-active file, Editor.jsx remounts the editor with
@@ -548,11 +981,26 @@ export const useNextEditPrediction = ({
         ) {
           resetToIdle('user-typed');
         }
+        // Typing during PENDING means the in-flight stream is parsing
+        // against stale file contents — its SEARCH text was selected
+        // before the new keystroke landed. Cut the fetch now so the
+        // debounce timer above (which we just refreshed) gets to fire
+        // with the post-keystroke state. Without this we waste tokens
+        // on a request the validator will mostly reject.
+        if (nepState === STATE.PENDING) {
+          cancelInflight('user-typed-during-pending');
+          setNepState(STATE.IDLE);
+        }
       } catch (_) { /* recent-edit capture is best-effort */ }
     });
     return () => { try { disposable?.dispose?.(); } catch (_) { /* ignored */ } };
+    // nepState is intentionally a dep — the listener reads it to decide
+    // whether to drop the queue or cancel a PENDING fetch. Without this dep
+    // the closure freezes on STATE.IDLE and both code paths become dead.
+    // The cost is one Monaco listener re-bind per state transition, which
+    // is cheap compared to firing wasted token budget at the API.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, editorInstance, activeFile]);
+  }, [enabled, editorInstance, activeFile, nepState, cancelInflight, resetToIdle]);
 
   // ── fire NEP ────────────────────────────────────────────────────────────
   const fireNep = useCallback(async () => {
@@ -563,7 +1011,17 @@ export const useNextEditPrediction = ({
     // subsequent fire within the TTL window is a Date.now() compare.
     try { await checkServerKill(); } catch (_) { /* network — ignored */ }
     if (isNepKilled()) return;
-    if (sessionFireCountRef.current >= NEP_PER_SESSION_FIRE_CAP) return;
+    if (sessionFireCountRef.current >= NEP_PER_SESSION_FIRE_CAP) {
+      // First-time hit emits a single telemetry event so we can see how
+      // often users actually saturate the cap; subsequent fires within the
+      // session are silently dropped. The functional setter dedups so the
+      // event fires once per session even though we read no state here.
+      setFireCapReached((prev) => {
+        if (!prev) recordNepEvent('rejected', { reason: 'session_cap', cap: NEP_PER_SESSION_FIRE_CAP });
+        return true;
+      });
+      return;
+    }
 
     const now = Date.now();
     if (now - lastFireRef.current < NEP_MIN_INTERVAL_MS) return;
@@ -813,6 +1271,29 @@ export const useNextEditPrediction = ({
           continue;
         }
         if (!entry) continue;
+        // Dedup: a stream can re-emit the same block (model retry, partial
+        // emission then re-flush) and the queue would stack identical
+        // jumps that the user has to Tab past for no reason. Match by
+        // kind + path + search + replace — anything that produces the
+        // same edit at the same site is a duplicate. We only check the
+        // remaining queue (cursor onwards) so accepted/skipped entries
+        // don't suppress a legitimate re-emission later.
+        const isDuplicate = (() => {
+          for (let i = queueIndexRef.current; i < queueRef.current.length; i++) {
+            const existing = queueRef.current[i];
+            if (!existing || existing.kind !== entry.kind) continue;
+            const a = existing.block || {};
+            const b = entry.block || {};
+            if (a.path === b.path && a.search === b.search && a.replace === b.replace) {
+              return true;
+            }
+          }
+          return false;
+        })();
+        if (isDuplicate) {
+          recordNepEvent('rejected', { reason: 'duplicate', path: entry.block?.path });
+          continue;
+        }
         queueRef.current.push(entry);
         syncPredictedPaths();
         if (!armedYet) {
@@ -882,21 +1363,43 @@ export const useNextEditPrediction = ({
     return null;
   }, [monacoInstance]);
 
+  // Replace a model's full content via pushEditOperations. We can't use
+  // model.setValue here: setValue raises onDidChangeContent with
+  // e.isFlush=true, and collabClient's local-change listener (collabClient.js:128)
+  // bails on flush events. The result is the user-reported bug — the
+  // edit shows up in the editor but never broadcasts through Yjs to
+  // collab-server, so on reload the file reverts to its pre-edit
+  // content. pushEditOperations fires a normal (isFlush=false) change,
+  // which the collab listener picks up and forwards to the worker /
+  // y-sweet, persisting the edit on disk.
+  const replaceModelContent = useCallback((model, newContent) => {
+    if (!model) return false;
+    try {
+      const range = model.getFullModelRange();
+      model.pushEditOperations(
+        [],
+        [{ range, text: newContent, forceMoveMarkers: true }],
+        () => null,
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }, []);
+
   const writeFileContent = useCallback(async (targetPath, content) => {
     const activePath = activeFile?.path || activeFile?.name;
     // (1) Active file → write through the active model. Most common path.
     if (targetPath === activePath) {
       const model = editorInstance?.getModel?.();
-      if (model) {
-        model.setValue(content);
+      if (model && replaceModelContent(model, content)) {
         return { via: 'active_model' };
       }
     }
     // (2) Other open file → write through its model.
     const openModel = findOpenModel(targetPath);
-    if (openModel) {
-      try { openModel.setValue(content); return { via: 'open_model' }; }
-      catch (_) { /* fall through to disk write */ }
+    if (openModel && replaceModelContent(openModel, content)) {
+      return { via: 'open_model' };
     }
     // (3) Closed file → hit collab-server directly.
     if (!workspaceSlug) {
@@ -909,7 +1412,21 @@ export const useNextEditPrediction = ({
     // singleton) and the second block in the chain rejects as no_match.
     try { fileCache.set(targetPath, content); } catch (_) { /* best-effort */ }
     return { via: 'collab_server' };
-  }, [editorInstance, activeFile, monacoInstance, workspaceSlug, findOpenModel]);
+  }, [editorInstance, activeFile, monacoInstance, workspaceSlug, findOpenModel, replaceModelContent]);
+
+  // Run the host-supplied save pipeline (REST persist, worker disk sync,
+  // LSP didSave, HMR retrigger) once an apply has landed. Best-effort —
+  // a thrown onApply must not prevent the queue from advancing, the
+  // model already has the edit and Yjs will eventually broadcast it.
+  const runOnApply = useCallback(async (path, content) => {
+    if (typeof onApply !== 'function') return;
+    try { await onApply(path, content); }
+    catch (err) {
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn(`[NEP] onApply threw for ${path}:`, err?.message || err);
+      }
+    }
+  }, [onApply]);
 
   // ── apply helpers ───────────────────────────────────────────────────────
   const applySearchBlock = useCallback(async (entry) => {
@@ -926,6 +1443,7 @@ export const useNextEditPrediction = ({
       recordNepEvent('rejected', { reason: 'write_failed', detail: err?.message, path });
       throw err;
     }
+    await runOnApply(path, next);
     // Classify + stash for the next NEP fire's appliedEdit. This is what
     // closes the cross-file refactor-chase loop: Phase 2 prompt sees the
     // applied edit, /code-intel/edit-impact returns the next sites.
@@ -950,7 +1468,7 @@ export const useNextEditPrediction = ({
       };
     }
     recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH, path, via: writeResult?.via });
-  }, [getLiveFileContent, writeFileContent]);
+  }, [getLiveFileContent, writeFileContent, runOnApply]);
 
   /**
    * Apply a SEARCH ALL block at a SINGLE site identified by byte-offset.
@@ -972,8 +1490,9 @@ export const useNextEditPrediction = ({
     const offset = offsets[siteIdx];
     const next = live.slice(0, offset) + entry.block.replace + live.slice(offset + entry.block.search.length);
     await writeFileContent(path, next);
+    await runOnApply(path, next);
     return next;
-  }, [getLiveFileContent, writeFileContent]);
+  }, [getLiveFileContent, writeFileContent, runOnApply]);
 
   // ── Tab cascade ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1047,17 +1566,41 @@ export const useNextEditPrediction = ({
         }
         if (e.code === 'KeyA') {
           // 'A' → apply all REMAINING sites in this batch.
+          // Single writeFileContent call → single pushEditOperations →
+          // single undo entry. Previously this was N sequential applies
+          // and Ctrl+Z had to be pressed N times to back out the batch.
           e.preventDefault();
           e.stopPropagation();
           (async () => {
-            let safety = 200;
-            let live = getLiveFileContent ? getLiveFileContent(entry.block.path) : null;
-            while (typeof live === 'string' && live.indexOf(entry.block.search) !== -1 && safety-- > 0) {
-              try {
-                await applySearchAllSite(entry, 0);
-                recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH_ALL, path: entry.block.path, batch: true });
-              } catch (err) { break; }
-              live = getLiveFileContent ? getLiveFileContent(entry.block.path) : null;
+            const path = entry.block.path;
+            const search = entry.block.search;
+            const replace = entry.block.replace;
+            const live = getLiveFileContent ? getLiveFileContent(path) : null;
+            if (typeof live !== 'string' || !search) {
+              advanceQueue();
+              return;
+            }
+            let count = 0;
+            {
+              let pos = 0;
+              while ((pos = live.indexOf(search, pos)) !== -1) {
+                count += 1;
+                pos += search.length;
+              }
+            }
+            if (count === 0) {
+              advanceQueue();
+              return;
+            }
+            const next = live.split(search).join(replace);
+            try {
+              await writeFileContent(path, next);
+              await runOnApply(path, next);
+              for (let i = 0; i < count; i++) {
+                recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH_ALL, path, batch: true });
+              }
+            } catch (err) {
+              recordNepEvent('rejected', { reason: 'apply_failed', detail: err?.message });
             }
             advanceQueue();
           })();
@@ -1079,10 +1622,33 @@ export const useNextEditPrediction = ({
         if (nepState === STATE.ARMED) {
           e.preventDefault();
           e.stopPropagation();
+          // Dismiss any active inline-completion suggestion so Tab doesn't
+          // simultaneously commit ghost text AND jump to the NEP site. Monaco's
+          // keybinding system for "editor.action.inlineSuggest.commit" fires
+          // after onKeyDown listeners and is not stopped by e.stopPropagation(),
+          // so we explicitly hide the inline suggest before it can commit.
+          try { editorInstance.trigger('nep', 'editor.action.inlineSuggest.hide', null); } catch (_) {}
           const path = entry.location?.path;
           const line = entry.location?.line;
           const activePath = activeFile?.path || activeFile?.name;
+          // Single-Tab apply when the cursor is already at the prediction
+          // line in the active file. The "jump" half of the cascade is
+          // wasted in that case — the user's eyes are already on the
+          // armed line, asking them to Tab twice is just friction.
           if (path && path === activePath) {
+            const cursor = editorInstance.getPosition?.();
+            if (cursor && cursor.lineNumber === line) {
+              (async () => {
+                try {
+                  await applySearchBlock(entry);
+                  advanceQueue();
+                } catch (err) {
+                  recordNepEvent('rejected', { reason: 'revalidate_failed', detail: err?.message });
+                  resetToIdle('revalidate-failed');
+                }
+              })();
+              return;
+            }
             try {
               editorInstance.revealLineInCenter(line);
               editorInstance.setPosition({ lineNumber: line, column: 1 });
@@ -1140,13 +1706,18 @@ export const useNextEditPrediction = ({
   }, [
     enabled, editorInstance, nepState, activeFile, getLiveFileContent,
     renderJumpHint, resetToIdle, applySearchBlock, applySearchAllSite,
-    dispatch, rawFiles, syncPredictedPaths,
+    dispatch, rawFiles, syncPredictedPaths, writeFileContent, runOnApply,
   ]);
 
   return {
     nepState,
     enabled,
     setEnabled,
+    // True once the per-session fire cap has been hit. The UI surface is
+    // a non-blocking notice — we're not pausing input, just signaling that
+    // automatic predictions are off until the workspace reloads.
+    fireCapReached,
+    fireCap: NEP_PER_SESSION_FIRE_CAP,
     // Set of file paths with at least one queued NEP prediction. The
     // tab-bar consumer reads this to badge tabs whose dot-on-the-gutter
     // can't be seen because the user isn't currently viewing that file.

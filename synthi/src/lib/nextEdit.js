@@ -188,6 +188,103 @@ export const countExactMatches = (content, search) => {
 };
 
 /**
+ * Indent-tolerant fallback: line-by-line equality after stripping leading
+ * spaces/tabs from each side. Trailing whitespace and interior structure
+ * are still strict — we don't want to collapse two visually-distinct lines.
+ *
+ * Returns `{ ok: true, offset, length, fileText }` for a single hit, where
+ * `offset`/`length` index into the original (un-normalized) `content` so
+ * the caller can splice without re-searching, and `fileText` is the actual
+ * file slice (preserved verbatim — it's the indent the user wrote, which
+ * applyBlock uses to re-shift the model's REPLACE text). `{ ok: false,
+ * matches }` when 0 or >1 matches.
+ *
+ * The model's most common SEARCH miss is "right text, wrong indent" — when
+ * the user opened the file inside a class body and the model copied the
+ * symbol declaration without the surrounding namespace's leading indent.
+ * This recovery turns that from `no_match` into a clean apply.
+ */
+export const findIndentTolerantMatch = (content, search) => {
+  if (typeof content !== 'string' || typeof search !== 'string') {
+    return { ok: false, matches: 0 };
+  }
+  if (!search) return { ok: false, matches: 0 };
+  // The exact path already covers \n=== text. Only fall back when we
+  // genuinely have at least one non-whitespace line in SEARCH.
+  if (!search.trim()) return { ok: false, matches: 0 };
+
+  const stripIndent = (s) => s.replace(/^[ \t]+/, '');
+  const searchLines = search.split('\n');
+  const normSearch = searchLines.map(stripIndent);
+  const contentLines = content.split('\n');
+  if (searchLines.length > contentLines.length) return { ok: false, matches: 0 };
+
+  // Pre-compute line start byte offsets so we can map (line index, col 0) → byte offset.
+  const lineStarts = new Array(contentLines.length + 1);
+  let acc = 0;
+  for (let i = 0; i < contentLines.length; i++) {
+    lineStarts[i] = acc;
+    acc += contentLines[i].length + 1; // +1 for the newline
+  }
+  lineStarts[contentLines.length] = acc; // virtual EOF
+
+  let count = 0;
+  let firstHit = null;
+  const last = contentLines.length - searchLines.length;
+  for (let i = 0; i <= last; i++) {
+    let ok = true;
+    for (let j = 0; j < searchLines.length; j++) {
+      if (stripIndent(contentLines[i + j]) !== normSearch[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) continue;
+    count += 1;
+    if (firstHit === null) {
+      const offset = lineStarts[i];
+      let length = 0;
+      for (let k = 0; k < searchLines.length; k++) {
+        length += contentLines[i + k].length;
+        if (k < searchLines.length - 1) length += 1; // newline between matched lines
+      }
+      const fileText = content.slice(offset, offset + length);
+      firstHit = { offset, length, fileText };
+    }
+    if (count > 1) break; // ambiguous — early exit
+  }
+
+  if (count === 1) return { ok: true, ...firstHit, matches: 1 };
+  return { ok: false, matches: count };
+};
+
+/**
+ * When the indent-tolerant matcher finds a SEARCH whose first-line indent
+ * differs from the file's, the REPLACE the model emitted carries the
+ * model's indent, not the file's. Shift every REPLACE line by the delta so
+ * the inserted text sits at the file's column instead of the model's.
+ */
+export const reindentReplace = (search, replace, fileMatchText) => {
+  if (typeof search !== 'string' || typeof replace !== 'string'
+      || typeof fileMatchText !== 'string') return replace;
+  const m = (s) => (s.match(/^[ \t]*/) || [''])[0];
+  const modelIndent = m(search.split('\n')[0] || '');
+  const fileIndent = m(fileMatchText.split('\n')[0] || '');
+  if (modelIndent === fileIndent) return replace;
+
+  const replaceLines = replace.split('\n');
+  const out = replaceLines.map((line) => {
+    if (modelIndent && line.startsWith(modelIndent)) {
+      return fileIndent + line.slice(modelIndent.length);
+    }
+    // Line is shallower than the model's base indent (e.g. closing brace
+    // at col 0). Leave alone — re-shifting would corrupt the structure.
+    return line;
+  });
+  return out.join('\n');
+};
+
+/**
  * Validate a parsed block against the current contents of the named file.
  *
  *   SEARCH:     N=0 → no_match     | N=1 → accept | N>1 → ambiguous
@@ -224,10 +321,31 @@ export const validateBlock = (block, getFileContent) => {
     return { ok: false, reason: REJECT_REASONS.PHASE2_REQUIRED, path, matches: n };
   }
 
-  // Default: SEARCH
-  if (n === 0) return { ok: false, reason: REJECT_REASONS.NO_MATCH, path, matches: 0 };
+  // Default: SEARCH. Exact path first (the central guarantee — strict
+  // byte match never produces a wrong location). Indent-tolerant fallback
+  // only when exact gives nothing; ambiguous still rejects so we never
+  // silently pick one of multiple visually-distinct matches.
+  if (n === 1) return { ok: true, path, matches: 1 };
   if (n > 1) return { ok: false, reason: REJECT_REASONS.AMBIGUOUS, path, matches: n };
-  return { ok: true, path, matches: 1 };
+
+  const indentMatch = findIndentTolerantMatch(content, search);
+  if (indentMatch.ok) {
+    return {
+      ok: true,
+      path,
+      matches: 1,
+      // Surface the relaxed match so applyBlock/locateBlock skip the
+      // re-search and so telemetry can split the success rate by tier.
+      indentTolerant: true,
+      offset: indentMatch.offset,
+      length: indentMatch.length,
+      fileText: indentMatch.fileText,
+    };
+  }
+  if (indentMatch.matches > 1) {
+    return { ok: false, reason: REJECT_REASONS.AMBIGUOUS, path, matches: indentMatch.matches };
+  }
+  return { ok: false, reason: REJECT_REASONS.NO_MATCH, path, matches: 0 };
 };
 
 /**
@@ -244,6 +362,14 @@ export const applyBlock = (block, getFileContent) => {
     throw err;
   }
   const content = getFileContent(block.path);
+  if (v.indentTolerant) {
+    // Re-shift the model's REPLACE so it lands at the file's actual indent
+    // column instead of the column the model hallucinated. Without this
+    // step the inserted text would have mismatched indents against its
+    // surroundings — visually correct text, structurally broken.
+    const adjustedReplace = reindentReplace(block.search, block.replace, v.fileText);
+    return content.slice(0, v.offset) + adjustedReplace + content.slice(v.offset + v.length);
+  }
   const idx = content.indexOf(block.search);
   return content.slice(0, idx) + block.replace + content.slice(idx + block.search.length);
 };
@@ -257,8 +383,15 @@ export const applyBlock = (block, getFileContent) => {
 export const locateBlock = (block, getFileContent) => {
   const content = getFileContent(block.path);
   if (typeof content !== 'string') return null;
-  const idx = content.indexOf(block.search);
-  if (idx === -1) return null;
+  let idx = content.indexOf(block.search);
+  if (idx === -1) {
+    // Fall back to the indent-tolerant path so the gutter dot still lands
+    // at the right line when the model emitted a SEARCH whose only
+    // disagreement with the file is leading whitespace.
+    const indentMatch = findIndentTolerantMatch(content, block.search);
+    if (!indentMatch.ok) return null;
+    idx = indentMatch.offset;
+  }
   // Line number = 1 + count of newlines before idx.
   let line = 1;
   for (let i = 0; i < idx; i++) if (content.charCodeAt(i) === 10) line += 1;

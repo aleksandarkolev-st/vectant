@@ -18,7 +18,7 @@ Manifest format (emitted by the AI inside <synthi_build_manifest>):
 
     {
       "compiler": "g++",
-      "std": "c++17",
+      "std": "c++26",
       "common_flags": ["-shared", "-fPIC", "-g", ...],
       "core_link_flags": [],
       "gui_link_flags": ["-lSDL2"],
@@ -86,7 +86,7 @@ class BuildManifest(BaseModel):
     """
 
     compiler: Compiler = "g++"
-    std: str = "c++17"
+    std: str = "c++26"
     common_flags: List[str] = Field(default_factory=list)
     core_link_flags: List[str] = Field(default_factory=list)
     gui_link_flags: List[str] = Field(default_factory=list)
