@@ -13,6 +13,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAnalyzerGateway } from './useAnalyzerGateway';
 import { getVFS } from '@/services/vfs/VirtualFileSystem';
+import {
+  computeHunks,
+  shouldUseHunks,
+  computeContentHashAsync,
+} from '@/utils/hunkDiff';
 
 // ============================================================================
 // Configuration
@@ -47,6 +52,38 @@ async function computeContentHash(content) {
     hash = hash & hash;
   }
   return Math.abs(hash).toString(16);
+}
+
+/**
+ * Detect a hunk_resolution_failed payload returned by the backend (HTTP 409).
+ * Returns { code, path, message } on match, otherwise null.
+ *
+ * The error chain is: ai-engine raises HunkResolutionError → FastAPI
+ * HTTPException(status_code=409, detail={...}) → gateway sendError forwards
+ * status + JSON-stringified detail → analyzerGatewayClient wraps as
+ * SynthiException with .status and .gatewayPayload.
+ */
+function parseHunkResolutionError(error) {
+  if (!error || error.status !== 409) return null;
+  const payload = error.gatewayPayload;
+  const rawDetail = payload?.detail;
+  if (!rawDetail) return null;
+  let detail = rawDetail;
+  if (typeof rawDetail === 'string') {
+    try {
+      detail = JSON.parse(rawDetail);
+    } catch {
+      return null;
+    }
+  }
+  // FastAPI wraps custom detail under a top-level "detail" key.
+  const inner = detail?.detail ?? detail;
+  if (!inner || inner.error !== 'hunk_resolution_failed') return null;
+  return {
+    code: inner.code,
+    path: inner.path,
+    message: inner.message,
+  };
 }
 
 function detectLanguage(path) {
@@ -106,6 +143,9 @@ export function useVFSWorkspaceAnalysis({
   const lastAiAnalysisRef = useRef(0);
   const focusFileRef = useRef(null);
   const analysisVersionRef = useRef(0); // Track analysis versions to discard stale results
+  // path -> { content, hash } of the last successfully-sent version. Used as
+  // the baseline against which the next change is diffed into hunks.
+  const baselineByPathRef = useRef(new Map());
   
   // Initialize VFS connection
   useEffect(() => {
@@ -246,22 +286,86 @@ export function useVFSWorkspaceAnalysis({
       lastAiAnalysisRef.current = now;
     }
     
+    // Convert each change to either hunks-or-content. payloadFiles is what
+    // goes on the wire; pendingBaselines records what to commit as the new
+    // baseline once the server confirms it accepted this version.
+    const payloadFiles = [];
+    const pendingBaselines = []; // [{ path, content, hash }]
+    let hunkSentCount = 0;
+    for (const change of changedFiles) {
+      const baseline = baselineByPathRef.current.get(change.path);
+      const base = {
+        path: change.path,
+        contentHash: change.contentHash,
+        changeType: change.changeType,
+        language: change.language,
+      };
+
+      if (change.changeType === 'deleted') {
+        baselineByPathRef.current.delete(change.path);
+        payloadFiles.push({ ...base, content: null });
+        continue;
+      }
+
+      if (typeof change.content !== 'string') {
+        // Defensive: shouldn't happen, but skip rather than send malformed
+        // payload. Backend treats this as "no content known" and skips.
+        continue;
+      }
+
+      // Stale duplicate — VFS emitted change with content identical to last
+      // sync. Drop entirely; nothing for the backend to do.
+      if (baseline && baseline.hash === change.contentHash) {
+        continue;
+      }
+
+      let usedHunks = false;
+      if (baseline && baseline.content !== change.content) {
+        const hunks = computeHunks(baseline.content, change.content);
+        if (hunks.length && shouldUseHunks(hunks, change.content)) {
+          payloadFiles.push({
+            ...base,
+            hunks,
+            baseHash: baseline.hash,
+          });
+          hunkSentCount += 1;
+          usedHunks = true;
+        }
+      }
+      if (!usedHunks) {
+        payloadFiles.push({ ...base, content: change.content });
+      }
+      pendingBaselines.push({
+        path: change.path,
+        content: change.content,
+        hash: change.contentHash,
+      });
+    }
+
+    if (payloadFiles.length === 0 && !options.force) {
+      // All changes were stale duplicates — nothing to do.
+      setIsAnalyzing(false);
+      return null;
+    }
+
     console.log(`[VFS Analysis] Starting analysis v${analysisVersion}`, {
-      changedFiles: changedFiles.length,
+      changedFiles: payloadFiles.length,
+      hunkSent: hunkSentCount,
       allFiles: allFiles.length,
       focusFile: focusFileRef.current,
       includeAi: shouldIncludeAi,
     });
-    
+
     // Log content hashes for debugging
-    for (const f of changedFiles) {
-      console.log(`[VFS Analysis]   ${f.path}: hash=${f.contentHash?.substring(0, 8)}, len=${f.content?.length}`);
+    for (const f of payloadFiles) {
+      const mode = f.hunks ? `hunks(${f.hunks.length})` : `content(${f.content?.length ?? 0})`;
+      console.log(`[VFS Analysis]   ${f.path}: hash=${f.contentHash?.substring(0, 8)} ${mode}`);
     }
-    
+
     try {
       const response = await clientRef.current._sendRequest('analyze/workspace/incremental', {
         workspaceId,
-        changedFiles,
+        changedFiles: payloadFiles,
         allFiles,
         focusFile: focusFileRef.current,
         includeAi: shouldIncludeAi,
@@ -273,7 +377,13 @@ export function useVFSWorkspaceAnalysis({
         console.log(`[VFS Analysis] Discarding stale results v${analysisVersion} (current: v${analysisVersionRef.current})`);
         return null;
       }
-      
+
+      // Server accepted this version — advance baselines so the next change
+      // can be diffed against the content the server now has.
+      for (const b of pendingBaselines) {
+        baselineByPathRef.current.set(b.path, { content: b.content, hash: b.hash });
+      }
+
       const data = response?.data ?? response;
       
       console.log(`[VFS Analysis] Received results v${analysisVersion}`, {
@@ -312,6 +422,25 @@ export function useVFSWorkspaceAnalysis({
       
       return data;
     } catch (error) {
+      // Server may have rejected because the baseline diverged. Drop the
+      // affected baseline (or all baselines if we cannot identify one) and
+      // re-queue the change so the next debounced run sends full content.
+      const detail = parseHunkResolutionError(error);
+      if (detail) {
+        if (detail.path) {
+          baselineByPathRef.current.delete(detail.path);
+        } else {
+          baselineByPathRef.current.clear();
+        }
+        for (const change of changedFiles) {
+          if (!detail.path || change.path === detail.path) {
+            pendingChangesRef.current.set(change.path, change);
+          }
+        }
+        console.warn(
+          `[VFS Analysis] Hunk resolution failed (${detail.code}) for ${detail.path || '*'} — falling back to full content on next run`
+        );
+      }
       if (analysisVersion === analysisVersionRef.current) {
         setLastError(error);
       }
