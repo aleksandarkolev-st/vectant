@@ -386,8 +386,13 @@ class WorkspaceAnalyzer:
                 dependents = self._dependency_tracker.get_dependents(path)
                 files_to_analyze.update(dependents)
         
-        # Filter to only files we have content for
+        # Filter to only files we have content for. Changed files count as
+        # having content because materialize_changes already resolved any
+        # hunk-only payloads into change.content.
         files_with_content = {f.path for f in request.all_files}
+        for change in request.changed_files:
+            if change.change_type != "deleted" and change.content is not None:
+                files_with_content.add(change.path)
         files_to_analyze &= files_with_content
         
         # Get optimal analysis order
