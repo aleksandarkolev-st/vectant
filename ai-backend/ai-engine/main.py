@@ -257,7 +257,7 @@ from analyzer.proactive import (
     WorkspaceAnalysisResult,
     FileChange,
 )
-from analyzer.proactive.types import AnalysisRequest, FileContext, Severity
+from analyzer.proactive.types import AnalysisRequest, FileContext, Hunk, Severity
 from analyzer.proactive.cache import AnalysisCache
 
 # Intelligence Aggregator - Unified Pipeline
@@ -1069,6 +1069,13 @@ async def get_unified_status():
 # Workspace Analysis Models
 # ============================================================================
 
+class HunkModel(BaseModel):
+    """A line-range replacement, half-open [start_line, end_line)."""
+    start_line: int
+    end_line: int
+    new_lines: List[str]
+
+
 class FileChangeModel(BaseModel):
     """Represents a file change for incremental analysis."""
     path: str
@@ -1076,6 +1083,11 @@ class FileChangeModel(BaseModel):
     change_type: str  # "added", "modified", "deleted"
     content: Optional[str] = None
     language: Optional[str] = None
+    # Hunk-only optimization. When hunks is provided and content is omitted,
+    # the analyzer reconstructs content from a stored baseline whose hash
+    # equals base_hash. The post-apply hash is verified against content_hash.
+    hunks: Optional[List[HunkModel]] = None
+    base_hash: Optional[str] = None
 
 
 class WorkspaceFileModel(BaseModel):
@@ -1152,12 +1164,24 @@ async def analyze_workspace(req: WorkspaceAnalysisRequestModel):
     changed_files = []
     if req.changed_files:
         for cf in req.changed_files:
+            hunks = None
+            if cf.hunks is not None:
+                hunks = [
+                    Hunk(
+                        start_line=h.start_line,
+                        end_line=h.end_line,
+                        new_lines=h.new_lines,
+                    )
+                    for h in cf.hunks
+                ]
             changed_files.append(FileChange(
                 path=cf.path,
                 content_hash=cf.content_hash,
                 change_type=cf.change_type,
                 content=cf.content,
                 language=cf.language,
+                hunks=hunks,
+                base_hash=cf.base_hash,
             ))
     
     # Build all files context
