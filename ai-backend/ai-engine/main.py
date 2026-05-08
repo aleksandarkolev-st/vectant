@@ -257,6 +257,7 @@ from analyzer.proactive import (
     WorkspaceAnalysisResult,
     FileChange,
 )
+from analyzer.proactive.workspace_analyzer import HunkResolutionError
 from analyzer.proactive.types import AnalysisRequest, FileContext, Hunk, Severity
 from analyzer.proactive.cache import AnalysisCache
 
@@ -1218,6 +1219,19 @@ async def analyze_workspace(req: WorkspaceAnalysisRequestModel):
         else:
             result = await analyzer.analyze(analysis_request)
         return result.to_dict()
+    except HunkResolutionError as e:
+        # 409 Conflict — frontend should drop its baseline for this path
+        # and resend with full content. The structured detail lets the
+        # frontend act on the failure without parsing free-text messages.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "hunk_resolution_failed",
+                "code": e.code,
+                "path": e.path,
+                "message": str(e),
+            },
+        )
     except Exception as e:
         import traceback
         traceback.print_exc()

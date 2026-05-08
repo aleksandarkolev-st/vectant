@@ -26,6 +26,12 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .cache import AnalysisCache
 from .dependency_tracker import DependencyTracker, get_dependency_tracker
+from .hunk_applier import (
+    Hunk as ApplierHunk,
+    HunkApplicationError,
+    apply_hunks,
+    content_hash as compute_content_hash,
+)
 from .orchestrator import ProactiveAnalyzer
 from .types import (
     AnalysisTier,
@@ -47,6 +53,19 @@ from .types import (
     WorkspaceAnalysisResult,
     WorkspaceSuggestion,
 )
+
+
+class HunkResolutionError(Exception):
+    """Raised when a FileChange carrying hunks cannot be resolved to content.
+
+    The HTTP layer should map this to 409 with a machine-readable code so
+    the frontend can drop its baseline and resend full content.
+    """
+
+    def __init__(self, code: str, message: str, path: str):
+        super().__init__(message)
+        self.code = code
+        self.path = path
 
 
 @dataclass
@@ -113,21 +132,130 @@ class WorkspaceAnalyzer:
         if bucket is not None:
             bucket.pop(path, None)
 
+    def _materialize_changes(
+        self,
+        workspace_id: str,
+        changes: List[FileChange],
+    ) -> None:
+        """Resolve hunk-only FileChanges to full content in-place.
+
+        For each change:
+          - If full content is provided, refresh the stored baseline.
+          - If only hunks are provided, look up the baseline (verifying
+            base_hash if given), apply hunks, verify the resulting hash,
+            and write the reconstructed content back to change.content
+            so the rest of the pipeline sees a normal full-content change.
+          - If hunks are present but no usable baseline exists, raise
+            HunkResolutionError so the client can fall back to full content.
+
+        Deletions are passed through unchanged and the baseline is dropped.
+        """
+        if not changes:
+            return
+
+        for change in changes:
+            if change.change_type == "deleted":
+                self._drop_base_content(workspace_id, change.path)
+                continue
+
+            if change.content is not None:
+                # Full content is authoritative. Refresh baseline.
+                self._store_base_content(workspace_id, change.path, change.content)
+                continue
+
+            if not change.hunks:
+                # Neither content nor hunks — nothing to materialize. Earlier
+                # code paths handle this (skipped from analysis) so leave as-is.
+                continue
+
+            base = self._get_base_content(workspace_id, change.path)
+            if base is None:
+                raise HunkResolutionError(
+                    code="BASELINE_MISSING",
+                    message=(
+                        f"No stored baseline for {change.path} in workspace "
+                        f"{workspace_id}; client must resend full content."
+                    ),
+                    path=change.path,
+                )
+
+            if change.base_hash is not None:
+                actual_base_hash = compute_content_hash(base)
+                if actual_base_hash != change.base_hash:
+                    # Drop the diverged baseline so a future full-content
+                    # request can establish a clean baseline again.
+                    self._drop_base_content(workspace_id, change.path)
+                    raise HunkResolutionError(
+                        code="BASELINE_MISMATCH",
+                        message=(
+                            f"Stored baseline for {change.path} hashes to "
+                            f"{actual_base_hash} but client expected "
+                            f"{change.base_hash}; client must resend full content."
+                        ),
+                        path=change.path,
+                    )
+
+            try:
+                applier_hunks = [
+                    ApplierHunk(
+                        start_line=h.start_line,
+                        end_line=h.end_line,
+                        new_lines=h.new_lines,
+                    )
+                    for h in change.hunks
+                ]
+                new_content = apply_hunks(base, applier_hunks)
+            except HunkApplicationError as e:
+                self._drop_base_content(workspace_id, change.path)
+                raise HunkResolutionError(
+                    code="HUNK_APPLY_FAILED",
+                    message=f"Cannot apply hunks to {change.path}: {e}",
+                    path=change.path,
+                )
+
+            actual_new_hash = compute_content_hash(new_content)
+            if change.content_hash and actual_new_hash != change.content_hash:
+                # The applied result does not match what the client claimed.
+                # Drop baseline and signal so the client resends full content.
+                self._drop_base_content(workspace_id, change.path)
+                raise HunkResolutionError(
+                    code="POST_APPLY_HASH_MISMATCH",
+                    message=(
+                        f"Applied hunks for {change.path} produced hash "
+                        f"{actual_new_hash} but client claimed {change.content_hash}."
+                    ),
+                    path=change.path,
+                )
+
+            change.content = new_content
+            self._store_base_content(workspace_id, change.path, new_content)
+
     async def analyze(
         self,
         request: WorkspaceAnalysisRequest,
     ) -> WorkspaceAnalysisResult:
         """
         Perform workspace-level analysis.
-        
+
         This is the main entry point for multi-file analysis.
         """
         start_time = time.perf_counter()
-        
+
+        # Resolve any hunk-only changes to full content. Also refreshes the
+        # baseline store from full-content payloads so subsequent hunk-only
+        # requests have something to apply against. Raises HunkResolutionError
+        # on irrecoverable mismatch — the API layer maps this to 409.
+        self._materialize_changes(request.workspace_id, request.changed_files or [])
+
+        # Refresh baselines from any full-content all_files payloads too, so
+        # the very first incremental request after a full analyze can use hunks.
+        for f in request.all_files or []:
+            self._store_base_content(request.workspace_id, f.path, f.content)
+
         result = WorkspaceAnalysisResult(
             workspace_id=request.workspace_id,
         )
-        
+
         # Step 1: Update dependency graph and determine what needs analysis
         files_to_analyze = await self._determine_analysis_scope(request)
         
@@ -192,12 +320,21 @@ class WorkspaceAnalyzer:
     ) -> WorkspaceAnalysisResult:
         """
         Perform incremental workspace analysis.
-        
+
         Only analyzes files that changed and their dependents.
         Much faster than full analysis for typical edit scenarios.
         """
         start_time = time.perf_counter()
-        
+
+        # Resolve hunk-only changes into full content first. After this
+        # returns, every change in request.changed_files either has
+        # change.content set (added/modified) or is a deletion.
+        self._materialize_changes(request.workspace_id, request.changed_files or [])
+
+        # Refresh baselines from any full-content all_files payloads.
+        for f in request.all_files or []:
+            self._store_base_content(request.workspace_id, f.path, f.content)
+
         # Get previous state
         prev_state = self._workspace_states.get(request.workspace_id, {})
         
