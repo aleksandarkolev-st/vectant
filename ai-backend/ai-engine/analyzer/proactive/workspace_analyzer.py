@@ -97,7 +97,22 @@ class WorkspaceAnalyzer:
         # Workspace state
         # workspace_id -> {path -> FileAnalysisState}
         self._workspace_states: Dict[str, Dict[str, FileAnalysisState]] = defaultdict(dict)
-        
+        # Last-known full content per file, indexed by workspace.
+        # Hunk-only requests apply against this; full-content requests refresh it.
+        # workspace_id -> {path -> content}
+        self._workspace_base_content: Dict[str, Dict[str, str]] = defaultdict(dict)
+
+    def _store_base_content(self, workspace_id: str, path: str, content: str) -> None:
+        self._workspace_base_content[workspace_id][path] = content
+
+    def _get_base_content(self, workspace_id: str, path: str) -> Optional[str]:
+        return self._workspace_base_content.get(workspace_id, {}).get(path)
+
+    def _drop_base_content(self, workspace_id: str, path: str) -> None:
+        bucket = self._workspace_base_content.get(workspace_id)
+        if bucket is not None:
+            bucket.pop(path, None)
+
     async def analyze(
         self,
         request: WorkspaceAnalysisRequest,
@@ -817,6 +832,7 @@ class WorkspaceAnalyzer:
     def clear_workspace(self, workspace_id: str):
         """Clear all cached state for a workspace."""
         self._workspace_states.pop(workspace_id, None)
+        self._workspace_base_content.pop(workspace_id, None)
     
     def get_workspace_stats(self, workspace_id: str) -> Dict[str, Any]:
         """Get statistics for a workspace."""
