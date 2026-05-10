@@ -335,7 +335,7 @@ export default function Dashboard() {
                 className="text-2xl font-semibold tracking-tight"
                 style={{ color: "var(--text-primary)" }}
               >
-                Welcome to <span className="synthi-gradient-text">Synthi</span>
+                Welcome to <span className="synthi-gradient-text">Vectant ADE</span>
               </h1>
               <p
                 className="synthi-body text-sm"
@@ -377,7 +377,7 @@ export default function Dashboard() {
       >
         <div className="max-w-5xl mx-auto flex items-center justify-between px-6 h-14">
           <h1 className="text-lg font-semibold tracking-tight flex items-center gap-2">
-            <span className="synthi-gradient-text">Synthi</span>
+            <span className="synthi-gradient-text">Vectant ADE</span>
             <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>
               Dashboard
             </span>

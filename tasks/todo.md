@@ -205,3 +205,17 @@
 - `backend/collab-server/server.js` no longer turns a successful clone into a hard failure when the secondary app-side workspace registration call cannot be completed; the result now reports registration state for callers.
 - `synthi/src/app/page.jsx` now explicitly posts to `/api/workspace` after a successful clone, so the authenticated frontend ensures the workspace DB row exists before redirecting.
 - Targeted verification passed: `vitest` reported `47 passed`, and `pytest test/test_cache.py test/test_rule_registry.py -q` reported `17 passed`.
+
+## Navbar Logo PNG Swap
+
+### Scope
+- Replace the workspace navbar logo with the provided Vectant PNG assets for light and dark themes.
+- Stop using the recreated SVG wordmarks and restore the repo SVG assets to their original state.
+- Rebuild the frontend container and verify the updated navbar at localhost.
+
+### Checklist
+- [ ] Copy the provided Vectant PNG assets into `synthi/public`.
+- [ ] Update `TopNav.jsx` to use the PNG assets by theme.
+- [ ] Restore the original `synthi-logo.svg` and `synthi-dark-logo.svg` files.
+- [ ] Rebuild and restart the frontend service.
+- [ ] Verify the updated navbar renders at `http://localhost:3000`.

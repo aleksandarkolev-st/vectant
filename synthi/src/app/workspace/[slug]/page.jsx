@@ -2647,7 +2647,7 @@ export default function EditorPage({ params }) {
                     <WorkspaceHydrator slug={slug} />
 
                     <TopNav
-                        title={activeFile ? activeFile.name : 'Synthi Workspace'}
+                        title={activeFile ? activeFile.name : 'Vectant ADE Workspace'}
                         onRun={handleRun}
                         runInGuiMode={runInGuiMode}
                         setRunInGuiMode={setRunInGuiMode}

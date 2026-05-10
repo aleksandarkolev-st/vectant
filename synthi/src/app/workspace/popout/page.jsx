@@ -29,7 +29,7 @@ function PopoutPageInner() {
 
   useEffect(() => {
     // Set the document title to something useful
-    document.title = `Synthi — ${panelType || 'Panel'}`;
+    document.title = `Vectant ADE — ${panelType || 'Panel'}`;
 
     // Signal parent that the popout window is ready
     try {

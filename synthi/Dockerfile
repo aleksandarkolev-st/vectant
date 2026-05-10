@@ -30,29 +30,33 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# ── NEXT_PUBLIC_* build args (baked into client bundle) ─────────────────────
-# We dynamically inject .env.production via cloudbuild.yaml. Do NOT use ARG 
-# here as it can override the environment with empty strings causing local resets.
-# ARG NEXT_PUBLIC_COLLAB_SERVER_URL
-# ARG NEXT_PUBLIC_YSWEET_URL
-# ARG NEXT_PUBLIC_COLLAB_PORT
-# ARG NEXT_PUBLIC_COMPILE_SIGNAL_URL
-# ARG NEXT_PUBLIC_GATEWAY_WS_URL
-# ARG NEXT_PUBLIC_CODE_INTEL_URL
-# ARG NEXT_PUBLIC_AI_ENGINE_URL
+# Cloud builds rely on synthi/.env.production. Local docker-compose builds pass
+# explicit build args, so write only non-empty args into .env.production.local
+# to override the beta defaults during `next build`.
+ARG NEXT_PUBLIC_COLLAB_SERVER_URL=
+ARG NEXT_PUBLIC_YSWEET_URL=
+ARG NEXT_PUBLIC_COLLAB_PORT=
+ARG NEXT_PUBLIC_COMPILE_SIGNAL_URL=
+ARG NEXT_PUBLIC_GATEWAY_WS_URL=
+ARG NEXT_PUBLIC_CODE_INTEL_URL=
+ARG NEXT_PUBLIC_AI_ENGINE_URL=
+ARG NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=
 
-# ENV NEXT_PUBLIC_COLLAB_SERVER_URL=$NEXT_PUBLIC_COLLAB_SERVER_URL
-# ENV NEXT_PUBLIC_YSWEET_URL=$NEXT_PUBLIC_YSWEET_URL
-# ENV NEXT_PUBLIC_COLLAB_PORT=$NEXT_PUBLIC_COLLAB_PORT
-# ENV NEXT_PUBLIC_COMPILE_SIGNAL_URL=$NEXT_PUBLIC_COMPILE_SIGNAL_URL
-# ENV NEXT_PUBLIC_GATEWAY_WS_URL=$NEXT_PUBLIC_GATEWAY_WS_URL
-# ENV NEXT_PUBLIC_CODE_INTEL_URL=$NEXT_PUBLIC_CODE_INTEL_URL
-# ENV NEXT_PUBLIC_AI_ENGINE_URL=$NEXT_PUBLIC_AI_ENGINE_URL
-
-# Opt into the per-workspace worker spawner in local docker-compose builds.
-# Cloud builds override this via .env.production.
-ARG NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER
-ENV NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=$NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER
+RUN rm -f .env.production.local && \
+        : > .env.production.local && \
+        for entry in \
+            "NEXT_PUBLIC_COLLAB_SERVER_URL=$NEXT_PUBLIC_COLLAB_SERVER_URL" \
+            "NEXT_PUBLIC_YSWEET_URL=$NEXT_PUBLIC_YSWEET_URL" \
+            "NEXT_PUBLIC_COLLAB_PORT=$NEXT_PUBLIC_COLLAB_PORT" \
+            "NEXT_PUBLIC_COMPILE_SIGNAL_URL=$NEXT_PUBLIC_COMPILE_SIGNAL_URL" \
+            "NEXT_PUBLIC_GATEWAY_WS_URL=$NEXT_PUBLIC_GATEWAY_WS_URL" \
+            "NEXT_PUBLIC_CODE_INTEL_URL=$NEXT_PUBLIC_CODE_INTEL_URL" \
+            "NEXT_PUBLIC_AI_ENGINE_URL=$NEXT_PUBLIC_AI_ENGINE_URL" \
+            "NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER=$NEXT_PUBLIC_ENABLE_WORKSPACE_SPAWNER"; do \
+            key="${entry%%=*}"; \
+            value="${entry#*=}"; \
+            if [ -n "$value" ]; then printf '%s=%s\n' "$key" "$value" >> .env.production.local; fi; \
+        done
 
 # Generate the Prisma client (reads schema.prisma → node_modules/.prisma)
 RUN npx prisma generate
