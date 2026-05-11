@@ -501,12 +501,68 @@ async fn dc_send_text_with_backpressure(
     }
 }
 
+/// Install no-op Xlib error handlers so a broken X11 connection to Xvfb
+/// does not exit() the worker process. The default libX11 IO handler calls
+/// exit(1) when the X server socket dies — which happens whenever a runner
+/// tears down mid-stream during a reset/restart. We dlopen libX11 lazily so
+/// the worker still builds and runs on hosts where libX11 isn't installed.
+fn install_x11_error_handlers() {
+    use std::os::raw::{c_int, c_void};
+
+    extern "C" fn xio_noop(_display: *mut c_void) -> c_int {
+        eprintln!("[worker] X11 IO error suppressed (display connection broken)");
+        0
+    }
+    extern "C" fn xerror_noop(_display: *mut c_void, _event: *mut c_void) -> c_int {
+        // Non-fatal X protocol errors; log nothing to avoid spam.
+        0
+    }
+
+    unsafe {
+        let lib = match libloading::Library::new("libX11.so.6")
+            .or_else(|_| libloading::Library::new("libX11.so"))
+        {
+            Ok(l) => l,
+            Err(e) => {
+                debug_log!("[worker] libX11 not loadable ({e}); skipping XIO handler install");
+                return;
+            }
+        };
+
+        type XSetIOErrorHandlerFn =
+            unsafe extern "C" fn(extern "C" fn(*mut c_void) -> c_int)
+                -> extern "C" fn(*mut c_void) -> c_int;
+        type XSetErrorHandlerFn =
+            unsafe extern "C" fn(extern "C" fn(*mut c_void, *mut c_void) -> c_int)
+                -> extern "C" fn(*mut c_void, *mut c_void) -> c_int;
+
+        if let Ok(set_io) = lib.get::<XSetIOErrorHandlerFn>(b"XSetIOErrorHandler\0") {
+            set_io(xio_noop);
+            debug_log!("[worker] Installed no-op XSetIOErrorHandler");
+        }
+        if let Ok(set_err) = lib.get::<XSetErrorHandlerFn>(b"XSetErrorHandler\0") {
+            set_err(xerror_noop);
+            debug_log!("[worker] Installed no-op XSetErrorHandler");
+        }
+
+        // Leak the handle: the handlers live for the lifetime of the
+        // process, so the library must stay loaded.
+        std::mem::forget(lib);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     debug_log!("=== WORKER BUILD 2026-02-06-LSP-DEBUG ===");
     debug_log!("[Worker] Starting up (PID: {})", std::process::id());
     debug_log!("Worker starting...");
     debug_log!("Operating System: {}", std::env::consts::OS);
+
+    // Prevent broken X11 connections (e.g. Xvfb tear-down during a reset
+    // mid-build) from exit(1)-ing the worker. Must run before any X-using
+    // code (GStreamer ximagesrc, x11rb input emulation) so the default
+    // handlers don't latch in.
+    install_x11_error_handlers();
 
     // v2.1: Print security audit at startup (requirement #9)
     if std::env::var("SYNTHI_SECURITY_AUDIT")
