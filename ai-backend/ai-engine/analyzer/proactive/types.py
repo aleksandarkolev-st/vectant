@@ -255,6 +255,14 @@ class AnalysisResult:
 # ============================================================================
 
 @dataclass
+class Hunk:
+    """A line-range replacement, half-open [start_line, end_line)."""
+    start_line: int
+    end_line: int
+    new_lines: List[str]
+
+
+@dataclass
 class FileChange:
     """Represents a change in a file for incremental analysis."""
     path: str
@@ -262,6 +270,11 @@ class FileChange:
     change_type: str  # "added", "modified", "deleted"
     content: Optional[str] = None  # Only for added/modified
     language: Optional[str] = None
+    # Hunk-only optimization: when set, content may be omitted and the
+    # backend reconstructs it from the stored baseline whose hash equals
+    # base_hash. content_hash must match the post-apply hash.
+    hunks: Optional[List[Hunk]] = None
+    base_hash: Optional[str] = None
 
 
 @dataclass

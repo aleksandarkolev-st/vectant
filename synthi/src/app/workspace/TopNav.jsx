@@ -81,8 +81,8 @@ function TopNav({
 
   return (
     <div className="topnav-root flex items-center h-9 px-2 border-b space-x-4 shadow-sm font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
-      <div className="flex items-center h-full flex-shrink-0">
-          <img src={isLightTheme ? '/synthi-dark-logo.svg' : '/synthi-logo.svg'} alt="Synthi" className="h-22 w-auto" />
+      <div className="flex items-center justify-center h-full flex-shrink-0">
+          <img src={isLightTheme ? '/vectant-light-theme.png' : '/vectant-dark-theme.png'} alt="Vectant" className="block h-5 w-auto object-contain" />
       </div>
       <div className="topnav-search relative transition-all duration-200 hidden sm:block min-w-0"
            style={{ width: searchOpen ? '400px' : '200px', maxWidth: '100%' }}>

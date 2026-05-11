@@ -1081,6 +1081,38 @@ async function forwardProactiveQuickAnalysis(socket, data, requestId) {
 }
 
 /**
+ * Translate a changedFile payload (camelCase from frontend) into the
+ * snake_case shape the ai-engine expects. Hunks are passed through when
+ * present so the backend can reconstruct content from a stored baseline.
+ */
+function mapChangedFile(f) {
+  const out = {
+    path: f.path || "",
+    content_hash: f.contentHash || f.content_hash || "",
+    change_type: f.changeType || f.change_type || "modified",
+    content: f.content == null ? null : f.content,
+    language: f.language || null,
+  };
+  const hunks = f.hunks || f.hunks_list;
+  if (Array.isArray(hunks)) {
+    out.hunks = hunks.map((h) => ({
+      start_line: h.startLine ?? h.start_line ?? 0,
+      end_line: h.endLine ?? h.end_line ?? 0,
+      new_lines: Array.isArray(h.newLines)
+        ? h.newLines
+        : Array.isArray(h.new_lines)
+          ? h.new_lines
+          : [],
+    }));
+  }
+  const baseHash = f.baseHash || f.base_hash;
+  if (typeof baseHash === "string" && baseHash) {
+    out.base_hash = baseHash;
+  }
+  return out;
+}
+
+/**
  * Forward workspace analysis request to backend.
  * Workspace analysis handles multiple files with:
  * - Incremental analysis (only changed files + dependents)
@@ -1102,13 +1134,7 @@ async function forwardWorkspaceAnalysis(socket, data, requestId) {
 
   // Changed files (for incremental analysis)
   if (Array.isArray(data?.changedFiles) && data.changedFiles.length) {
-    forwardBody.changed_files = data.changedFiles.map((f) => ({
-      path: f.path || "",
-      content_hash: f.contentHash || f.content_hash || "",
-      change_type: f.changeType || f.change_type || "modified",
-      content: f.content || null,
-      language: f.language || null,
-    }));
+    forwardBody.changed_files = data.changedFiles.map(mapChangedFile);
   }
 
   // All files in workspace
@@ -1256,13 +1282,7 @@ async function forwardWorkspaceIncrementalAnalysis(socket, data, requestId) {
 
   // Changed files (required for incremental)
   if (Array.isArray(data?.changedFiles) && data.changedFiles.length) {
-    forwardBody.changed_files = data.changedFiles.map((f) => ({
-      path: f.path || "",
-      content_hash: f.contentHash || f.content_hash || "",
-      change_type: f.changeType || f.change_type || "modified",
-      content: f.content || null,
-      language: f.language || null,
-    }));
+    forwardBody.changed_files = data.changedFiles.map(mapChangedFile);
   }
 
   // All files (for context and dependency resolution)

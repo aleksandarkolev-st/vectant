@@ -19,6 +19,34 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAnalyzerGateway } from './useAnalyzerGateway';
+import { computeHunks, shouldUseHunks } from '@/utils/hunkDiff';
+
+/**
+ * Detect a hunk_resolution_failed payload returned by the backend (HTTP 409).
+ * Mirrors the helper in useVFSWorkspaceAnalysis. Returns
+ * { code, path, message } on match, otherwise null.
+ */
+function parseHunkResolutionError(error) {
+  if (!error || error.status !== 409) return null;
+  const payload = error.gatewayPayload;
+  const rawDetail = payload?.detail;
+  if (!rawDetail) return null;
+  let detail = rawDetail;
+  if (typeof rawDetail === 'string') {
+    try {
+      detail = JSON.parse(rawDetail);
+    } catch {
+      return null;
+    }
+  }
+  const inner = detail?.detail ?? detail;
+  if (!inner || inner.error !== 'hunk_resolution_failed') return null;
+  return {
+    code: inner.code,
+    path: inner.path,
+    message: inner.message,
+  };
+}
 
 // ============================================================================
 // Types
@@ -183,6 +211,9 @@ export function useWorkspaceAnalysis({
   const lastAiAnalysisRef = useRef(0);
   const workspaceFilesRef = useRef([]);  // All files in workspace
   const focusFileRef = useRef(null);
+  // path -> { content, hash } of last successfully-acked content. Used as
+  // baseline for hunk computation on the next change.
+  const baselineByPathRef = useRef(new Map());
   
   /**
    * Update a file's content and track the change
@@ -299,18 +330,72 @@ export function useWorkspaceAnalysis({
       lastAiAnalysisRef.current = now;
     }
     
+    // Convert each change to either hunks-or-content. payloadFiles is what
+    // goes on the wire; pendingBaselines records what to commit as the new
+    // baseline once the server confirms it accepted this version.
+    const payloadFiles = [];
+    const pendingBaselines = [];
+    let hunkSentCount = 0;
+    for (const change of changes) {
+      const baseline = baselineByPathRef.current.get(change.path);
+      const base = {
+        path: change.path,
+        contentHash: change.contentHash,
+        changeType: change.changeType,
+        language: change.language,
+      };
+
+      if (change.changeType === 'deleted') {
+        baselineByPathRef.current.delete(change.path);
+        payloadFiles.push({ ...base, content: null });
+        continue;
+      }
+
+      if (typeof change.content !== 'string') continue;
+
+      if (baseline && baseline.hash === change.contentHash) continue;
+
+      let usedHunks = false;
+      if (baseline && baseline.content !== change.content) {
+        const hunks = computeHunks(baseline.content, change.content);
+        if (hunks.length && shouldUseHunks(hunks, change.content)) {
+          payloadFiles.push({ ...base, hunks, baseHash: baseline.hash });
+          hunkSentCount += 1;
+          usedHunks = true;
+        }
+      }
+      if (!usedHunks) {
+        payloadFiles.push({ ...base, content: change.content });
+      }
+      pendingBaselines.push({
+        path: change.path,
+        content: change.content,
+        hash: change.contentHash,
+      });
+    }
+
+    if (payloadFiles.length === 0 && !options.force) {
+      setIsAnalyzing(false);
+      return null;
+    }
+
     try {
       const response = await clientRef.current._sendRequest('analyze/workspace/incremental', {
         workspaceId,
-        changedFiles: changes,
+        changedFiles: payloadFiles,
         allFiles: workspaceFilesRef.current.slice(0, MAX_FILES_PER_ANALYSIS),
         focusFile: focusFileRef.current,
         includeAi: shouldIncludeAi,
         maxDiagnosticsPerFile,
       });
-      
+
+      // Server accepted this version — advance baselines.
+      for (const b of pendingBaselines) {
+        baselineByPathRef.current.set(b.path, { content: b.content, hash: b.hash });
+      }
+
       const data = response?.data ?? response;
-      
+
       // Update state
       if (data?.files) {
         setDiagnosticsByFile(prev => ({
@@ -323,15 +408,15 @@ export function useWorkspaceAnalysis({
           ),
         }));
       }
-      
+
       if (data?.crossFileDiagnostics) {
         setCrossFileDiagnostics(data.crossFileDiagnostics);
       }
-      
+
       if (data?.suggestions) {
         setSuggestions(data.suggestions);
       }
-      
+
       if (data?.performance) {
         setAnalysisStats({
           filesAnalyzed: data.performance.filesAnalyzed || 0,
@@ -339,9 +424,25 @@ export function useWorkspaceAnalysis({
           totalElapsedMs: data.performance.totalElapsedMs || 0,
         });
       }
-      
+
       return data;
     } catch (error) {
+      const detail = parseHunkResolutionError(error);
+      if (detail) {
+        if (detail.path) {
+          baselineByPathRef.current.delete(detail.path);
+        } else {
+          baselineByPathRef.current.clear();
+        }
+        for (const change of changes) {
+          if (!detail.path || change.path === detail.path) {
+            pendingChangesRef.current.set(change.path, change);
+          }
+        }
+        console.warn(
+          `[Workspace Analysis] Hunk resolution failed (${detail.code}) for ${detail.path || '*'} — falling back to full content on next run`
+        );
+      }
       setLastError(error);
       throw error;
     } finally {

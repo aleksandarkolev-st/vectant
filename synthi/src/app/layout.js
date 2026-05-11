@@ -28,8 +28,8 @@ const inter = Inter({
 });
 
 export const metadata = {
-  title: "Synthi IDE",
-  description: "The intelligent cloud IDE powered by Synthi",
+  title: "Vectant ADE",
+  description: "The intelligent cloud IDE powered by Vectant ADE",
 };
 
 export default function RootLayout({ children }) {
