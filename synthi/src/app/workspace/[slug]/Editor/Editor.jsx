@@ -463,7 +463,8 @@ const EditorPanel = ({
                 try {
                     await initSynthiFileSystem(
                         fileCacheEntriesRef.current,
-                        rawFilesRef.current
+                        rawFilesRef.current,
+                        slug
                     );
                     console.log('[SynthiFS] Virtual filesystem pre-initialized during service startup');
                 } catch (e) {
@@ -491,10 +492,10 @@ const EditorPanel = ({
     // etc.) to resolve files that only exist on the remote worker.
     useEffect(() => {
         if (!servicesReady) return;
-        initSynthiFileSystem(fileCacheEntries, rawFiles).catch(e =>
+        initSynthiFileSystem(fileCacheEntries, rawFiles, slug).catch(e =>
             console.warn('[SynthiFS] Failed to init virtual filesystem:', e)
         );
-    }, [servicesReady, fileCacheEntries, rawFiles]);
+    }, [servicesReady, fileCacheEntries, rawFiles, slug]);
 
     // ── Worker file-sync seeding ────────────────────────────────
     // Push every cached workspace file to the worker disk as soon as the
