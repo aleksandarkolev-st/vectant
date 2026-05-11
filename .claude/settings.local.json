@@ -26,7 +26,30 @@
       "Bash(timeout 180 python -u -m bench.synthi_report --workspace \"C:/Users/dev/AppData/Local/Temp/synthi_report_ws_wjapybn4\" --no-cleanup --out bench/synthi_report.md)",
       "Bash(echo \"EXIT=$?\")",
       "Bash(python -c ' *)",
-      "Bash(docker compose build *)"
+      "Bash(docker compose build *)",
+      "Bash(cargo check *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('ai-backend/ai-engine/analyzer/proactive/semantic_analyzer.py', encoding='utf-8'\\).read\\(\\)\\); print\\('parse OK'\\)\")",
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_snapshot",
+      "mcp__playwright__browser_evaluate",
+      "Bash(docker exec synthi-ide-postgres-1 *)",
+      "Bash(node -e ' *)",
+      "mcp__playwright__browser_console_messages",
+      "mcp__playwright__browser_wait_for",
+      "mcp__playwright__browser_take_screenshot",
+      "Bash(docker exec *)",
+      "PowerShell(docker exec synthi-ide-collab-server-1 *)",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_type",
+      "mcp__playwright__browser_press_key",
+      "PowerShell(docker exec synthi-ide-worker-1 *)",
+      "mcp__playwright__browser_network_requests",
+      "PowerShell(docker port synthi-ide-coturn-1 *)",
+      "PowerShell(cargo check *)",
+      "Bash(docker compose *)",
+      "PowerShell(docker exec synthi-ide-ai-engine-1 *)",
+      "Bash(docker port *)",
+      "Bash(grep -nB2 -A10 \"worker:\" docker-compose.yml)"
     ]
   }
 }

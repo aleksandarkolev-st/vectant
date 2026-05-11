@@ -1,3 +1,42 @@
+# C++ Compile / HMR Stress Test 2026-05-11
+
+## Scope
+- Stress test C++ compile + HMR in workspace nzl1wr9x via Playwright.
+- Find errors, fix them, redeploy to docker.
+
+## What was wrong
+1. **ai-engine `/data:ro` + uid mismatch** — `/code-intel/index` 500'd on every workspace load with "Read-only file system: '/data/repos/<slug>/.code_intel'". Even after dropping `:ro`, ai-engine ran as uid 999 while collab-server's `/data` tree is owned 1001:1001 → "Permission denied".
+2. **Worker LSP send-retry spam** — `dc_send_with_backpressure` would burn 20+40+80+160+320 ≈ 620 ms of exponential backoff per call even when the WebRTC DataChannel was permanently `Closed`. With LSP servers (cpp + java) producing diagnostics continuously after a peer disconnect, the worker log filled with `[lsp] send error (retry N/5): DataChannel is not opened`.
+
+## Fixes
+- `docker-compose.yml`: drop `:ro` on `ai-engine` `collab-data` mount; update comment.
+- `ai-backend/ai-engine/Dockerfile`: pin appuser to uid/gid 1001 to match the `/data/repos` ownership written by collab-server.
+- `backend/synthi-webrtc-compiler/worker/src/main.rs`: fast-fail `dc_send_with_backpressure` / `dc_send_text_with_backpressure` if `ready_state()` is not `Open` (both pre-send and after each transient error). Stops the retry loop the instant the channel goes closed.
+
+## Deploy
+- `docker compose build ai-engine && docker compose up -d ai-engine` ✅
+- `docker compose build worker && docker compose up -d worker` ✅
+- Verified: ai-engine `whoami` → uid 1001, `touch /data/wt` succeeds; worker logs free of `[lsp] send error (retry N/5)` spam; `/code-intel/index` no longer 500s on workspace load.
+
+## Known not-fixed (out of scope for this run)
+- Playwright Chromium ↔ Docker-network WebRTC ICE fails (browser host candidates not reachable from worker container). This silently hangs the "Run" button: clicks do nothing if the compile DataChannel never opened. Real users running Chrome on the host don't hit this, but the silent-hang UX is still a bug worth a follow-up (timeout + error toast in `compilerClient.compile()`).
+- `/git/<slug>/fetch` 400 — unauthenticated git fetch path; separate concern.
+- VS Code Server install fails (`tar: trailing garbage ignored`) — unrelated to C++ HMR.
+
+---
+
+# Docker Compose EOF Investigation
+
+## Scope
+- Determine whether the local `docker compose build frontend` failure is caused by the frontend app build or by Docker/BuildKit losing the session.
+- Confirm why the output references both `frontend` and `ai-engine` even when only `frontend` was requested.
+- Summarize the most likely root cause and the next minimal diagnostic or workaround.
+
+## Checklist
+- [in-progress] Trace the compose and Dockerfile path for `frontend` and `ai-engine`.
+- [not-started] Run minimal Docker daemon and buildx diagnostics around the EOF.
+- [not-started] Summarize the failure mode and next action.
+
 # Deployment Review Plan
 
 ## Scope

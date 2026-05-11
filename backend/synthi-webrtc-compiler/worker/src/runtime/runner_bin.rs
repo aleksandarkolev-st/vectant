@@ -22,6 +22,10 @@ use x11rb::connection::Connection;
 use x11rb::protocol::shm::ConnectionExt as ShmConnectionExt;
 #[cfg(target_os = "linux")]
 use x11rb::protocol::xtest::ConnectionExt as XTestConnectionExt;
+// xproto::ConnectionExt provides `get_keyboard_mapping`, used to build
+// the keysym → keycode reverse table for XTest keyboard injection.
+#[cfg(target_os = "linux")]
+use x11rb::protocol::xproto::ConnectionExt as XprotoConnectionExt;
 
 use worker::runtime::runner_logic;
 // use worker::compiler::abi_version;
@@ -372,6 +376,54 @@ fn main() {
         }
     } else {
         false
+    };
+
+    // Build a keysym → keycode lookup so keyboard injection via XTest works
+    // for raw-Xlib user apps (those that `XSelectInput(KeyPressMask)` and
+    // poll `XNextEvent` directly — e.g. the snake demo). The shipped
+    // `SDL_PushEvent` path below stays in place for SDL apps; this is the
+    // parallel path for the non-SDL case. Querying the X server once at
+    // startup is cheaper than per-event and matches the active keyboard
+    // layout. Empty on failure → key injection silently degrades.
+    #[cfg(target_os = "linux")]
+    let keysym_to_keycode: std::collections::HashMap<u32, u8> = if let Some(ref conn) = x11_conn {
+        let setup = conn.setup();
+        let min_kc = setup.min_keycode;
+        let max_kc = setup.max_keycode;
+        let count  = max_kc - min_kc + 1;
+        match conn.get_keyboard_mapping(min_kc, count) {
+            Ok(cookie) => match cookie.reply() {
+                Ok(mapping) => {
+                    let per = mapping.keysyms_per_keycode as usize;
+                    let mut map = std::collections::HashMap::with_capacity(count as usize * per);
+                    for i in 0..count as usize {
+                        let kc = min_kc + i as u8;
+                        for j in 0..per {
+                            let ks = mapping.keysyms[i * per + j];
+                            if ks != 0 {
+                                // First keycode wins — typical layout has
+                                // lower-case at index 0, upper at index 1,
+                                // so XK_a → its base keycode and XK_A → the
+                                // same keycode (Shift handled by caller).
+                                map.entry(ks).or_insert(kc);
+                            }
+                        }
+                    }
+                    debug_log!("[Runner] keysym→keycode map built: {} entries", map.len());
+                    map
+                }
+                Err(e) => {
+                    eprintln!("[Runner] get_keyboard_mapping reply failed: {}. Keyboard XTest injection disabled.", e);
+                    std::collections::HashMap::new()
+                }
+            },
+            Err(e) => {
+                eprintln!("[Runner] get_keyboard_mapping failed: {}. Keyboard XTest injection disabled.", e);
+                std::collections::HashMap::new()
+            }
+        }
+    } else {
+        std::collections::HashMap::new()
     };
 
     // SHM is only needed when runner manages its own display (for frame capture).
@@ -1072,10 +1124,11 @@ fn main() {
                                     let type_str = parts[2];
                                     let keycode = parts[3].parse::<i32>().unwrap_or(0);
 
-                                    // For keyboard events, use SDL_PushEvent since
-                                    // xdotool uses X11 keysyms which differ from SDL
-                                    // keycodes. SDL_PushEvent works reliably for keyboard
-                                    // events processed via SDL_PollEvent / on_event.
+                                    // Path 1 — SDL apps. SDL_PushEvent drops a synthetic
+                                    // event into SDL's queue keyed on the SDL keycode.
+                                    // SDL keycodes differ from X11 keysyms (especially for
+                                    // special keys with the 0x40000000 high bit), so we
+                                    // can't reuse one value for both pipelines.
                                     unsafe {
                                         let event_type = if type_str == "down" {
                                             SDL_KEYDOWN
@@ -1096,6 +1149,29 @@ fn main() {
                                         *(event_ptr.add(24) as *mut u16) = 0; // mod
 
                                         SDL_PushEvent(&mut event);
+                                    }
+
+                                    // Path 2 — raw-Xlib apps. Inject a real X11
+                                    // KeyPress / KeyRelease through XTest so apps
+                                    // that read via `XNextEvent` (and selected
+                                    // `KeyPressMask` on their window) see it.
+                                    // Optional 5th token in the stdin protocol
+                                    // carries the X11 keysym from main.rs's
+                                    // `js_key_to_x11_keysym`. Backward-compatible:
+                                    // older callers omit the field, in which case
+                                    // only SDL gets the event (today's behaviour).
+                                    if parts.len() >= 5 && xtest_ready && !keysym_to_keycode.is_empty() {
+                                        let keysym = parts[4].parse::<u32>().unwrap_or(0);
+                                        if keysym != 0 {
+                                            if let Some(&xkc) = keysym_to_keycode.get(&keysym) {
+                                                if let Some(ref conn) = x11_conn {
+                                                    // XTest event types: 2 = KeyPress, 3 = KeyRelease.
+                                                    let event_type: u8 = if type_str == "down" { 2 } else { 3 };
+                                                    let _ = conn.xtest_fake_input(event_type, xkc, 0, x11_root, 0, 0, 0);
+                                                    let _ = conn.flush();
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }

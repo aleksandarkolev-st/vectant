@@ -642,7 +642,31 @@ pub async fn handle_runner_execution(
             cmd.env("SYNTHI_SESSION_ID", sid);
         }
 
-        let mut child = cmd.spawn().context("Failed to spawn runner process")?;
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                // Diagnostic: the bare anyhow context strips the underlying
+                // io::Error reason before it reaches the frontend, leaving us
+                // unable to tell ENOENT from EACCES from ETXTBSY. Capture
+                // errno + binary state into both the worker stderr and the
+                // wrapped error message so the next failure is actionable.
+                let kind = e.kind();
+                let raw_os_error = e.raw_os_error();
+                let cwd_at_spawn = std::env::current_dir().ok();
+                let (exists, len, is_file) = match std::fs::metadata(&runner_path) {
+                    Ok(md) => (true, md.len(), md.is_file()),
+                    Err(_) => (false, 0u64, false),
+                };
+                eprintln!(
+                    "[Main] runner spawn FAILED: binary={:?} cwd_at_spawn={:?} kind={:?} raw_os_error={:?} exists={} len={} is_file={} err={}",
+                    runner_path, cwd_at_spawn, kind, raw_os_error, exists, len, is_file, e
+                );
+                return Err(anyhow::Error::from(e).context(format!(
+                    "Failed to spawn runner process: binary={} kind={:?} raw_os_error={:?} exists={} len={} is_file={}",
+                    runner_path.display(), kind, raw_os_error, exists, len, is_file
+                )));
+            }
+        };
 
         // Runner is up — flip lifecycle to `ready`. First peer attach
         // moves it to `running` via peer-count tracking (signaling-side).
@@ -758,6 +782,7 @@ pub async fn handle_runner_execution(
             process: Some(child),
             stdin: Some(stdin.clone()),
             output_tx: log_tx,
+            session_id: session_id.clone(),
             is_gui: req.is_gui,
             is_hmr_capable: has_on_update,
             hmr_capability: None,
@@ -872,14 +897,36 @@ pub async fn handle_runner_execution(
         // section. So we send the same commands in both modes, no
         // branching needed.
         if let Some(stdin_arc) = &state.stdin {
-            // Check if process is still alive before sending anything
+            // Check if process is still alive before sending anything.
+            // Capture the exit status (signal vs code) so that the bail
+            // message below can carry it into the frontend's
+            // SynthiException — the bare "Runner process exited" string
+            // is useless for telling a SIGSEGV apart from a normal exit
+            // apart from a SIGKILL from an OOM killer.
             let mut process_alive = true;
+            let mut exit_status_repr: Option<String> = None;
             if let Some(child) = state.process.as_mut() {
                 if let Ok(Some(status)) = child.try_wait() {
+                    let repr = {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::process::ExitStatusExt;
+                            match (status.code(), status.signal()) {
+                                (Some(code), _) => format!("code={}", code),
+                                (None, Some(sig)) => format!("signal={}", sig),
+                                _ => format!("{}", status),
+                            }
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            format!("{}", status)
+                        }
+                    };
                     debug_log!(
-                        "[Main] Runner process has already exited with status: {}",
-                        status
+                        "[Main] Runner process has already exited ({})",
+                        repr
                     );
+                    exit_status_repr = Some(repr);
                     process_alive = false;
                 }
             }
@@ -948,7 +995,10 @@ pub async fn handle_runner_execution(
                     anyhow::bail!("Runner process stdin write failed (process may have crashed)");
                 }
             } else {
-                anyhow::bail!("Runner process exited before module loading could begin");
+                anyhow::bail!(
+                    "Runner process exited before module loading could begin ({})",
+                    exit_status_repr.as_deref().unwrap_or("status unknown")
+                );
             }
         }
 

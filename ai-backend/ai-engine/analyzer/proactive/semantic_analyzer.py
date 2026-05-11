@@ -768,7 +768,15 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
         diagnostics.extend(self._check_const_correctness(lines, file))
         diagnostics.extend(self._check_syntax_issues(lines, file))
         diagnostics.extend(self._check_variable_issues(lines, file))
-        diagnostics.extend(self._check_undefined_functions(lines, file, available_symbols))
+        # Undefined-function detection is intentionally not run for C/C++.
+        # clangd is the authoritative source for symbol resolution, and the
+        # regex-based heuristic that previously ran here produced systematic
+        # false positives: it didn't recognise lambdas (`auto draw = [&](){}`)
+        # as defined names and had no real preprocessor to ingest header
+        # symbols (X11, POSIX, etc.). Running both surfaced clangd's correct
+        # diagnostics alongside the heuristic's noise. The heuristic was not
+        # worth chasing toward parity with clangd — that role belongs to the
+        # real LSP.
         # Note: Logic error detection is handled by AI tier for better accuracy
         # Note: Include checking disabled - too many false positives, let compiler handle it
         
@@ -896,137 +904,6 @@ class CppSemanticAnalyzer(BaseSemanticAnalyzer):
         # 2. Include was actually present but symbol detection failed
         # Let the compiler handle include errors - it's more accurate
         return []
-    
-    def _check_undefined_functions(
-        self,
-        lines: List[str],
-        file: FileContext,
-        available_symbols: Set[str],
-    ) -> List[Diagnostic]:
-        """Check for undefined function calls.
-        
-        This detects when a function is called but not defined in:
-        1. The current file
-        2. Any included header files (via available_symbols)
-        3. Standard library
-        """
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        diagnostics = []
-        
-        # Standard library functions that are commonly used without explicit include check
-        std_functions = {
-            'main', 'printf', 'scanf', 'strlen', 'strcpy', 'strcmp', 'memcpy', 'memset',
-            'malloc', 'free', 'calloc', 'realloc', 'exit', 'abort',
-            'sin', 'cos', 'tan', 'sqrt', 'pow', 'abs', 'floor', 'ceil',
-            'rand', 'srand', 'time', 'clock',
-            'assert', 'static_assert',
-            # Common STL methods
-            'begin', 'end', 'size', 'empty', 'push_back', 'pop_back',
-            'insert', 'erase', 'find', 'sort', 'swap', 'move',
-        }
-        
-        # Collect functions defined in current file
-        local_functions = set()
-        for line in lines:
-            stripped = line.strip()
-            # Function definition: return_type name(args) { or return_type name(args);
-            func_def = re.match(r'^(?:static\s+|inline\s+|extern\s+|virtual\s+)?(?:const\s+)?(?:unsigned\s+|signed\s+)?(?:[\w:]+(?:<[^>]+>)?)(?:[\s\*&]+)(\w+)\s*\([^)]*\)\s*(?:const)?\s*[{;]?', stripped)
-            if func_def and not stripped.startswith('#') and not stripped.startswith('//'):
-                func_name = func_def.group(1)
-                if func_name not in {'if', 'for', 'while', 'switch', 'return', 'sizeof', 'typedef', 'struct', 'class', 'enum', 'union', 'namespace'}:
-                    local_functions.add(func_name)
-                    logger.info(f"[_check_undefined_functions] Found local function: {func_name}")
-        
-        # All available functions = local + from includes + standard
-        all_available = local_functions | available_symbols | std_functions
-        logger.info(f"[_check_undefined_functions] All available functions: {all_available}")
-        
-        # Check for function calls that aren't available
-        inside_function = False
-        brace_depth = 0
-        
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            brace_depth += stripped.count('{') - stripped.count('}')
-            
-            # Skip preprocessor, comments
-            if stripped.startswith('#') or stripped.startswith('//') or stripped.startswith('/*'):
-                continue
-            
-            # Skip function definitions (we're looking for calls, not definitions)
-            # Standard function: Type name(...)
-            if re.match(r'^(?:static\s+|inline\s+)?(?:const\s+)?(?:[\w:]+(?:<[^>]+>)?)(?:[\s\*&]+)\w+\s*\([^)]*\)\s*\{?$', stripped):
-                continue
-            # Constructor/Destructor definition: ClassName(...) or ~ClassName(...)
-            # Heuristic: Starts with word, has parens, no return type, might have init list
-            if re.match(r'^(?:~)?\w+\s*\([^)]*\)\s*(?::.*)?\{?$', stripped):
-                continue
-            
-            # Look for function calls: name(
-            # But not: type name( which is a declaration
-            calls = re.finditer(r'\b(\w+)\s*\(', line)
-            for match in calls:
-                func_name = match.group(1)
-                
-                # Skip keywords and types
-                if func_name in {'if', 'for', 'while', 'switch', 'return', 'sizeof', 'typeof', 'decltype',
-                                 'int', 'float', 'double', 'char', 'bool', 'void', 'long', 'short',
-                                 'unsigned', 'signed', 'auto', 'const', 'static', 'extern', 'inline',
-                                 'class', 'struct', 'enum', 'union', 'namespace', 'template',
-                                 'new', 'delete', 'throw', 'catch', 'try'}:
-                    continue
-                
-                # Skip method calls (obj.method() or obj->method())
-                col = match.start()
-                if col > 0:
-                    before = line[:col].rstrip()
-                    if before.endswith('.') or before.endswith('->') or before.endswith('::'):
-                        continue
-                
-                # Skip constructor initialization lists
-                # Heuristic: : member(val)
-                colon_pos = line.find(':')
-                if colon_pos != -1 and colon_pos < col:
-                    # Check for ternary
-                    if '?' in line[:colon_pos]:
-                        pass # Ternary, don't skip
-                    # Check for range-based for
-                    elif line.strip().startswith('for'):
-                        pass # For loop, don't skip
-                    # Check for access modifiers
-                    elif re.search(r'\b(public|private|protected)\s*:', line[:colon_pos+1]):
-                        pass # Access modifier, don't skip
-                    # Check for switch case
-                    elif re.search(r'\bcase\s+.*:', line[:colon_pos+1]):
-                        pass # Case label, don't skip
-                    else:
-                        # Check if there's a block start or end between colon and call
-                        between = line[colon_pos+1:col]
-                        if '{' not in between and ';' not in between:
-                            # Likely constructor initialization list
-                            continue
-
-                # Check if function is available
-                if func_name not in all_available:
-                    logger.info(f"[_check_undefined_functions] Undefined function call: {func_name}")
-                    diagnostics.append(Diagnostic(
-                        message=f"Function '{func_name}' is not defined. Did you mean a different function name?",
-                        severity=Severity.ERROR,
-                        tier=AnalysisTier.SEMANTIC,
-                        location=DiagnosticLocation(
-                            line=i,
-                            column=col,
-                            end_line=i,
-                            end_column=col + len(func_name),
-                        ),
-                        code="SEM301",
-                        category=DiagnosticCategory.UNDEFINED_VARIABLE,
-                        explanation=f"The function '{func_name}' is called but not defined in the current file or any included headers.",
-                    ))
-        
-        return diagnostics
     
     def _check_syntax_issues(self, lines: List[str], file: FileContext) -> List[Diagnostic]:
         """Check for basic syntax issues like missing semicolons, malformed includes, unbalanced braces."""

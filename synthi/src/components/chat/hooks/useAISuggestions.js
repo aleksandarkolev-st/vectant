@@ -997,18 +997,24 @@ export const useAISuggestions = ({
                     // as a manual-review suggestion instead of a hard error
                     const replaceOnly = extractReplaceContent(block.searchReplaceText);
                     if (replaceOnly && replaceOnly.trim()) {
+                        // If the existing file is empty (or only whitespace), the SEARCH
+                        // block could never have matched anything meaningful — treat the
+                        // REPLACE content as the intended initial contents instead of
+                        // surfacing a confusing "did not match" error.
+                        const fileIsEmpty = !currentContent || !currentContent.trim();
+                        const writeReplace = baseIsMissing || fileIsEmpty;
                         console.warn('[SEARCH/REPLACE] Fuzzy match failed for', block.path, '— falling back to REPLACE content');
                         hydrated.push({
                             path: block.path,
                             resolvedPath,
                             diffText: null,
                             originalContent: currentContent,
-                            updatedContent: baseIsMissing ? replaceOnly : currentContent,
+                            updatedContent: writeReplace ? replaceOnly : currentContent,
                             isNewFile: baseIsMissing,
                             isFolder: false,
-                            chunks: baseIsMissing ? computeDiffChunks('', replaceOnly) : [],
-                            status: baseIsMissing ? 'pending' : 'error',
-                            error: baseIsMissing ? undefined : 'SEARCH block did not match current file. The intended replacement is shown below — review carefully before applying.',
+                            chunks: writeReplace ? computeDiffChunks(currentContent || '', replaceOnly) : [],
+                            status: writeReplace ? 'pending' : 'error',
+                            error: writeReplace ? undefined : 'SEARCH block did not match current file. The intended replacement is shown below — review carefully before applying.',
                             intendedContent: replaceOnly,
                         });
                     } else {

@@ -65,10 +65,58 @@ pub async fn run_java(
 
         let state = guard.take().unwrap();
 
-        // Kill old JVM / runner process
+        // Snapshot the X client count BEFORE killing the JVM. We use the
+        // drop in client count as the signal that the X server has fully
+        // reaped the dead JVM's connection. Without this, the next spawn
+        // races against the OLD JVM's still-mapped windows + matchbox's
+        // stale reparenting frame, and the window-discovery logic locks
+        // onto the OLD XID — GStreamer then captures a black framebuffer
+        // owned by the dead client (the "black screen on second build"
+        // symptom). Only meaningful when reusing Xvfb (GUI rerun).
+        let pre_kill_clients = if state.is_gui && can_reuse {
+            count_x_clients(&state.wsl_display_str).await
+        } else {
+            0
+        };
+
+        // Kill old JVM / runner process. `tokio::Child::kill().await`
+        // sends SIGKILL and waits for the process to be reaped — but
+        // the X server's reap of that client's windows is asynchronous
+        // and not covered by this wait. See the post-kill loop below.
         if let Some(mut child) = state.process {
-            eprintln!("[JavaRunner] Killing previous process...");
+            eprintln!(
+                "[JavaRunner] Killing previous process (pid={:?})...",
+                child.id()
+            );
             let _ = child.kill().await;
+        }
+
+        // Bounded wait for the X server + matchbox to settle. Up to
+        // 1500 ms, polling every 50 ms. If the count drops we proceed
+        // immediately; if the deadline hits we proceed anyway and let
+        // the spawn-side xwininfo retry loop handle whatever lingers.
+        if state.is_gui && can_reuse && pre_kill_clients > 0 {
+            let display = state.wsl_display_str.clone();
+            let deadline =
+                tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
+            loop {
+                let now = count_x_clients(&display).await;
+                if now < pre_kill_clients {
+                    eprintln!(
+                        "[JavaRunner] X11 cleanup: client count {} → {} after JVM kill",
+                        pre_kill_clients, now
+                    );
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    eprintln!(
+                        "[JavaRunner] X11 cleanup: timed out (1.5s) waiting for X client count to drop from {}",
+                        pre_kill_clients
+                    );
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
         }
 
         if can_reuse {
@@ -523,6 +571,7 @@ pub async fn run_java(
         process: Some(child),
         stdin: Some(stdin.clone()),
         output_tx: log_tx,
+        session_id: Some(session_id.to_string()),
         is_gui: req.is_gui,
         is_hmr_capable: false, // Java doesn't support in-process HMR
         hmr_capability: None,
@@ -621,6 +670,27 @@ pub async fn run_java(
 // These are extracted verbatim from the C++ runner.rs logic so
 // that both pipelines share identical Xvfb/GStreamer behaviour.
 // ════════════════════════════════════════════════════════════════
+
+/// Count active X11 client connections on `display` via `xlsclients`.
+/// Used as the cleanup signal after killing a previous JVM: the drop
+/// in client count indicates the X server has reaped the dead JVM's
+/// connection (and matchbox will subsequently clean up its frame on
+/// the resulting DestroyNotify). Returns 0 on any failure — callers
+/// must treat 0 as "skip the wait" so a missing/broken `xlsclients`
+/// degrades to today's behaviour rather than blocking forever.
+async fn count_x_clients(display: &str) -> usize {
+    use tokio::process::Command;
+    match Command::new("xlsclients")
+        .env("DISPLAY", display)
+        .output()
+        .await
+    {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).lines().count()
+        }
+        _ => 0,
+    }
+}
 
 /// Start Xvfb and matchbox-window-manager.
 /// Returns `(child, display)` where `display` is the DISPLAY string

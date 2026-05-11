@@ -446,6 +446,7 @@ export default function EditorPage({ params }) {
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
+    const [buildLogsCollapsed, setBuildLogsCollapsed] = useState(false);
     const [hmrEnabled, setHmrEnabled] = useState(true);
     const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const [emulatorSessionId, setEmulatorSessionId] = useState(null);
@@ -2180,6 +2181,12 @@ export default function EditorPage({ params }) {
         if (!emulatorSessionId) {
             appendBuildLog('Stopped by user.');
         }
+        // Clear the GUI-running flag synchronously. The worker normally
+        // emits `synthi:gui-end` on runner shutdown, but the hard
+        // `client.reconnect()` below tears down the data channel that
+        // event rides on — so without this explicit clear the TopNav
+        // would still show Stop/Reload (via isRunning) after a stop.
+        setIsGuiRunning(false);
         if (client?.reconnect) {
             await client.reconnect();
         }
@@ -2199,6 +2206,10 @@ export default function EditorPage({ params }) {
                 return;
             }
         }
+        // Same rationale as handleStop: clear before the hard reconnect
+        // so isRunning reflects reality during the gap before handleRun
+        // sets it back via the new session's gui-start event.
+        setIsGuiRunning(false);
         if (client?.reconnect) {
             await client.reconnect();
         }
@@ -2655,7 +2666,7 @@ export default function EditorPage({ params }) {
                         setHmrEnabled={setHmrEnabled}
                         onStop={handleStop}
                         onReload={handleRestart}
-                        isRunning={isCompiling}
+                        isRunning={isCompiling || isGuiRunning}
                         onToggleTerminal={onToggleTerminalCb}
                         onUndo={handleUndo}
                         onRedo={handleRedo}
@@ -2672,12 +2683,35 @@ export default function EditorPage({ params }) {
                     <GuestBanner />
 
                     {buildLogs.length > 0 && (
-                        <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
-                            {buildLogs.map((line, idx) => (
-                                <div key={idx} className="leading-5 whitespace-pre-wrap">
-                                    {line}
+                        <div className="border-b border-[#1a1a1e] bg-[#09090b]">
+                            <div className="flex items-center justify-between px-3 py-1 text-[10px] uppercase tracking-wide text-[#7d7d85]">
+                                <button
+                                    type="button"
+                                    onClick={() => setBuildLogsCollapsed((v) => !v)}
+                                    className="flex items-center gap-1 hover:text-[#D7DAE0]"
+                                    title={buildLogsCollapsed ? 'Show build logs' : 'Hide build logs'}
+                                >
+                                    <span aria-hidden="true">{buildLogsCollapsed ? '▸' : '▾'}</span>
+                                    <span>Build logs</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setBuildLogs([])}
+                                    className="hover:text-[#D7DAE0]"
+                                    title="Clear build logs"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                            {!buildLogsCollapsed && (
+                                <div className="px-3 pb-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
+                                    {buildLogs.map((line, idx) => (
+                                        <div key={idx} className="leading-5 whitespace-pre-wrap">
+                                            {line}
+                                        </div>
+                                    ))}
                                 </div>
-                            ))}
+                            )}
                         </div>
                     )}
 

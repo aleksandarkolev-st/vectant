@@ -212,6 +212,61 @@ async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCI
 // Removed: `const GUI_TOOLS = &["Xvfb", "matchbox-window-manager"]` — the
 // runner now handles input via stdin, no external GUI tooling needed.
 
+/// Convert JavaScript `ev.key` names to X11 keysyms (XK_*).
+/// Used by the runner's XTest fake_input path so raw-Xlib user apps
+/// (those reading via XNextEvent on a window with KeyPressMask) actually
+/// receive the keystroke. SDL apps already get their events via the
+/// SDL_PushEvent path keyed on the SDL keycode below; this is the
+/// parallel path for non-SDL apps. Keysym values are from
+/// /usr/include/X11/keysymdef.h. ASCII printable codepoints (0x20..0x7E)
+/// are valid keysyms verbatim; only "named" keys need a table.
+fn js_key_to_x11_keysym(key: &str) -> u32 {
+    match key {
+        " " => 0x0020,
+        "Enter" | "Return"      => 0xFF0D,
+        "Escape"                => 0xFF1B,
+        "Backspace"             => 0xFF08,
+        "Tab"                   => 0xFF09,
+        "Delete"                => 0xFFFF,
+        "Insert"                => 0xFF63,
+        "Home"                  => 0xFF50,
+        "End"                   => 0xFF57,
+        "PageUp"                => 0xFF55,
+        "PageDown"              => 0xFF56,
+        "ArrowLeft"             => 0xFF51,
+        "ArrowUp"               => 0xFF52,
+        "ArrowRight"            => 0xFF53,
+        "ArrowDown"             => 0xFF54,
+        "F1"  => 0xFFBE, "F2"  => 0xFFBF, "F3"  => 0xFFC0, "F4"  => 0xFFC1,
+        "F5"  => 0xFFC2, "F6"  => 0xFFC3, "F7"  => 0xFFC4, "F8"  => 0xFFC5,
+        "F9"  => 0xFFC6, "F10" => 0xFFC7, "F11" => 0xFFC8, "F12" => 0xFFC9,
+        "Shift"   | "ShiftLeft"   => 0xFFE1,
+        "ShiftRight"              => 0xFFE2,
+        "Control" | "ControlLeft" => 0xFFE3,
+        "ControlRight"            => 0xFFE4,
+        "Alt"     | "AltLeft"     => 0xFFE9,
+        "AltRight"                => 0xFFEA,
+        "Meta"    | "MetaLeft"    => 0xFFEB,
+        "MetaRight"               => 0xFFEC,
+        "CapsLock"                => 0xFFE5,
+        "NumLock"                 => 0xFF7F,
+        "ScrollLock"              => 0xFF14,
+        // Single character — for printable ASCII the keysym IS the codepoint.
+        // X11 distinguishes upper-case vs lower-case via separate keysyms,
+        // which is correct (XK_a = 0x61, XK_A = 0x41) — pass the raw char
+        // through so the browser's shift state is preserved end-to-end.
+        other => {
+            let mut chars = other.chars();
+            if let (Some(c), None) = (chars.next(), chars.next()) {
+                if c.is_ascii() && !c.is_control() {
+                    return c as u32;
+                }
+            }
+            0
+        }
+    }
+}
+
 /// Convert JavaScript `ev.key` names to SDL2 keycodes (SDLK_*)
 /// The runner's `input key down/up <keycode>` protocol expects integer SDL keycodes.
 fn js_key_to_sdl_keycode(key: &str) -> i32 {
@@ -325,6 +380,16 @@ async fn dc_send_with_backpressure(
     data: &Bytes,
     label: &str,
 ) -> anyhow::Result<()> {
+    // Fast-fail if the channel is permanently dead (closed/closing). Retrying with
+    // exponential backoff burns ~620ms per call and floods logs when an upstream
+    // pump (LSP, build log) keeps producing messages after the peer disconnected.
+    let state = dc.ready_state();
+    if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
+        && state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Connecting
+    {
+        return Err(anyhow::anyhow!("DataChannel not open (state={:?})", state));
+    }
+
     // Wait for the SCTP send buffer to drain below the threshold
     let mut waited = 0u32;
     while dc.buffered_amount().await > DC_BUFFER_THRESHOLD {
@@ -354,6 +419,12 @@ async fn dc_send_with_backpressure(
         match dc.send(data).await {
             Ok(_) => return Ok(()),
             Err(e) => {
+                // Bail immediately if the channel transitioned to closed mid-send.
+                let state = dc.ready_state();
+                if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
+                    return Err(anyhow::anyhow!("DataChannel not open (state={:?}): {}", state, e));
+                }
+
                 retries += 1;
                 if retries > DC_SEND_MAX_RETRIES {
                     debug_log!(
@@ -379,6 +450,14 @@ async fn dc_send_text_with_backpressure(
     text: String,
     label: &str,
 ) -> anyhow::Result<()> {
+    // See dc_send_with_backpressure: fast-fail on dead channel to stop log spam.
+    let state = dc.ready_state();
+    if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
+        && state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Connecting
+    {
+        return Err(anyhow::anyhow!("DataChannel not open (state={:?})", state));
+    }
+
     // Wait for buffer to drain
     let mut waited = 0u32;
     while dc.buffered_amount().await > DC_BUFFER_THRESHOLD {
@@ -398,6 +477,11 @@ async fn dc_send_text_with_backpressure(
         match dc.send_text(text.clone()).await {
             Ok(_) => return Ok(()),
             Err(e) => {
+                let state = dc.ready_state();
+                if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
+                    return Err(anyhow::anyhow!("DataChannel not open (state={:?}): {}", state, e));
+                }
+
                 retries += 1;
                 if retries > DC_SEND_MAX_RETRIES {
                     debug_log!(
@@ -1635,19 +1719,43 @@ async fn wire_peer_channels(
                                             }
                                         }
 
-                                        // Stop any running runner process/pipeline
+                                        // Stop the runner ONLY if this cancel actually
+                                        // targets the currently-active session. A stale
+                                        // cancel-build for a previous session (frontend
+                                        // can send these during reconnect/cleanup) used
+                                        // to unconditionally `take()` the runner store —
+                                        // killing the shared Xvfb of the live session
+                                        // and producing `XIO: fatal IO error 110` on the
+                                        // live runner's X connection. Now we match the
+                                        // request's session_id against the runner's own,
+                                        // and only take/kill if they match (or if the
+                                        // request didn't specify a session, i.e.
+                                        // cancel-everything semantics).
                                         {
                                             let mut guard = runner_store_for_msg.lock().await;
-                                            if let Some(state) = guard.take() {
-                                                if let Some(mut child) = state.process {
-                                                    let _ = child.kill().await;
+                                            let session_matches = match (&target_session, guard.as_ref().and_then(|s| s.session_id.as_ref())) {
+                                                (None, _) => true, // cancel-all
+                                                (Some(req_sid), Some(state_sid)) => req_sid == state_sid,
+                                                (Some(_), None) => false, // request targets a session but runner has none recorded; do not touch
+                                            };
+                                            if session_matches {
+                                                if let Some(state) = guard.take() {
+                                                    if let Some(mut child) = state.process {
+                                                        let _ = child.kill().await;
+                                                    }
+                                                    if let Some(mut child) = state.xvfb_process {
+                                                        let _ = child.kill().await;
+                                                    }
+                                                    if let Some(pipeline) = state.gst_pipeline {
+                                                        let _ = pipeline.set_state(gst::State::Null);
+                                                    }
                                                 }
-                                                if let Some(mut child) = state.xvfb_process {
-                                                    let _ = child.kill().await;
-                                                }
-                                                if let Some(pipeline) = state.gst_pipeline {
-                                                    let _ = pipeline.set_state(gst::State::Null);
-                                                }
+                                            } else {
+                                                debug_log!(
+                                                    "[Main] cancel-build session_id={:?} does not match active runner session={:?}; leaving runner alive",
+                                                    target_session,
+                                                    guard.as_ref().and_then(|s| s.session_id.clone())
+                                                );
                                             }
                                         }
 
@@ -2108,9 +2216,23 @@ async fn wire_peer_channels(
                                                     if let Some(typ) = evt.get("type").and_then(|x| x.as_str()) {
                                                         if typ == "stop-runner" {
                                                             debug_log!("[worker] stop-runner requested for session {}", sid);
-                                                            // Take and destroy runner state
+                                                            // Same defence as cancel-build: only tear down the
+                                                            // runner if its recorded session matches `sid`. A
+                                                            // stop-runner for a stale/previous session must not
+                                                            // kill the Xvfb that the currently-live session is
+                                                            // streaming through.
                                                             let mut rg = runner_store_term.lock().await;
-                                                            if let Some(mut state) = rg.take() {
+                                                            let session_matches = rg.as_ref()
+                                                                .and_then(|s| s.session_id.as_deref())
+                                                                .map(|state_sid| state_sid == sid)
+                                                                .unwrap_or(false);
+                                                            if !session_matches {
+                                                                debug_log!(
+                                                                    "[worker] stop-runner sid={} does not match active runner sid={:?}; leaving runner alive",
+                                                                    sid,
+                                                                    rg.as_ref().and_then(|s| s.session_id.clone())
+                                                                );
+                                                            } else if let Some(mut state) = rg.take() {
                                                                 // Stop GStreamer pipeline FIRST (before killing Xvfb)
                                                                 // to avoid capture-from-dead-display crashes
                                                                 if let Some(ref pipeline) = state.gst_pipeline {
@@ -2194,9 +2316,16 @@ async fn wire_peer_channels(
                                                                     if let Some(action) = evt.get("action").and_then(|x| x.as_str()) {
                                                                         if let Some(key) = evt.get("key").and_then(|k| k.as_str()) {
                                                                             let sdlk = js_key_to_sdl_keycode(key);
-                                                                            if sdlk != 0 {
+                                                                            let xks  = js_key_to_x11_keysym(key);
+                                                                            if sdlk != 0 || xks != 0 {
                                                                                 let dir = if action == "down" || action == "press" { "down" } else { "up" };
-                                                                                cmd = format!("input key {} {}", dir, sdlk);
+                                                                                // Extended protocol: `input key <dir> <sdl_keycode> <x11_keysym>`.
+                                                                                // The runner uses the SDL keycode for SDL_PushEvent (SDL apps)
+                                                                                // and the X11 keysym for xtest_fake_input (raw-Xlib apps that
+                                                                                // read via XNextEvent on KeyPressMask, e.g. the snake demo).
+                                                                                // Trailing field is backward-compatible: older runners that
+                                                                                // only parse 4 tokens will ignore the keysym.
+                                                                                cmd = format!("input key {} {} {}", dir, sdlk, xks);
                                                                             }
                                                                         }
                                                                     }
