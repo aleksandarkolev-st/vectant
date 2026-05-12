@@ -422,19 +422,218 @@ Keeping this as a dedicated phase isolates the compile-orchestration complexity 
 
 **Branch.** No `cuda-hmr` branch exists yet — start work with `git checkout -b cuda-hmr` from `main`.
 
-## 9. Verification
+## 9. Verification — in-depth testing playbook
 
-Each phase has its own checkpoint:
+This section is the operator manual for verifying each phase. It is **deliberately concrete**: exact files, exact commands, exact JSON shapes, exact pixel/log expectations. The automation harness in §12 implements the green path described here; this section also covers the manual flow you run when the harness is itself under development.
 
-1. **Phase 0 smoke.** Write a 20-line `vector_add.cu` project, hit Compile, confirm `compile_device.rs` produces a cubin and the host runner launches the kernel. Pure toolchain check.
-2. **Phase 1 cold-reload.** Same project, edit only the kernel body (e.g. swap `+` for `*`), hit Compile, confirm the input buffer survives. A worker unit test asserts the same `cudaMalloc` pointer is reused across the swap.
-3. **Phase 2 fast device swap.** Instrument the worker to log `reload_plan`. Edit kernel body → expect `device_only`, swap in <300ms. Edit a kernel parameter type → expect `abi_breaking` and cold reload. Repeat on ROCm via hipcc on an AMD GPU (or via HIP-CPU runtime in CI).
-4. **Phase 3 mixed + driver checkpoint + healer.** Start a long-running kernel that maintains accumulator state across launches. Edit both host and device side mid-run. Confirm the accumulator survives. Toggle `gpu.snapshot_mode` between `driver_checkpoint` and `userspace` and verify both paths succeed. Three healer drills:
-   - Tier 1: write a kernel calling a non-existent intrinsic; confirm `GPU_HEAL_COMPILE_PROMPT` fix natively replaces the call site in `device.cu` (no new file).
-   - Tier 2: write a kernel with 200 local floats forcing register spills; confirm `GPU_HEAL_PERF_PROMPT` adds `__launch_bounds__` and/or moves the array to shared memory by editing `device.cu` in place.
-   - Tier 3: write a kernel that indexes one past the buffer; confirm `GPU_HEAL_RUNTIME_PROMPT` fixes the bounds check directly in the kernel.
-   - For all three: assert via `verifier_gpu.py` that the heal output added no new files and no `*_safe`/`*_v2`/`*_fallback` wrappers.
-5. **Bench corpus.** Add `ai-backend/ai-engine/bench/corpus/gpu/` with `vector_add/`, `reduction/`, `gemm/` fixtures matching the existing `bench/corpus/<name>` shape. Each has a known-correct edit and an assertion that device state is preserved. Wire into `bench/harness.py`.
+### 9.0 Prerequisites
+
+**Host machine (worker side).**
+
+- NVIDIA: driver ≥ 535 (Tier-A driver checkpoint needs ≥ 555 / CUDA 12.5). Verify: `nvidia-smi`, `nvcc --version` ≥ 12.0.
+- AMD (ROCm): driver ≥ 6.0. Verify: `rocminfo`, `hipcc --version`. For CI without an AMD GPU, fall back to the HIP-CPU runtime.
+- ccache present but **not** in PATH for the device compile stage (§5.3) — verify with `ccache -s` before and after a device compile; counters must not increment.
+- Sufficient device memory: each fixture below sizes buffers to fit in ≤ 64 MiB so a 4 GiB device is enough.
+
+**Backend services (host).** All services from `live-test.mjs` preamble must be up. Concretely:
+
+```
+docker compose ps                       # signaling, collab, redis, y-sweet, ai-engine, gateway, frontend, worker
+curl -s localhost:3000/api/ready        # frontend
+curl -s localhost:1234/health           # collab
+nc -z localhost 9000                    # signaling
+```
+
+The worker must be built with the `gpu-hmr` cargo feature: `cargo build --features gpu-hmr -p synthi-webrtc-compiler`. The feature gates the new adapter; without it the GPU manifest field is ignored and tests fall through to the host-only path — which is itself a useful negative test (see §9.6).
+
+**Feature flag.** Every test session exports `SYNTHI_GPU_HMR=1` so the orchestration changes are live. Without it the worker silently routes through the legacy host-only path.
+
+**Frontend toggle.** The "GPU" / "No GPU" toggle from §5.7 is wired to Redux. Tests that exercise the *enabled* path send `prefer_gpu_pipeline: true` on compile requests; tests that exercise the *disabled* path send `false` and assert the project compiles as plain C++ (or fails predictably).
+
+### 9.1 Workspace seeding intricacies
+
+Seeding a GPU workspace uses the same wire as `live-test.mjs` (Phase 2-3 of that script) plus three deltas:
+
+1. The seed file set is **5 files**, not 1: `shared.h`, `core.cpp`, `gui.cpp`, `host_runner.cpp`, `device.cu` (or `device.hip`). The Kernel Splitter Agent normally produces this set on first compile, but in the test harness we seed the post-split layout directly so we can assert against known SipHash-2-4 kernel signatures.
+2. The `BuildManifest` includes a `gpu` block (§5.1). We seed it as `.synthi/build_manifest.json` in the workspace alongside the source files; the worker reads it on first compile so the device pipeline kicks in immediately without waiting on the LLM.
+3. Initial compile is **worker-driven**, not browser-driven. Unlike `live-test.mjs` Phase 2 (which waits for the browser to mount the workspace), the GPU harness sends `synthi_compile` with `prefer_gpu_pipeline:true` directly. The frontend is only needed if you want to interactively inspect the running app.
+
+Seed pattern (mirrors `writeFilesBatchCollab` in `live-test.mjs:140-155`):
+
+```js
+await writeFilesBatchCollab({ collabUrl, slug, userId, syncToGcs: true, files: [
+  { path: 'shared.h',         content: SHARED_H },
+  { path: 'core.cpp',         content: CORE_CPP },
+  { path: 'gui.cpp',          content: GUI_CPP },
+  { path: 'host_runner.cpp',  content: HOST_RUNNER_CPP },
+  { path: 'device.cu',        content: DEVICE_CU },
+  { path: '.synthi/build_manifest.json', content: JSON.stringify(MANIFEST) },
+]});
+await stageAndCommit({ collabUrl, slug, userId, message: 'gpu-hmr-test: seed' });
+```
+
+`MANIFEST.gpu` for the CUDA path:
+```json
+{ "vendor": "cuda", "device_compiler": "nvcc", "arch": ["sm_80"],
+  "device_flags": ["-O3","-lineinfo","--use_fast_math"],
+  "runtime_libs": ["cudart","cuda"],
+  "snapshot_mode": "auto",
+  "fatbin_strategy": "sidecar_module" }
+```
+
+For ROCm, swap `vendor: "rocm"`, `device_compiler: "hipcc"`, `arch: ["gfx90a"]`, `runtime_libs: ["amdhip64"]`.
+
+### 9.2 Test fixtures
+
+Three fixtures live under `mcp/synthi-mcp/tests/fixtures/gpu/`. Each is a complete, hand-written post-split project (no LLM in the loop) so the harness can assert exact behavior.
+
+**`vector_add/`** — Phases 0–2 baseline.
+- `device.cu` exports `__global__ void vec_add(const float* a, const float* b, float* c, int n)`.
+- `core.cpp` allocates 3 device buffers of `N = 1<<20` floats, fills `a` and `b` with deterministic patterns (`a[i] = i`, `b[i] = 2*i`), launches `vec_add`, copies `c` back, and renders a 256-bin histogram of `c` to the canvas.
+- Edit script: replace the `+` in `c[i] = a[i] + b[i];` with `*`. After HMR the histogram visibly shifts from a linear ramp to a sparse cluster.
+- Assertions: the `cudaMalloc` pointer for `a` is reused across the swap (worker log line `[gpu-adapter] reused buffer a=0x… size=4194304`). Visual pHash hamming > 4. Kernel signature hash unchanged → `reload_plan = device_only`.
+
+**`reduction/`** — Phase 1 cold-reload + buffer survival.
+- `device.cu` exports `__global__ void block_reduce(const float* in, float* partials, int n)`; host completes the reduction on CPU.
+- Edit: change the per-block accumulator from sum to max.
+- Assertion: the input buffer (≈ 4 MiB) survives the swap; reported reduction value transitions from `Σi` (1 048 575 × 524 288) to `N - 1` exactly on the first post-HMR frame.
+
+**`gemm/`** — Phase 2 fast device swap + Phase 3 mixed.
+- `device.cu` exports `__global__ void gemm_naive(const float* A, const float* B, float* C, int M, int N, int K)` with constant-memory `__constant__ float alpha[1]; __constant__ float beta[1];`.
+- Edit A (device-only): vectorize the inner loop. `reload_plan = device_only`.
+- Edit B (mixed): change `alpha`/`beta` types from `float` to `float2` AND update the host launch site. `reload_plan = mixed`. Constant-memory layout change is treated as ABI-breaking under the §5.7 rules; the harness must observe a *cold* reload (no buffer pointer reuse) with `device_on_load` invoked once.
+
+All three fixtures include a `golden.json` describing:
+- expected `reload_plan` per edit step,
+- expected `kernel_sig_hashes` before and after,
+- expected per-phase post-HMR pixel sample (center pixel of the canvas) with tolerance,
+- expected worker log markers (regex per phase).
+
+### 9.3 Phase 0 — toolchain smoke
+
+**Goal.** Prove the worker invokes `nvcc` / `hipcc`, produces a cubin/hsaco, and the host runner can launch one kernel.
+
+**Manual recipe (5 min).**
+1. Seed `vector_add/` (§9.2).
+2. `POST /compile` with `prefer_gpu_pipeline:true`.
+3. Tail `worker.log`, expect within 30 s:
+   ```
+   [compile-device] nvcc -arch=sm_80 -O3 -lineinfo --use_fast_math -ptx -o device_*.ptx
+   [compile-device] nvcc --cubin -o device_*.cubin
+   [ptxas] Used 18 registers, 0 bytes spill
+   [gpu-adapter] cuModuleLoadData ok  module=…  kernels=[vec_add]
+   ```
+4. The window shows the linear histogram. No errors in `worker.log`, no `gpu_runtime_error` events.
+
+**Pass/fail.**
+- Pass: a `device_*.cubin` is present under `<workspace>/.synthi/build/`. Its mtime > the compile request timestamp.
+- Fail: missing cubin, or `nvcc` invoked via ccache (`is_cpp_compiler` regression — §5.3).
+
+**Common failure modes and the fix.**
+- `nvcc: command not found` → PATH not set in worker container. `docker exec worker which nvcc` should resolve.
+- `unsupported gpu architecture 'sm_80'` → arch mismatch; the harness skips this fixture on hardware older than Ampere and emits a `skipped` row.
+- ccache wrapping nvcc → assertion fails on `worker.log` containing `ccache nvcc`. Fix `is_cpp_compiler` (§5.3).
+
+### 9.4 Phase 1 — cold reload with buffer survival
+
+**Goal.** A device-only edit reloads the cubin without restarting the process or destroying buffers.
+
+**Manual recipe.**
+1. Run Phase-0 first; leave the window open.
+2. Apply the edit (replace `+` with `*` in `device.cu`).
+3. `POST /compile`, then `synthi_wait_hmr` (timeout 30 s).
+4. Expected `worker.log` markers:
+   ```
+   [gpu-reload] plan=device_only  reason=device-file-only-edit
+   [gpu-reload] step=drain   streams_synced=1  ms=…
+   [gpu-reload] step=save    tier=userspace  buffers=3  bytes=12582912
+   [gpu-reload] step=unload  module=…
+   [gpu-reload] step=load    cubin=device_*.cubin  ms=…
+   [gpu-reload] step=restore bufs_replayed=3  bytes=12582912
+   [gpu-reload] step=verify  sig_match=1/1  ok
+   ```
+5. Visual: the histogram shifts. pHash hamming > 4.
+6. Buffer survival: log line `[gpu-adapter] reused buffer a=0x7f… size=…` for each of `a`, `b`, `c`. Pointer values from the post-load log must equal the pre-edit pointers (recorded in `before.log`).
+
+**Negative test.** Repeat with `SYNTHI_GPU_HMR=0`. Expect the worker to fall through to cold restart and the buffer pointers to change. The harness asserts the *positive* case logs `reused buffer` ≥ 3 times and the *negative* case logs `cold-restart` once.
+
+### 9.5 Phase 2 — fast device-only swap (and ROCm parity)
+
+**Goal.** Device-only edits take <300 ms wall clock; param-type edits trip `abi_breaking` and cold-reload cleanly.
+
+**Recipe — fast path.**
+1. Use `gemm/` fixture, Edit A (vectorize inner loop).
+2. Compile, wait HMR.
+3. Worker emits `[gpu-reload] plan=device_only` and `total_ms` ≤ 300 (configurable via `SYNTHI_GPU_FAST_SWAP_BUDGET_MS`, default 300).
+4. Output matrix `C` (sampled by the host runner and rendered as a 16×16 thumbnail) is numerically unchanged within `1e-4` (vectorization shouldn't move the values).
+
+**Recipe — abi_breaking.**
+1. Edit `device.cu` to change `gemm_naive`'s last param from `int K` to `int K, float alpha_scalar`. Do NOT update the host launch site (we want the classifier to detect the signature drift before the host can even compile).
+2. Compile. Expect: `[gpu-reload] plan=abi_breaking` and either (a) the heal endpoint fires because the host now has an unresolved symbol, or (b) the verifier rejects the patch as `signature_changed_without_host_update`. Either path is acceptable; assert both don't both fire.
+
+**ROCm parity.** Re-run §9.4 and §9.5 with `vendor:"rocm"` manifest. On CI without an AMD GPU, set `SYNTHI_GPU_HIP_FAKE_RUNTIME=1` to load the HIP-CPU runtime; the assertion list is identical except the `[gpu-adapter]` log prefix says `hip` instead of `cu`.
+
+### 9.6 Phase 3 — mixed reload + driver checkpoint + healer drills
+
+**Goal.** Prove the orchestrator can save → host-swap → device-swap → restore in one pass; prove both snapshot tiers work; prove the three healer tiers patch existing files without emitting shims.
+
+**Mixed recipe.**
+1. Use `gemm/` Edit B (constant-memory type change + host launch update in one batch).
+2. Compile. Expect: `[gpu-reload] plan=mixed`, step sequence `device_save → host_swap → device_swap → device_restore`, `device_on_load` invoked exactly once, `kernel_sig_hashes` updated, host pointer (Renderer*) unchanged.
+3. Pre-flight: start the project, let it run for ≥ 2 s so an accumulator inside `core.cpp` is non-zero; the accumulator must survive the mixed swap.
+
+**Snapshot tier toggle.**
+- Run mixed twice: once with `gpu.snapshot_mode:"driver_checkpoint"`, once with `"userspace"`. On a driver < 12.5, the first run must downgrade automatically; assert the log shows `[device-checkpoint-probe] tier=A unavailable; falling back to tier B`.
+- Tier-A run logs `cuCheckpointProcessCheckpoint ok blob=… bytes`.
+- Tier-B run logs `[device-snapshot] tier=B buffers=3 bytes=…` and serializes via msgpack.
+
+**Healer drill — Tier 1 (compile hard).**
+1. Edit `device.cu`: change `__shfl_down_sync(0xFFFFFFFF, x, 16)` to `__shfl_down(0xFFFFFFFF, x, 16)` (drops the `_sync` suffix; nvcc rejects on sm_70+).
+2. Compile. Expect: `[compile-device] nvcc error: identifier "__shfl_down" is undefined`.
+3. Harness asserts: heal request fires within 5 s, prompt is `GPU_HEAL_COMPILE_PROMPT`, returned edits target `device.cu` only, no new files, the next compile succeeds.
+
+**Healer drill — Tier 2 (compile soft).**
+1. Edit kernel to declare `float local[200];` inside `__global__` body so ptxas reports register spills.
+2. Compile. `ptxas info` records 96 registers, 24 bytes spill stores.
+3. Harness asserts: triage promotes to Tier 2 because spills > 0 AND the kernel is hot in the launch graph; heal request uses `GPU_HEAL_PERF_PROMPT`; the returned diff contains either an `__launch_bounds__` annotation **or** moves `local[]` to `__shared__`. Verifier-rejected outputs (new file, `_safe` wrapper) must be retried, logged, and bounded by `MAX_HEAL_RETRIES=2`.
+
+**Healer drill — Tier 3 (runtime).**
+1. Edit kernel index expression from `out[i]` to `out[i + 4]` for a buffer of length `n`; the last thread block over-indexes.
+2. Compile + launch. Expect: `cudaErrorIllegalAddress` raised on the stream callback within 100 ms.
+3. Harness asserts: triage = Tier 3, heal prompt = `GPU_HEAL_RUNTIME_PROMPT`, the returned diff fixes the bounds check natively (e.g. `if (i + 4 < n) out[i+4] = …` or reverts to `out[i]`), no new files.
+
+**Stream-hang specifically.**
+1. Inject a kernel with `while (true)` guarded by a never-true predicate the compiler can't prove false (use `volatile int* p = &x; while (*p == 0) {}`).
+2. Compile + launch. The watchdog (§11.6) synthesizes `STREAM_HANG` after `SYNTHI_GPU_LAUNCH_WATCHDOG_MS` (default 5 s).
+3. Harness asserts: `gpu_runtime_error` event with `kind: "stream_hang"` reaches the heal endpoint, the AI patches the launch site or kernel (commonly by adding the missing termination condition), and after MAX_HEAL_RETRIES fails the worker falls through to `drain timeout → process kill → cold restart` (§5.7). The harness verifies the drain timeout fires at the configured 2000 ms — measured from log timestamps.
+
+**No-shim verifier assertions (apply to all three tiers).**
+
+```
+for edit in heal_response.edits:
+    assert edit.module in BuildManifest.files            # rule 1
+    if introduces_global(edit):
+        assert not name_similar_to_existing(new_symbol)  # rule 2
+    if tier in ('compile_soft','runtime'):
+        assert all_existing_kernel_sigs_present()        # rule 3
+assert no_new_cu_hip_files(heal_response)                # rule 4
+```
+
+### 9.7 Bench corpus integration
+
+Add `ai-backend/ai-engine/bench/corpus/gpu/` with `vector_add/`, `reduction/`, `gemm/` directories matching the existing `bench/corpus/<name>` shape (peek at `bench/corpus/py-off-by-one/` for the format — `before/`, `after/`, `prompt.txt`, `expected.json`). Each GPU fixture's `expected.json` declares the post-edit `reload_plan`, kernel-signature hashes, and a numerical assertion on the output. Wire into `bench/harness.py` by adding the directory to its corpus enumeration; no harness code change beyond the directory listing.
+
+### 9.8 What "green" looks like at the end
+
+Running the harness (§12) against a worker built with `gpu-hmr` should print:
+
+```
+━━━ GPU HMR test summary ━━━
+  Checked N points: G PASS  W WARN  0 FAIL
+  Phases: P0 ✓  P1 ✓  P2 ✓ (cuda)  P2 ✓ (rocm)  P3-mixed ✓  P3-heal-T1 ✓  P3-heal-T2 ✓  P3-heal-T3 ✓
+```
+
+Anything in `FAIL` blocks merge to `cuda-hmr`. `WARN` is acceptable for capability-gated checks (e.g. Tier-A driver checkpoint on a < 12.5 driver downgrades to Tier B and emits a WARN, not a FAIL). The pass criteria for the harness itself: zero FAIL rows, and at minimum one phase per phase id covered.
 
 ## 10. Risks and open issues
 
@@ -548,3 +747,76 @@ Already listed in §8, repeated here for legibility of this section:
 - `ai-backend/ai-engine/agents/gpu_healer.py` — accepts the unified payload, dispatches to the right sub-prompt.
 - `ai-backend/ai-engine/verifier_gpu.py` — no-shim rules: file-creation rejection, name-similarity wrapper detection, signature preservation.
 - Worker → IDE RPC schema — add a `gpu_runtime_error` event variant (find the existing schema via the host compile-error event type).
+
+## 12. Automation harness — `gpu-hmr-test.mjs`
+
+The plan in §9 is executed automatically by `mcp/synthi-mcp/scripts/gpu-hmr-test.mjs`, modelled on `live-test.mjs`. The script is **forward-compatible** — it will run today against a worker that hasn't shipped GPU HMR yet and emit precise, actionable failures pinpointing which seam is missing. As each phase lands, more rows turn from `WARN (skipped: feature_flag_off)` into `PASS`.
+
+### 12.1 What the harness does, end to end
+
+1. **Preflight** (mirrors `live-test.mjs` Phase 1):
+   - TCP-pings frontend/collab/signaling.
+   - Probes the worker container for `nvcc` and/or `hipcc`. If neither is present, every per-phase row records `skipped: no_toolchain`; the harness still exercises the workspace-seeding wire (validates the §9.1 seed plumbing) and prints a clean summary.
+   - Probes `SYNTHI_GPU_HMR` and the worker's `gpu-hmr` cargo feature via `synthi_health`'s extended capability block. If the flag is off, rows record `skipped: feature_flag_off`. This is the same shape `live-test-phase3.mjs` uses for unimplemented escape hatches — see lines 1007-1031 of `live-test.mjs`.
+2. **Workspace seeding** (the §9.1 intricacies):
+   - Creates a fresh slug via `POST /api/workspace`.
+   - Writes 5 source files + `.synthi/build_manifest.json` in one `write-files-batch` call (single round-trip, atomic from the collab server's view).
+   - Stages + commits.
+3. **Per-phase suite**, each with its own assertions and recorded row:
+   - **P0 (smoke)**: compile, scrape worker log for `compile-device`, assert cubin exists.
+   - **P1 (cold reload)**: edit `device.cu`, compile, `synthi_wait_hmr`, screenshot before/after with pHash, assert `reload_plan=cold` (Phase-1 era) or `device_only` (Phase-2 era), assert buffer-pointer reuse.
+   - **P2-cuda (fast swap)**: assert `total_ms ≤ SYNTHI_GPU_FAST_SWAP_BUDGET_MS`, assert `device_on_load` was NOT invoked.
+   - **P2-rocm (parity)**: same but with `vendor:"rocm"`. Auto-skip if `hipcc` not present and `SYNTHI_GPU_HIP_FAKE_RUNTIME` unset.
+   - **P3-mixed**: stateful fixture (accumulator), edit both sides, assert accumulator preserved, assert log-step sequence.
+   - **P3-tier-toggle**: re-run mixed once per `snapshot_mode`, assert downgrade behavior on old drivers.
+   - **P3-heal-T1/T2/T3**: inject the three pathological edits from §9.6, post to `/refactor/heal/gpu`, validate against the no-shim verifier rules.
+   - **P3-stream-hang**: assert the watchdog's 5 s synthesis + drain-timeout fallback.
+4. **Summary** (mirrors `live-test.mjs:1131-1144`):
+   - Per-row PASS / WARN / FAIL with phase label.
+   - Writes `results.json` + `results.txt` + per-phase screenshots and worker-log slices to `.gpu-hmr-test-{logs,artifacts}/`.
+   - Exit code: 0 if zero FAIL; 1 otherwise. WARN never fails the run (it's the right signal for "feature not built yet" and "no Tier-A driver").
+
+### 12.2 Running it
+
+Single command from `mcp/synthi-mcp/`:
+
+```
+SYNTHI_GPU_HMR=1 \
+  SYNTHI_GPU_VENDOR=cuda \
+  GOOGLE_API_KEY=…  \
+  node scripts/gpu-hmr-test.mjs
+```
+
+Environment variables (all optional, sensible defaults):
+
+| Variable                              | Default                | Purpose                                                                                  |
+| ------------------------------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
+| `FRONTEND_URL`                        | `http://localhost:3000`| Next.js API for workspace creation.                                                       |
+| `COLLAB_URL`                          | `http://localhost:1234`| Collab server for `write-files-batch` + git ops.                                          |
+| `SIGNALING_URL`                       | `ws://localhost:9000`  | WebRTC signaling; used by `synthi_attach` if MCP is wired.                                |
+| `AI_ENGINE_URL`                       | `http://localhost:8000`| AI engine for `/refactor/split/gpu`, `/refactor/heal/gpu`, etc.                          |
+| `WORKER_LOG_PATH`                     | `<repo>/backend/synthi-webrtc-compiler/.run/worker.log` | Tailed by the harness for log markers.                |
+| `SLUG`                                | `gpu-hmr-<ts>`         | Unique per run.                                                                          |
+| `SYNTHI_GPU_VENDOR`                   | `cuda`                 | `cuda` or `rocm`; also set `both` to run both vendors back-to-back.                       |
+| `SYNTHI_GPU_FAST_SWAP_BUDGET_MS`      | `300`                  | Phase-2 wall-clock budget.                                                               |
+| `SYNTHI_GPU_LAUNCH_WATCHDOG_MS`       | `5000`                 | Used to set the expected stream-hang detection latency.                                  |
+| `SYNTHI_GPU_DRAIN_TIMEOUT_MS`         | `2000`                 | Used to assert the drain-timeout fallback.                                               |
+| `SYNTHI_GPU_HIP_FAKE_RUNTIME`         | unset                  | If set, harness sends a manifest flag asking the worker to load HIP-CPU instead of real ROCm. |
+| `SKIP_PHASES`                         | empty                  | Comma list of phase ids to skip (e.g. `P3-stream-hang` for slow CI lanes).               |
+| `ONLY_PHASES`                         | empty                  | Comma list of phase ids to run exclusively.                                              |
+| `HMR_TIMEOUT_MS`                      | `60000`                | Per-edit HMR wait timeout.                                                               |
+
+### 12.3 What it asserts vs the plan
+
+Every numbered assertion in §9 has a row in `results.json`. The harness is the executable form of §9; if §9 changes, the harness's `expected.*` files (in `tests/fixtures/gpu/*/golden.json`) must change with it, and CI will catch drift between the two.
+
+### 12.4 Pre-implementation behavior
+
+Today, every GPU endpoint and every worker log marker described in §9 does not exist. Running the harness on current `main` produces:
+
+- P0–P3 rows: `WARN  skipped: feature_flag_off` (because `SYNTHI_GPU_HMR=1` is read by code that doesn't exist yet).
+- Workspace seed rows: `PASS` (the `write-files-batch` plumbing is real; the harness validates 5 files + manifest land on disk correctly via `synthi_get_source_state`'s content hash).
+- Toolchain probe rows: `PASS` or `SKIP` based on whether `nvcc`/`hipcc` exist on the worker.
+- Exit code: 0.
+
+This is intentional: the harness is the **acceptance test** the implementor runs locally as each seam ships. The first thing it will do, the first day Phase 0 lands, is turn the P0 row green and immediately catch the `is_cpp_compiler` regression (§9.3) if anyone forgets it.
