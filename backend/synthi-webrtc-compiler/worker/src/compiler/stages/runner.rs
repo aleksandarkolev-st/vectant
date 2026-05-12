@@ -136,14 +136,27 @@ pub async fn handle_runner_execution(
     // The on_update callback is optional — it just lets user code react
     // to the swap (e.g. migrate state).  Without it, the new module is
     // loaded and the next render frame picks up the new symbols.
-    let existing_runner_can_hmr = if let Some(state) = guard.as_ref() {
+    //
+    // CRITICAL: also verify the child process is still alive. Otherwise we
+    // happily fall into the "HMR MODE: Reusing existing runner" path and
+    // immediately bail with "Runner process exited before module loading
+    // could begin" — which is exactly what happens when the user's main()
+    // returned cleanly after a previous run (e.g. clicked Restart, or the
+    // game-loop hit Escape). Treating an exited runner as "no runner" lets
+    // the spawn-fresh branch below take over.
+    let existing_runner_can_hmr = if let Some(state) = guard.as_mut() {
+        let runner_alive = match state.process.as_mut() {
+            Some(child) => matches!(child.try_wait(), Ok(None)),
+            None => false,
+        };
         let gui_mode_same = state.is_gui == req.is_gui;
         let resolution_same = state.width == req_width && state.height == req_height;
-        debug_log!("[Main] Existing runner: is_gui={}, gui_mode_same={}, resolution_same={}, has_on_update={}",
-            state.is_gui, gui_mode_same, resolution_same, has_on_update);
+        debug_log!("[Main] Existing runner: alive={}, is_gui={}, gui_mode_same={}, resolution_same={}, has_on_update={}",
+            runner_alive, state.is_gui, gui_mode_same, resolution_same, has_on_update);
 
-        // HMR enabled: reuse running process when GUI mode and resolution match.
-        gui_mode_same && resolution_same
+        // HMR enabled: reuse running process when alive AND GUI mode and
+        // resolution match.
+        runner_alive && gui_mode_same && resolution_same
     } else {
         false
     };
