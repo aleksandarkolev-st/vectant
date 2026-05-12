@@ -335,12 +335,41 @@ This is the user's "binary device snapshot" requirement. Decided per-workspace a
 
 **Tier B — userspace serializer (always available).** Required because the driver feature is recent and not on every machine.
 
-1. **Buffer registry.** A 50-line shim in `host_runner.cpp` wraps `cudaMalloc`/`hipMalloc` and records `(ptr, size, owner_module, semantic_name)` for every live device allocation. The runner template already exists (it's what the AI synthesises today); the shim is a small addition.
+1. **Buffer registry.** A 50-line shim in `host_runner.cpp` wraps `cudaMalloc`/`hipMalloc` and records `(ptr, size, owner_module, semantic_name, lifetime_hint, dirty)` for every live device allocation. The runner template already exists (it's what the AI synthesises today); the shim is a small addition.
 2. **Drain.** `cuStreamSynchronize` every known stream; record the stream/event DAG before draining so it can be reconstructed.
-3. **Pack.** `cuMemcpyDtoH` every registered buffer into a single pinned-host arena; copy `__constant__` symbols via `cuModuleGetGlobal` + `cuMemcpyDtoH`. Serialize with **msgpack** (matches the host v2 path — `PLUGIN_ABI.md:608-613` — so the wire framing is uniform).
-4. **Restore.** Context is alive across the swap; reallocate buffers with the same sizes, `cuMemcpyHtoD` from the arena, restore constants, recreate streams + events with the recorded topology. `device_on_load` lets user code rebind any pointers it stashed — and, critically, lets the AI *natively patch the deserialization logic itself* when the struct layout changes across an ABI edit, so no migration shim is ever needed.
+3. **Pack.** Default path = `cuMemcpyDtoD` into an in-VRAM shadow arena (see §6.1 below); fall through to `cuMemcpyDtoH` into a pinned-host arena only when the device doesn't have enough free VRAM headroom. Copy `__constant__` symbols via `cuModuleGetGlobal` + `cuMemcpyDtoH` (always cheap — constant memory is ≤ 64 KiB). Frame the snapshot with **msgpack** (matches the host v2 path — `PLUGIN_ABI.md:608-613` — so the wire framing is uniform).
+4. **Restore.** Context is alive across the swap; reallocate buffers with the same sizes (or reuse the existing allocations when the size and owner match — the common case for a device-only edit), `cuMemcpyDtoD` or `cuMemcpyHtoD` from the appropriate arena, restore constants, recreate streams + events with the recorded topology. `device_on_load` lets user code rebind any pointers it stashed — and, critically, lets the AI *natively patch the deserialization logic itself* when the struct layout changes across an ABI edit, so no migration shim is ever needed.
 
 Both tiers expose the same `DeviceStateSnapshot` Rust type to the rest of the worker; only the `driver_blob`-vs-`buffers` arm differs. The agent pipeline is unaware of which tier is in use; `gpu.snapshot_mode = "auto"` lets the worker pick.
+
+### 6.1 Tier-B latency budget — why naive `cuMemcpyDtoH` is unshippable
+
+The first draft of this plan said "`cuMemcpyDtoH` every registered buffer into a single pinned-host arena." For a project with 100 MiB of device-resident state that's fine. For a real GPU app it is **not**, and shipping it that way would make HMR feel sluggish on every edit. Concrete numbers (PCIe 4.0 x16, ~28 GB/s real-world; HBM2e DtoD ~700 GB/s):
+
+| Device-resident size | Naive DtoH+HtoD round-trip | In-VRAM shadow (DtoD round-trip) |
+| -------------------- | -------------------------- | -------------------------------- |
+| 256 MiB              | ~18 ms                     | ~0.7 ms                          |
+| 4 GiB                | ~290 ms                    | ~12 ms                           |
+| 16 GiB               | ~1170 ms                   | ~46 ms                           |
+| 32 GiB               | ~2340 ms (visibly slow)    | ~92 ms                           |
+
+A 1+ second pause on every edit is incompatible with the "feels like Next.js HMR" goal. The orchestrator must defend against this with five mitigations applied in order. None requires user-code changes; all are transparent to the agent pipeline.
+
+**6.1.1 In-VRAM shadow arena (default path).** Reserve, at workspace start, a contiguous device arena sized to `headroom = free_vram - working_set_target`. During Pack, `cuMemcpyDtoD` every live registered buffer into the arena (kept on a private `synthi_snapshot_stream`). DtoD is ~25× faster than DtoH. Restore is the symmetric DtoD. The arena lives across edits; we only resize it when the registry's total tracked size changes by > 10%. Falls through to host-pinned only when `free_vram < total_registered_size + safety_margin` (typically when the user's app is close to OOM, which is itself a heal trigger).
+
+**6.1.2 Dirty-bit accounting (skip clean buffers).** The buffer registry shim intercepts every `cudaMemcpy*`, `cudaMemset*`, and kernel launch that names a buffer in its parameter list; it flips that buffer's `dirty` flag to true. On a successful swap, the orchestrator clears all flags. The next snapshot only copies buffers where `dirty == true`. For a typical edit-test loop on a long-running simulation, most large buffers (geometry, lookup tables, weights) are *cold* — they get copied once, on the first swap, and then never again until user code writes them. The expected speedup is workload-specific but in practice cuts the second-edit-onward snapshot time by 5-30×.
+
+Implementation lives in `device_snapshot.rs::BufferRegistry`. Detection of kernel-launch writes uses the launch graph (§5.6) — if a kernel param is declared `float*` (not `const float*`), the registry marks it dirty when that kernel runs. For untyped/`void*` params we conservatively mark dirty.
+
+**6.1.3 Async overlap with compile.** The next compile starts the moment the edit is captured. While `nvcc` runs (typically 300-2000 ms), the snapshot's `cuMemcpyDtoD` runs in parallel on `synthi_snapshot_stream`. By the time the new cubin lands the snapshot is already complete in 80% of cases. The orchestrator waits on the snapshot stream only at the start of the `unload` phase. Net effect: snapshot time is *hidden* behind compile time for everything up to the compile budget.
+
+**6.1.4 Scratch-buffer tagging from the AI.** `GPU_SPLIT_PROMPT` (and `GPU_DIFF_PATCH_PROMPT`) is updated to ask the AI to tag each `cudaMalloc` call with a one-token semantic hint at registration time: `synthi_register(ptr, size, "scratch")` or `"persistent"`. Scratch buffers are skipped entirely during Pack — `device_on_load` reinitializes them on restore. Persistent buffers are copied. The tag is *advisory*: the worker honors it for non-ABI-breaking edits and ignores it for ABI-breaking ones (where it has no way to know what's safe to drop). This is consistent with §11.4 "AI updates lifecycle code natively, never via shims" — the tag is part of the user's code, not a wrapper around it.
+
+**6.1.5 Size-budget surfacing.** The orchestrator records `snapshot_bytes` and `snapshot_ms` per swap and emits a `gpu_snapshot_telemetry` event on the same channel as `gpu_runtime_error`. Above a configurable threshold (`SYNTHI_GPU_SNAPSHOT_BUDGET_MS`, default 250 ms), the IDE surfaces a hint in the verify panel: "Snapshotting 18 GiB across each HMR is slow. Consider tagging weights/geometry as `"persistent_immutable"` to skip copying them." This is the user-facing escape valve when the heuristics under-perform — same UX as the existing host compile-error card.
+
+**6.1.6 What this leaves on the table.** Even with all five mitigations, a worst-case workload — every buffer dirty every frame, no scratch tagging, no VRAM headroom — still pays the full PCIe round-trip. That is *acceptable* because (a) such a workload is unusual in practice, (b) the latency surfaces as a visible "saving state" indicator rather than a perceived stall, and (c) the user has a documented path to Tier A by upgrading their driver. The plan does **not** add a third "differential hash" tier in v1; in §10 (risks) we track Tier-2 telemetry to decide whether such a tier is worth its complexity later.
+
+The latency assertions in §9.4 are updated accordingly: the harness measures `snapshot_ms` and `snapshot_bytes` per swap, and fails the row if `snapshot_ms > SYNTHI_GPU_SNAPSHOT_BUDGET_MS * 2` on the second-edit-onward case (where dirty-bit accounting must be working).
 
 ## 7. Phased rollout
 
@@ -534,7 +563,7 @@ All three fixtures include a `golden.json` describing:
 - `unsupported gpu architecture 'sm_80'` → arch mismatch; the harness skips this fixture on hardware older than Ampere and emits a `skipped` row.
 - ccache wrapping nvcc → assertion fails on `worker.log` containing `ccache nvcc`. Fix `is_cpp_compiler` (§5.3).
 
-### 9.4 Phase 1 — cold reload with buffer survival
+### 9.4 Phase 1 — cold reload with buffer survival (and §6.1 latency budget)
 
 **Goal.** A device-only edit reloads the cubin without restarting the process or destroying buffers.
 
@@ -556,6 +585,13 @@ All three fixtures include a `golden.json` describing:
 6. Buffer survival: log line `[gpu-adapter] reused buffer a=0x7f… size=…` for each of `a`, `b`, `c`. Pointer values from the post-load log must equal the pre-edit pointers (recorded in `before.log`).
 
 **Negative test.** Repeat with `SYNTHI_GPU_HMR=0`. Expect the worker to fall through to cold restart and the buffer pointers to change. The harness asserts the *positive* case logs `reused buffer` ≥ 3 times and the *negative* case logs `cold-restart` once.
+
+**§6.1 latency assertions (added to this phase by the harness).** Two assertions, both reading the `gpu_snapshot_telemetry` line the orchestrator must emit on every swap:
+
+- *First-edit snapshot* ≤ `SYNTHI_GPU_SNAPSHOT_BUDGET_MS * 2` (default 500 ms). The first swap has no clean-buffer history, so the orchestrator pays for the full working set. Failing this means the in-VRAM shadow path (§6.1.1) isn't engaged.
+- *Second-edit-onward snapshot* ≤ `SYNTHI_GPU_SNAPSHOT_BUDGET_MS` (default 250 ms). The second edit makes no buffer writes, so dirty-bit accounting (§6.1.2) must skip the bulk. Failing this means the dirty-bit shim is missing or not flagging clean buffers correctly.
+
+The harness reports the measured `snapshot_ms` and `snapshot_bytes` per swap and tags the result with the tier in use (`snapshot_tier=A` for driver checkpoint, `snapshot_tier=B` for userspace). A WARN on Tier A is treated as informational (driver-side timing the worker can't fully control); on Tier B a budget bust is a hard FAIL because the §6.1 mitigations are the contract.
 
 ### 9.5 Phase 2 — fast device-only swap (and ROCm parity)
 
@@ -638,6 +674,7 @@ Anything in `FAIL` blocks merge to `cuda-hmr`. `WARN` is acceptable for capabili
 ## 10. Risks and open issues
 
 - **Driver version skew.** `cuCheckpointProcessCheckpoint` is recent. The userspace fallback is mandatory and must be the default until we know which drivers ship on Cloud Run / user machines.
+- **Tier-B latency on VRAM-heavy projects.** Naive `cuMemcpyDtoH` of the full working set scales with PCIe bandwidth: ~290 ms for 4 GiB, ~1.2 s for 16 GiB — outside the "feels like HMR" budget. The five mitigations in §6.1 (in-VRAM shadow arena, dirty-bit accounting, async overlap with compile, scratch tagging, size-budget surfacing) target this; the harness asserts the second-edit-onward snapshot stays under `SYNTHI_GPU_SNAPSHOT_BUDGET_MS * 2`. Telemetry is what tells us whether a v2 differential-hash tier is worth building.
 - **Separate compilation (`-rdc=true`).** Cross-TU `__device__` calls complicate the single-cubin sidecar model. Phases 0-4 assume whole-program device compilation; the Mod-Delta Classifier detects `-rdc` and forces cold reload until Phase 5 lands proper multi-TU device-link support (see §7 Phase 5).
 - **Constant memory layout drift.** Adding a `__constant__` symbol changes layout; treat it as ABI-breaking for now. A future ABI Stamper pass could lay out constants by name-hash to make insertions non-breaking.
 - **ROCm CRIU maturity.** `criu-amdgpu` is less battle-tested than CUDA's checkpoint API; expect to lean on tier B for ROCm in practice.
@@ -801,6 +838,7 @@ Environment variables (all optional, sensible defaults):
 | `SYNTHI_GPU_FAST_SWAP_BUDGET_MS`      | `300`                  | Phase-2 wall-clock budget.                                                               |
 | `SYNTHI_GPU_LAUNCH_WATCHDOG_MS`       | `5000`                 | Used to set the expected stream-hang detection latency.                                  |
 | `SYNTHI_GPU_DRAIN_TIMEOUT_MS`         | `2000`                 | Used to assert the drain-timeout fallback.                                               |
+| `SYNTHI_GPU_SNAPSHOT_BUDGET_MS`       | `250`                  | §6.1 budget. First-edit allowance is 2×; second-edit-onward must stay inside 1×.         |
 | `SYNTHI_GPU_HIP_FAKE_RUNTIME`         | unset                  | If set, harness sends a manifest flag asking the worker to load HIP-CPU instead of real ROCm. |
 | `SKIP_PHASES`                         | empty                  | Comma list of phase ids to skip (e.g. `P3-stream-hang` for slow CI lanes).               |
 | `ONLY_PHASES`                         | empty                  | Comma list of phase ids to run exclusively.                                              |

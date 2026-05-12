@@ -62,6 +62,7 @@ const CFG = {
   fastSwapBudgetMs: Number(process.env.SYNTHI_GPU_FAST_SWAP_BUDGET_MS ?? 300),
   watchdogMs: Number(process.env.SYNTHI_GPU_LAUNCH_WATCHDOG_MS ?? 5000),
   drainTimeoutMs: Number(process.env.SYNTHI_GPU_DRAIN_TIMEOUT_MS ?? 2000),
+  snapshotBudgetMs: Number(process.env.SYNTHI_GPU_SNAPSHOT_BUDGET_MS ?? 250),
   hipFakeRuntime: process.env.SYNTHI_GPU_HIP_FAKE_RUNTIME === '1',
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 60000),
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
@@ -704,6 +705,53 @@ async function phaseP1(ctx) {
       `pre=${prePtrs.length} post=${postPtrs.length} overlap=${overlap.length}`);
   } else {
     record('P1', 'pre/post pointer overlap', 'skip', 'no pre-edit pointers in worker.log');
+  }
+
+  // §6.1 latency assertion — first edit may pay the full PCIe round trip,
+  // but the second-edit-onward must stay inside SYNTHI_GPU_SNAPSHOT_BUDGET_MS*2
+  // because dirty-bit accounting should have flagged most buffers clean.
+  const snapTelemetry = await awaitWorkerLogRegex(
+    /gpu_snapshot_telemetry.*snapshot_ms=(\d+).*snapshot_bytes=(\d+)/, 2000);
+  if (snapTelemetry.matched) {
+    const ms = Number((snapTelemetry.snippet.match(/snapshot_ms=(\d+)/) ?? [])[1]);
+    const bytes = Number((snapTelemetry.snippet.match(/snapshot_bytes=(\d+)/) ?? [])[1]);
+    const budget = CFG.snapshotBudgetMs * 2; // first-edit allowance
+    record('P1', `snapshot latency within ${budget}ms`,
+      ms <= budget ? 'pass' : 'fail',
+      `snapshot_ms=${ms}  bytes=${(bytes / (1<<20)).toFixed(1)}MiB`);
+
+    // Tier reporting — we want Tier B telemetry to surface the tier in use
+    const tierMatch = (await readWorkerLogTail() ?? '').match(/snapshot_tier=([AB])/);
+    if (tierMatch) {
+      record('P1', 'snapshot tier reported', 'pass', `tier=${tierMatch[1]}`);
+    }
+  } else {
+    record('P1', 'snapshot latency telemetry', 'warn',
+      'no gpu_snapshot_telemetry log line — §6.1 mitigations not wired yet');
+  }
+
+  // Second-edit pass: tighter budget. Apply the same edit twice (identity);
+  // dirty-bit accounting should mark every buffer clean → near-zero snapshot.
+  const second = await postCompile({
+    slug: CFG.slug,
+    files: [{ path: ctx.deviceFilename, content: DEVICE_CU_PHASE1_EDIT }],
+    manifest: ctx.manifest,
+  });
+  if (second.ok) {
+    const second2 = await awaitWorkerLogRegex(
+      /gpu_snapshot_telemetry.*snapshot_ms=(\d+).*snapshot_bytes=(\d+)/, 5000);
+    if (second2.matched) {
+      // Walk back to find the LAST telemetry line (the second-edit one).
+      const all = [...(second2.tail ?? '').matchAll(/snapshot_ms=(\d+).*?snapshot_bytes=(\d+)/g)];
+      const last = all[all.length - 1];
+      if (last) {
+        const ms = Number(last[1]);
+        const budget = CFG.snapshotBudgetMs;
+        record('P1', `2nd-edit snapshot within tight budget (${budget}ms)`,
+          ms <= budget ? 'pass' : 'fail',
+          `snapshot_ms=${ms}  (dirty-bit accounting should skip clean buffers — §6.1.2)`);
+      }
+    }
   }
 }
 
