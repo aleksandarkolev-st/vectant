@@ -5,7 +5,9 @@ import collabClient from '@/services/collabClient';
 import { getCompilerClient } from '@/services/compilerClient';
 import { cancelUiAction } from './uiSlice'; // Cross-slice dependency
 import { syncFileToGit, fetchGitStatus } from './gitSlice';
+import { setCompileManifest } from './compileManifestSlice';
 import { gitClient } from '@/services/gitClient';
+import { buildArchMarkdown } from '@/lib/project-templates';
 import {
     findFirstFile,
     findFileInTree,
@@ -524,6 +526,109 @@ export const handleCreateItemThunk = createAsyncThunk(
             }
         }
     }
+);
+
+// 4b. Scaffold project from a template (used by NewProjectPicker).
+// Writes all template files in one batch, then dispatches
+// setCompileManifest with a synthetic arch markdown so the bottom-right
+// framework pill lights up without waiting for an AI compile.
+export const scaffoldProjectThunk = createAsyncThunk(
+    'workspace/scaffoldProject',
+    async ({ files, manifest, label }, { dispatch, getState }) => {
+        const slug = getState().workspace.slug;
+        if (!slug) throw new SynthiException('No workspace', 'No active workspace');
+        if (!Array.isArray(files) || files.length === 0) {
+            throw new SynthiException('No files in template', 'Template is empty');
+        }
+
+        // Batch-write through collab-server (authoritative on-disk path).
+        await gitClient.writeFilesBatch(slug, files, { syncToGcs: true });
+
+        // Best-effort: sync each file to the compiler worker for LSP indexing.
+        try {
+            const client = getCompilerClient();
+            for (const f of files) {
+                client.syncFile(f.path, f.content || '');
+            }
+        } catch (_) { /* best-effort */ }
+
+        // Refresh the file tree so the picker's caller sees the new files.
+        await dispatch(fetchFilesThunk(slug));
+
+        // Populate compile manifest so StatusBar framework pill renders.
+        if (manifest) {
+            dispatch(setCompileManifest({
+                manifest: null,
+                architecture: buildArchMarkdown(manifest),
+            }));
+        }
+
+        // Select the first non-folder file so the editor opens on something.
+        const entry = files.find((f) => !f.path.endsWith('/'));
+        if (entry) {
+            const name = entry.path.split('/').pop();
+            dispatch(selectFileThunk({
+                name,
+                type: 'file',
+                language: getFileLanguage(name),
+                path: entry.path,
+            }));
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('synthi:codeintel-index-file', {
+                    detail: { filePath: entry.path },
+                }));
+            }
+        }
+
+        return { label, count: files.length };
+    },
+);
+
+// 4c. Single-file creation by extension (used by NewProjectPicker's Files tab).
+// Sanitises the name (no path separators), appends the extension if missing,
+// then runs the same disk write + worker sync + CodeIntel notify as
+// handleCreateItemThunk's file branch.
+export const createFileWithExtensionThunk = createAsyncThunk(
+    'workspace/createFileWithExtension',
+    async ({ name, ext }, { dispatch, getState }) => {
+        const slug = getState().workspace.slug;
+        if (!slug) throw new SynthiException('No workspace', 'No active workspace');
+        const trimmed = (name || '').trim();
+        if (!trimmed) throw new SynthiException('Name cannot be empty', 'Pick a file name.');
+        const invalidChars = /[<>:"/\\|?*]/;
+        if (invalidChars.test(trimmed)) {
+            throw new SynthiException('Name contains invalid characters.', 'The name contains characters that are not allowed.');
+        }
+        // Strip any trailing duplicate extension the user typed.
+        const stripped = trimmed.toLowerCase().endsWith(`.${ext.toLowerCase()}`)
+            ? trimmed.slice(0, -(ext.length + 1))
+            : trimmed;
+        const fullPath = `${stripped}.${ext}`;
+        const { workspace } = getState();
+        if (findFileInTree(workspace.rawFiles, fullPath)) {
+            throw new SynthiException('A file with this name already exists.', 'A file with this name already exists.');
+        }
+
+        await api.createItem(slug, fullPath, false);
+
+        try {
+            getCompilerClient().syncFile(fullPath, '');
+        } catch (_) { /* best-effort */ }
+
+        await dispatch(fetchFilesThunk(slug));
+        dispatch(selectFileThunk({
+            name: fullPath,
+            type: 'file',
+            language: getFileLanguage(fullPath),
+            path: fullPath,
+        }));
+        if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('synthi:codeintel-index-file', {
+                detail: { filePath: fullPath },
+            }));
+        }
+        return { path: fullPath };
+    },
 );
 
 // 5. Rename Item (Mutation)

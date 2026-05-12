@@ -727,14 +727,44 @@ export default function EditorPage({ params }) {
     }, []);
 
     // ── AI Jumpstart: consume pending prompt from dashboard ──────────
+    // If the payload carries a projectType, prepend its systemPromptHint
+    // to the user prompt so the AI receives the project-context directive
+    // before the user's free-text request.
     useEffect(() => {
         const payload = consumeJumpstartPayload();
         if (!payload) return;
         setChatVisible(true);
         setSidebarView(null);
         setTimeout(() => sidebarPanelRef.current?.collapse(), 50); // Collapse sidebar initially
-        setJumpstartPrompt(payload.prompt || null);
+        const pt = payload.projectType;
+        let prompt = payload.prompt || null;
+        if (prompt && pt?.systemPromptHint) {
+            prompt = `[PROJECT TYPE: ${pt.label}]\n${pt.systemPromptHint}\n\n${prompt}`;
+        }
+        setJumpstartPrompt(prompt);
         setJumpstartAttachments(payload.attachments?.length ? payload.attachments : null);
+    }, []);
+
+    // ── In-workspace "Other" → AI: listen for picker-dispatched event ─
+    // The NewProjectPicker's "Other → Describe" flow fires a
+    // `synthi:jumpstart-trigger` event with `{prompt, attachments}`. We
+    // route it through the same jumpstart state used for the dashboard
+    // flow so the AI chat picks it up via its updated re-armable ref.
+    useEffect(() => {
+        const handler = (e) => {
+            const detail = e?.detail || {};
+            if (typeof detail.prompt !== 'string' || !detail.prompt.trim()) return;
+            setChatVisible(true);
+            setSidebarView(null);
+            setTimeout(() => sidebarPanelRef.current?.collapse(), 50);
+            setJumpstartPrompt(detail.prompt);
+            setJumpstartAttachments(detail.attachments?.length ? detail.attachments : null);
+        };
+        if (typeof window !== 'undefined') {
+            window.addEventListener('synthi:jumpstart-trigger', handler);
+            return () => window.removeEventListener('synthi:jumpstart-trigger', handler);
+        }
+        return undefined;
     }, []);
 
     useEffect(() => {

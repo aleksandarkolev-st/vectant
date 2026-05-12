@@ -591,13 +591,37 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
 
 // ─── Workspace CWD Resolution ───────────────────────────────────────────────
 
-const REPOS_DIR = path.resolve(__dirname, 'repos');
+// Import REPOS_DIR from the shared config so we honour the REPOS_DIR env
+// var (matching gitService). Previously this module hard-coded
+// `path.resolve(__dirname, 'repos')`, which silently diverged from
+// gitService.baseDir in hosted environments where `process.env.REPOS_DIR`
+// points at a mounted volume (e.g. `/data/repos`). That mismatch caused
+// the terminal to spawn in the wrong directory (or fall back to $HOME)
+// while the user's files lived elsewhere.
+const { REPOS_DIR } = require('./config');
+
+/**
+ * Sanitise userId the same way gitService.getUserRepoPath does, so the
+ * terminal and gitService agree on the per-user directory name even when
+ * the userId contains characters outside the safe charset.
+ */
+function _safeUserId(userId) {
+  if (!userId) return '';
+  return String(userId).replace(/[^a-zA-Z0-9_@.\-]/g, '_');
+}
 
 /**
  * Resolve the on-disk working directory for a workspace slug.
  *
- * Local:  <collab-server>/repos/<slug>   (where gitService clones workspace files)
- * Cloud:  /workspace/<slug>              (mounted volume in the container)
+ * Local:  <collab-server>/repos/<slug>            (gitService default)
+ * Cloud:  $WORKSPACE_ROOT/<slug> | $REPOS_DIR/<slug>
+ *
+ * If the workspace directory does not exist yet (brand-new workspace
+ * with no files written, or fresh per-user clone not yet materialised),
+ * we create it instead of falling back to $HOME. Falling back to $HOME
+ * was the source of the long-standing "empty linux panel" complaint:
+ * the terminal opened correctly but cd'd into the user's home dir, so
+ * the AI's `npm install` / `ls` etc. could not see the workspace files.
  *
  * Set the WORKSPACE_ROOT env var to override the base path (useful for
  * Docker / K8s where the volume mount differs from the local layout).
@@ -605,18 +629,31 @@ const REPOS_DIR = path.resolve(__dirname, 'repos');
 async function resolveWorkspaceCwd(slug, userId) {
   const fsp = require('fs').promises;
   const baseDir = process.env.WORKSPACE_ROOT || REPOS_DIR;
+  const safeId = _safeUserId(userId);
 
   if (slug) {
-    // 1. Try per-user directory: repos/<slug>/<userId>  (matches gitService layout)
-    if (userId) {
-      const perUserDir = path.join(baseDir, slug, userId);
+    // 1. Per-user directory: repos/<slug>/<userId>  (matches gitService layout)
+    if (safeId) {
+      const perUserDir = path.join(baseDir, slug, safeId);
       try { await fsp.access(perUserDir); return perUserDir; } catch (_) {}
     }
-    // 2. Fall back to workspace root: repos/<slug>
+    // 2. Workspace root: repos/<slug>
     const wsDir = path.join(baseDir, slug);
     try { await fsp.access(wsDir); return wsDir; } catch (_) {}
+
+    // 3. Neither exists yet — create the per-user dir (preferred) or the
+    //    slug dir. mkdir is recursive so the baseDir parent is created
+    //    if absent. We log so disk-layout surprises are debuggable.
+    const target = safeId ? path.join(baseDir, slug, safeId) : path.join(baseDir, slug);
+    try {
+      await fsp.mkdir(target, { recursive: true });
+      console.log(`[Terminal] resolveWorkspaceCwd: created ${target} (was missing)`);
+      return target;
+    } catch (err) {
+      console.warn(`[Terminal] resolveWorkspaceCwd: failed to create ${target}: ${err.message}`);
+    }
   }
-  // 3. Fallback: base directory itself, then $HOME
+  // 4. Last resort: base directory itself, then $HOME (truly unrecoverable)
   try { await fsp.access(baseDir); return baseDir; } catch (_) {}
   return os.homedir();
 }

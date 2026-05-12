@@ -1504,6 +1504,11 @@ export const useAISuggestions = ({
             onLog,
             onCommandPending,
             includeActiveFile: includeActiveFileOpt,
+            // forceAgents: when true, run the agent pipeline regardless of
+            // currentMode/heuristics. Used by the AI Jumpstart auto-send so
+            // first-mount scaffolding goes through the thinking pipeline
+            // instead of a single-shot LLM call.
+            forceAgents = false,
         } = streamHandlers || {};
         const includeActiveFile = includeActiveFileOpt !== false; // default true for backwards compat
 
@@ -1608,8 +1613,11 @@ export const useAISuggestions = ({
             // Keep agents for run+task (e.g., "check git status and revert file")
             let agentContext = '';
             let agentResults = [];
-            const useAgents = !isRunOnly && shouldUseAgents(userPrompt);
-            
+            // forceAgents lets specific callers (e.g. AI Jumpstart) bypass
+            // the DIRECT-mode short-circuit inside shouldUseAgents so the
+            // full thinking pipeline runs even when the chat is in DIRECT.
+            const useAgents = !isRunOnly && (forceAgents || shouldUseAgents(userPrompt));
+
             if (useAgents) {
                 appendProgressLog('Running agent pipeline...');
                 onLog?.('Dispatching sub-agents');

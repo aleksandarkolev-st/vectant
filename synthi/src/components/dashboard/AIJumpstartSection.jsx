@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useCallback, useRef, useMemo, useEffect } from "react";
+import { useState, useCallback, useRef, useMemo } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { Button } from "@/components/ui/button";
+import { useNewProjectPicker } from "@/components/NewProjectPicker";
 import {
   Sparkles,
   Paperclip,
@@ -10,6 +12,8 @@ import {
   FileText,
   ImageIcon,
   AlertCircle,
+  FolderPlus,
+  Check,
 } from "lucide-react";
 
 /* ──────────────────── constants ──────────────────── */
@@ -91,7 +95,24 @@ function readFileAsync(file) {
 /**
  * AI Jumpstart section for the "Create Repository" form.
  *
- * @param {{ enabled: boolean, onEnabledChange: (v: boolean) => void, prompt: string, onPromptChange: (v: string) => void, attachments: Array, onAttachmentsChange: (v: Array) => void, disabled: boolean }} props
+ * The prompt textarea is gated behind a project-type pick: when AI
+ * Jumpstart is enabled, the user must first choose a project type
+ * (via the shared NewProjectPicker in jumpstart mode) before the
+ * textarea unlocks. The picked type is passed up to the parent via
+ * `onProjectTypeChange` so the dashboard can persist it in the
+ * sessionStorage payload alongside the prompt.
+ *
+ * @param {{
+ *   enabled: boolean,
+ *   onEnabledChange: (v: boolean) => void,
+ *   prompt: string,
+ *   onPromptChange: (v: string) => void,
+ *   attachments: Array,
+ *   onAttachmentsChange: (v: Array) => void,
+ *   projectType: object|null,
+ *   onProjectTypeChange: (pt: object|null) => void,
+ *   disabled: boolean,
+ * }} props
  */
 export default function AIJumpstartSection({
   enabled,
@@ -100,11 +121,40 @@ export default function AIJumpstartSection({
   onPromptChange,
   attachments,
   onAttachmentsChange,
+  projectType,
+  onProjectTypeChange,
   disabled = false,
 }) {
   const fileInputRef = useRef(null);
   const expandRef = useRef(null);
   const [attachError, setAttachError] = useState(null);
+  const { openPickerForJumpstart } = useNewProjectPicker();
+
+  // Prompt textarea is unlocked only after a project type is picked.
+  // "Other" / blank canvas is represented as { id: 'other', ... } and
+  // also unlocks the input.
+  const typeChosen = !!projectType;
+
+  const handlePickType = useCallback(async () => {
+    const result = await openPickerForJumpstart();
+    if (!result) return;
+    // result.template is the template object; result.variant is the
+    // variant (or null). Flatten for the parent + payload.
+    const tpl = result.template;
+    const variant = result.variant;
+    const label = variant ? `${tpl.label} (${variant.label})` : tpl.label;
+    const hint = variant?.systemPromptHint || tpl.systemPromptHint || "";
+    onProjectTypeChange({
+      id: tpl.id,
+      label,
+      variant: variant?.id || null,
+      systemPromptHint: hint,
+    });
+  }, [openPickerForJumpstart, onProjectTypeChange]);
+
+  const handleClearType = useCallback(() => {
+    onProjectTypeChange(null);
+  }, [onProjectTypeChange]);
 
   /* ── derived ── */
   const totalSize = useMemo(
@@ -254,7 +304,63 @@ export default function AIJumpstartSection({
             border: "1px solid color-mix(in srgb, var(--accent-primary) 20%, transparent)",
           }}
         >
-          {/* Prompt textarea */}
+          {/* Project-type picker — gates the prompt textarea */}
+          <div className="space-y-1.5">
+            <label
+              className="synthi-label"
+              style={{ color: "var(--text-muted)" }}
+            >
+              Project type
+            </label>
+            {typeChosen ? (
+              <div
+                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm"
+                style={{
+                  background: "var(--bg-editor)",
+                  border: "1px solid var(--accent-primary)",
+                  color: "var(--text-primary)",
+                }}
+              >
+                <Check
+                  className="h-3.5 w-3.5 shrink-0"
+                  style={{ color: "var(--accent-primary)" }}
+                />
+                <span className="flex-1 truncate font-medium">
+                  {projectType.label}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleClearType}
+                  disabled={disabled}
+                  className="text-xs underline transition-opacity hover:opacity-80 disabled:opacity-50"
+                  style={{ color: "var(--text-secondary)" }}
+                >
+                  Change
+                </button>
+              </div>
+            ) : (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handlePickType}
+                disabled={disabled}
+                className="w-full justify-start gap-2 transition-all duration-150 hover:-translate-y-0.5 hover:shadow-md"
+                style={{
+                  borderColor: "var(--border-medium)",
+                  background: "var(--bg-editor)",
+                  color: "var(--text-primary)",
+                }}
+              >
+                <FolderPlus
+                  className="h-3.5 w-3.5"
+                  style={{ color: "var(--accent-primary)" }}
+                />
+                Choose project type…
+              </Button>
+            )}
+          </div>
+
+          {/* Prompt textarea — locked until a project type is chosen */}
           <div className="space-y-1.5">
             <label
               htmlFor="ai-jumpstart-prompt"
@@ -262,20 +368,32 @@ export default function AIJumpstartSection({
               style={{ color: "var(--text-muted)" }}
             >
               Describe your project idea
+              {!typeChosen && (
+                <span
+                  className="ml-1 text-xs font-normal"
+                  style={{ color: "var(--text-dim)" }}
+                >
+                  (pick a project type first)
+                </span>
+              )}
             </label>
             <textarea
               id="ai-jumpstart-prompt"
-              placeholder="e.g. A full-stack Next.js task manager with Prisma, auth, and a clean dashboard UI…"
+              placeholder={
+                typeChosen
+                  ? "e.g. A full-stack Next.js task manager with Prisma, auth, and a clean dashboard UI…"
+                  : "Pick a project type above to unlock the prompt"
+              }
               value={prompt}
               onChange={(e) => {
                 if (e.target.value.length <= MAX_PROMPT_LENGTH) {
                   onPromptChange(e.target.value);
                 }
               }}
-              disabled={disabled}
+              disabled={disabled || !typeChosen}
               rows={4}
               maxLength={MAX_PROMPT_LENGTH}
-              className="th-input w-full px-3 py-2.5 rounded-lg text-sm outline-none transition-colors synthi-focus-ring resize-y"
+              className="th-input w-full px-3 py-2.5 rounded-lg text-sm outline-none transition-colors synthi-focus-ring resize-y disabled:cursor-not-allowed disabled:opacity-60"
               style={{
                 background: "var(--bg-editor)",
                 color: "var(--text-primary)",

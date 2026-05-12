@@ -52,10 +52,35 @@ function sanitizeAttachment(att) {
  */
 
 /**
+ * @typedef {Object} JumpstartProjectType
+ * @property {string} id              - Template id (e.g. "python", "react")
+ * @property {string} label           - Display label (e.g. "React (Vite)")
+ * @property {string|null} variant    - Variant id when applicable (e.g. "vite")
+ * @property {string} systemPromptHint - Prepended to the user prompt to bias AI output
+ */
+
+/**
  * @typedef {Object} JumpstartPayload
  * @property {string} prompt         - User's project idea description
  * @property {JumpstartAttachment[]} attachments - Attached reference files
+ * @property {JumpstartProjectType|null} projectType - Optional project-type context
  */
+
+/**
+ * Sanitize an inbound projectType object — strip unknown fields, clamp lengths.
+ * Returns null for falsy inputs (e.g. "Other" / blank canvas).
+ */
+function sanitizeProjectType(pt) {
+  if (!pt || typeof pt !== "object") return null;
+  return {
+    id: String(pt.id || "").slice(0, 64),
+    label: String(pt.label || "").slice(0, 128),
+    variant: pt.variant ? String(pt.variant).slice(0, 64) : null,
+    systemPromptHint: typeof pt.systemPromptHint === "string"
+      ? pt.systemPromptHint.slice(0, 2000)
+      : "",
+  };
+}
 
 /**
  * Persist jumpstart data to sessionStorage before navigating to workspace.
@@ -70,6 +95,7 @@ export function storeJumpstartPayload(payload) {
       attachments: Array.isArray(payload.attachments)
         ? payload.attachments.map(sanitizeAttachment)
         : [],
+      projectType: sanitizeProjectType(payload.projectType),
     };
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(sanitized));
   } catch (err) {

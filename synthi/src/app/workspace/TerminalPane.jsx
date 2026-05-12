@@ -72,9 +72,6 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const currentSessionIdRef = useRef(null);
   const inputBufferRef = useRef('');
   const initializedRef = useRef(false);
-  const [connectionState, setConnectionState] = useState('connecting'); // 'connecting' | 'connected' | 'error' | 'closed'
-  const [errorMessage, setErrorMessage] = useState('');
-  const reconnectAttemptsRef = useRef(0);
   const { canTerminal, role } = useSessionPermissions();
   const { data: authSession } = useSession();
   const authSessionRef = useRef(authSession);
@@ -82,10 +79,6 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const canTerminalRef = useRef(canTerminal);
   canTerminalRef.current = canTerminal;
   const isGuest = role === 'guest';
-  // Use the same SIGNAL URL as compilerClient when available, fallback to localhost
-  const MACHINE_WS = process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
-    ? process.env.NEXT_PUBLIC_COMPILE_SIGNAL_URL
-    : 'https://lumpish-undevoutly-sonja.ngrok-free.dev/';
   const sessionIdRef = useRef(null);
   const reconnectTimerRef = useRef(null);
   const reconnectCountRef = useRef(0);
@@ -442,25 +435,13 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       <div ref={containerRef} className="h-full w-full" />
 
       {/* Session: View-only terminal overlay for guests without canTerminal */}
-      {isGuest && !canTerminal && connectionState === 'connected' && (
+      {isGuest && !canTerminal && state === 'connected' && (
         <div className="absolute bottom-0 left-0 right-0 flex items-center justify-center px-4 py-1.5 bg-[#fbbf2415] border-t border-[#fbbf2430] z-10">
           <div className="flex items-center gap-2">
             <EyeOff className="w-3.5 h-3.5 text-[#fbbf24]" />
             <span className="text-xs text-[#fbbf24] font-medium">
               Terminal is view-only — Ask the host for terminal access
             </span>
-          </div>
-        </div>
-      )}
-      
-      {/* Synthi Branded Error Overlay */}
-      {(connectionState === 'error' || connectionState === 'closed') && (
-        <div className="absolute inset-0 bg-[#0a0b10]/98 backdrop-blur-md flex items-center justify-center z-10">
-          <div className="flex flex-col items-center gap-4 p-8 max-w-md text-center">
-            {/* Title with gradient */}
-            <h3 className="text-xl font-bold bg-gradient-to-r from-[#f0f2f5] to-[#a8adc0] bg-clip-text text-transparent">
-              Terminal Disconnected
-            </h3>
           </div>
         </div>
       )}

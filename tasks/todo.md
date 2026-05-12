@@ -258,3 +258,20 @@
 - [ ] Restore the original `synthi-logo.svg` and `synthi-dark-logo.svg` files.
 - [ ] Rebuild and restart the frontend service.
 - [ ] Verify the updated navbar renders at `http://localhost:3000`.
+
+---
+
+# New-Workspace Project & File Picker — 2026-05-12
+
+Full plan: [new-project-picker-plan.md](new-project-picker-plan.md)
+
+## Checklist
+- [ ] Create `synthi/src/lib/project-templates/` registry + 9 template files
+- [ ] Create `synthi/src/components/NewProjectPicker.jsx` (Provider + Dialog + Files/Projects tabs)
+- [ ] Add `scaffoldProjectThunk` to `workspaceSlice.js` (writeFilesBatch + setCompileManifest + fetchFilesThunk)
+- [ ] Mount `NewProjectPickerProvider` in `app/layout.js`
+- [ ] Gate `FileTree.jsx` `handleTreeAction` on `files.length === 0` → open picker instead of inline rename
+- [ ] Smoke: empty workspace → new file → Python template → files appear → "Python" pill shows
+- [ ] Smoke: non-empty workspace → new file still uses inline rename
+- [ ] Smoke: RN-Android template → compile → worker auto-scaffolds `android/`
+

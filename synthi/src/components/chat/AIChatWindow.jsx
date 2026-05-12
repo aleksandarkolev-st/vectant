@@ -336,15 +336,20 @@ const AIChatWindow = ({
         scrollLockRef.current = false;
     }, [activeSessionId]);
 
-    // ── AI Jumpstart: auto-send initial prompt once on first mount ──
-    const hasConsumedInitialPrompt = useRef(false);
+    // ── AI Jumpstart: auto-send initial prompt when it changes ──
+    // Tracks the last prompt actually consumed (not just "consumed at all")
+    // so a second `initialPrompt` — e.g. from the in-workspace
+    // NewProjectPicker "Other" flow that dispatches synthi:jumpstart-trigger —
+    // fires too, while still guarding against React 18 StrictMode double-invoke.
+    const lastConsumedInitialPromptRef = useRef(null);
     useEffect(() => {
         if (!initialPrompt) return;
+        if (lastConsumedInitialPromptRef.current === initialPrompt) return;
 
         // Use a short delay to let the component hydrate and session initialize
         const timer = setTimeout(() => {
-            if (hasConsumedInitialPrompt.current) return;
-            hasConsumedInitialPrompt.current = true;
+            if (lastConsumedInitialPromptRef.current === initialPrompt) return;
+            lastConsumedInitialPromptRef.current = initialPrompt;
             
             const aborter = new AbortController();
             thinkingStartRef.current = Date.now();
@@ -362,6 +367,12 @@ const AIChatWindow = ({
 
             handleSendMessage(initialPrompt, jumpstartAttachmentsList, {
                 includeActiveFile: false,
+                // Jumpstart prompts must run through the agent pipeline so
+                // the AI plans + thinks across many files instead of doing
+                // one single-shot completion. Without this, the auto-send
+                // fires in DIRECT mode and produces tiny output for what
+                // should be a whole-project build.
+                forceAgents: true,
                 controller: aborter,
                 onStreamStart: () => setIsThinking(true),
                 onFirstToken: () => {
