@@ -277,7 +277,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
         }),
       );
     }
-    toast.success('Asked Synthi AI to build it');
+    toast.success('Asked Vectant AI to build it');
     handleClose();
   }
 
@@ -418,7 +418,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
               >
                 <ArrowLeft className="h-4 w-4" />
               </button>
-              <DialogTitle>Describe what you want Synthi AI to build</DialogTitle>
+              <DialogTitle>Describe what you want Vectant AI to build</DialogTitle>
             </div>
             <DialogDescription>
               The AI will pick the stack and write the files. The more specific, the better.
@@ -478,7 +478,7 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
           </DialogTitle>
           <DialogDescription>
             {mode === 'jumpstart'
-              ? 'Choose what you want Synthi AI to build. You’ll describe the details next.'
+              ? 'Choose what you want Vectant AI to build. You’ll describe the details next.'
               : 'Pick a project scaffold, or create a single file by type.'}
           </DialogDescription>
         </DialogHeader>

@@ -279,7 +279,7 @@ export default function AIJumpstartSection({
                 : "var(--text-dim)",
             }}
           />
-          Jumpstart your project with Synthi AI
+          Jumpstart your project with Vectant AI
         </Label>
       </div>
 

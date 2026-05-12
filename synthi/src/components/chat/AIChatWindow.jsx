@@ -785,7 +785,7 @@ const AIChatWindow = ({
                         <div className="w-6 h-6 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(to bottom right, var(--accent-primary), var(--accent-secondary))', boxShadow: '0 0 12px color-mix(in srgb, var(--accent-primary) 30%, transparent)' }}>
                             <Sparkles className="w-3 h-3 text-white" strokeWidth={2.5} />
                         </div>
-                        <span className="text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>Synthi AI</span>
+                        <span className="text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>Vectant AI</span>
                         {(suggestedCode || fileSuggestions.length > 0) && (
                             <div className="text-[9px] font-semibold px-2 py-0.5 rounded-full" style={{ color: 'var(--accent-secondary)', background: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent)' }}>
                                 {fileSuggestions.length > 0 ? `${fileSuggestions.length} file${fileSuggestions.length > 1 ? 's' : ''}` : 'Ready'}
