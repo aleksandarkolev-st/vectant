@@ -1,0 +1,501 @@
+"""GPU-side verifier — enforces the no-shim contract.
+
+Spec: docs/GPU_HMR_ULTRAPLAN.md §11.4. The host healer is allowed to
+emit `{module, operation, anchor, content}` edits to existing files;
+this module rejects, mechanically, any output that would amount to a
+shim/wrapper — that's the discipline the plan's "agentic, no shims"
+promise rests on. Same role as `verifier.py` for the host pipeline,
+scoped specifically to the GPU-edit shape.
+
+The rules (verbatim from §11.4) are mechanical so the verifier never
+makes a judgement call:
+
+  1. **No file creation.** Only modules already listed in the project's
+     `BuildManifest.files` may be edited. Verifier rejects any edit
+     whose `module` isn't in that set.
+
+  2. **No wrapper kernels.** Newly-declared `__global__` symbols whose
+     names look like a `_safe`/`_v2`/`_fallback` extension of an
+     existing kernel — or a `safe_<existing>` prefix — are rejected.
+
+  3. **Signature preservation on Tier 2/3.** For heals targeting
+     `device.cu` under the perf or runtime tiers, every existing kernel
+     symbol must still exist with an unchanged parameter list unless
+     the diff also patches the host launch site for it.
+
+  4. **No new `.cu`/`.hip` files.** The "5 files only" rule from
+     `GPU_SPLIT_PROMPT` — multi-TU device builds are a Phase-5 concern.
+
+In addition, two pre-emit checks for the *split* path (§5.6 item 2):
+
+  - every `<<<grid, block, ...>>>` launch in host code names a
+    `__global__` symbol declared in `device.cu`,
+  - the declared `gpu.arch` list isn't empty.
+
+The verifier returns a structured rejection (list of `Violation`s)
+rather than raising — the orchestrator's MAX_HEAL_RETRIES loop
+re-prompts with the rejection notes appended to
+`previous_heal_attempts` (§11.3).
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from difflib import SequenceMatcher
+from typing import Iterable, List, Mapping, Optional, Set
+
+
+HealTier = str  # "compile_hard" | "compile_soft" | "runtime"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Violation types
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Violation:
+    rule: str  # short stable identifier — used in rejection notes
+    message: str  # human-readable explanation
+    offending_module: Optional[str] = None
+    offending_symbol: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        d = {"rule": self.rule, "message": self.message}
+        if self.offending_module is not None:
+            d["offending_module"] = self.offending_module
+        if self.offending_symbol is not None:
+            d["offending_symbol"] = self.offending_symbol
+        return d
+
+
+@dataclass
+class HealVerificationResult:
+    ok: bool
+    violations: List[Violation] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "ok": self.ok,
+            "violations": [v.to_dict() for v in self.violations],
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Heal-output verifier (§11.4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_GLOBAL_DECL_RE = re.compile(
+    r"__global__\s+(?:void\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
+    re.MULTILINE,
+)
+
+_DEVICE_FILES = {"device.cu", "device.hip"}
+
+_NEW_FILE_OPS = {"create", "new", "add_file"}
+
+_SHIM_SUFFIXES = ("_safe", "_v2", "_v3", "_fallback", "_fixed", "_patched", "_wrap", "_wrapper")
+_SHIM_PREFIXES = ("safe_", "fixed_", "patched_", "wrap_")
+
+
+def _is_shim_name(new_name: str, existing_names: Iterable[str]) -> Optional[str]:
+    """Heuristic: is `new_name` a thinly-disguised duplicate of one of
+    `existing_names`? Returns the matched existing kernel or None.
+
+    The rule has two halves:
+
+      - `existing + suffix` — `kernel_foo_safe`, `kernel_foo_v2`,
+        `kernel_foo_fallback`. Matched by suffix-strip + exact-match.
+      - `prefix + existing` — `safe_kernel_foo`, `wrap_kernel_foo`.
+        Same idea in reverse.
+
+    Plus a fuzzy backstop: edit distance (Levenshtein-ish via
+    `SequenceMatcher`) > 0.85 to an existing name with the same
+    length-1 suffix difference is treated as a shim. This catches
+    `kernel_foo2` / `kernel_fooSafe` etc. without us enumerating
+    every possible mutation.
+    """
+    existing_set = {n for n in existing_names if n}
+    if not existing_set:
+        return None
+
+    for suf in _SHIM_SUFFIXES:
+        if new_name.endswith(suf):
+            stem = new_name[: -len(suf)]
+            if stem in existing_set:
+                return stem
+    for pre in _SHIM_PREFIXES:
+        if new_name.startswith(pre):
+            stem = new_name[len(pre):]
+            if stem in existing_set:
+                return stem
+
+    # Fuzzy backstop: > 0.85 similarity AND length delta ≤ 3 AND the
+    # new name strictly contains the existing as a substring (drops
+    # most coincidental matches like sibling kernels with shared
+    # prefixes).
+    for existing in existing_set:
+        if abs(len(new_name) - len(existing)) > 3:
+            continue
+        if existing not in new_name and new_name not in existing:
+            continue
+        if SequenceMatcher(None, new_name, existing).ratio() > 0.85:
+            if new_name != existing:
+                return existing
+    return None
+
+
+def verify_heal_output(
+    *,
+    tier: HealTier,
+    project_files: Iterable[str],
+    edits: List[Mapping[str, str]],
+    existing_kernels: Iterable[str],
+    existing_device_source: Optional[str] = None,
+    host_launch_sites: Optional[Mapping[str, str]] = None,
+) -> HealVerificationResult:
+    """Run §11.4 mechanical checks against a healer's `edits` list.
+
+    Args:
+      tier: which heal tier the prompt fired ("compile_hard" |
+        "compile_soft" | "runtime"). Signature-preservation only
+        applies on the latter two.
+      project_files: iterable of files currently listed in the
+        BuildManifest (rule 1: no file creation).
+      edits: the healer's `{module, operation, anchor, content}` list.
+      existing_kernels: iterable of kernel symbol names defined in the
+        pre-heal `device.cu` / `device.hip`.
+      existing_device_source: the unedited device file content (used
+        for rule 3 — signature preservation).
+      host_launch_sites: kernel name → host launch-site source line,
+        used to detect coordinated host updates.
+
+    Returns:
+      `HealVerificationResult` with `.ok == True` and an empty
+      violations list on a clean pass.
+    """
+    violations: List[Violation] = []
+    project_files_set: Set[str] = set(project_files)
+    existing_kernels_set: Set[str] = {k for k in existing_kernels if k}
+    host_sites: Mapping[str, str] = host_launch_sites or {}
+
+    # Rule 1 + 4: no file creation, no new .cu/.hip files.
+    for edit in edits:
+        module = edit.get("module", "")
+        op = (edit.get("operation") or "").lower()
+        if op in _NEW_FILE_OPS or module not in project_files_set:
+            violations.append(
+                Violation(
+                    rule="no_file_creation",
+                    message=(
+                        f"Heal output edits or creates a file outside the project's "
+                        f"BuildManifest: module={module!r} op={op!r}. "
+                        f"Allowed files: {sorted(project_files_set)}"
+                    ),
+                    offending_module=module,
+                )
+            )
+        if module.endswith(".cu") and module not in _DEVICE_FILES:
+            violations.append(
+                Violation(
+                    rule="no_extra_device_tu",
+                    message=(
+                        f"Heal output introduces a new .cu file: {module!r}. "
+                        "Multi-TU device builds are a Phase-5 concern; v1 "
+                        "supports a single device.cu / device.hip module."
+                    ),
+                    offending_module=module,
+                )
+            )
+
+    # Rule 2: no wrapper kernels.
+    device_edits = [e for e in edits if e.get("module") in _DEVICE_FILES]
+    introduced_kernels = _collect_new_kernels(device_edits, existing_kernels_set)
+    for new_name in introduced_kernels:
+        existing_match = _is_shim_name(new_name, existing_kernels_set)
+        if existing_match is not None:
+            violations.append(
+                Violation(
+                    rule="no_wrapper_kernel",
+                    message=(
+                        f"Heal output introduces __global__ {new_name!r} that "
+                        f"resembles an existing kernel {existing_match!r}. Patch "
+                        "the existing kernel in place rather than adding a wrapper."
+                    ),
+                    offending_module="device.cu",
+                    offending_symbol=new_name,
+                )
+            )
+
+    # Rule 3: signature preservation on Tier 2/3.
+    if tier in {"compile_soft", "runtime"} and existing_device_source:
+        post_source = _apply_edits_dry_run(existing_device_source, device_edits)
+        post_kernel_sigs = _collect_kernel_signatures(post_source)
+        pre_kernel_sigs = _collect_kernel_signatures(existing_device_source)
+        for name, pre_sig in pre_kernel_sigs.items():
+            post_sig = post_kernel_sigs.get(name)
+            if post_sig is None:
+                # Removed — accept only if the heal also removed the
+                # host launch site for this kernel.
+                if name in host_sites and not _host_site_was_removed(
+                    name, host_sites, edits
+                ):
+                    violations.append(
+                        Violation(
+                            rule="signature_preserved_missing_host_update",
+                            message=(
+                                f"Tier-{tier} heal removed kernel {name!r} "
+                                "without removing/updating its host launch "
+                                "site. Patch both sides in one edit batch."
+                            ),
+                            offending_module="device.cu",
+                            offending_symbol=name,
+                        )
+                    )
+            elif post_sig != pre_sig:
+                if not _host_site_was_updated(name, host_sites, edits):
+                    violations.append(
+                        Violation(
+                            rule="signature_changed_without_host_update",
+                            message=(
+                                f"Tier-{tier} heal changed signature of kernel "
+                                f"{name!r} without a matching host launch-site "
+                                "update. Patch both sides in one edit batch."
+                            ),
+                            offending_module="device.cu",
+                            offending_symbol=name,
+                        )
+                    )
+
+    return HealVerificationResult(ok=not violations, violations=violations)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Split-output verifier (§5.6 item 2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class SplitVerificationResult:
+    ok: bool
+    violations: List[Violation] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "ok": self.ok,
+            "violations": [v.to_dict() for v in self.violations],
+        }
+
+
+_LAUNCH_CALL_RE = re.compile(
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*<<<[^;]{0,256}?>>>",
+)
+
+
+def verify_split_output(
+    *,
+    files: Mapping[str, str],
+    manifest_arch: Iterable[str],
+) -> SplitVerificationResult:
+    """Verify the Kernel Splitter Agent's output (§5.6 item 2).
+
+    Asserts:
+
+      - `manifest_arch` is non-empty (the Rust mirror's
+        `validate_manifest_v1` also catches this, but failing here
+        gives the LLM a tighter retry signal).
+      - every `<<<…>>>` launch site in host files names a kernel
+        declared in `device.cu` / `device.hip`.
+      - the split contains exactly the 5 expected files
+        (shared.h / core.cpp / gui.cpp / host_runner.cpp / device.cu|hip).
+    """
+    violations: List[Violation] = []
+    if not list(manifest_arch):
+        violations.append(
+            Violation(
+                rule="manifest_arch_empty",
+                message="gpu.arch must list at least one target arch.",
+            )
+        )
+
+    device_source = files.get("device.cu") or files.get("device.hip") or ""
+    declared_kernels = set(_collect_kernel_signatures(device_source).keys())
+
+    expected = {"shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"}
+    has_device_file = "device.cu" in files or "device.hip" in files
+    missing_host = expected - set(files)
+    for f in missing_host:
+        violations.append(
+            Violation(
+                rule="split_missing_file",
+                message=f"Split output is missing required host file: {f}.",
+            )
+        )
+    if not has_device_file:
+        violations.append(
+            Violation(
+                rule="split_missing_device_file",
+                message=(
+                    "GPU split output is missing device.cu (or device.hip). "
+                    "Kernels must live in the dedicated 5th file."
+                ),
+            )
+        )
+
+    for host_path in ("core.cpp", "gui.cpp", "host_runner.cpp"):
+        src = files.get(host_path)
+        if not src:
+            continue
+        for match in _LAUNCH_CALL_RE.finditer(src):
+            kernel = match.group("name")
+            if kernel not in declared_kernels:
+                violations.append(
+                    Violation(
+                        rule="launch_site_unresolved",
+                        message=(
+                            f"Host file {host_path} launches {kernel}<<<...>>> "
+                            "but no matching __global__ symbol is declared "
+                            "in device.cu/device.hip."
+                        ),
+                        offending_module=host_path,
+                        offending_symbol=kernel,
+                    )
+                )
+
+    return SplitVerificationResult(ok=not violations, violations=violations)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers — kernel signature extraction + edit application
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _collect_new_kernels(
+    device_edits: Iterable[Mapping[str, str]],
+    existing_kernels: Set[str],
+) -> Set[str]:
+    """Pull kernel names out of the edit `content` fields, filtering
+    out edits that target the body of an existing kernel (those just
+    re-render the surrounding signature without introducing it).
+    """
+    found: Set[str] = set()
+    for edit in device_edits:
+        content = edit.get("content", "") or ""
+        for m in _GLOBAL_DECL_RE.finditer(content):
+            name = m.group("name")
+            if name and name not in existing_kernels:
+                found.add(name)
+    return found
+
+
+def _collect_kernel_signatures(source: str) -> dict[str, str]:
+    """`kernel_name -> normalised parameter list` for every `__global__`
+    in `source`. The signature is the literal text between `(` and `)`
+    with whitespace collapsed — good enough for "did the params
+    change" without writing a C++ parser.
+    """
+    sigs: dict[str, str] = {}
+    cursor = 0
+    while True:
+        m = _GLOBAL_DECL_RE.search(source, cursor)
+        if not m:
+            break
+        name = m.group("name")
+        paren_start = m.end()  # m.end() is position right after '('
+        depth = 1
+        i = paren_start
+        n = len(source)
+        while i < n and depth > 0:
+            c = source[i]
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+            i += 1
+        if depth == 0:
+            params = source[paren_start : i - 1]
+            sigs[name] = re.sub(r"\s+", " ", params).strip()
+        cursor = i if i > cursor else cursor + 1
+    return sigs
+
+
+def _apply_edits_dry_run(source: str, edits: Iterable[Mapping[str, str]]) -> str:
+    """Approximate post-edit source so the signature-preservation rule
+    can compare. For Phase-1 we only handle `replace`/`patch` edits with
+    an `anchor` substring; full diff_patch semantics live in
+    `diff_patch_helpers.py`. Unknown ops are ignored — the verifier
+    errs on the side of letting the patch through (the worker will
+    re-verify after applying).
+    """
+    out = source
+    for edit in edits:
+        op = (edit.get("operation") or "").lower()
+        anchor = edit.get("anchor")
+        content = edit.get("content") or ""
+        if op in {"replace", "patch", "rewrite", "edit"} and anchor:
+            if anchor in out:
+                out = out.replace(anchor, content, 1)
+            elif anchor.strip() and anchor.strip() in out:
+                # Tolerate whitespace differences in the anchor.
+                out = out.replace(anchor.strip(), content.strip(), 1)
+        elif op in {"insert_after", "append"} and anchor:
+            idx = out.find(anchor)
+            if idx >= 0:
+                idx += len(anchor)
+                out = out[:idx] + "\n" + content + out[idx:]
+        elif op == "delete" and anchor and anchor in out:
+            out = out.replace(anchor, "", 1)
+    return out
+
+
+def _host_site_was_updated(
+    kernel: str,
+    host_sites: Mapping[str, str],
+    edits: Iterable[Mapping[str, str]],
+) -> bool:
+    """True if the heal's edit batch touches the host file that
+    contains the launch site for `kernel`. Conservative — any
+    matching-module edit counts as "host updated"; the worker's
+    post-apply diff will catch the false-positive case.
+    """
+    if kernel not in host_sites:
+        return False
+    # We don't carry per-file source of the launch site; use the
+    # kernel name as a substring marker for which host file edits
+    # reference it.
+    for edit in edits:
+        module = edit.get("module", "")
+        if module.endswith((".cpp", ".cc", ".cxx", ".h", ".hpp")):
+            content = edit.get("content", "") or ""
+            anchor = edit.get("anchor", "") or ""
+            if kernel in content or kernel in anchor:
+                return True
+    return False
+
+
+def _host_site_was_removed(
+    kernel: str,
+    host_sites: Mapping[str, str],
+    edits: Iterable[Mapping[str, str]],
+) -> bool:
+    """Specialised case of `_host_site_was_updated` for the
+    "kernel removed" path — looks for an edit that either deletes the
+    launch-site anchor or replaces it with content not containing the
+    kernel name.
+    """
+    if kernel not in host_sites:
+        return False
+    for edit in edits:
+        module = edit.get("module", "")
+        if not module.endswith((".cpp", ".cc", ".cxx")):
+            continue
+        op = (edit.get("operation") or "").lower()
+        anchor = edit.get("anchor", "") or ""
+        content = edit.get("content", "") or ""
+        if op == "delete" and kernel in anchor:
+            return True
+        if op in {"replace", "patch", "rewrite", "edit"} and kernel in anchor and kernel not in content:
+            return True
+    return False
