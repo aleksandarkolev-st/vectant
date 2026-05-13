@@ -100,7 +100,9 @@ sys.path.insert(0, "ai-backend/ai-engine")
 from llm.prompts import GPU_SPLIT_PROMPT
 
 checks = []
-checks.append(("placeholder", "{{USER_CODE_BLOCK}}" in GPU_SPLIT_PROMPT))
+# Actual placeholder in agents/kernel_splitter.py::build_prompt is {USER_CODE}
+# (single braces); the agent does `GPU_SPLIT_PROMPT.replace("{USER_CODE}", code)`.
+checks.append(("placeholder", "{USER_CODE}" in GPU_SPLIT_PROMPT))
 required_files = ("shared.h", "core.cpp", "gui.cpp", "host_runner.cpp", "device.cu")
 checks.append(("five_files", all(f in GPU_SPLIT_PROMPT for f in required_files)))
 # No-shim contract clause — at least one of these canonical phrases.
@@ -141,6 +143,10 @@ existing = ["vec_add", "reduce_sum", "gemm_naive"]
 known_files = {"core.cpp", "gui.cpp", "shared.h", "host_runner.cpp", "device.cu"}
 
 # Matrix of shim names that should ALL be rejected.
+# Fuzzy backstop entries must satisfy the verifier's gate:
+# length_delta(new, existing) <= 3, existing is a substring of new
+# (or vice versa), AND SequenceMatcher ratio > 0.85.
+# `vec_add2` against `vec_add`: delta=1, substring=yes, ratio≈0.93.
 shim_matrix = [
     "vec_add_safe",        # suffix _safe
     "vec_add_v2",          # suffix _v2
@@ -151,7 +157,7 @@ shim_matrix = [
     "safe_vec_add",        # prefix safe_
     "fixed_vec_add",       # prefix fixed_
     "wrap_vec_add",        # prefix wrap_
-    "vec_add_v_two",       # fuzzy backstop — SequenceMatcher > 0.85
+    "vec_add2",            # fuzzy backstop — SequenceMatcher 0.93, delta=1
 ]
 
 results = {"matrix": [], "new_file": None, "new_global": None, "clean": None}
@@ -187,17 +193,24 @@ out = verify_heal_output(
 )
 results["new_file"] = {"ok": out.ok, "rules": [v.rule for v in out.violations]}
 
-# P1py.8 — Tier 2/3 signature change without host update rejected
+# P1py.8 — Tier 2/3 signature change without host update rejected.
+# The verifier needs:
+#   (a) an anchor matching the existing signature line so
+#       _apply_edits_dry_run can produce a post-edit source,
+#   (b) host_launch_sites mapping so _host_site_was_updated has
+#       a kernel↔launch-site link to consult.
 out = verify_heal_output(
     tier="runtime",
     project_files=known_files,
     edits=[{
         "module": "device.cu",
-        "operation": "edit",
-        "content": "__global__ void gemm_naive(float* a, int n) {}",  # signature changed
+        "operation": "replace",
+        "anchor": "__global__ void gemm_naive(const float* a, const float* b, float* c, int n)",
+        "content": "__global__ void gemm_naive(const float* a, const float* b, float* c, int n, float alpha)",
     }],
     existing_kernels=existing,
     existing_device_source=EXISTING_DEVICE,
+    host_launch_sites={"gemm_naive": "gemm_naive<<<g, b>>>(a, b, c, n)"},
 )
 results["sig_changed_t3"] = {"ok": out.ok, "rules": [v.rule for v in out.violations]}
 
@@ -265,7 +278,10 @@ import json, sys
 sys.path.insert(0, "ai-backend/ai-engine")
 from agents.kernel_splitter import parse_kernel_split_response, KernelSplitterError
 
-# Synthetic well-formed response (mimics what Gemini would emit).
+# Synthetic well-formed response. The parser (agents/kernel_splitter.py)
+# expects a <JSON>...</JSON> block whose body is a dict of filename ->
+# file content. The structured metadata (arch, manifest, hashes, launch
+# graph) lives inside <synthi_arch_cache> nested blocks.
 GOOD = """
 <synthi_arch_cache>
 # Architecture
@@ -297,24 +313,15 @@ This is the vector_add kernel split across 5 files.
 </synthi_launch_graph>
 </synthi_arch_cache>
 
-==== FILE: shared.h ====
-#pragma once
-extern "C" __global__ void vec_add(const float*, const float*, float*, int);
-
-==== FILE: core.cpp ====
-#include "shared.h"
-void run(){}
-
-==== FILE: gui.cpp ====
-#include "shared.h"
-void render(){}
-
-==== FILE: host_runner.cpp ====
-int main(){return 0;}
-
-==== FILE: device.cu ====
-#include "shared.h"
-extern "C" __global__ void vec_add(const float*, const float*, float*, int){}
+<JSON>
+{
+  "shared.h": "#pragma once\\nextern \\"C\\" __global__ void vec_add(const float*, const float*, float*, int);\\n",
+  "core.cpp": "#include \\"shared.h\\"\\nvoid run(){}\\n",
+  "gui.cpp": "#include \\"shared.h\\"\\nvoid render(){}\\n",
+  "host_runner.cpp": "int main(){return 0;}\\n",
+  "device.cu": "#include \\"shared.h\\"\\nextern \\"C\\" __global__ void vec_add(const float*, const float*, float*, int){}\\n"
+}
+</JSON>
 """
 
 # Test 1: clean parse
