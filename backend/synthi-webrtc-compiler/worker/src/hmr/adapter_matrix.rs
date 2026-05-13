@@ -179,6 +179,49 @@ impl AdapterMatrix {
             fallback_behavior: "full_restart".into(),
         });
 
+        // ── GPU rows (GPU_HMR_ULTRAPLAN §5.3) ────────────────────
+        // Descriptors are always present so the planner can reason
+        // about them; the concrete adapter instance is only created
+        // by `adapter_registry::create_adapter_for_language` when
+        // the `gpu-hmr` cargo feature is on (and falls through to
+        // None otherwise — the planner cold-restarts on GPU edits
+        // when the feature is off, which is the documented Phase-0
+        // behavior).
+        //
+        // Phase-1 declared tier is Tier1: today the GpuModuleAdapter
+        // returns Unsupported and the planner falls back to a
+        // process-swap-style cold restart. Phase 2 graduates to
+        // Tier2 (warm cubin swap via cuModuleLoadData) and Phase 3
+        // to Tier3 once §6 snapshots are wired.
+        adapters.insert("cuda".into(), AdapterDescriptor {
+            language: "cuda".into(),
+            family: AdapterFamily::DynamicLibrary,
+            capability_tier: CapabilityTier::Tier1,
+            snapshot_modes: vec!["userspace".into(), "driver_checkpoint".into()],
+            healthcheck_strategy: "kernel_probe".into(),
+            fallback_behavior: "cold_reload".into(),
+        });
+
+        adapters.insert("hip".into(), AdapterDescriptor {
+            language: "hip".into(),
+            family: AdapterFamily::DynamicLibrary,
+            capability_tier: CapabilityTier::Tier1,
+            snapshot_modes: vec!["userspace".into()], // ROCm: no driver checkpoint (Phase 1)
+            healthcheck_strategy: "kernel_probe".into(),
+            fallback_behavior: "cold_reload".into(),
+        });
+
+        // Friendly alias — manifest may say "rocm" instead of "hip"
+        // (vendor vs. language). Same descriptor.
+        adapters.insert("rocm".into(), AdapterDescriptor {
+            language: "rocm".into(),
+            family: AdapterFamily::DynamicLibrary,
+            capability_tier: CapabilityTier::Tier1,
+            snapshot_modes: vec!["userspace".into()],
+            healthcheck_strategy: "kernel_probe".into(),
+            fallback_behavior: "cold_reload".into(),
+        });
+
         Self { adapters }
     }
 
@@ -233,5 +276,41 @@ mod tests {
         assert_eq!(AdapterFamily::DynamicLibrary.max_capability_tier(), CapabilityTier::Tier3);
         assert_eq!(AdapterFamily::ManagedRuntime.max_capability_tier(), CapabilityTier::Tier2);
         assert_eq!(AdapterFamily::ProcessSwap.max_capability_tier(), CapabilityTier::Tier1);
+    }
+
+    // ── GPU-HMR Phase 1 rows ──────────────────────────────────
+
+    #[test]
+    fn default_matrix_contains_cuda() {
+        let m = AdapterMatrix::default_matrix();
+        let cuda = m.get("cuda").expect("cuda row missing");
+        assert_eq!(cuda.family, AdapterFamily::DynamicLibrary);
+        assert_eq!(cuda.capability_tier, CapabilityTier::Tier1);
+        assert!(cuda.snapshot_modes.contains(&"userspace".to_string()));
+        assert!(cuda.snapshot_modes.contains(&"driver_checkpoint".to_string()));
+        assert_eq!(cuda.healthcheck_strategy, "kernel_probe");
+        assert_eq!(cuda.fallback_behavior, "cold_reload");
+    }
+
+    #[test]
+    fn default_matrix_contains_hip_and_rocm_alias() {
+        let m = AdapterMatrix::default_matrix();
+        let hip = m.get("hip").expect("hip row missing");
+        let rocm = m.get("rocm").expect("rocm alias row missing");
+        assert_eq!(hip.family, AdapterFamily::DynamicLibrary);
+        assert_eq!(rocm.family, AdapterFamily::DynamicLibrary);
+        // Phase 1 ROCm has no driver-checkpoint tier — userspace only.
+        assert_eq!(hip.snapshot_modes, vec!["userspace".to_string()]);
+        assert_eq!(rocm.snapshot_modes, vec!["userspace".to_string()]);
+    }
+
+    #[test]
+    fn gpu_rows_declared_tier_does_not_promise_warm_reload() {
+        // Phase 1 must declare Tier1, NOT Tier3 — the harness
+        // greps for tier=1 on the gpu rows to assert we're not
+        // pretending to support warm reload yet.
+        let m = AdapterMatrix::default_matrix();
+        assert!(!m.get("cuda").unwrap().capability_tier.supports_warm_reload());
+        assert!(!m.get("hip").unwrap().capability_tier.supports_warm_reload());
     }
 }
