@@ -15,7 +15,15 @@ use crate::hmr::dynlib_adapter::{DynLibAdapter, DynLibAdapterConfig};
 use crate::hmr::managed_runtime_adapter::{ManagedRuntimeAdapter, ManagedRuntimeConfig, ManagedRuntimeKind};
 use crate::hmr::process_swap_adapter::{ProcessSwapAdapter, ProcessSwapConfig};
 
+#[cfg(feature = "gpu-hmr")]
+use crate::hmr::gpu_module_adapter::{GpuModuleAdapter, GpuModuleAdapterConfig, GpuVendor};
+
 /// A factory that creates the default adapter for a language.
+///
+/// GPU rows ("cuda", "hip", "rocm") are wired only with
+/// `--features gpu-hmr`; on host-only builds the factory returns
+/// `None` for those languages and the planner falls through to a
+/// cold restart per the GPU_HMR_ULTRAPLAN Phase-0 contract.
 pub fn create_adapter_for_language(language: &str) -> Option<Box<dyn Adapter>> {
     match language {
         "c" | "cpp" | "rust" | "zig" => {
@@ -47,6 +55,22 @@ pub fn create_adapter_for_language(language: &str) -> Option<Box<dyn Adapter>> {
                 ..Default::default()
             };
             Some(Box::new(ProcessSwapAdapter::new(config)))
+        }
+        #[cfg(feature = "gpu-hmr")]
+        "cuda" => {
+            let config = GpuModuleAdapterConfig {
+                vendor: GpuVendor::Cuda,
+                ..Default::default()
+            };
+            Some(Box::new(GpuModuleAdapter::new(config)))
+        }
+        #[cfg(feature = "gpu-hmr")]
+        "hip" | "rocm" => {
+            let config = GpuModuleAdapterConfig {
+                vendor: GpuVendor::Rocm,
+                ..Default::default()
+            };
+            Some(Box::new(GpuModuleAdapter::new(config)))
         }
         _ => None,
     }
@@ -168,5 +192,42 @@ mod tests {
         for (lang, result) in &results {
             assert!(result.is_ok(), "failed to initialize {}: {:?}", lang, result);
         }
+    }
+
+    // ── GPU-HMR Phase 1 factory branches ──────────────────────
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn factory_creates_cuda_adapter() {
+        let a = create_adapter_for_language("cuda").expect("cuda adapter");
+        assert_eq!(a.info().name, "gpu_module_cuda");
+        assert!(a.info().supported_languages.contains(&"cuda".to_string()));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn factory_creates_hip_and_rocm_adapter() {
+        let hip = create_adapter_for_language("hip").expect("hip adapter");
+        let rocm = create_adapter_for_language("rocm").expect("rocm adapter");
+        assert_eq!(hip.info().name, "gpu_module_rocm");
+        assert_eq!(rocm.info().name, "gpu_module_rocm");
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn registry_from_matrix_with_gpu_rows() {
+        let matrix = AdapterMatrix::default_matrix();
+        let registry = AdapterRegistry::from_matrix(&matrix);
+        assert!(registry.get_info("cuda").is_some(), "expected cuda adapter registered");
+        assert!(registry.get_info("hip").is_some(), "expected hip adapter registered");
+        assert!(registry.get_info("rocm").is_some(), "expected rocm adapter registered");
+    }
+
+    #[cfg(not(feature = "gpu-hmr"))]
+    #[test]
+    fn factory_returns_none_for_gpu_when_feature_off() {
+        assert!(create_adapter_for_language("cuda").is_none());
+        assert!(create_adapter_for_language("hip").is_none());
+        assert!(create_adapter_for_language("rocm").is_none());
     }
 }
