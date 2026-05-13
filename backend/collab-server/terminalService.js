@@ -628,18 +628,37 @@ function _safeUserId(userId) {
  */
 async function resolveWorkspaceCwd(slug, userId) {
   const fsp = require('fs').promises;
-  const baseDir = process.env.WORKSPACE_ROOT || REPOS_DIR;
+  // Env var priority — match every var the rest of the stack uses so
+  // hosted deployments don't break just because the operator set the
+  // var the *other* service expects:
+  //   WORKSPACE_ROOT      → explicit override for the terminal
+  //   REPOS_DIR           → collab-server canonical (config.js, gitService)
+  //   SYNTHI_REPOS_PATH   → ai-engine convention (Python side)
+  //   REPOS_DIR (default) → the resolved value baked at module load
+  const baseDir =
+    process.env.WORKSPACE_ROOT ||
+    process.env.REPOS_DIR ||
+    process.env.SYNTHI_REPOS_PATH ||
+    REPOS_DIR;
   const safeId = _safeUserId(userId);
 
   if (slug) {
     // 1. Per-user directory: repos/<slug>/<userId>  (matches gitService layout)
     if (safeId) {
       const perUserDir = path.join(baseDir, slug, safeId);
-      try { await fsp.access(perUserDir); return perUserDir; } catch (_) {}
+      try {
+        await fsp.access(perUserDir);
+        console.log(`[Terminal] resolveWorkspaceCwd: per-user dir ${perUserDir}`);
+        return perUserDir;
+      } catch (_) {}
     }
     // 2. Workspace root: repos/<slug>
     const wsDir = path.join(baseDir, slug);
-    try { await fsp.access(wsDir); return wsDir; } catch (_) {}
+    try {
+      await fsp.access(wsDir);
+      console.log(`[Terminal] resolveWorkspaceCwd: shared workspace dir ${wsDir}`);
+      return wsDir;
+    } catch (_) {}
 
     // 3. Neither exists yet — create the per-user dir (preferred) or the
     //    slug dir. mkdir is recursive so the baseDir parent is created
@@ -653,8 +672,15 @@ async function resolveWorkspaceCwd(slug, userId) {
       console.warn(`[Terminal] resolveWorkspaceCwd: failed to create ${target}: ${err.message}`);
     }
   }
-  // 4. Last resort: base directory itself, then $HOME (truly unrecoverable)
-  try { await fsp.access(baseDir); return baseDir; } catch (_) {}
+  // 4. Last resort: base directory itself, then $HOME (truly unrecoverable).
+  // Log loudly — if you see this in container logs, your terminal is at
+  // $HOME and nothing the AI runs will see workspace files.
+  try {
+    await fsp.access(baseDir);
+    console.warn(`[Terminal] resolveWorkspaceCwd: FALLBACK to baseDir ${baseDir} (slug=${slug}, userId=${userId})`);
+    return baseDir;
+  } catch (_) {}
+  console.error(`[Terminal] resolveWorkspaceCwd: FALLBACK TO $HOME — baseDir ${baseDir} does not exist (slug=${slug}, userId=${userId})`);
   return os.homedir();
 }
 
