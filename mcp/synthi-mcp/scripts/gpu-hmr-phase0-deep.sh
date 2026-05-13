@@ -154,9 +154,17 @@ check_nvcc() {
   return 0
 }
 
+# ── shared: tool presence helpers ───────────────────────────
+have_python() { command -v python3 >/dev/null 2>&1; }
+have_cargo()  { command -v cargo   >/dev/null 2>&1; }
+
 # ── P0.3  Python build_manifest round-trip ──────────────────
 run_py_build_manifest() {
   if [ "$SYNTHI_SKIP_PY" = "1" ]; then skip_step "P0.3" "SYNTHI_SKIP_PY=1"; return 0; fi
+  if ! have_python; then
+    skip_step "P0.3" "python3 not on PATH in this image — run the Phase 1 Python harness in python:3.10-slim instead"
+    return 0
+  fi
   local engine="$SYNTHI_REPO_ROOT/ai-backend/ai-engine"
   if [ ! -d "$engine" ]; then
     record "P0.3" fail "ai-engine dir missing at $engine"
@@ -169,6 +177,10 @@ run_py_build_manifest() {
 # ── P0.4  Python gpu_detect classifier ──────────────────────
 run_py_gpu_detect() {
   if [ "$SYNTHI_SKIP_PY" = "1" ]; then skip_step "P0.4" "SYNTHI_SKIP_PY=1"; return 0; fi
+  if ! have_python; then
+    skip_step "P0.4" "python3 not on PATH in this image"
+    return 0
+  fi
   local engine="$SYNTHI_REPO_ROOT/ai-backend/ai-engine"
   run_step "P0.4" "Python gpu_detect classifier" \
     bash -lc "cd '$engine' && python3 -m pytest tests/test_gpu_detect.py -v --tb=short"
@@ -177,6 +189,10 @@ run_py_gpu_detect() {
 # ── P0.5  Rust compile_manifest (feature: gpu-hmr) ──────────
 run_rs_compile_manifest() {
   if [ "$SYNTHI_SKIP_RS" = "1" ]; then skip_step "P0.5" "SYNTHI_SKIP_RS=1"; return 0; fi
+  if ! have_cargo; then
+    skip_step "P0.5" "cargo not on PATH in this image — run the Phase 1 Rust harness in rust:1.88-bookworm instead"
+    return 0
+  fi
   local worker="$SYNTHI_REPO_ROOT/backend/synthi-webrtc-compiler/worker"
   if [ ! -f "$worker/Cargo.toml" ]; then
     record "P0.5" fail "worker Cargo.toml missing at $worker"
@@ -189,6 +205,7 @@ run_rs_compile_manifest() {
 # ── P0.6  ccache exclusion for nvcc/hipcc ───────────────────
 run_rs_compile_helpers() {
   if [ "$SYNTHI_SKIP_RS" = "1" ]; then skip_step "P0.6" "SYNTHI_SKIP_RS=1"; return 0; fi
+  if ! have_cargo; then skip_step "P0.6" "cargo not on PATH"; return 0; fi
   local worker="$SYNTHI_REPO_ROOT/backend/synthi-webrtc-compiler/worker"
   run_step "P0.6" "Rust compile_helpers::is_device_compiler" \
     bash -lc "cd '$worker' && cargo test --features gpu-hmr --lib compiler::stages::compile_helpers -- --nocapture"
@@ -197,6 +214,7 @@ run_rs_compile_helpers() {
 # ── P0.7  populate_device_command unit tests ────────────────
 run_rs_compile_device() {
   if [ "$SYNTHI_SKIP_RS" = "1" ]; then skip_step "P0.7" "SYNTHI_SKIP_RS=1"; return 0; fi
+  if ! have_cargo; then skip_step "P0.7" "cargo not on PATH"; return 0; fi
   local worker="$SYNTHI_REPO_ROOT/backend/synthi-webrtc-compiler/worker"
   run_step "P0.7" "Rust compile_device::populate_device_command" \
     bash -lc "cd '$worker' && cargo test --features gpu-hmr --lib compiler::stages::compile_device -- --nocapture"
@@ -205,6 +223,7 @@ run_rs_compile_device() {
 # ── P0.8  ptxas_info_parser unit tests + live ptxas stderr ──
 run_rs_ptxas_parser() {
   if [ "$SYNTHI_SKIP_RS" = "1" ]; then skip_step "P0.8" "SYNTHI_SKIP_RS=1"; return 0; fi
+  if ! have_cargo; then skip_step "P0.8" "cargo not on PATH"; return 0; fi
   local worker="$SYNTHI_REPO_ROOT/backend/synthi-webrtc-compiler/worker"
   run_step "P0.8" "Rust ptxas_info_parser unit tests" \
     bash -lc "cd '$worker' && cargo test --features gpu-hmr --lib compiler::stages::ptxas_info_parser -- --nocapture"
