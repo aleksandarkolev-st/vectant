@@ -54,6 +54,8 @@ pub mod dynlib_swap;
 pub mod dynlib_symbol_resolver;
 pub mod fast_refresh;
 #[cfg(feature = "gpu-hmr")]
+pub mod device_snapshot;
+#[cfg(feature = "gpu-hmr")]
 pub mod gpu_module_adapter;
 pub mod health_check;
 pub mod hmr_eligibility;
