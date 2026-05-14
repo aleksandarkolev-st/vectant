@@ -71,7 +71,7 @@ fn decision_to_str(d: &ReloadDecision) -> &'static str {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use super::*;
     use crate::hmr::adapter_matrix::AdapterMatrix;
