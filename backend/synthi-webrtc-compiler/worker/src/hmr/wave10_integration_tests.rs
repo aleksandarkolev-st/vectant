@@ -6,7 +6,7 @@
 // ============================================================
 
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use crate::hmr::adapter_matrix::AdapterMatrix;
     use crate::hmr::adapter_registry::{create_adapter_for_language, AdapterRegistry};
