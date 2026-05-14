@@ -1,5 +1,5 @@
 // ============================================================
-// GPU MODULE ADAPTER (Phase 1 scaffold)
+// GPU MODULE ADAPTER (Phase 2 — driver loader wired in)
 // ============================================================
 //
 // Spec: docs/GPU_HMR_ULTRAPLAN.md §5.3 / §5.4. This is the
@@ -9,30 +9,36 @@
 // module adapter does `cuModuleLoadData` / `cuModuleUnload` (HIP
 // equivalents on ROCm) on a sidecar cubin / hsaco.
 //
-// Phase 1 scope (this file):
+// Phase status:
 //
-//   • Strongly-typed scaffold types — `GpuVendor`, `GpuModuleAdapter`,
-//     `GpuModuleAdapterConfig`.
-//   • `Adapter` trait implementation, returning `Unsupported` from
-//     `reload()` and empty payloads from `snapshot_state` /
-//     `restore_state`.
-//   • Driver-API symbol *names* defined as constants so the Phase 2
-//     dlsym pass (in `device_loader.rs`) has a single source of
-//     truth.
-//   • Feature-gated by `gpu-hmr`. With the feature off, the module
-//     compiles to an empty body so worker builds on hosts without
-//     CUDA / ROCm continue to work unchanged.
+//   Phase 1 ✓
+//     • Strongly-typed scaffold (`GpuVendor`, adapter struct,
+//       config). `Adapter` impl returning Unsupported.
+//     • Driver-API symbol names declared as a single source.
 //
-// Phase 2 will add (NOT in this commit):
+//   Phase 2 ✓ (this file)
+//     • `initialize()` performs the real dlopen + dlsym pass via
+//       `gpu_driver_loader::try_load`. Successful loads stash the
+//       handle in an Arc so the Phase-3 module-manager / shadow-
+//       arena can clone it without re-dlopen.
+//     • Failed loads (driver missing on a host without CUDA /
+//       ROCm) leave the adapter Ready but mark
+//       `driver_available()` false; the planner falls through to
+//       cold restart based on the reload reason.
+//     • info().extra exposes `driver_state`, `driver_path`,
+//       optional `driver_error` for telemetry.
 //
-//   • Real `cuModuleLoadData` / `cuModuleUnload` dlsym + invocation.
-//   • Two-slot module manager (mirrors `slot_manager.rs::LibSlot`).
-//   • Stream drain, `cuCtxSynchronize`, kernel launch table rewrite.
-//   • `device_save` / `device_restore` integration with
-//     `device_snapshot.rs` (Tier-B userspace path).
+//   Phase 3 (not in this commit)
+//     • Two-slot module manager wired through `reload()`:
+//       cuModuleLoadData → resolve_kernels → drain → swap →
+//       unload-retired.
+//     • Shadow arena + dirty-bit shim integrated into
+//       `snapshot_state` / `restore_state`.
+//     • Tier-A driver checkpoint path.
 //
-// Phase 3+ extends to driver checkpoint snapshot (Tier A) and the
-// no-shim healer integration. None of those land here.
+// Feature-gated by `gpu-hmr`. With the feature off the module
+// compiles to an empty body so worker builds on hosts without
+// CUDA / ROCm continue to work unchanged.
 
 #![cfg(feature = "gpu-hmr")]
 
