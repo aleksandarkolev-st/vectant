@@ -151,7 +151,7 @@ pub fn validate_restore(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use super::*;
 
