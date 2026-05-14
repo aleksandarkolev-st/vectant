@@ -56,7 +56,17 @@ pub mod fast_refresh;
 #[cfg(feature = "gpu-hmr")]
 pub mod device_snapshot;
 #[cfg(feature = "gpu-hmr")]
+pub mod gpu_dirty_bit;
+#[cfg(feature = "gpu-hmr")]
+pub mod gpu_driver_loader;
+#[cfg(feature = "gpu-hmr")]
 pub mod gpu_module_adapter;
+#[cfg(feature = "gpu-hmr")]
+pub mod gpu_module_manager;
+#[cfg(feature = "gpu-hmr")]
+pub mod gpu_shadow_arena;
+#[cfg(feature = "gpu-hmr")]
+pub mod gpu_stream_drain;
 pub mod health_check;
 pub mod hmr_eligibility;
 pub mod hot_swap_coordinator;
