@@ -46,6 +46,13 @@ ENGINE="$SYNTHI_REPO_ROOT/ai-backend/ai-engine"
 
 mkdir -p "$SYNTHI_LOG_DIR"
 
+# Pytest's capture layer can fail on the Windows-mounted workspace temp
+# path. Keep temp files on the Linux filesystem unless the caller
+# explicitly chose another location.
+export TMPDIR="${TMPDIR:-/tmp}"
+export TMP="${TMP:-$TMPDIR}"
+export TEMP="${TEMP:-$TMPDIR}"
+
 RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; BLU=$'\033[36m'; DIM=$'\033[2m'; RST=$'\033[0m'
 PASS=0; FAIL=0; SKIP=0; WARN=0
 declare -a RESULTS
