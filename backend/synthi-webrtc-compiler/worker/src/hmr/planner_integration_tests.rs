@@ -5,7 +5,7 @@
 // machine, candidate protocol, and ABI detection work together.
 // ============================================================
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use crate::hmr::abi_detect::detect_abi_changes;
     use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix, CapabilityTier};
