@@ -216,20 +216,50 @@ pub fn drain_stream_with_clock(
 mod tests {
     use super::*;
     use std::ffi::c_void;
-    use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+    use std::cell::RefCell;
 
-    static CTX_CALLS: AtomicU64 = AtomicU64::new(0);
-    static STREAM_CALLS: AtomicU64 = AtomicU64::new(0);
-    static CTX_RESULT: AtomicI32 = AtomicI32::new(0);
-    static STREAM_RESULT: AtomicI32 = AtomicI32::new(0);
+    // Per-thread stub state so parallel cargo tests don't
+    // pollute each other's counters / result codes.
+    struct StubState {
+        ctx_calls: u64,
+        stream_calls: u64,
+        ctx_result: CuResult,
+        stream_result: CuResult,
+    }
+
+    impl StubState {
+        const fn fresh() -> Self {
+            Self {
+                ctx_calls: 0,
+                stream_calls: 0,
+                ctx_result: 0,
+                stream_result: 0,
+            }
+        }
+    }
+
+    thread_local! {
+        static STATE: RefCell<StubState> = const { RefCell::new(StubState::fresh()) };
+    }
+
+    fn with_state<R>(f: impl FnOnce(&StubState) -> R) -> R {
+        STATE.with(|s| f(&s.borrow()))
+    }
+    fn with_state_mut<R>(f: impl FnOnce(&mut StubState) -> R) -> R {
+        STATE.with(|s| f(&mut s.borrow_mut()))
+    }
 
     unsafe extern "C" fn stub_ctx_sync() -> CuResult {
-        CTX_CALLS.fetch_add(1, Ordering::SeqCst);
-        CTX_RESULT.load(Ordering::SeqCst)
+        with_state_mut(|s| {
+            s.ctx_calls += 1;
+            s.ctx_result
+        })
     }
     unsafe extern "C" fn stub_stream_sync(_s: *mut c_void) -> CuResult {
-        STREAM_CALLS.fetch_add(1, Ordering::SeqCst);
-        STREAM_RESULT.load(Ordering::SeqCst)
+        with_state_mut(|s| {
+            s.stream_calls += 1;
+            s.stream_result
+        })
     }
     // Unused stubs.
     unsafe extern "C" fn stub_init(_f: u32) -> CuResult { 0 }
@@ -259,10 +289,7 @@ mod tests {
     }
 
     fn reset() {
-        CTX_CALLS.store(0, Ordering::SeqCst);
-        STREAM_CALLS.store(0, Ordering::SeqCst);
-        CTX_RESULT.store(0, Ordering::SeqCst);
-        STREAM_RESULT.store(0, Ordering::SeqCst);
+        with_state_mut(|s| *s = StubState::fresh());
     }
 
     #[test]
@@ -279,7 +306,7 @@ mod tests {
         // wall time. Budget 100 → Synced.
         let now = || 5u64;
         let r = drain_context_with_clock(&t, 100, DrainClock::Synthetic(&now));
-        assert_eq!(CTX_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(with_state(|s| s.ctx_calls), 1);
         assert!(r.is_synced(), "got {r:?}");
         assert_eq!(r.elapsed_ms(), 5);
         assert_eq!(r.budget_ms(), Some(100));
@@ -305,7 +332,7 @@ mod tests {
     #[test]
     fn drain_context_reports_driver_error() {
         reset();
-        CTX_RESULT.store(3, Ordering::SeqCst);
+        with_state_mut(|s| s.ctx_result = 3);
         let t = stub_table();
         let now = || 12u64;
         let r = drain_context_with_clock(&t, 100, DrainClock::Synthetic(&now));
@@ -333,7 +360,7 @@ mod tests {
         let t = stub_table();
         let now = || 7u64;
         let r = drain_stream_with_clock(&t, std::ptr::null_mut(), 50, DrainClock::Synthetic(&now));
-        assert_eq!(STREAM_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(with_state(|s| s.stream_calls), 1);
         match r {
             DrainOutcome::Synced { scope, elapsed_ms, budget_ms } => {
                 assert_eq!(scope, DrainScope::Stream);
@@ -347,7 +374,7 @@ mod tests {
     #[test]
     fn drain_stream_propagates_driver_error() {
         reset();
-        STREAM_RESULT.store(11, Ordering::SeqCst);
+        with_state_mut(|s| s.stream_result = 11);
         let t = stub_table();
         let r = drain_stream_with_clock(
             &t,
