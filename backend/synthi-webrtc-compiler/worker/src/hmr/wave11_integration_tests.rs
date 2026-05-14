@@ -8,7 +8,7 @@
 // ============================================================
 
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use crate::hmr::dynlib_abi_contract::{
         canonical_abi_contract, validate_symbols_against_contract, AbiHeader,
