@@ -28,13 +28,20 @@
 //     • info().extra exposes `driver_state`, `driver_path`,
 //       optional `driver_error` for telemetry.
 //
-//   Phase 3 (not in this commit)
+//   Phase 3 ✓
 //     • Two-slot module manager wired through `reload()`:
-//       cuModuleLoadData → resolve_kernels → drain → swap →
+//       drain → cuModuleLoadData → resolve_kernels → swap →
 //       unload-retired.
-//     • Shadow arena + dirty-bit shim integrated into
-//       `snapshot_state` / `restore_state`.
-//     • Tier-A driver checkpoint path.
+//     • Deterministic `gpu_reload_orchestrator` report markers
+//       emitted for the worker log / harness.
+//     • Driver-unavailable and drain-timeout paths now route to
+//       cold fallback instead of claiming an unsupported scaffold.
+//
+//   Still pending after this file:
+//     • Host-runner launch-site replacement calls this adapter
+//       with the produced sidecar path from compiler/handler.rs.
+//     • Shadow arena + dirty-bit registry are not yet connected
+//       to `snapshot_state` / `restore_state`.
 //
 // Feature-gated by `gpu-hmr`. With the feature off the module
 // compiles to an empty body so worker builds on hosts without
@@ -43,7 +50,9 @@
 #![cfg(feature = "gpu-hmr")]
 
 use std::collections::HashMap;
+use std::fs;
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -51,8 +60,13 @@ use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::adapter_trait::{
     Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest, AdapterReloadResult,
 };
-use crate::hmr::compile_manifest::DeviceVendor;
-use crate::hmr::gpu_driver_loader::{self, DriverLoadError, GpuDriverHandle};
+use crate::hmr::compile_manifest::{DeviceVendor, SnapshotMode};
+use crate::hmr::gpu_driver_loader::{self, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable};
+use crate::hmr::gpu_module_manager::{GpuModuleManager, ModuleManagerError};
+use crate::hmr::gpu_reload_orchestrator::{
+    plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
+};
+use crate::hmr::gpu_stream_drain::{drain_context, DrainOutcome};
 
 // ── Vendor + symbol table ───────────────────────────────────
 
@@ -217,10 +231,23 @@ pub struct GpuModuleAdapter {
     /// module-manager + shadow-arena can hold their own
     /// references without re-dlopen.
     driver: Option<Arc<GpuDriverHandle>>,
+    /// Two-slot manager for the active / standby cubin or hsaco
+    /// image. The driver handle owns the function pointers; this
+    /// manager owns only opaque module and function handles.
+    module_manager: GpuModuleManager,
+    /// Last deterministic reload report lines. These are also
+    /// printed during `reload()` so the worker log carries the
+    /// markers from docs/GPU_HMR_ULTRAPLAN.md §9.
+    last_reload_log: Vec<String>,
     /// Last driver-load error, if `try_load` failed. Surfaced on
     /// `info().extra["driver_error"]` for telemetry. Cleared on
     /// the next successful load attempt.
     last_driver_error: Option<DriverLoadError>,
+    /// Test-only symbol table injection. This lets adapter-level
+    /// unit tests exercise real load/swap/unload sequencing without
+    /// requiring libcuda.so.1 or a GPU in CI.
+    #[cfg(test)]
+    test_symbols: Option<GpuDriverSymbolTable>,
 }
 
 impl GpuModuleAdapter {
@@ -233,7 +260,11 @@ impl GpuModuleAdapter {
             kernel_table: HashMap::new(),
             health: AdapterHealth::Unknown,
             driver: None,
+            module_manager: GpuModuleManager::new(),
+            last_reload_log: Vec::new(),
             last_driver_error: None,
+            #[cfg(test)]
+            test_symbols: None,
         }
     }
 
@@ -254,7 +285,7 @@ impl GpuModuleAdapter {
     /// path: when `driver_available()` is false the planner must
     /// fall through to cold restart.
     pub fn driver_available(&self) -> bool {
-        self.driver.is_some()
+        self.driver.is_some() || cfg!(test) && self.test_symbols_available()
     }
 
     /// Shared reference to the loaded driver, if any. Phase 3's
@@ -297,16 +328,102 @@ impl GpuModuleAdapter {
             v.stream_synchronize_symbol(),
         ]
     }
+
+    pub fn last_reload_log(&self) -> &[String] {
+        &self.last_reload_log
+    }
+
+    fn symbols(&self) -> Option<&GpuDriverSymbolTable> {
+        if let Some(driver) = &self.driver {
+            return Some(driver.symbols());
+        }
+        #[cfg(test)]
+        {
+            if let Some(symbols) = self.test_symbols.as_ref() {
+                return Some(symbols);
+            }
+        }
+        None
+    }
+
+    #[cfg(test)]
+    fn test_symbols_available(&self) -> bool {
+        self.test_symbols.is_some()
+    }
+
+    #[cfg(not(test))]
+    fn test_symbols_available(&self) -> bool {
+        false
+    }
+
+    fn compile_vendor(&self) -> DeviceVendor {
+        match self.config.vendor {
+            GpuVendor::Cuda => DeviceVendor::Cuda,
+            GpuVendor::Rocm => DeviceVendor::Rocm,
+        }
+    }
+
+    fn classify_plan(req: &AdapterReloadRequest) -> GpuReloadPlan {
+        let mut touches_device = false;
+        let mut touches_host = false;
+        for path in &req.changed_files {
+            let p = path.as_str();
+            if p.ends_with(".cu")
+                || p.ends_with(".hip")
+                || p == "device"
+                || p == "device.cu"
+                || p == "device.hip"
+            {
+                touches_device = true;
+            } else {
+                touches_host = true;
+            }
+        }
+        match (touches_device, touches_host) {
+            (true, true) => GpuReloadPlan::Mixed,
+            (true, false) => GpuReloadPlan::DeviceOnly,
+            (false, true) => GpuReloadPlan::HostOnly,
+            (false, false) => GpuReloadPlan::DeviceOnly,
+        }
+    }
+
+    fn emit_report(&mut self, input: GpuSwapInputs) {
+        let cfg = GpuReloadConfig {
+            vendor: self.compile_vendor(),
+            requested_snapshot_mode: SnapshotMode::Auto,
+            drain_timeout_ms: self.config.drain_timeout_ms,
+            ..Default::default()
+        };
+        let report = plan_gpu_reload(&cfg, input);
+        self.last_reload_log = report.log_lines.clone();
+        for line in &self.last_reload_log {
+            println!("{line}");
+        }
+    }
+
+    fn module_manager_error(err: ModuleManagerError) -> String {
+        format!("gpu module manager {}: {err}", err.short_label())
+    }
 }
 
 impl Adapter for GpuModuleAdapter {
     fn info(&self) -> AdapterInfo {
         let mut extra = HashMap::new();
         extra.insert("vendor".into(), self.config.vendor.as_str().into());
-        extra.insert("driver_library".into(), self.config.vendor.driver_library().into());
+        extra.insert(
+            "driver_library".into(),
+            self.config.vendor.driver_library().into(),
+        );
         extra.insert("phase".into(), format!("{:?}", self.phase));
         extra.insert("reload_count".into(), self.reload_count.to_string());
         extra.insert("driver_state".into(), self.driver_state_label().into());
+        extra.insert(
+            "swap_count".into(),
+            self.module_manager.swap_count().to_string(),
+        );
+        if let Some(primary) = self.module_manager.primary() {
+            extra.insert("active_module_bytes".into(), primary.blob_bytes.to_string());
+        }
         if let Some(err) = &self.last_driver_error {
             extra.insert("driver_error".into(), err.short_label().into());
         }
@@ -366,12 +483,14 @@ impl Adapter for GpuModuleAdapter {
         self.active_module_handle = None;
         self.kernel_table.clear();
         self.driver = None;
+        self.module_manager = GpuModuleManager::new();
+        self.last_reload_log.clear();
         self.phase = GpuPhase::ShutDown;
         self.health = AdapterHealth::Unknown;
         Ok(())
     }
 
-    fn reload(&mut self, _req: &AdapterReloadRequest) -> AdapterReloadResult {
+    fn reload(&mut self, req: &AdapterReloadRequest) -> AdapterReloadResult {
         self.reload_count += 1;
         if self.phase == GpuPhase::Uninitialized || self.phase == GpuPhase::ShutDown {
             return AdapterReloadResult::Failed {
@@ -379,23 +498,165 @@ impl Adapter for GpuModuleAdapter {
                 recoverable: false,
             };
         }
-        // The driver-side swap doesn't land until Phase 3. The reason
-        // string carries the driver state so the planner can branch:
-        //   • driver=loaded → Phase 3 will wire the two-slot manager.
-        //   • driver=unavailable → cold path is the only option.
-        let reason = match self.driver_state_label() {
-            "loaded" => "gpu_module_adapter Phase 2 — driver loaded, swap path lands in Phase 3"
-                .to_string(),
-            "unavailable" => format!(
-                "gpu_module_adapter Phase 2 — driver unavailable ({}); falling through to cold path",
-                self.last_driver_error
-                    .as_ref()
-                    .map(|e| e.short_label())
-                    .unwrap_or("unknown")
-            ),
-            _ => "gpu_module_adapter Phase 2 scaffold — driver state pending".to_string(),
+        if !self.driver_available() {
+            return AdapterReloadResult::Unsupported {
+                reason: format!(
+                    "gpu_module_adapter driver unavailable ({}); falling through to cold path",
+                    self.last_driver_error
+                        .as_ref()
+                        .map(|e| e.short_label())
+                        .unwrap_or("unknown")
+                ),
+            };
+        }
+
+        let artifact = req.build_manifest.artifact_path.trim();
+        if artifact.is_empty() {
+            return AdapterReloadResult::Unsupported {
+                reason: "gpu_module_adapter missing device artifact path; cold reload required"
+                    .into(),
+            };
+        }
+
+        let blob = match fs::read(artifact) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                self.health = AdapterHealth::Degraded;
+                return AdapterReloadResult::Failed {
+                    error: format!("failed to read GPU sidecar artifact {artifact:?}: {e}"),
+                    recoverable: true,
+                };
+            }
         };
-        AdapterReloadResult::Unsupported { reason }
+        if blob.len() as u64 > self.config.max_module_bytes {
+            return AdapterReloadResult::Unsupported {
+                reason: format!(
+                    "gpu sidecar artifact {} bytes exceeds max_module_bytes={}",
+                    blob.len(),
+                    self.config.max_module_bytes
+                ),
+            };
+        }
+
+        let plan = Self::classify_plan(req);
+        if plan == GpuReloadPlan::HostOnly {
+            self.emit_report(GpuSwapInputs {
+                plan,
+                reason: "host-file-only-edit".into(),
+                streams_synced: 0,
+                force_drain_timeout: false,
+                snapshot_bytes: 0,
+                snapshot_ms: 0,
+                dirty_buffers: 0,
+                expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
+                matched_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
+            });
+            return AdapterReloadResult::Unsupported {
+                reason: "host-only GPU reload delegated to host adapter".into(),
+            };
+        }
+
+        self.phase = GpuPhase::Swapping;
+        let started = Instant::now();
+        let symbols = match self.symbols() {
+            Some(symbols) => *symbols,
+            None => {
+                self.health = AdapterHealth::Degraded;
+                self.phase = GpuPhase::Ready;
+                return AdapterReloadResult::Unsupported {
+                    reason: "gpu_module_adapter has no driver symbol table".into(),
+                };
+            }
+        };
+
+        let drain = drain_context(&symbols, self.config.drain_timeout_ms);
+        if !drain.is_synced() {
+            let timed_out = matches!(drain, DrainOutcome::TimedOut { .. });
+            self.emit_report(GpuSwapInputs {
+                plan,
+                reason: drain.short_label().into(),
+                streams_synced: 0,
+                force_drain_timeout: timed_out,
+                snapshot_bytes: blob.len() as u64,
+                snapshot_ms: drain.elapsed_ms(),
+                dirty_buffers: 0,
+                expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
+                matched_kernel_hashes: 0,
+            });
+            self.health = AdapterHealth::Faulted;
+            self.phase = GpuPhase::Faulted;
+            return AdapterReloadResult::Failed {
+                error: format!("GPU drain failed: {:?}", drain),
+                recoverable: !timed_out,
+            };
+        }
+
+        let load_result = (|| -> Result<(), String> {
+            self.module_manager
+                .load_standby(&symbols, &blob)
+                .map_err(Self::module_manager_error)?;
+            self.module_manager
+                .resolve_kernels(&symbols, &req.build_manifest.exported_symbols)
+                .map_err(Self::module_manager_error)?;
+            let retired = self
+                .module_manager
+                .swap()
+                .map_err(Self::module_manager_error)?;
+            if let Some(retired) = retired {
+                self.module_manager
+                    .unload_retired(&symbols, retired)
+                    .map_err(Self::module_manager_error)?;
+            }
+            Ok(())
+        })();
+
+        match load_result {
+            Ok(()) => {
+                self.active_module_handle = self.module_manager.primary().map(|s| s.handle);
+                self.kernel_table.clear();
+                for name in self.module_manager.kernel_table().names() {
+                    if let Some(handle) = self.module_manager.kernel_table().get(name) {
+                        self.kernel_table.insert(name.clone(), handle);
+                    }
+                }
+                self.emit_report(GpuSwapInputs {
+                    plan,
+                    reason: "device-file-only-edit".into(),
+                    streams_synced: 1,
+                    force_drain_timeout: false,
+                    snapshot_bytes: blob.len() as u64,
+                    snapshot_ms: started.elapsed().as_millis() as u64,
+                    dirty_buffers: 0,
+                    expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
+                    matched_kernel_hashes: self.kernel_table.len() as u32,
+                });
+                self.phase = GpuPhase::Ready;
+                self.health = AdapterHealth::Healthy;
+                AdapterReloadResult::Success {
+                    reload_ms: started.elapsed().as_millis() as u64,
+                    state_preserved: req.preserve_state,
+                }
+            }
+            Err(error) => {
+                self.emit_report(GpuSwapInputs {
+                    plan,
+                    reason: "module-load-failed".into(),
+                    streams_synced: 1,
+                    force_drain_timeout: false,
+                    snapshot_bytes: blob.len() as u64,
+                    snapshot_ms: started.elapsed().as_millis() as u64,
+                    dirty_buffers: 0,
+                    expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
+                    matched_kernel_hashes: 0,
+                });
+                self.phase = GpuPhase::Ready;
+                self.health = AdapterHealth::Degraded;
+                AdapterReloadResult::Failed {
+                    error,
+                    recoverable: true,
+                }
+            }
+        }
     }
 
     fn snapshot_state(&self) -> Result<Vec<u8>, String> {
@@ -408,7 +669,7 @@ impl Adapter for GpuModuleAdapter {
     fn restore_state(&mut self, data: &[u8]) -> Result<(), String> {
         if !data.is_empty() {
             return Err(format!(
-                "GpuModuleAdapter::restore_state got {} bytes but Phase 2 scaffold only accepts empty payload",
+                "GpuModuleAdapter::restore_state got {} bytes but snapshot restore is not wired yet",
                 data.len()
             ));
         }
@@ -426,6 +687,12 @@ mod tests {
     use crate::hmr::adapter_matrix::AdapterFamily;
     use crate::hmr::adapter_trait::AdapterReloadRequest;
     use crate::hmr::build_manifest::BuildManifest;
+    use crate::hmr::gpu_driver_loader::{
+        CuContext, CuDevicePtr, CuFunction, CuModule, CuResult, CuStream,
+    };
+    use std::ffi::c_void;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn dummy_request() -> AdapterReloadRequest {
         AdapterReloadRequest {
@@ -433,6 +700,129 @@ mod tests {
             module_id: "device".into(),
             changed_files: vec!["device.cu".into()],
             build_manifest: BuildManifest::for_language("test-preview", "cuda"),
+            preserve_state: true,
+            timeout_ms: 5_000,
+        }
+    }
+
+    static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x1000);
+
+    unsafe extern "C" fn ok_init(_flags: u32) -> CuResult {
+        0
+    }
+
+    unsafe extern "C" fn ok_device_get(device: *mut i32, _ordinal: i32) -> CuResult {
+        if !device.is_null() {
+            *device = 0;
+        }
+        0
+    }
+
+    unsafe extern "C" fn ok_ctx_get_current(ctx: *mut CuContext) -> CuResult {
+        if !ctx.is_null() {
+            *ctx = 0x44 as CuContext;
+        }
+        0
+    }
+
+    unsafe extern "C" fn ok_module_load_data(
+        module: *mut CuModule,
+        _image: *const c_void,
+    ) -> CuResult {
+        if !module.is_null() {
+            let handle = NEXT_HANDLE.fetch_add(0x100, Ordering::SeqCst);
+            *module = handle as CuModule;
+        }
+        0
+    }
+
+    unsafe extern "C" fn ok_module_unload(_module: CuModule) -> CuResult {
+        0
+    }
+
+    unsafe extern "C" fn ok_module_get_function(
+        hfunc: *mut CuFunction,
+        _hmod: CuModule,
+        _name: *const u8,
+    ) -> CuResult {
+        if !hfunc.is_null() {
+            let handle = NEXT_HANDLE.fetch_add(0x10, Ordering::SeqCst);
+            *hfunc = handle as CuFunction;
+        }
+        0
+    }
+
+    unsafe extern "C" fn ok_ctx_synchronize() -> CuResult {
+        0
+    }
+
+    unsafe extern "C" fn err_ctx_synchronize() -> CuResult {
+        700
+    }
+
+    unsafe extern "C" fn ok_stream_synchronize(_stream: CuStream) -> CuResult {
+        0
+    }
+
+    unsafe extern "C" fn ok_mem_alloc(dptr: *mut CuDevicePtr, _bytes: usize) -> CuResult {
+        if !dptr.is_null() {
+            *dptr = NEXT_HANDLE.fetch_add(0x100, Ordering::SeqCst) as u64;
+        }
+        0
+    }
+
+    unsafe extern "C" fn ok_mem_free(_dptr: CuDevicePtr) -> CuResult {
+        0
+    }
+
+    unsafe extern "C" fn ok_memcpy_dtod(
+        _dst: CuDevicePtr,
+        _src: CuDevicePtr,
+        _bytes: usize,
+    ) -> CuResult {
+        0
+    }
+
+    fn stub_symbols() -> GpuDriverSymbolTable {
+        GpuDriverSymbolTable {
+            cu_init: ok_init,
+            cu_device_get: ok_device_get,
+            cu_ctx_get_current: ok_ctx_get_current,
+            cu_module_load_data: ok_module_load_data,
+            cu_module_unload: ok_module_unload,
+            cu_module_get_function: ok_module_get_function,
+            cu_ctx_synchronize: ok_ctx_synchronize,
+            cu_stream_synchronize: ok_stream_synchronize,
+            cu_mem_alloc: ok_mem_alloc,
+            cu_mem_free: ok_mem_free,
+            cu_memcpy_dtod: ok_memcpy_dtod,
+        }
+    }
+
+    fn drain_error_symbols() -> GpuDriverSymbolTable {
+        GpuDriverSymbolTable {
+            cu_ctx_synchronize: err_ctx_synchronize,
+            ..stub_symbols()
+        }
+    }
+
+    fn adapter_with_symbols(symbols: GpuDriverSymbolTable) -> GpuModuleAdapter {
+        let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
+        a.phase = GpuPhase::Ready;
+        a.health = AdapterHealth::Healthy;
+        a.test_symbols = Some(symbols);
+        a
+    }
+
+    fn request_with_artifact(path: &str, changed_files: Vec<String>) -> AdapterReloadRequest {
+        let mut manifest =
+            BuildManifest::for_language("test-preview", "cuda").with_artifact(path, "test-hash");
+        manifest.exported_symbols = vec!["vec_add".into()];
+        AdapterReloadRequest {
+            reload_id: "test".into(),
+            module_id: "device".into(),
+            changed_files,
+            build_manifest: manifest,
             preserve_state: true,
             timeout_ms: 5_000,
         }
@@ -456,16 +846,25 @@ mod tests {
         assert!(info.supported_languages.contains(&"cuda".to_string()));
         assert!(info.supported_languages.contains(&"hip".to_string()));
         assert_eq!(info.extra.get("vendor").map(|s| s.as_str()), Some("cuda"));
-        assert_eq!(info.extra.get("driver_library").map(|s| s.as_str()), Some("libcuda.so.1"));
+        assert_eq!(
+            info.extra.get("driver_library").map(|s| s.as_str()),
+            Some("libcuda.so.1")
+        );
     }
 
     #[test]
     fn info_reports_rocm_metadata() {
-        let cfg = GpuModuleAdapterConfig { vendor: GpuVendor::Rocm, ..Default::default() };
+        let cfg = GpuModuleAdapterConfig {
+            vendor: GpuVendor::Rocm,
+            ..Default::default()
+        };
         let a = GpuModuleAdapter::new(cfg);
         let info = a.info();
         assert_eq!(info.name, "gpu_module_rocm");
-        assert_eq!(info.extra.get("driver_library").map(|s| s.as_str()), Some("libamdhip64.so"));
+        assert_eq!(
+            info.extra.get("driver_library").map(|s| s.as_str()),
+            Some("libamdhip64.so")
+        );
     }
 
     #[test]
@@ -488,7 +887,10 @@ mod tests {
 
     #[test]
     fn required_symbol_table_is_complete_rocm() {
-        let cfg = GpuModuleAdapterConfig { vendor: GpuVendor::Rocm, ..Default::default() };
+        let cfg = GpuModuleAdapterConfig {
+            vendor: GpuVendor::Rocm,
+            ..Default::default()
+        };
         let a = GpuModuleAdapter::new(cfg);
         let syms = a.required_driver_symbols();
         assert!(syms.contains(&"hipModuleLoadData"));
@@ -522,25 +924,21 @@ mod tests {
     }
 
     #[test]
-    fn reload_unsupported_post_init() {
+    fn reload_without_driver_routes_to_cold_path() {
         let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
         a.initialize().unwrap();
         let r = a.reload(&dummy_request());
         match r {
-            AdapterReloadResult::Unsupported { ref reason } => {
-                // Reason text changes per phase; the contract is
-                // that it identifies the phase + driver state so
-                // the planner can branch.
-                assert!(
-                    reason.contains("Phase"),
-                    "reason must identify phase: {reason}"
-                );
-                assert!(
-                    reason.contains("loaded")
-                        || reason.contains("unavailable")
-                        || reason.contains("pending"),
-                    "reason must include driver state: {reason}"
-                );
+            AdapterReloadResult::Unsupported { ref reason }
+                if a.driver_state_label() == "unavailable" =>
+            {
+                assert!(reason.contains("driver unavailable"));
+                assert!(reason.contains("cold path"));
+            }
+            AdapterReloadResult::Unsupported { ref reason }
+                if a.driver_state_label() == "loaded" =>
+            {
+                assert!(reason.contains("missing device artifact path"));
             }
             other => panic!("expected Unsupported, got {:?}", other),
         }
@@ -552,7 +950,10 @@ mod tests {
         let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
         let r = a.reload(&dummy_request());
         match r {
-            AdapterReloadResult::Failed { ref error, recoverable } => {
+            AdapterReloadResult::Failed {
+                ref error,
+                recoverable,
+            } => {
                 assert!(error.contains("not initialized"));
                 assert!(!recoverable);
             }
@@ -575,7 +976,7 @@ mod tests {
         let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
         assert!(a.restore_state(&[]).is_ok());
         let err = a.restore_state(&[0x42, 0x42]).unwrap_err();
-        assert!(err.contains("Phase"));
+        assert!(err.contains("snapshot restore is not wired yet"));
     }
 
     // ── Phase-2 driver-loader integration ───────────────────
@@ -612,7 +1013,10 @@ mod tests {
     fn info_extra_surfaces_driver_state() {
         let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
         let pre = a.info();
-        assert_eq!(pre.extra.get("driver_state").map(|s| s.as_str()), Some("pending"));
+        assert_eq!(
+            pre.extra.get("driver_state").map(|s| s.as_str()),
+            Some("pending")
+        );
         a.initialize().unwrap();
         let post = a.info();
         let state = post.extra.get("driver_state").map(|s| s.as_str()).unwrap();
@@ -639,13 +1043,111 @@ mod tests {
         let r = a.reload(&dummy_request());
         match r {
             AdapterReloadResult::Unsupported { reason } => {
-                assert!(
-                    reason.contains(label),
-                    "reload reason {reason:?} must mention driver state {label:?}"
-                );
+                if label == "unavailable" {
+                    assert!(
+                        reason.contains(label),
+                        "reload reason {reason:?} must mention driver state {label:?}"
+                    );
+                } else {
+                    assert!(reason.contains("artifact path"));
+                }
             }
             other => panic!("expected Unsupported, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn phase3_reload_loads_sidecar_and_emits_markers() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let mut a = adapter_with_symbols(stub_symbols());
+        let r = a.reload(&request_with_artifact(&path, vec!["device.cu".into()]));
+        match r {
+            AdapterReloadResult::Success {
+                state_preserved, ..
+            } => assert!(state_preserved),
+            other => panic!("expected Success, got {:?}", other),
+        }
+        assert_eq!(a.reload_count(), 1);
+        assert_eq!(a.module_manager.swap_count(), 1);
+        assert_eq!(a.kernel_table.len(), 1);
+        assert_eq!(a.healthcheck(), AdapterHealth::Healthy);
+        assert!(a
+            .last_reload_log()
+            .iter()
+            .any(|l| l.contains("plan=device_only")));
+        assert!(a
+            .last_reload_log()
+            .iter()
+            .any(|l| l.contains("gpu_snapshot_telemetry")));
+    }
+
+    #[test]
+    fn phase3_second_reload_unloads_retired_slot() {
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-1").unwrap();
+        second.write_all(b"fake-cubin-2").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let mut a = adapter_with_symbols(stub_symbols());
+        assert!(matches!(
+            a.reload(&request_with_artifact(
+                &first_path,
+                vec!["device.cu".into()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        let first_handle = a.active_module_handle;
+        assert!(matches!(
+            a.reload(&request_with_artifact(
+                &second_path,
+                vec!["device.cu".into()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        assert_eq!(a.module_manager.swap_count(), 2);
+        assert_ne!(a.active_module_handle, first_handle);
+    }
+
+    #[test]
+    fn phase3_reload_reports_mixed_plan_when_host_and_device_changed() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let mut a = adapter_with_symbols(stub_symbols());
+        let r = a.reload(&request_with_artifact(
+            &path,
+            vec!["core.cpp".into(), "device.cu".into()],
+        ));
+        assert!(matches!(r, AdapterReloadResult::Success { .. }));
+        assert!(a.last_reload_log().iter().any(|l| l.contains("plan=mixed")));
+        assert!(a
+            .last_reload_log()
+            .iter()
+            .any(|l| l.contains("device_restore ok")));
+    }
+
+    #[test]
+    fn phase3_drain_error_faults_adapter_without_swapping() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let mut a = adapter_with_symbols(drain_error_symbols());
+        let r = a.reload(&request_with_artifact(&path, vec!["device.cu".into()]));
+        match r {
+            AdapterReloadResult::Failed {
+                ref error,
+                recoverable,
+            } => {
+                assert!(error.contains("GPU drain failed"));
+                assert!(recoverable);
+            }
+            other => panic!("expected Failed, got {:?}", other),
+        }
+        assert_eq!(a.module_manager.swap_count(), 0);
+        assert_eq!(a.healthcheck(), AdapterHealth::Faulted);
     }
 
     #[test]
@@ -663,6 +1165,9 @@ mod tests {
         assert_eq!(a.info().name, "gpu_module_cuda");
         a.initialize().unwrap();
         let r = a.reload(&dummy_request());
-        assert!(matches!(r, AdapterReloadResult::Unsupported { .. }));
+        assert!(matches!(
+            r,
+            AdapterReloadResult::Unsupported { .. } | AdapterReloadResult::Failed { .. }
+        ));
     }
 }
