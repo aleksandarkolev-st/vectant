@@ -405,11 +405,10 @@ impl CompileManifest {
     pub fn tier0_safe(&self) -> bool {
         let has_o0 = self.common_flags.iter().any(|f| f == "-O0");
         let no_higher_opt = !self.common_flags.iter().any(|f| {
-            f.starts_with("-O") && f != "-O0" && f != "-Os" // -Os is separate check
-                || f == "-Os"
+            (f.starts_with("-O") && f != "-O0" && f != "-Os") || f == "-Os"
         });
         let has_no_merge = self.common_flags.iter().any(|f| f == "-fno-merge-constants");
-        (has_o0 || no_higher_opt) && has_no_merge
+        has_o0 && no_higher_opt && has_no_merge
     }
 
     /// Ensure the manifest has Tier 0 safety flags. Returns a new
