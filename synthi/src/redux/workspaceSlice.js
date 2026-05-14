@@ -21,6 +21,7 @@ import { loadScheduler } from '@/services/loadScheduler';
 import { perfMeasureToConsole, perfOnce } from '@/services/perfMarkers';
 import { openTab, selectNodes, selectTabs } from '@/components/docking-wm/state/layout-slice';
 import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
+import { getWorkspaceDependencyInstallPlan } from '@/lib/workspaceInstallPlan';
 
 // --- Initial State and Utilities ---
 
@@ -580,7 +581,41 @@ export const scaffoldProjectThunk = createAsyncThunk(
             }
         }
 
-        return { label, count: files.length };
+        let install = { started: false };
+        const installPlan = getWorkspaceDependencyInstallPlan(files);
+        if (installPlan) {
+            try {
+                const result = await api.execTerminalCommand(slug, installPlan.command, { timeout: 300000 });
+                if (result.exitCode !== null && result.exitCode !== 0) {
+                    throw new Error(result.output || `${installPlan.label} failed with exit code ${result.exitCode}`);
+                }
+                install = {
+                    started: true,
+                    label: installPlan.label,
+                    ...result,
+                };
+                if (typeof window !== 'undefined' && result.sessionId) {
+                    window.dispatchEvent(new CustomEvent('terminal-session-open', {
+                        detail: {
+                            sessionId: result.sessionId,
+                            command: result.command || installPlan.command,
+                            label: `Install: ${installPlan.label}`,
+                            isAi: false,
+                        },
+                    }));
+                }
+            } catch (error) {
+                console.warn('[workspace] Automatic dependency install did not start:', error);
+                install = {
+                    started: true,
+                    label: installPlan.label,
+                    command: installPlan.command,
+                    error: error?.message || 'Failed to start dependency installation.',
+                };
+            }
+        }
+
+        return { label, count: files.length, install };
     },
 );
 

@@ -254,7 +254,17 @@ function NewProjectPickerDialog({ open, mode, onClose }) {
         setBusy(false);
         return;
       }
-      toast.success(`Created ${label} project`);
+      const install = res.payload?.install;
+      if (install?.error) {
+        toast.success(`Created ${label} project`);
+        toast.error(`Could not start ${install.label || 'dependency install'}: ${install.error}`);
+      } else if (install?.sessionId) {
+        toast.success(`Created ${label} project. Running ${install.label} in Terminal.`);
+      } else if (install?.started) {
+        toast.success(`Created ${label} project and installed dependencies.`);
+      } else {
+        toast.success(`Created ${label} project`);
+      }
       handleClose();
     } catch (err) {
       toast.error(`Scaffold failed: ${err?.message || err}`);

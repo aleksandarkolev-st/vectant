@@ -1,5 +1,19 @@
 # C++ Compile / HMR Stress Test 2026-05-11
 
+## Workspace Dependency Prep Rollout 2026-05-14
+
+### Scope
+- Build an authoritative backend workspace-preparation system that auto-detects dependency manifests, auto-prepares environments on workspace load, and persists prep fingerprints/status.
+- Keep environments workspace-local while reusing native package-manager caches instead of sharing installed environments across users.
+- Support the repo's main ecosystems first: Node, Python, Rust, Java/Maven, Java/Gradle, and Dart/Flutter.
+
+### Checklist
+- [x] Add a collab-server workspace prep manager with manifest detection, fingerprints, queueing, and status persistence.
+- [x] Add collab-server APIs that trigger prep and report prep status.
+- [x] Trigger prep automatically from the workspace load path.
+- [x] Surface prep progress/results to the frontend without blocking workspace load.
+- [in-progress] Validate the flow end-to-end for representative ecosystems.
+
 ## Scope
 - Stress test C++ compile + HMR in workspace nzl1wr9x via Playwright.
 - Find errors, fix them, redeploy to docker.

@@ -23,6 +23,7 @@ const { withTelemetry, getMetrics, resetMetrics, getEventLoopBlockCount } = requ
 const sseService = require('./sseService');
 const persistence = require('./persistence');
 const logger = require('./logger').child({ component: 'collab' });
+const workspacePrepManager = require('./workspacePrepManager');
 
 // ── User block list (in-memory) ──────────────────────────────────────────────
 // blockedBy: userId → Set<blockedUserId>
@@ -1240,6 +1241,50 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(status, null, 2));
     return;
+  }
+
+  const workspacePrepMatch = new URL(req.url, `http://${req.headers.host}`).pathname.match(/^\/api\/workspace\/([^/]+)\/prepare$/);
+  if (workspacePrepMatch) {
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const slug = decodeURIComponent(workspacePrepMatch[1]);
+    const userId = req.headers['x-user-id'] || urlObj.searchParams.get('userId') || null;
+    const sessionId = req.headers['x-session-id'] || urlObj.searchParams.get('sessionId') || null;
+    const effectiveUserId = sessionId && userId
+      ? sessionManager.getEffectiveUserId(userId, sessionId)
+      : userId;
+
+    if (req.method === 'GET') {
+      const status = await workspacePrepManager.getWorkspacePrepStatus(slug, effectiveUserId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(status));
+      return;
+    }
+
+    if (req.method === 'POST') {
+      if (sessionId && userId && !sessionManager.checkPermission(sessionId, userId, 'canFileOps')) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'permission_denied',
+          message: 'Workspace preparation requires canFileOps permission.',
+        }));
+        return;
+      }
+
+      const hKey = hydrationKey(slug, effectiveUserId);
+      if (!hydratedSlugs.has(hKey)) {
+        await gitService.initRepo(slug, null, effectiveUserId);
+        hydratedSlugs.add(hKey);
+      }
+
+      const force = /^(1|true|yes)$/i.test(String(urlObj.searchParams.get('force') || ''));
+      const status = await workspacePrepManager.ensureWorkspacePrepared(slug, effectiveUserId, {
+        force,
+        trigger: 'workspace_prepare_api',
+      });
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(status));
+      return;
+    }
   }
 
   // ========================================================================
@@ -3498,6 +3543,20 @@ const server = http.createServer(async (req, res) => {
                   // Kick off index build in background (non-blocking)
                   try {
                     fileIndex.ensureIndex(slug, gitService.getEffectiveRepoPath(slug, effectiveUserId)).catch(() => {});
+                  } catch (_) {}
+                  try {
+                    const canAutoPrepare = !sessionId || !userId || sessionManager.checkPermission(sessionId, userId, 'canFileOps');
+                    if (canAutoPrepare) {
+                      workspacePrepManager.ensureWorkspacePrepared(slug, effectiveUserId, {
+                        trigger: 'workspace_files_meta',
+                      }).catch((error) => {
+                        logger.warn('workspace_prep_background_trigger_failed', {
+                          slug,
+                          userId: effectiveUserId || null,
+                          message: error.message,
+                        });
+                      });
+                    }
                   } catch (_) {}
                   break;
                 case 'index-ensure':

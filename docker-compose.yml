@@ -55,6 +55,11 @@ services:
         NEXT_PUBLIC_COLLAB_PORT: "1234"
         NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:9000"
         NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
+        # Browser-side code-intel / provenance hooks call the ai-engine via a
+        # public host URL, not the compose-network hostname. Default to 8081
+        # because Windows commonly reserves the 8000 range in excluded ports.
+        NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
+        NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
     ports:
       - "3000:3000"
     environment:
@@ -90,6 +95,8 @@ services:
       # Inside the compose network the ai-engine is reachable as `ai-engine:8000`,
       # not localhost. Used by RAG fast-context, NEP edit-impact, shadow flows, agent.
       CODE_INTEL_URL: "http://ai-engine:8000"
+      NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
+      NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -156,7 +163,9 @@ services:
       context: ./ai-backend/ai-engine
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      # Keep container port 8000 stable for inter-service traffic, but avoid
+      # assuming the Windows host can also bind 8000.
+      - "${AI_ENGINE_HOST_PORT:-8081}:8000"
     # ai-engine needs access to the same workspace files collab-server
     # writes. Without this mount, /code-intel/edit-impact can't index any
     # workspace and returns empty candidates — NEP loses the entire cross-

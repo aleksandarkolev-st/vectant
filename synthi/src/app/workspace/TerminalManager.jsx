@@ -51,30 +51,46 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
   // If an AI tab already exists, update it to show the latest session. Only create a new
   // tab when there is no existing AI terminal.
   useEffect(() => {
-    const handleAiTerminal = (e) => {
-      const { sessionId, command } = e.detail || {};
+    const openSessionTab = ({ sessionId, command, label: explicitLabel, isAi = false, shellType = null } = {}) => {
       if (!sessionId) return;
-      const label = `AI: ${(command || 'command').slice(0, 20)}${(command || '').length > 20 ? '…' : ''}`;
+      const label = explicitLabel || (isAi
+        ? `AI: ${(command || 'command').slice(0, 20)}${(command || '').length > 20 ? '…' : ''}`
+        : `Task: ${(command || 'command').slice(0, 20)}${(command || '').length > 20 ? '…' : ''}`);
 
       setTerminals(prev => {
-        // Check if there's already an AI terminal tab
-        const existingIdx = prev.findIndex(t => t.isAi);
+        const existingIdx = isAi
+          ? prev.findIndex(t => t.isAi)
+          : prev.findIndex(t => t.fixedSessionId === sessionId);
         if (existingIdx !== -1) {
-          // Update existing AI tab with the new session
           const updated = [...prev];
-          updated[existingIdx] = { ...updated[existingIdx], fixedSessionId: sessionId, label };
-          // Switch to the existing AI tab
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            fixedSessionId: sessionId,
+            label,
+            shellType: shellType || updated[existingIdx].shellType,
+          };
           setActiveId(updated[existingIdx].id);
           return updated;
         }
-        // No existing AI tab — create one
-        const id = `ai-${Date.now()}`;
+        const id = `${isAi ? 'ai' : 'term'}-${Date.now()}`;
         setActiveId(id);
-        return [...prev, { id, label, split: false, fixedSessionId: sessionId, isAi: true }];
+        return [...prev, { id, label, split: false, fixedSessionId: sessionId, isAi, shellType }];
       });
     };
+
+    const handleAiTerminal = (e) => {
+      openSessionTab({ ...(e.detail || {}), isAi: true });
+    };
+    const handleTerminalSession = (e) => {
+      openSessionTab(e.detail || {});
+    };
+
     window.addEventListener('ai-terminal-open', handleAiTerminal);
-    return () => window.removeEventListener('ai-terminal-open', handleAiTerminal);
+    window.addEventListener('terminal-session-open', handleTerminalSession);
+    return () => {
+      window.removeEventListener('ai-terminal-open', handleAiTerminal);
+      window.removeEventListener('terminal-session-open', handleTerminalSession);
+    };
   }, []);
 
   useEffect(() => {

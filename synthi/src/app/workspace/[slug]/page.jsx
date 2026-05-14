@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, startTransition, use
 import { use } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import { useAppDispatch, useAppSelector, useAppStore } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, markFileSavedRemotely } from '@/redux/workspaceSlice';
 import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
@@ -70,6 +71,7 @@ import { useRetryCompile } from '@/hooks/useRetryCompile';
 import { HMRStatusIndicator } from '@/components/HMRStatusIndicator';
 import { RuntimeHealingIndicator } from '@/components/healing/RuntimeHealingIndicator';
 import { installPreviewBridge } from '@/lib/preview-store-bridge';
+import { getWorkspaceDependencyInstallPlan } from '@/lib/workspaceInstallPlan';
 import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import { GitSummaryPanel } from '@/components/git/GitSummaryPanel';
@@ -699,6 +701,8 @@ export default function EditorPage({ params }) {
     const [workspaceMissingMessage, setWorkspaceMissingMessage] = useState('');
     const [activeSessionId, setActiveSessionId] = useState(collabSessionService?.isActive ? collabSessionService.sessionId : null);
     const [collabHostId, setCollabHostId] = useState(collabSessionService?.hostId || null);
+    const workspacePrepToastIdRef = useRef(null);
+    const workspacePrepStateRef = useRef(null);
 
     useEffect(() => {
         return collabSessionService.onChange(() => {
@@ -858,6 +862,69 @@ export default function EditorPage({ params }) {
             init();
         }
     }, [slug, dispatch]);
+
+    useEffect(() => {
+        if (!slug || workspaceMissing || authStatus === 'loading') return undefined;
+
+        let cancelled = false;
+        let timer = null;
+        const toastId = `workspace-prep-${slug}`;
+        workspacePrepToastIdRef.current = toastId;
+
+        const poll = async () => {
+            try {
+                const status = await api.getWorkspacePrepStatus(slug);
+                if (cancelled) return;
+
+                const nextState = String(status?.state || 'idle');
+                const previousState = workspacePrepStateRef.current;
+                const tasks = Array.isArray(status?.tasks) ? status.tasks : [];
+                const taskCount = tasks.length;
+                const failureMessage = status?.error || tasks.find((task) => task.status === 'failed' || task.status === 'blocked')?.message || 'Workspace preparation failed.';
+
+                if (nextState === 'queued' || nextState === 'running') {
+                    toast.loading(
+                        taskCount > 0
+                            ? `Preparing ${taskCount} workspace environment${taskCount === 1 ? '' : 's'}`
+                            : 'Preparing workspace environment',
+                        { id: toastId, duration: Infinity }
+                    );
+                } else if (nextState === 'ready' && (previousState === 'queued' || previousState === 'running')) {
+                    toast.success('Workspace environment is ready.', { id: toastId, duration: 4000 });
+                } else if (nextState === 'blocked' && previousState !== 'blocked') {
+                    toast.error('Workspace preparation is blocked.', {
+                        id: toastId,
+                        description: failureMessage,
+                        duration: 6000,
+                    });
+                } else if (nextState === 'failed' && previousState !== 'failed') {
+                    toast.error('Workspace preparation failed.', {
+                        id: toastId,
+                        description: failureMessage,
+                        duration: 6000,
+                    });
+                }
+
+                workspacePrepStateRef.current = nextState;
+
+                const nextPollMs = nextState === 'queued' || nextState === 'running' ? 3000 : 15000;
+                timer = window.setTimeout(poll, nextPollMs);
+            } catch (_) {
+                if (cancelled) return;
+                timer = window.setTimeout(poll, 15000);
+            }
+        };
+
+        poll();
+
+        return () => {
+            cancelled = true;
+            if (timer) window.clearTimeout(timer);
+            if (workspacePrepToastIdRef.current) toast.dismiss(workspacePrepToastIdRef.current);
+            workspacePrepToastIdRef.current = null;
+            workspacePrepStateRef.current = null;
+        };
+    }, [slug, workspaceMissing, authStatus]);
 
     // Subscribe to server-side file-tree-changed notifications so
     // all connected clients stay in sync when any teammate mutates the tree.
@@ -1949,6 +2016,32 @@ export default function EditorPage({ params }) {
                     }
 
                     await dispatch(fetchFilesThunk(slug));
+
+                    const installPlan = getWorkspaceDependencyInstallPlan(files);
+                    if (installPlan) {
+                        try {
+                            const installResult = await api.execTerminalCommand(slug, installPlan.command, { timeout: 300000 });
+                            if (installResult.exitCode !== null && installResult.exitCode !== 0) {
+                                throw new Error(installResult.output || `${installPlan.label} failed with exit code ${installResult.exitCode}`);
+                            }
+                            if (installResult.sessionId && typeof window !== 'undefined') {
+                                window.dispatchEvent(new CustomEvent('terminal-session-open', {
+                                    detail: {
+                                        sessionId: installResult.sessionId,
+                                        command: installResult.command || installPlan.command,
+                                        label: `Install: ${installPlan.label}`,
+                                        isAi: false,
+                                    },
+                                }));
+                                appendBuildLog(`[sync] Started ${installPlan.label} in Terminal.`);
+                            } else {
+                                appendBuildLog(`[sync] Completed ${installPlan.label}.`);
+                            }
+                        } catch (installErr) {
+                            console.warn('Workspace dependency install did not start', installErr);
+                            appendBuildLog(`[sync] Could not start ${installPlan.label}: ${installErr?.message || String(installErr)}`);
+                        }
+                    }
 
                     const writtenCount = Array.isArray(result?.written) ? result.written.length : 0;
                     const skippedCount = Array.isArray(result?.skipped) ? result.skipped.length : 0;
