@@ -326,40 +326,80 @@ mod tests {
     use super::*;
     use std::ffi::c_void;
 
-    use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+    use std::cell::RefCell;
 
-    static ALLOC_CALLS: AtomicU64 = AtomicU64::new(0);
-    static ALLOC_RESULT: AtomicI32 = AtomicI32::new(0);
-    static FREE_CALLS: AtomicU64 = AtomicU64::new(0);
-    static FREE_RESULT: AtomicI32 = AtomicI32::new(0);
-    static DTOD_CALLS: AtomicU64 = AtomicU64::new(0);
-    static DTOD_RESULT: AtomicI32 = AtomicI32::new(0);
-    static DTOD_LAST_BYTES: AtomicU64 = AtomicU64::new(0);
-    static DTOD_LAST_DST: AtomicU64 = AtomicU64::new(0);
-    static DTOD_LAST_SRC: AtomicU64 = AtomicU64::new(0);
-    static NEXT_SHADOW: AtomicU64 = AtomicU64::new(0x9_0000);
+    // Per-thread stub state — see gpu_module_manager test
+    // module for the rationale (parallel cargo tests would
+    // pollute shared atomics).
+    struct StubState {
+        alloc_calls: u64,
+        alloc_result: CuResult,
+        free_calls: u64,
+        free_result: CuResult,
+        dtod_calls: u64,
+        dtod_result: CuResult,
+        dtod_last_bytes: u64,
+        dtod_last_dst: u64,
+        dtod_last_src: u64,
+        next_shadow: u64,
+    }
+
+    impl StubState {
+        const fn fresh() -> Self {
+            Self {
+                alloc_calls: 0,
+                alloc_result: 0,
+                free_calls: 0,
+                free_result: 0,
+                dtod_calls: 0,
+                dtod_result: 0,
+                dtod_last_bytes: 0,
+                dtod_last_dst: 0,
+                dtod_last_src: 0,
+                next_shadow: 0x9_0000,
+            }
+        }
+    }
+
+    thread_local! {
+        static STATE: RefCell<StubState> = const { RefCell::new(StubState::fresh()) };
+    }
+
+    fn with_state<R>(f: impl FnOnce(&StubState) -> R) -> R {
+        STATE.with(|s| f(&s.borrow()))
+    }
+    fn with_state_mut<R>(f: impl FnOnce(&mut StubState) -> R) -> R {
+        STATE.with(|s| f(&mut s.borrow_mut()))
+    }
 
     unsafe extern "C" fn stub_alloc(dptr: *mut CuDevicePtr, bytes: usize) -> CuResult {
-        ALLOC_CALLS.fetch_add(1, Ordering::SeqCst);
-        let r = ALLOC_RESULT.load(Ordering::SeqCst);
-        if r == 0 {
-            let h = NEXT_SHADOW.fetch_add(0x1000, Ordering::SeqCst);
-            unsafe { *dptr = h };
-            // Sanity-check that the stub even saw the right size.
-            assert!(bytes > 0);
-        }
-        r
+        with_state_mut(|s| {
+            s.alloc_calls += 1;
+            let r = s.alloc_result;
+            if r == 0 {
+                let h = s.next_shadow;
+                s.next_shadow += 0x1000;
+                unsafe { *dptr = h };
+                // Sanity-check that the stub even saw the right size.
+                assert!(bytes > 0);
+            }
+            r
+        })
     }
     unsafe extern "C" fn stub_free(_dptr: CuDevicePtr) -> CuResult {
-        FREE_CALLS.fetch_add(1, Ordering::SeqCst);
-        FREE_RESULT.load(Ordering::SeqCst)
+        with_state_mut(|s| {
+            s.free_calls += 1;
+            s.free_result
+        })
     }
     unsafe extern "C" fn stub_dtod(dst: CuDevicePtr, src: CuDevicePtr, bytes: usize) -> CuResult {
-        DTOD_CALLS.fetch_add(1, Ordering::SeqCst);
-        DTOD_LAST_DST.store(dst, Ordering::SeqCst);
-        DTOD_LAST_SRC.store(src, Ordering::SeqCst);
-        DTOD_LAST_BYTES.store(bytes as u64, Ordering::SeqCst);
-        DTOD_RESULT.load(Ordering::SeqCst)
+        with_state_mut(|s| {
+            s.dtod_calls += 1;
+            s.dtod_last_dst = dst;
+            s.dtod_last_src = src;
+            s.dtod_last_bytes = bytes as u64;
+            s.dtod_result
+        })
     }
     // Unused stubs to satisfy table layout.
     unsafe extern "C" fn stub_init(_f: u32) -> CuResult { 0 }
@@ -388,15 +428,7 @@ mod tests {
     }
 
     fn reset() {
-        ALLOC_CALLS.store(0, Ordering::SeqCst);
-        ALLOC_RESULT.store(0, Ordering::SeqCst);
-        FREE_CALLS.store(0, Ordering::SeqCst);
-        FREE_RESULT.store(0, Ordering::SeqCst);
-        DTOD_CALLS.store(0, Ordering::SeqCst);
-        DTOD_RESULT.store(0, Ordering::SeqCst);
-        DTOD_LAST_BYTES.store(0, Ordering::SeqCst);
-        DTOD_LAST_DST.store(0, Ordering::SeqCst);
-        DTOD_LAST_SRC.store(0, Ordering::SeqCst);
+        with_state_mut(|s| *s = StubState::fresh());
     }
 
     #[test]
@@ -415,7 +447,7 @@ mod tests {
         let mut a = ShadowArena::new();
         let t = stub_table();
         let e = a.register(&t, 0xa000, 4096).unwrap();
-        assert_eq!(ALLOC_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(with_state(|s| s.alloc_calls), 1);
         assert_eq!(e.orig_dptr, 0xa000);
         assert_eq!(e.size_bytes, 4096);
         assert!(!e.shadow_is_fresh);
@@ -439,7 +471,11 @@ mod tests {
         let e1 = a.register(&t, 0xa000, 4096).unwrap();
         let e2 = a.register(&t, 0xa000, 4096).unwrap();
         assert_eq!(e1, e2);
-        assert_eq!(ALLOC_CALLS.load(Ordering::SeqCst), 1, "second register must not realloc");
+        assert_eq!(
+            with_state(|s| s.alloc_calls),
+            1,
+            "second register must not realloc"
+        );
         assert_eq!(a.total_shadow_bytes(), 4096);
     }
 
@@ -463,7 +499,7 @@ mod tests {
     #[test]
     fn register_surfaces_driver_error() {
         reset();
-        ALLOC_RESULT.store(2, Ordering::SeqCst);
+        with_state_mut(|s| s.alloc_result = 2);
         let mut a = ShadowArena::new();
         let t = stub_table();
         let err = a.register(&t, 0xa000, 4096).unwrap_err();
@@ -487,11 +523,13 @@ mod tests {
         let shadow_ptr = a.get(0xa000).unwrap().shadow_dptr;
         let n = a.sync_to_shadow(&t, 0xa000).unwrap();
         assert_eq!(n, 4096);
-        assert_eq!(DTOD_CALLS.load(Ordering::SeqCst), 1);
+        let (dtod_calls, dst, src, bytes) =
+            with_state(|s| (s.dtod_calls, s.dtod_last_dst, s.dtod_last_src, s.dtod_last_bytes));
+        assert_eq!(dtod_calls, 1);
         // dst = shadow, src = orig (the "save" direction).
-        assert_eq!(DTOD_LAST_DST.load(Ordering::SeqCst), shadow_ptr);
-        assert_eq!(DTOD_LAST_SRC.load(Ordering::SeqCst), 0xa000);
-        assert_eq!(DTOD_LAST_BYTES.load(Ordering::SeqCst), 4096);
+        assert_eq!(dst, shadow_ptr);
+        assert_eq!(src, 0xa000);
+        assert_eq!(bytes, 4096);
         assert!(a.get(0xa000).unwrap().shadow_is_fresh);
         assert_eq!(a.sync_to_calls(), 1);
     }
@@ -506,10 +544,12 @@ mod tests {
         a.sync_to_shadow(&t, 0xa000).unwrap();
         reset();
         a.sync_from_shadow(&t, 0xa000).unwrap();
-        assert_eq!(DTOD_CALLS.load(Ordering::SeqCst), 1);
+        let (dtod_calls, dst, src) =
+            with_state(|s| (s.dtod_calls, s.dtod_last_dst, s.dtod_last_src));
+        assert_eq!(dtod_calls, 1);
         // dst = orig, src = shadow (the "restore" direction).
-        assert_eq!(DTOD_LAST_DST.load(Ordering::SeqCst), 0xa000);
-        assert_eq!(DTOD_LAST_SRC.load(Ordering::SeqCst), shadow_ptr);
+        assert_eq!(dst, 0xa000);
+        assert_eq!(src, shadow_ptr);
         assert_eq!(a.sync_from_calls(), 1);
     }
 
@@ -529,7 +569,7 @@ mod tests {
         let mut a = ShadowArena::new();
         let t = stub_table();
         a.register(&t, 0xa000, 4096).unwrap();
-        DTOD_RESULT.store(5, Ordering::SeqCst);
+        with_state_mut(|s| s.dtod_result = 5);
         let err = a.sync_to_shadow(&t, 0xa000).unwrap_err();
         match err {
             ShadowArenaError::DriverError { op, code } => {
@@ -549,7 +589,7 @@ mod tests {
         assert_eq!(a.total_shadow_bytes(), 4096);
         let n = a.release(&t, 0xa000).unwrap();
         assert_eq!(n, 4096);
-        assert_eq!(FREE_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(with_state(|s| s.free_calls), 1);
         assert!(a.is_empty());
         assert_eq!(a.total_shadow_bytes(), 0);
     }
@@ -565,7 +605,7 @@ mod tests {
     #[test]
     fn release_failure_keeps_entry_for_retry() {
         reset();
-        FREE_RESULT.store(4, Ordering::SeqCst);
+        with_state_mut(|s| s.free_result = 4);
         let mut a = ShadowArena::new();
         let t = stub_table();
         a.register(&t, 0xa000, 4096).unwrap();
