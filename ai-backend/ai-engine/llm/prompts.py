@@ -3889,11 +3889,12 @@ real runtime code/header surface, not prose:
     wrapper kernels, extra migration files, and bypass modules that hide
     the actual source change.
 
-# GPU CONTRACT — HotApi v2.1 ADDENDUM
+# GPU CONTRACT — HotApi v2.2 GPU ADDENDUM
 
-The host module's `HotApi` table gains four new optional GPU fields. Emit
-the C++ exports below in the host module (core.cpp) verbatim, replacing
-the kernel-name placeholders with the real kernel names from the project:
+The ABI is defined in the worker's `plugin_contract.rs`: the host module's
+`HotApi` table has five optional GPU callbacks mirroring the C exports below.
+Emit these exports in the host module (core.cpp) verbatim, replacing the
+kernel-name placeholders with the real kernel names from the project:
 
 ```cpp
 // 1. device_descriptor — what does the GPU side need at load time?
