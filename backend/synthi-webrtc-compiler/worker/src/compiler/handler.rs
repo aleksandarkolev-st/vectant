@@ -129,6 +129,28 @@ fn device_filename_for_vendor(vendor: DeviceVendor) -> &'static str {
     }
 }
 
+const GPU_HOST_CONTRACT_REQUIRED_SYMBOLS: &[&str] = &[
+    "device_descriptor",
+    "device_on_load",
+    "device_kernel_sig_hash",
+];
+
+const GPU_HOST_CONTRACT_STATE_SYMBOLS: &[&str] = &["device_save_size", "device_save_write"];
+
+fn missing_gpu_host_contract_symbols(exported_symbols: &[String]) -> Vec<&'static str> {
+    GPU_HOST_CONTRACT_REQUIRED_SYMBOLS
+        .iter()
+        .copied()
+        .filter(|required| !exported_symbols.iter().any(|symbol| symbol == required))
+        .collect()
+}
+
+fn has_gpu_state_serialization_symbols(exported_symbols: &[String]) -> bool {
+    GPU_HOST_CONTRACT_STATE_SYMBOLS
+        .iter()
+        .all(|required| exported_symbols.iter().any(|symbol| symbol == required))
+}
+
 pub async fn handle_compile_request(
     ctx: &CompileContext,
     req: CompileRequest,
@@ -1821,6 +1843,10 @@ pub async fn handle_compile_request(
     // ── Determine capabilities from exported symbols ──
     let capabilities: Vec<String> = {
         let mut caps = Vec::new();
+        let gpu_manifest_enabled = compile_manifest
+            .as_ref()
+            .and_then(|m| m.gpu.as_ref())
+            .is_some();
         if exported_symbols
             .iter()
             .any(|s| s.contains("on_update") || s.contains("core_on_update"))
@@ -1841,6 +1867,22 @@ pub async fn handle_compile_request(
         }
         if exported_symbols.iter().any(|s| s.contains("gui_on_render")) {
             caps.push("gui_render".to_string());
+        }
+        if gpu_manifest_enabled {
+            let missing_gpu = missing_gpu_host_contract_symbols(&exported_symbols);
+            if missing_gpu.is_empty() {
+                caps.push("gpu_hotapi_contract".to_string());
+            } else {
+                caps.push("gpu_contract_incomplete".to_string());
+                eprintln!(
+                    "[GPU HMR] host GPU ABI incomplete missing={}",
+                    missing_gpu.join(",")
+                );
+            }
+
+            if has_gpu_state_serialization_symbols(&exported_symbols) {
+                caps.push("gpu_managed_device_state".to_string());
+            }
         }
         caps
     };
@@ -2399,4 +2441,43 @@ pub(crate) fn build_simple_diff(old: &str, new: &str) -> String {
     }
 
     diff
+}
+
+#[cfg(test)]
+mod gpu_host_contract_tests {
+    use super::*;
+
+    fn symbols(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    #[test]
+    fn missing_gpu_host_contract_symbols_reports_required_callbacks() {
+        let missing = missing_gpu_host_contract_symbols(&symbols(&[
+            "device_descriptor",
+            "device_kernel_sig_hash",
+        ]));
+        assert_eq!(missing, vec!["device_on_load"]);
+    }
+
+    #[test]
+    fn gpu_host_contract_accepts_required_lifecycle_symbols() {
+        let missing = missing_gpu_host_contract_symbols(&symbols(&[
+            "device_descriptor",
+            "device_on_load",
+            "device_kernel_sig_hash",
+        ]));
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn gpu_state_serialization_requires_both_save_callbacks() {
+        assert!(!has_gpu_state_serialization_symbols(&symbols(&[
+            "device_save_size",
+        ])));
+        assert!(has_gpu_state_serialization_symbols(&symbols(&[
+            "device_save_size",
+            "device_save_write",
+        ])));
+    }
 }
