@@ -339,49 +339,92 @@ mod tests {
     //
     // We can't dlopen a real driver in CI. Instead we expose a
     // synthesized `GpuDriverSymbolTable` whose function pointers
-    // are static `extern "C"` stubs that simulate the success or
-    // failure shape we want to test. Each stub mutates a global
-    // counter so tests can assert it was actually invoked.
+    // are `extern "C"` stubs that simulate success/failure
+    // shapes. The stubs read + mutate a per-thread `StubState`
+    // — using globals here would cross-pollute parallel cargo
+    // tests (one test storing a non-zero error code into the
+    // result static would race against another test asserting
+    // success).
+    //
+    // Each test runs on a single thread end-to-end, so a
+    // `thread_local!` Cell-of-state gives each test a fresh
+    // counter without forcing `--test-threads=1`.
 
-    use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+    use std::cell::RefCell;
 
-    static LOAD_CALLS: AtomicU64 = AtomicU64::new(0);
-    static LOAD_RESULT: AtomicI32 = AtomicI32::new(0);
-    static GET_FN_CALLS: AtomicU64 = AtomicU64::new(0);
-    static GET_FN_RESULT: AtomicI32 = AtomicI32::new(0);
-    static UNLOAD_CALLS: AtomicU64 = AtomicU64::new(0);
-    static UNLOAD_RESULT: AtomicI32 = AtomicI32::new(0);
-    static NEXT_MODULE_HANDLE: AtomicU64 = AtomicU64::new(0x1_0000);
-    static NEXT_FN_HANDLE: AtomicU64 = AtomicU64::new(0x2_0000);
+    struct StubState {
+        load_calls: u64,
+        load_result: CuResult,
+        get_fn_calls: u64,
+        get_fn_result: CuResult,
+        unload_calls: u64,
+        unload_result: CuResult,
+        next_module_handle: u64,
+        next_fn_handle: u64,
+    }
+
+    impl StubState {
+        const fn fresh() -> Self {
+            Self {
+                load_calls: 0,
+                load_result: 0,
+                get_fn_calls: 0,
+                get_fn_result: 0,
+                unload_calls: 0,
+                unload_result: 0,
+                next_module_handle: 0x1_0000,
+                next_fn_handle: 0x2_0000,
+            }
+        }
+    }
+
+    thread_local! {
+        static STATE: RefCell<StubState> = const { RefCell::new(StubState::fresh()) };
+    }
+
+    fn with_state<R>(f: impl FnOnce(&StubState) -> R) -> R {
+        STATE.with(|s| f(&s.borrow()))
+    }
+    fn with_state_mut<R>(f: impl FnOnce(&mut StubState) -> R) -> R {
+        STATE.with(|s| f(&mut s.borrow_mut()))
+    }
 
     unsafe extern "C" fn stub_load_data(
         module: *mut CuModule,
         _image: *const c_void,
     ) -> CuResult {
-        LOAD_CALLS.fetch_add(1, Ordering::SeqCst);
-        let r = LOAD_RESULT.load(Ordering::SeqCst);
-        if r == 0 {
-            let h = NEXT_MODULE_HANDLE.fetch_add(0x100, Ordering::SeqCst);
-            unsafe { *module = h as CuModule };
-        }
-        r
+        with_state_mut(|s| {
+            s.load_calls += 1;
+            let r = s.load_result;
+            if r == 0 {
+                let h = s.next_module_handle;
+                s.next_module_handle += 0x100;
+                unsafe { *module = h as CuModule };
+            }
+            r
+        })
     }
     unsafe extern "C" fn stub_unload(_module: CuModule) -> CuResult {
-        UNLOAD_CALLS.fetch_add(1, Ordering::SeqCst);
-        UNLOAD_RESULT.load(Ordering::SeqCst)
+        with_state_mut(|s| {
+            s.unload_calls += 1;
+            s.unload_result
+        })
     }
     unsafe extern "C" fn stub_get_function(
         hfunc: *mut CuFunction,
         _hmod: CuModule,
         _name: *const u8,
     ) -> CuResult {
-        GET_FN_CALLS.fetch_add(1, Ordering::SeqCst);
-        let r = GET_FN_RESULT.load(Ordering::SeqCst);
-        if r == 0 {
-            let h = NEXT_FN_HANDLE.fetch_add(0x10, Ordering::SeqCst);
-            unsafe { *hfunc = h as CuFunction };
-        }
-        r
+        with_state_mut(|s| {
+            s.get_fn_calls += 1;
+            let r = s.get_fn_result;
+            if r == 0 {
+                let h = s.next_fn_handle;
+                s.next_fn_handle += 0x10;
+                unsafe { *hfunc = h as CuFunction };
+            }
+            r
+        })
     }
     // Unused-symbol stubs (the manager doesn't call them but the
     // GpuDriverSymbolTable layout requires every field set).
@@ -411,12 +454,7 @@ mod tests {
     }
 
     fn reset_counters() {
-        LOAD_CALLS.store(0, Ordering::SeqCst);
-        LOAD_RESULT.store(0, Ordering::SeqCst);
-        GET_FN_CALLS.store(0, Ordering::SeqCst);
-        GET_FN_RESULT.store(0, Ordering::SeqCst);
-        UNLOAD_CALLS.store(0, Ordering::SeqCst);
-        UNLOAD_RESULT.store(0, Ordering::SeqCst);
+        with_state_mut(|s| *s = StubState::fresh());
     }
 
     // ── Actual assertions ──────────────────────────────────
@@ -436,7 +474,7 @@ mod tests {
         let mut m = GpuModuleManager::new();
         let t = stub_table();
         let slot = m.load_standby(&t, &[0u8, 1, 2, 3]).unwrap();
-        assert_eq!(LOAD_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(with_state(|s| s.load_calls), 1);
         assert_eq!(slot.blob_bytes, 4);
         assert!(slot.handle != 0);
         assert_eq!(m.standby().unwrap(), slot);
@@ -465,7 +503,7 @@ mod tests {
     #[test]
     fn load_standby_surfaces_driver_error_code() {
         reset_counters();
-        LOAD_RESULT.store(42, Ordering::SeqCst);
+        with_state_mut(|s| s.load_result = 42);
         let mut m = GpuModuleManager::new();
         let t = stub_table();
         let err = m.load_standby(&t, &[1, 2]).unwrap_err();
@@ -488,7 +526,7 @@ mod tests {
             .resolve_kernels(&t, &["vec_add".into(), "gemm".into(), "softmax".into()])
             .unwrap();
         assert_eq!(n, 3);
-        assert_eq!(GET_FN_CALLS.load(Ordering::SeqCst), 3);
+        assert_eq!(with_state(|s| s.get_fn_calls), 3);
         assert!(m.kernel_table().get("vec_add").is_some());
         assert!(m.kernel_table().get("missing").is_none());
     }
@@ -524,7 +562,7 @@ mod tests {
         let mut sentinel = KernelTable::new();
         sentinel.insert("sentinel", 0xdeadbeef);
         m.kernels = sentinel;
-        GET_FN_RESULT.store(7, Ordering::SeqCst);
+        with_state_mut(|s| s.get_fn_result = 7);
         let err = m
             .resolve_kernels(&t, &["a".into(), "b".into()])
             .unwrap_err();
@@ -571,13 +609,13 @@ mod tests {
         m.swap().unwrap();
         let retired = ModuleSlot { handle: 0xabcd, blob_bytes: 2 };
         m.unload_retired(&t, retired).unwrap();
-        assert_eq!(UNLOAD_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(with_state(|s| s.unload_calls), 1);
     }
 
     #[test]
     fn unload_retired_surfaces_driver_error() {
         reset_counters();
-        UNLOAD_RESULT.store(9, Ordering::SeqCst);
+        with_state_mut(|s| s.unload_result = 9);
         let mut m = GpuModuleManager::new();
         let t = stub_table();
         let retired = ModuleSlot { handle: 0xabcd, blob_bytes: 2 };
