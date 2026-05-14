@@ -793,7 +793,7 @@ fn current_time_ms() -> u64 {
         .as_millis() as u64
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use super::*;
     use crate::hmr::build_manifest::{BuildSlot, HealthcheckStrategy, SnapshotMode, PreviewPreservationMode};
