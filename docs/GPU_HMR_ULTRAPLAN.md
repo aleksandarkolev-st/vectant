@@ -8,7 +8,7 @@ Synthi's HMR pipeline today does Next.js-style hot-reload for compiled C++ host 
 - The Rust worker compiles each module with `g++`/`clang++` using `compile_to_object_command` + `link_object_to_so_command` (`backend/synthi-webrtc-compiler/worker/src/compiler/stages/compile_helpers.rs:188,227`), `dlopen`s the result via `libloading::Library::new(path)` (`backend/synthi-webrtc-compiler/worker/src/runtime/loader.rs:98`), and runs the v2 HotApi swap algorithm: same-version copy / msgpack migrate / cold-init (`backend/synthi-webrtc-compiler/PLUGIN_ABI.md:567-730`).
 - On every edit, `POST /refactor/diff_patch` (`main.py:1919`) returns a list of `{module, operation, anchor, content}` edits (`diff_patch_helpers.py:53,94-96`); the worker re-compiles only the dirty module and re-runs the swap.
 
-The user wants this same loop for **GPU kernels** — both **CUDA (nvcc/clang-cuda)** and **ROCm (hipcc)** from day one — with **full device-state preservation**, ideally via a binary device snapshot, and with the **error-healing loop** that exists for host compile errors extended to nvcc/hipcc/ptxas warnings and GPU runtime faults — **without introducing any shim/wrapper code**. The healer must natively patch existing modules; "agentic" means the AI updates the kernel and its lifecycle functions directly.
+The user wants this same loop for **GPU kernels** — both **CUDA (nvcc/clang-cuda)** and **ROCm (hipcc)** from day one — with **full preservation of Synthi-managed device state**, ideally via a binary device snapshot, and with the **error-healing loop** that exists for host compile errors extended to nvcc/hipcc/ptxas warnings and GPU runtime faults. The corrected model is agentic: Synthi does not hot-swap arbitrary raw CUDA/HIP source as-is. Synthi's agent rewrites GPU projects into a hot-swappable GPU runtime contract, then maintains that contract across edits. Runtime boundary helpers such as `synthi_gpu_launch(...)` and `synthi_gpu_pack_buffer(...)` are required infrastructure; forbidden shims are wrapper kernels, extra migration files, and bypass modules that hide the real source change.
 
 A targeted exploration of the codebase confirms there is **zero GPU plumbing today** (no `nvcc`, `hipcc`, `__global__`, or CUDA include references anywhere). This is greenfield. There is no `cuda-hmr` branch yet — work starts from `main`.
 
@@ -34,11 +34,12 @@ Ship a `cuda-hmr` branch that lets a user write a project containing `__global__
 
 1. The AI splits the project into the existing 4 host files **plus** a 5th `device` file containing the kernels.
 2. The worker builds host modules with `g++/clang++` and the device module with `nvcc`/`hipcc` into a sidecar `.cubin`/`.hsaco`.
-3. On every edit, the GPU mod-delta agent classifies the diff as host-only / device-only / mixed / abi-breaking, and the worker performs the right kind of swap (host `.so` via `dlopen`, device cubin via `cuModuleLoad`, both, or cold reload) without restarting the process.
-4. Device state survives the swap via driver-level checkpoint (preferred) or userspace serialization (fallback).
-5. Compile errors *and* GPU-specific soft warnings *and* runtime faults all feed the same agentic healer — which natively patches existing modules, never emits shims/wrappers.
+3. The agent rewrites raw `kernel<<<...>>>(...)` launch sites into the Synthi GPU launch boundary, e.g. `synthi_gpu_launch(gpu, "vec_add", grid, block, shared, stream, { &a, &b, &c, &n })`, so the worker can launch through Driver API `CUfunction` / HIP function handles after a sidecar swap.
+4. On every edit, the GPU mod-delta agent classifies the diff as host-only / device-only / mixed / abi-breaking, and the worker performs the right kind of swap (host `.so` via `dlopen`, device cubin via `cuModuleLoad`, both, or cold reload) without restarting the process when the GPU context is still valid.
+5. Synthi-managed device state survives the swap via driver-level checkpoint (preferred) or userspace serialization (fallback).
+6. Compile errors *and* GPU-specific soft warnings *and* runtime faults all feed the same agentic healer — which natively patches existing modules, never emits wrapper kernels or migration shim files. Fatal CUDA/HIP runtime faults that invalidate the context are repaired in source and then resumed through cold restart.
 
-The work fits behind the existing v2 HotApi by adding a v2.1 GPU addendum; non-GPU projects are unaffected because every GPU field is optional.
+The work fits behind the existing v2 HotApi by adding a v2.1 GPU addendum plus a concrete Synthi GPU runtime header/contract; non-GPU projects are unaffected because every GPU field is optional.
 
 ## 4. Shape of the change
 
@@ -74,7 +75,8 @@ The work fits behind the existing v2 HotApi by adding a v2.1 GPU addendum; non-G
                 ┌─────────────────────────────────────────┐
                 │ Runtime: HotApi v2 + GPU adapter        │
                 │ host: libloading::Library::new          │
-                │ device: cuModuleLoadData / hipModuleLoad│
+                │ device: Synthi GPU ABI boundary +       │
+                │         cuModuleLoadData / hipModuleLoad│
                 │ + stream callbacks + watchdog →         │
                 │   runtime_error channel                 │
                 └────────────────────┬────────────────────┘
@@ -170,7 +172,7 @@ So the GPU addendum is primarily a **prompt change**, with a small mirroring ext
   - `device_on_load(prev_blob, len)` — rebinds buffers/constants after `cuModuleLoad`; this is where the AI natively patches deserialization across an ABI change, no migration shim required
   - `device_save_size` / `device_save_write` — size-then-write msgpack, mirrors the existing host v2 pattern (`PLUGIN_ABI.md:608-613`)
   - `device_kernel_sig_hash(name)` — SipHash-2-4 over kernel params
-- Hard rules go in the prompt the same way "MALLOC PROHIBITION" goes in `UNIVERSAL_SPLIT_PROMPT` today (`prompts.py:2925`): no `cuMalloc` outside the registered shim; no destruction of the CUDA/HIP context inside `device_on_unload`; constants accessed via `cuModuleGetGlobal` only.
+- The ABI itself lives in code/header-level runtime definitions; `GPU_SPLIT_PROMPT` teaches the agent to emit code that conforms to that ABI. Hard rules go in the prompt the same way "MALLOC PROHIBITION" goes in `UNIVERSAL_SPLIT_PROMPT` today (`prompts.py:2925`): launch kernels through `synthi_gpu_launch(...)`, register Synthi-managed allocations through the runtime registry, do not destroy the CUDA/HIP context inside `device_on_unload`, and access constants through `cuModuleGetGlobal` only.
 
 Compatibility tiers (used by the worker's reload classifier, with the same shape as today's host story):
 
@@ -185,7 +187,7 @@ Compatibility tiers (used by the worker's reload classifier, with the same shape
 - `runtime/runner/validator.rs` — add presence checks for the new exports when the project's manifest has `gpu` set.
 - `runtime/capability.rs` — add bool flags mirroring the existing `core_on_load`/`gui_on_load` pattern.
 
-`PLUGIN_ABI.md` gets a short documentation appendix describing the new fields, but the spec for what the AI emits lives in `GPU_SPLIT_PROMPT`.
+`PLUGIN_ABI.md` gets a short documentation appendix describing the new fields. The ABI contract lives in runtime code/header definitions; the prompt is the agent instruction layer that keeps emitted source conformant.
 
 ### 5.3 Worker — compiler dispatch and device adapter
 
@@ -335,10 +337,10 @@ This is the user's "binary device snapshot" requirement. Decided per-workspace a
 
 **Tier B — userspace serializer (always available).** Required because the driver feature is recent and not on every machine.
 
-1. **Buffer registry.** A 50-line shim in `host_runner.cpp` wraps `cudaMalloc`/`hipMalloc` and records `(ptr, size, owner_module, semantic_name, lifetime_hint, dirty)` for every live device allocation. The runner template already exists (it's what the AI synthesises today); the shim is a small addition.
+1. **Buffer registry.** A small Synthi runtime boundary in `host_runner.cpp` wraps/registers `cudaMalloc`/`hipMalloc` and records `(ptr, size, owner_module, semantic_name, lifetime_hint, dirty)` for every live Synthi-managed device allocation. This is not a forbidden shim; it is the required HMR runtime contract the agent writes into the application lifecycle.
 2. **Drain.** `cuStreamSynchronize` every known stream; record the stream/event DAG before draining so it can be reconstructed.
 3. **Pack.** Default path = `cuMemcpyDtoD` into an in-VRAM shadow arena (see §6.1 below); fall through to `cuMemcpyDtoH` into a pinned-host arena only when the device doesn't have enough free VRAM headroom. Copy `__constant__` symbols via `cuModuleGetGlobal` + `cuMemcpyDtoH` (always cheap — constant memory is ≤ 64 KiB). Frame the snapshot with **msgpack** (matches the host v2 path — `PLUGIN_ABI.md:608-613` — so the wire framing is uniform).
-4. **Restore.** Context is alive across the swap; reallocate buffers with the same sizes (or reuse the existing allocations when the size and owner match — the common case for a device-only edit), `cuMemcpyDtoD` or `cuMemcpyHtoD` from the appropriate arena, restore constants, recreate streams + events with the recorded topology. `device_on_load` lets user code rebind any pointers it stashed — and, critically, lets the AI *natively patch the deserialization logic itself* when the struct layout changes across an ABI edit, so no migration shim is ever needed.
+4. **Restore.** Context is alive across the swap unless a fatal runtime fault invalidated it; reallocate buffers with the same sizes (or reuse the existing allocations when the size and owner match — the common case for a device-only edit), `cuMemcpyDtoD` or `cuMemcpyHtoD` from the appropriate arena, restore constants, recreate streams + events with the recorded topology. `device_on_load` lets user code rebind any pointers it stashed — and, critically, lets the AI *natively patch the deserialization logic itself* when the struct layout changes across an ABI edit, so no migration shim file is ever needed.
 
 Both tiers expose the same `DeviceStateSnapshot` Rust type to the rest of the worker; only the `driver_blob`-vs-`buffers` arm differs. The agent pipeline is unaware of which tier is in use; `gpu.snapshot_mode = "auto"` lets the worker pick.
 
@@ -684,7 +686,7 @@ Anything in `FAIL` blocks merge to `cuda-hmr`. `WARN` is acceptable for capabili
 
 ## 11. GPU error feedback loop — fully agentic, no shims
 
-The existing host healer (`/refactor/heal`, `main.py:2031`) consumes compiler stderr and patches files in place. For GPU we keep that exact shape — `{module, operation, anchor, content}` edits to existing files, never new "wrapper" or "fixup" modules — but the error surface is wider in three ways: there are soft compiler warnings that predict runtime failure, true runtime errors caught only after launch, and silent stream hangs that never produce an error code at all. The healer needs all three channels feeding the same agent, behind a single endpoint, with a mechanical verifier that rejects any output that smells like a shim.
+The existing host healer (`/refactor/heal`, `main.py:2031`) consumes compiler stderr and patches files in place. For GPU we keep that exact shape — `{module, operation, anchor, content}` edits to existing files, never new "wrapper" or "fixup" modules — but the error surface is wider in three ways: there are soft compiler warnings that predict runtime failure, true runtime errors caught only after launch, and silent stream hangs that never produce an error code at all. The healer needs all three channels feeding the same agent, behind a single endpoint, with a mechanical verifier that rejects wrapper kernels and migration shim files while allowing required Synthi GPU runtime-boundary calls.
 
 ### 11.1 Three error tiers
 
@@ -694,7 +696,7 @@ Same heal endpoint (`/refactor/heal/gpu`), three classifier branches. Each maps 
 
 **Tier 2 — Soft compile warning (predictive failure).** `nvcc` exits 0 but ptxas warned about register pressure, spill stores, or constant/shared memory exhaustion. The host *will* be able to launch the kernel, but it will either silently degrade (spills → 10× slowdown) or fail at runtime (`cudaErrorLaunchOutOfResources`). Routed to `GPU_HEAL_PERF_PROMPT`. The AI's job is to natively edit the kernel — add `__launch_bounds__`, split a large kernel into two `__global__`s used by the existing launch graph, move local arrays into shared memory, change register-hungry types — never to add a wrapper.
 
-**Tier 3 — Runtime fault.** The kernel launched but the device or runtime API returned an error. Examples: `cudaErrorIllegalAddress`, `cudaErrorMisalignedAddress`, `cudaErrorLaunchTimeout`, `cudaErrorInvalidConfiguration`, or the synthetic `STREAM_HANG` from the watchdog. Routed to `GPU_HEAL_RUNTIME_PROMPT`. The AI patches the kernel and/or host launch site directly — fixing a bounds check, fixing a divergent stream wait, fixing a missing sync — never adding a "safe-mode wrapper".
+**Tier 3 — Runtime fault.** The kernel launched but the device or runtime API returned an error. Examples: `cudaErrorIllegalAddress`, `cudaErrorMisalignedAddress`, `cudaErrorLaunchTimeout`, `cudaErrorInvalidConfiguration`, or the synthetic `STREAM_HANG` from the watchdog. Routed to `GPU_HEAL_RUNTIME_PROMPT`. The AI patches the kernel and/or host launch site directly — fixing a bounds check, fixing a divergent stream wait, fixing a missing sync — never adding a "safe-mode wrapper". If the CUDA/HIP context is invalidated by the fault, the worker must cold-restart after applying the source fix.
 
 ### 11.2 Capture surface
 
