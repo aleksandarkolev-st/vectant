@@ -37,6 +37,7 @@
 #![cfg(feature = "gpu-hmr")]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +46,7 @@ use crate::hmr::adapter_trait::{
     Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest, AdapterReloadResult,
 };
 use crate::hmr::compile_manifest::DeviceVendor;
+use crate::hmr::gpu_driver_loader::{self, DriverLoadError, GpuDriverHandle};
 
 // ── Vendor + symbol table ───────────────────────────────────
 
@@ -176,29 +178,43 @@ enum GpuPhase {
 
 // ── The adapter ─────────────────────────────────────────────
 
-/// Phase-1 scaffold. Holds enough state to satisfy the `Adapter`
-/// trait but does not yet call into the driver. Phase 2 will replace
-/// `Unsupported` reload results with the real two-slot swap.
+/// Phase-2 scaffold. `initialize()` now attempts a real driver
+/// load via `gpu_driver_loader::try_load`. On a host without the
+/// vendor driver the adapter still goes Ready (state-machine
+/// invariant for the planner) but `driver_state` reports
+/// `unavailable` so the planner knows to fall through to cold
+/// restart. The full swap path lands in Phase 3.
 pub struct GpuModuleAdapter {
     config: GpuModuleAdapterConfig,
     phase: GpuPhase,
     /// Reload counter — incremented every time `reload()` is called,
-    /// even when it returns Unsupported. Helps Phase 1 telemetry
+    /// even when it returns Unsupported. Helps telemetry
     /// distinguish a flat-lined adapter (never called) from one that
     /// keeps refusing.
     reload_count: u64,
     /// Address of the currently-loaded module, if any. `u64` rather
     /// than `*mut c_void` so `GpuModuleAdapter: Send` falls out for
-    /// free — the actual pointer crossing is a Phase 2 concern.
+    /// free — the actual pointer crossing is a Phase 3 concern.
     active_module_handle: Option<u64>,
     /// Live kernel name → CUfunction-handle-as-u64 map. Empty in
-    /// Phase 1; populated when Phase 2 calls `cuModuleGetFunction`
+    /// Phase 2; populated when Phase 3 calls `cuModuleGetFunction`
     /// for every kernel in the manifest right after a successful
     /// swap.
     kernel_table: HashMap<String, u64>,
-    /// Health line surfaced to the planner. Phase 1 reports `Unknown`
-    /// until the device-side probe (Phase 2) wires up.
+    /// Health line surfaced to the planner. Phase 2 reports
+    /// `Healthy` after a successful `initialize` even when the
+    /// driver isn't loaded — the planner uses `driver_state` to
+    /// route reload vs cold restart.
     health: AdapterHealth,
+    /// Loaded driver handle, if `gpu_driver_loader::try_load`
+    /// succeeded in `initialize`. Shared via `Arc` so Phase 3's
+    /// module-manager + shadow-arena can hold their own
+    /// references without re-dlopen.
+    driver: Option<Arc<GpuDriverHandle>>,
+    /// Last driver-load error, if `try_load` failed. Surfaced on
+    /// `info().extra["driver_error"]` for telemetry. Cleared on
+    /// the next successful load attempt.
+    last_driver_error: Option<DriverLoadError>,
 }
 
 impl GpuModuleAdapter {
@@ -210,6 +226,8 @@ impl GpuModuleAdapter {
             active_module_handle: None,
             kernel_table: HashMap::new(),
             health: AdapterHealth::Unknown,
+            driver: None,
+            last_driver_error: None,
         }
     }
 
@@ -223,6 +241,40 @@ impl GpuModuleAdapter {
 
     pub fn is_ready(&self) -> bool {
         self.phase == GpuPhase::Ready
+    }
+
+    /// True once `initialize` succeeded *and* the vendor driver
+    /// was found. Phase-3 planner uses this to gate the swap
+    /// path: when `driver_available()` is false the planner must
+    /// fall through to cold restart.
+    pub fn driver_available(&self) -> bool {
+        self.driver.is_some()
+    }
+
+    /// Shared reference to the loaded driver, if any. Phase 3's
+    /// module manager + shadow arena will clone this Arc so they
+    /// don't re-dlopen.
+    pub fn driver_handle(&self) -> Option<Arc<GpuDriverHandle>> {
+        self.driver.clone()
+    }
+
+    /// Last driver-load error, if any. Cleared on the next
+    /// successful initialize.
+    pub fn last_driver_error(&self) -> Option<&DriverLoadError> {
+        self.last_driver_error.as_ref()
+    }
+
+    /// Telemetry label for the driver. Mirrors the planner's log
+    /// line: `loaded` / `unavailable` / `pending` (= initialize
+    /// not yet called).
+    pub fn driver_state_label(&self) -> &'static str {
+        if self.driver.is_some() {
+            "loaded"
+        } else if self.last_driver_error.is_some() {
+            "unavailable"
+        } else {
+            "pending"
+        }
     }
 
     /// Phase 1 introspection — returns the set of driver-API symbols
@@ -248,6 +300,13 @@ impl Adapter for GpuModuleAdapter {
         extra.insert("driver_library".into(), self.config.vendor.driver_library().into());
         extra.insert("phase".into(), format!("{:?}", self.phase));
         extra.insert("reload_count".into(), self.reload_count.to_string());
+        extra.insert("driver_state".into(), self.driver_state_label().into());
+        if let Some(err) = &self.last_driver_error {
+            extra.insert("driver_error".into(), err.short_label().into());
+        }
+        if let Some(handle) = &self.driver {
+            extra.insert("driver_path".into(), handle.library_path().into());
+        }
         AdapterInfo {
             name: self.config.vendor.adapter_name().into(),
             // Modules are loaded into the running process via the
@@ -272,21 +331,35 @@ impl Adapter for GpuModuleAdapter {
                 self.phase
             ));
         }
-        // Phase 2 will:
-        //   1. dlopen self.config.vendor.driver_library()
-        //   2. dlsym every required_driver_symbols() entry
-        //   3. cuInit(0) + cuCtxGetCurrent
-        // For Phase 1 we just transition to Ready.
+        // Phase 2: actually attempt the dlopen + dlsym pass. The
+        // adapter still goes Ready even when the driver is missing
+        // (so the planner state machine remains valid), but the
+        // driver handle / last error fields capture which path was
+        // taken so the planner can route reload vs cold restart.
+        match gpu_driver_loader::try_load(self.config.vendor) {
+            Ok(handle) => {
+                self.driver = Some(handle.shared());
+                self.last_driver_error = None;
+            }
+            Err(e) => {
+                self.driver = None;
+                self.last_driver_error = Some(e);
+            }
+        }
         self.phase = GpuPhase::Ready;
         self.health = AdapterHealth::Healthy;
         Ok(())
     }
 
     fn shutdown(&mut self) -> Result<(), String> {
-        // Phase 2 will cuModuleUnload any active handle and dlclose
-        // the driver library. Phase 1: drop handles + flag the phase.
+        // Phase 3 will cuModuleUnload any active handle and dlclose
+        // the driver library. Phase 2: drop handles + flag the phase.
+        // Dropping the Arc here is sufficient — `libloading::Library`
+        // runs dlclose in its Drop impl as long as no other Arc
+        // clone outlives this adapter.
         self.active_module_handle = None;
         self.kernel_table.clear();
+        self.driver = None;
         self.phase = GpuPhase::ShutDown;
         self.health = AdapterHealth::Unknown;
         Ok(())
@@ -300,17 +373,27 @@ impl Adapter for GpuModuleAdapter {
                 recoverable: false,
             };
         }
-        // The driver-side swap doesn't land until Phase 2. Surfacing
-        // Unsupported lets the planner fall through to the cold path
-        // until then — exactly the behavior the harness expects from
-        // a pre-Phase-2 worker per §12.4.
-        AdapterReloadResult::Unsupported {
-            reason: "gpu_module_adapter Phase 1 scaffold — driver swap not yet implemented".into(),
-        }
+        // The driver-side swap doesn't land until Phase 3. The reason
+        // string carries the driver state so the planner can branch:
+        //   • driver=loaded → Phase 3 will wire the two-slot manager.
+        //   • driver=unavailable → cold path is the only option.
+        let reason = match self.driver_state_label() {
+            "loaded" => "gpu_module_adapter Phase 2 — driver loaded, swap path lands in Phase 3"
+                .to_string(),
+            "unavailable" => format!(
+                "gpu_module_adapter Phase 2 — driver unavailable ({}); falling through to cold path",
+                self.last_driver_error
+                    .as_ref()
+                    .map(|e| e.short_label())
+                    .unwrap_or("unknown")
+            ),
+            _ => "gpu_module_adapter Phase 2 scaffold — driver state pending".to_string(),
+        };
+        AdapterReloadResult::Unsupported { reason }
     }
 
     fn snapshot_state(&self) -> Result<Vec<u8>, String> {
-        // Phase 2 will marshal DeviceStateSnapshot here. Empty Vec
+        // Phase 3 will marshal DeviceStateSnapshot here. Empty Vec
         // signals "no device state captured" which is the honest
         // answer today.
         Ok(Vec::new())
@@ -319,7 +402,7 @@ impl Adapter for GpuModuleAdapter {
     fn restore_state(&mut self, data: &[u8]) -> Result<(), String> {
         if !data.is_empty() {
             return Err(format!(
-                "GpuModuleAdapter::restore_state got {} bytes but Phase 1 scaffold only accepts empty payload",
+                "GpuModuleAdapter::restore_state got {} bytes but Phase 2 scaffold only accepts empty payload",
                 data.len()
             ));
         }
@@ -433,13 +516,25 @@ mod tests {
     }
 
     #[test]
-    fn reload_unsupported_phase1_post_init() {
+    fn reload_unsupported_post_init() {
         let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
         a.initialize().unwrap();
         let r = a.reload(&dummy_request());
         match r {
             AdapterReloadResult::Unsupported { ref reason } => {
-                assert!(reason.contains("Phase 1"));
+                // Reason text changes per phase; the contract is
+                // that it identifies the phase + driver state so
+                // the planner can branch.
+                assert!(
+                    reason.contains("Phase"),
+                    "reason must identify phase: {reason}"
+                );
+                assert!(
+                    reason.contains("loaded")
+                        || reason.contains("unavailable")
+                        || reason.contains("pending"),
+                    "reason must include driver state: {reason}"
+                );
             }
             other => panic!("expected Unsupported, got {:?}", other),
         }
@@ -460,18 +555,91 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_state_empty_phase1() {
+    fn snapshot_state_empty_pre_swap() {
         let a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
         let blob = a.snapshot_state().expect("snapshot ok");
-        assert!(blob.is_empty(), "Phase 1 must report empty snapshot");
+        assert!(
+            blob.is_empty(),
+            "pre-Phase-3 adapter must report empty snapshot"
+        );
     }
 
     #[test]
-    fn restore_state_rejects_nonempty_phase1() {
+    fn restore_state_rejects_nonempty_pre_swap() {
         let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
         assert!(a.restore_state(&[]).is_ok());
         let err = a.restore_state(&[0x42, 0x42]).unwrap_err();
-        assert!(err.contains("Phase 1"));
+        assert!(err.contains("Phase"));
+    }
+
+    // ── Phase-2 driver-loader integration ───────────────────
+
+    #[test]
+    fn driver_state_label_pending_before_initialize() {
+        let a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
+        assert_eq!(a.driver_state_label(), "pending");
+        assert!(!a.driver_available());
+        assert!(a.last_driver_error().is_none());
+    }
+
+    #[test]
+    fn driver_state_after_initialize_is_loaded_or_unavailable() {
+        let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
+        a.initialize().unwrap();
+        let label = a.driver_state_label();
+        assert!(
+            label == "loaded" || label == "unavailable",
+            "expected loaded|unavailable, got {label}"
+        );
+        if label == "loaded" {
+            assert!(a.driver_available());
+            assert!(a.driver_handle().is_some());
+            assert!(a.last_driver_error().is_none());
+        } else {
+            assert!(!a.driver_available());
+            assert!(a.driver_handle().is_none());
+            assert!(a.last_driver_error().is_some());
+        }
+    }
+
+    #[test]
+    fn info_extra_surfaces_driver_state() {
+        let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
+        let pre = a.info();
+        assert_eq!(pre.extra.get("driver_state").map(|s| s.as_str()), Some("pending"));
+        a.initialize().unwrap();
+        let post = a.info();
+        let state = post.extra.get("driver_state").map(|s| s.as_str()).unwrap();
+        assert!(state == "loaded" || state == "unavailable");
+        if state == "unavailable" {
+            assert!(post.extra.get("driver_error").is_some());
+        }
+    }
+
+    #[test]
+    fn shutdown_drops_driver_handle() {
+        let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
+        a.initialize().unwrap();
+        a.shutdown().unwrap();
+        assert!(!a.driver_available());
+        assert!(a.driver_handle().is_none());
+    }
+
+    #[test]
+    fn reload_reason_mentions_driver_state() {
+        let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
+        a.initialize().unwrap();
+        let label = a.driver_state_label();
+        let r = a.reload(&dummy_request());
+        match r {
+            AdapterReloadResult::Unsupported { reason } => {
+                assert!(
+                    reason.contains(label),
+                    "reload reason {reason:?} must mention driver state {label:?}"
+                );
+            }
+            other => panic!("expected Unsupported, got {:?}", other),
+        }
     }
 
     #[test]
