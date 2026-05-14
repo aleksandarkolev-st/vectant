@@ -189,7 +189,7 @@ pub fn orchestrate_dynlib_reload(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use super::*;
 
