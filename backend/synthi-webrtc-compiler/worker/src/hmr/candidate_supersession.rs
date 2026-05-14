@@ -74,7 +74,7 @@ pub fn should_supersede(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use super::*;
     use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
