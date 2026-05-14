@@ -19,7 +19,7 @@ SAMPLE_RAW = '''
 <JSON>
 {
   "shared.h": "struct AppState { int n; };",
-  "core.cpp": "void launch_va() { vec_add<<<1, 256>>>(0, 0, 0, 256); }",
+  "core.cpp": "void launch_va() { synthi_gpu_launch(gpu, \\"vec_add\\", 1, 256, 0, stream, { &a, &b, &c, &n }); }",
   "gui.cpp": "void draw() {}",
   "host_runner.cpp": "int main() { return 0; }",
   "device.cu": "__global__ void vec_add(const float* a, const float* b, float* c, int n) {}"
@@ -107,6 +107,8 @@ def test_build_prompt_substitutes_user_code():
     p = build_prompt(code)
     assert code in p
     assert "{USER_CODE}" not in p
+    assert "synthi_gpu_launch" in p
+    assert "raw `kernel<<<grid, block, shared, stream>>>(args...)`" in p
 
 
 def test_build_prompt_attaches_detection_hint():

@@ -26,10 +26,10 @@ makes a judgement call:
   4. **No new `.cu`/`.hip` files.** The "5 files only" rule from
      `GPU_SPLIT_PROMPT` — multi-TU device builds are a Phase-5 concern.
 
-In addition, two pre-emit checks for the *split* path (§5.6 item 2):
+In addition, split-path checks (§5.6 item 2):
 
-  - every `<<<grid, block, ...>>>` launch in host code names a
-    `__global__` symbol declared in `device.cu`,
+  - every host launch has been rewritten to `synthi_gpu_launch(...)`,
+    and every referenced kernel is declared in `device.cu`,
   - the declared `gpu.arch` list isn't empty.
 
 The verifier returns a structured rejection (list of `Violation`s)
@@ -178,6 +178,9 @@ def verify_heal_output(
     """
     violations: List[Violation] = []
     project_files_set: Set[str] = set(project_files)
+    allowed_modules = set(project_files_set)
+    alias_to_file = _module_aliases(project_files_set)
+    allowed_modules.update(alias_to_file)
     existing_kernels_set: Set[str] = {k for k in existing_kernels if k}
     host_sites: Mapping[str, str] = host_launch_sites or {}
 
@@ -185,7 +188,8 @@ def verify_heal_output(
     for edit in edits:
         module = edit.get("module", "")
         op = (edit.get("operation") or "").lower()
-        if op in _NEW_FILE_OPS or module not in project_files_set:
+        normalized_module = alias_to_file.get(module, module)
+        if op in _NEW_FILE_OPS or module not in allowed_modules:
             violations.append(
                 Violation(
                     rule="no_file_creation",
@@ -197,7 +201,7 @@ def verify_heal_output(
                     offending_module=module,
                 )
             )
-        if module.endswith(".cu") and module not in _DEVICE_FILES:
+        if normalized_module.endswith(".cu") and normalized_module not in _DEVICE_FILES:
             violations.append(
                 Violation(
                     rule="no_extra_device_tu",
@@ -211,7 +215,11 @@ def verify_heal_output(
             )
 
     # Rule 2: no wrapper kernels.
-    device_edits = [e for e in edits if e.get("module") in _DEVICE_FILES]
+    device_edits = [
+        {**e, "module": alias_to_file.get(e.get("module", ""), e.get("module", ""))}
+        for e in edits
+        if alias_to_file.get(e.get("module", ""), e.get("module", "")) in _DEVICE_FILES
+    ]
     introduced_kernels = _collect_new_kernels(device_edits, existing_kernels_set)
     for new_name in introduced_kernels:
         existing_match = _is_shim_name(new_name, existing_kernels_set)
@@ -289,8 +297,12 @@ class SplitVerificationResult:
         }
 
 
-_LAUNCH_CALL_RE = re.compile(
+_RAW_LAUNCH_CALL_RE = re.compile(
     r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*<<<[^;]{0,256}?>>>",
+)
+_SYNTHI_LAUNCH_CALL_RE = re.compile(
+    r"\bsynthi_gpu_launch\s*\(\s*[^,]+,\s*[\"'](?P<name>[A-Za-z_][A-Za-z0-9_]*)[\"']",
+    re.DOTALL,
 )
 
 
@@ -306,8 +318,10 @@ def verify_split_output(
       - `manifest_arch` is non-empty (the Rust mirror's
         `validate_manifest_v1` also catches this, but failing here
         gives the LLM a tighter retry signal).
-      - every `<<<…>>>` launch site in host files names a kernel
-        declared in `device.cu` / `device.hip`.
+      - every host launch site uses `synthi_gpu_launch(...)`, not raw
+        CUDA/HIP triple-chevron syntax.
+      - every `synthi_gpu_launch(...)` kernel name is declared in
+        `device.cu` / `device.hip`.
       - the split contains exactly the 5 expected files
         (shared.h / core.cpp / gui.cpp / host_runner.cpp / device.cu|hip).
     """
@@ -348,14 +362,31 @@ def verify_split_output(
         src = files.get(host_path)
         if not src:
             continue
-        for match in _LAUNCH_CALL_RE.finditer(src):
+        for match in _RAW_LAUNCH_CALL_RE.finditer(src):
+            kernel = match.group("name")
+            violations.append(
+                Violation(
+                    rule="raw_launch_not_rewritten",
+                    message=(
+                        f"Host file {host_path} still contains raw launch "
+                        f"{kernel}<<<...>>>. GPU split output must launch "
+                        "through synthi_gpu_launch(...) so the worker can "
+                        "resolve CUfunction/HIP function handles after a "
+                        "sidecar module swap."
+                    ),
+                    offending_module=host_path,
+                    offending_symbol=kernel,
+                )
+            )
+        for match in _SYNTHI_LAUNCH_CALL_RE.finditer(src):
             kernel = match.group("name")
             if kernel not in declared_kernels:
                 violations.append(
                     Violation(
                         rule="launch_site_unresolved",
                         message=(
-                            f"Host file {host_path} launches {kernel}<<<...>>> "
+                            f"Host file {host_path} launches {kernel!r} via "
+                            "synthi_gpu_launch(...) "
                             "but no matching __global__ symbol is declared "
                             "in device.cu/device.hip."
                         ),
@@ -467,7 +498,7 @@ def _host_site_was_updated(
     # reference it.
     for edit in edits:
         module = edit.get("module", "")
-        if module.endswith((".cpp", ".cc", ".cxx", ".h", ".hpp")):
+        if module in {"core", "gui", "shared", "host_runner"} or module.endswith((".cpp", ".cc", ".cxx", ".h", ".hpp")):
             content = edit.get("content", "") or ""
             anchor = edit.get("anchor", "") or ""
             if kernel in content or kernel in anchor:
@@ -489,7 +520,7 @@ def _host_site_was_removed(
         return False
     for edit in edits:
         module = edit.get("module", "")
-        if not module.endswith((".cpp", ".cc", ".cxx")):
+        if module not in {"core", "gui", "host_runner"} and not module.endswith((".cpp", ".cc", ".cxx")):
             continue
         op = (edit.get("operation") or "").lower()
         anchor = edit.get("anchor", "") or ""
@@ -499,3 +530,20 @@ def _host_site_was_removed(
         if op in {"replace", "patch", "rewrite", "edit"} and kernel in anchor and kernel not in content:
             return True
     return False
+
+
+def _module_aliases(project_files: Set[str]) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    if "core.cpp" in project_files:
+        aliases["core"] = "core.cpp"
+    if "gui.cpp" in project_files:
+        aliases["gui"] = "gui.cpp"
+    if "shared.h" in project_files:
+        aliases["shared"] = "shared.h"
+    if "host_runner.cpp" in project_files:
+        aliases["host_runner"] = "host_runner.cpp"
+    if "device.cu" in project_files:
+        aliases["device"] = "device.cu"
+    elif "device.hip" in project_files:
+        aliases["device"] = "device.hip"
+    return aliases

@@ -3812,7 +3812,7 @@ AppState* state = (AppState*)state_ptr;
 #   - HotApi v2.1 GPU fields (`device_descriptor`, `device_on_load`,
 #     `device_save_size`/`device_save_write`, `device_kernel_sig_hash`),
 #   - a launch-graph block inside <synthi_arch_cache>,
-#   - the "no shim/wrapper" contract.
+#   - the "runtime boundary, no wrapper-kernel" contract.
 #
 # The prompt is intentionally explicit about what the AI must and must not
 # emit so the mechanical verifier (`verifier_gpu.py`) doesn't have to second-
@@ -3831,9 +3831,9 @@ work with a dynamic-linking HMR system extended for GPU device modules.
                        Header-only. No executable code except inline accessors.
 
 2. core.cpp          - logic and state mutation. Compiles to libcore.so.
-                       Calls into the device module via the kernel-launch
-                       wrappers declared in shared.h. NO windowing, NO
-                       rendering, NO main(), NO library init.
+                       Calls into the device module through the Synthi
+                       GPU launch boundary declared in shared.h. NO
+                       windowing, NO rendering, NO main(), NO library init.
 
 3. gui.cpp           - rendering and UI. Compiles to libgui.so.
                        Reads from AppState (filled by core + device); never
@@ -3842,8 +3842,9 @@ work with a dynamic-linking HMR system extended for GPU device modules.
 4. host_runner.cpp   - process entry point. Owns the CUDA/HIP context and
                        the window. dlopens libcore/libgui, dlsyms the
                        lifecycle functions including the new GPU ones,
-                       calls them every frame. Owns the buffer registry
-                       shim used by tier-B userspace snapshots.
+                       calls them every frame. Owns the Synthi-managed
+                       device allocation registry used by tier-B
+                       userspace snapshots.
 
 5. device.cu (CUDA) **OR** device.hip (ROCm) - every `__global__` and
                        `__device__` symbol. Builds to a sidecar `cubin`
@@ -3867,6 +3868,26 @@ core.cpp / gui.cpp / host_runner.cpp:
     `hot_get_api()`),
   - SHARED.H is HEADER-ONLY,
   - the `<synthi_arch_cache>` and `<synthi_build_manifest>` response shape.
+
+# GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
+
+Synthi does not hot-swap arbitrary raw CUDA/HIP source as-is. Your job
+is to rewrite the user's GPU code into Synthi's hot-swappable GPU ABI,
+then keep that ABI explicit in the emitted source. The ABI boundary is
+real runtime code/header surface, not prose:
+
+  - raw `kernel<<<grid, block, shared, stream>>>(args...)` launch sites
+    in host code MUST become calls to:
+
+        synthi_gpu_launch(gpu, "kernel", grid, block, shared, stream,
+                          { &arg0, &arg1, ... });
+
+  - Synthi-managed device allocations MUST be registered through the
+    runtime registry so the worker can preserve them across sidecar
+    cubin/hsaco swaps.
+  - This runtime boundary is allowed and required. Forbidden shims are
+    wrapper kernels, extra migration files, and bypass modules that hide
+    the actual source change.
 
 # GPU CONTRACT — HotApi v2.1 ADDENDUM
 
@@ -3913,12 +3934,14 @@ extern "C" unsigned long long device_kernel_sig_hash(const char* name);
 # DEVICE-SIDE FILE RULES
 
   - All `__global__` and `__device__` symbols live in `device.cu` (or
-    `device.hip`). Host files declare them as extern launch wrappers.
-  - **No `cuMalloc`/`hipMalloc` outside the buffer-registry shim** in
-    host_runner.cpp. The shim records `(ptr, size, owner_module,
-    semantic_name, lifetime_hint, dirty)` for every live allocation
-    so the tier-B userspace snapshot can pack/restore them across an
-    HMR swap.
+    `device.hip`). Host files launch them only through
+    `synthi_gpu_launch(...)`; do not leave raw triple-chevron host
+    launch sites in the split output.
+  - **No `cuMalloc`/`hipMalloc` outside the Synthi allocation registry**
+    in host_runner.cpp. The registry records `(ptr, size, owner_module,
+    semantic_name, lifetime_hint, dirty)` for every live Synthi-managed
+    allocation so the tier-B userspace snapshot can pack/restore it
+    across an HMR swap.
   - **Never destroy the CUDA/HIP context inside `device_on_unload`**
     or the runner's shutdown — the context outlives any cubin swap.
     `cuModuleUnload`/`hipModuleUnload` and then exit; no
@@ -3949,8 +3972,8 @@ compares pre- and post-edit hashes to decide reload plan: unchanged →
 
 # LAUNCH GRAPH (inside <synthi_arch_cache>)
 
-For every `<<<grid, block, shared, stream>>>` launch in core.cpp /
-gui.cpp / host_runner.cpp, emit one row inside the arch cache:
+For every host launch that you converted to `synthi_gpu_launch(...)` in
+core.cpp / gui.cpp / host_runner.cpp, emit one row inside the arch cache:
 
     <synthi_launch_graph>
     [
@@ -3989,8 +4012,9 @@ not HMR-compatible. Pick `arch` from the source's targeting hints
   - Never introduce a new kernel whose name looks like `_safe`, `_v2`,
     `_fallback`, `safe_<existing>`, etc. Patch the existing kernel
     in place.
-  - Never add a "rescue" host helper that wraps a launch — fix the
-    launch itself.
+  - Never add a "rescue" host helper that wraps a launch. Use the
+    required `synthi_gpu_launch(...)` runtime boundary directly at the
+    original launch site and fix the launch arguments there.
   - When a serialisation layout changes, edit `device_on_load` and
     `device_save_write` IN PLACE rather than emitting a migration
     wrapper.
@@ -4023,8 +4047,9 @@ not HMR-compatible. Pick `arch` from the source's targeting hints
 - All five files must be present in the JSON.
 - The build manifest MUST include both the host fields and a non-null
   `gpu` sub-object.
-- Every kernel referenced in any `<<<…>>>` launch must be declared in
-  device.cu/device.hip.
+- Every kernel referenced in any `synthi_gpu_launch(...)` call must be
+  declared in device.cu/device.hip. Raw `kernel<<<...>>>` host launches
+  are invalid split output.
 - Every kernel declared in device.cu/device.hip must appear in
   <synthi_kernel_hashes>.
 - Preserve the user's intent: kernel logic, buffer sizes, launch
@@ -4035,4 +4060,149 @@ not HMR-compatible. Pick `arch` from the source's targeting hints
 ```cpp
 {USER_CODE}
 ```
+""".strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GPU diff + heal prompts (GPU_HMR_ULTRAPLAN §5.5 / §11)
+# ─────────────────────────────────────────────────────────────────────────────
+
+GPU_DIFF_PATCH_PROMPT = r"""
+You are generating EDIT INSTRUCTIONS for a Synthi GPU HMR project.
+
+Return a JSON object:
+
+{
+  "reload_plan": "host_only" | "device_only" | "mixed" | "abi_breaking",
+  "edits": [
+    { "module": "core" | "gui" | "shared" | "host_runner" | "device",
+      "operation": "insert_after" | "insert_before" | "replace" | "delete",
+      "anchor": "...exact existing substring...",
+      "content": "...replacement or insertion..." }
+  ]
+}
+
+Rules:
+- Keep the Synthi GPU runtime boundary intact. Host launch sites must use
+  `synthi_gpu_launch(...)`, not raw `kernel<<<...>>>(...)`.
+- Do not add wrapper kernels such as `_safe`, `_v2`, `_fallback`, or
+  `safe_<kernel>`. Patch existing kernels in place.
+- Do not create new `.cu` or `.hip` files. The Phase-1/2 contract has a
+  single device module.
+- If a kernel signature or constant-memory layout changes, set
+  `reload_plan` to `abi_breaking` unless the edit batch also updates the
+  host launch boundary and lifecycle code.
+- If only the device implementation changes and kernel signatures stay
+  unchanged, set `reload_plan` to `device_only`.
+- If both host and device files change without ABI drift, set
+  `reload_plan` to `mixed`.
+
+ARCHITECTURE CACHE:
+{ARCHITECTURE}
+
+CURRENT FILES:
+shared.h:
+```
+{SHARED_CONTENT}
+```
+
+core.cpp:
+```
+{CORE_CONTENT}
+```
+
+gui.cpp:
+```
+{GUI_CONTENT}
+```
+
+host_runner.cpp:
+```
+{HOST_RUNNER_CONTENT}
+```
+
+device:
+```
+{DEVICE_CONTENT}
+```
+
+USER DIFF:
+```
+{DIFF}
+```
+
+Return only the JSON object. No markdown fences.
+""".strip()
+
+
+GPU_HEAL_SHARED_HEADER = r"""
+You are the Synthi GPU healer. Patch the original split source in place.
+
+Output a JSON object with an `edits` array using the same edit schema as
+GPU diff patch:
+
+{ "edits": [
+  { "module": "core" | "gui" | "shared" | "host_runner" | "device",
+    "operation": "insert_after" | "insert_before" | "replace" | "delete",
+    "anchor": "...exact existing substring...",
+    "content": "...replacement or insertion..." }
+] }
+
+Hard constraints:
+- Do not create files.
+- Do not add wrapper kernels (`*_safe`, `*_v2`, `*_fallback`,
+  `safe_*`, etc.).
+- Do not hide a bug behind a new migration file or bypass module.
+- Host launches must remain on the Synthi runtime boundary:
+  `synthi_gpu_launch(...)`.
+- Runtime boundary calls such as `synthi_gpu_launch(...)`,
+  `synthi_gpu_pack_buffer(...)`, and `synthi_register(...)` are allowed
+  because they are the actual HMR ABI.
+- If a CUDA/HIP runtime fault invalidated the context, patch the source
+  and mark the fix as restart-safe in the edited lifecycle code. The
+  worker may cold-restart after applying the fix.
+""".strip()
+
+
+GPU_HEAL_COMPILE_PROMPT = GPU_HEAL_SHARED_HEADER + r"""
+
+Tier: compile_hard.
+
+Fix the nvcc/hipcc/nvlink compile error by editing the smallest set of
+existing modules. Prefer correcting the existing kernel, include, launch
+boundary, or lifecycle function directly.
+
+HEAL PAYLOAD:
+{PAYLOAD}
+""".strip()
+
+
+GPU_HEAL_PERF_PROMPT = GPU_HEAL_SHARED_HEADER + r"""
+
+Tier: compile_soft.
+
+The compiler succeeded but ptxas/hipcc diagnostics predict a bad launch
+or severe performance issue. Patch the hot kernel directly. Valid fixes
+include `__launch_bounds__`, reducing register pressure, moving a local
+array to shared memory, or splitting work only when the existing launch
+graph and lifecycle code are updated in the same edit batch.
+
+HEAL PAYLOAD:
+{PAYLOAD}
+""".strip()
+
+
+GPU_HEAL_RUNTIME_PROMPT = GPU_HEAL_SHARED_HEADER + r"""
+
+Tier: runtime.
+
+Patch the kernel and/or host launch boundary that caused the runtime
+fault. Bounds checks, stream/event ordering, launch configuration, and
+missing synchronization should be fixed in the original source. Some
+CUDA/HIP faults invalidate the context; in that case patch the source
+for the next cold restart rather than pretending in-place resume is
+always safe.
+
+HEAL PAYLOAD:
+{PAYLOAD}
 """.strip()

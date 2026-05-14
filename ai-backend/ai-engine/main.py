@@ -1900,6 +1900,31 @@ from diff_patch_helpers import (  # noqa: E402 — late import is intentional
     build_manifest_heal_prompt as _build_manifest_heal_prompt,
     parse_heal_manifest_response as _parse_heal_manifest_response,
 )
+from agents.gpu_detect import detect_project as _detect_gpu_project  # noqa: E402
+from agents.kernel_splitter import (  # noqa: E402
+    KernelSplitterError as _KernelSplitterError,
+    run_kernel_splitter as _run_kernel_splitter,
+)
+from agents.gpu_mod_delta import (  # noqa: E402
+    GpuDiffPatchRequest,
+    build_gpu_diff_patch_prompt as _build_gpu_diff_patch_prompt,
+    parse_gpu_diff_response as _parse_gpu_diff_response,
+)
+from agents.gpu_healer import (  # noqa: E402
+    GpuHealRequest,
+    build_gpu_heal_prompt as _build_gpu_heal_prompt,
+    parse_gpu_heal_response as _parse_gpu_heal_response,
+)
+
+
+def _file_map_from_request(req: AnalyzeAiRequest) -> dict[str, str]:
+    files = {}
+    for f in req.files or []:
+        path = getattr(f, "path", None) or getattr(f, "name", None) or "input.cpp"
+        files[path] = f.content
+    if not files and req.code:
+        files[req.focus or "input.cpp"] = req.code
+    return files
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1992,6 +2017,152 @@ async def refactor_diff_patch(req: DiffPatchRequest):
         raise
     except Exception as e:
         print(f"[DiffPatch] Error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/refactor/split/gpu")
+async def refactor_split_gpu(req: VerifiedAiRequest):
+    """GPU Kernel Splitter Agent endpoint.
+
+    Same external shape as `/refactor/split/verified`, but routes through
+    `GPU_SPLIT_PROMPT` and requires a manifest `gpu` block. The returned
+    `result` remains a raw JSON string so the Rust worker can parse it the
+    same way it parses host split output.
+    """
+    start_time = time.time()
+
+    def select_provider_name() -> str | None:
+        if req.api_key:
+            model_name = (req.model or "").lower()
+            if "gemini" in model_name:
+                return "gemini"
+            return "chatgpt"
+        return None
+
+    provider = get_provider(provider_name=select_provider_name(), use_custom=bool(req.api_key))
+    file_map = _file_map_from_request(req)
+    detection = _detect_gpu_project(file_map or {req.focus or "input.cpp": req.code})
+    if not detection.is_gpu:
+        raise HTTPException(status_code=422, detail="GPU split requested for source with no GPU markers")
+
+    try:
+        split = await _run_kernel_splitter(
+            provider=provider,
+            user_code=req.code,
+            lang=req.lang,
+            detection=detection,
+            extra_instructions=req.prompt,
+            model=req.model or "gemini-3.1-flash-lite-preview",
+            api_key=req.api_key,
+            files=req.files,
+            focus=req.focus,
+        )
+    except _KernelSplitterError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not split.manifest or not isinstance(split.manifest.get("gpu"), dict):
+        raise HTTPException(status_code=422, detail="GPU split response missing manifest.gpu block")
+
+    try:
+        manifest_parsed = parse_manifest(split.manifest)
+        validate_manifest_v1(manifest_parsed)
+        manifest_out = manifest_to_dict(manifest_parsed)
+    except ManifestRejection as e:
+        raise HTTPException(status_code=422, detail=e.message)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"GPU manifest validation failed: {e}")
+
+    elapsed = time.time() - start_time
+    verification = split.verification.to_dict() if split.verification else None
+    if split.verification and not split.verification.ok:
+        logger.info("[split/gpu] verifier rejected GPU split: %s", verification)
+
+    return {
+        "result": json.dumps(split.files),
+        "architecture": split.architecture_md,
+        "manifest": manifest_out,
+        "kernel_hashes": split.kernel_hashes,
+        "launch_graph": split.launch_graph,
+        "gpu_detection": detection.to_dict(),
+        "lang": req.lang,
+        "verified": bool(split.verification.ok if split.verification else True),
+        "verification": verification,
+        "elapsed_seconds": elapsed,
+    }
+
+
+@app.post("/refactor/diff_patch/gpu")
+async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
+    """GPU-aware diff patch endpoint.
+
+    Adds `reload_plan` and the `device` edit module while preserving the
+    existing anchor-based edit shape used by the Rust worker.
+    """
+    start_time = time.time()
+    provider_name = os.getenv("SYNTHI_DIFF_PATCH_PROVIDER", "gemini").lower()
+    provider = get_provider(provider_name=provider_name, use_custom=bool(req.api_key))
+    prompt = _build_gpu_diff_patch_prompt(req)
+
+    default_model = (
+        os.getenv("SYNTHI_OPENAI_MODEL", "qwen2.5-coder:7b")
+        if provider_name == "openai"
+        else "gemini-3.1-flash-lite-preview"
+    )
+    try:
+        ai_response = await provider.ask_llm(
+            prompt,
+            "cpp",
+            None,
+            mode="delta",
+            model=req.model or default_model,
+            api_key=req.api_key,
+        )
+        parsed = _parse_gpu_diff_response(ai_response)
+        elapsed = time.time() - start_time
+        print(
+            f"[GpuDiffPatch] plan={parsed['reload_plan']} "
+            f"edits={len(parsed['edits'])} elapsed={elapsed:.2f}s"
+        )
+        return {**parsed, "elapsed_seconds": elapsed}
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse GPU patch response: {e}")
+    except Exception as e:
+        print(f"[GpuDiffPatch] Error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/refactor/heal/gpu")
+async def refactor_heal_gpu(req: GpuHealRequest):
+    """GPU compile/perf/runtime healer endpoint."""
+    start_time = time.time()
+    provider = get_provider(provider_name="gemini", use_custom=bool(req.api_key))
+    prompt, triage = _build_gpu_heal_prompt(req)
+    try:
+        ai_response = await provider.ask_llm(
+            prompt,
+            "cpp",
+            None,
+            mode="delta",
+            model=req.model or "gemini-3.1-flash-lite-preview",
+            api_key=req.api_key,
+        )
+        parsed = _parse_gpu_heal_response(ai_response, req)
+        elapsed = time.time() - start_time
+        print(
+            f"[GpuHeal] tier={triage.get('tier')} prompt={triage.get('prompt_name')} "
+            f"edits={len(parsed['edits'])} elapsed={elapsed:.2f}s"
+        )
+        return {**parsed, "triage": triage, "elapsed_seconds": elapsed}
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse GPU heal response: {e}")
+    except Exception as e:
+        print(f"[GpuHeal] Error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 

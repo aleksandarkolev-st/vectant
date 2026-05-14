@@ -252,7 +252,7 @@ def test_rejects_new_cu_file():
 def test_split_clean_output_passes():
     files = {
         "shared.h": "struct AppState { int n; };",
-        "core.cpp": "void launch_vec_add() { vec_add<<<1, 256>>>(0, 0, 0, 256); }",
+        "core.cpp": "void launch_vec_add() { synthi_gpu_launch(gpu, \"vec_add\", 1, 256, 0, stream, { &a, &b, &c, &n }); }",
         "gui.cpp": "void draw() {}",
         "host_runner.cpp": "int main() { return 0; }",
         "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
@@ -274,10 +274,26 @@ def test_split_rejects_empty_arch():
     assert any(v.rule == "manifest_arch_empty" for v in r.violations)
 
 
-def test_split_rejects_unresolved_launch_site():
+def test_split_rejects_raw_launch_site():
     files = {
         "shared.h": "",
-        "core.cpp": "void l() { ghost_kernel<<<1, 256>>>(0); }",
+        "core.cpp": "void l() { vec_add<<<1, 256>>>(0); }",
+        "gui.cpp": "",
+        "host_runner.cpp": "",
+        "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert not r.ok
+    assert any(
+        v.rule == "raw_launch_not_rewritten" and v.offending_symbol == "vec_add"
+        for v in r.violations
+    )
+
+
+def test_split_rejects_unresolved_synthi_launch_site():
+    files = {
+        "shared.h": "",
+        "core.cpp": "void l() { synthi_gpu_launch(gpu, \"ghost_kernel\", 1, 256, 0, stream, { &x }); }",
         "gui.cpp": "",
         "host_runner.cpp": "",
         "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
