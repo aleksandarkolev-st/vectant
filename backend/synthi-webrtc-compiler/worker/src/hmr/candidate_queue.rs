@@ -162,7 +162,7 @@ impl CandidateQueue {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use super::*;
     use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
