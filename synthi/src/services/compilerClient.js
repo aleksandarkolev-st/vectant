@@ -346,6 +346,22 @@ export class CompilerClient {
             }
         }
 
+        if (
+            typeof text === 'string' &&
+            typeof window !== 'undefined' &&
+            window.dispatchEvent &&
+            (
+                text.includes('[gpu-reload]') ||
+                text.includes('gpu_snapshot_telemetry') ||
+                text.includes('[ptxas]') ||
+                text.includes('gpu_runtime_error')
+            )
+        ) {
+            window.dispatchEvent(new CustomEvent('synthi:gpu-hmr-status', {
+                detail: { line: text }
+            }));
+        }
+
         // Check for GUI control messages
         try {
             const parsed = JSON.parse(text);
