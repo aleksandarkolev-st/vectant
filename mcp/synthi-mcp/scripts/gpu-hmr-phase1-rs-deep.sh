@@ -169,11 +169,14 @@ EOF
 
 # ── P1rs.11  Factory wires CUDA + ROCm adapters ────────────────
 phase1_factory_wiring() {
+  # cargo 1.95+ enforces a single TESTNAME positional arg; multi-name
+  # filtering goes after `--` so the test binary handles it.
   run_cargo "P1rs.11" "adapter_registry GPU factory branches" \
-    test --features gpu-hmr --lib hmr::adapter_registry::tests::factory_creates_cuda_adapter \
-                                  hmr::adapter_registry::tests::factory_creates_hip_and_rocm_adapter \
-                                  hmr::adapter_registry::tests::registry_from_matrix_with_gpu_rows \
-    -- --nocapture
+    test --features gpu-hmr --lib \
+    -- --nocapture \
+       hmr::adapter_registry::tests::factory_creates_cuda_adapter \
+       hmr::adapter_registry::tests::factory_creates_hip_and_rocm_adapter \
+       hmr::adapter_registry::tests::registry_from_matrix_with_gpu_rows
 }
 
 # ── P1rs.12  Adapter is Send + Sync (compile-time) ─────────────
