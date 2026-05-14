@@ -1,26 +1,23 @@
 pub mod abi_detect;
-pub mod binary_patch;
-pub mod tier0_unified;
-pub mod ts_value_classifier;
 pub mod adapted_project;
-pub mod adapter_matrix;
 pub mod adapter_lifecycle_fsm;
+pub mod adapter_matrix;
 pub mod adapter_registry;
 pub mod adapter_trait;
 pub mod ai_bypass;
 pub mod ai_cache;
 pub mod ai_circuit_breaker;
 pub mod ai_cost_tracker;
-pub mod ai_fallback_chain;
 #[cfg(test)]
 pub mod ai_extraction_tests;
+pub mod ai_fallback_chain;
 pub mod ai_gate;
 pub mod ai_request_contract;
 pub mod ai_response_validator;
 pub mod ai_timeout_guardian;
+pub mod binary_patch;
 pub mod binary_state;
 pub mod build_manifest;
-pub mod compile_manifest;
 pub mod cache_writer;
 pub mod candidate;
 pub mod candidate_bridge;
@@ -31,17 +28,18 @@ pub mod candidate_supersession;
 pub mod candidate_watchdog;
 pub mod changed_files;
 pub mod compile_enrichment;
+pub mod compile_manifest;
 pub mod dependency_graph;
 pub mod deterministic_compile;
+#[cfg(feature = "gpu-hmr")]
+pub mod device_checkpoint_probe;
+#[cfg(feature = "gpu-hmr")]
+pub mod device_snapshot;
 pub mod diagnostics;
 pub mod diff_patcher;
 pub mod dirty_classifier;
-pub mod edit_applier;
-pub mod edit_classifier;
-pub mod speculative_diff_patch;
-pub mod tier0_literal_patch;
-pub mod dynlib_adapter;
 pub mod dynlib_abi_contract;
+pub mod dynlib_adapter;
 pub mod dynlib_build_hooks;
 pub mod dynlib_crash_isolation;
 pub mod dynlib_language_profiles;
@@ -52,9 +50,9 @@ pub mod dynlib_rollback;
 pub mod dynlib_state_bridge;
 pub mod dynlib_swap;
 pub mod dynlib_symbol_resolver;
+pub mod edit_applier;
+pub mod edit_classifier;
 pub mod fast_refresh;
-#[cfg(feature = "gpu-hmr")]
-pub mod device_snapshot;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_dirty_bit;
 #[cfg(feature = "gpu-hmr")]
@@ -63,6 +61,8 @@ pub mod gpu_driver_loader;
 pub mod gpu_module_adapter;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_module_manager;
+#[cfg(feature = "gpu-hmr")]
+pub mod gpu_reload_orchestrator;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_shadow_arena;
 #[cfg(feature = "gpu-hmr")]
@@ -102,6 +102,7 @@ pub mod rollout_flags;
 pub mod scope_planner_bridge;
 pub mod shared_header_detect;
 pub mod slot_manager;
+pub mod speculative_diff_patch;
 pub mod state_checkpoint;
 pub mod state_diff;
 pub mod state_manager;
@@ -115,6 +116,9 @@ pub mod state_type_id;
 pub mod swap_rollback;
 pub mod symbol_validation;
 pub mod telemetry;
+pub mod tier0_literal_patch;
+pub mod tier0_unified;
+pub mod ts_value_classifier;
 pub mod undef_symbols;
 
 #[cfg(test)]
