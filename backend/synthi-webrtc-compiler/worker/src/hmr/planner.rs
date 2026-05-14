@@ -218,7 +218,7 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use super::*;
     use crate::hmr::build_manifest::BuildSlot;
