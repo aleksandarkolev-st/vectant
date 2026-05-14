@@ -278,7 +278,7 @@ export class CompilerClient {
 
     _mapLanguage(filename = '') {
         const ext = filename.split('.').pop().toLowerCase();
-        if (['c', 'cpp', 'cc', 'cxx', 'hpp', 'h'].includes(ext)) return 'cpp';
+        if (['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'cu', 'cuh', 'hip'].includes(ext)) return 'cpp';
         if (ext === 'java') return 'java';
         if (ext === 'rs') return 'rust';
         if (ext === 'ts' || ext === 'tsx') return 'ts';
@@ -1492,7 +1492,7 @@ export class CompilerClient {
         return this.connect();
     }
 
-    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, userRequestedAi = false, userRequestedDeterministic = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null } = {}) {
+    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, userRequestedAi = false, userRequestedDeterministic = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null, preferGpuPipeline = true } = {}) {
         // Auto-detect React Native from source if no target specified and file is JS/JSX/TSX
         const ext = (filename || '').split('.').pop().toLowerCase();
         const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
@@ -1796,6 +1796,8 @@ export class CompilerClient {
                     use_ai_split: useAiSplit,
                     user_requested_ai: userRequestedAi,
                     user_requested_deterministic: userRequestedDeterministic,
+                    prefer_gpu_pipeline: preferGpuPipeline !== false,
+                    gpu_mode: preferGpuPipeline === false ? 'disabled' : 'auto',
                     target: effectiveTarget,
                     project_root: projectRoot,
                     slug: slug || this.slug

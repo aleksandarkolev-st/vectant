@@ -320,7 +320,12 @@ pub async fn handle_compile_request(
             // Loop A, no cache: read existing adapted files from disk.
             let is_editing_split_file = {
                 let fname = req.filename.to_lowercase();
-                fname.contains("core.") || fname.contains("gui.") || fname.contains("shared.")
+                fname.contains("core.")
+                    || fname.contains("gui.")
+                    || fname.contains("shared.")
+                    || fname.contains("host_runner.")
+                    || fname.ends_with("device.cu")
+                    || fname.ends_with("device.hip")
             };
 
             // Always read the current split files from disk
@@ -1093,9 +1098,16 @@ pub async fn handle_compile_request(
         None => eprintln!("[HMR] compile_manifest: none (falling back to sdl2_default downstream)"),
     }
 
-    let device_source_content: Option<String> = if let Some(gpu) =
-        compile_manifest.as_ref().and_then(|m| m.gpu.as_ref())
-    {
+    let device_source_content: Option<String> = if !req.prefer_gpu_pipeline {
+        if compile_manifest
+            .as_ref()
+            .and_then(|m| m.gpu.as_ref())
+            .is_some()
+        {
+            eprintln!("[compile-device] skipping — GPU pipeline disabled by compile request");
+        }
+        None
+    } else if let Some(gpu) = compile_manifest.as_ref().and_then(|m| m.gpu.as_ref()) {
         let device_filename = device_filename_for_vendor(gpu.vendor);
         let from_split = split_data
             .get("device")

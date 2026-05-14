@@ -68,6 +68,13 @@ pub struct CompileRequest {
     /// Explicit user request for deterministic compilation (Loop A).
     #[serde(default)]
     pub user_requested_deterministic: bool,
+    /// Frontend preference for the GPU HMR pipeline. Defaults true so existing
+    /// clients get detector/manifest driven GPU behavior.
+    #[serde(default = "default_prefer_gpu_pipeline")]
+    pub prefer_gpu_pipeline: bool,
+    /// Human-readable GPU mode from the UI: "auto" or "disabled".
+    #[serde(default)]
+    pub gpu_mode: Option<String>,
     /// Target platform for execution: "native" (default), "react-native-emulator", etc.
     #[serde(default)]
     pub target: Option<String>,
@@ -77,4 +84,8 @@ pub struct CompileRequest {
     /// Workspace slug for mobile builds (to download synced files)
     #[serde(default)]
     pub slug: Option<String>,
+}
+
+fn default_prefer_gpu_pipeline() -> bool {
+    true
 }

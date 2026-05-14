@@ -5,6 +5,8 @@ import { subscribeAdapterStatus, getAdapterStatus, handleAdapterStatusNotificati
 import { subscribeRestoreStatus, getRestoreStatus, installRestoreListener } from '@/lib/state-restore-status';
 import { subscribeCandidateTracker, getCurrentCandidate, installCandidateListener } from '@/lib/candidate-tracker';
 import { subscribeHealthPanel, getHealthPanel, updateAdapterHealth, setLifecycleState, setAiActive, pushError } from '@/lib/adapter-health-panel';
+import { useAppDispatch, useAppSelector } from '@/redux/hooks';
+import { selectGpuModeEnabled, setGpuModeEnabled, toggleGpuMode } from '@/redux/uiSlice';
 
 /**
  * Enhanced HMR Hook
@@ -21,6 +23,26 @@ import { subscribeHealthPanel, getHealthPanel, updateAdapterHealth, setLifecycle
 
 // Maximum number of history entries to keep (prevents memory leaks)
 const MAX_HMR_HISTORY_SIZE = 50;
+
+export function useGpuMode() {
+    const dispatch = useAppDispatch();
+    const gpuModeEnabled = useAppSelector(selectGpuModeEnabled);
+
+    const setEnabled = useCallback((enabled) => {
+        dispatch(setGpuModeEnabled(!!enabled));
+    }, [dispatch]);
+
+    const toggle = useCallback(() => {
+        dispatch(toggleGpuMode());
+    }, [dispatch]);
+
+    return {
+        gpuModeEnabled,
+        setGpuModeEnabled: setEnabled,
+        toggleGpuMode: toggle,
+        preferGpuPipeline: gpuModeEnabled,
+    };
+}
 
 export function useHMR() {
     const runtimeRef = useRef(null);

@@ -64,7 +64,7 @@ import { fileCache } from '@/services/fileCache';
 import { preCompileHeal, detectLanguage } from '@/services/preCompileHealer';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
-import { useHMR } from '@/hooks/useHMR';
+import { useGpuMode, useHMR } from '@/hooks/useHMR';
 import { useRuntimeHealing } from '@/hooks/useRuntimeHealing';
 import { useRetryCompile } from '@/hooks/useRetryCompile';
 import { HMRStatusIndicator } from '@/components/HMRStatusIndicator';
@@ -163,6 +163,7 @@ export default function EditorPage({ params }) {
     // framework pill, CompileErrorCard, and ConfidenceWarning components.
     useCompileManifestListener();
     const hmrState = useHMR();
+    const { gpuModeEnabled, setGpuModeEnabled, preferGpuPipeline } = useGpuMode();
     const healingState = useRuntimeHealing({ editorRef, gateway, autoHeal: false });
     const { canRetry, retryCount, isRetrying, retry } = useRetryCompile({ compilerClient: client, autoRetry: true });
 
@@ -2137,6 +2138,7 @@ export default function EditorPage({ params }) {
                 projectRoot,
                 slug, // Pass workspace slug for mobile builds to download synced files
                 sessionId: mobileSid,
+                preferGpuPipeline,
                 onLog: (line) => {
                     appendBuildLog(line);
                     console.log('[build]', line);
@@ -2155,7 +2157,7 @@ export default function EditorPage({ params }) {
                 setEmulatorForcedError(msg);
             }
         }
-    }, [activeFile, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob, getLatestCurrentContent]);
+    }, [activeFile, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob, getLatestCurrentContent, preferGpuPipeline]);
 
     const handleStop = useCallback(async () => {
         const activeSessionId = client?.getActiveSessionId?.();
@@ -2256,7 +2258,7 @@ export default function EditorPage({ params }) {
 
         // Check if language is supported for compilation to avoid errors
         const ext = (filename.split('.').pop() || '').toLowerCase();
-        const supportedExts = ['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'rs', 'ts', 'tsx'];
+        const supportedExts = ['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'cu', 'cuh', 'hip', 'rs', 'ts', 'tsx'];
         if (!supportedExts.includes(ext)) {
             console.log(`[HMR] Skipping silent compilation for unsupported extension: .${ext}`);
             return;
@@ -2333,6 +2335,7 @@ export default function EditorPage({ params }) {
                 source,
                 files: additionalFiles,
                 isGui: shouldRunGui,
+                preferGpuPipeline,
             });
             setIsHmrRecompiling(false);
             console.log('[HMR] Re-run succeeded after save');
@@ -2358,7 +2361,7 @@ export default function EditorPage({ params }) {
                 }
             }
         } catch (_) { /* never let healing break save */ }
-    }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent]);
+    }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent, preferGpuPipeline]);
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
@@ -2653,6 +2656,8 @@ export default function EditorPage({ params }) {
                         setRunInGuiMode={setRunInGuiMode}
                         hmrEnabled={hmrEnabled}
                         setHmrEnabled={setHmrEnabled}
+                        gpuModeEnabled={gpuModeEnabled}
+                        setGpuModeEnabled={setGpuModeEnabled}
                         onStop={handleStop}
                         onReload={handleRestart}
                         isRunning={isCompiling}
