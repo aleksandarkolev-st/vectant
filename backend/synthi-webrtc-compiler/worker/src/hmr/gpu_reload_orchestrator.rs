@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::hmr::compile_manifest::{DeviceVendor, SnapshotMode};
 use crate::hmr::device_checkpoint_probe::probe_checkpoint;
 use crate::hmr::device_snapshot::SnapshotTier;
+use crate::runtime::gpu_runtime_watchdog::GpuRuntimeErrorEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -142,6 +143,92 @@ impl GpuReloadReport {
             .map(|s| s.as_str())
             .collect::<Vec<_>>()
             .join(" -> ")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuRuntimeRecoveryAction {
+    HealAndResume,
+    HealAndColdRestart,
+    BailOut,
+}
+
+impl GpuRuntimeRecoveryAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::HealAndResume => "heal_and_resume",
+            Self::HealAndColdRestart => "heal_and_cold_restart",
+            Self::BailOut => "bail_out",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuRuntimeFaultDecision {
+    pub action: GpuRuntimeRecoveryAction,
+    pub should_call_healer: bool,
+    pub requires_cold_restart: bool,
+    pub previous_heal_attempts: u8,
+    pub max_heal_retries: u8,
+    pub log_lines: Vec<String>,
+}
+
+pub fn plan_runtime_fault_recovery(
+    config: &GpuReloadConfig,
+    event: &GpuRuntimeErrorEvent,
+    previous_heal_attempts: u8,
+) -> GpuRuntimeFaultDecision {
+    let exhausted = previous_heal_attempts >= config.max_heal_retries;
+    let requires_cold_restart = event.requires_context_restart;
+    let mut log_lines = vec![event.log_marker()];
+
+    if exhausted {
+        log_lines.push(format!(
+            "[gpu-heal] tier=runtime attempts={} max={} action=surface_raw_error",
+            previous_heal_attempts, config.max_heal_retries
+        ));
+        if requires_cold_restart {
+            log_lines.push(format!(
+                "[gpu-reload] cold-restart reason=context-invalidated kind={}",
+                event.kind.as_str()
+            ));
+        }
+        return GpuRuntimeFaultDecision {
+            action: GpuRuntimeRecoveryAction::BailOut,
+            should_call_healer: false,
+            requires_cold_restart,
+            previous_heal_attempts,
+            max_heal_retries: config.max_heal_retries,
+            log_lines,
+        };
+    }
+
+    let action = if requires_cold_restart {
+        GpuRuntimeRecoveryAction::HealAndColdRestart
+    } else {
+        GpuRuntimeRecoveryAction::HealAndResume
+    };
+    log_lines.push(format!(
+        "[gpu-heal] tier=runtime attempts={} max={} action={}",
+        previous_heal_attempts,
+        config.max_heal_retries,
+        action.as_str()
+    ));
+    if requires_cold_restart {
+        log_lines.push(format!(
+            "[gpu-reload] cold-restart reason=context-invalidated kind={}",
+            event.kind.as_str()
+        ));
+    }
+
+    GpuRuntimeFaultDecision {
+        action,
+        should_call_healer: true,
+        requires_cold_restart,
+        previous_heal_attempts,
+        max_heal_retries: config.max_heal_retries,
+        log_lines,
     }
 }
 
@@ -274,6 +361,7 @@ fn env_u64(name: &str, default: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::gpu_runtime_watchdog::GpuRuntimeErrorKind;
 
     #[test]
     fn device_only_runs_fast_swap_sequence() {
@@ -355,5 +443,76 @@ mod tests {
         let report = plan_gpu_reload(&cfg, input);
         assert!(report.rollback_required);
         assert!(report.steps.contains(&GpuReloadStep::Rollback));
+    }
+
+    #[test]
+    fn fatal_runtime_fault_plans_heal_then_cold_restart() {
+        let cfg = GpuReloadConfig::default();
+        let event = GpuRuntimeErrorEvent::from_runtime_status(
+            "vec_add",
+            7,
+            "cudaErrorIllegalAddress",
+            42,
+            5_000,
+        );
+        let decision = plan_runtime_fault_recovery(&cfg, &event, 0);
+
+        assert_eq!(
+            decision.action,
+            GpuRuntimeRecoveryAction::HealAndColdRestart
+        );
+        assert!(decision.should_call_healer);
+        assert!(decision.requires_cold_restart);
+        assert!(decision
+            .log_lines
+            .iter()
+            .any(|l| l.contains("context-invalidated kind=illegal_address")));
+    }
+
+    #[test]
+    fn recoverable_runtime_fault_plans_heal_and_resume() {
+        let cfg = GpuReloadConfig::default();
+        let event = GpuRuntimeErrorEvent {
+            event_type: "gpu_runtime_error".into(),
+            kind: GpuRuntimeErrorKind::InvalidConfiguration,
+            kernel: "vec_add".into(),
+            stream_id: 1,
+            elapsed_ms: 3,
+            watchdog_ms: 5_000,
+            requires_context_restart: false,
+        };
+        let decision = plan_runtime_fault_recovery(&cfg, &event, 1);
+
+        assert_eq!(decision.action, GpuRuntimeRecoveryAction::HealAndResume);
+        assert!(decision.should_call_healer);
+        assert!(!decision.requires_cold_restart);
+        assert!(decision
+            .log_lines
+            .iter()
+            .any(|l| l.contains("action=heal_and_resume")));
+    }
+
+    #[test]
+    fn runtime_fault_retry_cap_bails_out_without_healer() {
+        let cfg = GpuReloadConfig {
+            max_heal_retries: 2,
+            ..Default::default()
+        };
+        let event = GpuRuntimeErrorEvent::from_runtime_status(
+            "vec_add",
+            7,
+            "cudaErrorLaunchFailure",
+            42,
+            5_000,
+        );
+        let decision = plan_runtime_fault_recovery(&cfg, &event, 2);
+
+        assert_eq!(decision.action, GpuRuntimeRecoveryAction::BailOut);
+        assert!(!decision.should_call_healer);
+        assert!(decision.requires_cold_restart);
+        assert!(decision
+            .log_lines
+            .iter()
+            .any(|l| l.contains("action=surface_raw_error")));
     }
 }
