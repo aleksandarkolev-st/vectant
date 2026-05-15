@@ -7,17 +7,17 @@ SKIP   [preflight] nvcc on host  — not found
 SKIP   [preflight] hipcc on host  — not found
 SKIP   [preflight] nvcc in worker  — not found
 SKIP   [preflight] hipcc in worker  — not found
-WARN   [preflight] SYNTHI_GPU_HMR flag  — unset/0 — phases will be skipped or downgraded
+PASS   [preflight] SYNTHI_GPU_HMR flag  — enabled
 PASS   [preflight] MCP tools/list  — transport=docker count=42
-PASS   [seed] create workspace  — id=cmp76h8ww0007ld0159gfltla slug=gpu-hmr-1778865306629
+PASS   [seed] create workspace  — id=cmp7ac0ju0001rv01esf0y0xm slug=gpu-hmr-1778871772645
 PASS   [seed] fixture uses Synthi GPU runtime contract  — synthi_gpu_launch + lifecycle exports
 PASS   [seed] write-files-batch (5 src + manifest)  — 6 files
 PASS   [seed] stage + commit
-PASS   [seed] device.cu present in collab  — 242 bytes
-SKIP   [vendor:cuda] GPU toolchain gate  — no_toolchain: nvcc not found
-SKIP   [P0] toolchain smoke  — feature_flag_off
-SKIP   [P1] cold reload buffer survival  — feature_flag_off
-SKIP   [P2] fast device swap  — feature_flag_off
-SKIP   [P3-mixed] mixed reload  — feature_flag_off
-SKIP   [P3-heal] healer drills  — feature_flag_off
-SKIP   [P3-stream-hang] stream hang watchdog  — feature_flag_off
+PASS   [seed] device.hip present in collab  — 242 bytes
+SKIP   [vendor:rocm] GPU toolchain gate  — no_toolchain: hipcc not found
+SKIP   [P0] toolchain smoke  — no_toolchain: hipcc not found
+SKIP   [P1] phase skipped  — filter
+SKIP   [P2] phase skipped  — filter
+SKIP   [P3-mixed] phase skipped  — filter
+SKIP   [P3-heal] phase skipped  — filter
+SKIP   [P3-stream-hang] phase skipped  — filter

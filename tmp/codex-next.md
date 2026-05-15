@@ -176,3 +176,34 @@ gpu_snapshot_telemetry snapshot_ms=... snapshot_bytes=...
 4. If P0 passes but P1/P2 fail: inspect GPU adapter/reload logs and classify whether the failure is compile, module load, state snapshot, or reload orchestration.
 5. Do not mark GPU HMR complete until ROCm P0, P1, and P2 have PASS rows on RX 9070 XT.
 
+## Local Follow-up (2026-05-15, RX 9070 XT)
+
+- Docker containers are running under compose project `vectant-ade`, so the old hard-coded names `synthi-ide-mcp-1` / `synthi-ide-worker-1` are stale on this checkout.
+- `mcp/synthi-mcp/scripts/gpu-hmr-test.mjs` now auto-resolves active `mcp` and `worker` service containers through `docker compose ps -q` and compose service labels when the configured container names do not exist.
+- Verified host GPU: Windows reports `AMD Radeon RX 9070 XT`.
+- Verified Docker Desktop GPU device shape: Docker can pass `/dev/dxg` into containers, but this environment does not expose native Linux `/dev/kfd` or `/dev/dri` to the worker.
+- Verified WSL libraries: `/usr/lib/wsl/lib/libdxcore.so` exists in the Ubuntu WSL distro, but `/opt/rocm/lib/librocdxg.so` is not installed.
+- Verified worker blockers:
+  - `hipcc` not found
+  - `rocminfo` not found
+  - `/dev/kfd` and `/dev/dri` not present
+- Latest ROCm P0 smoke:
+
+```powershell
+$env:SYNTHI_GPU_HMR='1'
+$env:SYNTHI_GPU_VENDOR='rocm'
+$env:SYNTHI_GPU_ARCH='gfx1201'
+$env:ONLY_PHASES='P0'
+node scripts/gpu-hmr-test.mjs
+```
+
+Result: `12 PASS, 0 WARN, 0 FAIL, 11 SKIP`.
+
+The skip is still the expected blocker, not a GPU success:
+
+```text
+[vendor:rocm] GPU toolchain gate - no_toolchain: hipcc not found
+[P0] toolchain smoke - no_toolchain: hipcc not found
+```
+
+For this Windows/WSL2 Docker Desktop host, the likely next infra step is a ROCDXG-compatible worker path: ROCm user-space with `hipcc`, `HSA_ENABLE_DXG_DETECTION=1`, `/dev/dxg` passed through, and mounts for `libdxcore.so` plus `librocdxg.so` once ROCDXG is installed. Native Linux `/dev/kfd` + `/dev/dri` compose flags alone will not work on the current Docker Desktop device model.

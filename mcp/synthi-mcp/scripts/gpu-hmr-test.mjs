@@ -32,7 +32,7 @@
 //   HMR_TIMEOUT_MS               60000
 //   MCP_ENTRY                    ../dist/index.js
 //   MCP_TRANSPORT                docker | host
-//   MCP_CONTAINER                synthi-ide-mcp-1
+//   MCP_CONTAINER                synthi-ide-mcp-1 (auto-detected from compose if absent/stale)
 //   MCP_SIGNALING_URL            ws://signaling-server:9000 (docker transport)
 //   SYNTHI_GPU_USE_MCP           1 (set 0 to use direct AI endpoint probe only)
 //   GOOGLE_API_KEY               (only needed if MCP attach is exercised)
@@ -150,6 +150,68 @@ function tcpPing(host, port, timeoutMs = 2000) {
 function parseUrl(u) {
   const x = new URL(u);
   return { host: x.hostname, port: Number(x.port) || (x.protocol === 'wss:' || x.protocol === 'https:' ? 443 : 80) };
+}
+
+function execText(cmd, args, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { timeout: timeoutMs }, (err, stdout, stderr) => {
+      if (err) {
+        err.stderr = stderr;
+        reject(err);
+        return;
+      }
+      resolve(String(stdout).trim());
+    });
+  });
+}
+
+async function dockerContainerExists(nameOrId) {
+  if (!nameOrId) return false;
+  try {
+    await execText('docker', ['container', 'inspect', nameOrId], 5000);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveDockerContainer(configured, service) {
+  if (await dockerContainerExists(configured)) return configured;
+
+  const repoRoot = path.resolve(__dirname, '../../..');
+  try {
+    const ids = await execText(
+      'docker',
+      ['compose', '--project-directory', repoRoot, 'ps', '-q', service],
+      8000,
+    );
+    const id = ids.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
+    if (id) return id;
+  } catch {
+    // Fall through to label-based discovery for stacks launched with an
+    // explicit compose project name.
+  }
+
+  try {
+    const ids = await execText(
+      'docker',
+      ['ps', '-q', '--filter', `label=com.docker.compose.service=${service}`],
+      8000,
+    );
+    const id = ids.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
+    if (id) return id;
+  } catch {
+    // Keep the configured value so the downstream docker exec error remains
+    // visible in the test output.
+  }
+
+  return configured;
+}
+
+async function resolveDockerContainers() {
+  if (CFG.mcpTransport !== 'docker') return;
+  CFG.mcpContainer = await resolveDockerContainer(CFG.mcpContainer, 'mcp');
+  CFG.workerContainer = await resolveDockerContainer(CFG.workerContainer, 'worker');
 }
 
 // ───────────────────────── collab + frontend wire ─────────────────────────
@@ -1260,6 +1322,8 @@ extern "C" __global__ void vec_add(const float* a, const float* b, float* c, int
 // ───────────────────────── main ─────────────────────────
 
 async function main() {
+  await resolveDockerContainers();
+
   console.log(color.blue + '\n━━━ Synthi GPU-HMR live test ━━━' + color.reset);
   console.log(`  slug         ${CFG.slug}`);
   console.log(`  vendor       ${CFG.vendor}`);

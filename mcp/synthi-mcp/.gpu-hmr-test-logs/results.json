@@ -1,8 +1,8 @@
 {
-  "slug": "gpu-hmr-1778865306629",
-  "vendor": "cuda",
-  "gpu_hmr_flag": false,
-  "run_at": "2026-05-15T17:15:14.992Z",
+  "slug": "gpu-hmr-1778871772645",
+  "vendor": "rocm",
+  "gpu_hmr_flag": true,
+  "run_at": "2026-05-15T19:03:09.025Z",
   "config": {
     "fastSwapBudgetMs": 300,
     "watchdogMs": 5000,
@@ -10,8 +10,8 @@
   },
   "summary": {
     "total": 23,
-    "passed": 11,
-    "warned": 1,
+    "passed": 12,
+    "warned": 0,
     "failed": 0,
     "skipped": 11
   },
@@ -21,161 +21,161 @@
       "name": "frontend reachable",
       "status": "pass",
       "detail": "http://localhost:3000",
-      "ts": "2026-05-15T17:15:06.661Z"
+      "ts": "2026-05-15T19:02:53.956Z"
     },
     {
       "phase": "preflight",
       "name": "collab-server reachable",
       "status": "pass",
       "detail": "http://localhost:1234",
-      "ts": "2026-05-15T17:15:06.662Z"
+      "ts": "2026-05-15T19:02:53.958Z"
     },
     {
       "phase": "preflight",
       "name": "signaling reachable",
       "status": "pass",
       "detail": "ws://localhost:9000",
-      "ts": "2026-05-15T17:15:06.662Z"
+      "ts": "2026-05-15T19:02:53.958Z"
     },
     {
       "phase": "preflight",
       "name": "ai-engine reachable",
       "status": "pass",
       "detail": "http://localhost:8000",
-      "ts": "2026-05-15T17:15:06.662Z"
+      "ts": "2026-05-15T19:02:53.958Z"
     },
     {
       "phase": "preflight",
       "name": "GPU endpoints present",
       "status": "pass",
       "detail": "{\"/refactor/split/gpu\":422,\"/refactor/diff_patch/gpu\":422,\"/refactor/heal/gpu\":200}",
-      "ts": "2026-05-15T17:15:11.458Z"
+      "ts": "2026-05-15T19:03:07.863Z"
     },
     {
       "phase": "preflight",
       "name": "nvcc on host",
       "status": "skip",
       "detail": "not found",
-      "ts": "2026-05-15T17:15:12.604Z"
+      "ts": "2026-05-15T19:03:08.197Z"
     },
     {
       "phase": "preflight",
       "name": "hipcc on host",
       "status": "skip",
       "detail": "not found",
-      "ts": "2026-05-15T17:15:12.605Z"
+      "ts": "2026-05-15T19:03:08.197Z"
     },
     {
       "phase": "preflight",
       "name": "nvcc in worker",
       "status": "skip",
       "detail": "not found",
-      "ts": "2026-05-15T17:15:12.606Z"
+      "ts": "2026-05-15T19:03:08.197Z"
     },
     {
       "phase": "preflight",
       "name": "hipcc in worker",
       "status": "skip",
       "detail": "not found",
-      "ts": "2026-05-15T17:15:12.606Z"
+      "ts": "2026-05-15T19:03:08.197Z"
     },
     {
       "phase": "preflight",
       "name": "SYNTHI_GPU_HMR flag",
-      "status": "warn",
-      "detail": "unset/0 — phases will be skipped or downgraded",
-      "ts": "2026-05-15T17:15:12.606Z"
+      "status": "pass",
+      "detail": "enabled",
+      "ts": "2026-05-15T19:03:08.197Z"
     },
     {
       "phase": "preflight",
       "name": "MCP tools/list",
       "status": "pass",
       "detail": "transport=docker count=42",
-      "ts": "2026-05-15T17:15:14.070Z"
+      "ts": "2026-05-15T19:03:08.625Z"
     },
     {
       "phase": "seed",
       "name": "create workspace",
       "status": "pass",
-      "detail": "id=cmp76h8ww0007ld0159gfltla slug=gpu-hmr-1778865306629",
-      "ts": "2026-05-15T17:15:14.540Z"
+      "detail": "id=cmp7ac0ju0001rv01esf0y0xm slug=gpu-hmr-1778871772645",
+      "ts": "2026-05-15T19:03:08.857Z"
     },
     {
       "phase": "seed",
       "name": "fixture uses Synthi GPU runtime contract",
       "status": "pass",
       "detail": "synthi_gpu_launch + lifecycle exports",
-      "ts": "2026-05-15T17:15:14.545Z"
+      "ts": "2026-05-15T19:03:08.858Z"
     },
     {
       "phase": "seed",
       "name": "write-files-batch (5 src + manifest)",
       "status": "pass",
       "detail": "6 files",
-      "ts": "2026-05-15T17:15:14.753Z"
+      "ts": "2026-05-15T19:03:08.931Z"
     },
     {
       "phase": "seed",
       "name": "stage + commit",
       "status": "pass",
       "detail": "",
-      "ts": "2026-05-15T17:15:14.951Z"
+      "ts": "2026-05-15T19:03:09.019Z"
     },
     {
       "phase": "seed",
-      "name": "device.cu present in collab",
+      "name": "device.hip present in collab",
       "status": "pass",
       "detail": "242 bytes",
-      "ts": "2026-05-15T17:15:14.972Z"
+      "ts": "2026-05-15T19:03:09.022Z"
     },
     {
-      "phase": "vendor:cuda",
+      "phase": "vendor:rocm",
       "name": "GPU toolchain gate",
       "status": "skip",
-      "detail": "no_toolchain: nvcc not found",
-      "ts": "2026-05-15T17:15:14.972Z"
+      "detail": "no_toolchain: hipcc not found",
+      "ts": "2026-05-15T19:03:09.023Z"
     },
     {
       "phase": "P0",
       "name": "toolchain smoke",
       "status": "skip",
-      "detail": "feature_flag_off",
-      "ts": "2026-05-15T17:15:14.973Z"
+      "detail": "no_toolchain: hipcc not found",
+      "ts": "2026-05-15T19:03:09.023Z"
     },
     {
       "phase": "P1",
-      "name": "cold reload buffer survival",
+      "name": "phase skipped",
       "status": "skip",
-      "detail": "feature_flag_off",
-      "ts": "2026-05-15T17:15:14.974Z"
+      "detail": "filter",
+      "ts": "2026-05-15T19:03:09.023Z"
     },
     {
       "phase": "P2",
-      "name": "fast device swap",
+      "name": "phase skipped",
       "status": "skip",
-      "detail": "feature_flag_off",
-      "ts": "2026-05-15T17:15:14.975Z"
+      "detail": "filter",
+      "ts": "2026-05-15T19:03:09.023Z"
     },
     {
       "phase": "P3-mixed",
-      "name": "mixed reload",
+      "name": "phase skipped",
       "status": "skip",
-      "detail": "feature_flag_off",
-      "ts": "2026-05-15T17:15:14.975Z"
+      "detail": "filter",
+      "ts": "2026-05-15T19:03:09.023Z"
     },
     {
       "phase": "P3-heal",
-      "name": "healer drills",
+      "name": "phase skipped",
       "status": "skip",
-      "detail": "feature_flag_off",
-      "ts": "2026-05-15T17:15:14.976Z"
+      "detail": "filter",
+      "ts": "2026-05-15T19:03:09.024Z"
     },
     {
       "phase": "P3-stream-hang",
-      "name": "stream hang watchdog",
+      "name": "phase skipped",
       "status": "skip",
-      "detail": "feature_flag_off",
-      "ts": "2026-05-15T17:15:14.977Z"
+      "detail": "filter",
+      "ts": "2026-05-15T19:03:09.024Z"
     }
   ]
 }
