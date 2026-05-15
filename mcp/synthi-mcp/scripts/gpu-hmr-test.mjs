@@ -1338,7 +1338,7 @@ async function phaseP2(ctx) {
   if (!CFG.gpuHmr) return record('P2', 'fast device swap', 'skip', 'feature_flag_off');
   if (skipIfNoGpuToolchain('P2', ctx, 'fast device swap')) return;
 
-  log('info', '── Phase P2: fast device-only swap + ABI-shaped reload fallback ──');
+  log('info', '── Phase P2: fast device-only swap + ABI-breaking classifier ──');
 
   // Fast path
   const fastLogStart = await workerLogCheckpoint(8 * 1024 * 1024);
@@ -1373,9 +1373,8 @@ async function phaseP2(ctx) {
     }
   }
 
-  // ABI-shaped edit. The live worker currently exposes the fallback through
-  // the general planner/reload path; stricter kernel-signature classification
-  // is covered by the GPU reload planner unit surface.
+  // ABI-shaped edit. A kernel parameter-list change must be classified before
+  // the sidecar fast-swap path so the runtime cold-loads and calls device_on_load.
   const abiLogStart = await workerLogCheckpoint(8 * 1024 * 1024);
   const abi = await postCompile({
     ctx,
@@ -1388,12 +1387,12 @@ async function phaseP2(ctx) {
   } else {
     record('P2', 'abi-break dispatch', 'pass');
     const abiReload = await awaitWorkerLogRegex(
-      /plan=(abi_breaking|mixed)|HMR Planner\]\s+Decision:\s+(FullRestart|ColdReload|WarmReload)|Device sidecar reload.*result=Success/i,
+      /plan=abi_breaking|cold_reload reason=abi_breaking|device_on_load invoked/i,
       CFG.hmrTimeoutMs,
       { after: abiLogStart, maxBytes: 8 * 1024 * 1024 });
-    record('P2', 'ABI edit reaches planner/reload fallback',
-      abiReload.matched ? 'pass' : 'warn',
-      abiReload.snippet || 'no marker');
+    record('P2', 'ABI edit emits abi_breaking cold reload',
+      abiReload.matched ? 'pass' : 'fail',
+      abiReload.snippet || 'no abi_breaking marker');
   }
 }
 

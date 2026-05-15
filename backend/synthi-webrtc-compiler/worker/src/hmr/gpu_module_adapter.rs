@@ -296,6 +296,10 @@ pub struct GpuModuleAdapter {
     /// printed during `reload()` so the worker log carries the
     /// markers from docs/GPU_HMR_ULTRAPLAN.md §9.
     last_reload_log: Vec<String>,
+    /// ABI fingerprint from the last device sidecar manifest this
+    /// adapter accepted. Device-only body edits keep this stable;
+    /// kernel signature edits change it and must cold-reload.
+    last_device_abi_version: Option<String>,
     /// Last driver-load error, if `try_load` failed. Surfaced on
     /// `info().extra["driver_error"]` for telemetry. Cleared on
     /// the next successful load attempt.
@@ -319,6 +323,7 @@ impl GpuModuleAdapter {
             driver: None,
             module_manager: GpuModuleManager::new(),
             last_reload_log: Vec::new(),
+            last_device_abi_version: None,
             last_driver_error: None,
             #[cfg(test)]
             test_symbols: None,
@@ -431,7 +436,18 @@ impl GpuModuleAdapter {
         }
     }
 
-    fn classify_plan(req: &AdapterReloadRequest) -> GpuReloadPlan {
+    fn request_touches_device(req: &AdapterReloadRequest) -> bool {
+        req.changed_files.iter().any(|path| {
+            let p = path.as_str();
+            p.ends_with(".cu")
+                || p.ends_with(".hip")
+                || p == "device"
+                || p == "device.cu"
+                || p == "device.hip"
+        })
+    }
+
+    fn classify_plan_from_paths(req: &AdapterReloadRequest) -> GpuReloadPlan {
         let mut touches_device = false;
         let mut touches_host = false;
         for path in &req.changed_files {
@@ -452,6 +468,26 @@ impl GpuModuleAdapter {
             (true, false) => GpuReloadPlan::DeviceOnly,
             (false, true) => GpuReloadPlan::HostOnly,
             (false, false) => GpuReloadPlan::DeviceOnly,
+        }
+    }
+
+    fn classify_plan(&self, req: &AdapterReloadRequest) -> GpuReloadPlan {
+        let path_plan = Self::classify_plan_from_paths(req);
+        let current_abi = req.build_manifest.abi_version.trim();
+        if Self::request_touches_device(req) && !current_abi.is_empty() {
+            if let Some(previous_abi) = self.last_device_abi_version.as_deref() {
+                if !previous_abi.is_empty() && previous_abi != current_abi {
+                    return GpuReloadPlan::AbiBreaking;
+                }
+            }
+        }
+        path_plan
+    }
+
+    fn remember_device_abi(&mut self, req: &AdapterReloadRequest) {
+        let abi = req.build_manifest.abi_version.trim();
+        if !abi.is_empty() {
+            self.last_device_abi_version = Some(abi.to_string());
         }
     }
 
@@ -497,6 +533,9 @@ impl Adapter for GpuModuleAdapter {
         }
         if let Some(handle) = &self.driver {
             extra.insert("driver_path".into(), handle.library_path().into());
+        }
+        if let Some(abi) = &self.last_device_abi_version {
+            extra.insert("device_abi_version".into(), abi.clone());
         }
         AdapterInfo {
             name: self.config.vendor.adapter_name().into(),
@@ -554,6 +593,7 @@ impl Adapter for GpuModuleAdapter {
         self.module_manager = GpuModuleManager::new();
         clear_launch_dispatcher();
         self.last_reload_log.clear();
+        self.last_device_abi_version = None;
         self.phase = GpuPhase::ShutDown;
         self.health = AdapterHealth::Unknown;
         Ok(())
@@ -607,7 +647,7 @@ impl Adapter for GpuModuleAdapter {
             };
         }
 
-        let plan = Self::classify_plan(req);
+        let plan = self.classify_plan(req);
         let (snapshot_bytes, dirty_buffers) = Self::managed_snapshot_stats();
         if plan == GpuReloadPlan::HostOnly {
             self.emit_report(GpuSwapInputs {
@@ -623,6 +663,27 @@ impl Adapter for GpuModuleAdapter {
             });
             return AdapterReloadResult::Unsupported {
                 reason: "host-only GPU reload delegated to host adapter".into(),
+            };
+        }
+
+        if plan == GpuReloadPlan::AbiBreaking {
+            let expected = req.build_manifest.exported_symbols.len() as u32;
+            self.emit_report(GpuSwapInputs {
+                plan,
+                reason: "signature-changed".into(),
+                streams_synced: 0,
+                force_drain_timeout: false,
+                snapshot_bytes,
+                snapshot_ms: 0,
+                dirty_buffers,
+                expected_kernel_hashes: expected,
+                matched_kernel_hashes: expected,
+            });
+            self.remember_device_abi(req);
+            self.phase = GpuPhase::Ready;
+            self.health = AdapterHealth::Healthy;
+            return AdapterReloadResult::Unsupported {
+                reason: "gpu sidecar ABI changed; cold device reload required".into(),
             };
         }
 
@@ -706,6 +767,7 @@ impl Adapter for GpuModuleAdapter {
                 });
                 self.phase = GpuPhase::Ready;
                 self.health = AdapterHealth::Healthy;
+                self.remember_device_abi(req);
                 AdapterReloadResult::Success {
                     reload_ms: started.elapsed().as_millis() as u64,
                     state_preserved: req.preserve_state,
@@ -924,8 +986,17 @@ mod tests {
     }
 
     fn request_with_artifact(path: &str, changed_files: Vec<String>) -> AdapterReloadRequest {
+        request_with_artifact_and_abi(path, changed_files, "")
+    }
+
+    fn request_with_artifact_and_abi(
+        path: &str,
+        changed_files: Vec<String>,
+        abi_version: &str,
+    ) -> AdapterReloadRequest {
         let mut manifest =
             BuildManifest::for_language("test-preview", "cuda").with_artifact(path, "test-hash");
+        manifest.abi_version = abi_version.to_string();
         manifest.exported_symbols = vec!["vec_add".into()];
         AdapterReloadRequest {
             reload_id: "test".into(),
@@ -1029,9 +1100,11 @@ mod tests {
         a.initialize().unwrap();
         a.kernel_table.insert("vec_add".into(), 0xdead_beef);
         a.active_module_handle = Some(0x1234_5678);
+        a.last_device_abi_version = Some("sig-v1".into());
         assert!(a.shutdown().is_ok());
         assert!(a.active_module_handle.is_none());
         assert!(a.kernel_table.is_empty());
+        assert!(a.last_device_abi_version.is_none());
     }
 
     #[test]
@@ -1257,6 +1330,53 @@ mod tests {
         ));
         assert_eq!(a.module_manager.swap_count(), 2);
         assert_ne!(a.active_module_handle, first_handle);
+    }
+
+    #[test]
+    fn phase3_reload_reports_abi_breaking_when_kernel_signature_changes() {
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-1").unwrap();
+        second.write_all(b"fake-cubin-2").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+
+        let mut a = adapter_with_symbols(stub_symbols());
+        assert!(matches!(
+            a.reload(&request_with_artifact_and_abi(
+                &first_path,
+                vec!["device.cu".into()],
+                "sig-v1"
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+
+        let r = a.reload(&request_with_artifact_and_abi(
+            &second_path,
+            vec!["device.cu".into()],
+            "sig-v2",
+        ));
+        match r {
+            AdapterReloadResult::Unsupported { reason } => {
+                assert!(reason.contains("ABI changed"));
+                assert!(reason.contains("cold device reload"));
+            }
+            other => panic!("expected Unsupported, got {:?}", other),
+        }
+        assert_eq!(a.module_manager.swap_count(), 1);
+        assert_eq!(a.last_device_abi_version.as_deref(), Some("sig-v2"));
+        assert!(a
+            .last_reload_log()
+            .iter()
+            .any(|l| l.contains("plan=abi_breaking")));
+        assert!(a
+            .last_reload_log()
+            .iter()
+            .any(|l| l.contains("cold_reload reason=abi_breaking")));
+        assert!(a
+            .last_reload_log()
+            .iter()
+            .any(|l| l.contains("device_on_load invoked")));
     }
 
     #[test]

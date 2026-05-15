@@ -213,23 +213,157 @@ fn strip_c_like_comments(source: &str) -> String {
 }
 
 fn extract_device_kernel_symbols(source: &str) -> Vec<String> {
+    extract_device_kernel_declarations(source)
+        .into_iter()
+        .map(|decl| decl.name)
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeviceKernelDeclaration {
+    name: String,
+    signature: String,
+}
+
+fn extract_device_kernel_declarations(source: &str) -> Vec<DeviceKernelDeclaration> {
     let uncommented = strip_c_like_comments(source);
     let launch_bounds = match regex::Regex::new(r"__launch_bounds__\s*\([^)]*\)") {
         Ok(re) => re,
         Err(_) => return Vec::new(),
     };
     let normalized = launch_bounds.replace_all(&uncommented, " ");
-    let re = match regex::Regex::new(r"__global__[^;{}()]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(") {
-        Ok(re) => re,
-        Err(_) => return Vec::new(),
-    };
-    let mut names: Vec<String> = re
+    let re =
+        match regex::Regex::new(r"__global__[^;{}()]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)") {
+            Ok(re) => re,
+            Err(_) => return Vec::new(),
+        };
+    let mut decls: Vec<DeviceKernelDeclaration> = re
         .captures_iter(&normalized)
-        .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str().to_string();
+            let params = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
+            Some(DeviceKernelDeclaration {
+                signature: format!("{}({})", name, normalize_kernel_params(params)),
+                name,
+            })
+        })
         .collect();
-    names.sort();
-    names.dedup();
-    names
+    decls.sort_by(|a, b| a.name.cmp(&b.name).then(a.signature.cmp(&b.signature)));
+    decls.dedup_by(|a, b| a.name == b.name && a.signature == b.signature);
+    decls
+}
+
+fn extract_device_kernel_signatures(source: &str) -> Vec<String> {
+    extract_device_kernel_declarations(source)
+        .into_iter()
+        .map(|decl| decl.signature)
+        .collect()
+}
+
+fn normalize_kernel_params(params: &str) -> String {
+    let normalized = split_top_level_params(params)
+        .into_iter()
+        .map(|param| normalize_kernel_param(&param))
+        .filter(|param| !param.is_empty() && param != "void")
+        .collect::<Vec<_>>();
+    normalized.join(",")
+}
+
+fn split_top_level_params(params: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut paren = 0_i32;
+    let mut bracket = 0_i32;
+    let mut angle = 0_i32;
+    for ch in params.chars() {
+        match ch {
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            '<' => angle += 1,
+            '>' => angle -= 1,
+            ',' if paren == 0 && bracket == 0 && angle == 0 => {
+                out.push(current.trim().to_string());
+                current.clear();
+                continue;
+            }
+            _ => {}
+        }
+        current.push(ch);
+    }
+    if !current.trim().is_empty() {
+        out.push(current.trim().to_string());
+    }
+    out
+}
+
+fn normalize_kernel_param(param: &str) -> String {
+    let without_default = param.split('=').next().unwrap_or(param).trim();
+    let spaced = without_default
+        .replace('*', " * ")
+        .replace('&', " & ")
+        .replace('[', " [ ")
+        .replace(']', " ] ");
+    let mut tokens = spaced
+        .split_whitespace()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+
+    if tokens.len() >= 2 {
+        if let Some(last) = tokens.last() {
+            if is_c_identifier(last) && !is_type_keyword(last) {
+                tokens.pop();
+            }
+        }
+    }
+
+    tokens
+        .join(" ")
+        .replace(" *", "*")
+        .replace(" &", "&")
+        .replace(" [ ]", "[]")
+}
+
+fn is_type_keyword(token: &str) -> bool {
+    matches!(
+        token,
+        "const"
+            | "volatile"
+            | "restrict"
+            | "__restrict__"
+            | "signed"
+            | "unsigned"
+            | "short"
+            | "long"
+            | "int"
+            | "float"
+            | "double"
+            | "char"
+            | "void"
+            | "bool"
+            | "size_t"
+    )
+}
+
+fn is_c_identifier(token: &str) -> bool {
+    let mut chars = token.chars();
+    match chars.next() {
+        Some(ch) if ch == '_' || ch.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn kernel_abi_fingerprint_source(source: &str) -> String {
+    let kernel_symbols = extract_device_kernel_symbols(source);
+    let kernel_signatures = extract_device_kernel_signatures(source);
+    if kernel_signatures.is_empty() {
+        kernel_symbols.join("|")
+    } else {
+        kernel_signatures.join("|")
+    }
 }
 
 fn device_filename_for_vendor(vendor: DeviceVendor) -> &'static str {
@@ -2103,6 +2237,7 @@ pub async fn handle_compile_request(
                 device_dirty_units.push(device_filename.to_string());
             }
             let kernel_symbols = extract_device_kernel_symbols(device_source);
+            let kernel_abi = kernel_abi_fingerprint_source(device_source);
             let artifact_path = device_outcome.artifact_path.to_string_lossy().to_string();
             let artifact_hash = format!(
                 "{}",
@@ -2110,13 +2245,13 @@ pub async fn handle_compile_request(
                     "{}:{}:{}",
                     artifact_path,
                     device_outcome.stderr.len(),
-                    kernel_symbols.join(",")
+                    kernel_abi
                 ))
             );
             let device_manifest = BuildManifest::for_language(session_id.clone(), gpu_language)
                 .with_slot(BuildSlot::Custom("device".into()))
                 .with_artifact(&artifact_path, &artifact_hash)
-                .with_abi_version(&format!("{}", hash_content(&kernel_symbols.join("|"))))
+                .with_abi_version(&format!("{}", hash_content(&kernel_abi)))
                 .with_state_schema_hash(&format!("{}", hash_content(device_source)))
                 .with_build_time(build_time_ms)
                 .with_dirty_units(device_dirty_units)
@@ -2664,6 +2799,46 @@ __global__ void live_kernel(float* x);
         assert_eq!(
             extract_device_kernel_symbols(source),
             vec!["live_kernel".to_string()]
+        );
+    }
+
+    #[test]
+    fn device_kernel_signature_extractor_tracks_parameter_lists() {
+        let source = r#"
+extern "C" __global__ void vec_add(const float* a, const float* b, float* out, int n) {}
+__global__ void __launch_bounds__(256, 2) reduce(float const* in, float* out) {}
+__global__ void noop(void) {}
+"#;
+
+        assert_eq!(
+            extract_device_kernel_signatures(source),
+            vec![
+                "noop()".to_string(),
+                "reduce(float const*,float*)".to_string(),
+                "vec_add(const float*,const float*,float*,int)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn device_kernel_abi_fingerprint_changes_on_signature_change() {
+        let before = r#"
+extern "C" __global__ void vec_add(const float* a, float* out, int n) {}
+"#;
+        let body_only = r#"
+extern "C" __global__ void vec_add(const float* a, float* out, int n) { out[0] = a[0] + 1.0f; }
+"#;
+        let after = r#"
+extern "C" __global__ void vec_add(const float* a, float* out, int n, float scale) {}
+"#;
+
+        assert_eq!(
+            kernel_abi_fingerprint_source(before),
+            kernel_abi_fingerprint_source(body_only)
+        );
+        assert_ne!(
+            kernel_abi_fingerprint_source(before),
+            kernel_abi_fingerprint_source(after)
         );
     }
 }
