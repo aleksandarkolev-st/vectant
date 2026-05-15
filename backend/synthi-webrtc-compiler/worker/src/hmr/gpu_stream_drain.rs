@@ -125,10 +125,7 @@ impl<'a> DrainClock<'a> {
 /// is post-hoc — if the driver returns within the budget we
 /// report Synced, otherwise TimedOut. Returns the outcome by
 /// value so callers can log it as a single line.
-pub fn drain_context(
-    symbols: &GpuDriverSymbolTable,
-    budget_ms: u64,
-) -> DrainOutcome {
+pub fn drain_context(symbols: &GpuDriverSymbolTable, budget_ms: u64) -> DrainOutcome {
     drain_context_with_clock(symbols, budget_ms, DrainClock::Wall)
 }
 
@@ -215,8 +212,8 @@ pub fn drain_stream_with_clock(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::c_void;
     use std::cell::RefCell;
+    use std::ffi::c_void;
 
     // Per-thread stub state so parallel cargo tests don't
     // pollute each other's counters / result codes.
@@ -262,15 +259,52 @@ mod tests {
         })
     }
     // Unused stubs.
-    unsafe extern "C" fn stub_init(_f: u32) -> CuResult { 0 }
-    unsafe extern "C" fn stub_device_get(_d: *mut i32, _o: i32) -> CuResult { 0 }
-    unsafe extern "C" fn stub_ctx_get(_c: *mut *mut c_void) -> CuResult { 0 }
-    unsafe extern "C" fn stub_load_data(_m: *mut *mut c_void, _i: *const c_void) -> CuResult { 0 }
-    unsafe extern "C" fn stub_unload(_m: *mut c_void) -> CuResult { 0 }
-    unsafe extern "C" fn stub_get_function(_h: *mut *mut c_void, _m: *mut c_void, _n: *const u8) -> CuResult { 0 }
-    unsafe extern "C" fn stub_alloc(_p: *mut u64, _b: usize) -> CuResult { 0 }
-    unsafe extern "C" fn stub_free(_p: u64) -> CuResult { 0 }
-    unsafe extern "C" fn stub_dtod(_d: u64, _s: u64, _b: usize) -> CuResult { 0 }
+    unsafe extern "C" fn stub_init(_f: u32) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_device_get(_d: *mut i32, _o: i32) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_ctx_get(_c: *mut *mut c_void) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_load_data(_m: *mut *mut c_void, _i: *const c_void) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_unload(_m: *mut c_void) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_get_function(
+        _h: *mut *mut c_void,
+        _m: *mut c_void,
+        _n: *const u8,
+    ) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_launch_kernel(
+        _f: *mut c_void,
+        _grid_dim_x: u32,
+        _grid_dim_y: u32,
+        _grid_dim_z: u32,
+        _block_dim_x: u32,
+        _block_dim_y: u32,
+        _block_dim_z: u32,
+        _shared_mem_bytes: u32,
+        _stream: *mut c_void,
+        _kernel_params: *mut *mut c_void,
+        _extra: *mut *mut c_void,
+    ) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_alloc(_p: *mut u64, _b: usize) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_free(_p: u64) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_dtod(_d: u64, _s: u64, _b: usize) -> CuResult {
+        0
+    }
 
     fn stub_table() -> GpuDriverSymbolTable {
         GpuDriverSymbolTable {
@@ -280,6 +314,7 @@ mod tests {
             cu_module_load_data: stub_load_data,
             cu_module_unload: stub_unload,
             cu_module_get_function: stub_get_function,
+            cu_launch_kernel: stub_launch_kernel,
             cu_ctx_synchronize: stub_ctx_sync,
             cu_stream_synchronize: stub_stream_sync,
             cu_mem_alloc: stub_alloc,
@@ -320,7 +355,11 @@ mod tests {
         let now = || 250u64;
         let r = drain_context_with_clock(&t, 100, DrainClock::Synthetic(&now));
         match r {
-            DrainOutcome::TimedOut { scope, elapsed_ms, budget_ms } => {
+            DrainOutcome::TimedOut {
+                scope,
+                elapsed_ms,
+                budget_ms,
+            } => {
                 assert_eq!(scope, DrainScope::Context);
                 assert_eq!(elapsed_ms, 250);
                 assert_eq!(budget_ms, 100);
@@ -337,7 +376,12 @@ mod tests {
         let now = || 12u64;
         let r = drain_context_with_clock(&t, 100, DrainClock::Synthetic(&now));
         match r {
-            DrainOutcome::DriverError { scope, elapsed_ms, op, code } => {
+            DrainOutcome::DriverError {
+                scope,
+                elapsed_ms,
+                op,
+                code,
+            } => {
                 assert_eq!(scope, DrainScope::Context);
                 assert_eq!(elapsed_ms, 12);
                 assert_eq!(op, "cuCtxSynchronize");
@@ -362,7 +406,11 @@ mod tests {
         let r = drain_stream_with_clock(&t, std::ptr::null_mut(), 50, DrainClock::Synthetic(&now));
         assert_eq!(with_state(|s| s.stream_calls), 1);
         match r {
-            DrainOutcome::Synced { scope, elapsed_ms, budget_ms } => {
+            DrainOutcome::Synced {
+                scope,
+                elapsed_ms,
+                budget_ms,
+            } => {
                 assert_eq!(scope, DrainScope::Stream);
                 assert_eq!(elapsed_ms, 7);
                 assert_eq!(budget_ms, 50);
@@ -376,14 +424,12 @@ mod tests {
         reset();
         with_state_mut(|s| s.stream_result = 11);
         let t = stub_table();
-        let r = drain_stream_with_clock(
-            &t,
-            std::ptr::null_mut(),
-            100,
-            DrainClock::Synthetic(&|| 0),
-        );
+        let r =
+            drain_stream_with_clock(&t, std::ptr::null_mut(), 100, DrainClock::Synthetic(&|| 0));
         match r {
-            DrainOutcome::DriverError { scope, op, code, .. } => {
+            DrainOutcome::DriverError {
+                scope, op, code, ..
+            } => {
                 assert_eq!(scope, DrainScope::Stream);
                 assert_eq!(op, "cuStreamSynchronize");
                 assert_eq!(code, 11);
@@ -406,8 +452,16 @@ mod tests {
 
     #[test]
     fn drain_outcome_short_labels() {
-        let s = DrainOutcome::Synced { scope: DrainScope::Context, elapsed_ms: 1, budget_ms: 10 };
-        let t = DrainOutcome::TimedOut { scope: DrainScope::Stream, elapsed_ms: 10, budget_ms: 5 };
+        let s = DrainOutcome::Synced {
+            scope: DrainScope::Context,
+            elapsed_ms: 1,
+            budget_ms: 10,
+        };
+        let t = DrainOutcome::TimedOut {
+            scope: DrainScope::Stream,
+            elapsed_ms: 10,
+            budget_ms: 5,
+        };
         let d = DrainOutcome::DriverError {
             scope: DrainScope::Context,
             elapsed_ms: 1,

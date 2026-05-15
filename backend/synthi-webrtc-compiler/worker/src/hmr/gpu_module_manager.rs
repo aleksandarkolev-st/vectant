@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 
 use crate::hmr::gpu_driver_loader::{
-    CuFunction, CuModule, CuResult, GpuDriverSymbolTable,
+    CuFunction, CuKernelParams, CuModule, CuResult, CuStream, GpuDriverSymbolTable,
 };
 
 // ── Slot record ─────────────────────────────────────────────
@@ -96,24 +96,59 @@ impl KernelTable {
     }
 }
 
+// ── Launch config ───────────────────────────────────────────
+
+/// Driver-API launch dimensions for a resolved kernel. The first
+/// runtime boundary version passes 1D launch sizes through the
+/// C ABI, so this helper expands them into full x/y/z tuples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KernelLaunchConfig {
+    pub grid: (u32, u32, u32),
+    pub block: (u32, u32, u32),
+    pub shared_mem_bytes: u32,
+    pub stream: CuStream,
+}
+
+impl KernelLaunchConfig {
+    pub fn new(
+        grid_size: usize,
+        block_size: usize,
+        shared_mem_bytes: usize,
+        stream_token: usize,
+    ) -> Self {
+        Self {
+            grid: (clamp_launch_dim(grid_size), 1, 1),
+            block: (clamp_launch_dim(block_size), 1, 1),
+            shared_mem_bytes: shared_mem_bytes.min(u32::MAX as usize) as u32,
+            stream: stream_token as CuStream,
+        }
+    }
+}
+
+fn clamp_launch_dim(value: usize) -> u32 {
+    value.max(1).min(u32::MAX as usize) as u32
+}
+
 // ── Errors ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleManagerError {
     /// Driver returned non-zero. `code` is `CUresult`; the caller
     /// looks it up against the cuda.h enum.
-    DriverError {
-        op: &'static str,
-        code: CuResult,
-    },
+    DriverError { op: &'static str, code: CuResult },
     /// `load_standby` invoked while a standby is already loaded.
     /// The caller must `swap()` (or explicitly discard) the
     /// existing one first.
     StandbyOccupied,
     /// `swap()` called with no standby loaded.
     NoStandby,
+    /// `launch_kernel` called before any module has been promoted.
+    NoPrimary,
     /// `resolve_kernels` called before `load_standby`.
     NoTarget,
+    /// `launch_kernel` named a kernel that has not been resolved
+    /// against the primary module.
+    UnknownKernel(String),
     /// Kernel name failed CString conversion (interior NUL).
     InvalidKernelName(String),
     /// Empty cubin/hsaco — refuse the load up-front.
@@ -126,7 +161,9 @@ impl ModuleManagerError {
             Self::DriverError { .. } => "driver_error",
             Self::StandbyOccupied => "standby_occupied",
             Self::NoStandby => "no_standby",
+            Self::NoPrimary => "no_primary",
             Self::NoTarget => "no_target",
+            Self::UnknownKernel(_) => "unknown_kernel",
             Self::InvalidKernelName(_) => "invalid_kernel_name",
             Self::EmptyBlob => "empty_blob",
         }
@@ -139,7 +176,9 @@ impl std::fmt::Display for ModuleManagerError {
             Self::DriverError { op, code } => write!(f, "driver op {op:?} returned {code}"),
             Self::StandbyOccupied => write!(f, "standby slot already holds a module"),
             Self::NoStandby => write!(f, "no standby module to swap"),
+            Self::NoPrimary => write!(f, "no primary module loaded — call swap first"),
             Self::NoTarget => write!(f, "no module loaded — call load_standby first"),
+            Self::UnknownKernel(s) => write!(f, "kernel {s:?} has not been resolved"),
             Self::InvalidKernelName(s) => write!(f, "kernel name {s:?} contains NUL"),
             Self::EmptyBlob => write!(f, "empty cubin / hsaco blob"),
         }
@@ -326,6 +365,60 @@ impl GpuModuleManager {
         }
         Ok(())
     }
+
+    /// Launches a resolved kernel through the vendor driver API.
+    /// The kernel handle must already exist in the active primary
+    /// table; unresolved names are rejected before entering the
+    /// driver so the runtime boundary can surface a deterministic
+    /// error card.
+    pub fn launch_kernel(
+        &mut self,
+        symbols: &GpuDriverSymbolTable,
+        kernel_name: &str,
+        config: KernelLaunchConfig,
+        kernel_params: CuKernelParams,
+    ) -> Result<(), ModuleManagerError> {
+        if self.primary.is_none() {
+            let err = ModuleManagerError::NoPrimary;
+            self.last_error = Some(err.clone());
+            return Err(err);
+        }
+
+        let hfunc = match self.kernels.get(kernel_name) {
+            Some(h) => h as CuFunction,
+            None => {
+                let err = ModuleManagerError::UnknownKernel(kernel_name.to_string());
+                self.last_error = Some(err.clone());
+                return Err(err);
+            }
+        };
+
+        let code = unsafe {
+            (symbols.cu_launch_kernel)(
+                hfunc,
+                config.grid.0,
+                config.grid.1,
+                config.grid.2,
+                config.block.0,
+                config.block.1,
+                config.block.2,
+                config.shared_mem_bytes,
+                config.stream,
+                kernel_params,
+                std::ptr::null_mut(),
+            )
+        };
+        if code != 0 {
+            let err = ModuleManagerError::DriverError {
+                op: "cuLaunchKernel",
+                code,
+            };
+            self.last_error = Some(err.clone());
+            return Err(err);
+        }
+
+        Ok(())
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────
@@ -357,6 +450,12 @@ mod tests {
         load_result: CuResult,
         get_fn_calls: u64,
         get_fn_result: CuResult,
+        launch_calls: u64,
+        launch_result: CuResult,
+        last_launch_fn: u64,
+        last_grid_x: u32,
+        last_block_x: u32,
+        last_shared_bytes: u32,
         unload_calls: u64,
         unload_result: CuResult,
         next_module_handle: u64,
@@ -370,6 +469,12 @@ mod tests {
                 load_result: 0,
                 get_fn_calls: 0,
                 get_fn_result: 0,
+                launch_calls: 0,
+                launch_result: 0,
+                last_launch_fn: 0,
+                last_grid_x: 0,
+                last_block_x: 0,
+                last_shared_bytes: 0,
                 unload_calls: 0,
                 unload_result: 0,
                 next_module_handle: 0x1_0000,
@@ -389,10 +494,7 @@ mod tests {
         STATE.with(|s| f(&mut s.borrow_mut()))
     }
 
-    unsafe extern "C" fn stub_load_data(
-        module: *mut CuModule,
-        _image: *const c_void,
-    ) -> CuResult {
+    unsafe extern "C" fn stub_load_data(module: *mut CuModule, _image: *const c_void) -> CuResult {
         with_state_mut(|s| {
             s.load_calls += 1;
             let r = s.load_result;
@@ -426,16 +528,54 @@ mod tests {
             r
         })
     }
+    unsafe extern "C" fn stub_launch_kernel(
+        f: CuFunction,
+        grid_dim_x: u32,
+        _grid_dim_y: u32,
+        _grid_dim_z: u32,
+        block_dim_x: u32,
+        _block_dim_y: u32,
+        _block_dim_z: u32,
+        shared_mem_bytes: u32,
+        _stream: *mut c_void,
+        _kernel_params: *mut *mut c_void,
+        _extra: *mut *mut c_void,
+    ) -> CuResult {
+        with_state_mut(|s| {
+            s.launch_calls += 1;
+            s.last_launch_fn = f as u64;
+            s.last_grid_x = grid_dim_x;
+            s.last_block_x = block_dim_x;
+            s.last_shared_bytes = shared_mem_bytes;
+            s.launch_result
+        })
+    }
     // Unused-symbol stubs (the manager doesn't call them but the
     // GpuDriverSymbolTable layout requires every field set).
-    unsafe extern "C" fn stub_init(_f: u32) -> CuResult { 0 }
-    unsafe extern "C" fn stub_device_get(_d: *mut i32, _o: i32) -> CuResult { 0 }
-    unsafe extern "C" fn stub_ctx_get(_c: *mut *mut c_void) -> CuResult { 0 }
-    unsafe extern "C" fn stub_ctx_sync() -> CuResult { 0 }
-    unsafe extern "C" fn stub_stream_sync(_s: *mut c_void) -> CuResult { 0 }
-    unsafe extern "C" fn stub_mem_alloc(_p: *mut u64, _b: usize) -> CuResult { 0 }
-    unsafe extern "C" fn stub_mem_free(_p: u64) -> CuResult { 0 }
-    unsafe extern "C" fn stub_memcpy_dtod(_d: u64, _s: u64, _b: usize) -> CuResult { 0 }
+    unsafe extern "C" fn stub_init(_f: u32) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_device_get(_d: *mut i32, _o: i32) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_ctx_get(_c: *mut *mut c_void) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_ctx_sync() -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_stream_sync(_s: *mut c_void) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_mem_alloc(_p: *mut u64, _b: usize) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_mem_free(_p: u64) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_memcpy_dtod(_d: u64, _s: u64, _b: usize) -> CuResult {
+        0
+    }
 
     pub(super) fn stub_table() -> GpuDriverSymbolTable {
         GpuDriverSymbolTable {
@@ -445,6 +585,7 @@ mod tests {
             cu_module_load_data: stub_load_data,
             cu_module_unload: stub_unload,
             cu_module_get_function: stub_get_function,
+            cu_launch_kernel: stub_launch_kernel,
             cu_ctx_synchronize: stub_ctx_sync,
             cu_stream_synchronize: stub_stream_sync,
             cu_mem_alloc: stub_mem_alloc,
@@ -545,9 +686,7 @@ mod tests {
         let mut m = GpuModuleManager::new();
         let t = stub_table();
         m.load_standby(&t, &[1, 2]).unwrap();
-        let err = m
-            .resolve_kernels(&t, &["good\0bad".into()])
-            .unwrap_err();
+        let err = m.resolve_kernels(&t, &["good\0bad".into()]).unwrap_err();
         assert_eq!(err.short_label(), "invalid_kernel_name");
     }
 
@@ -607,7 +746,10 @@ mod tests {
         let t = stub_table();
         m.load_standby(&t, &[1, 2]).unwrap();
         m.swap().unwrap();
-        let retired = ModuleSlot { handle: 0xabcd, blob_bytes: 2 };
+        let retired = ModuleSlot {
+            handle: 0xabcd,
+            blob_bytes: 2,
+        };
         m.unload_retired(&t, retired).unwrap();
         assert_eq!(with_state(|s| s.unload_calls), 1);
     }
@@ -618,7 +760,10 @@ mod tests {
         with_state_mut(|s| s.unload_result = 9);
         let mut m = GpuModuleManager::new();
         let t = stub_table();
-        let retired = ModuleSlot { handle: 0xabcd, blob_bytes: 2 };
+        let retired = ModuleSlot {
+            handle: 0xabcd,
+            blob_bytes: 2,
+        };
         let err = m.unload_retired(&t, retired).unwrap_err();
         match err {
             ModuleManagerError::DriverError { op, code } => {
@@ -645,6 +790,110 @@ mod tests {
         );
         t.clear();
         assert!(t.is_empty());
+    }
+
+    #[test]
+    fn launch_config_clamps_1d_runtime_sizes() {
+        let c = KernelLaunchConfig::new(0, usize::MAX, usize::MAX, 0x77);
+        assert_eq!(c.grid, (1, 1, 1));
+        assert_eq!(c.block, (u32::MAX, 1, 1));
+        assert_eq!(c.shared_mem_bytes, u32::MAX);
+        assert_eq!(c.stream as usize, 0x77);
+    }
+
+    #[test]
+    fn launch_kernel_invokes_driver_for_resolved_primary_kernel() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+        m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["vec_add".into()]).unwrap();
+        let fn_handle = m.kernel_table().get("vec_add").unwrap();
+        m.swap().unwrap();
+
+        let cfg = KernelLaunchConfig::new(8, 256, 128, 0x55);
+        m.launch_kernel(&t, "vec_add", cfg, std::ptr::null_mut())
+            .unwrap();
+
+        with_state(|s| {
+            assert_eq!(s.launch_calls, 1);
+            assert_eq!(s.last_launch_fn, fn_handle);
+            assert_eq!(s.last_grid_x, 8);
+            assert_eq!(s.last_block_x, 256);
+            assert_eq!(s.last_shared_bytes, 128);
+        });
+    }
+
+    #[test]
+    fn launch_kernel_rejects_without_primary() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+        m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["vec_add".into()]).unwrap();
+
+        let err = m
+            .launch_kernel(
+                &t,
+                "vec_add",
+                KernelLaunchConfig::new(1, 1, 0, 0),
+                std::ptr::null_mut(),
+            )
+            .unwrap_err();
+
+        assert_eq!(err.short_label(), "no_primary");
+        assert_eq!(with_state(|s| s.launch_calls), 0);
+    }
+
+    #[test]
+    fn launch_kernel_rejects_unknown_kernel() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+        m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["vec_add".into()]).unwrap();
+        m.swap().unwrap();
+
+        let err = m
+            .launch_kernel(
+                &t,
+                "missing",
+                KernelLaunchConfig::new(1, 1, 0, 0),
+                std::ptr::null_mut(),
+            )
+            .unwrap_err();
+
+        assert_eq!(err.short_label(), "unknown_kernel");
+        assert_eq!(with_state(|s| s.launch_calls), 0);
+    }
+
+    #[test]
+    fn launch_kernel_surfaces_driver_error() {
+        reset_counters();
+        with_state_mut(|s| s.launch_result = 701);
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+        m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["vec_add".into()]).unwrap();
+        m.swap().unwrap();
+
+        let err = m
+            .launch_kernel(
+                &t,
+                "vec_add",
+                KernelLaunchConfig::new(1, 1, 0, 0),
+                std::ptr::null_mut(),
+            )
+            .unwrap_err();
+
+        match err {
+            ModuleManagerError::DriverError { op, code } => {
+                assert_eq!(op, "cuLaunchKernel");
+                assert_eq!(code, 701);
+            }
+            other => panic!("expected DriverError, got {other:?}"),
+        }
+        assert_eq!(with_state(|s| s.launch_calls), 1);
     }
 
     #[test]

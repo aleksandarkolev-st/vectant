@@ -62,10 +62,7 @@ pub struct ShadowEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShadowArenaError {
     /// Driver returned non-zero.
-    DriverError {
-        op: &'static str,
-        code: CuResult,
-    },
+    DriverError { op: &'static str, code: CuResult },
     /// `register` called with size 0.
     ZeroSize { key: CuDevicePtr },
     /// `sync_*` / `release` called for a buffer that never
@@ -101,7 +98,11 @@ impl std::fmt::Display for ShadowArenaError {
             Self::UnknownKey { key } => {
                 write!(f, "no shadow entry for {key:#x}")
             }
-            Self::SizeMismatch { key, existing, requested } => write!(
+            Self::SizeMismatch {
+                key,
+                existing,
+                requested,
+            } => write!(
                 f,
                 "shadow size mismatch for {key:#x}: existing={existing}, requested={requested}"
             ),
@@ -202,8 +203,7 @@ impl ShadowArena {
         // SAFETY: cuMemAlloc writes a single CUdeviceptr into the
         // out pointer. The pointer lives on the stack until the
         // call returns.
-        let code =
-            unsafe { (symbols.cu_mem_alloc)(&mut shadow as *mut CuDevicePtr, size_bytes) };
+        let code = unsafe { (symbols.cu_mem_alloc)(&mut shadow as *mut CuDevicePtr, size_bytes) };
         if code != 0 {
             let err = ShadowArenaError::DriverError {
                 op: "cuMemAlloc",
@@ -402,14 +402,49 @@ mod tests {
         })
     }
     // Unused stubs to satisfy table layout.
-    unsafe extern "C" fn stub_init(_f: u32) -> CuResult { 0 }
-    unsafe extern "C" fn stub_device_get(_d: *mut i32, _o: i32) -> CuResult { 0 }
-    unsafe extern "C" fn stub_ctx_get(_c: *mut *mut c_void) -> CuResult { 0 }
-    unsafe extern "C" fn stub_load_data(_m: *mut *mut c_void, _i: *const c_void) -> CuResult { 0 }
-    unsafe extern "C" fn stub_unload(_m: *mut c_void) -> CuResult { 0 }
-    unsafe extern "C" fn stub_get_function(_h: *mut *mut c_void, _m: *mut c_void, _n: *const u8) -> CuResult { 0 }
-    unsafe extern "C" fn stub_ctx_sync() -> CuResult { 0 }
-    unsafe extern "C" fn stub_stream_sync(_s: *mut c_void) -> CuResult { 0 }
+    unsafe extern "C" fn stub_init(_f: u32) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_device_get(_d: *mut i32, _o: i32) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_ctx_get(_c: *mut *mut c_void) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_load_data(_m: *mut *mut c_void, _i: *const c_void) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_unload(_m: *mut c_void) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_get_function(
+        _h: *mut *mut c_void,
+        _m: *mut c_void,
+        _n: *const u8,
+    ) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_launch_kernel(
+        _f: *mut c_void,
+        _grid_dim_x: u32,
+        _grid_dim_y: u32,
+        _grid_dim_z: u32,
+        _block_dim_x: u32,
+        _block_dim_y: u32,
+        _block_dim_z: u32,
+        _shared_mem_bytes: u32,
+        _stream: *mut c_void,
+        _kernel_params: *mut *mut c_void,
+        _extra: *mut *mut c_void,
+    ) -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_ctx_sync() -> CuResult {
+        0
+    }
+    unsafe extern "C" fn stub_stream_sync(_s: *mut c_void) -> CuResult {
+        0
+    }
 
     fn stub_table() -> GpuDriverSymbolTable {
         GpuDriverSymbolTable {
@@ -419,6 +454,7 @@ mod tests {
             cu_module_load_data: stub_load_data,
             cu_module_unload: stub_unload,
             cu_module_get_function: stub_get_function,
+            cu_launch_kernel: stub_launch_kernel,
             cu_ctx_synchronize: stub_ctx_sync,
             cu_stream_synchronize: stub_stream_sync,
             cu_mem_alloc: stub_alloc,
@@ -487,7 +523,11 @@ mod tests {
         a.register(&t, 0xa000, 4096).unwrap();
         let err = a.register(&t, 0xa000, 8192).unwrap_err();
         match err {
-            ShadowArenaError::SizeMismatch { key, existing, requested } => {
+            ShadowArenaError::SizeMismatch {
+                key,
+                existing,
+                requested,
+            } => {
                 assert_eq!(key, 0xa000);
                 assert_eq!(existing, 4096);
                 assert_eq!(requested, 8192);
@@ -523,8 +563,14 @@ mod tests {
         let shadow_ptr = a.get(0xa000).unwrap().shadow_dptr;
         let n = a.sync_to_shadow(&t, 0xa000).unwrap();
         assert_eq!(n, 4096);
-        let (dtod_calls, dst, src, bytes) =
-            with_state(|s| (s.dtod_calls, s.dtod_last_dst, s.dtod_last_src, s.dtod_last_bytes));
+        let (dtod_calls, dst, src, bytes) = with_state(|s| {
+            (
+                s.dtod_calls,
+                s.dtod_last_dst,
+                s.dtod_last_src,
+                s.dtod_last_bytes,
+            )
+        });
         assert_eq!(dtod_calls, 1);
         // dst = shadow, src = orig (the "save" direction).
         assert_eq!(dst, shadow_ptr);

@@ -150,6 +150,13 @@ impl GpuVendor {
             Self::Rocm => "hipModuleGetFunction",
         }
     }
+
+    pub fn launch_kernel_symbol(&self) -> &'static str {
+        match self {
+            Self::Cuda => "cuLaunchKernel",
+            Self::Rocm => "hipModuleLaunchKernel",
+        }
+    }
 }
 
 impl From<DeviceVendor> for GpuVendor {
@@ -326,6 +333,7 @@ impl GpuModuleAdapter {
             v.module_load_symbol(),
             v.module_unload_symbol(),
             v.module_get_function_symbol(),
+            v.launch_kernel_symbol(),
             v.ctx_synchronize_symbol(),
             v.stream_synchronize_symbol(),
         ]
@@ -766,6 +774,22 @@ mod tests {
         0
     }
 
+    unsafe extern "C" fn ok_launch_kernel(
+        _f: CuFunction,
+        _grid_dim_x: u32,
+        _grid_dim_y: u32,
+        _grid_dim_z: u32,
+        _block_dim_x: u32,
+        _block_dim_y: u32,
+        _block_dim_z: u32,
+        _shared_mem_bytes: u32,
+        _stream: CuStream,
+        _kernel_params: *mut *mut c_void,
+        _extra: *mut *mut c_void,
+    ) -> CuResult {
+        0
+    }
+
     unsafe extern "C" fn ok_ctx_synchronize() -> CuResult {
         0
     }
@@ -805,6 +829,7 @@ mod tests {
             cu_module_load_data: ok_module_load_data,
             cu_module_unload: ok_module_unload,
             cu_module_get_function: ok_module_get_function,
+            cu_launch_kernel: ok_launch_kernel,
             cu_ctx_synchronize: ok_ctx_synchronize,
             cu_stream_synchronize: ok_stream_synchronize,
             cu_mem_alloc: ok_mem_alloc,
@@ -894,9 +919,10 @@ mod tests {
         assert!(syms.contains(&"cuModuleLoadData"));
         assert!(syms.contains(&"cuModuleUnload"));
         assert!(syms.contains(&"cuModuleGetFunction"));
+        assert!(syms.contains(&"cuLaunchKernel"));
         assert!(syms.contains(&"cuCtxSynchronize"));
         assert!(syms.contains(&"cuStreamSynchronize"));
-        assert_eq!(syms.len(), 5);
+        assert_eq!(syms.len(), 6);
     }
 
     #[test]
@@ -910,9 +936,10 @@ mod tests {
         assert!(syms.contains(&"hipModuleLoadData"));
         assert!(syms.contains(&"hipModuleUnload"));
         assert!(syms.contains(&"hipModuleGetFunction"));
+        assert!(syms.contains(&"hipModuleLaunchKernel"));
         assert!(syms.contains(&"hipDeviceSynchronize"));
         assert!(syms.contains(&"hipStreamSynchronize"));
-        assert_eq!(syms.len(), 5);
+        assert_eq!(syms.len(), 6);
     }
 
     #[test]

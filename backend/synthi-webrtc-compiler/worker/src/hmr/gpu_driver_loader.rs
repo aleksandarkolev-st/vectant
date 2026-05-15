@@ -23,7 +23,7 @@
 //   • `probe(vendor)` — non-failing check returning a
 //     `DriverProbe` enum the planner can branch on at startup.
 //   • `GpuDriverSymbolTable` — typed function pointers for the
-//     11 driver symbols listed in §5.3.
+//     driver symbols listed in §5.3.
 //   • `Send + Sync` impl gated by the fact that `libloading`
 //     yields `Library: Send + Sync` already.
 //
@@ -63,15 +63,32 @@ pub type CuStream = *mut c_void;
 pub type CuModule = *mut c_void;
 pub type CuFunction = *mut c_void;
 pub type CuContext = *mut c_void;
+pub type CuKernelParams = *mut *mut c_void;
+
+pub const REQUIRED_SYMBOL_COUNT: usize = 12;
 
 pub type CuInitFn = unsafe extern "C" fn(flags: u32) -> CuResult;
 pub type CuDeviceGetFn = unsafe extern "C" fn(device: *mut i32, ordinal: i32) -> CuResult;
 pub type CuCtxGetCurrentFn = unsafe extern "C" fn(ctx: *mut CuContext) -> CuResult;
 
-pub type CuModuleLoadDataFn = unsafe extern "C" fn(module: *mut CuModule, image: *const c_void) -> CuResult;
+pub type CuModuleLoadDataFn =
+    unsafe extern "C" fn(module: *mut CuModule, image: *const c_void) -> CuResult;
 pub type CuModuleUnloadFn = unsafe extern "C" fn(module: CuModule) -> CuResult;
 pub type CuModuleGetFunctionFn =
     unsafe extern "C" fn(hfunc: *mut CuFunction, hmod: CuModule, name: *const u8) -> CuResult;
+pub type CuLaunchKernelFn = unsafe extern "C" fn(
+    f: CuFunction,
+    grid_dim_x: u32,
+    grid_dim_y: u32,
+    grid_dim_z: u32,
+    block_dim_x: u32,
+    block_dim_y: u32,
+    block_dim_z: u32,
+    shared_mem_bytes: u32,
+    stream: CuStream,
+    kernel_params: CuKernelParams,
+    extra: CuKernelParams,
+) -> CuResult;
 
 pub type CuCtxSynchronizeFn = unsafe extern "C" fn() -> CuResult;
 pub type CuStreamSynchronizeFn = unsafe extern "C" fn(stream: CuStream) -> CuResult;
@@ -95,6 +112,7 @@ pub struct GpuDriverSymbolTable {
     pub cu_module_load_data: CuModuleLoadDataFn,
     pub cu_module_unload: CuModuleUnloadFn,
     pub cu_module_get_function: CuModuleGetFunctionFn,
+    pub cu_launch_kernel: CuLaunchKernelFn,
     pub cu_ctx_synchronize: CuCtxSynchronizeFn,
     pub cu_stream_synchronize: CuStreamSynchronizeFn,
     pub cu_mem_alloc: CuMemAllocFn,
@@ -102,10 +120,10 @@ pub struct GpuDriverSymbolTable {
     pub cu_memcpy_dtod: CuMemcpyDtoDFn,
 }
 
-/// The 11 driver symbols the loader must resolve, in the order
+/// The driver symbols the loader must resolve, in the order
 /// they're resolved (so a partial-load error surfaces with a
 /// deterministic "stopped at symbol N" message).
-pub fn required_symbol_names(vendor: GpuVendor) -> [&'static str; 11] {
+pub fn required_symbol_names(vendor: GpuVendor) -> [&'static str; REQUIRED_SYMBOL_COUNT] {
     match vendor {
         GpuVendor::Cuda => [
             "cuInit",
@@ -114,6 +132,7 @@ pub fn required_symbol_names(vendor: GpuVendor) -> [&'static str; 11] {
             "cuModuleLoadData",
             "cuModuleUnload",
             "cuModuleGetFunction",
+            "cuLaunchKernel",
             "cuCtxSynchronize",
             "cuStreamSynchronize",
             "cuMemAlloc_v2",
@@ -127,6 +146,7 @@ pub fn required_symbol_names(vendor: GpuVendor) -> [&'static str; 11] {
             "hipModuleLoadData",
             "hipModuleUnload",
             "hipModuleGetFunction",
+            "hipModuleLaunchKernel",
             "hipDeviceSynchronize",
             "hipStreamSynchronize",
             "hipMalloc",
@@ -175,11 +195,12 @@ impl std::fmt::Display for DriverLoadError {
             Self::LibraryNotFound { library, detail } => {
                 write!(f, "driver library {library:?} not found: {detail}")
             }
-            Self::SymbolMissing { library, symbol, detail } => {
-                write!(
-                    f,
-                    "symbol {symbol:?} missing from {library:?}: {detail}"
-                )
+            Self::SymbolMissing {
+                library,
+                symbol,
+                detail,
+            } => {
+                write!(f, "symbol {symbol:?} missing from {library:?}: {detail}")
             }
         }
     }
@@ -248,14 +269,14 @@ impl std::fmt::Debug for GpuDriverHandle {
         f.debug_struct("GpuDriverHandle")
             .field("vendor", &self.vendor)
             .field("library_path", &self.library_path)
-            .field("symbol_count", &11usize)
+            .field("symbol_count", &REQUIRED_SYMBOL_COUNT)
             .finish()
     }
 }
 
 // ── Loader ──────────────────────────────────────────────────
 
-/// Attempts to dlopen the vendor driver and resolve all 11 driver
+/// Attempts to dlopen the vendor driver and resolve all driver
 /// symbols. Fail-fast: the first missing symbol terminates the
 /// resolve loop and returns `SymbolMissing`. The caller decides
 /// whether to fall back to cold restart.
@@ -293,7 +314,7 @@ pub fn probe(vendor: GpuVendor) -> DriverProbe {
     match try_load(vendor) {
         Ok(h) => DriverProbe::Loaded {
             library: h.library_path().to_string(),
-            symbol_count: 11,
+            symbol_count: REQUIRED_SYMBOL_COUNT,
         },
         Err(e) => DriverProbe::Unavailable(e),
     }
@@ -308,18 +329,19 @@ pub fn probe(vendor: GpuVendor) -> DriverProbe {
 unsafe fn resolve_symbols(
     library: &libloading::Library,
     library_path: &str,
-    names: &[&'static str; 11],
+    names: &[&'static str; REQUIRED_SYMBOL_COUNT],
 ) -> Result<GpuDriverSymbolTable, DriverLoadError> {
     macro_rules! fetch {
         ($idx:expr, $ty:ty) => {{
             let sym_name = names[$idx];
-            let sym: libloading::Symbol<$ty> = library
-                .get(sym_name.as_bytes())
-                .map_err(|e| DriverLoadError::SymbolMissing {
-                    library: library_path.to_string(),
-                    symbol: sym_name.to_string(),
-                    detail: e.to_string(),
-                })?;
+            let sym: libloading::Symbol<$ty> =
+                library
+                    .get(sym_name.as_bytes())
+                    .map_err(|e| DriverLoadError::SymbolMissing {
+                        library: library_path.to_string(),
+                        symbol: sym_name.to_string(),
+                        detail: e.to_string(),
+                    })?;
             *sym
         }};
     }
@@ -331,11 +353,12 @@ unsafe fn resolve_symbols(
         cu_module_load_data: fetch!(3, CuModuleLoadDataFn),
         cu_module_unload: fetch!(4, CuModuleUnloadFn),
         cu_module_get_function: fetch!(5, CuModuleGetFunctionFn),
-        cu_ctx_synchronize: fetch!(6, CuCtxSynchronizeFn),
-        cu_stream_synchronize: fetch!(7, CuStreamSynchronizeFn),
-        cu_mem_alloc: fetch!(8, CuMemAllocFn),
-        cu_mem_free: fetch!(9, CuMemFreeFn),
-        cu_memcpy_dtod: fetch!(10, CuMemcpyDtoDFn),
+        cu_launch_kernel: fetch!(6, CuLaunchKernelFn),
+        cu_ctx_synchronize: fetch!(7, CuCtxSynchronizeFn),
+        cu_stream_synchronize: fetch!(8, CuStreamSynchronizeFn),
+        cu_mem_alloc: fetch!(9, CuMemAllocFn),
+        cu_mem_free: fetch!(10, CuMemFreeFn),
+        cu_memcpy_dtod: fetch!(11, CuMemcpyDtoDFn),
     })
 }
 
@@ -346,9 +369,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn required_symbol_count_is_eleven_for_both_vendors() {
-        assert_eq!(required_symbol_names(GpuVendor::Cuda).len(), 11);
-        assert_eq!(required_symbol_names(GpuVendor::Rocm).len(), 11);
+    fn required_symbol_count_is_pinned_for_both_vendors() {
+        assert_eq!(
+            required_symbol_names(GpuVendor::Cuda).len(),
+            REQUIRED_SYMBOL_COUNT
+        );
+        assert_eq!(
+            required_symbol_names(GpuVendor::Rocm).len(),
+            REQUIRED_SYMBOL_COUNT
+        );
     }
 
     #[test]
@@ -360,6 +389,7 @@ mod tests {
         assert!(names.contains(&"cuMemAlloc_v2"));
         assert!(names.contains(&"cuMemFree_v2"));
         assert!(names.contains(&"cuMemcpyDtoD_v2"));
+        assert!(names.contains(&"cuLaunchKernel"));
     }
 
     #[test]
@@ -370,6 +400,7 @@ mod tests {
         assert!(names.contains(&"hipMalloc"));
         assert!(names.contains(&"hipFree"));
         assert!(names.contains(&"hipMemcpyDtoD"));
+        assert!(names.contains(&"hipModuleLaunchKernel"));
     }
 
     #[test]
@@ -420,7 +451,7 @@ mod tests {
         if let DriverProbe::Loaded { symbol_count, .. } = &p {
             // Local dev box happens to have the driver. Still
             // assert the contract holds.
-            assert_eq!(*symbol_count, 11);
+            assert_eq!(*symbol_count, REQUIRED_SYMBOL_COUNT);
             assert!(p.is_available());
         } else if let DriverProbe::Unavailable(e) = &p {
             // Library not found OR symbol_missing both
@@ -467,7 +498,7 @@ mod tests {
         assert!(!unavailable.is_available());
         let loaded = DriverProbe::Loaded {
             library: "libcuda.so.1".into(),
-            symbol_count: 11,
+            symbol_count: REQUIRED_SYMBOL_COUNT,
         };
         assert!(loaded.is_available());
     }
