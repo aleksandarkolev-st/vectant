@@ -33,6 +33,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::runtime::gpu_runtime_boundary::ManagedBufferRecord;
+
 // ── Top-level snapshot envelope ─────────────────────────────
 
 /// One device-state snapshot. Sits inside `StateSnapshotV2`
@@ -176,11 +178,39 @@ impl BufferRegistry {
     }
 
     pub fn register(&mut self, record: BufferRecord) {
-        if let Some(existing) = self.by_name.iter_mut().find(|r| r.handle_id == record.handle_id) {
+        if let Some(existing) = self
+            .by_name
+            .iter_mut()
+            .find(|r| r.handle_id == record.handle_id)
+        {
             *existing = record;
         } else {
             self.by_name.push(record);
         }
+    }
+
+    /// Build a snapshot registry from the worker-side runtime boundary.
+    /// This is the bridge from agent-emitted `synthi_register(...)`
+    /// calls to the Tier-B snapshot planner.
+    pub fn from_managed_buffers(records: impl IntoIterator<Item = ManagedBufferRecord>) -> Self {
+        let mut registry = Self::new();
+        for record in records {
+            let debug_name = record
+                .semantic_name
+                .unwrap_or_else(|| format!("0x{:x}", record.ptr));
+            let lifetime_hint = record.lifetime_hint.unwrap_or_default();
+            let uses_vram_shadow = lifetime_hint != "scratch";
+            registry.register(BufferRecord {
+                handle_id: record.ptr as u64,
+                debug_name,
+                bytes: record.bytes as u64,
+                element_stride: None,
+                dirty: record.dirty,
+                uses_vram_shadow,
+                shadow_handle_id: None,
+            });
+        }
+        registry
     }
 
     pub fn get_by_name(&self, name: &str) -> Option<&BufferRecord> {
@@ -330,12 +360,51 @@ mod tests {
     }
 
     #[test]
+    fn registry_imports_runtime_boundary_buffers() {
+        let reg = BufferRegistry::from_managed_buffers(vec![
+            ManagedBufferRecord {
+                ptr: 0x10,
+                bytes: 1024,
+                semantic_name: Some("positions".into()),
+                lifetime_hint: Some("persistent".into()),
+                dirty: true,
+            },
+            ManagedBufferRecord {
+                ptr: 0x20,
+                bytes: 2048,
+                semantic_name: Some("scratch_tmp".into()),
+                lifetime_hint: Some("scratch".into()),
+                dirty: false,
+            },
+            ManagedBufferRecord {
+                ptr: 0x30,
+                bytes: 4096,
+                semantic_name: None,
+                lifetime_hint: None,
+                dirty: false,
+            },
+        ]);
+
+        let positions = reg.get_by_name("positions").unwrap();
+        assert_eq!(positions.handle_id, 0x10);
+        assert_eq!(positions.bytes, 1024);
+        assert!(positions.dirty);
+        assert!(positions.uses_vram_shadow);
+
+        let scratch = reg.get_by_name("scratch_tmp").unwrap();
+        assert!(!scratch.dirty);
+        assert!(!scratch.uses_vram_shadow);
+
+        assert!(reg.get_by_name("0x30").is_some());
+    }
+
+    #[test]
     fn snapshot_byte_budget_skips_clean_shadowed_buffers() {
         // §6.1.2 dirty-bit accounting: clean buffer + shadow on
         // means we DON'T pay the copy cost on the next swap.
         let mut reg = BufferRegistry::new();
-        reg.register(sample_record("dirty", 0x10, 4096, true));   // dirty -> counted
-        reg.register(sample_record("clean", 0x20, 8192, false));  // clean + shadow -> skipped
+        reg.register(sample_record("dirty", 0x10, 4096, true)); // dirty -> counted
+        reg.register(sample_record("clean", 0x20, 8192, false)); // clean + shadow -> skipped
         let mut without_shadow = sample_record("no_shadow", 0x30, 1024, false);
         without_shadow.uses_vram_shadow = false;
         reg.register(without_shadow); // clean but no shadow -> counted
