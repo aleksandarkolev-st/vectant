@@ -2165,6 +2165,25 @@ pub async fn handle_compile_request(
         }
     }
 
+    if let (Some(device_outcome), Some(manifest), Some(device_source)) = (
+        device_compile_outcome.as_ref(),
+        compile_manifest.as_ref(),
+        device_source_content.as_ref(),
+    ) {
+        if let Some(gpu) = manifest.gpu.as_ref() {
+            let kernel_symbols = extract_device_kernel_symbols(device_source);
+            let device_cmd = format!(
+                "__gpu_device:{}:{}",
+                gpu.vendor.as_str(),
+                kernel_symbols.join(",")
+            );
+            modules_to_load.push((
+                device_cmd,
+                device_outcome.artifact_path.to_string_lossy().to_string(),
+            ));
+        }
+    }
+
     // Check for `on_update` to determine if we can HMR or need restart
     let has_on_update =
         processed_core.contains("on_update") || processed_core.contains("core_on_update");

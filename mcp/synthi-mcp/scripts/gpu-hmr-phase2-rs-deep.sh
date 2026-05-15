@@ -210,6 +210,35 @@ phase2_runtime_boundary_exports() {
   fi
 }
 
+# ── P2rs.9c Runner receives device sidecar load commands ─────────
+phase2_runner_device_sidecar_path() {
+  local missing=0
+  echo "${BLU}━━ P2rs.9c ${DIM}— runner device sidecar command path${RST}"
+
+  if ! grep -q "__gpu_device:" "$WORKER/src/compiler/handler.rs"; then
+    record "P2rs.9c/handler" fail "compiler handler does not enqueue __gpu_device sidecars"
+    missing=$((missing+1))
+  fi
+  if ! grep -q "load_device" "$WORKER/src/compiler/stages/runner.rs"; then
+    record "P2rs.9c/worker-runner" fail "worker runner stage does not send load_device"
+    missing=$((missing+1))
+  fi
+  if ! grep -q '"load_device"' "$WORKER/src/runtime/runner_bin.rs"; then
+    record "P2rs.9c/runner-bin" fail "runner binary does not handle load_device"
+    missing=$((missing+1))
+  fi
+  if ! grep -q "Device sidecar reload vendor=" "$WORKER/src/runtime/runner_bin.rs"; then
+    record "P2rs.9c/runner-log" fail "runner binary does not log device sidecar reload outcome"
+    missing=$((missing+1))
+  fi
+
+  if [ "$missing" -eq 0 ]; then
+    record "P2rs.9c" pass "compiler enqueues and runner handles load_device sidecars"
+  else
+    return 1
+  fi
+}
+
 # ── P2rs.10 Compile-time Send+Sync sanity for every Phase-2 type ──
 phase2_send_sync_check() {
   # Each Phase-2 module has its own `..._is_send_and_sync` test.
@@ -325,6 +354,7 @@ phase2_cargo_check_feature_off
 phase2_module_tests
 phase2_build_artifact
 phase2_runtime_boundary_exports
+phase2_runner_device_sidecar_path
 phase2_send_sync_check
 phase2_adapter_wiring
 phase2_symbol_table_pins
