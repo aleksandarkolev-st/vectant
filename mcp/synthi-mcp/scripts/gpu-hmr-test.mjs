@@ -22,6 +22,7 @@
 //   WORKER_LOG_PATH              <repo>/backend/synthi-webrtc-compiler/.run/worker.log
 //   SLUG                         gpu-hmr-<ts>
 //   SYNTHI_GPU_VENDOR            cuda | rocm | both              (default cuda)
+//   SYNTHI_GPU_ARCH              override target arch (cuda: sm_80, rocm: gfx1201)
 //   SYNTHI_GPU_FAST_SWAP_BUDGET_MS 300
 //   SYNTHI_GPU_LAUNCH_WATCHDOG_MS  5000
 //   SYNTHI_GPU_DRAIN_TIMEOUT_MS    2000
@@ -61,6 +62,7 @@ const CFG = {
   workspaceName: process.env.WORKSPACE_NAME ?? 'Synthi GPU-HMR Test',
   gpuHmr: (process.env.SYNTHI_GPU_HMR ?? '0') === '1',
   vendor: (process.env.SYNTHI_GPU_VENDOR ?? 'cuda').toLowerCase(),
+  gpuArch: process.env.SYNTHI_GPU_ARCH,
   fastSwapBudgetMs: Number(process.env.SYNTHI_GPU_FAST_SWAP_BUDGET_MS ?? 300),
   watchdogMs: Number(process.env.SYNTHI_GPU_LAUNCH_WATCHDOG_MS ?? 5000),
   drainTimeoutMs: Number(process.env.SYNTHI_GPU_DRAIN_TIMEOUT_MS ?? 2000),
@@ -643,6 +645,7 @@ const DEVICE_CU_HEAL_T3 = DEVICE_CU_PHASE0.replace(
 );
 
 function manifestFor(vendor) {
+  const arch = CFG.gpuArch ?? (vendor === 'rocm' ? 'gfx1201' : 'sm_80');
   if (vendor === 'rocm') {
     return {
       compiler: 'clang++',
@@ -650,7 +653,7 @@ function manifestFor(vendor) {
       gpu: {
         vendor: 'rocm',
         device_compiler: 'hipcc',
-        arch: ['gfx90a'],
+        arch: [arch],
         device_flags: ['-O3', '-g'],
         runtime_libs: ['amdhip64'],
         snapshot_mode: 'auto',
@@ -665,7 +668,7 @@ function manifestFor(vendor) {
     gpu: {
       vendor: 'cuda',
       device_compiler: 'nvcc',
-      arch: ['sm_80'],
+      arch: [arch],
       device_flags: ['-O3', '-lineinfo', '--use_fast_math'],
       runtime_libs: ['cudart', 'cuda'],
       snapshot_mode: 'auto',
