@@ -18,7 +18,7 @@ from agents.kernel_splitter import (
 SAMPLE_RAW = '''
 <JSON>
 {
-  "shared.h": "struct AppState { int n; };",
+  "shared.h": "#include \\"synthi_gpu_runtime.h\\"\\nstruct AppState { int n; };",
   "core.cpp": "void launch_va() { synthi_gpu_launch(gpu, \\"vec_add\\", 1, 256, 0, stream, { &a, &b, &c, &n }); }",
   "gui.cpp": "void draw() {}",
   "host_runner.cpp": "int main() { return 0; }",
@@ -108,6 +108,7 @@ def test_build_prompt_substitutes_user_code():
     assert code in p
     assert "{USER_CODE}" not in p
     assert "synthi_gpu_launch" in p
+    assert '#include "synthi_gpu_runtime.h"' in p
     assert "raw `kernel<<<grid, block, shared, stream>>>(args...)`" in p
 
 

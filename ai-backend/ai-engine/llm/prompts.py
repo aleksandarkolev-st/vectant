@@ -3876,6 +3876,13 @@ is to rewrite the user's GPU code into Synthi's hot-swappable GPU ABI,
 then keep that ABI explicit in the emitted source. The ABI boundary is
 real runtime code/header surface, not prose:
 
+  - `shared.h` MUST include the worker-generated contract header:
+
+        #include "synthi_gpu_runtime.h"
+
+    Do not redeclare this ABI by hand. The worker writes this header into
+    the workspace before compiling GPU-enabled projects.
+
   - raw `kernel<<<grid, block, shared, stream>>>(args...)` launch sites
     in host code MUST become calls to:
 

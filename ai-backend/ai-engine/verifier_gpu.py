@@ -322,6 +322,9 @@ def verify_split_output(
         CUDA/HIP triple-chevron syntax.
       - every `synthi_gpu_launch(...)` kernel name is declared in
         `device.cu` / `device.hip`.
+      - `shared.h` includes the worker-generated
+        `synthi_gpu_runtime.h` ABI header instead of inventing local
+        launch/lifecycle declarations.
       - the split contains exactly the 5 expected files
         (shared.h / core.cpp / gui.cpp / host_runner.cpp / device.cu|hip).
     """
@@ -355,6 +358,21 @@ def verify_split_output(
                     "GPU split output is missing device.cu (or device.hip). "
                     "Kernels must live in the dedicated 5th file."
                 ),
+            )
+        )
+
+    shared_source = files.get("shared.h") or ""
+    if "synthi_gpu_runtime.h" not in shared_source:
+        violations.append(
+            Violation(
+                rule="missing_gpu_runtime_header",
+                message=(
+                    "shared.h must include \"synthi_gpu_runtime.h\". "
+                    "The GPU ABI lives in the worker-generated runtime "
+                    "header; the agent should conform to it rather than "
+                    "declaring a private launch contract."
+                ),
+                offending_module="shared.h",
             )
         )
 

@@ -251,7 +251,7 @@ def test_rejects_new_cu_file():
 
 def test_split_clean_output_passes():
     files = {
-        "shared.h": "struct AppState { int n; };",
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
         "core.cpp": "void launch_vec_add() { synthi_gpu_launch(gpu, \"vec_add\", 1, 256, 0, stream, { &a, &b, &c, &n }); }",
         "gui.cpp": "void draw() {}",
         "host_runner.cpp": "int main() { return 0; }",
@@ -263,7 +263,7 @@ def test_split_clean_output_passes():
 
 def test_split_rejects_empty_arch():
     files = {
-        "shared.h": "",
+        "shared.h": '#include "synthi_gpu_runtime.h"',
         "core.cpp": "",
         "gui.cpp": "",
         "host_runner.cpp": "",
@@ -276,7 +276,7 @@ def test_split_rejects_empty_arch():
 
 def test_split_rejects_raw_launch_site():
     files = {
-        "shared.h": "",
+        "shared.h": '#include "synthi_gpu_runtime.h"',
         "core.cpp": "void l() { vec_add<<<1, 256>>>(0); }",
         "gui.cpp": "",
         "host_runner.cpp": "",
@@ -292,7 +292,7 @@ def test_split_rejects_raw_launch_site():
 
 def test_split_rejects_unresolved_synthi_launch_site():
     files = {
-        "shared.h": "",
+        "shared.h": '#include "synthi_gpu_runtime.h"',
         "core.cpp": "void l() { synthi_gpu_launch(gpu, \"ghost_kernel\", 1, 256, 0, stream, { &x }); }",
         "gui.cpp": "",
         "host_runner.cpp": "",
@@ -308,7 +308,7 @@ def test_split_rejects_unresolved_synthi_launch_site():
 
 def test_split_rejects_missing_device_file():
     files = {
-        "shared.h": "",
+        "shared.h": '#include "synthi_gpu_runtime.h"',
         "core.cpp": "",
         "gui.cpp": "",
         "host_runner.cpp": "",
@@ -316,3 +316,16 @@ def test_split_rejects_missing_device_file():
     r = verify_split_output(files=files, manifest_arch=["sm_80"])
     assert not r.ok
     assert any(v.rule == "split_missing_device_file" for v in r.violations)
+
+
+def test_split_rejects_missing_runtime_contract_header():
+    files = {
+        "shared.h": "struct AppState { int n; };",
+        "core.cpp": "void launch_vec_add() { synthi_gpu_launch(gpu, \"vec_add\", 1, 256, 0, stream, { &a, &b, &c, &n }); }",
+        "gui.cpp": "void draw() {}",
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert not r.ok
+    assert any(v.rule == "missing_gpu_runtime_header" for v in r.violations)

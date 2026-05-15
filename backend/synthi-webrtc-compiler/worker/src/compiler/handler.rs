@@ -20,6 +20,7 @@ use crate::compiler::stages::compile_core::compile_core;
 use crate::compiler::stages::compile_device::{compile_device_phase0, DeviceCompileOutcome};
 use crate::compiler::stages::compile_gui::compile_gui;
 use crate::compiler::stages::compile_runner::{compile_runner, HOST_RUNNER_FILENAME};
+use crate::compiler::stages::gpu_runtime_contract::ensure_gpu_runtime_contract_header;
 use crate::compiler::stages::guardrails::{
     apply_core_guardrails, apply_gui_guardrails, apply_shared_guardrails,
 };
@@ -1118,6 +1119,14 @@ pub async fn handle_compile_request(
             m.tier0_safe(),
         ),
         None => eprintln!("[HMR] compile_manifest: none (falling back to sdl2_default downstream)"),
+    }
+
+    if let Some(gpu) = compile_manifest.as_ref().and_then(|m| m.gpu.as_ref()) {
+        let header_path = ensure_gpu_runtime_contract_header(&ctx.workspace_path, gpu).await?;
+        eprintln!(
+            "[compile-device] runtime contract header ready path={}",
+            header_path.display()
+        );
     }
 
     let device_source_content: Option<String> = if !req.prefer_gpu_pipeline {
