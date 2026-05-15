@@ -191,27 +191,27 @@ services:
       - ai-engine
 
   coturn:
-  image: coturn/coturn:latest
-  ports:
-    - "3478:3478"
-    - "3478:3478/udp"
-    - "49152-49200:49152-49200/udp"
+    image: coturn/coturn:latest
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "49152-49200:49152-49200/udp"
 
-  command: >
-    --no-tls
-    --no-dtls
-    --lt-cred-mech
-    --user=synthi:synthi
-    --realm=synthi.local
-    --no-cli
-    --fingerprint
-    --min-port=49152
-    --max-port=49200
-    --listening-ip=0.0.0.0
-    --verbose
-    --log-file=stdout
+    command: >
+      --no-tls
+      --no-dtls
+      --lt-cred-mech
+      --user=synthi:synthi
+      --realm=synthi.local
+      --no-cli
+      --fingerprint
+      --min-port=49152
+      --max-port=49200
+      --listening-ip=0.0.0.0
+      --verbose
+      --log-file=stdout
 
-  restart: unless-stopped
+    restart: unless-stopped
 
   # Synthi MCP — sleeper container on the default compose network.
   # live-test.mjs uses `docker exec -i synthi-ide-mcp-1 node /app/dist/index.js`
