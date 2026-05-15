@@ -125,6 +125,10 @@ check_gpu() {
 # ── P0.2  nvcc + sm_120 ─────────────────────────────────────
 check_nvcc() {
   if ! command -v nvcc >/dev/null 2>&1; then
+    if [ "$SYNTHI_NO_GPU" = "1" ] || [ "$SYNTHI_SKIP_NVCC" = "1" ]; then
+      skip_step "P0.2" "nvcc not on PATH (live toolchain checks skipped in no-GPU mode)"
+      return 0
+    fi
     record "P0.2" fail "nvcc not on PATH — install CUDA Toolkit 12.8+ or pass nvidia/cuda:12.8.0-devel image"
     return 1
   fi
@@ -171,7 +175,7 @@ run_py_build_manifest() {
     return 1
   fi
   run_step "P0.3" "Python build_manifest tests" \
-    bash -lc "cd '$engine' && python3 -m pytest tests/test_gpu_build_manifest.py -v --tb=short"
+    bash -lc "cd '$engine' && TMPDIR=/tmp TMP=/tmp TEMP=/tmp python3 -m pytest tests/test_gpu_build_manifest.py -v --tb=short"
 }
 
 # ── P0.4  Python gpu_detect classifier ──────────────────────
@@ -183,7 +187,7 @@ run_py_gpu_detect() {
   fi
   local engine="$SYNTHI_REPO_ROOT/ai-backend/ai-engine"
   run_step "P0.4" "Python gpu_detect classifier" \
-    bash -lc "cd '$engine' && python3 -m pytest tests/test_gpu_detect.py -v --tb=short"
+    bash -lc "cd '$engine' && TMPDIR=/tmp TMP=/tmp TEMP=/tmp python3 -m pytest tests/test_gpu_detect.py -v --tb=short"
 }
 
 # ── P0.5  Rust compile_manifest (feature: gpu-hmr) ──────────
