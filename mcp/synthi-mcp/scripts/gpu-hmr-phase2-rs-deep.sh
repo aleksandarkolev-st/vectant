@@ -176,6 +176,40 @@ phase2_build_artifact() {
     build --features gpu-hmr --lib
 }
 
+# ── P2rs.9b Runtime-boundary symbols exported from Rust bins ─────
+phase2_runtime_boundary_exports() {
+  local log="$SYNTHI_LOG_DIR/P2rs.9b.log"
+  echo "${BLU}━━ P2rs.9b ${DIM}— runner/worker export GPU runtime boundary symbols${RST}"
+  if ! ( cd "$WORKER" && cargo build --features gpu-hmr --bin runner --bin worker $CARGO_EXTRA ) >"$log" 2>&1; then
+    local code=$?
+    record "P2rs.9b" fail "cargo build --bin runner --bin worker failed (rc=$code; tail $log)"
+    tail -n 25 "$log" | sed 's/^/    /'
+    return $code
+  fi
+
+  local missing=0
+  for bin in runner worker; do
+    local bin_path="$WORKER/target/debug/$bin"
+    if [ "$SYNTHI_RS_RELEASE" = "1" ]; then
+      bin_path="$WORKER/target/release/$bin"
+    fi
+    for sym in synthi_gpu_launch_raw synthi_gpu_register_buffer synthi_gpu_pack_buffer synthi_gpu_restore_buffer; do
+      if ! nm -D "$bin_path" 2>/dev/null | grep -q " $sym$"; then
+        echo "missing $sym in $bin_path" >>"$log"
+        missing=$((missing+1))
+      fi
+    done
+  done
+
+  if [ "$missing" -eq 0 ]; then
+    record "P2rs.9b" pass "runner + worker export synthi_gpu_* C ABI"
+  else
+    record "P2rs.9b" fail "missing $missing GPU runtime-boundary export(s); tail $log"
+    tail -n 25 "$log" | sed 's/^/    /'
+    return 1
+  fi
+}
+
 # ── P2rs.10 Compile-time Send+Sync sanity for every Phase-2 type ──
 phase2_send_sync_check() {
   # Each Phase-2 module has its own `..._is_send_and_sync` test.
@@ -290,6 +324,7 @@ phase2_cargo_check
 phase2_cargo_check_feature_off
 phase2_module_tests
 phase2_build_artifact
+phase2_runtime_boundary_exports
 phase2_send_sync_check
 phase2_adapter_wiring
 phase2_symbol_table_pins
