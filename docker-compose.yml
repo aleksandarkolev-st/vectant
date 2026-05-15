@@ -262,6 +262,19 @@ services:
       # Build-time gpu-hmr enables the Rust modules; this runtime flag keeps
       # the local stack explicit for harnesses and diagnostics.
       SYNTHI_GPU_HMR: "1"
+      # Docker Desktop / WSL2 ROCm path. ROCDXG tells the HSA runtime to use
+      # the /dev/dxg device exposed by Windows instead of native /dev/kfd.
+      HSA_ENABLE_DXG_DETECTION: "1"
+    devices:
+      - "/dev/dxg:/dev/dxg"
+    volumes:
+      - /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so:ro
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    ipc: host
+    shm_size: "8gb"
     depends_on:
       - signaling-server
       - collab-server
