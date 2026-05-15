@@ -10,9 +10,9 @@
 //
 // Phase scope: this is the ABI boundary and registry. The actual
 // CUfunction/HIP-function invocation is owned by the GPU module adapter
-// and launch graph plumbing; until that path is fully connected this
-// layer records launches and marks managed buffers dirty so snapshots
-// remain conservative.
+// and launch graph plumbing. This layer records launches, marks managed
+// buffers dirty so snapshots remain conservative, and fails fast when no
+// device sidecar dispatcher has been installed.
 
 #![cfg(feature = "gpu-hmr")]
 
@@ -232,19 +232,22 @@ pub extern "C" fn synthi_gpu_launch_raw(
     };
 
     let dispatch_result = dispatcher.as_ref().map(|d| d.dispatch(&request, args));
-    if let Some(result) = dispatch_result {
-        let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
-        if let Some(record) = guard.launches.get_mut(launch_index) {
-            match result {
-                Ok(()) => {
-                    record.dispatched = true;
-                }
-                Err(e) => {
-                    record.dispatch_error = Some(e);
-                }
+
+    let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    if let Some(record) = guard.launches.get_mut(launch_index) {
+        match dispatch_result {
+            Some(Ok(())) => {
+                record.dispatched = true;
+            }
+            Some(Err(e)) => {
+                record.dispatch_error = Some(e);
+            }
+            None => {
+                record.dispatch_error = Some("no GPU launch dispatcher installed".to_string());
             }
         }
     }
+    drop(guard);
 
     let ok = {
         let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
@@ -266,7 +269,7 @@ pub extern "C" fn synthi_gpu_launch_raw(
         if dispatcher.is_some() {
             if ok { "ok" } else { "failed" }
         } else {
-            "queued"
+            "missing-dispatcher"
         }
     );
     ok
@@ -420,7 +423,7 @@ mod tests {
             4,
         );
 
-        assert!(ok);
+        assert!(!ok);
         let launches = launch_records_snapshot();
         assert_eq!(launches.len(), 1);
         assert_eq!(launches[0].kernel_name, "vec_add");
@@ -428,7 +431,10 @@ mod tests {
         assert_eq!(launches[0].block, (256, 1, 1));
         assert_eq!(launches[0].arg_count, 4);
         assert!(!launches[0].dispatched);
-        assert!(launches[0].dispatch_error.is_none());
+        assert_eq!(
+            launches[0].dispatch_error.as_deref(),
+            Some("no GPU launch dispatcher installed")
+        );
         assert!(managed_buffers_snapshot()[0].dirty);
     }
 
