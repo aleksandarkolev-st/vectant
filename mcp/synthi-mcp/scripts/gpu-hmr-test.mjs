@@ -256,6 +256,7 @@ async function probeToolchain() {
 
 const SHARED_H = `// shared.h — GPU HMR test fixture
 #pragma once
+#include "synthi_gpu_runtime.h"
 #include <cstdint>
 #include <cstddef>
 
@@ -270,16 +271,14 @@ struct CoreState {
     int      n;
     uint64_t frame;
     double   accumulator;                 // touched on host every frame
+    SynthiGpuRuntime* gpu;                // Synthi runtime boundary for sidecar launches
+    std::uintptr_t stream;
 };
-
-// Forward declares used by host and device sides.
-extern "C" {
-    void vec_add_launch(const float* a, const float* b, float* c, int n);
-}
 `;
 
 const CORE_CPP = `// core.cpp — GPU HMR test fixture (Phase 0/1 vector add)
 #include "shared.h"
+#include <cstdlib>
 #include <cstring>
 #include <cuda_runtime.h>
 
@@ -300,9 +299,15 @@ extern "C" void* core_on_load(void* prev, size_t prev_len) {
     g_state->magic = CORE_STATE_MAGIC;
     g_state->version = 1;
     g_state->n = N_ELEMS;
+    cudaStream_t stream = nullptr;
+    cudaStreamCreate(&stream);
+    g_state->stream = reinterpret_cast<std::uintptr_t>(stream);
     cudaMalloc(&g_state->d_a, sizeof(float) * N_ELEMS);
     cudaMalloc(&g_state->d_b, sizeof(float) * N_ELEMS);
     cudaMalloc(&g_state->d_c, sizeof(float) * N_ELEMS);
+    synthi_register(g_state->gpu, g_state->d_a, sizeof(float) * N_ELEMS, "a", "persistent");
+    synthi_register(g_state->gpu, g_state->d_b, sizeof(float) * N_ELEMS, "b", "persistent");
+    synthi_register(g_state->gpu, g_state->d_c, sizeof(float) * N_ELEMS, "c", "persistent");
     // Deterministic seed: a[i]=i, b[i]=2i
     float* host = (float*) std::malloc(sizeof(float) * N_ELEMS);
     for (int i = 0; i < N_ELEMS; ++i) host[i] = (float) i;
@@ -314,9 +319,47 @@ extern "C" void* core_on_load(void* prev, size_t prev_len) {
 }
 
 extern "C" void core_tick(void* /*ctx*/) {
-    vec_add_launch(g_state->d_a, g_state->d_b, g_state->d_c, g_state->n);
+    dim3 block(256);
+    dim3 grid((g_state->n + block.x - 1) / block.x);
+    synthi_gpu_launch(
+        g_state->gpu,
+        "vec_add",
+        grid,
+        block,
+        0,
+        g_state->stream,
+        { &g_state->d_a, &g_state->d_b, &g_state->d_c, &g_state->n }
+    );
     g_state->frame += 1;
     g_state->accumulator += 1.0;
+}
+
+extern "C" const DeviceDescriptor* device_descriptor() {
+    static const char* arches[] = { "sm_80" };
+    static const char* kernels[] = { "vec_add" };
+    static DeviceDescriptor descriptor = {
+        "cuda",
+        arches,
+        kernels,
+        1,
+        1,
+        0,
+    };
+    return &descriptor;
+}
+
+extern "C" void device_on_load(const unsigned char* /*prev_blob*/, std::size_t /*len*/) {
+    if (!g_state) return;
+    synthi_register(g_state->gpu, g_state->d_a, sizeof(float) * g_state->n, "a", "persistent");
+    synthi_register(g_state->gpu, g_state->d_b, sizeof(float) * g_state->n, "b", "persistent");
+    synthi_register(g_state->gpu, g_state->d_c, sizeof(float) * g_state->n, "c", "persistent");
+}
+
+extern "C" std::size_t device_save_size() { return 0; }
+extern "C" void device_save_write(unsigned char* /*out*/, std::size_t /*cap*/) {}
+
+extern "C" unsigned long long device_kernel_sig_hash(const char* name) {
+    return std::strcmp(name, "vec_add") == 0 ? 0x7e5b30b1a64c21d5ULL : 0ULL;
 }
 `;
 
@@ -366,12 +409,6 @@ extern "C" __global__ void vec_add(const float* a, const float* b, float* c, int
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) c[i] = a[i] + b[i];
 }
-
-extern "C" void vec_add_launch(const float* a, const float* b, float* c, int n) {
-    int block = 256;
-    int grid = (n + block - 1) / block;
-    vec_add<<<grid, block>>>(a, b, c, n);
-}
 `;
 
 // Phase-1 edit: + becomes * — same signature, kernel hash unchanged.
@@ -390,11 +427,6 @@ extern "C" __global__ void vec_add(const float* a, const float* b, float* c, int
         c[i] = x * y;
     }
 }
-extern "C" void vec_add_launch(const float* a, const float* b, float* c, int n) {
-    int block = 256;
-    int grid = (n + block - 1) / block;
-    vec_add<<<grid, block>>>(a, b, c, n);
-}
 `;
 
 // Phase-2 abi-breaking edit: extra parameter — signature changes.
@@ -402,11 +434,6 @@ const DEVICE_CU_PHASE2_ABI_BREAK = `// device.cu — abi-breaking edit (extra pa
 extern "C" __global__ void vec_add(const float* a, const float* b, float* c, int n, float scale) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) c[i] = (a[i] + b[i]) * scale;
-}
-extern "C" void vec_add_launch(const float* a, const float* b, float* c, int n) {
-    int block = 256;
-    int grid = (n + block - 1) / block;
-    vec_add<<<grid, block>>>(a, b, c, n, 1.0f);   // host updated in sync
 }
 `;
 
@@ -422,10 +449,6 @@ extern "C" __global__ void vec_add(const float* a, const float* b, float* c, int
     for (int k = 0; k < 200; ++k) local[k] = a[(i + k) % n] * 1.000001f;
     float sum = 0; for (int k = 0; k < 200; ++k) sum += local[k];
     if (i < n) c[i] = sum + b[i];
-}
-extern "C" void vec_add_launch(const float* a, const float* b, float* c, int n) {
-    int block = 256; int grid = (n + block - 1) / block;
-    vec_add<<<grid, block>>>(a, b, c, n);
 }
 `;
 const DEVICE_CU_HEAL_T3 = DEVICE_CU_PHASE0.replace(
@@ -463,6 +486,43 @@ function manifestFor(vendor) {
       fatbin_strategy: 'sidecar_module',
     },
   };
+}
+
+function verifySeedFixtureContract(files) {
+  const byPath = new Map(files.map((f) => [f.path, f.content]));
+  const hostText = ['shared.h', 'core.cpp', 'gui.cpp', 'host_runner.cpp']
+    .map((p) => byPath.get(p) ?? '')
+    .join('\n');
+  const deviceText = byPath.get('device.cu') ?? byPath.get('device.hip') ?? '';
+  const findings = [];
+  if (!(byPath.get('shared.h') ?? '').includes('#include "synthi_gpu_runtime.h"')) {
+    findings.push('shared.h_missing_synthi_gpu_runtime_header');
+  }
+  if (!/\bsynthi_gpu_launch\s*\(/.test(hostText)) {
+    findings.push('host_missing_synthi_gpu_launch_boundary');
+  }
+  if (/\w+\s*<<<[\s\S]*?>>>/.test(hostText)) {
+    findings.push('host_contains_raw_triple_chevron_launch');
+  }
+  if (/\bvec_add_launch\b/.test(hostText) || /\bvec_add_launch\b/.test(deviceText)) {
+    findings.push('private_vec_add_launch_wrapper_present');
+  }
+  if (!/\bdevice_descriptor\s*\(/.test(hostText)) {
+    findings.push('missing_device_descriptor_export');
+  }
+  if (!/\bdevice_on_load\s*\(/.test(hostText)) {
+    findings.push('missing_device_on_load_export');
+  }
+  if (!/\bdevice_save_size\s*\(/.test(hostText) || !/\bdevice_save_write\s*\(/.test(hostText)) {
+    findings.push('missing_device_save_exports');
+  }
+  if (!/\bdevice_kernel_sig_hash\s*\(/.test(hostText)) {
+    findings.push('missing_device_kernel_sig_hash_export');
+  }
+  if (!/\b__global__\s+void\s+vec_add\s*\(/.test(deviceText)) {
+    findings.push('device_missing_vec_add_kernel');
+  }
+  return { ok: findings.length === 0, findings };
 }
 
 // ───────────────────────── compile + HMR over the AI engine wire ─────────────────────────
@@ -608,6 +668,11 @@ async function seedWorkspace(vendor) {
     { path: deviceFilename, content: DEVICE_CU_PHASE0 },
     { path: '.synthi/build_manifest.json', content: JSON.stringify(m, null, 2) },
   ];
+
+  const contract = verifySeedFixtureContract(files);
+  record('seed', 'fixture uses Synthi GPU runtime contract',
+    contract.ok ? 'pass' : 'fail',
+    contract.ok ? 'synthi_gpu_launch + lifecycle exports' : contract.findings.join(', '));
 
   try {
     await writeFilesBatch({ slug: CFG.slug, userId: CFG.hostId, files, syncToGcs: CFG.syncToGcs });
@@ -909,10 +974,6 @@ extern "C" __global__ void vec_add(const float* a, const float* b, float* c, int
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) c[i] = a[i] + b[i];
 }
-extern "C" void vec_add_launch(const float* a, const float* b, float* c, int n) {
-    int block = 256; int grid = (n + block - 1) / block;
-    vec_add<<<grid, block>>>(a, b, c, n);
-}
 `;
   const compile = await postCompile({
     slug: CFG.slug,
@@ -1031,7 +1092,26 @@ async function writeSummary() {
   process.exitCode = failed > 0 ? 1 : 0;
 }
 
-main().catch((e) => {
+async function selfCheck() {
+  const files = [
+    { path: 'shared.h', content: SHARED_H },
+    { path: 'core.cpp', content: CORE_CPP },
+    { path: 'gui.cpp', content: GUI_CPP },
+    { path: 'host_runner.cpp', content: HOST_RUNNER_CPP },
+    { path: 'device.cu', content: DEVICE_CU_PHASE0 },
+    { path: '.synthi/build_manifest.json', content: JSON.stringify(manifestFor('cuda'), null, 2) },
+  ];
+  const contract = verifySeedFixtureContract(files);
+  if (!contract.ok) {
+    console.error(`gpu-hmr-test self-check failed: ${contract.findings.join(', ')}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log('gpu-hmr-test self-check passed: fixture uses Synthi GPU runtime contract');
+}
+
+const entry = process.argv.includes('--self-check') ? selfCheck : main;
+entry().catch((e) => {
   console.error(color.red + '\nFATAL: ' + color.reset + (e.stack ?? e.message));
   process.exit(1);
 });
