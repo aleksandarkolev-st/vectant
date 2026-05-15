@@ -68,6 +68,7 @@ const CFG = {
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'host').toLowerCase(),
   mcpContainer: process.env.MCP_CONTAINER ?? 'synthi-ide-mcp-1',
+  workerContainer: process.env.WORKER_CONTAINER ?? 'synthi-ide-worker-1',
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
   skipPhases: new Set((process.env.SKIP_PHASES ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
   onlyPhases: new Set((process.env.ONLY_PHASES ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
@@ -99,6 +100,11 @@ function record(phase, name, status, detail = '') {
 function shouldRun(phase) {
   if (CFG.onlyPhases.size > 0 && !CFG.onlyPhases.has(phase)) return false;
   if (CFG.skipPhases.has(phase)) return false;
+  return true;
+}
+function skipIfNoGpuToolchain(phase, ctx, name) {
+  if (ctx.toolchain?.ok) return false;
+  record(phase, name, 'skip', ctx.toolchain?.reason ?? 'no_toolchain');
   return true;
 }
 
@@ -234,20 +240,31 @@ async function probeToolchain() {
   out.host.nvcc = await execWhich('nvcc');
   out.host.hipcc = await execWhich('hipcc');
 
-  if (process.env.WORKER_CONTAINER || CFG.mcpTransport === 'docker') {
-    const ctr = process.env.WORKER_CONTAINER ?? CFG.mcpContainer;
-    out.worker.nvcc = await new Promise((res) => {
-      execFile('docker', ['exec', ctr, 'sh', '-c', 'command -v nvcc || true'], (e, so) => {
-        res(e ? null : (so.trim() || null));
-      });
+  await new Promise((res) => {
+    execFile('docker', ['exec', CFG.workerContainer, 'sh', '-c', 'command -v nvcc || true'], (e, so) => {
+      if (!e) out.worker.nvcc = so.trim() || null;
+      res();
     });
-    out.worker.hipcc = await new Promise((res) => {
-      execFile('docker', ['exec', ctr, 'sh', '-c', 'command -v hipcc || true'], (e, so) => {
-        res(e ? null : (so.trim() || null));
-      });
+  });
+  await new Promise((res) => {
+    execFile('docker', ['exec', CFG.workerContainer, 'sh', '-c', 'command -v hipcc || true'], (e, so) => {
+      if (!e) out.worker.hipcc = so.trim() || null;
+      res();
     });
-  }
+  });
   return out;
+}
+
+function toolchainForVendor(tc, vendor) {
+  if (vendor === 'rocm') {
+    if (tc.worker.hipcc) return { ok: true, source: 'worker', path: tc.worker.hipcc };
+    if (CFG.hipFakeRuntime) return { ok: true, source: 'fake-runtime', path: 'SYNTHI_GPU_HIP_FAKE_RUNTIME=1' };
+    if (tc.worker.hipcc === undefined && tc.host.hipcc) return { ok: true, source: 'host', path: tc.host.hipcc };
+    return { ok: false, reason: 'no_toolchain: hipcc not found' };
+  }
+  if (tc.worker.nvcc) return { ok: true, source: 'worker', path: tc.worker.nvcc };
+  if (tc.worker.nvcc === undefined && tc.host.nvcc) return { ok: true, source: 'host', path: tc.host.nvcc };
+  return { ok: false, reason: 'no_toolchain: nvcc not found' };
 }
 
 // ───────────────────────── fixtures ─────────────────────────
@@ -633,11 +650,11 @@ async function preflight() {
     JSON.stringify(ep.endpoints));
 
   const tc = await probeToolchain();
-  record('preflight', 'nvcc on host', tc.host.nvcc ? 'pass' : 'warn', tc.host.nvcc ?? 'not found');
-  record('preflight', 'hipcc on host', tc.host.hipcc ? 'pass' : 'warn', tc.host.hipcc ?? 'not found');
+  record('preflight', 'nvcc on host', tc.host.nvcc ? 'pass' : 'skip', tc.host.nvcc ?? 'not found');
+  record('preflight', 'hipcc on host', tc.host.hipcc ? 'pass' : 'skip', tc.host.hipcc ?? 'not found');
   if (tc.worker.nvcc !== undefined) {
-    record('preflight', 'nvcc in worker', tc.worker.nvcc ? 'pass' : 'warn', tc.worker.nvcc ?? 'not found');
-    record('preflight', 'hipcc in worker', tc.worker.hipcc ? 'pass' : 'warn', tc.worker.hipcc ?? 'not found');
+    record('preflight', 'nvcc in worker', tc.worker.nvcc ? 'pass' : 'skip', tc.worker.nvcc ?? 'not found');
+    record('preflight', 'hipcc in worker', tc.worker.hipcc ? 'pass' : 'skip', tc.worker.hipcc ?? 'not found');
   }
 
   record('preflight', 'SYNTHI_GPU_HMR flag', CFG.gpuHmr ? 'pass' : 'warn',
@@ -701,6 +718,7 @@ async function seedWorkspace(vendor) {
 async function phaseP0(ctx) {
   if (!shouldRun('P0')) return record('P0', 'phase skipped', 'skip', 'SKIP_PHASES/ONLY_PHASES filter');
   if (!CFG.gpuHmr) return record('P0', 'toolchain smoke', 'skip', 'feature_flag_off');
+  if (skipIfNoGpuToolchain('P0', ctx, 'toolchain smoke')) return;
 
   log('info', '── Phase P0: toolchain smoke ──');
   const compile = await postCompile({
@@ -733,6 +751,7 @@ async function phaseP0(ctx) {
 async function phaseP1(ctx) {
   if (!shouldRun('P1')) return record('P1', 'phase skipped', 'skip', 'filter');
   if (!CFG.gpuHmr) return record('P1', 'cold reload buffer survival', 'skip', 'feature_flag_off');
+  if (skipIfNoGpuToolchain('P1', ctx, 'cold reload buffer survival')) return;
 
   log('info', '── Phase P1: cold reload + buffer survival ──');
   // Record pre-edit buffer pointers from worker.log (P0 should have logged them).
@@ -823,6 +842,7 @@ async function phaseP1(ctx) {
 async function phaseP2(ctx) {
   if (!shouldRun('P2')) return record('P2', 'phase skipped', 'skip', 'filter');
   if (!CFG.gpuHmr) return record('P2', 'fast device swap', 'skip', 'feature_flag_off');
+  if (skipIfNoGpuToolchain('P2', ctx, 'fast device swap')) return;
 
   log('info', '── Phase P2: fast device-only swap + abi-breaking ──');
 
@@ -870,6 +890,7 @@ async function phaseP2(ctx) {
 async function phaseP3Heal(ctx) {
   if (!shouldRun('P3-heal')) return record('P3-heal', 'phase skipped', 'skip', 'filter');
   if (!CFG.gpuHmr) return record('P3-heal', 'healer drills', 'skip', 'feature_flag_off');
+  if (skipIfNoGpuToolchain('P3-heal', ctx, 'healer drills')) return;
 
   log('info', '── Phase P3-heal: three-tier healer drills ──');
 
@@ -931,6 +952,7 @@ async function phaseP3Heal(ctx) {
 async function phaseP3Mixed(ctx) {
   if (!shouldRun('P3-mixed')) return record('P3-mixed', 'phase skipped', 'skip', 'filter');
   if (!CFG.gpuHmr) return record('P3-mixed', 'mixed reload', 'skip', 'feature_flag_off');
+  if (skipIfNoGpuToolchain('P3-mixed', ctx, 'mixed reload')) return;
 
   log('info', '── Phase P3-mixed: host + device edit in one batch ──');
   // Edit both core.cpp (touch host launch) and device.cu (touch kernel) together.
@@ -964,6 +986,7 @@ async function phaseP3Mixed(ctx) {
 async function phaseP3StreamHang(ctx) {
   if (!shouldRun('P3-stream-hang')) return record('P3-stream-hang', 'phase skipped', 'skip', 'filter');
   if (!CFG.gpuHmr) return record('P3-stream-hang', 'stream hang watchdog', 'skip', 'feature_flag_off');
+  if (skipIfNoGpuToolchain('P3-stream-hang', ctx, 'stream hang watchdog')) return;
 
   log('info', '── Phase P3-stream-hang: watchdog + drain timeout ──');
   // Inject a kernel guaranteed to spin.
@@ -1024,6 +1047,10 @@ async function main() {
       continue;
     }
     ctx.vendor = vendor;
+    ctx.toolchain = toolchainForVendor(pre.tc, vendor);
+    record(`vendor:${vendor}`, 'GPU toolchain gate',
+      ctx.toolchain.ok ? 'pass' : 'skip',
+      ctx.toolchain.ok ? `${ctx.toolchain.source}:${ctx.toolchain.path}` : ctx.toolchain.reason);
     // Phases run sequentially because they share the same workspace state.
     try { await phaseP0(ctx); }            catch (e) { record('P0',            'unexpected throw', 'fail', e.message.slice(0, 200)); }
     try { await phaseP1(ctx); }            catch (e) { record('P1',            'unexpected throw', 'fail', e.message.slice(0, 200)); }
