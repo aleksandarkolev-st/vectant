@@ -280,7 +280,12 @@ async function readWorkerLogTail(maxBytes = 256 * 1024) {
     await fd.close();
     return buf.toString('utf8');
   } catch (e) {
-    return null;
+    return new Promise((resolve) => {
+      execFile('docker', ['logs', '--tail', '1000', CFG.workerContainer], { maxBuffer: maxBytes * 2 }, (err, stdout, stderr) => {
+        if (err) return resolve(null);
+        resolve(`${stdout ?? ''}${stderr ?? ''}`.slice(-maxBytes));
+      });
+    });
   }
 }
 
@@ -676,6 +681,12 @@ function sourceSetForVendor(vendor) {
   return { core, gui };
 }
 
+function deviceSourceForPath(filePath, content) {
+  if (!filePath.endsWith('.hip')) return content;
+  if (content.includes('<hip/hip_runtime.h>')) return content;
+  return content.replace(/^/, '#include <hip/hip_runtime.h>\n');
+}
+
 const DEVICE_CU_PHASE0 = `// device.cu — vector add baseline (Phase 0/1)
 extern "C" __global__ void vec_add(const float* a, const float* b, float* c, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -901,6 +912,7 @@ async function postCompileViaAiEngine({ slug, files, manifest }) {
 }
 
 async function postCompile({ ctx, slug, files, manifest }) {
+  files = files.map((f) => ({ ...f, content: deviceSourceForPath(f.path, f.content) }));
   for (const f of files) ctx.sourceFiles.set(f.path, f.content);
 
   try {
@@ -1034,7 +1046,7 @@ async function seedWorkspace(vendor) {
     { path: 'core.cpp', content: sources.core },
     { path: 'gui.cpp', content: sources.gui },
     { path: 'host_runner.cpp', content: HOST_RUNNER_CPP },
-    { path: deviceFilename, content: DEVICE_CU_PHASE0 },
+    { path: deviceFilename, content: deviceSourceForPath(deviceFilename, DEVICE_CU_PHASE0) },
     { path: '.synthi/build_manifest.json', content: JSON.stringify(m, null, 2) },
   ];
 
@@ -1319,7 +1331,7 @@ async function phaseP3Mixed(ctx) {
 
   log('info', '── Phase P3-mixed: host + device edit in one batch ──');
   // Edit both core.cpp (touch host launch) and device.cu (touch kernel) together.
-  const editedCore = CORE_CPP.replace(
+  const editedCore = (ctx.sourceFiles.get('core.cpp') ?? CORE_CPP).replace(
     'g_state->accumulator += 1.0;',
     'g_state->accumulator += 2.5;   // P3-mixed: accumulator must survive',
   );
