@@ -1,6 +1,6 @@
 # Codex Next Session Handoff - GPU HMR / RX 9070 XT
 
-Date: 2026-05-15
+Date: 2026-05-16
 
 ## Current State
 
@@ -12,6 +12,9 @@ Date: 2026-05-15
 
 ## Latest Local Commits
 
+- `f62623ec fix(gpu-hmr): classify kernel abi changes`
+- `05c7257c docs(gpu-hmr): record compose build closeout`
+- `d3ea6464 docs(gpu-hmr): update rx 9070 xt handoff`
 - `7555e8f8 test(gpu-hmr): stabilize rocm p2 log assertions`
 - `63158fd4 test(gpu-hmr): accept manifest module aliases`
 - `c975d802 test(gpu-hmr): accept rocm sidecar reload marker`
@@ -37,7 +40,11 @@ Date: 2026-05-15
   - Uses timestamped worker-log checkpoints.
   - Reads full Docker `logs --since` windows for checkpoint searches, avoiding stdout/stderr ordering and tail aging problems.
   - Caps the post-compile `synthi_wait_hmr` terminal-event wait for GPU runs.
-  - Accepts the live ABI-shaped reload fallback marker emitted by the worker (`HMR Planner] Decision: WarmReload`) while still accepting stricter `abi_breaking`, `mixed`, cold, or full-restart markers if they appear later.
+  - Requires the live ABI-shaped device edit to emit `plan=abi_breaking`, `cold_reload reason=abi_breaking`, or `device_on_load invoked`.
+- Worker GPU ABI classification now carries per-kernel parameter-list signatures into the device `BuildManifest.abi_version`.
+  - Device body-only edits keep the ABI fingerprint stable and continue using fast GPU sidecar swap.
+  - Kernel parameter-list edits change the ABI fingerprint and the GPU module adapter emits `plan=abi_breaking` before the fast-swap path.
+  - The adapter records the last accepted device ABI fingerprint so subsequent device reloads can compare manifests without using the host `prev_manifest`.
 
 ## Verified On This Machine
 
@@ -49,6 +56,16 @@ npm run build
 ```
 
 Result: passed.
+
+Targeted Rust verification inside the worker builder image:
+
+```powershell
+docker build --target builder --build-arg WORKER_CARGO_FEATURES=gpu-hmr -t synthi-worker-builder-gpu-hmr-test .
+docker run --rm synthi-worker-builder-gpu-hmr-test cargo test --release --features gpu-hmr device_kernel_ -- --nocapture
+docker run --rm synthi-worker-builder-gpu-hmr-test cargo test --release --features gpu-hmr phase3_reload_reports_abi_breaking_when_kernel_signature_changes -- --nocapture
+```
+
+Result: build passed; `device_kernel_` ran 4 tests; ABI-breaking adapter test passed and printed `plan=abi_breaking`.
 
 Focused ROCm P0/P1/P2 harness:
 
@@ -81,10 +98,10 @@ Key verified markers include:
 [P0] worker invokes device compiler - compile-device] hipcc
 [P0] gpu adapter loaded cubin/hsaco - Device sidecar reload vendor=rocm ... result=Success
 [P1] reload plan emitted - [gpu-reload] plan=mixed
-[P1] snapshot latency within 500ms - snapshot_ms=34 bytes=0.0MiB
-[P1] 2nd-edit snapshot within tight budget (250ms) - snapshot_ms=34
-[P2] fast swap within budget (300ms) - reload_ms=2
-[P2] ABI edit reaches planner/reload fallback - HMR Planner] Decision: WarmReload
+[P1] snapshot latency within 500ms - snapshot_ms=100 bytes=0.0MiB
+[P1] 2nd-edit snapshot within tight budget (250ms) - snapshot_ms=100
+[P2] fast swap within budget (300ms) - reload_ms=3
+[P2] ABI edit emits abi_breaking cold reload - plan=abi_breaking
 ```
 
 Worker ROCm visibility previously verified in the live worker:
@@ -95,11 +112,9 @@ HIP version: 7.2.53211-e1a6bc5663
 rocminfo reports gfx1201 / AMD Radeon RX 9070 XT
 ```
 
-## Important Caveat
+## Current Caveat
 
-The live worker does not yet classify the harness extra-parameter device edit as `plan=abi_breaking`. It compiles the sidecar and the general HMR planner reports `WarmReload`. The harness now treats that as a verified ABI-shaped reload fallback so P0/P1/P2 can represent the behavior that is actually wired today.
-
-The stricter future worker enhancement is to carry per-kernel signature metadata into the adapter request or build manifest so a kernel parameter-list change can deterministically emit `plan=abi_breaking` before reload.
+The P0/P1/P2 GPU HMR path is live for ROCm on this RX 9070 XT and the ABI-shaped edit now reaches the stricter `plan=abi_breaking` marker through MCP. Remaining work is P3 polish/healer/stream-hang coverage and richer ABI stamping for constant-memory layout drift.
 
 ## Final Closeout Commands
 

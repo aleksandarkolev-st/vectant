@@ -9,7 +9,7 @@ SKIP   [preflight] nvcc in worker  — not found
 PASS   [preflight] hipcc in worker  — /opt/rocm/bin/hipcc
 PASS   [preflight] SYNTHI_GPU_HMR flag  — enabled
 PASS   [preflight] MCP tools/list  — transport=docker count=42
-PASS   [seed] create workspace  — id=cmp7enwh90000pl01d4s1zssk slug=gpu-hmr-1778879049771
+PASS   [seed] create workspace  — id=cmp7g8ryl0000qr01paqpkrhr slug=gpu-hmr-1778881702611
 PASS   [seed] fixture uses Synthi GPU runtime contract  — synthi_gpu_launch + lifecycle exports
 PASS   [seed] write-files-batch (5 src + manifest)  — 6 files
 PASS   [seed] stage + commit
@@ -18,19 +18,19 @@ PASS   [vendor:rocm] GPU toolchain gate  — worker:/opt/rocm/bin/hipcc
 PASS   [preflight] MCP synthi_attach  — attached; no frame yet
 PASS   [P0] compile dispatch
 PASS   [P0] worker invokes device compiler  — compile-device] hipcc
-PASS   [P0] gpu adapter loaded cubin/hsaco  — Device sidecar reload vendor=rocm artifact=/tmp/.tmp7RJojr/build/device_1778879063.hsaco kernels=vec_add result=Success
+PASS   [P0] gpu adapter loaded cubin/hsaco  — Device sidecar reload vendor=rocm artifact=/tmp/.tmpNv8xdi/build/device_1778881717.hsaco kernels=vec_add result=Success
 PASS   [P0] device compiler not wrapped by ccache  — clean
 PASS   [P1] edit dispatch
 PASS   [P1] reload plan emitted  — [gpu-reload] plan=mixed
 PASS   [P1] buffer pointers reused across swap  — state_preserved: true
 PASS   [P1] pre/post pointer overlap  — state_preserved=true; no pre-edit pointer marker retained
-PASS   [P1] snapshot latency within 500ms  — snapshot_ms=34  bytes=0.0MiB
+PASS   [P1] snapshot latency within 500ms  — snapshot_ms=100  bytes=0.0MiB
 PASS   [P1] snapshot tier reported  — tier=B
-PASS   [P1] 2nd-edit snapshot within tight budget (250ms)  — snapshot_ms=34  (dirty-bit accounting should skip clean buffers — §6.1.2)
+PASS   [P1] 2nd-edit snapshot within tight budget (250ms)  — snapshot_ms=100  (dirty-bit accounting should skip clean buffers — §6.1.2)
 PASS   [P2] fast-swap dispatch
-PASS   [P2] fast swap within budget (300ms)  — reload_ms=2
+PASS   [P2] fast swap within budget (300ms)  — reload_ms=3
 PASS   [P2] abi-break dispatch
-PASS   [P2] ABI edit reaches planner/reload fallback  — HMR Planner] Decision: WarmReload
+PASS   [P2] ABI edit emits abi_breaking cold reload  — plan=abi_breaking
 SKIP   [P3-mixed] phase skipped  — filter
 SKIP   [P3-heal] phase skipped  — filter
 SKIP   [P3-stream-hang] phase skipped  — filter
