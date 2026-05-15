@@ -335,6 +335,18 @@ phase2_device_snapshot_intact() {
     test --features gpu-hmr --lib hmr::device_snapshot -- --nocapture
 }
 
+# ── P2rs.16 Contract regressions added after live integration ─────
+phase2_runtime_contract_regressions() {
+  run_cargo "P2rs.16a" "generated GPU runtime contract header compiles" \
+    test --features gpu-hmr --lib compiler::stages::gpu_runtime_contract -- --nocapture
+
+  run_cargo "P2rs.16b" "device kernel extraction + host GPU ABI contract tests" \
+    test --features gpu-hmr --lib gpu_host_contract_tests -- --nocapture
+
+  run_cargo "P2rs.16c" "GPU runtime watchdog fatal-fault classification tests" \
+    test --features gpu-hmr --lib runtime::gpu_runtime_watchdog -- --nocapture
+}
+
 # ── main ────────────────────────────────────────────────────
 echo "${BLU}════════════════════════════════════════${RST}"
 echo "${BLU}  GPU-HMR Phase 2 (Rust) deep-test      ${RST}"
@@ -365,6 +377,7 @@ phase2_symbol_table_pins
 phase2_host_probe
 phase2_snapshot_envelope_still_intact
 phase2_device_snapshot_intact
+phase2_runtime_contract_regressions
 
 echo ""
 echo "${BLU}════════════════════════════════════════${RST}"
