@@ -79,6 +79,10 @@ bool synthi_gpu_restore_buffer(const unsigned char* blob, const char* semantic_n
 
 }} // extern "C"
 
+inline std::uintptr_t synthi_gpu_stream_token(std::nullptr_t) {{
+    return 0;
+}}
+
 template <typename Stream>
 inline std::uintptr_t synthi_gpu_stream_token(Stream stream) {{
     if constexpr (std::is_pointer_v<Stream>) {{
@@ -143,6 +147,8 @@ mod tests {
     use crate::hmr::compile_manifest::{
         DeviceCompiler, FatbinStrategy, GpuBuildBlock, SnapshotMode,
     };
+    use std::fs;
+    use std::process::Command;
 
     fn gpu(vendor: DeviceVendor) -> GpuBuildBlock {
         GpuBuildBlock {
@@ -164,6 +170,7 @@ mod tests {
         let h = render_gpu_runtime_header(&gpu(DeviceVendor::Cuda));
         assert!(h.contains("synthi_gpu_launch_raw"));
         assert!(h.contains("inline bool synthi_gpu_launch"));
+        assert!(h.contains("synthi_gpu_stream_token(std::nullptr_t)"));
         assert!(h.contains("const DeviceDescriptor* device_descriptor()"));
         assert!(h.contains("void device_on_load"));
         assert!(h.contains("std::size_t device_save_size()"));
@@ -179,5 +186,49 @@ mod tests {
         assert!(rocm.contains("#define SYNTHI_GPU_VENDOR_ROCM 1"));
         assert!(!cuda.contains("cuda_runtime.h"));
         assert!(!rocm.contains("hip/hip_runtime.h"));
+    }
+
+    #[test]
+    fn generated_header_accepts_common_stream_token_shapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let header_path = dir.path().join(SYNTHI_GPU_RUNTIME_HEADER);
+        let smoke_path = dir.path().join("stream_token_smoke.cpp");
+        fs::write(&header_path, render_gpu_runtime_header(&gpu(DeviceVendor::Cuda))).unwrap();
+        fs::write(
+            &smoke_path,
+            r#"#include "synthi_gpu_runtime.h"
+
+struct Dim3 { unsigned int x; unsigned int y; unsigned int z; };
+
+void smoke(SynthiGpuRuntime* gpu) {
+    Dim3 grid{1, 1, 1};
+    Dim3 block{32, 1, 1};
+    int value = 0;
+    const void* arg = &value;
+    (void)synthi_gpu_stream_token(nullptr);
+    (void)synthi_gpu_stream_token(static_cast<void*>(nullptr));
+    (void)synthi_gpu_stream_token(0);
+    (void)synthi_gpu_launch(gpu, "noop", grid, block, 0, nullptr, {arg});
+}
+"#,
+        )
+        .unwrap();
+
+        let compiler = std::env::var("CXX").unwrap_or_else(|_| "c++".to_string());
+        let output = Command::new(&compiler)
+            .arg("-std=c++17")
+            .arg("-fsyntax-only")
+            .arg("-I")
+            .arg(dir.path())
+            .arg(&smoke_path)
+            .output()
+            .unwrap_or_else(|err| panic!("failed to run {compiler}: {err}"));
+
+        assert!(
+            output.status.success(),
+            "generated GPU runtime header failed C++ syntax check\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
