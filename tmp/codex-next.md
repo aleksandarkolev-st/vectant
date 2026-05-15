@@ -185,9 +185,13 @@ gpu_snapshot_telemetry snapshot_ms=... snapshot_bytes=...
 - Verified Docker Desktop GPU device shape: Docker can pass `/dev/dxg` into containers, but this environment does not expose native Linux `/dev/kfd` or `/dev/dri` to the worker.
 - Verified WSL libraries: `/usr/lib/wsl/lib/libdxcore.so` exists in the Ubuntu WSL distro, but `/opt/rocm/lib/librocdxg.so` is not installed.
 - Verified worker blockers:
-  - `hipcc` not found
-  - `rocminfo` not found
-  - `/dev/kfd` and `/dev/dri` not present
+  - Fixed: rebuilt `vectant-ade-worker:latest` now has `/opt/rocm/bin/hipcc`, `/opt/rocm/bin/rocminfo`, `libamdhip64.so`, and `librocdxg.so`.
+  - Fixed for Docker Desktop WSL: compose passes `/dev/dxg` and mounts `/usr/lib/wsl/lib/libdxcore.so`.
+  - Expected on this host: native `/dev/kfd` and `/dev/dri` are still absent because Docker Desktop exposes `/dev/dxg`, not the native Linux DRM/KFD path.
+- Verified ROCm visibility after the worker rebuild:
+  - `hipcc --version` reports HIP `7.2.53211-e1a6bc5663`.
+  - `rocminfo` reports `Agent 2` as `gfx1201` with marketing name `AMD Radeon RX 9070 XT`.
+  - Worker image size is now about 21.2 GB because it includes `rocm-hip-sdk`.
 - Latest ROCm P0 smoke:
 
 ```powershell
