@@ -96,12 +96,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip \
     # SDL2
     libsdl2-2.0-0 libsdl2-dev \
-    # Runtime utilities used by language runtimes and downloads
-    curl xz-utils gnupg \
+    # Runtime utilities used by language runtimes, downloads, and ROCm lld
+    curl xz-utils gnupg libxml2-16 \
     && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-15 100 \
     && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-15 100 \
     && update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-15 100 \
     && update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-15 100 \
+    && ln -sf /lib/x86_64-linux-gnu/libxml2.so.16 /usr/lib/x86_64-linux-gnu/libxml2.so.2 \
     && rm -rf /var/lib/apt/lists/*
 
 # ── ROCm / HIP toolchain for GPU HMR ─────────────────────────────────────────
