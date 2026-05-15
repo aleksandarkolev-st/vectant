@@ -30,10 +30,17 @@
 // host-only path. This keeps the build green on machines that don't
 // have CUDA/HIP installed during the rollout.
 
-use crate::compiler::stages::ptxas_info_parser::{parse as parse_ptxas, GpuToolchainDiagnostics};
-use crate::hmr::compile_manifest::{CompileManifest, DeviceCompiler, DeviceVendor};
-use anyhow::{Context, Result};
+#[cfg(feature = "gpu-hmr")]
+use crate::compiler::stages::ptxas_info_parser::parse as parse_ptxas;
+use crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics;
+#[cfg(feature = "gpu-hmr")]
+use crate::hmr::compile_manifest::{DeviceCompiler, DeviceVendor};
+use crate::hmr::compile_manifest::CompileManifest;
+#[cfg(feature = "gpu-hmr")]
+use anyhow::Context;
+use anyhow::Result;
 use std::path::PathBuf;
+#[cfg(feature = "gpu-hmr")]
 use tokio::time::{timeout, Duration};
 
 /// Standard filenames for the AI-synthesised device source files.

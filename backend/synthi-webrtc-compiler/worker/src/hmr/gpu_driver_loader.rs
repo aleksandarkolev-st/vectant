@@ -235,7 +235,7 @@ impl DriverProbe {
 /// can all share the same resolved symbol table without each
 /// dlopen'ing it again.
 pub struct GpuDriverHandle {
-    library: libloading::Library,
+    _library: libloading::Library,
     library_path: String,
     vendor: GpuVendor,
     symbols: GpuDriverSymbolTable,
@@ -300,7 +300,7 @@ pub fn try_load(vendor: GpuVendor) -> Result<GpuDriverHandle, DriverLoadError> {
     let symbols = unsafe { resolve_symbols(&library, &library_path, &names) }?;
 
     Ok(GpuDriverHandle {
-        library,
+        _library: library,
         library_path,
         vendor,
         symbols,
