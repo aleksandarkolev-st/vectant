@@ -61,12 +61,14 @@ use crate::hmr::adapter_trait::{
     Adapter, AdapterHealth, AdapterInfo, AdapterReloadRequest, AdapterReloadResult,
 };
 use crate::hmr::compile_manifest::{DeviceVendor, SnapshotMode};
+use crate::hmr::device_snapshot::BufferRegistry;
 use crate::hmr::gpu_driver_loader::{self, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable};
 use crate::hmr::gpu_module_manager::{GpuModuleManager, ModuleManagerError};
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
 use crate::hmr::gpu_stream_drain::{drain_context, DrainOutcome};
+use crate::runtime::gpu_runtime_boundary::managed_buffers_snapshot;
 
 // ── Vendor + symbol table ───────────────────────────────────
 
@@ -333,6 +335,16 @@ impl GpuModuleAdapter {
         &self.last_reload_log
     }
 
+    fn managed_snapshot_stats() -> (u64, u32) {
+        let registry = BufferRegistry::from_managed_buffers(managed_buffers_snapshot());
+        let snapshot_bytes = registry.snapshot_byte_budget();
+        let dirty_buffers = registry
+            .iter()
+            .filter(|record| record.dirty || !record.uses_vram_shadow)
+            .count() as u32;
+        (snapshot_bytes, dirty_buffers)
+    }
+
     fn symbols(&self) -> Option<&GpuDriverSymbolTable> {
         if let Some(driver) = &self.driver {
             return Some(driver.symbols());
@@ -539,15 +551,16 @@ impl Adapter for GpuModuleAdapter {
         }
 
         let plan = Self::classify_plan(req);
+        let (snapshot_bytes, dirty_buffers) = Self::managed_snapshot_stats();
         if plan == GpuReloadPlan::HostOnly {
             self.emit_report(GpuSwapInputs {
                 plan,
                 reason: "host-file-only-edit".into(),
                 streams_synced: 0,
                 force_drain_timeout: false,
-                snapshot_bytes: 0,
+                snapshot_bytes,
                 snapshot_ms: 0,
-                dirty_buffers: 0,
+                dirty_buffers,
                 expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
                 matched_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
             });
@@ -577,9 +590,9 @@ impl Adapter for GpuModuleAdapter {
                 reason: drain.short_label().into(),
                 streams_synced: 0,
                 force_drain_timeout: timed_out,
-                snapshot_bytes: blob.len() as u64,
+                snapshot_bytes,
                 snapshot_ms: drain.elapsed_ms(),
-                dirty_buffers: 0,
+                dirty_buffers,
                 expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
                 matched_kernel_hashes: 0,
             });
@@ -624,9 +637,9 @@ impl Adapter for GpuModuleAdapter {
                     reason: "device-file-only-edit".into(),
                     streams_synced: 1,
                     force_drain_timeout: false,
-                    snapshot_bytes: blob.len() as u64,
+                    snapshot_bytes,
                     snapshot_ms: started.elapsed().as_millis() as u64,
-                    dirty_buffers: 0,
+                    dirty_buffers,
                     expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
                     matched_kernel_hashes: self.kernel_table.len() as u32,
                 });
@@ -643,9 +656,9 @@ impl Adapter for GpuModuleAdapter {
                     reason: "module-load-failed".into(),
                     streams_synced: 1,
                     force_drain_timeout: false,
-                    snapshot_bytes: blob.len() as u64,
+                    snapshot_bytes,
                     snapshot_ms: started.elapsed().as_millis() as u64,
-                    dirty_buffers: 0,
+                    dirty_buffers,
                     expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
                     matched_kernel_hashes: 0,
                 });
@@ -690,7 +703,8 @@ mod tests {
     use crate::hmr::gpu_driver_loader::{
         CuContext, CuDevicePtr, CuFunction, CuModule, CuResult, CuStream,
     };
-    use std::ffi::c_void;
+    use crate::runtime::gpu_runtime_boundary::{reset_for_test, synthi_gpu_register_buffer};
+    use std::ffi::{c_void, CString};
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1127,6 +1141,36 @@ mod tests {
             .last_reload_log()
             .iter()
             .any(|l| l.contains("device_restore ok")));
+    }
+
+    #[test]
+    fn phase3_reload_uses_managed_buffer_snapshot_telemetry() {
+        reset_for_test();
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let name = CString::new("positions").unwrap();
+        let lifetime = CString::new("persistent").unwrap();
+        let mut device_ptr = 0x1234_u64;
+        synthi_gpu_register_buffer(
+            std::ptr::null_mut(),
+            (&mut device_ptr as *mut u64).cast(),
+            4096,
+            name.as_ptr(),
+            lifetime.as_ptr(),
+        );
+
+        let mut a = adapter_with_symbols(stub_symbols());
+        let r = a.reload(&request_with_artifact(&path, vec!["device.cu".into()]));
+        assert!(matches!(r, AdapterReloadResult::Success { .. }));
+        assert!(a.last_reload_log().iter().any(|l| l.contains("step=save")
+            && l.contains("buffers=1")
+            && l.contains("bytes=4096")));
+        assert!(a
+            .last_reload_log()
+            .iter()
+            .any(|l| l.contains("gpu_snapshot_telemetry") && l.contains("snapshot_bytes=4096")));
+        reset_for_test();
     }
 
     #[test]
