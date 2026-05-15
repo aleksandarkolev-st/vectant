@@ -2177,7 +2177,7 @@ pub async fn handle_compile_request(
                 gpu.vendor.as_str(),
                 kernel_symbols.join(",")
             );
-            modules_to_load.push((
+            modules_to_load.insert(0, (
                 device_cmd,
                 device_outcome.artifact_path.to_string_lossy().to_string(),
             ));

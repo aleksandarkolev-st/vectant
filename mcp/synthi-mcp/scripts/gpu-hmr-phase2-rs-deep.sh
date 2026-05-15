@@ -219,6 +219,10 @@ phase2_runner_device_sidecar_path() {
     record "P2rs.9c/handler" fail "compiler handler does not enqueue __gpu_device sidecars"
     missing=$((missing+1))
   fi
+  if ! grep -q "modules_to_load.insert(0" "$WORKER/src/compiler/handler.rs"; then
+    record "P2rs.9c/order" fail "compiler handler does not load the device sidecar before host modules"
+    missing=$((missing+1))
+  fi
   if ! grep -q "load_device" "$WORKER/src/compiler/stages/runner.rs"; then
     record "P2rs.9c/worker-runner" fail "worker runner stage does not send load_device"
     missing=$((missing+1))
