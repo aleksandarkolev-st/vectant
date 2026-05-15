@@ -16,6 +16,8 @@ FROM rust:1.88-bookworm AS builder
 
 WORKDIR /build
 
+ARG WORKER_CARGO_FEATURES=""
+
 # Install GStreamer dev headers (required for gstreamer-rs build scripts)
 # and protobuf compiler (required by tonic-build + protoc-bin-vendored)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -43,7 +45,11 @@ RUN mkdir -p src/runtime src/compiler src/hmr src/infra src/safety src/android s
     echo "fn main() {}" > src/main.rs && \
     echo "fn main() {}" > src/runtime/runner_bin.rs && \
     echo "" > src/lib.rs && \
-    cargo build --release 2>/dev/null || true
+    if [ -n "$WORKER_CARGO_FEATURES" ]; then \
+      cargo build --release --features "$WORKER_CARGO_FEATURES" 2>/dev/null || true; \
+    else \
+      cargo build --release 2>/dev/null || true; \
+    fi
 
 # Now copy the real source and build for real
 COPY src/ src/
@@ -51,7 +57,11 @@ COPY cpp_src/ cpp_src/
 
 # Touch main.rs so cargo detects the source change
 RUN touch src/main.rs src/lib.rs && \
-    cargo build --release
+    if [ -n "$WORKER_CARGO_FEATURES" ]; then \
+      cargo build --release --features "$WORKER_CARGO_FEATURES"; \
+    else \
+      cargo build --release; \
+    fi
 
 # ── Stage 2: Runtime ────────────────────────────────────────────────────────
 FROM ubuntu:25.10
