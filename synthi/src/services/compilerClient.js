@@ -795,6 +795,8 @@ export class CompilerClient {
                 if (this.ws === ws) {
                     this.ws = null;
 
+                    const keepPeerConnection = this.pc && (this.pc.connectionState === 'connected' || this.pc.connectionState === 'connecting');
+
                     // If the WebRTC PeerConnection is still connected, DON'T
                     // tear everything down.  The signaling WS is only needed
                     // for SDP exchange and ICE candidates — once the PC is
@@ -802,7 +804,7 @@ export class CompilerClient {
                     // work independently.  Tearing down a healthy PC would
                     // kill the LSP, vscode-server, etc. for no reason and trigger
                     // an unnecessary reconnect cycle.
-                    if (this.pc && (this.pc.connectionState === 'connected' || this.pc.connectionState === 'connecting')) {
+                    if (keepPeerConnection) {
                         console.log('[CompilerClient] Signaling WS closed but WebRTC PC still alive (' + this.pc.connectionState + '), keeping channels');
                         return;
                     }

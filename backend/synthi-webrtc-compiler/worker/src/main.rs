@@ -1633,6 +1633,129 @@ async fn create_peer(
     Ok(pc)
 }
 
+fn directory_has_entries(path: &std::path::Path) -> bool {
+    match std::fs::read_dir(path) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(_) => false,
+    }
+}
+
+async fn copy_workspace_tree(
+    src_root: &std::path::Path,
+    dst_root: &std::path::Path,
+) -> Result<()> {
+    tokio::fs::create_dir_all(dst_root)
+        .await
+        .with_context(|| format!("Failed to create {}", dst_root.display()))?;
+
+    let mut stack: Vec<(std::path::PathBuf, std::path::PathBuf)> =
+        vec![(src_root.to_path_buf(), dst_root.to_path_buf())];
+
+    while let Some((src_dir, dst_dir)) = stack.pop() {
+        let mut rd = tokio::fs::read_dir(&src_dir)
+            .await
+            .with_context(|| format!("Failed to read dir {}", src_dir.display()))?;
+
+        while let Some(ent) = rd.next_entry().await? {
+            let src_path = ent.path();
+            let dst_path = dst_dir.join(ent.file_name());
+            let ft = ent.file_type().await?;
+
+            if ft.is_dir() {
+                tokio::fs::create_dir_all(&dst_path).await.ok();
+                stack.push((src_path, dst_path));
+            } else if ft.is_file() {
+                if let Some(parent) = dst_path.parent() {
+                    tokio::fs::create_dir_all(parent).await.ok();
+                }
+                tokio::fs::copy(&src_path, &dst_path).await.with_context(|| {
+                    format!(
+                        "Failed to copy {} -> {}",
+                        src_path.display(),
+                        dst_path.display()
+                    )
+                })?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn resolve_mobile_workspace_path(
+    slug: &str,
+    session_workspace_path: &std::path::Path,
+    platform: &str,
+) -> Result<std::path::PathBuf> {
+    let local_dir = std::path::PathBuf::from("/synthi").join(slug);
+    let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
+        .ok()
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
+        })
+        .unwrap_or(false);
+
+    if force_redownload && local_dir.exists() {
+        if let Err(e) = tokio::fs::remove_dir_all(&local_dir).await {
+            debug_log!(
+                "[{}] Failed to clear existing workspace {}: {}",
+                platform,
+                local_dir.display(),
+                e
+            );
+        } else {
+            debug_log!(
+                "[{}] Cleared existing workspace {} (force redownload)",
+                platform,
+                local_dir.display()
+            );
+        }
+    }
+
+    let session_has_files = directory_has_entries(session_workspace_path);
+
+    match storage::download(slug, None).await {
+        Ok(path) => {
+            if session_has_files {
+                copy_workspace_tree(session_workspace_path, &path).await?;
+                debug_log!(
+                    "[{}] Overlaid active session workspace onto {}",
+                    platform,
+                    path.display()
+                );
+            }
+            Ok(path)
+        }
+        Err(download_err) => {
+            if session_has_files {
+                copy_workspace_tree(session_workspace_path, &local_dir).await?;
+                debug_log!(
+                    "[{}] GCS workspace unavailable; seeded {} from active session workspace {}",
+                    platform,
+                    local_dir.display(),
+                    session_workspace_path.display()
+                );
+                return Ok(local_dir);
+            }
+
+            if directory_has_entries(&local_dir) {
+                debug_log!(
+                    "[{}] GCS workspace unavailable; reusing existing local workspace {}",
+                    platform,
+                    local_dir.display()
+                );
+                return Ok(local_dir);
+            }
+
+            Err(anyhow::anyhow!(
+                "Failed to download workspace: {}",
+                download_err
+            ))
+        }
+    }
+}
+
 async fn wire_peer_channels(
     pc: &Arc<RTCPeerConnection>,
     peer_id: String,
@@ -1871,6 +1994,7 @@ async fn wire_peer_channels(
                                                 });
                                                 let project_root = req.project_root.clone();
                                                 let slug = req.slug.clone();
+                                                let session_workspace_path = workspace_path_for_compile.as_ref().clone();
                                                 let log_clone = log.clone();
                                                 let rn_video_fanout = video_fanout_for_msg.clone();
                                                 tokio::spawn(async move {
@@ -1880,31 +2004,11 @@ async fn wire_peer_channels(
                                                     // dramatically speeding up subsequent mobile builds.
                                                     // To force a clean slate, set SYNTHI_MOBILE_FORCE_REDOWNLOAD=1.
                                                     let workspace_path = if let Some(s) = &slug {
-                                                        let local_dir = std::path::PathBuf::from("/synthi").join(s);
-                                                        let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
-                                                            .ok()
-                                                            .map(|v| {
-                                                                let v = v.trim().to_ascii_lowercase();
-                                                                matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
-                                                            })
-                                                            .unwrap_or(false);
-
-                                                        if force_redownload && local_dir.exists() {
-                                                            if let Err(e) = std::fs::remove_dir_all(&local_dir) {
-                                                                debug_log!(
-                                                                    "[Mobile] Failed to clear existing workspace {}: {}",
-                                                                    local_dir.display(),
-                                                                    e
-                                                                );
-                                                            } else {
-                                                                debug_log!(
-                                                                    "[Mobile] Cleared existing workspace {} (force redownload)",
-                                                                    local_dir.display()
-                                                                );
-                                                            }
-                                                        }
-
-                                                        match storage::download(&s, None).await {
+                                                        match resolve_mobile_workspace_path(
+                                                            s,
+                                                            session_workspace_path.as_path(),
+                                                            "Mobile",
+                                                        ).await {
                                                             Ok(path) => {
                                                                 debug_log!("[Mobile] Workspace ready at: {}", path.display());
                                                                 path
@@ -1955,30 +2059,16 @@ async fn wire_peer_channels(
                                                 });
                                                 let project_root = req.project_root.clone();
                                                 let slug = req.slug.clone();
+                                                let session_workspace_path = workspace_path_for_compile.as_ref().clone();
                                                 let log_clone = log.clone();
                                                 let flutter_video_fanout = video_fanout_for_msg.clone();
                                                 tokio::spawn(async move {
                                                     let workspace_path = if let Some(s) = &slug {
-                                                        let local_dir = std::path::PathBuf::from("/synthi").join(s);
-                                                        let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
-                                                            .ok()
-                                                            .map(|v| {
-                                                                let v = v.trim().to_ascii_lowercase();
-                                                                matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
-                                                            })
-                                                            .unwrap_or(false);
-
-                                                        if force_redownload && local_dir.exists() {
-                                                            if let Err(e) = std::fs::remove_dir_all(&local_dir) {
-                                                                debug_log!(
-                                                                    "[Flutter] Failed to clear existing workspace {}: {}",
-                                                                    local_dir.display(),
-                                                                    e
-                                                                );
-                                                            }
-                                                        }
-
-                                                        match storage::download(&s, None).await {
+                                                        match resolve_mobile_workspace_path(
+                                                            s,
+                                                            session_workspace_path.as_path(),
+                                                            "Flutter",
+                                                        ).await {
                                                             Ok(path) => {
                                                                 debug_log!("[Flutter] Workspace ready at: {}", path.display());
                                                                 path
