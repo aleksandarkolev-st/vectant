@@ -7,7 +7,6 @@
 // then slots are atomically swapped.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -131,7 +130,14 @@ impl SlotManager {
         abi_version: String,
         symbols: Vec<String>,
     ) -> &SlotEntry {
-        self.register_initial_with_kind(module, SlotKind::Host, lib_path, content_hash, abi_version, symbols)
+        self.register_initial_with_kind(
+            module,
+            SlotKind::Host,
+            lib_path,
+            content_hash,
+            abi_version,
+            symbols,
+        )
     }
 
     /// Register a module's initial load with an explicit `kind`.
@@ -159,7 +165,8 @@ impl SlotManager {
             active: true,
         };
         self.slots.insert(module.to_string(), [Some(entry), None]);
-        self.active_slot.insert(module.to_string(), LibSlot::Primary);
+        self.active_slot
+            .insert(module.to_string(), LibSlot::Primary);
         self.slots.get(module).unwrap()[0].as_ref().unwrap()
     }
 
@@ -173,7 +180,14 @@ impl SlotManager {
         abi_version: String,
         symbols: Vec<String>,
     ) -> Result<&SlotEntry, String> {
-        self.prepare_standby_with_kind(module, SlotKind::Host, lib_path, content_hash, abi_version, symbols)
+        self.prepare_standby_with_kind(
+            module,
+            SlotKind::Host,
+            lib_path,
+            content_hash,
+            abi_version,
+            symbols,
+        )
     }
 
     /// Load a new artifact into the standby slot with an explicit
@@ -196,7 +210,12 @@ impl SlotManager {
 
         // Cross-kind swap is a planner bug — fail fast rather than
         // silently swap a cubin for a `.so`.
-        let active_idx_for_kind = match self.active_slot.get(module).copied().unwrap_or(LibSlot::Primary) {
+        let active_idx_for_kind = match self
+            .active_slot
+            .get(module)
+            .copied()
+            .unwrap_or(LibSlot::Primary)
+        {
             LibSlot::Primary => 0,
             LibSlot::Standby => 1,
         };
@@ -209,7 +228,11 @@ impl SlotManager {
             }
         }
 
-        let active = self.active_slot.get(module).copied().unwrap_or(LibSlot::Primary);
+        let active = self
+            .active_slot
+            .get(module)
+            .copied()
+            .unwrap_or(LibSlot::Primary);
         let standby_idx = match active {
             LibSlot::Primary => 1,
             LibSlot::Standby => 0,
@@ -237,8 +260,15 @@ impl SlotManager {
             .get_mut(module)
             .ok_or_else(|| format!("module '{}' not registered", module))?;
 
-        let active = self.active_slot.get(module).copied().unwrap_or(LibSlot::Primary);
-        let active_idx = match active { LibSlot::Primary => 0, LibSlot::Standby => 1 };
+        let active = self
+            .active_slot
+            .get(module)
+            .copied()
+            .unwrap_or(LibSlot::Primary);
+        let active_idx = match active {
+            LibSlot::Primary => 0,
+            LibSlot::Standby => 1,
+        };
         let standby_idx = 1 - active_idx;
 
         if slots[standby_idx].is_none() {
@@ -268,7 +298,11 @@ impl SlotManager {
     /// Rollback: discard the standby slot (e.g., after failed health check).
     pub fn discard_standby(&mut self, module: &str) {
         if let Some(slots) = self.slots.get_mut(module) {
-            let active = self.active_slot.get(module).copied().unwrap_or(LibSlot::Primary);
+            let active = self
+                .active_slot
+                .get(module)
+                .copied()
+                .unwrap_or(LibSlot::Primary);
             let standby_idx = match active {
                 LibSlot::Primary => 1,
                 LibSlot::Standby => 0,
@@ -281,7 +315,10 @@ impl SlotManager {
     pub fn get_active(&self, module: &str) -> Option<&SlotEntry> {
         let slots = self.slots.get(module)?;
         let active = self.active_slot.get(module)?;
-        let idx = match active { LibSlot::Primary => 0, LibSlot::Standby => 1 };
+        let idx = match active {
+            LibSlot::Primary => 0,
+            LibSlot::Standby => 1,
+        };
         slots[idx].as_ref()
     }
 
@@ -322,10 +359,22 @@ mod tests {
     #[test]
     fn prepare_and_swap() {
         let mut mgr = SlotManager::new();
-        mgr.register_initial("gui", PathBuf::from("/tmp/gui_v1.so"), "h1".into(), "1.0".into(), vec![]);
+        mgr.register_initial(
+            "gui",
+            PathBuf::from("/tmp/gui_v1.so"),
+            "h1".into(),
+            "1.0".into(),
+            vec![],
+        );
 
-        mgr.prepare_standby("gui", PathBuf::from("/tmp/gui_v2.so"), "h2".into(), "1.0".into(), vec![])
-            .unwrap();
+        mgr.prepare_standby(
+            "gui",
+            PathBuf::from("/tmp/gui_v2.so"),
+            "h2".into(),
+            "1.0".into(),
+            vec![],
+        )
+        .unwrap();
 
         let result = mgr.swap("gui").unwrap();
         assert_eq!(result.old_slot, LibSlot::Primary);
@@ -339,9 +388,21 @@ mod tests {
     #[test]
     fn discard_standby() {
         let mut mgr = SlotManager::new();
-        mgr.register_initial("gui", PathBuf::from("/tmp/gui_v1.so"), "h1".into(), "1.0".into(), vec![]);
-        mgr.prepare_standby("gui", PathBuf::from("/tmp/gui_v2.so"), "h2".into(), "1.0".into(), vec![])
-            .unwrap();
+        mgr.register_initial(
+            "gui",
+            PathBuf::from("/tmp/gui_v1.so"),
+            "h1".into(),
+            "1.0".into(),
+            vec![],
+        );
+        mgr.prepare_standby(
+            "gui",
+            PathBuf::from("/tmp/gui_v2.so"),
+            "h2".into(),
+            "1.0".into(),
+            vec![],
+        )
+        .unwrap();
         mgr.discard_standby("gui");
 
         // Should still have original active
@@ -352,7 +413,13 @@ mod tests {
     #[test]
     fn swap_without_standby_fails() {
         let mut mgr = SlotManager::new();
-        mgr.register_initial("gui", PathBuf::from("/tmp/gui_v1.so"), "h1".into(), "1.0".into(), vec![]);
+        mgr.register_initial(
+            "gui",
+            PathBuf::from("/tmp/gui_v1.so"),
+            "h1".into(),
+            "1.0".into(),
+            vec![],
+        );
         assert!(mgr.swap("gui").is_err());
     }
 
@@ -371,7 +438,11 @@ mod tests {
     fn register_initial_defaults_to_host_kind() {
         let mut mgr = SlotManager::new();
         let entry = mgr.register_initial(
-            "gui", PathBuf::from("/tmp/g.so"), "h".into(), "1".into(), vec![],
+            "gui",
+            PathBuf::from("/tmp/g.so"),
+            "h".into(),
+            "1".into(),
+            vec![],
         );
         assert_eq!(entry.kind, SlotKind::Host);
         assert!(!entry.is_device());
@@ -422,7 +493,11 @@ mod tests {
     fn prepare_standby_rejects_kind_mismatch() {
         let mut mgr = SlotManager::new();
         mgr.register_initial(
-            "gui", PathBuf::from("/tmp/g.so"), "h".into(), "1".into(), vec![],
+            "gui",
+            PathBuf::from("/tmp/g.so"),
+            "h".into(),
+            "1".into(),
+            vec![],
         );
         // Active is Host; preparing a Device standby is a planner bug.
         let err = mgr

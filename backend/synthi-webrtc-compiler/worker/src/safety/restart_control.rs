@@ -16,7 +16,6 @@
 // 4. Circuit breaker pattern for repeated failures
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;

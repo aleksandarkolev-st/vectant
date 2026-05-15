@@ -124,8 +124,17 @@ mod tests {
 
     #[test]
     fn crash_reason_classification() {
-        assert_eq!(classify_rollback_reason("segfault in init()"), "candidate_crash");
-        assert_eq!(classify_rollback_reason("health check timeout"), "health_timeout");
-        assert_eq!(classify_rollback_reason("schema migration failed"), "schema_mismatch");
+        assert_eq!(
+            classify_rollback_reason("segfault in init()"),
+            "candidate_crash"
+        );
+        assert_eq!(
+            classify_rollback_reason("health check timeout"),
+            "health_timeout"
+        );
+        assert_eq!(
+            classify_rollback_reason("schema migration failed"),
+            "schema_mismatch"
+        );
     }
 }

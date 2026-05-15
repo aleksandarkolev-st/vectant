@@ -6,7 +6,6 @@
 // tried in sequence until one succeeds.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 use crate::hmr::ai_request_contract::AiRequestReason;
@@ -141,10 +140,7 @@ impl FallbackTracker {
 
     /// How many levels remain.
     pub fn remaining_levels(&self) -> usize {
-        self.chain
-            .levels
-            .len()
-            .saturating_sub(self.current_level)
+        self.chain.levels.len().saturating_sub(self.current_level)
     }
 
     /// Whether we've exhausted all options.
@@ -201,10 +197,16 @@ mod tests {
 
         // First advance stays at RetryAi (attempt 1 < max 2)
         let next = tracker.advance();
-        assert!(matches!(next, FallbackAdvance::Try(FallbackLevel::RetryAi { .. })));
+        assert!(matches!(
+            next,
+            FallbackAdvance::Try(FallbackLevel::RetryAi { .. })
+        ));
 
         // Second advance moves past RetryAi
         let next = tracker.advance();
-        assert!(matches!(next, FallbackAdvance::Try(FallbackLevel::UseCachedResponse)));
+        assert!(matches!(
+            next,
+            FallbackAdvance::Try(FallbackLevel::UseCachedResponse)
+        ));
     }
 }

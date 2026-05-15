@@ -6,13 +6,14 @@
 // receives a dyn Adapter.
 // ============================================================
 
-
 use std::collections::HashMap;
 
 use crate::hmr::adapter_matrix::AdapterMatrix;
 use crate::hmr::adapter_trait::{Adapter, AdapterInfo};
 use crate::hmr::dynlib_adapter::{DynLibAdapter, DynLibAdapterConfig};
-use crate::hmr::managed_runtime_adapter::{ManagedRuntimeAdapter, ManagedRuntimeConfig, ManagedRuntimeKind};
+use crate::hmr::managed_runtime_adapter::{
+    ManagedRuntimeAdapter, ManagedRuntimeConfig, ManagedRuntimeKind,
+};
 use crate::hmr::process_swap_adapter::{ProcessSwapAdapter, ProcessSwapConfig};
 
 #[cfg(feature = "gpu-hmr")]
@@ -190,7 +191,12 @@ mod tests {
         let mut registry = AdapterRegistry::from_matrix(&matrix);
         let results = registry.initialize_all();
         for (lang, result) in &results {
-            assert!(result.is_ok(), "failed to initialize {}: {:?}", lang, result);
+            assert!(
+                result.is_ok(),
+                "failed to initialize {}: {:?}",
+                lang,
+                result
+            );
         }
     }
 
@@ -218,9 +224,18 @@ mod tests {
     fn registry_from_matrix_with_gpu_rows() {
         let matrix = AdapterMatrix::default_matrix();
         let registry = AdapterRegistry::from_matrix(&matrix);
-        assert!(registry.get_info("cuda").is_some(), "expected cuda adapter registered");
-        assert!(registry.get_info("hip").is_some(), "expected hip adapter registered");
-        assert!(registry.get_info("rocm").is_some(), "expected rocm adapter registered");
+        assert!(
+            registry.get_info("cuda").is_some(),
+            "expected cuda adapter registered"
+        );
+        assert!(
+            registry.get_info("hip").is_some(),
+            "expected hip adapter registered"
+        );
+        assert!(
+            registry.get_info("rocm").is_some(),
+            "expected rocm adapter registered"
+        );
     }
 
     #[cfg(not(feature = "gpu-hmr"))]

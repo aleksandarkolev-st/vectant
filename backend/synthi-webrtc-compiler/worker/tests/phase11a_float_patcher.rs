@@ -2,22 +2,34 @@
 // Phase 11 — Float literal patcher integration tests
 // ============================================================
 
+use std::process::Command;
 use worker::hmr::binary_patch::dwarf_line_map::line_to_addresses;
 use worker::hmr::binary_patch::float_patcher::{find_float_loads, patch_float};
 use worker::hmr::tier0_unified::{try_tier0_v2, Tier0V2Outcome};
-use std::process::Command;
 
 fn compile_so(dir: &std::path::Path, source: &str, name: &str) -> std::path::PathBuf {
     let src = dir.join(format!("{}.c", name));
     let so = dir.join(format!("lib{}.so", name));
     std::fs::write(&src, source).unwrap();
     let out = Command::new("gcc")
-        .args(["-shared", "-fPIC", "-O0", "-g", "-gdwarf-4", "-fno-merge-constants", "-o"])
+        .args([
+            "-shared",
+            "-fPIC",
+            "-O0",
+            "-g",
+            "-gdwarf-4",
+            "-fno-merge-constants",
+            "-o",
+        ])
         .arg(&so)
         .arg(&src)
         .output()
         .expect("gcc");
-    assert!(out.status.success(), "gcc: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "gcc: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     so
 }
 
@@ -85,7 +97,8 @@ fn unified_tier0_v2_patches_float() {
     std::fs::rename(
         dir.path().join("libcore.c.so"),
         dir.path().join("libcore_100.so"),
-    ).unwrap_or_else(|_| {
+    )
+    .unwrap_or_else(|_| {
         // compile_so names it libcore.c.so, let me just re-compile with the right name
     });
     // Re-compile with correct naming
@@ -93,7 +106,15 @@ fn unified_tier0_v2_patches_float() {
     let so = dir.path().join("libcore_100.so");
     std::fs::write(&src, source).unwrap();
     let out = Command::new("gcc")
-        .args(["-shared", "-fPIC", "-O0", "-g", "-gdwarf-4", "-fno-merge-constants", "-o"])
+        .args([
+            "-shared",
+            "-fPIC",
+            "-O0",
+            "-g",
+            "-gdwarf-4",
+            "-fno-merge-constants",
+            "-o",
+        ])
         .arg(&so)
         .arg(&src)
         .output()
@@ -106,7 +127,11 @@ fn unified_tier0_v2_patches_float() {
 
     match try_tier0_v2(dir.path(), old, new, &[("core", "core.c")]) {
         Tier0V2Outcome::Patched(r) => {
-            assert!(r.float_patches > 0, "should have float patches, got: {:?}", r);
+            assert!(
+                r.float_patches > 0,
+                "should have float patches, got: {:?}",
+                r
+            );
         }
         other => panic!("expected Patched, got {:?}", other),
     }
@@ -120,7 +145,15 @@ fn unified_mixed_int_and_float() {
     let so = dir.path().join("libcore_200.so");
     std::fs::write(&src, source).unwrap();
     let out = Command::new("gcc")
-        .args(["-shared", "-fPIC", "-O0", "-g", "-gdwarf-4", "-fno-merge-constants", "-o"])
+        .args([
+            "-shared",
+            "-fPIC",
+            "-O0",
+            "-g",
+            "-gdwarf-4",
+            "-fno-merge-constants",
+            "-o",
+        ])
         .arg(&so)
         .arg(&src)
         .output()

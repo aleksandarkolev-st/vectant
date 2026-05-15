@@ -6,7 +6,6 @@
 // symbol validation → swap → state restore → healthcheck.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 use crate::hmr::adapter_trait::AdapterHealth;
@@ -77,8 +76,7 @@ pub fn orchestrate_dynlib_reload(
     });
 
     // Phase 2: Validate artifact
-    let artifact_valid = !manifest.artifact_path.is_empty()
-        && !manifest.artifact_hash.is_empty();
+    let artifact_valid = !manifest.artifact_path.is_empty() && !manifest.artifact_hash.is_empty();
     steps.push(ReloadStep {
         phase: DynLibReloadPhase::ValidateArtifact,
         success: artifact_valid,
@@ -194,18 +192,21 @@ mod tests {
     use super::*;
 
     fn test_manifest() -> BuildManifest {
-        BuildManifest::new("test", "cpp", "DynamicLibrary", 3, BuildSlot::Full, "libmod_a.so", "abc123")
+        BuildManifest::new(
+            "test",
+            "cpp",
+            "DynamicLibrary",
+            3,
+            BuildSlot::Full,
+            "libmod_a.so",
+            "abc123",
+        )
     }
 
     #[test]
     fn happy_path_with_state() {
-        let report = orchestrate_dynlib_reload(
-            "r-1",
-            "mod_a",
-            &test_manifest(),
-            LibSlot::Primary,
-            true,
-        );
+        let report =
+            orchestrate_dynlib_reload("r-1", "mod_a", &test_manifest(), LibSlot::Primary, true);
         assert!(!report.rolled_back);
         assert!(report.state_preserved);
         assert_eq!(report.final_health, AdapterHealth::Healthy);

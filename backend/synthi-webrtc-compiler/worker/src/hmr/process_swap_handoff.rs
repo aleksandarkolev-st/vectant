@@ -6,7 +6,6 @@
 // a structured envelope over stdin/stdout pipes.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Read, Write};
@@ -66,7 +65,10 @@ impl HandoffEnvelope {
     }
 }
 
-pub fn write_envelope<W: Write>(writer: &mut W, envelope: &HandoffEnvelope) -> Result<usize, String> {
+pub fn write_envelope<W: Write>(
+    writer: &mut W,
+    envelope: &HandoffEnvelope,
+) -> Result<usize, String> {
     let encoded = rmp_serde::to_vec(envelope)
         .map_err(|error| format!("failed to serialize handoff envelope: {}", error))?;
     writer
@@ -92,8 +94,12 @@ pub fn read_envelope<R: Read>(reader: &mut R) -> Result<HandoffEnvelope, String>
 pub fn write_envelope_to_path(envelope: &HandoffEnvelope, path: &Path) -> Result<usize, String> {
     let encoded = rmp_serde::to_vec(envelope)
         .map_err(|error| format!("failed to serialize handoff envelope: {}", error))?;
-    fs::write(path, &encoded)
-        .map_err(|error| format!("failed to persist handoff envelope to {:?}: {}", path, error))?;
+    fs::write(path, &encoded).map_err(|error| {
+        format!(
+            "failed to persist handoff envelope to {:?}: {}",
+            path, error
+        )
+    })?;
     Ok(encoded.len())
 }
 

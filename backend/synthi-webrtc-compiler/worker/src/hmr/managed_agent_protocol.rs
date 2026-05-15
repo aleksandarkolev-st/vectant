@@ -7,7 +7,6 @@
 // status back.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Protocol version.
@@ -28,17 +27,11 @@ pub enum AgentCommand {
         changed_classes: Vec<String>,
     },
     /// Commit the prepared reload (make it live).
-    CommitReload {
-        reload_id: String,
-    },
+    CommitReload { reload_id: String },
     /// Roll back a prepared but uncommitted reload.
-    RollbackReload {
-        reload_id: String,
-    },
+    RollbackReload { reload_id: String },
     /// Ask the agent to export current state.
-    ExportState {
-        format: StateTransferFormat,
-    },
+    ExportState { format: StateTransferFormat },
     /// Send state to the agent for import.
     ImportState {
         format: StateTransferFormat,
@@ -65,14 +58,9 @@ pub enum AgentResponse {
         classes_affected: usize,
     },
     /// Reload committed successfully.
-    ReloadCommitted {
-        reload_id: String,
-        duration_ms: u64,
-    },
+    ReloadCommitted { reload_id: String, duration_ms: u64 },
     /// Reload rolled back.
-    ReloadRolledBack {
-        reload_id: String,
-    },
+    ReloadRolledBack { reload_id: String },
     /// State export result.
     StateExported {
         format: StateTransferFormat,
@@ -91,10 +79,7 @@ pub enum AgentResponse {
         healthy: bool,
     },
     /// Error from agent.
-    Error {
-        code: String,
-        message: String,
-    },
+    Error { code: String, message: String },
     /// Agent shutting down.
     ShutdownAck,
 }
@@ -136,10 +121,7 @@ impl ProtocolFrame {
 }
 
 /// Validate that a Hello/HelloAck handshake is compatible.
-pub fn validate_handshake(
-    host_version: u32,
-    agent_version: u32,
-) -> Result<(), String> {
+pub fn validate_handshake(host_version: u32, agent_version: u32) -> Result<(), String> {
     if host_version != agent_version {
         Err(format!(
             "protocol mismatch: host v{} vs agent v{}",

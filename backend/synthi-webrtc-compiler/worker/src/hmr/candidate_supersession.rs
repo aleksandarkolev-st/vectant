@@ -102,7 +102,12 @@ mod tests {
             build_time_ms: 100,
             extension: Default::default(),
         };
-        Candidate::new(manifest, 1, ReloadDecision::WarmReload, StateStrategy::PreservePointer)
+        Candidate::new(
+            manifest,
+            1,
+            ReloadDecision::WarmReload,
+            StateStrategy::PreservePointer,
+        )
     }
 
     #[test]

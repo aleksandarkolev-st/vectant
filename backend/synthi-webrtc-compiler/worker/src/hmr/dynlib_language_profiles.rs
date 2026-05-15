@@ -7,7 +7,6 @@
 // the source language of the loaded module.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Languages supported by the DynLib adapter family.
@@ -196,6 +195,8 @@ mod tests {
     #[test]
     fn rust_cdylib_crate_type() {
         let profile = profile_for(DynLibLanguage::Rust);
-        assert!(profile.shared_lib_flags.contains(&"--crate-type=cdylib".to_string()));
+        assert!(profile
+            .shared_lib_flags
+            .contains(&"--crate-type=cdylib".to_string()));
     }
 }

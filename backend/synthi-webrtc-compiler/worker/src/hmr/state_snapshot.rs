@@ -7,7 +7,6 @@
 // safe restoration.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -90,8 +89,14 @@ pub fn compare_snapshots(old: &StateSnapshot, new: &StateSnapshot) -> SnapshotCo
         }
     }
 
-    let added: Vec<String> = new_fields.difference(&old_fields).map(|k| (*k).clone()).collect();
-    let removed: Vec<String> = old_fields.difference(&new_fields).map(|k| (*k).clone()).collect();
+    let added: Vec<String> = new_fields
+        .difference(&old_fields)
+        .map(|k| (*k).clone())
+        .collect();
+    let removed: Vec<String> = old_fields
+        .difference(&new_fields)
+        .map(|k| (*k).clone())
+        .collect();
 
     SnapshotCompat {
         identical,
@@ -289,7 +294,11 @@ impl StateSnapshotV2 {
     pub fn device_payload_size(&self) -> u64 {
         self.device
             .as_ref()
-            .map(|v| serde_json::to_string(v).map(|s| s.len() as u64).unwrap_or(0))
+            .map(|v| {
+                serde_json::to_string(v)
+                    .map(|s| s.len() as u64)
+                    .unwrap_or(0)
+            })
             .unwrap_or(0)
     }
 }
@@ -305,7 +314,10 @@ impl StateSnapshotV2 {
         Self {
             envelope_version: Self::ENVELOPE_VERSION,
             host,
-            device: Some(serde_json::to_value(device).expect("DeviceStateSnapshot is JSON-safe by construction")),
+            device: Some(
+                serde_json::to_value(device)
+                    .expect("DeviceStateSnapshot is JSON-safe by construction"),
+            ),
         }
     }
 
@@ -390,7 +402,7 @@ mod v2_tests {
     #[cfg(feature = "gpu-hmr")]
     #[test]
     fn v2_strongly_typed_device_roundtrip() {
-        use crate::hmr::device_snapshot::{DeviceStateSnapshot, SnapshotTier, BufferRegistry};
+        use crate::hmr::device_snapshot::{BufferRegistry, DeviceStateSnapshot, SnapshotTier};
         let device = DeviceStateSnapshot {
             tier: SnapshotTier::Userspace,
             device_ordinal: 0,

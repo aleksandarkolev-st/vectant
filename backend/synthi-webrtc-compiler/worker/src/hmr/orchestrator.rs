@@ -52,9 +52,9 @@ use crate::safety::quiescence::{QuiescenceConfig, QuiescenceManager};
 // Integration with the full HMR pipeline (planner, adapters, AI gate, candidates)
 use crate::hmr::integration::HmrPipeline;
 use crate::hmr::state_checkpoint::{CheckpointManager, CheckpointPolicy, CheckpointResult};
+use crate::hmr::state_migration::MigrationRegistry;
 use crate::hmr::state_restore_orchestrator::{orchestrate_restore, RestoreOutcome};
 use crate::hmr::state_restore_validator::RestoreTarget;
-use crate::hmr::state_migration::MigrationRegistry;
 use crate::hmr::state_snapshot::SnapshotReason;
 // use crate::quiescence::{QuiescenceManager, QuiescenceConfig}; // DUP
 // use crate::reload_protocol::{ReloadOperation, ReloadConfig}; // DUP
@@ -706,12 +706,9 @@ impl HmrOrchestrator {
         // Create default state for new fields
         let new_defaults = MsgPackState::new(1, 0);
 
-        let (new_bytes, result) = self.state_manager.migrate_binary(
-            slot,
-            old_bytes,
-            new_field_names,
-            &new_defaults,
-        )?;
+        let (new_bytes, result) =
+            self.state_manager
+                .migrate_binary(slot, old_bytes, new_field_names, &new_defaults)?;
 
         Ok(MigratedState::Binary(new_bytes, result))
     }
@@ -806,7 +803,11 @@ impl HmrOrchestrator {
             layout_hash: None,
         };
 
-        Some(orchestrate_restore(snapshot, &target, &self.migration_registry))
+        Some(orchestrate_restore(
+            snapshot,
+            &target,
+            &self.migration_registry,
+        ))
     }
 
     // ============================================================

@@ -53,7 +53,11 @@ pub fn execute_planner_and_transition(
         decision: decision_str.to_string(),
         decision_code: output.reason.decision_code.clone(),
         decision_reason: output.reason.decision_reason.clone(),
-        user_message: if output.reason.user_message.is_empty() { None } else { Some(output.reason.user_message.clone()) },
+        user_message: if output.reason.user_message.is_empty() {
+            None
+        } else {
+            Some(output.reason.user_message.clone())
+        },
         preview_id: lifecycle.preview_id().to_string(),
     };
 
@@ -75,7 +79,9 @@ fn decision_to_str(d: &ReloadDecision) -> &'static str {
 mod tests {
     use super::*;
     use crate::hmr::adapter_matrix::AdapterMatrix;
-    use crate::hmr::build_manifest::{BuildSlot, HealthcheckStrategy, PreviewPreservationMode, SnapshotMode};
+    use crate::hmr::build_manifest::{
+        BuildSlot, HealthcheckStrategy, PreviewPreservationMode, SnapshotMode,
+    };
     use crate::hmr::rollout_flags::RolloutFlags;
 
     fn setup() -> (
@@ -87,9 +93,11 @@ mod tests {
     ) {
         let mut sm = LifecycleStateMachine::new("test-preview");
         // Advance to CompileFinished
-        sm.transition(PreviewLifecycleState::CompileRequested).unwrap();
+        sm.transition(PreviewLifecycleState::CompileRequested)
+            .unwrap();
         sm.transition(PreviewLifecycleState::Compiling).unwrap();
-        sm.transition(PreviewLifecycleState::CompileFinished).unwrap();
+        sm.transition(PreviewLifecycleState::CompileFinished)
+            .unwrap();
 
         let telemetry = HmrTelemetry::new();
 

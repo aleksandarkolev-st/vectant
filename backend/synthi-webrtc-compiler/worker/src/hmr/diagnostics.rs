@@ -146,8 +146,7 @@ mod tests {
                 suggestion: None,
             },
         ];
-        let payload =
-            CompileDiagnosticsPayload::from_diagnostics("p1", "cpp", "gui", diags);
+        let payload = CompileDiagnosticsPayload::from_diagnostics("p1", "cpp", "gui", diags);
         assert_eq!(payload.error_count, 1);
         assert_eq!(payload.warning_count, 1);
         assert!(payload.has_errors());
@@ -155,12 +154,7 @@ mod tests {
 
     #[test]
     fn diagnostics_serde_roundtrip() {
-        let payload = CompileDiagnosticsPayload::from_diagnostics(
-            "p2",
-            "rust",
-            "core",
-            vec![],
-        );
+        let payload = CompileDiagnosticsPayload::from_diagnostics("p2", "rust", "core", vec![]);
         let json = serde_json::to_string(&payload).unwrap();
         let de: CompileDiagnosticsPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(de.preview_id, "p2");

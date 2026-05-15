@@ -11,7 +11,6 @@
 // 5. Tracing spans for debugging
 // ============================================================
 
-
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;

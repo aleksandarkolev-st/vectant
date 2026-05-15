@@ -8,7 +8,6 @@
 // in handler.rs.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -33,19 +32,27 @@ pub enum RebuildScope {
 impl RebuildScope {
     /// Whether this scope includes core modules.
     pub fn includes_core(&self) -> bool {
-        matches!(self, RebuildScope::CoreOnly | RebuildScope::Both | RebuildScope::FullReload)
+        matches!(
+            self,
+            RebuildScope::CoreOnly | RebuildScope::Both | RebuildScope::FullReload
+        )
     }
 
     /// Whether this scope includes GUI modules.
     pub fn includes_gui(&self) -> bool {
-        matches!(self, RebuildScope::GuiOnly | RebuildScope::Both | RebuildScope::FullReload)
+        matches!(
+            self,
+            RebuildScope::GuiOnly | RebuildScope::Both | RebuildScope::FullReload
+        )
     }
 
     /// Merge two scopes (union).
     pub fn merge(&self, other: &RebuildScope) -> RebuildScope {
         match (self, other) {
             (RebuildScope::None, s) | (s, RebuildScope::None) => *s,
-            (RebuildScope::FullReload, _) | (_, RebuildScope::FullReload) => RebuildScope::FullReload,
+            (RebuildScope::FullReload, _) | (_, RebuildScope::FullReload) => {
+                RebuildScope::FullReload
+            }
             (RebuildScope::Both, _) | (_, RebuildScope::Both) => RebuildScope::Both,
             (RebuildScope::GuiOnly, RebuildScope::CoreOnly)
             | (RebuildScope::CoreOnly, RebuildScope::GuiOnly) => RebuildScope::Both,
@@ -204,8 +211,16 @@ mod tests {
     #[test]
     fn both() {
         let dirty = vec![
-            DirtyFile { path: "src/main.rs".into(), class: FileClass::Core, content_hash: None },
-            DirtyFile { path: "src/gui/win.rs".into(), class: FileClass::Gui, content_hash: None },
+            DirtyFile {
+                path: "src/main.rs".into(),
+                class: FileClass::Core,
+                content_hash: None,
+            },
+            DirtyFile {
+                path: "src/gui/win.rs".into(),
+                class: FileClass::Gui,
+                content_hash: None,
+            },
         ];
         let result = calculate_rebuild_scope(&ScopeInput {
             dirty_files: &dirty,
@@ -245,8 +260,17 @@ mod tests {
 
     #[test]
     fn merge_scopes() {
-        assert_eq!(RebuildScope::None.merge(&RebuildScope::GuiOnly), RebuildScope::GuiOnly);
-        assert_eq!(RebuildScope::CoreOnly.merge(&RebuildScope::GuiOnly), RebuildScope::Both);
-        assert_eq!(RebuildScope::Both.merge(&RebuildScope::CoreOnly), RebuildScope::Both);
+        assert_eq!(
+            RebuildScope::None.merge(&RebuildScope::GuiOnly),
+            RebuildScope::GuiOnly
+        );
+        assert_eq!(
+            RebuildScope::CoreOnly.merge(&RebuildScope::GuiOnly),
+            RebuildScope::Both
+        );
+        assert_eq!(
+            RebuildScope::Both.merge(&RebuildScope::CoreOnly),
+            RebuildScope::Both
+        );
     }
 }

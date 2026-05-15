@@ -6,7 +6,6 @@
 // The AI is only invoked when Loop A explicitly defers.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Why the planner is asking the AI for help.

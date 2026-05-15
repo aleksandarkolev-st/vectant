@@ -8,7 +8,6 @@
 // reload latency budget.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -98,9 +97,7 @@ impl DeterministicCompileOutput {
 ///
 /// Returns an error message if the project is not adapted or
 /// the required source files are missing.
-pub fn validate_deterministic_input(
-    input: &DeterministicCompileInput,
-) -> Result<(), String> {
+pub fn validate_deterministic_input(input: &DeterministicCompileInput) -> Result<(), String> {
     if !input.adapted.is_adapted {
         return Err("project is not adapted; cannot use Loop A".into());
     }
@@ -221,32 +218,80 @@ mod tests {
 
         // Nothing changed
         assert_eq!(
-            determine_deterministic_scope(&input, Some("h1"), Some("h2"), Some("s1"), "h1", "h2", "s1"),
+            determine_deterministic_scope(
+                &input,
+                Some("h1"),
+                Some("h2"),
+                Some("s1"),
+                "h1",
+                "h2",
+                "s1"
+            ),
             DeterministicRebuildScope::None
         );
         // Core only changed
         assert_eq!(
-            determine_deterministic_scope(&input, Some("h1"), Some("h2"), Some("s1"), "h1x", "h2", "s1"),
+            determine_deterministic_scope(
+                &input,
+                Some("h1"),
+                Some("h2"),
+                Some("s1"),
+                "h1x",
+                "h2",
+                "s1"
+            ),
             DeterministicRebuildScope::CoreOnly
         );
         // GUI only changed
         assert_eq!(
-            determine_deterministic_scope(&input, Some("h1"), Some("h2"), Some("s1"), "h1", "h2x", "s1"),
+            determine_deterministic_scope(
+                &input,
+                Some("h1"),
+                Some("h2"),
+                Some("s1"),
+                "h1",
+                "h2x",
+                "s1"
+            ),
             DeterministicRebuildScope::GuiOnly
         );
         // Both changed
         assert_eq!(
-            determine_deterministic_scope(&input, Some("h1"), Some("h2"), Some("s1"), "h1x", "h2x", "s1"),
+            determine_deterministic_scope(
+                &input,
+                Some("h1"),
+                Some("h2"),
+                Some("s1"),
+                "h1x",
+                "h2x",
+                "s1"
+            ),
             DeterministicRebuildScope::Both
         );
         // Shared header changed → forces Both
         assert_eq!(
-            determine_deterministic_scope(&input, Some("h1"), Some("h2"), Some("s1"), "h1", "h2", "s2"),
+            determine_deterministic_scope(
+                &input,
+                Some("h1"),
+                Some("h2"),
+                Some("s1"),
+                "h1",
+                "h2",
+                "s2"
+            ),
             DeterministicRebuildScope::Both
         );
         // Shared header changed even though core/gui also unchanged
         assert_eq!(
-            determine_deterministic_scope(&input, Some("h1"), Some("h2"), Some("s1"), "h1", "h2", "s1x"),
+            determine_deterministic_scope(
+                &input,
+                Some("h1"),
+                Some("h2"),
+                Some("s1"),
+                "h1",
+                "h2",
+                "s1x"
+            ),
             DeterministicRebuildScope::Both
         );
     }

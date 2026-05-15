@@ -6,7 +6,6 @@
 // language-specific or family-specific branches.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -41,14 +40,9 @@ pub enum AdapterReloadResult {
         state_preserved: bool,
     },
     /// Reload failed but the old artifact is still running.
-    Failed {
-        error: String,
-        recoverable: bool,
-    },
+    Failed { error: String, recoverable: bool },
     /// Adapter cannot handle this reload; escalate to cold path.
-    Unsupported {
-        reason: String,
-    },
+    Unsupported { reason: String },
 }
 
 /// Health of an adapter after a reload.
@@ -120,14 +114,26 @@ mod tests {
                 extra: HashMap::new(),
             }
         }
-        fn initialize(&mut self) -> Result<(), String> { Ok(()) }
-        fn shutdown(&mut self) -> Result<(), String> { Ok(()) }
-        fn reload(&mut self, _req: &AdapterReloadRequest) -> AdapterReloadResult {
-            AdapterReloadResult::Unsupported { reason: "noop".into() }
+        fn initialize(&mut self) -> Result<(), String> {
+            Ok(())
         }
-        fn snapshot_state(&self) -> Result<Vec<u8>, String> { Ok(vec![]) }
-        fn restore_state(&mut self, _data: &[u8]) -> Result<(), String> { Ok(()) }
-        fn healthcheck(&self) -> AdapterHealth { AdapterHealth::Unknown }
+        fn shutdown(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+        fn reload(&mut self, _req: &AdapterReloadRequest) -> AdapterReloadResult {
+            AdapterReloadResult::Unsupported {
+                reason: "noop".into(),
+            }
+        }
+        fn snapshot_state(&self) -> Result<Vec<u8>, String> {
+            Ok(vec![])
+        }
+        fn restore_state(&mut self, _data: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn healthcheck(&self) -> AdapterHealth {
+            AdapterHealth::Unknown
+        }
     }
 
     #[test]

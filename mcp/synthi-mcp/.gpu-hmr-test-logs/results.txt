@@ -1,0 +1,23 @@
+PASS   [preflight] frontend reachable  — http://localhost:3000
+PASS   [preflight] collab-server reachable  — http://localhost:1234
+PASS   [preflight] signaling reachable  — ws://localhost:9000
+PASS   [preflight] ai-engine reachable  — http://localhost:8000
+PASS   [preflight] GPU endpoints present  — {"/refactor/split/gpu":422,"/refactor/diff_patch/gpu":422,"/refactor/heal/gpu":200}
+SKIP   [preflight] nvcc on host  — not found
+SKIP   [preflight] hipcc on host  — not found
+SKIP   [preflight] nvcc in worker  — not found
+SKIP   [preflight] hipcc in worker  — not found
+WARN   [preflight] SYNTHI_GPU_HMR flag  — unset/0 — phases will be skipped or downgraded
+PASS   [preflight] MCP tools/list  — transport=docker count=42
+PASS   [seed] create workspace  — id=cmp76h8ww0007ld0159gfltla slug=gpu-hmr-1778865306629
+PASS   [seed] fixture uses Synthi GPU runtime contract  — synthi_gpu_launch + lifecycle exports
+PASS   [seed] write-files-batch (5 src + manifest)  — 6 files
+PASS   [seed] stage + commit
+PASS   [seed] device.cu present in collab  — 242 bytes
+SKIP   [vendor:cuda] GPU toolchain gate  — no_toolchain: nvcc not found
+SKIP   [P0] toolchain smoke  — feature_flag_off
+SKIP   [P1] cold reload buffer survival  — feature_flag_off
+SKIP   [P2] fast device swap  — feature_flag_off
+SKIP   [P3-mixed] mixed reload  — feature_flag_off
+SKIP   [P3-heal] healer drills  — feature_flag_off
+SKIP   [P3-stream-hang] stream hang watchdog  — feature_flag_off

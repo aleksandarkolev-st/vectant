@@ -6,7 +6,6 @@
 // split result instead of calling the AI endpoint.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};

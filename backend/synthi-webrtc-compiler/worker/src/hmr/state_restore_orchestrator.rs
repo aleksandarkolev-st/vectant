@@ -6,8 +6,8 @@
 // for the reload protocol to call.
 // ============================================================
 
-use crate::hmr::state_migration::MigrationRegistry;
 use crate::hmr::state_manager::SchemaVersion;
+use crate::hmr::state_migration::MigrationRegistry;
 use crate::hmr::state_restore_validator::{validate_restore, RestoreTarget, RestoreVerdict};
 use crate::hmr::state_snapshot::StateSnapshot;
 

@@ -8,7 +8,6 @@
 // two module groups.
 // ============================================================
 
-
 use crate::hmr::dependency_graph::DependencyGraph;
 use crate::hmr::dirty_classifier::FileClass;
 use crate::hmr::rebuild_scope::RebuildScope;
@@ -110,11 +109,7 @@ mod tests {
         graph.upsert("core/engine.rs", ["shared/types.h".into()].into(), None);
         graph.upsert("gui/render.rs", ["shared/types.h".into()].into(), None);
 
-        let analysis = analyze_shared_headers(
-            &["shared/types.h".into()],
-            &graph,
-            mock_classify,
-        );
+        let analysis = analyze_shared_headers(&["shared/types.h".into()], &graph, mock_classify);
         assert_eq!(analysis.bridging_headers.len(), 1);
         assert_eq!(analysis.escalated_scope, Some(RebuildScope::Both));
     }
@@ -125,11 +120,7 @@ mod tests {
         graph.upsert("core/engine.rs", ["shared/math.h".into()].into(), None);
         graph.upsert("core/physics.rs", ["shared/math.h".into()].into(), None);
 
-        let analysis = analyze_shared_headers(
-            &["shared/math.h".into()],
-            &graph,
-            mock_classify,
-        );
+        let analysis = analyze_shared_headers(&["shared/math.h".into()], &graph, mock_classify);
         assert_eq!(analysis.core_only_shared.len(), 1);
         assert_eq!(analysis.escalated_scope, Some(RebuildScope::CoreOnly));
     }
@@ -137,11 +128,7 @@ mod tests {
     #[test]
     fn no_dependents_is_bridging() {
         let graph = DependencyGraph::new();
-        let analysis = analyze_shared_headers(
-            &["shared/unknown.h".into()],
-            &graph,
-            mock_classify,
-        );
+        let analysis = analyze_shared_headers(&["shared/unknown.h".into()], &graph, mock_classify);
         // Conservative: no dependents → bridging
         assert_eq!(analysis.bridging_headers.len(), 1);
     }

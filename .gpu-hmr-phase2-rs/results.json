@@ -1,0 +1,23 @@
+{"pass":21,"fail":0,"warn":0,"skip":0,"results":[
+  {"id":"P2rs.0","status":"pass","detail":"all 5 Phase-2 scaffolds present + registered"},
+  {"id":"P2rs.1","status":"pass","detail":"cargo check --features gpu-hmr"},
+  {"id":"P2rs.2","status":"pass","detail":"cargo check (default features — gpu-hmr off)"},
+  {"id":"P2rs.3","status":"pass","detail":"gpu_driver_loader unit tests"},
+  {"id":"P2rs.4","status":"pass","detail":"gpu_module_manager unit tests"},
+  {"id":"P2rs.5","status":"pass","detail":"gpu_shadow_arena unit tests"},
+  {"id":"P2rs.6","status":"pass","detail":"gpu_dirty_bit unit tests"},
+  {"id":"P2rs.7","status":"pass","detail":"gpu_stream_drain unit tests"},
+  {"id":"P2rs.8","status":"pass","detail":"gpu_module_adapter Phase 2 wiring tests"},
+  {"id":"P2rs.9","status":"pass","detail":"cargo build --features gpu-hmr (verify link)"},
+  {"id":"P2rs.9b","status":"pass","detail":"runner + worker export synthi_gpu_* C ABI"},
+  {"id":"P2rs.9c","status":"pass","detail":"compiler enqueues and runner handles load_device sidecars"},
+  {"id":"P2rs.10","status":"pass","detail":"Send+Sync checks for all Phase-2 types"},
+  {"id":"P2rs.11","status":"pass","detail":"adapter driver_state_label + info extras"},
+  {"id":"P2rs.12","status":"pass","detail":"driver symbol table is versioned correctly"},
+  {"id":"P2rs.13","status":"pass","detail":"host driver: unavailable"},
+  {"id":"P2rs.14","status":"pass","detail":"state_snapshot v2 envelope still roundtrips"},
+  {"id":"P2rs.15","status":"pass","detail":"device_snapshot still roundtrips"},
+  {"id":"P2rs.16a","status":"pass","detail":"generated GPU runtime contract header compiles"},
+  {"id":"P2rs.16b","status":"pass","detail":"device kernel extraction + host GPU ABI contract tests"},
+  {"id":"P2rs.16c","status":"pass","detail":"GPU runtime watchdog fatal-fault classification tests"}
+]}

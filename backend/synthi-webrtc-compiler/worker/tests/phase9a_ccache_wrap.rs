@@ -77,10 +77,7 @@ fn returns_command_usable_for_spawn() {
         cmd.arg("--version");
         match cmd.spawn() {
             Ok(child) => {
-                let output = child
-                    .wait_with_output()
-                    .await
-                    .expect("child exits cleanly");
+                let output = child.wait_with_output().await.expect("child exits cleanly");
                 // g++ --version should succeed and print a banner
                 assert!(
                     output.status.success() || !output.stdout.is_empty(),
@@ -123,9 +120,8 @@ fn synthi_no_ccache_env_var_is_respected() {
     // The ccache_available() init prints a message with the reason
     // when SYNTHI_NO_CCACHE is set. Loose match — the important
     // thing is we see SOME indication the env var was respected.
-    let opted_out = stderr.contains("SYNTHI_NO_CCACHE")
-        || stderr.contains("ccache")
-        || output.status.success();
+    let opted_out =
+        stderr.contains("SYNTHI_NO_CCACHE") || stderr.contains("ccache") || output.status.success();
     assert!(
         opted_out,
         "SYNTHI_NO_CCACHE=1 subprocess should run successfully; stderr: {}",

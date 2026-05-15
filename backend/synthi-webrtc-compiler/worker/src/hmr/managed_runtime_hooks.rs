@@ -6,7 +6,6 @@
 // and host-agent communication protocol.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Describes how the managed host accepts reloaded code.
@@ -148,10 +147,7 @@ mod tests {
 
     #[test]
     fn strategy_hot_swap_few_classes() {
-        let check = determine_reload_strategy(
-            &["Main.java".into(), "App.java".into()],
-            true,
-        );
+        let check = determine_reload_strategy(&["Main.java".into(), "App.java".into()], true);
         assert_eq!(check.strategy, ReloadStrategy::HotSwapClasses);
         assert!(!check.requires_quiesce);
     }
@@ -172,23 +168,14 @@ mod tests {
 
     #[test]
     fn command_sequence_with_state() {
-        let cmds = build_reload_commands(
-            "app",
-            "app.jar",
-            ReloadStrategy::ClassLoaderRestart,
-            true,
-        );
+        let cmds =
+            build_reload_commands("app", "app.jar", ReloadStrategy::ClassLoaderRestart, true);
         assert_eq!(cmds.len(), 5); // export + prepare + deliver + commit + import
     }
 
     #[test]
     fn command_sequence_no_state() {
-        let cmds = build_reload_commands(
-            "app",
-            "app.jar",
-            ReloadStrategy::HotSwapClasses,
-            false,
-        );
+        let cmds = build_reload_commands("app", "app.jar", ReloadStrategy::HotSwapClasses, false);
         assert_eq!(cmds.len(), 3); // prepare + deliver + commit
     }
 }

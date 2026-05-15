@@ -30,7 +30,10 @@ pub enum ReloadDecision {
 impl ReloadDecision {
     /// Returns true if this decision keeps the current process alive.
     pub fn is_in_process(&self) -> bool {
-        matches!(self, Self::WarmReload | Self::ColdReload | Self::ManagedReload)
+        matches!(
+            self,
+            Self::WarmReload | Self::ColdReload | Self::ManagedReload
+        )
     }
 
     /// Returns true if the decision preserves the preview session (no browser reload).

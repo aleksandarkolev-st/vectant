@@ -1,0 +1,92 @@
+{
+  "matrix": [
+    {
+      "shim": "vec_add_safe",
+      "ok": false,
+      "rules": [
+        "no_wrapper_kernel"
+      ]
+    },
+    {
+      "shim": "vec_add_v2",
+      "ok": false,
+      "rules": [
+        "no_wrapper_kernel"
+      ]
+    },
+    {
+      "shim": "vec_add_v3",
+      "ok": false,
+      "rules": [
+        "no_wrapper_kernel"
+      ]
+    },
+    {
+      "shim": "vec_add_fallback",
+      "ok": false,
+      "rules": [
+        "no_wrapper_kernel"
+      ]
+    },
+    {
+      "shim": "vec_add_patched",
+      "ok": false,
+      "rules": [
+        "no_wrapper_kernel"
+      ]
+    },
+    {
+      "shim": "vec_add_wrapper",
+      "ok": false,
+      "rules": [
+        "no_wrapper_kernel"
+      ]
+    },
+    {
+      "shim": "safe_vec_add",
+      "ok": false,
+      "rules": [
+        "no_wrapper_kernel"
+      ]
+    },
+    {
+      "shim": "fixed_vec_add",
+      "ok": false,
+      "rules": [
+        "no_wrapper_kernel"
+      ]
+    },
+    {
+      "shim": "wrap_vec_add",
+      "ok": false,
+      "rules": [
+        "no_wrapper_kernel"
+      ]
+    },
+    {
+      "shim": "vec_add2",
+      "ok": false,
+      "rules": [
+        "no_wrapper_kernel"
+      ]
+    }
+  ],
+  "new_file": {
+    "ok": false,
+    "rules": [
+      "no_file_creation",
+      "no_extra_device_tu"
+    ]
+  },
+  "new_global": null,
+  "clean": {
+    "ok": true,
+    "rules": []
+  },
+  "sig_changed_t3": {
+    "ok": false,
+    "rules": [
+      "signature_changed_without_host_update"
+    ]
+  }
+}

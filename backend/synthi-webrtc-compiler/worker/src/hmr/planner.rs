@@ -125,7 +125,11 @@ pub fn plan_reload(input: &PlannerInput) -> PlannerOutput {
         && !input.schema_changed
         && input.runtime_supports_warm_reload
     {
-        let state_strategy = if input.manifest.snapshot_modes.contains(&SnapshotMode::Binary) {
+        let state_strategy = if input
+            .manifest
+            .snapshot_modes
+            .contains(&SnapshotMode::Binary)
+        {
             StateStrategy::Preserve
         } else {
             StateStrategy::Migrate

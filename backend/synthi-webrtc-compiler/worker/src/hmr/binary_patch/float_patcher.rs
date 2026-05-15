@@ -40,10 +40,9 @@ pub fn find_float_loads(
         return Ok(Vec::new());
     }
 
-    let data = std::fs::read(so_path)
-        .with_context(|| format!("read {}", so_path.display()))?;
-    let obj = object::File::parse(&*data)
-        .with_context(|| format!("parse ELF {}", so_path.display()))?;
+    let data = std::fs::read(so_path).with_context(|| format!("read {}", so_path.display()))?;
+    let obj =
+        object::File::parse(&*data).with_context(|| format!("parse ELF {}", so_path.display()))?;
 
     let text = obj.section_by_name(".text").context("no .text")?;
     let text_va = text.address();
@@ -61,7 +60,8 @@ pub fn find_float_loads(
         let remaining = &text_data[off..];
         let decode_len = remaining.len().min(15);
 
-        let mut decoder = Decoder::with_ip(64, &remaining[..decode_len], addr, DecoderOptions::NONE);
+        let mut decoder =
+            Decoder::with_ip(64, &remaining[..decode_len], addr, DecoderOptions::NONE);
         if let Some(instr) = decoder.iter().next() {
             let mnemonic = instr.mnemonic();
             let is_movss = mnemonic == Mnemonic::Movss;
@@ -78,7 +78,13 @@ pub fn find_float_loads(
             }
 
             if let Some(loc) = extract_rip_relative_float(
-                &instr, addr, &data, text_va, text_file_off, size, expected_value,
+                &instr,
+                addr,
+                &data,
+                text_va,
+                text_file_off,
+                size,
+                expected_value,
             ) {
                 results.push(loc);
             }
@@ -96,8 +102,8 @@ pub fn patch_float(
     new_value: f64,
     is_float: bool,
 ) -> Result<()> {
-    let mut bytes = std::fs::read(so_path)
-        .with_context(|| format!("read {}", so_path.display()))?;
+    let mut bytes =
+        std::fs::read(so_path).with_context(|| format!("read {}", so_path.display()))?;
 
     let off = location.rodata_file_offset as usize;
     let size = location.size as usize;
@@ -164,11 +170,22 @@ fn extract_rip_relative_float(
 
         let current_bytes = file_data[off..off + sz].to_vec();
         let current_value = if size == 4 {
-            f32::from_le_bytes([current_bytes[0], current_bytes[1], current_bytes[2], current_bytes[3]]) as f64
+            f32::from_le_bytes([
+                current_bytes[0],
+                current_bytes[1],
+                current_bytes[2],
+                current_bytes[3],
+            ]) as f64
         } else {
             f64::from_le_bytes([
-                current_bytes[0], current_bytes[1], current_bytes[2], current_bytes[3],
-                current_bytes[4], current_bytes[5], current_bytes[6], current_bytes[7],
+                current_bytes[0],
+                current_bytes[1],
+                current_bytes[2],
+                current_bytes[3],
+                current_bytes[4],
+                current_bytes[5],
+                current_bytes[6],
+                current_bytes[7],
             ])
         };
 
@@ -192,15 +209,16 @@ fn extract_rip_relative_float(
 
 /// Parse a C float/double literal string to f64.
 pub fn parse_c_float(text: &str) -> Option<f64> {
-    let s = text.trim().trim_end_matches(|c: char| c == 'f' || c == 'F' || c == 'l' || c == 'L');
+    let s = text
+        .trim()
+        .trim_end_matches(|c: char| c == 'f' || c == 'F' || c == 'l' || c == 'L');
     s.parse::<f64>().ok()
 }
 
 /// Detect whether a number literal string is a float (vs integer).
 pub fn is_float_literal(text: &str) -> bool {
     let s = text.trim();
-    s.contains('.') || s.ends_with('f') || s.ends_with('F')
-        || s.contains('e') || s.contains('E')
+    s.contains('.') || s.ends_with('f') || s.ends_with('F') || s.contains('e') || s.contains('E')
 }
 
 #[cfg(test)]

@@ -114,19 +114,19 @@ impl DirtyBitTracker {
     }
 
     pub fn track(&mut self, key: CuDevicePtr, bytes: u64) {
-        let entry = self
-            .entries
-            .entry(key)
-            .or_insert(Entry { bytes: 0, dirty: false });
+        let entry = self.entries.entry(key).or_insert(Entry {
+            bytes: 0,
+            dirty: false,
+        });
         entry.bytes = bytes;
     }
 
     pub fn mark(&mut self, key: CuDevicePtr, bytes: u64) {
         self.mark_calls += 1;
-        let entry = self
-            .entries
-            .entry(key)
-            .or_insert(Entry { bytes: 0, dirty: false });
+        let entry = self.entries.entry(key).or_insert(Entry {
+            bytes: 0,
+            dirty: false,
+        });
         // Only update bytes if the caller actually provided a
         // size; passing 0 must not erase a previously-known
         // allocation size.
@@ -167,10 +167,7 @@ impl DirtyBitTracker {
     }
 
     pub fn is_dirty(&self, key: CuDevicePtr) -> bool {
-        self.entries
-            .get(&key)
-            .map(|e| e.dirty)
-            .unwrap_or(false)
+        self.entries.get(&key).map(|e| e.dirty).unwrap_or(false)
     }
 
     pub fn is_tracked(&self, key: CuDevicePtr) -> bool {
@@ -205,17 +202,14 @@ impl DirtyBitTracker {
     }
 
     pub fn iter_dirty(&self) -> impl Iterator<Item = (CuDevicePtr, u64)> + '_ {
-        self.dirty_set.iter().filter_map(|k| {
-            self.entries.get(k).map(|e| (*k, e.bytes))
-        })
+        self.dirty_set
+            .iter()
+            .filter_map(|k| self.entries.get(k).map(|e| (*k, e.bytes)))
     }
 
     pub fn stats(&self) -> DirtyStats {
         let dirty_buffers = self.dirty_set.len();
-        let clean_buffers = self
-            .entries
-            .len()
-            .saturating_sub(dirty_buffers);
+        let clean_buffers = self.entries.len().saturating_sub(dirty_buffers);
         DirtyStats {
             dirty_buffers,
             clean_buffers,
@@ -327,10 +321,8 @@ mod tests {
 
     #[test]
     fn iter_dirty_visits_only_dirty_entries() {
-        let mut t = DirtyBitTracker::with_baseline(vec![
-            (0xa000, Some(4096)),
-            (0xb000, Some(8192)),
-        ]);
+        let mut t =
+            DirtyBitTracker::with_baseline(vec![(0xa000, Some(4096)), (0xb000, Some(8192))]);
         t.mark(0xa000, 4096);
         let mut items: Vec<_> = t.iter_dirty().collect();
         items.sort();

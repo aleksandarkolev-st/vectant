@@ -59,9 +59,11 @@ mod tests {
 
         // 2. Setup lifecycle
         let mut sm = LifecycleStateMachine::new("p1");
-        sm.transition(PreviewLifecycleState::CompileRequested).unwrap();
+        sm.transition(PreviewLifecycleState::CompileRequested)
+            .unwrap();
         sm.transition(PreviewLifecycleState::Compiling).unwrap();
-        sm.transition(PreviewLifecycleState::CompileFinished).unwrap();
+        sm.transition(PreviewLifecycleState::CompileFinished)
+            .unwrap();
 
         // 3. Run planner via glue
         let input = PlannerInput {
@@ -91,7 +93,8 @@ mod tests {
         candidate.promote();
 
         // 5. Complete lifecycle
-        sm.transition(PreviewLifecycleState::ReloadApplying).unwrap();
+        sm.transition(PreviewLifecycleState::ReloadApplying)
+            .unwrap();
         sm.transition(PreviewLifecycleState::ReloadApplied).unwrap();
         sm.transition(PreviewLifecycleState::Idle).unwrap();
     }

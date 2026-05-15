@@ -10,15 +10,17 @@
 //
 // Requires: gcc, Xvfb (optional for display tests)
 
-use worker::hmr::tier0_unified::{try_tier0_v2, Tier0V2Outcome};
-use worker::hmr::binary_patch::dwarf_line_map::{line_to_addresses, read_rodata};
-use worker::hmr::binary_patch::imm_patcher::find_immediates;
-use worker::hmr::binary_patch::float_patcher::find_float_loads;
-use worker::hmr::binary_patch::proc_mem_patcher::{find_so_base_addr, patch_process_memory};
-use worker::hmr::ts_value_classifier::{classify_ast, AstClassification, LiteralKind};
-use worker::hmr::tier0_literal_patch::{candidate_so_paths, patch_so_file, LiteralSwap, LiteralKind as SwapKind, Tier0Outcome};
-use std::process::Command;
 use std::path::Path;
+use std::process::Command;
+use worker::hmr::binary_patch::dwarf_line_map::{line_to_addresses, read_rodata};
+use worker::hmr::binary_patch::float_patcher::find_float_loads;
+use worker::hmr::binary_patch::imm_patcher::find_immediates;
+use worker::hmr::binary_patch::proc_mem_patcher::{find_so_base_addr, patch_process_memory};
+use worker::hmr::tier0_literal_patch::{
+    candidate_so_paths, patch_so_file, LiteralKind as SwapKind, LiteralSwap, Tier0Outcome,
+};
+use worker::hmr::tier0_unified::{try_tier0_v2, Tier0V2Outcome};
+use worker::hmr::ts_value_classifier::{classify_ast, AstClassification, LiteralKind};
 
 // ─── Helpers ──────────────────────────────────────────────
 
@@ -29,14 +31,23 @@ fn compile_project(dir: &Path, source: &str) -> (std::path::PathBuf, std::path::
 
     let out = Command::new("gcc")
         .args([
-            "-shared", "-fPIC", "-O0", "-g", "-gdwarf-4",
-            "-fno-merge-constants", "-o",
+            "-shared",
+            "-fPIC",
+            "-O0",
+            "-g",
+            "-gdwarf-4",
+            "-fno-merge-constants",
+            "-o",
         ])
         .arg(&so)
         .arg(&src)
         .output()
         .expect("gcc must be installed");
-    assert!(out.status.success(), "gcc failed:\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "gcc failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let _ = std::fs::remove_file(dir.join("libcore.so"));
     std::os::unix::fs::symlink("libcore_1000.so", dir.join("libcore.so")).unwrap();
@@ -93,8 +104,14 @@ void setup() {
     // Step 3: verify the .so binary
     let so = dir.path().join("libcore_1000.so");
     let data = std::fs::read(&so).unwrap();
-    assert!(data.windows(7).any(|w| w == b"My App!"), ".so should contain new string");
-    assert!(!data.windows(7).any(|w| w == b"My Game"), ".so should NOT contain old string");
+    assert!(
+        data.windows(7).any(|w| w == b"My App!"),
+        ".so should contain new string"
+    );
+    assert!(
+        !data.windows(7).any(|w| w == b"My Game"),
+        ".so should NOT contain old string"
+    );
     println!("[OK] binary verified: 'My Game' → 'My App!'");
 }
 
@@ -128,7 +145,10 @@ fn e2e_integer_literal_full_pipeline() {
     let va: Vec<u64> = line2_addrs.iter().map(|a| a.address).collect();
     let locs = find_immediates(&so, &va, Some(800)).unwrap();
     assert!(!locs.is_empty(), "should find imm32=800");
-    println!("[OK] iced-x86: found imm32=800 at {:#x}", locs[0].instruction_va);
+    println!(
+        "[OK] iced-x86: found imm32=800 at {:#x}",
+        locs[0].instruction_va
+    );
 
     // Step 4: unified patcher applies both changes
     match try_tier0_v2(dir.path(), source, new_src, &[("core", "core.c")]) {
@@ -173,7 +193,10 @@ fn e2e_float_literal_full_pipeline() {
     let va: Vec<u64> = addrs.iter().map(|a| a.address).collect();
     let locs = find_float_loads(&so, &va, Some(1.5), true).unwrap();
     assert!(!locs.is_empty(), "should find movss loading 1.5f");
-    println!("[OK] iced-x86: found movss with 1.5f at .rodata offset {:#x}", locs[0].rodata_file_offset);
+    println!(
+        "[OK] iced-x86: found movss with 1.5f at .rodata offset {:#x}",
+        locs[0].rodata_file_offset
+    );
 
     // Unified patcher
     match try_tier0_v2(dir.path(), source, new_src, &[("core", "core.c")]) {
@@ -305,7 +328,13 @@ fn e2e_proc_mem_self_patch() {
     let va = buf.as_ptr() as u64;
     let pid = std::process::id();
 
-    patch_process_memory(pid, va, &[0x42, 0x42, 0x42, 0x42], &[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
+    patch_process_memory(
+        pid,
+        va,
+        &[0x42, 0x42, 0x42, 0x42],
+        &[0xDE, 0xAD, 0xBE, 0xEF],
+    )
+    .unwrap();
     assert_eq!(buf, [0xDE, 0xAD, 0xBE, 0xEF]);
     println!("[OK] /proc/self/mem patched 4 bytes at {:#x}", va);
 }

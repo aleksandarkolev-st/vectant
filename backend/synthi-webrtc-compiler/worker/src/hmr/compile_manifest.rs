@@ -404,10 +404,14 @@ impl CompileManifest {
     /// changed, producing a silently wrong binary.
     pub fn tier0_safe(&self) -> bool {
         let has_o0 = self.common_flags.iter().any(|f| f == "-O0");
-        let no_higher_opt = !self.common_flags.iter().any(|f| {
-            (f.starts_with("-O") && f != "-O0" && f != "-Os") || f == "-Os"
-        });
-        let has_no_merge = self.common_flags.iter().any(|f| f == "-fno-merge-constants");
+        let no_higher_opt = !self
+            .common_flags
+            .iter()
+            .any(|f| (f.starts_with("-O") && f != "-O0" && f != "-Os") || f == "-Os");
+        let has_no_merge = self
+            .common_flags
+            .iter()
+            .any(|f| f == "-fno-merge-constants");
         has_o0 && no_higher_opt && has_no_merge
     }
 
@@ -418,9 +422,8 @@ impl CompileManifest {
     pub fn with_tier0_flags(&self) -> Self {
         let mut m = self.clone();
         // Remove any optimization flags that conflict with -O0
-        m.common_flags.retain(|f| {
-            !(f.starts_with("-O") && f != "-O0")
-        });
+        m.common_flags
+            .retain(|f| !(f.starts_with("-O") && f != "-O0"));
         if !m.common_flags.iter().any(|f| f == "-O0") {
             m.common_flags.push("-O0".to_string());
         }
@@ -459,7 +462,10 @@ mod tests {
         assert_eq!(m.compiler.executable(), "g++");
         assert_eq!(m.std, "c++17");
         assert_eq!(m.gui_link_flags, vec!["-lSDL2".to_string()]);
-        assert_eq!(m.runner_link_flags, vec!["-lSDL2".to_string(), "-ldl".to_string()]);
+        assert_eq!(
+            m.runner_link_flags,
+            vec!["-lSDL2".to_string(), "-ldl".to_string()]
+        );
         assert_eq!(m.hot_reload_mode, HotReloadMode::Swap);
         assert_eq!(m.confidence.overall, ConfidenceLevel::High);
         assert_eq!(m.confidence.runner_synthesis, ConfidenceLevel::High);
@@ -600,7 +606,10 @@ mod tests {
     #[test]
     fn sdl2_default_is_tier0_safe() {
         let m = CompileManifest::sdl2_default();
-        assert!(m.tier0_safe(), "sdl2_default must include -O0 and -fno-merge-constants");
+        assert!(
+            m.tier0_safe(),
+            "sdl2_default must include -O0 and -fno-merge-constants"
+        );
     }
 
     #[test]
@@ -620,7 +629,8 @@ mod tests {
     #[test]
     fn with_tier0_flags_injects_missing() {
         let mut m = CompileManifest::sdl2_default();
-        m.common_flags.retain(|f| f != "-O0" && f != "-fno-merge-constants");
+        m.common_flags
+            .retain(|f| f != "-O0" && f != "-fno-merge-constants");
         assert!(!m.tier0_safe());
         let fixed = m.with_tier0_flags();
         assert!(fixed.tier0_safe());

@@ -1,0 +1,181 @@
+{
+  "slug": "gpu-hmr-1778865306629",
+  "vendor": "cuda",
+  "gpu_hmr_flag": false,
+  "run_at": "2026-05-15T17:15:14.992Z",
+  "config": {
+    "fastSwapBudgetMs": 300,
+    "watchdogMs": 5000,
+    "drainTimeoutMs": 2000
+  },
+  "summary": {
+    "total": 23,
+    "passed": 11,
+    "warned": 1,
+    "failed": 0,
+    "skipped": 11
+  },
+  "results": [
+    {
+      "phase": "preflight",
+      "name": "frontend reachable",
+      "status": "pass",
+      "detail": "http://localhost:3000",
+      "ts": "2026-05-15T17:15:06.661Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "collab-server reachable",
+      "status": "pass",
+      "detail": "http://localhost:1234",
+      "ts": "2026-05-15T17:15:06.662Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "signaling reachable",
+      "status": "pass",
+      "detail": "ws://localhost:9000",
+      "ts": "2026-05-15T17:15:06.662Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "ai-engine reachable",
+      "status": "pass",
+      "detail": "http://localhost:8000",
+      "ts": "2026-05-15T17:15:06.662Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "GPU endpoints present",
+      "status": "pass",
+      "detail": "{\"/refactor/split/gpu\":422,\"/refactor/diff_patch/gpu\":422,\"/refactor/heal/gpu\":200}",
+      "ts": "2026-05-15T17:15:11.458Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "nvcc on host",
+      "status": "skip",
+      "detail": "not found",
+      "ts": "2026-05-15T17:15:12.604Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "hipcc on host",
+      "status": "skip",
+      "detail": "not found",
+      "ts": "2026-05-15T17:15:12.605Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "nvcc in worker",
+      "status": "skip",
+      "detail": "not found",
+      "ts": "2026-05-15T17:15:12.606Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "hipcc in worker",
+      "status": "skip",
+      "detail": "not found",
+      "ts": "2026-05-15T17:15:12.606Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "SYNTHI_GPU_HMR flag",
+      "status": "warn",
+      "detail": "unset/0 — phases will be skipped or downgraded",
+      "ts": "2026-05-15T17:15:12.606Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "MCP tools/list",
+      "status": "pass",
+      "detail": "transport=docker count=42",
+      "ts": "2026-05-15T17:15:14.070Z"
+    },
+    {
+      "phase": "seed",
+      "name": "create workspace",
+      "status": "pass",
+      "detail": "id=cmp76h8ww0007ld0159gfltla slug=gpu-hmr-1778865306629",
+      "ts": "2026-05-15T17:15:14.540Z"
+    },
+    {
+      "phase": "seed",
+      "name": "fixture uses Synthi GPU runtime contract",
+      "status": "pass",
+      "detail": "synthi_gpu_launch + lifecycle exports",
+      "ts": "2026-05-15T17:15:14.545Z"
+    },
+    {
+      "phase": "seed",
+      "name": "write-files-batch (5 src + manifest)",
+      "status": "pass",
+      "detail": "6 files",
+      "ts": "2026-05-15T17:15:14.753Z"
+    },
+    {
+      "phase": "seed",
+      "name": "stage + commit",
+      "status": "pass",
+      "detail": "",
+      "ts": "2026-05-15T17:15:14.951Z"
+    },
+    {
+      "phase": "seed",
+      "name": "device.cu present in collab",
+      "status": "pass",
+      "detail": "242 bytes",
+      "ts": "2026-05-15T17:15:14.972Z"
+    },
+    {
+      "phase": "vendor:cuda",
+      "name": "GPU toolchain gate",
+      "status": "skip",
+      "detail": "no_toolchain: nvcc not found",
+      "ts": "2026-05-15T17:15:14.972Z"
+    },
+    {
+      "phase": "P0",
+      "name": "toolchain smoke",
+      "status": "skip",
+      "detail": "feature_flag_off",
+      "ts": "2026-05-15T17:15:14.973Z"
+    },
+    {
+      "phase": "P1",
+      "name": "cold reload buffer survival",
+      "status": "skip",
+      "detail": "feature_flag_off",
+      "ts": "2026-05-15T17:15:14.974Z"
+    },
+    {
+      "phase": "P2",
+      "name": "fast device swap",
+      "status": "skip",
+      "detail": "feature_flag_off",
+      "ts": "2026-05-15T17:15:14.975Z"
+    },
+    {
+      "phase": "P3-mixed",
+      "name": "mixed reload",
+      "status": "skip",
+      "detail": "feature_flag_off",
+      "ts": "2026-05-15T17:15:14.975Z"
+    },
+    {
+      "phase": "P3-heal",
+      "name": "healer drills",
+      "status": "skip",
+      "detail": "feature_flag_off",
+      "ts": "2026-05-15T17:15:14.976Z"
+    },
+    {
+      "phase": "P3-stream-hang",
+      "name": "stream hang watchdog",
+      "status": "skip",
+      "detail": "feature_flag_off",
+      "ts": "2026-05-15T17:15:14.977Z"
+    }
+  ]
+}

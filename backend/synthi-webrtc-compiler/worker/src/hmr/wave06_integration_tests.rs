@@ -17,8 +17,12 @@ mod tests {
     use crate::hmr::candidate_history::CandidateHistory;
     use crate::hmr::candidate_notification::CandidateNotification;
     use crate::hmr::candidate_queue::CandidateQueue;
-    use crate::hmr::candidate_supersession::{should_supersede, SupersessionPolicy, SupersessionVerdict};
-    use crate::hmr::candidate_watchdog::{check_candidate_timeout, CandidateTimeouts, WatchdogAction};
+    use crate::hmr::candidate_supersession::{
+        should_supersede, SupersessionPolicy, SupersessionVerdict,
+    };
+    use crate::hmr::candidate_watchdog::{
+        check_candidate_timeout, CandidateTimeouts, WatchdogAction,
+    };
     use crate::hmr::health_check::HealthCheckResult;
     use crate::hmr::planner_decision::{ReloadDecision, StateStrategy};
     use crate::hmr::promotion_policy::{evaluate_promotion, PromotionPolicy, PromotionVerdict};
@@ -54,7 +58,11 @@ mod tests {
         let mut history = CandidateHistory::new();
 
         // Enqueue
-        let gen = q.enqueue(manifest("a"), ReloadDecision::WarmReload, StateStrategy::PreservePointer);
+        let gen = q.enqueue(
+            manifest("a"),
+            ReloadDecision::WarmReload,
+            StateStrategy::PreservePointer,
+        );
         assert_eq!(gen, 1);
         assert_eq!(q.pending_count(), 1);
 
@@ -87,7 +95,11 @@ mod tests {
     #[test]
     fn scenario_supersession() {
         let mut q = CandidateQueue::new("p1");
-        q.enqueue(manifest("a"), ReloadDecision::WarmReload, StateStrategy::PreservePointer);
+        q.enqueue(
+            manifest("a"),
+            ReloadDecision::WarmReload,
+            StateStrategy::PreservePointer,
+        );
         let active = q.activate_next().unwrap();
 
         // New build arrives while loading
@@ -100,7 +112,11 @@ mod tests {
     #[test]
     fn scenario_bridge_pending() {
         let mut q = CandidateQueue::new("p1");
-        q.enqueue(manifest("a"), ReloadDecision::WarmReload, StateStrategy::PreservePointer);
+        q.enqueue(
+            manifest("a"),
+            ReloadDecision::WarmReload,
+            StateStrategy::PreservePointer,
+        );
 
         let (action, _) = bridge_tick(&q, &BridgeConfig::default(), 0);
         assert!(matches!(action, BridgeAction::BeginLoad { .. }));
