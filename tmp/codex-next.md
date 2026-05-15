@@ -101,13 +101,16 @@ The live worker does not yet classify the harness extra-parameter device edit as
 
 The stricter future worker enhancement is to carry per-kernel signature metadata into the adapter request or build manifest so a kernel parameter-list change can deterministically emit `plan=abi_breaking` before reload.
 
-## Remaining Before Final Closeout
+## Final Closeout Commands
 
-Run the user-requested repository-level Docker commands after the latest harness commit:
+The user-requested repository-level Docker commands were run after the green harness commit:
 
 ```powershell
 docker compose build
 docker compose down
 ```
 
-Then commit this handoff update and any final result updates.
+Result:
+
+- `docker compose build` passed for `frontend`, `ai-engine`, `ai-gateway`, `mcp`, `y-sweet`, `signaling-server`, `collab-server`, and `worker`.
+- `docker compose down` stopped and removed the compose services and default network.
