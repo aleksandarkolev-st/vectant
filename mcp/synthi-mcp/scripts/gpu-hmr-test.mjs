@@ -1107,7 +1107,10 @@ async function phaseP0(ctx) {
   record('P0', 'worker invokes device compiler', sawNvcc.matched ? 'pass' : 'warn',
     sawNvcc.snippet || 'no log marker (was worker.log path set?)');
 
-  const sawCubin = await awaitWorkerLogRegex(/cuModuleLoadData ok|hipModuleLoad ok|kernels=\[/, 15000);
+  const sawCubin = await awaitWorkerLogRegex(
+    /cuModuleLoadData ok|hipModuleLoad ok|kernels=\[|Device sidecar reload vendor=.*result=Success/,
+    15000,
+  );
   record('P0', 'gpu adapter loaded cubin/hsaco', sawCubin.matched ? 'pass' : 'warn',
     sawCubin.snippet || 'no marker');
 
