@@ -199,6 +199,14 @@ const TOOLS = [
           enum: ["auto", "disabled"],
           description: "GPU mode from the IDE toggle. 'auto' lets the worker detect/use GPU HMR; 'disabled' routes through the host-only path.",
         },
+        compile_manifest: {
+          type: "object",
+          description: "Optional worker compile manifest. Used by deterministic MCP flows before a split sidecar exists.",
+        },
+        manifest: {
+          type: "object",
+          description: "Alias for compile_manifest.",
+        },
         target: {
           type: "string",
           description: "Target platform. Default 'native'; mobile uses 'react-native-emulator'.",

@@ -1,5 +1,6 @@
 use crate::debug_log;
-use anyhow::Result;
+use anyhow::{Context, Result};
+use std::path::{Component, Path, PathBuf};
 
 use crate::compiler::builder::{
     hash_content, hash_shared_header_semantic, ModuleHashes, RebuildScope,
@@ -25,6 +26,55 @@ use crate::compiler::stages::guardrails::{
     apply_core_guardrails, apply_gui_guardrails, apply_shared_guardrails,
 };
 use crate::compiler::stages::runner::handle_runner_execution;
+
+fn compile_request_relpath(path: &str) -> Result<PathBuf> {
+    if path.trim().is_empty() {
+        anyhow::bail!("compile request contains an empty filename");
+    }
+
+    let mut rel = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(part) => rel.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                anyhow::bail!("compile request filename is not workspace-relative: {path}");
+            }
+        }
+    }
+
+    if rel.as_os_str().is_empty() {
+        anyhow::bail!("compile request filename resolves to an empty path: {path}");
+    }
+    Ok(rel)
+}
+
+async fn write_compile_request_file(workspace: &Path, name: &str, content: &str) -> Result<()> {
+    let rel = compile_request_relpath(name)?;
+    let path = workspace.join(&rel);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("creating compile request parent {}", parent.display()))?;
+    }
+    tokio::fs::write(&path, content)
+        .await
+        .with_context(|| format!("writing compile request file {}", path.display()))?;
+    Ok(())
+}
+
+async fn sync_compile_request_workspace(ctx: &CompileContext, req: &CompileRequest) -> Result<()> {
+    for file in &req.files {
+        write_compile_request_file(&ctx.workspace_path, &file.name, &file.content).await?;
+    }
+    write_compile_request_file(&ctx.workspace_path, &req.filename, &req.source).await?;
+    eprintln!(
+        "[Compile] synced inline request files: primary={} additional={}",
+        req.filename,
+        req.files.len()
+    );
+    Ok(())
+}
 
 /// Write the split sidecar to disk with end-to-end operator logging.
 ///
@@ -169,9 +219,7 @@ fn extract_device_kernel_symbols(source: &str) -> Vec<String> {
         Err(_) => return Vec::new(),
     };
     let normalized = launch_bounds.replace_all(&uncommented, " ");
-    let re = match regex::Regex::new(
-        r"__global__[^;{}()]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(",
-    ) {
+    let re = match regex::Regex::new(r"__global__[^;{}()]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(") {
         Ok(re) => re,
         Err(_) => return Vec::new(),
     };
@@ -235,6 +283,8 @@ pub async fn handle_compile_request(
 
     // Manual logging instead of record_step for now
     debug_log!("[Compile] Step: Handler started");
+
+    sync_compile_request_workspace(ctx, &req).await?;
 
     // ============================================================
     // HMR PIPELINE: Initialize and classify compile loop
@@ -1136,23 +1186,32 @@ pub async fn handle_compile_request(
     //      `CompileManifest::sdl2_default()`, preserving exact backward
     //      compatibility with pre-universal-prompt projects.
     let compile_manifest: Option<CompileManifest> = {
-        let from_split_data = split_data
-            .get("_synthi_manifest")
+        let from_request = req
+            .compile_manifest
+            .as_ref()
             .and_then(|v| if v.is_null() { None } else { Some(v) })
             .and_then(CompileManifest::from_json_value);
-        if from_split_data.is_some() {
-            from_split_data
+        if from_request.is_some() {
+            from_request
         } else {
-            // Fallback: re-read sidecar. Cheap — tens of KB at most,
-            // and only on UseCached/edge paths that don't carry the
-            // manifest inside split_data.
-            match tokio::fs::read_to_string(&sidecar_path).await {
-                Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
-                    .ok()
-                    .and_then(|meta| meta.get("compile_manifest").cloned())
-                    .and_then(|v| if v.is_null() { None } else { Some(v) })
-                    .and_then(|v| CompileManifest::from_json_value(&v)),
-                Err(_) => None,
+            let from_split_data = split_data
+                .get("_synthi_manifest")
+                .and_then(|v| if v.is_null() { None } else { Some(v) })
+                .and_then(CompileManifest::from_json_value);
+            if from_split_data.is_some() {
+                from_split_data
+            } else {
+                // Fallback: re-read sidecar. Cheap — tens of KB at most,
+                // and only on UseCached/edge paths that don't carry the
+                // manifest inside split_data.
+                match tokio::fs::read_to_string(&sidecar_path).await {
+                    Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                        .ok()
+                        .and_then(|meta| meta.get("compile_manifest").cloned())
+                        .and_then(|v| if v.is_null() { None } else { Some(v) })
+                        .and_then(|v| CompileManifest::from_json_value(&v)),
+                    Err(_) => None,
+                }
             }
         }
     };
@@ -2238,10 +2297,13 @@ pub async fn handle_compile_request(
                 gpu.vendor.as_str(),
                 kernel_symbols.join(",")
             );
-            modules_to_load.insert(0, (
-                device_cmd,
-                device_outcome.artifact_path.to_string_lossy().to_string(),
-            ));
+            modules_to_load.insert(
+                0,
+                (
+                    device_cmd,
+                    device_outcome.artifact_path.to_string_lossy().to_string(),
+                ),
+            );
         }
     }
 

@@ -75,6 +75,10 @@ pub struct CompileRequest {
     /// Human-readable GPU mode from the UI: "auto" or "disabled".
     #[serde(default)]
     pub gpu_mode: Option<String>,
+    /// Optional compile recipe supplied directly by deterministic callers.
+    /// Same JSON shape as `.synthi_split_meta.json::compile_manifest`.
+    #[serde(default, alias = "manifest")]
+    pub compile_manifest: Option<serde_json::Value>,
     /// Target platform for execution: "native" (default), "react-native-emulator", etc.
     #[serde(default)]
     pub target: Option<String>,

@@ -654,6 +654,28 @@ int main() {
 }
 `;
 
+function sourceSetForVendor(vendor) {
+  const arch = CFG.gpuArch ?? (vendor === 'rocm' ? 'gfx1201' : 'sm_80');
+  if (vendor !== 'rocm') {
+    return { core: CORE_CPP, gui: GUI_CPP };
+  }
+  const core = CORE_CPP
+    .replace('#include <cuda_runtime.h>', '#include <hip/hip_runtime.h>')
+    .replaceAll('cudaStream_t', 'hipStream_t')
+    .replaceAll('cudaStreamCreate', 'hipStreamCreate')
+    .replaceAll('cudaMalloc', 'hipMalloc')
+    .replaceAll('cudaMemcpyHostToDevice', 'hipMemcpyHostToDevice')
+    .replaceAll('cudaMemcpyDeviceToHost', 'hipMemcpyDeviceToHost')
+    .replaceAll('cudaMemcpy', 'hipMemcpy')
+    .replace('"sm_80"', `"${arch}"`)
+    .replace('"cuda"', '"rocm"');
+  const gui = GUI_CPP
+    .replace('#include <cuda_runtime.h>', '#include <hip/hip_runtime.h>')
+    .replaceAll('cudaMemcpyDeviceToHost', 'hipMemcpyDeviceToHost')
+    .replaceAll('cudaMemcpy', 'hipMemcpy');
+  return { core, gui };
+}
+
 const DEVICE_CU_PHASE0 = `// device.cu — vector add baseline (Phase 0/1)
 extern "C" __global__ void vec_add(const float* a, const float* b, float* c, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -708,9 +730,39 @@ const DEVICE_CU_HEAL_T3 = DEVICE_CU_PHASE0.replace(
 
 function manifestFor(vendor) {
   const arch = CFG.gpuArch ?? (vendor === 'rocm' ? 'gfx1201' : 'sm_80');
+  const commonFlags = [
+    '-shared',
+    '-fPIC',
+    '-O0',
+    '-fno-merge-constants',
+    '-D_POSIX_C_SOURCE=199309L',
+    '-g',
+    '-gdwarf-4',
+    '-fno-omit-frame-pointer',
+    '-fdiagnostics-format=json',
+  ];
+  const confidence = {
+    overall: 'high',
+    runner_synthesis: 'high',
+    link_flags: 'high',
+    notes: `${vendor} GPU HMR fixture`,
+  };
   if (vendor === 'rocm') {
     return {
-      compiler: 'clang++',
+      compiler: 'g++',
+      std: 'c++17',
+      common_flags: [
+        ...commonFlags,
+        '-D__HIP_PLATFORM_AMD__',
+        '-I/opt/rocm/include',
+      ],
+      core_link_flags: ['-L/opt/rocm/lib', '-lamdhip64'],
+      gui_link_flags: ['-L/opt/rocm/lib', '-lamdhip64'],
+      shared_link_flags: [],
+      runner_link_flags: ['-L/opt/rocm/lib', '-lamdhip64', '-ldl'],
+      system_packages: [],
+      hot_reload_mode: 'swap',
+      confidence,
       files: ['shared.h', 'core.cpp', 'gui.cpp', 'host_runner.cpp', 'device.hip'],
       gpu: {
         vendor: 'rocm',
@@ -726,6 +778,15 @@ function manifestFor(vendor) {
   }
   return {
     compiler: 'g++',
+    std: 'c++17',
+    common_flags: commonFlags,
+    core_link_flags: ['-lcudart', '-lcuda'],
+    gui_link_flags: ['-lcudart', '-lcuda'],
+    shared_link_flags: [],
+    runner_link_flags: ['-lcudart', '-lcuda', '-ldl'],
+    system_packages: [],
+    hot_reload_mode: 'swap',
+    confidence,
     files: ['shared.h', 'core.cpp', 'gui.cpp', 'host_runner.cpp', 'device.cu'],
     gpu: {
       vendor: 'cuda',
@@ -799,6 +860,7 @@ async function postCompileViaMcp({ ctx, files }) {
     user_requested_deterministic: true,
     prefer_gpu_pipeline: true,
     gpu_mode: 'auto',
+    compile_manifest: ctx.manifest,
     slug: CFG.slug,
   });
   if (!compileRes?.ok) {
@@ -955,6 +1017,7 @@ async function preflight() {
 async function seedWorkspace(vendor) {
   const m = manifestFor(vendor);
   const deviceFilename = vendor === 'rocm' ? 'device.hip' : 'device.cu';
+  const sources = sourceSetForVendor(vendor);
   log('info', `Seeding workspace slug=${CFG.slug} vendor=${vendor}`);
 
   let ws;
@@ -968,8 +1031,8 @@ async function seedWorkspace(vendor) {
 
   const files = [
     { path: 'shared.h', content: SHARED_H },
-    { path: 'core.cpp', content: CORE_CPP },
-    { path: 'gui.cpp', content: GUI_CPP },
+    { path: 'core.cpp', content: sources.core },
+    { path: 'gui.cpp', content: sources.gui },
     { path: 'host_runner.cpp', content: HOST_RUNNER_CPP },
     { path: deviceFilename, content: DEVICE_CU_PHASE0 },
     { path: '.synthi/build_manifest.json', content: JSON.stringify(m, null, 2) },

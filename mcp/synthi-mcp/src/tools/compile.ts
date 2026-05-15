@@ -46,6 +46,8 @@ interface RawArgs {
   user_requested_deterministic?: unknown;
   prefer_gpu_pipeline?: unknown;
   gpu_mode?: unknown;
+  compile_manifest?: unknown;
+  manifest?: unknown;
   target?: unknown;
   project_root?: unknown;
   slug?: unknown;
@@ -112,6 +114,16 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     payload["prefer_gpu_pipeline"] = a.prefer_gpu_pipeline;
   }
   if (typeof a.gpu_mode === "string") payload["gpu_mode"] = a.gpu_mode;
+  const compileManifest = a.compile_manifest ?? a.manifest;
+  if (compileManifest !== undefined) {
+    if (!compileManifest || typeof compileManifest !== "object" || Array.isArray(compileManifest)) {
+      return errorResponse("invalid_args", {
+        field: a.compile_manifest !== undefined ? "compile_manifest" : "manifest",
+        expected: "object",
+      });
+    }
+    payload["compile_manifest"] = compileManifest;
+  }
   if (typeof a.target === "string") payload["target"] = a.target;
   if (typeof a.project_root === "string") payload["project_root"] = a.project_root;
   if (typeof a.slug === "string") payload["slug"] = a.slug;
@@ -142,6 +154,7 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       prefer_gpu_pipeline:
         typeof a.prefer_gpu_pipeline === "boolean" ? a.prefer_gpu_pipeline : undefined,
       ...(typeof a.gpu_mode === "string" ? { gpu_mode: a.gpu_mode } : {}),
+      ...(compileManifest !== undefined ? { compile_manifest: true } : {}),
       ...(typeof a.target === "string" ? { target: a.target } : {}),
     },
   });
