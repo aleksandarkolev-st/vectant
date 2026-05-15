@@ -180,6 +180,7 @@ gpu_snapshot_telemetry snapshot_ms=... snapshot_bytes=...
 
 - Docker containers are running under compose project `vectant-ade`, so the old hard-coded names `synthi-ide-mcp-1` / `synthi-ide-worker-1` are stale on this checkout.
 - `mcp/synthi-mcp/scripts/gpu-hmr-test.mjs` now auto-resolves active `mcp` and `worker` service containers through `docker compose ps -q` and compose service labels when the configured container names do not exist.
+- Worker Docker builds now set `WORKER_CARGO_FEATURES=gpu-hmr` from compose, and the rebuilt `vectant-ade-worker:latest` runner no longer contains the `load_device ignored; runner built without gpu-hmr` fallback string.
 - Verified host GPU: Windows reports `AMD Radeon RX 9070 XT`.
 - Verified Docker Desktop GPU device shape: Docker can pass `/dev/dxg` into containers, but this environment does not expose native Linux `/dev/kfd` or `/dev/dri` to the worker.
 - Verified WSL libraries: `/usr/lib/wsl/lib/libdxcore.so` exists in the Ubuntu WSL distro, but `/opt/rocm/lib/librocdxg.so` is not installed.
