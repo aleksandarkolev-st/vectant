@@ -32,7 +32,7 @@ use crate::compiler::stages::compile_helpers::{
     compile_to_object_command, cpp_compile_command, link_object_to_exec_command,
     object_path_for_exec,
 };
-use crate::hmr::compile_manifest::CompileManifest;
+use crate::hmr::compile_manifest::{CompileManifest, ModuleKind};
 use crate::hmr::incremental_cache::IncrementalCache;
 use anyhow::{Context, Result};
 use tokio::time::{timeout, Duration};
@@ -134,7 +134,7 @@ pub async fn compile_runner(
             &owned_default_manifest
         }
     };
-    let compiler_exe = effective_manifest.compiler.executable();
+    let compiler_exe = effective_manifest.select_compiler(ModuleKind::HostRunner);
     let std_flag = format!("-std={}", effective_manifest.std);
 
     // Pure-function flag construction — see `build_runner_flag_list` for
@@ -285,7 +285,7 @@ pub async fn compile_runner(
             "host_runner",
             host_runner_content,
             |m| {
-                let mut cmd = cpp_compile_command(m.compiler.executable());
+                let mut cmd = cpp_compile_command(m.select_compiler(ModuleKind::HostRunner));
                 cmd.arg(format!("-std={}", m.std));
                 // Strip -shared / -fPIC (runner is an executable, not a .so)
                 for f in &m.common_flags {

@@ -100,7 +100,7 @@ use crate::hmr::adapter_trait::AdapterReloadResult;
 use crate::hmr::ai_bypass::{check_ai_bypass, AiBypassResult, SplitCache};
 use crate::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
 use crate::hmr::compile_enrichment::CompileEnrichment;
-use crate::hmr::compile_manifest::{CompileManifest, DeviceVendor};
+use crate::hmr::compile_manifest::{CompileManifest, DeviceVendor, ModuleKind};
 use crate::hmr::deterministic_compile::{
     determine_deterministic_scope, validate_deterministic_input, DeterministicCompileInput,
     DeterministicRebuildScope,
@@ -1112,7 +1112,7 @@ pub async fn handle_compile_request(
     match &compile_manifest {
         Some(m) => eprintln!(
             "[HMR] compile_manifest: compiler={}, std={}, gui_link={:?}, hot_reload={}, tier0_safe={}",
-            m.compiler.executable(),
+            m.select_compiler(ModuleKind::Core),
             m.std,
             m.gui_link_flags,
             m.hot_reload_mode.as_str(),
