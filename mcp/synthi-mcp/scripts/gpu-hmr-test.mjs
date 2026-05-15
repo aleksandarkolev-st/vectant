@@ -964,10 +964,28 @@ function levenshtein(a, b) {
   return dp[a.length][b.length];
 }
 
+function canonicalManifestModule(moduleName, manifestFiles) {
+  if (typeof moduleName !== 'string' || moduleName.trim() === '') return null;
+  if (manifestFiles.includes(moduleName)) return moduleName;
+
+  const normalized = moduleName.replaceAll('\\', '/');
+  if (manifestFiles.includes(normalized)) return normalized;
+
+  const extension = path.extname(normalized);
+  if (extension) return null;
+
+  const matches = manifestFiles.filter((file) => {
+    const base = path.basename(file);
+    return base.slice(0, base.length - path.extname(base).length) === normalized;
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
 function verifyHealOutput(edits, manifestFiles, existingKernels) {
   const findings = [];
   for (const e of edits ?? []) {
-    if (!manifestFiles.includes(e.module)) {
+    const canonicalModule = canonicalManifestModule(e.module, manifestFiles);
+    if (!canonicalModule) {
       findings.push({ rule: 'no_new_files', detail: `module ${e.module} not in manifest` });
     }
     // Detect __global__ declarations in `content`
@@ -983,7 +1001,8 @@ function verifyHealOutput(edits, manifestFiles, existingKernels) {
         }
       }
     }
-    if (/^[^.]+\.(cu|hip)$/.test(e.module) && e.operation === 'create') {
+    const targetModule = canonicalModule ?? e.module;
+    if (!canonicalModule && /^[^.]+\.(cu|hip)$/.test(targetModule) && e.operation === 'create') {
       findings.push({ rule: 'no_new_device_file', detail: e.module });
     }
   }
