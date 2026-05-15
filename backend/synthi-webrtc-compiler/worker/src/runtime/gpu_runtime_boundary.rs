@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedBufferRecord {
@@ -32,11 +32,33 @@ pub struct ManagedBufferRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchRecord {
     pub kernel_name: String,
+    pub grid: (u32, u32, u32),
+    pub block: (u32, u32, u32),
     pub grid_size: usize,
     pub block_size: usize,
     pub shared_bytes: usize,
     pub stream_token: usize,
     pub arg_count: usize,
+    pub dispatched: bool,
+    pub dispatch_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuLaunchRequest {
+    pub kernel_name: String,
+    pub grid: (u32, u32, u32),
+    pub block: (u32, u32, u32),
+    pub shared_bytes: usize,
+    pub stream_token: usize,
+    pub arg_count: usize,
+}
+
+pub trait GpuLaunchDispatcher: Send + Sync {
+    fn dispatch(
+        &self,
+        request: &GpuLaunchRequest,
+        args: *const *const c_void,
+    ) -> Result<(), String>;
 }
 
 #[derive(Debug, Default)]
@@ -47,9 +69,30 @@ struct BoundaryState {
 }
 
 static STATE: OnceLock<Mutex<BoundaryState>> = OnceLock::new();
+static DISPATCHER: OnceLock<Mutex<Option<Arc<dyn GpuLaunchDispatcher>>>> = OnceLock::new();
 
 fn state() -> &'static Mutex<BoundaryState> {
     STATE.get_or_init(|| Mutex::new(BoundaryState::default()))
+}
+
+fn dispatcher_slot() -> &'static Mutex<Option<Arc<dyn GpuLaunchDispatcher>>> {
+    DISPATCHER.get_or_init(|| Mutex::new(None))
+}
+
+pub fn install_launch_dispatcher(
+    dispatcher: Arc<dyn GpuLaunchDispatcher>,
+) -> Option<Arc<dyn GpuLaunchDispatcher>> {
+    let mut guard = dispatcher_slot()
+        .lock()
+        .expect("gpu runtime dispatcher mutex poisoned");
+    guard.replace(dispatcher)
+}
+
+pub fn clear_launch_dispatcher() -> Option<Arc<dyn GpuLaunchDispatcher>> {
+    let mut guard = dispatcher_slot()
+        .lock()
+        .expect("gpu runtime dispatcher mutex poisoned");
+    guard.take()
 }
 
 fn cstr(ptr: *const c_char) -> Option<String> {
@@ -61,6 +104,37 @@ fn cstr(ptr: *const c_char) -> Option<String> {
         .ok()
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
+}
+
+fn clamp_dim(value: u64) -> u32 {
+    value.max(1).min(u32::MAX as u64) as u32
+}
+
+fn read_launch_dims(ptr: *const c_void, bytes: usize) -> (u32, u32, u32) {
+    if ptr.is_null() || bytes == 0 {
+        return (1, 1, 1);
+    }
+
+    unsafe {
+        if bytes >= 12 {
+            let p = ptr as *const u32;
+            return (
+                clamp_dim(std::ptr::read_unaligned(p) as u64),
+                clamp_dim(std::ptr::read_unaligned(p.add(1)) as u64),
+                clamp_dim(std::ptr::read_unaligned(p.add(2)) as u64),
+            );
+        }
+        if bytes >= std::mem::size_of::<usize>() {
+            let n = std::ptr::read_unaligned(ptr as *const usize);
+            return (clamp_dim(n as u64), 1, 1);
+        }
+        if bytes >= std::mem::size_of::<u32>() {
+            let n = std::ptr::read_unaligned(ptr as *const u32);
+            return (clamp_dim(n as u64), 1, 1);
+        }
+    }
+
+    (1, 1, 1)
 }
 
 #[no_mangle]
@@ -115,30 +189,87 @@ pub extern "C" fn synthi_gpu_launch_raw(
     block_size: usize,
     shared_bytes: usize,
     stream_token: usize,
-    _args: *const *const c_void,
+    args: *const *const c_void,
     arg_count: usize,
 ) -> bool {
     let kernel_name = cstr(kernel_name).unwrap_or_else(|| "<unknown>".to_string());
-    let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
-    for record in guard.buffers_by_ptr.values_mut() {
-        // Until launch-graph write-set inference is connected, every launch
-        // conservatively dirties every Synthi-managed buffer.
-        record.dirty = true;
-    }
-    guard.launches.push(LaunchRecord {
+    let grid = read_launch_dims(_grid, grid_size);
+    let block = read_launch_dims(_block, block_size);
+    let request = GpuLaunchRequest {
         kernel_name: kernel_name.clone(),
-        grid_size,
-        block_size,
+        grid,
+        block,
         shared_bytes,
         stream_token,
         arg_count,
-    });
+    };
+
+    let (launch_index, dispatcher) = {
+        let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+        for record in guard.buffers_by_ptr.values_mut() {
+            // Until launch-graph write-set inference is connected, every launch
+            // conservatively dirties every Synthi-managed buffer.
+            record.dirty = true;
+        }
+        let launch_index = guard.launches.len();
+        guard.launches.push(LaunchRecord {
+            kernel_name: kernel_name.clone(),
+            grid,
+            block,
+            grid_size,
+            block_size,
+            shared_bytes,
+            stream_token,
+            arg_count,
+            dispatched: false,
+            dispatch_error: None,
+        });
+        let dispatcher = dispatcher_slot()
+            .lock()
+            .expect("gpu runtime dispatcher mutex poisoned")
+            .clone();
+        (launch_index, dispatcher)
+    };
+
+    let dispatch_result = dispatcher.as_ref().map(|d| d.dispatch(&request, args));
+    if let Some(result) = dispatch_result {
+        let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+        if let Some(record) = guard.launches.get_mut(launch_index) {
+            match result {
+                Ok(()) => {
+                    record.dispatched = true;
+                }
+                Err(e) => {
+                    record.dispatch_error = Some(e);
+                }
+            }
+        }
+    }
+
+    let ok = {
+        let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+        guard
+            .launches
+            .get(launch_index)
+            .map(|record| record.dispatch_error.is_none())
+            .unwrap_or(false)
+    };
 
     eprintln!(
-        "[gpu-runtime-boundary] synthi_gpu_launch kernel={} args={} stream={} shared_bytes={}",
-        kernel_name, arg_count, stream_token, shared_bytes
+        "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={}",
+        kernel_name,
+        grid,
+        block,
+        arg_count,
+        stream_token,
+        shared_bytes,
+        if dispatcher.is_some() {
+            if ok { "ok" } else { "failed" }
+        } else {
+            "queued"
+        }
     );
-    true
+    ok
 }
 
 #[no_mangle]
@@ -206,13 +337,14 @@ pub fn launch_records_snapshot() -> Vec<LaunchRecord> {
 pub fn reset_for_test() {
     let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     *guard = BoundaryState::default();
+    clear_launch_dispatcher();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;
-    use std::sync::{MutexGuard, OnceLock};
+    use std::sync::{Arc, MutexGuard, OnceLock};
 
     static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -273,13 +405,15 @@ mod tests {
         );
 
         let kernel = CString::new("vec_add").unwrap();
+        let grid = [12_u32, 2, 1];
+        let block = 256_u32;
         let ok = synthi_gpu_launch_raw(
             std::ptr::null_mut(),
             kernel.as_ptr(),
-            std::ptr::null(),
-            12,
-            std::ptr::null(),
-            12,
+            grid.as_ptr().cast(),
+            std::mem::size_of_val(&grid),
+            (&block as *const u32).cast(),
+            std::mem::size_of_val(&block),
             0,
             99,
             std::ptr::null(),
@@ -290,7 +424,103 @@ mod tests {
         let launches = launch_records_snapshot();
         assert_eq!(launches.len(), 1);
         assert_eq!(launches[0].kernel_name, "vec_add");
+        assert_eq!(launches[0].grid, (12, 2, 1));
+        assert_eq!(launches[0].block, (256, 1, 1));
         assert_eq!(launches[0].arg_count, 4);
+        assert!(!launches[0].dispatched);
+        assert!(launches[0].dispatch_error.is_none());
         assert!(managed_buffers_snapshot()[0].dirty);
+    }
+
+    struct TestDispatcher {
+        should_fail: bool,
+        calls: std::sync::Arc<Mutex<Vec<GpuLaunchRequest>>>,
+    }
+
+    impl GpuLaunchDispatcher for TestDispatcher {
+        fn dispatch(
+            &self,
+            request: &GpuLaunchRequest,
+            _args: *const *const c_void,
+        ) -> Result<(), String> {
+            self.calls.lock().unwrap().push(request.clone());
+            if self.should_fail {
+                Err("synthetic launch failure".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn launch_dispatcher_receives_decoded_dimensions() {
+        let _guard = test_guard();
+        reset_for_test();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: calls.clone(),
+        }));
+
+        let kernel = CString::new("gemm").unwrap();
+        let grid = [8_u32, 4, 1];
+        let block = [16_u32, 16, 1];
+        assert!(synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            grid.as_ptr().cast(),
+            std::mem::size_of_val(&grid),
+            block.as_ptr().cast(),
+            std::mem::size_of_val(&block),
+            512,
+            0xfeed,
+            std::ptr::null(),
+            6,
+        ));
+
+        let seen = calls.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].kernel_name, "gemm");
+        assert_eq!(seen[0].grid, (8, 4, 1));
+        assert_eq!(seen[0].block, (16, 16, 1));
+        assert_eq!(seen[0].shared_bytes, 512);
+        assert_eq!(seen[0].stream_token, 0xfeed);
+
+        let launches = launch_records_snapshot();
+        assert!(launches[0].dispatched);
+        assert!(launches[0].dispatch_error.is_none());
+    }
+
+    #[test]
+    fn launch_dispatcher_failure_returns_false_and_records_error() {
+        let _guard = test_guard();
+        reset_for_test();
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: true,
+            calls: std::sync::Arc::new(Mutex::new(Vec::new())),
+        }));
+
+        let kernel = CString::new("bad").unwrap();
+        let grid = 1_u32;
+        let ok = synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&grid as *const u32).cast(),
+            std::mem::size_of_val(&grid),
+            (&grid as *const u32).cast(),
+            std::mem::size_of_val(&grid),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        );
+
+        assert!(!ok);
+        let launches = launch_records_snapshot();
+        assert!(!launches[0].dispatched);
+        assert_eq!(
+            launches[0].dispatch_error.as_deref(),
+            Some("synthetic launch failure")
+        );
     }
 }

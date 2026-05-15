@@ -50,6 +50,7 @@
 #![cfg(feature = "gpu-hmr")]
 
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
@@ -62,13 +63,18 @@ use crate::hmr::adapter_trait::{
 };
 use crate::hmr::compile_manifest::{DeviceVendor, SnapshotMode};
 use crate::hmr::device_snapshot::BufferRegistry;
-use crate::hmr::gpu_driver_loader::{self, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable};
+use crate::hmr::gpu_driver_loader::{
+    self, CuFunction, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable,
+};
 use crate::hmr::gpu_module_manager::{GpuModuleManager, ModuleManagerError};
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
 use crate::hmr::gpu_stream_drain::{drain_context, DrainOutcome};
-use crate::runtime::gpu_runtime_boundary::managed_buffers_snapshot;
+use crate::runtime::gpu_runtime_boundary::{
+    clear_launch_dispatcher, install_launch_dispatcher, managed_buffers_snapshot,
+    GpuLaunchDispatcher, GpuLaunchRequest,
+};
 
 // ── Vendor + symbol table ───────────────────────────────────
 
@@ -203,6 +209,48 @@ enum GpuPhase {
     Swapping,
     Faulted,
     ShutDown,
+}
+
+struct DriverLaunchDispatcher {
+    symbols: GpuDriverSymbolTable,
+    kernels: HashMap<String, u64>,
+}
+
+impl GpuLaunchDispatcher for DriverLaunchDispatcher {
+    fn dispatch(
+        &self,
+        request: &GpuLaunchRequest,
+        args: *const *const c_void,
+    ) -> Result<(), String> {
+        let Some(handle) = self.kernels.get(&request.kernel_name).copied() else {
+            return Err(format!(
+                "kernel {:?} is not resolved in active GPU sidecar",
+                request.kernel_name
+            ));
+        };
+
+        let shared_mem_bytes = request.shared_bytes.min(u32::MAX as usize) as u32;
+        let code = unsafe {
+            (self.symbols.cu_launch_kernel)(
+                handle as CuFunction,
+                request.grid.0,
+                request.grid.1,
+                request.grid.2,
+                request.block.0,
+                request.block.1,
+                request.block.2,
+                shared_mem_bytes,
+                request.stream_token as *mut c_void,
+                args as *mut *mut c_void,
+                std::ptr::null_mut(),
+            )
+        };
+        if code != 0 {
+            return Err(format!("cuLaunchKernel returned {code}"));
+        }
+
+        Ok(())
+    }
 }
 
 // ── The adapter ─────────────────────────────────────────────
@@ -504,6 +552,7 @@ impl Adapter for GpuModuleAdapter {
         self.kernel_table.clear();
         self.driver = None;
         self.module_manager = GpuModuleManager::new();
+        clear_launch_dispatcher();
         self.last_reload_log.clear();
         self.phase = GpuPhase::ShutDown;
         self.health = AdapterHealth::Unknown;
@@ -640,6 +689,10 @@ impl Adapter for GpuModuleAdapter {
                         self.kernel_table.insert(name.clone(), handle);
                     }
                 }
+                install_launch_dispatcher(Arc::new(DriverLaunchDispatcher {
+                    symbols,
+                    kernels: self.kernel_table.clone(),
+                }));
                 self.emit_report(GpuSwapInputs {
                     plan,
                     reason: "device-file-only-edit".into(),
@@ -711,7 +764,9 @@ mod tests {
     use crate::hmr::gpu_driver_loader::{
         CuContext, CuDevicePtr, CuFunction, CuModule, CuResult, CuStream,
     };
-    use crate::runtime::gpu_runtime_boundary::{reset_for_test, synthi_gpu_register_buffer};
+    use crate::runtime::gpu_runtime_boundary::{
+        reset_for_test, synthi_gpu_launch_raw, synthi_gpu_register_buffer,
+    };
     use std::ffi::{c_void, CString};
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -728,6 +783,9 @@ mod tests {
     }
 
     static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x1000);
+    static LAUNCH_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static LAST_LAUNCH_GRID_X: AtomicUsize = AtomicUsize::new(0);
+    static LAST_LAUNCH_BLOCK_X: AtomicUsize = AtomicUsize::new(0);
 
     unsafe extern "C" fn ok_init(_flags: u32) -> CuResult {
         0
@@ -776,10 +834,10 @@ mod tests {
 
     unsafe extern "C" fn ok_launch_kernel(
         _f: CuFunction,
-        _grid_dim_x: u32,
+        grid_dim_x: u32,
         _grid_dim_y: u32,
         _grid_dim_z: u32,
-        _block_dim_x: u32,
+        block_dim_x: u32,
         _block_dim_y: u32,
         _block_dim_z: u32,
         _shared_mem_bytes: u32,
@@ -787,6 +845,9 @@ mod tests {
         _kernel_params: *mut *mut c_void,
         _extra: *mut *mut c_void,
     ) -> CuResult {
+        LAUNCH_CALLS.fetch_add(1, Ordering::SeqCst);
+        LAST_LAUNCH_GRID_X.store(grid_dim_x as usize, Ordering::SeqCst);
+        LAST_LAUNCH_BLOCK_X.store(block_dim_x as usize, Ordering::SeqCst);
         0
     }
 
@@ -1122,6 +1183,42 @@ mod tests {
             .last_reload_log()
             .iter()
             .any(|l| l.contains("gpu_snapshot_telemetry")));
+    }
+
+    #[test]
+    fn phase3_reload_installs_runtime_launch_dispatcher() {
+        reset_for_test();
+        LAUNCH_CALLS.store(0, Ordering::SeqCst);
+        LAST_LAUNCH_GRID_X.store(0, Ordering::SeqCst);
+        LAST_LAUNCH_BLOCK_X.store(0, Ordering::SeqCst);
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let mut a = adapter_with_symbols(stub_symbols());
+        let r = a.reload(&request_with_artifact(&path, vec!["device.cu".into()]));
+        assert!(matches!(r, AdapterReloadResult::Success { .. }));
+
+        let kernel = CString::new("vec_add").unwrap();
+        let grid = 8_u32;
+        let block = 256_u32;
+        assert!(synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&grid as *const u32).cast(),
+            std::mem::size_of_val(&grid),
+            (&block as *const u32).cast(),
+            std::mem::size_of_val(&block),
+            0,
+            0,
+            std::ptr::null(),
+            4,
+        ));
+
+        assert_eq!(LAUNCH_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(LAST_LAUNCH_GRID_X.load(Ordering::SeqCst), 8);
+        assert_eq!(LAST_LAUNCH_BLOCK_X.load(Ordering::SeqCst), 256);
+        reset_for_test();
     }
 
     #[test]
