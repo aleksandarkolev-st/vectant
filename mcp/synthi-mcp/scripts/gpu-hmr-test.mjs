@@ -32,6 +32,8 @@
 //   MCP_ENTRY                    ../dist/index.js
 //   MCP_TRANSPORT                docker | host
 //   MCP_CONTAINER                synthi-ide-mcp-1
+//   MCP_SIGNALING_URL            ws://signaling-server:9000 (docker transport)
+//   SYNTHI_GPU_USE_MCP           1 (set 0 to use direct AI endpoint probe only)
 //   GOOGLE_API_KEY               (only needed if MCP attach is exercised)
 
 import { spawn, execFile } from 'node:child_process';
@@ -66,10 +68,17 @@ const CFG = {
   hipFakeRuntime: process.env.SYNTHI_GPU_HIP_FAKE_RUNTIME === '1',
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 60000),
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
-  mcpTransport: (process.env.MCP_TRANSPORT ?? 'host').toLowerCase(),
+  mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
   mcpContainer: process.env.MCP_CONTAINER ?? 'synthi-ide-mcp-1',
+  mcpSignalingUrl: process.env.MCP_SIGNALING_URL ?? 'ws://signaling-server:9000',
+  mcpRequestTimeoutMs: Number(process.env.MCP_REQUEST_TIMEOUT_MS ?? 90000),
+  mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
+  mcpPrometheusPort: process.env.MCP_PROMETHEUS_PORT,
   workerContainer: process.env.WORKER_CONTAINER ?? 'synthi-ide-worker-1',
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
+  geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
+  useMcpCompile: (process.env.SYNTHI_GPU_USE_MCP ?? '1') !== '0',
+  directAiFallback: process.env.SYNTHI_GPU_DIRECT_AI_FALLBACK === '1',
   skipPhases: new Set((process.env.SKIP_PHASES ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
   onlyPhases: new Set((process.env.ONLY_PHASES ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
   syncToGcs: true,
@@ -77,6 +86,7 @@ const CFG = {
 
 const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
 const ARTIFACT_DIR = path.resolve(__dirname, '../.gpu-hmr-test-artifacts');
+const MCP_STDERR_LOG = path.join(LOG_DIR, 'mcp.stderr.log');
 
 // ───────────────────────── log + results ─────────────────────────
 
@@ -221,6 +231,165 @@ async function awaitWorkerLogRegex(regex, timeoutMs) {
     await sleep(500);
   }
   return { matched: false, snippet: '', tail: await readWorkerLogTail() };
+}
+
+// ───────────────────────── MCP JSON-RPC over stdio ─────────────────────────
+
+class McpClient {
+  constructor(proc) {
+    this.proc = proc;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.buffer = '';
+    this.stderrTail = [];
+    proc.stdout.on('data', (chunk) => this.onData(chunk.toString()));
+    proc.stderr.on('data', (chunk) => {
+      const s = chunk.toString();
+      this.stderrTail.push(s);
+      if (this.stderrTail.length > 50) this.stderrTail.shift();
+      if (process.env.MCP_VERBOSE) process.stderr.write(color.dim + '[mcp] ' + color.reset + s);
+    });
+    proc.on('exit', (code, sig) => {
+      for (const [, p] of this.pending) p.reject(new Error(`MCP exited ${code ?? sig} before response`));
+      this.pending.clear();
+    });
+  }
+
+  onData(text) {
+    this.buffer += text;
+    let idx;
+    while ((idx = this.buffer.indexOf('\n')) >= 0) {
+      const line = this.buffer.slice(0, idx).trim();
+      this.buffer = this.buffer.slice(idx + 1);
+      if (!line) continue;
+      let msg;
+      try { msg = JSON.parse(line); } catch { continue; }
+      if (msg.id != null && this.pending.has(msg.id)) {
+        const p = this.pending.get(msg.id);
+        this.pending.delete(msg.id);
+        if (msg.error) p.reject(new Error(`MCP error: ${JSON.stringify(msg.error)}`));
+        else p.resolve(msg.result);
+      }
+    }
+  }
+
+  request(method, params = {}, timeoutMs = CFG.mcpRequestTimeoutMs) {
+    const id = this.nextId++;
+    const frame = { jsonrpc: '2.0', id, method, params };
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`MCP request ${method} timed out after ${timeoutMs}ms. stderr tail:\n${this.stderrTail.slice(-10).join('')}`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v) => { clearTimeout(t); resolve(v); },
+        reject: (e) => { clearTimeout(t); reject(e); },
+      });
+      this.proc.stdin.write(JSON.stringify(frame) + '\n');
+    });
+  }
+
+  async toolCall(name, args, timeoutMs = CFG.mcpRequestTimeoutMs) {
+    const res = await this.request('tools/call', { name, arguments: args }, timeoutMs);
+    const content = Array.isArray(res?.content) ? res.content : [];
+    const textBlock = content.find((b) => b?.type === 'text');
+    if (res.isError) {
+      const errMsg = textBlock?.text || JSON.stringify(res.content);
+      throw new Error(`tool ${name} isError: ${errMsg}`);
+    }
+    const imageBlock = content.find((b) => b?.type === 'image');
+    let parsed;
+    if (textBlock?.text) {
+      try { parsed = JSON.parse(textBlock.text); }
+      catch { parsed = { raw: textBlock.text }; }
+    } else {
+      parsed = {};
+    }
+    if (imageBlock?.data) parsed.data = imageBlock.data;
+    return parsed;
+  }
+}
+
+let mcpState = null;
+
+async function startMcp() {
+  if (!CFG.useMcpCompile) return null;
+  if (mcpState?.client) return mcpState;
+
+  let proc;
+  if (CFG.mcpTransport === 'docker') {
+    const mcpEnv = {
+      SYNTHI_SESSION_ID: CFG.slug,
+      SYNTHI_SIGNALING_URL: CFG.mcpSignalingUrl,
+      SYNTHI_VISION_BACKEND: 'gemini_api',
+      GOOGLE_API_KEY: CFG.googleApiKey,
+      SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+      SYNTHI_PROMETHEUS_HOST: '0.0.0.0',
+    };
+    if (CFG.mcpPrometheusPort) mcpEnv.SYNTHI_PROMETHEUS_PORT = CFG.mcpPrometheusPort;
+    const args = ['exec', '-i'];
+    for (const [k, v] of Object.entries(mcpEnv)) args.push('-e', `${k}=${v}`);
+    args.push(CFG.mcpContainer, 'node', '/app/dist/index.js');
+    proc = spawn('docker', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  } else {
+    if (!existsSync(CFG.mcpEntry)) {
+      throw new Error(`MCP entry not found: ${CFG.mcpEntry}; run npm run build in mcp/synthi-mcp`);
+    }
+    const env = {
+      ...process.env,
+      SYNTHI_SESSION_ID: CFG.slug,
+      SYNTHI_SIGNALING_URL: CFG.signalingUrl,
+      SYNTHI_VISION_BACKEND: 'gemini_api',
+      GOOGLE_API_KEY: CFG.googleApiKey,
+      SYNTHI_GEMINI_MODEL: CFG.geminiModel,
+      SYNTHI_PROMETHEUS_HOST: '127.0.0.1',
+    };
+    if (CFG.mcpPrometheusPort) env.SYNTHI_PROMETHEUS_PORT = CFG.mcpPrometheusPort;
+    proc = spawn('node', [CFG.mcpEntry], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  }
+
+  const stderrStream = (await import('node:fs')).createWriteStream(MCP_STDERR_LOG, { flags: 'a' });
+  proc.stderr.pipe(stderrStream);
+  const client = new McpClient(proc);
+  await client.request('initialize', {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'synthi-gpu-hmr-test', version: '0.0.1' },
+  }, 20000);
+  await client.request('notifications/initialized', {}, 5000).catch(() => {});
+  const tools = await client.request('tools/list', {}, 20000);
+  const toolNames = tools.tools?.map((t) => t.name) ?? [];
+  mcpState = { proc, client, stderrStream, attached: false, toolNames };
+  record('preflight', 'MCP tools/list',
+    toolNames.includes('synthi_compile') && toolNames.includes('synthi_wait_hmr') ? 'pass' : 'fail',
+    `transport=${CFG.mcpTransport} count=${toolNames.length}`);
+  return mcpState;
+}
+
+async function ensureMcpAttached() {
+  const state = await startMcp();
+  if (!state) return null;
+  if (state.attached) return state;
+  const attachArgs = {
+    sessionId: CFG.slug,
+    'i-understand-no-auth': true,
+  };
+  if (CFG.mcpTransport !== 'docker') attachArgs.signalingUrl = CFG.signalingUrl;
+  const attach = await state.client.toolCall('synthi_attach', attachArgs, CFG.mcpAttachTimeoutMs);
+  if (!attach?.ok) throw new Error(`synthi_attach failed: ${JSON.stringify(attach)}`);
+  state.attached = true;
+  record('preflight', 'MCP synthi_attach', 'pass',
+    attach.resolution ? `${attach.resolution.w}x${attach.resolution.h}` : 'attached; no frame yet');
+  return state;
+}
+
+async function stopMcp() {
+  if (!mcpState) return;
+  const { proc, stderrStream } = mcpState;
+  try { proc.stdin.end(); } catch { /* ignore */ }
+  try { proc.kill('SIGTERM'); } catch { /* ignore */ }
+  try { stderrStream.end(); } catch { /* ignore */ }
+  mcpState = null;
 }
 
 // ───────────────────────── toolchain probe ─────────────────────────
@@ -542,16 +711,48 @@ function verifySeedFixtureContract(files) {
   return { ok: findings.length === 0, findings };
 }
 
-// ───────────────────────── compile + HMR over the AI engine wire ─────────────────────────
-//
-// In production this is mediated by MCP/synthi_compile. For determinism this
-// harness can also POST directly to the AI engine when MCP isn't wired in
-// (most CI lanes don't have a real WebRTC stack up).
+// ───────────────────────── compile + HMR over MCP ─────────────────────────
 
-async function postCompile({ slug, files, manifest }) {
+async function postCompileViaMcp({ ctx, files }) {
+  const state = await ensureMcpAttached();
+  const primaryPath = files[0]?.path ?? ctx.deviceFilename;
+  const primarySource = ctx.sourceFiles.get(primaryPath);
+  if (typeof primarySource !== 'string') {
+    return { ok: false, reason: `missing_primary_source:${primaryPath}` };
+  }
+  const additionalFiles = [...ctx.sourceFiles.entries()]
+    .filter(([name]) => name !== primaryPath)
+    .map(([name, content]) => ({ name, content }));
+
+  const compileRes = await state.client.toolCall('synthi_compile', {
+    language: 'cpp',
+    filename: primaryPath,
+    source: primarySource,
+    files: additionalFiles,
+    is_gui: true,
+    use_ai_split: false,
+    user_requested_deterministic: true,
+    prefer_gpu_pipeline: true,
+    gpu_mode: 'auto',
+    slug: CFG.slug,
+  });
+  if (!compileRes?.ok) {
+    return { ok: false, reason: `mcp_compile_failed:${JSON.stringify(compileRes).slice(0, 240)}` };
+  }
+
+  let hmr = null;
+  try {
+    hmr = await state.client.toolCall('synthi_wait_hmr', { timeoutMs: CFG.hmrTimeoutMs }, CFG.hmrTimeoutMs + 5000);
+  } catch (e) {
+    return { ok: true, body: { compile: compileRes }, hmr: { status: 'timeout_or_error', error: e.message } };
+  }
+  return { ok: true, body: { compile: compileRes }, hmr };
+}
+
+async function postCompileViaAiEngine({ slug, files, manifest }) {
   // The AI engine endpoint surface we want here is /refactor/diff_patch/gpu
-  // (or /refactor/split/gpu for first compile). Today neither exists, so we
-  // probe and return a structured "not_implemented" rather than throwing.
+  // (or /refactor/split/gpu for first compile). This is only a fallback for
+  // legacy CI lanes where MCP/WebRTC is unavailable.
   try {
     const body = {
       slug,
@@ -570,6 +771,29 @@ async function postCompile({ slug, files, manifest }) {
   } catch (e) {
     return { ok: false, reason: 'unreachable', error: e.message };
   }
+}
+
+async function postCompile({ ctx, slug, files, manifest }) {
+  for (const f of files) ctx.sourceFiles.set(f.path, f.content);
+
+  try {
+    await writeFilesBatch({ slug, userId: CFG.hostId, files, syncToGcs: CFG.syncToGcs });
+  } catch (e) {
+    return { ok: false, reason: `collab_write_failed:${e.message.slice(0, 180)}` };
+  }
+
+  if (CFG.useMcpCompile) {
+    try {
+      const viaMcp = await postCompileViaMcp({ ctx, files });
+      if (viaMcp.ok || !CFG.directAiFallback) return viaMcp;
+      record('mcp', 'compile fallback to AI endpoint', 'warn', viaMcp.reason ?? 'mcp compile failed');
+    } catch (e) {
+      if (!CFG.directAiFallback) return { ok: false, reason: `mcp_compile_failed:${e.message.slice(0, 220)}` };
+      record('mcp', 'compile fallback to AI endpoint', 'warn', e.message.slice(0, 220));
+    }
+  }
+
+  return postCompileViaAiEngine({ slug, files, manifest });
 }
 
 async function postHeal({ slug, tier, error, manifest }) {
@@ -712,7 +936,12 @@ async function seedWorkspace(vendor) {
   record('seed', `${deviceFilename} present in collab`, seedOk ? 'pass' : 'fail',
     got ? `${got.length} bytes` : 'not found');
 
-  return { workspace: ws, manifest: m, deviceFilename };
+  return {
+    workspace: ws,
+    manifest: m,
+    deviceFilename,
+    sourceFiles: new Map(files.map((f) => [f.path, f.content])),
+  };
 }
 
 async function phaseP0(ctx) {
@@ -722,6 +951,7 @@ async function phaseP0(ctx) {
 
   log('info', '── Phase P0: toolchain smoke ──');
   const compile = await postCompile({
+    ctx,
     slug: CFG.slug,
     files: [{ path: ctx.deviceFilename, content: DEVICE_CU_PHASE0 }],
     manifest: ctx.manifest,
@@ -760,6 +990,7 @@ async function phaseP1(ctx) {
     .map((m) => `${m[1]}=0x${m[2]}`);
 
   const compile = await postCompile({
+    ctx,
     slug: CFG.slug,
     files: [{ path: ctx.deviceFilename, content: DEVICE_CU_PHASE1_EDIT }],
     manifest: ctx.manifest,
@@ -817,6 +1048,7 @@ async function phaseP1(ctx) {
   // Second-edit pass: tighter budget. Apply the same edit twice (identity);
   // dirty-bit accounting should mark every buffer clean → near-zero snapshot.
   const second = await postCompile({
+    ctx,
     slug: CFG.slug,
     files: [{ path: ctx.deviceFilename, content: DEVICE_CU_PHASE1_EDIT }],
     manifest: ctx.manifest,
@@ -849,6 +1081,7 @@ async function phaseP2(ctx) {
   // Fast path
   const tFast0 = Date.now();
   const fast = await postCompile({
+    ctx,
     slug: CFG.slug,
     files: [{ path: ctx.deviceFilename, content: DEVICE_CU_PHASE2_FAST }],
     manifest: ctx.manifest,
@@ -872,6 +1105,7 @@ async function phaseP2(ctx) {
 
   // ABI-breaking
   const abi = await postCompile({
+    ctx,
     slug: CFG.slug,
     files: [{ path: ctx.deviceFilename, content: DEVICE_CU_PHASE2_ABI_BREAK }],
     manifest: ctx.manifest,
@@ -904,6 +1138,7 @@ async function phaseP3Heal(ctx) {
     log('info', `─ drill: ${d.name}`);
     // 1. inject pathological code
     const inject = await postCompile({
+      ctx,
       slug: CFG.slug,
       files: [{ path: ctx.deviceFilename, content: d.body }],
       manifest: ctx.manifest,
@@ -961,6 +1196,7 @@ async function phaseP3Mixed(ctx) {
     'g_state->accumulator += 2.5;   // P3-mixed: accumulator must survive',
   );
   const compile = await postCompile({
+    ctx,
     slug: CFG.slug,
     files: [
       { path: 'core.cpp',           content: editedCore },
@@ -999,6 +1235,7 @@ extern "C" __global__ void vec_add(const float* a, const float* b, float* c, int
 }
 `;
   const compile = await postCompile({
+    ctx,
     slug: CFG.slug,
     files: [{ path: ctx.deviceFilename, content: hangBody }],
     manifest: ctx.manifest,
@@ -1024,6 +1261,7 @@ async function main() {
   console.log(`  slug         ${CFG.slug}`);
   console.log(`  vendor       ${CFG.vendor}`);
   console.log(`  gpu-hmr flag ${CFG.gpuHmr}`);
+  console.log(`  mcp compile  ${CFG.useMcpCompile ? `${CFG.mcpTransport}:${CFG.mcpContainer}` : 'disabled'}`);
   console.log(`  worker log   ${CFG.workerLogPath}`);
   console.log('');
 
@@ -1031,10 +1269,18 @@ async function main() {
   await mkdir(ARTIFACT_DIR, { recursive: true });
 
   const pre = await preflight();
+  if (CFG.useMcpCompile) {
+    try {
+      await startMcp();
+    } catch (e) {
+      record('preflight', 'MCP initialize/tools-list', 'warn', e.message.slice(0, 220));
+    }
+  }
   // Hard-blockers: workspace + collab must be reachable to do anything useful.
   if (!pre.feOk || !pre.colOk) {
     log('fail', 'frontend or collab unreachable — cannot seed workspace; exiting with FAIL summary');
     await writeSummary();
+    await stopMcp();
     process.exit(1);
   }
 
@@ -1061,6 +1307,7 @@ async function main() {
   }
 
   await writeSummary();
+  await stopMcp();
 }
 
 async function writeSummary() {

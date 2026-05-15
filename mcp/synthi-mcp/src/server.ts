@@ -190,6 +190,15 @@ const TOOLS = [
           type: "boolean",
           description: "Explicit opt-in to deterministic split (Loop A). Default false.",
         },
+        prefer_gpu_pipeline: {
+          type: "boolean",
+          description: "Forward the compile through the GPU HMR detector/pipeline when a GPU manifest or source is present. Defaults true in the worker.",
+        },
+        gpu_mode: {
+          type: "string",
+          enum: ["auto", "disabled"],
+          description: "GPU mode from the IDE toggle. 'auto' lets the worker detect/use GPU HMR; 'disabled' routes through the host-only path.",
+        },
         target: {
           type: "string",
           description: "Target platform. Default 'native'; mobile uses 'react-native-emulator'.",

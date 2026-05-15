@@ -44,6 +44,8 @@ interface RawArgs {
   use_ai_split?: unknown;
   user_requested_ai?: unknown;
   user_requested_deterministic?: unknown;
+  prefer_gpu_pipeline?: unknown;
+  gpu_mode?: unknown;
   target?: unknown;
   project_root?: unknown;
   slug?: unknown;
@@ -106,6 +108,10 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
   if (typeof a.user_requested_deterministic === "boolean") {
     payload["user_requested_deterministic"] = a.user_requested_deterministic;
   }
+  if (typeof a.prefer_gpu_pipeline === "boolean") {
+    payload["prefer_gpu_pipeline"] = a.prefer_gpu_pipeline;
+  }
+  if (typeof a.gpu_mode === "string") payload["gpu_mode"] = a.gpu_mode;
   if (typeof a.target === "string") payload["target"] = a.target;
   if (typeof a.project_root === "string") payload["project_root"] = a.project_root;
   if (typeof a.slug === "string") payload["slug"] = a.slug;
@@ -133,6 +139,9 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       use_ai_split: Boolean(payload["use_ai_split"]),
       file_count: files.length,
       source_chars: (a.source as string).length,
+      prefer_gpu_pipeline:
+        typeof a.prefer_gpu_pipeline === "boolean" ? a.prefer_gpu_pipeline : undefined,
+      ...(typeof a.gpu_mode === "string" ? { gpu_mode: a.gpu_mode } : {}),
       ...(typeof a.target === "string" ? { target: a.target } : {}),
     },
   });
