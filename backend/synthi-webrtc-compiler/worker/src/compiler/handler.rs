@@ -107,15 +107,76 @@ use crate::hmr::deterministic_compile::{
 };
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
 
+fn strip_c_like_comments(source: &str) -> String {
+    #[derive(Clone, Copy)]
+    enum State {
+        Normal,
+        Slash,
+        LineComment,
+        BlockComment,
+        BlockStar,
+    }
+
+    let mut out = String::with_capacity(source.len());
+    let mut state = State::Normal;
+    for ch in source.chars() {
+        match (state, ch) {
+            (State::Normal, '/') => state = State::Slash,
+            (State::Normal, _) => out.push(ch),
+            (State::Slash, '/') => {
+                out.push(' ');
+                state = State::LineComment;
+            }
+            (State::Slash, '*') => {
+                out.push(' ');
+                state = State::BlockComment;
+            }
+            (State::Slash, _) => {
+                out.push('/');
+                out.push(ch);
+                state = State::Normal;
+            }
+            (State::LineComment, '\n') => {
+                out.push('\n');
+                state = State::Normal;
+            }
+            (State::LineComment, _) => {}
+            (State::BlockComment, '*') => state = State::BlockStar,
+            (State::BlockComment, '\n') => out.push('\n'),
+            (State::BlockComment, _) => {}
+            (State::BlockStar, '/') => {
+                out.push(' ');
+                state = State::Normal;
+            }
+            (State::BlockStar, '*') => {}
+            (State::BlockStar, '\n') => {
+                out.push('\n');
+                state = State::BlockComment;
+            }
+            (State::BlockStar, _) => state = State::BlockComment,
+        }
+    }
+    if matches!(state, State::Slash) {
+        out.push('/');
+    }
+    out
+}
+
 fn extract_device_kernel_symbols(source: &str) -> Vec<String> {
+    let uncommented = strip_c_like_comments(source);
+    let launch_bounds = match regex::Regex::new(r"__launch_bounds__\s*\([^)]*\)") {
+        Ok(re) => re,
+        Err(_) => return Vec::new(),
+    };
+    let normalized = launch_bounds.replace_all(&uncommented, " ");
     let re = match regex::Regex::new(
-        r"__global__(?:\s+__launch_bounds__\s*\([^)]*\))?(?:\s+[A-Za-z_][A-Za-z0-9_:<>]*\s*)+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+        r"__global__[^;{}()]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(",
     ) {
         Ok(re) => re,
         Err(_) => return Vec::new(),
     };
     let mut names: Vec<String> = re
-        .captures_iter(source)
+        .captures_iter(&normalized)
         .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
         .collect();
     names.sort();
@@ -2507,5 +2568,40 @@ mod gpu_host_contract_tests {
             "device_save_size",
             "device_save_write",
         ])));
+    }
+
+    #[test]
+    fn device_kernel_symbol_extractor_handles_launch_bounds_positions() {
+        let source = r#"
+extern "C" __global__ void vec_add(const float* a, float* out) {}
+__global__ void __launch_bounds__(256, 2) reduce(const float* in, float* out) {}
+__global__ __launch_bounds__(128) void saxpy(float* y) {}
+"#;
+
+        assert_eq!(
+            extract_device_kernel_symbols(source),
+            vec![
+                "reduce".to_string(),
+                "saxpy".to_string(),
+                "vec_add".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn device_kernel_symbol_extractor_ignores_comments_and_deduplicates() {
+        let source = r#"
+// __global__ void commented_out(float* x) {}
+/*
+__global__ void block_commented(float* x) {}
+*/
+__global__ void live_kernel(float* x) {}
+__global__ void live_kernel(float* x);
+"#;
+
+        assert_eq!(
+            extract_device_kernel_symbols(source),
+            vec!["live_kernel".to_string()]
+        );
     }
 }
