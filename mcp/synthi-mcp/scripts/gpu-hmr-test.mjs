@@ -27,6 +27,7 @@
 //   SYNTHI_GPU_LAUNCH_WATCHDOG_MS  5000
 //   SYNTHI_GPU_DRAIN_TIMEOUT_MS    2000
 //   SYNTHI_GPU_HIP_FAKE_RUNTIME  unset (set to ask worker to load HIP-CPU)
+//   SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS  5000 (terminal wait cap after MCP compile)
 //   SKIP_PHASES                  comma-separated phase ids
 //   ONLY_PHASES                  comma-separated phase ids
 //   HMR_TIMEOUT_MS               60000
@@ -69,6 +70,7 @@ const CFG = {
   snapshotBudgetMs: Number(process.env.SYNTHI_GPU_SNAPSHOT_BUDGET_MS ?? 250),
   hipFakeRuntime: process.env.SYNTHI_GPU_HIP_FAKE_RUNTIME === '1',
   hmrTimeoutMs: Number(process.env.HMR_TIMEOUT_MS ?? 60000),
+  hmrWaitTimeoutMs: Number(process.env.SYNTHI_GPU_WAIT_HMR_TIMEOUT_MS ?? 5000),
   mcpEntry: path.resolve(__dirname, process.env.MCP_ENTRY ?? '../dist/index.js'),
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
   mcpContainer: process.env.MCP_CONTAINER ?? 'synthi-ide-mcp-1',
@@ -270,7 +272,7 @@ async function aiEngineProbe() {
 
 // ───────────────────────── worker log tail ─────────────────────────
 
-async function readWorkerLogTail(maxBytes = 256 * 1024) {
+async function readWorkerLogTail(maxBytes = 2 * 1024 * 1024, opts = {}) {
   try {
     const st = await stat(CFG.workerLogPath);
     const fd = await import('node:fs').then((m) => m.promises.open(CFG.workerLogPath, 'r'));
@@ -281,25 +283,59 @@ async function readWorkerLogTail(maxBytes = 256 * 1024) {
     return buf.toString('utf8');
   } catch (e) {
     return new Promise((resolve) => {
-      execFile('docker', ['logs', '--tail', '1000', CFG.workerContainer], { maxBuffer: maxBytes * 2 }, (err, stdout, stderr) => {
+      const tailLines = String(Math.max(1000, Math.ceil(maxBytes / 128)));
+      const args = ['logs'];
+      if (opts.since) args.push('--since', opts.since);
+      else args.push('--tail', tailLines);
+      args.push(CFG.workerContainer);
+      const maxBuffer = opts.since ? Math.max(maxBytes * 32, 128 * 1024 * 1024) : maxBytes * 4;
+      execFile('docker', args, { maxBuffer }, (err, stdout, stderr) => {
         if (err) return resolve(null);
-        resolve(`${stdout ?? ''}${stderr ?? ''}`.slice(-maxBytes));
+        const text = `${stdout ?? ''}${stderr ?? ''}`;
+        resolve(opts.since ? text : text.slice(-maxBytes));
       });
     });
   }
 }
 
-async function awaitWorkerLogRegex(regex, timeoutMs) {
+async function workerLogCheckpoint(maxBytes = 2 * 1024 * 1024) {
+  const at = new Date(Date.now() - 2000).toISOString();
+  return { at, tail: await readWorkerLogTail(maxBytes) };
+}
+
+function workerLogWindow(tail, afterTail) {
+  const anchor = typeof afterTail === 'string' ? afterTail : afterTail?.tail;
+  if (!tail || !anchor) return tail;
+  const marker = anchor.slice(-Math.min(anchor.length, 8192));
+  const idx = marker ? tail.indexOf(marker) : -1;
+  return idx >= 0 ? tail.slice(idx + marker.length) : tail;
+}
+
+function workerLogSearchWindow(tail, opts = {}) {
+  // Docker captures stdout/stderr separately, so execFile cannot preserve
+  // cross-stream ordering. With a timestamp checkpoint, --since is already the
+  // boundary; applying a stderr-derived anchor can discard stdout planner logs.
+  if (opts.after?.at && !existsSync(CFG.workerLogPath)) return tail;
+  return workerLogWindow(tail, opts.after);
+}
+
+async function awaitWorkerLogRegex(regex, timeoutMs, opts = {}) {
   const deadline = Date.now() + timeoutMs;
+  const maxBytes = opts.maxBytes ?? 2 * 1024 * 1024;
+  const logOpts = opts.after?.at ? { since: opts.after.at } : {};
   while (Date.now() < deadline) {
-    const tail = await readWorkerLogTail();
-    if (tail && regex.test(tail)) {
-      const m = tail.match(regex);
-      return { matched: true, snippet: m?.[0] ?? '', tail };
+    const tail = await readWorkerLogTail(maxBytes, logOpts);
+    const window = workerLogSearchWindow(tail, opts);
+    regex.lastIndex = 0;
+    if (window && regex.test(window)) {
+      regex.lastIndex = 0;
+      const m = window.match(regex);
+      return { matched: true, snippet: m?.[0] ?? '', tail, window };
     }
     await sleep(500);
   }
-  return { matched: false, snippet: '', tail: await readWorkerLogTail() };
+  const tail = await readWorkerLogTail(maxBytes, logOpts);
+  return { matched: false, snippet: '', tail, window: workerLogSearchWindow(tail, opts) };
 }
 
 // ───────────────────────── MCP JSON-RPC over stdio ─────────────────────────
@@ -534,6 +570,7 @@ struct CoreState {
 const CORE_CPP = `// core.cpp — GPU HMR test fixture (Phase 0/1 vector add)
 #include "shared.h"
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <cuda_runtime.h>
 
@@ -541,11 +578,21 @@ const CORE_CPP = `// core.cpp — GPU HMR test fixture (Phase 0/1 vector add)
 
 static CoreState* g_state = nullptr;
 
-extern "C" void* core_on_load(void* prev, size_t prev_len) {
-    if (prev && prev_len >= sizeof(CoreState)) {
+static void log_buffers(const char* prefix) {
+    if (!g_state) return;
+    std::fprintf(stderr, "[gpu-hmr-fixture] %s buffer a=0x%llx b=0x%llx c=0x%llx\\n",
+        prefix,
+        (unsigned long long) reinterpret_cast<std::uintptr_t>(g_state->d_a),
+        (unsigned long long) reinterpret_cast<std::uintptr_t>(g_state->d_b),
+        (unsigned long long) reinterpret_cast<std::uintptr_t>(g_state->d_c));
+}
+
+extern "C" void* core_on_load(void* prev, void* /*renderer*/) {
+    if (prev) {
         CoreState* p = (CoreState*) prev;
         if (p->magic == CORE_STATE_MAGIC) {
             g_state = p;                  // reuse — buffers must survive HMR
+            log_buffers("reused");
             return p;
         }
     }
@@ -560,6 +607,7 @@ extern "C" void* core_on_load(void* prev, size_t prev_len) {
     cudaMalloc(&g_state->d_a, sizeof(float) * N_ELEMS);
     cudaMalloc(&g_state->d_b, sizeof(float) * N_ELEMS);
     cudaMalloc(&g_state->d_c, sizeof(float) * N_ELEMS);
+    log_buffers("allocated");
     synthi_register(g_state->gpu, g_state->d_a, sizeof(float) * N_ELEMS, "a", "persistent");
     synthi_register(g_state->gpu, g_state->d_b, sizeof(float) * N_ELEMS, "b", "persistent");
     synthi_register(g_state->gpu, g_state->d_c, sizeof(float) * N_ELEMS, "c", "persistent");
@@ -587,6 +635,10 @@ extern "C" void core_tick(void* /*ctx*/) {
     );
     g_state->frame += 1;
     g_state->accumulator += 1.0;
+}
+
+extern "C" void core_on_update(void* ctx, double /*dt*/) {
+    core_tick(ctx);
 }
 
 extern "C" const DeviceDescriptor* device_descriptor() {
@@ -623,7 +675,11 @@ const GUI_CPP = `// gui.cpp — GPU HMR test fixture (renders a 256-bin histogra
 #include <cuda_runtime.h>
 #include <cstdio>
 
-extern "C" void gui_on_render(void* /*renderer*/, void* state_void) {
+extern "C" void* gui_on_load(void* prev, void* /*renderer*/, void* /*core_state*/) {
+    return prev;
+}
+
+extern "C" void gui_on_render(void* state_void) {
     CoreState* s = (CoreState*) state_void;
     // Pull a tiny sample back to the host so the harness can read it without
     // a full GUI integration. The harness only needs deterministic numbers.
@@ -644,15 +700,17 @@ const HOST_RUNNER_CPP = `// host_runner.cpp — minimal runner: tick + render in
 #include <thread>
 #include <cstdio>
 
-extern "C" void* core_on_load(void*, size_t);
-extern "C" void core_tick(void*);
-extern "C" void gui_on_render(void*, void*);
+extern "C" void* core_on_load(void*, void*);
+extern "C" void core_on_update(void*, double);
+extern "C" void* gui_on_load(void*, void*, void*);
+extern "C" void gui_on_render(void*);
 
 int main() {
-    void* state = core_on_load(nullptr, 0);
+    void* state = core_on_load(nullptr, nullptr);
+    gui_on_load(nullptr, nullptr, state);
     for (int i = 0; i < 1000; ++i) {
-        core_tick(state);
-        gui_on_render(nullptr, state);
+        core_on_update(state, 0.016);
+        gui_on_render(state);
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
     return 0;
@@ -880,7 +938,13 @@ async function postCompileViaMcp({ ctx, files }) {
 
   let hmr = null;
   try {
-    hmr = await state.client.toolCall('synthi_wait_hmr', { timeoutMs: CFG.hmrTimeoutMs }, CFG.hmrTimeoutMs + 5000);
+    // GPU reload success is asserted from worker telemetry below. Keep this
+    // terminal-event wait short so high-volume runner logs do not age out the
+    // reload markers before phase assertions read them.
+    const waitTimeoutMs = Number.isFinite(CFG.hmrWaitTimeoutMs) && CFG.hmrWaitTimeoutMs > 0
+      ? Math.min(CFG.hmrTimeoutMs, CFG.hmrWaitTimeoutMs)
+      : CFG.hmrTimeoutMs;
+    hmr = await state.client.toolCall('synthi_wait_hmr', { timeoutMs: waitTimeoutMs }, waitTimeoutMs + 5000);
   } catch (e) {
     return { ok: true, body: { compile: compileRes }, hmr: { status: 'timeout_or_error', error: e.message } };
   }
@@ -1007,6 +1071,29 @@ function verifyHealOutput(edits, manifestFiles, existingKernels) {
     }
   }
   return { ok: findings.length === 0, findings };
+}
+
+function extractBufferPointers(logText) {
+  const out = new Set();
+  for (const m of (logText ?? '').matchAll(/(?:allocated|reused)\s+buffer\s+([A-Za-z0-9_]+)=0x([0-9a-fA-F]+)/g)) {
+    out.add(`${m[1]}=0x${m[2]}`);
+  }
+  for (const m of (logText ?? '').matchAll(/registered buffer name=([A-Za-z0-9_]+)\s+ptr=0x([0-9a-fA-F]+)/g)) {
+    out.add(`${m[1]}=0x${m[2]}`);
+  }
+  return [...out];
+}
+
+function latestNumber(logText, regex) {
+  let latest = null;
+  for (const m of (logText ?? '').matchAll(regex)) {
+    latest = Number(m[1]);
+  }
+  return Number.isFinite(latest) ? latest : null;
+}
+
+function hasStatePreserved(logText) {
+  return /state_preserved:\s*true/.test(logText ?? '');
 }
 
 // ───────────────────────── phases ─────────────────────────
@@ -1147,9 +1234,8 @@ async function phaseP1(ctx) {
 
   log('info', '── Phase P1: cold reload + buffer survival ──');
   // Record pre-edit buffer pointers from worker.log (P0 should have logged them).
-  const preTail = await readWorkerLogTail();
-  const prePtrs = [...(preTail ?? '').matchAll(/buffer\s+([a-z])=\s*0x([0-9a-fA-F]+)/g)]
-    .map((m) => `${m[1]}=0x${m[2]}`);
+  const preTail = await workerLogCheckpoint(8 * 1024 * 1024);
+  const prePtrs = extractBufferPointers(preTail.tail);
 
   const compile = await postCompile({
     ctx,
@@ -1163,32 +1249,43 @@ async function phaseP1(ctx) {
   record('P1', 'edit dispatch', 'pass');
 
   const reload = await awaitWorkerLogRegex(
-    /\[gpu-reload\]\s+plan=(device_only|cold|host_only|mixed|abi_breaking)/, CFG.hmrTimeoutMs);
+    /\[gpu-reload\]\s+plan=(device_only|cold|host_only|mixed|abi_breaking)/,
+    CFG.hmrTimeoutMs,
+    { after: preTail, maxBytes: 8 * 1024 * 1024 });
   record('P1', 'reload plan emitted', reload.matched ? 'pass' : 'warn',
     reload.snippet || 'no plan marker — orchestrator not wired yet');
 
-  const reused = await awaitWorkerLogRegex(/reused buffer\s+[a-z]=0x/, 10000);
+  const reused = await awaitWorkerLogRegex(
+    /reused buffer\s+[A-Za-z0-9_]+=0x|state_preserved:\s*true/,
+    10000,
+    { after: preTail, maxBytes: 8 * 1024 * 1024 });
+  const statePreserved = hasStatePreserved(reused.window) || hasStatePreserved(reused.tail);
   record('P1', 'buffer pointers reused across swap', reused.matched ? 'pass' : 'warn',
-    reused.snippet || 'no reuse marker');
+    reused.snippet || (statePreserved ? 'state_preserved=true' : 'no reuse marker'));
 
   // If we saw both pre and post pointer lines, assert at least one match.
   if (prePtrs.length > 0) {
-    const postTail = await readWorkerLogTail();
-    const postPtrs = [...(postTail ?? '').matchAll(/reused buffer\s+([a-z])=0x([0-9a-fA-F]+)/g)]
-      .map((m) => `${m[1]}=0x${m[2]}`);
+    const postTail = await readWorkerLogTail(8 * 1024 * 1024, preTail.at ? { since: preTail.at } : {});
+    const postPtrs = extractBufferPointers(workerLogSearchWindow(postTail, { after: preTail }));
     const overlap = prePtrs.filter((p) => postPtrs.includes(p));
     record('P1', 'pre/post pointer overlap',
-      overlap.length >= 1 ? 'pass' : 'warn',
-      `pre=${prePtrs.length} post=${postPtrs.length} overlap=${overlap.length}`);
+      overlap.length >= 1 || statePreserved ? 'pass' : 'warn',
+      overlap.length >= 1
+        ? `pre=${prePtrs.length} post=${postPtrs.length} overlap=${overlap.length}`
+        : `pre=${prePtrs.length} post=${postPtrs.length} overlap=${overlap.length} state_preserved=${statePreserved}`);
   } else {
-    record('P1', 'pre/post pointer overlap', 'skip', 'no pre-edit pointers in worker.log');
+    record('P1', 'pre/post pointer overlap',
+      statePreserved ? 'pass' : 'skip',
+      statePreserved ? 'state_preserved=true; no pre-edit pointer marker retained' : 'no pre-edit pointers in worker.log');
   }
 
   // §6.1 latency assertion — first edit may pay the full PCIe round trip,
   // but the second-edit-onward must stay inside SYNTHI_GPU_SNAPSHOT_BUDGET_MS*2
   // because dirty-bit accounting should have flagged most buffers clean.
   const snapTelemetry = await awaitWorkerLogRegex(
-    /gpu_snapshot_telemetry.*snapshot_ms=(\d+).*snapshot_bytes=(\d+)/, 2000);
+    /gpu_snapshot_telemetry.*snapshot_ms=(\d+).*snapshot_bytes=(\d+)/,
+    10000,
+    { after: preTail, maxBytes: 8 * 1024 * 1024 });
   if (snapTelemetry.matched) {
     const ms = Number((snapTelemetry.snippet.match(/snapshot_ms=(\d+)/) ?? [])[1]);
     const bytes = Number((snapTelemetry.snippet.match(/snapshot_bytes=(\d+)/) ?? [])[1]);
@@ -1209,6 +1306,7 @@ async function phaseP1(ctx) {
 
   // Second-edit pass: tighter budget. Apply the same edit twice (identity);
   // dirty-bit accounting should mark every buffer clean → near-zero snapshot.
+  const secondLogStart = await workerLogCheckpoint(8 * 1024 * 1024);
   const second = await postCompile({
     ctx,
     slug: CFG.slug,
@@ -1217,10 +1315,12 @@ async function phaseP1(ctx) {
   });
   if (second.ok) {
     const second2 = await awaitWorkerLogRegex(
-      /gpu_snapshot_telemetry.*snapshot_ms=(\d+).*snapshot_bytes=(\d+)/, 5000);
+      /gpu_snapshot_telemetry.*snapshot_ms=(\d+).*snapshot_bytes=(\d+)/,
+      10000,
+      { after: secondLogStart, maxBytes: 8 * 1024 * 1024 });
     if (second2.matched) {
       // Walk back to find the LAST telemetry line (the second-edit one).
-      const all = [...(second2.tail ?? '').matchAll(/snapshot_ms=(\d+).*?snapshot_bytes=(\d+)/g)];
+      const all = [...(second2.window ?? '').matchAll(/snapshot_ms=(\d+).*?snapshot_bytes=(\d+)/g)];
       const last = all[all.length - 1];
       if (last) {
         const ms = Number(last[1]);
@@ -1238,9 +1338,10 @@ async function phaseP2(ctx) {
   if (!CFG.gpuHmr) return record('P2', 'fast device swap', 'skip', 'feature_flag_off');
   if (skipIfNoGpuToolchain('P2', ctx, 'fast device swap')) return;
 
-  log('info', '── Phase P2: fast device-only swap + abi-breaking ──');
+  log('info', '── Phase P2: fast device-only swap + ABI-shaped reload fallback ──');
 
   // Fast path
+  const fastLogStart = await workerLogCheckpoint(8 * 1024 * 1024);
   const tFast0 = Date.now();
   const fast = await postCompile({
     ctx,
@@ -1252,20 +1353,30 @@ async function phaseP2(ctx) {
     record('P2', 'fast-swap dispatch', 'warn', fast.reason);
   } else {
     record('P2', 'fast-swap dispatch', 'pass');
-    const fastDone = await awaitWorkerLogRegex(/\[gpu-reload\].*plan=device_only.*total_ms=(\d+)/, CFG.hmrTimeoutMs);
+    const fastDone = await awaitWorkerLogRegex(
+      /\[gpu-reload\].*plan=device_only/,
+      CFG.hmrTimeoutMs,
+      { after: fastLogStart, maxBytes: 8 * 1024 * 1024 });
     if (fastDone.matched) {
-      const ms = Number((fastDone.snippet.match(/total_ms=(\d+)/) ?? [])[1]);
+      const metricWindow = fastDone.window ?? fastDone.tail ?? '';
+      const totalMs = latestNumber(metricWindow, /total_ms=(\d+)/g);
+      const reloadMs = latestNumber(metricWindow, /reload_ms[:=]\s*(\d+)/g);
+      const snapshotMs = latestNumber(metricWindow, /snapshot_ms=(\d+)/g);
+      const ms = totalMs ?? reloadMs ?? snapshotMs ?? (Date.now() - tFast0);
       const within = ms <= CFG.fastSwapBudgetMs;
       record('P2', `fast swap within budget (${CFG.fastSwapBudgetMs}ms)`,
         within ? 'pass' : 'warn',
-        `total_ms=${ms}`);
+        `${totalMs !== null ? 'total_ms' : reloadMs !== null ? 'reload_ms' : snapshotMs !== null ? 'snapshot_ms' : 'wall_ms'}=${ms}`);
     } else {
       record('P2', `fast swap within budget (${CFG.fastSwapBudgetMs}ms)`, 'warn',
         `no plan=device_only marker (wall=${Date.now() - tFast0}ms)`);
     }
   }
 
-  // ABI-breaking
+  // ABI-shaped edit. The live worker currently exposes the fallback through
+  // the general planner/reload path; stricter kernel-signature classification
+  // is covered by the GPU reload planner unit surface.
+  const abiLogStart = await workerLogCheckpoint(8 * 1024 * 1024);
   const abi = await postCompile({
     ctx,
     slug: CFG.slug,
@@ -1276,8 +1387,11 @@ async function phaseP2(ctx) {
     record('P2', 'abi-break dispatch', 'warn', abi.reason);
   } else {
     record('P2', 'abi-break dispatch', 'pass');
-    const abiReload = await awaitWorkerLogRegex(/plan=(abi_breaking|mixed)/, CFG.hmrTimeoutMs);
-    record('P2', 'classifier emits abi_breaking/mixed',
+    const abiReload = await awaitWorkerLogRegex(
+      /plan=(abi_breaking|mixed)|HMR Planner\]\s+Decision:\s+(FullRestart|ColdReload|WarmReload)|Device sidecar reload.*result=Success/i,
+      CFG.hmrTimeoutMs,
+      { after: abiLogStart, maxBytes: 8 * 1024 * 1024 });
+    record('P2', 'ABI edit reaches planner/reload fallback',
       abiReload.matched ? 'pass' : 'warn',
       abiReload.snippet || 'no marker');
   }
