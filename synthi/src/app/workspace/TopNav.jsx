@@ -19,6 +19,8 @@ function TopNav({
   setRunInGuiMode,
   hmrEnabled,
   setHmrEnabled,
+  gpuModeEnabled,
+  setGpuModeEnabled,
   onStop,
   onReload,
   isRunning,
@@ -174,6 +176,17 @@ function TopNav({
           title={hmrEnabled ? "HMR Enabled — app restarts on save" : "HMR Disabled — save does not restart app"}
         >
           {hmrEnabled ? "HMR" : "No HMR"}
+        </Button>
+
+        {/* GPU Pipeline Toggle - desktop only */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className={`hidden xl:inline-flex h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${gpuModeEnabled ? 'th-btn-active' : ''}`}
+          onClick={() => setGpuModeEnabled(!gpuModeEnabled)}
+          title={gpuModeEnabled ? "GPU pipeline enabled — compile requests may use CUDA/ROCm HMR" : "GPU pipeline disabled — compile requests stay on the host path"}
+        >
+          {gpuModeEnabled ? "GPU" : "No GPU"}
         </Button>
 
         {isRunning ? (

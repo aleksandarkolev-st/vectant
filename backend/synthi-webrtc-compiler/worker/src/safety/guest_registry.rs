@@ -93,7 +93,10 @@ pub enum WmClassVerdict {
     /// Hash of `/proc/<pid>/exe` differs from the registered fingerprint
     /// for the session's root PID. Fall back to conservative
     /// classification and emit `wm_class_mismatch`.
-    Mismatch { claimed: String, registry_binary: Option<String> },
+    Mismatch {
+        claimed: String,
+        registry_binary: Option<String>,
+    },
     /// Registry has no entry for the window's owning session — can't
     /// make a verdict. Callers treat this as "unknown" (don't emit
     /// mismatch).
@@ -207,10 +210,7 @@ impl GuestRegistry {
         if !is_descendant_of(pid, info.root_pid) && pid != info.root_pid {
             return WmClassVerdict::Mismatch {
                 claimed: claimed_wm_class.to_string(),
-                registry_binary: info
-                    .binary_path
-                    .as_ref()
-                    .map(|p| p.display().to_string()),
+                registry_binary: info.binary_path.as_ref().map(|p| p.display().to_string()),
             };
         }
         let window_binary_hash = match read_proc_exe_fingerprint(pid) {
@@ -221,7 +221,9 @@ impl GuestRegistry {
                 };
             }
             Err(e) => {
-                return WmClassVerdict::Unavailable { reason: e.to_string() };
+                return WmClassVerdict::Unavailable {
+                    reason: e.to_string(),
+                };
             }
         };
         match &info.binary_fingerprint {
@@ -231,10 +233,7 @@ impl GuestRegistry {
             Some(expected) if expected == &window_binary_hash => WmClassVerdict::Match,
             Some(_) => WmClassVerdict::Mismatch {
                 claimed: claimed_wm_class.to_string(),
-                registry_binary: info
-                    .binary_path
-                    .as_ref()
-                    .map(|p| p.display().to_string()),
+                registry_binary: info.binary_path.as_ref().map(|p| p.display().to_string()),
             },
         }
     }
@@ -347,7 +346,11 @@ mod tests {
     #[test]
     fn register_stores_and_retrieves() {
         let reg = GuestRegistry::new();
-        let info = reg.register("test-session", std::process::id(), Some("worker".to_string()));
+        let info = reg.register(
+            "test-session",
+            std::process::id(),
+            Some("worker".to_string()),
+        );
         assert_eq!(info.root_pid, std::process::id());
         let fetched = reg.get("test-session").expect("entry not found");
         assert_eq!(fetched.root_pid, info.root_pid);

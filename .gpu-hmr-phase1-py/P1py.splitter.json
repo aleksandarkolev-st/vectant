@@ -1,0 +1,10 @@
+{
+  "clean": {
+    "n_files": 5,
+    "has_manifest": true,
+    "arch_present": true,
+    "has_hashes": true,
+    "has_launch": true
+  },
+  "malformed_rejected": true
+}

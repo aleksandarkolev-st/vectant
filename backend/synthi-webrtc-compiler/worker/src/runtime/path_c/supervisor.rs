@@ -19,10 +19,10 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
-use std::time::Duration;
 
 use super::hmr_protocol::*;
 use super::ipc_transport::*;
@@ -116,13 +116,11 @@ impl SupervisedSession {
 
     async fn wait_ack(&mut self, expected_id: u64) -> Result<()> {
         loop {
-            let resp = tokio::time::timeout(
-                Duration::from_secs(10),
-                recv_response(&mut self.ipc_stream),
-            )
-            .await
-            .context("timeout waiting for IPC response")?
-            .context("recv IPC response")?;
+            let resp =
+                tokio::time::timeout(Duration::from_secs(10), recv_response(&mut self.ipc_stream))
+                    .await
+                    .context("timeout waiting for IPC response")?
+                    .context("recv IPC response")?;
 
             match resp {
                 HmrResponse::Ack { command_id } if command_id == expected_id => return Ok(()),
@@ -135,10 +133,7 @@ impl SupervisedSession {
                 }
                 HmrResponse::WindowDiscovered { x11_window_id } => {
                     self.x11_window_id = Some(x11_window_id);
-                    eprintln!(
-                        "[Supervisor] window discovered: {:#x}",
-                        x11_window_id
-                    );
+                    eprintln!("[Supervisor] window discovered: {:#x}", x11_window_id);
                     continue;
                 }
                 other => anyhow::bail!(
@@ -169,8 +164,7 @@ pub async fn spawn_supervised(
     // 2. Create IPC socket
     let sock_path = socket_path(session_id);
     let _ = std::fs::remove_file(&sock_path);
-    let listener = UnixListener::bind(&sock_path)
-        .with_context(|| format!("bind {}", sock_path))?;
+    let listener = UnixListener::bind(&sock_path).with_context(|| format!("bind {}", sock_path))?;
 
     // 3. Spawn child runner
     let mut child = Command::new(runner_bin)

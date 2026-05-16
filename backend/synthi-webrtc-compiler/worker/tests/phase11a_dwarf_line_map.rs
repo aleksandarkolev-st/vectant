@@ -5,8 +5,8 @@
 // Compiles a real C file with -g -gdwarf-4 -O0, then verifies
 // the DWARF line map correctly resolves source lines to addresses.
 
-use worker::hmr::binary_patch::dwarf_line_map::{line_to_addresses, read_rodata};
 use std::process::Command;
+use worker::hmr::binary_patch::dwarf_line_map::{line_to_addresses, read_rodata};
 
 fn compile_test_so(dir: &std::path::Path, source: &str, name: &str) -> std::path::PathBuf {
     let src_path = dir.join(format!("{}.c", name));
@@ -15,7 +15,11 @@ fn compile_test_so(dir: &std::path::Path, source: &str, name: &str) -> std::path
 
     let output = Command::new("gcc")
         .args([
-            "-shared", "-fPIC", "-O0", "-g", "-gdwarf-4",
+            "-shared",
+            "-fPIC",
+            "-O0",
+            "-g",
+            "-gdwarf-4",
             "-fno-merge-constants",
             "-o",
         ])
@@ -25,10 +29,7 @@ fn compile_test_so(dir: &std::path::Path, source: &str, name: &str) -> std::path
         .expect("gcc must be available");
 
     if !output.status.success() {
-        panic!(
-            "gcc failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        panic!("gcc failed: {}", String::from_utf8_lossy(&output.stderr));
     }
     so_path
 }
@@ -140,9 +141,18 @@ int foo() {
     let line5 = line_to_addresses(&so, "test7.c", 5).unwrap();
 
     // At -O0, each assignment should produce at least one instruction
-    assert!(!line3.is_empty(), "line 3 (int a = 10) should have addresses");
-    assert!(!line4.is_empty(), "line 4 (int b = 20) should have addresses");
-    assert!(!line5.is_empty(), "line 5 (return a + b) should have addresses");
+    assert!(
+        !line3.is_empty(),
+        "line 3 (int a = 10) should have addresses"
+    );
+    assert!(
+        !line4.is_empty(),
+        "line 4 (int b = 20) should have addresses"
+    );
+    assert!(
+        !line5.is_empty(),
+        "line 5 (return a + b) should have addresses"
+    );
 
     // Addresses should be strictly increasing
     if !line3.is_empty() && !line4.is_empty() {

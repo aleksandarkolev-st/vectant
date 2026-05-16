@@ -55,20 +55,70 @@ use std::path::{Path, PathBuf};
 /// filter out the common cases. Phase 4.5's full stdlib list on
 /// the Python side is authoritative.
 const STDLIB_PREFIXES: &[&str] = &[
-    "stdio.h", "stdlib.h", "string.h", "stdint.h", "stdbool.h",
-    "stddef.h", "stdarg.h", "stdatomic.h", "assert.h", "errno.h",
-    "time.h", "math.h", "ctype.h", "limits.h",
+    "stdio.h",
+    "stdlib.h",
+    "string.h",
+    "stdint.h",
+    "stdbool.h",
+    "stddef.h",
+    "stdarg.h",
+    "stdatomic.h",
+    "assert.h",
+    "errno.h",
+    "time.h",
+    "math.h",
+    "ctype.h",
+    "limits.h",
     // C++ stdlib (no .h)
-    "iostream", "vector", "string", "memory", "map", "set", "array",
-    "algorithm", "functional", "utility", "optional", "variant",
-    "chrono", "thread", "mutex", "atomic", "future", "filesystem",
-    "fstream", "sstream", "iomanip", "type_traits", "tuple", "list",
-    "deque", "queue", "stack", "unordered_map", "unordered_set",
-    "iterator", "ranges", "numeric", "random", "bit", "span",
+    "iostream",
+    "vector",
+    "string",
+    "memory",
+    "map",
+    "set",
+    "array",
+    "algorithm",
+    "functional",
+    "utility",
+    "optional",
+    "variant",
+    "chrono",
+    "thread",
+    "mutex",
+    "atomic",
+    "future",
+    "filesystem",
+    "fstream",
+    "sstream",
+    "iomanip",
+    "type_traits",
+    "tuple",
+    "list",
+    "deque",
+    "queue",
+    "stack",
+    "unordered_map",
+    "unordered_set",
+    "iterator",
+    "ranges",
+    "numeric",
+    "random",
+    "bit",
+    "span",
     // POSIX
-    "unistd.h", "fcntl.h", "sys/types.h", "sys/stat.h", "sys/mman.h",
-    "sys/wait.h", "sys/socket.h", "pthread.h", "dlfcn.h", "signal.h",
-    "dirent.h", "termios.h", "poll.h",
+    "unistd.h",
+    "fcntl.h",
+    "sys/types.h",
+    "sys/stat.h",
+    "sys/mman.h",
+    "sys/wait.h",
+    "sys/socket.h",
+    "pthread.h",
+    "dlfcn.h",
+    "signal.h",
+    "dirent.h",
+    "termios.h",
+    "poll.h",
 ];
 
 /// A plan for precompiling a header on behalf of a project.
@@ -177,11 +227,7 @@ fn is_stdlib_header(header: &str) -> bool {
 /// — std version, compiler, common_flags, include paths. Callers
 /// are responsible for hashing all of these together and passing
 /// the digest. The PCH is invalidated whenever any of those change.
-pub fn pch_output_path(
-    cache_dir: &Path,
-    candidate_header: &str,
-    flags_hash: u64,
-) -> PathBuf {
+pub fn pch_output_path(cache_dir: &Path, candidate_header: &str, flags_hash: u64) -> PathBuf {
     let sanitized: String = candidate_header
         .chars()
         .map(|c| match c {
@@ -526,11 +572,7 @@ int main() { return 0; }"#;
 
     #[test]
     fn pch_output_path_sanitizes_separators() {
-        let path = pch_output_path(
-            Path::new("/tmp/pch-cache"),
-            "SDL2/SDL.h",
-            0xdeadbeef,
-        );
+        let path = pch_output_path(Path::new("/tmp/pch-cache"), "SDL2/SDL.h", 0xdeadbeef);
         let s = path.to_string_lossy();
         assert!(s.contains("SDL2_SDL_h"));
         assert!(s.contains("deadbeef"));

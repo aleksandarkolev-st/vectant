@@ -140,7 +140,9 @@ pub fn evaluate_promotion(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hmr::build_manifest::{BuildManifest, BuildSlot, HealthcheckStrategy, PreviewPreservationMode};
+    use crate::hmr::build_manifest::{
+        BuildManifest, BuildSlot, HealthcheckStrategy, PreviewPreservationMode,
+    };
     use crate::hmr::planner_decision::{ReloadDecision, StateStrategy};
 
     fn validated_candidate() -> Candidate {
@@ -188,7 +190,10 @@ mod tests {
     fn promote_on_success() {
         let c = validated_candidate();
         let policy = PromotionPolicy::default();
-        assert_eq!(evaluate_promotion(&c, &policy, 400), PromotionVerdict::Promote);
+        assert_eq!(
+            evaluate_promotion(&c, &policy, 400),
+            PromotionVerdict::Promote
+        );
     }
 
     #[test]

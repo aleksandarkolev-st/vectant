@@ -37,10 +37,7 @@ pub fn find_so_base_addr(pid: u32, so_path: &Path) -> Result<Option<MappedSo>> {
     let maps_content = fs::read_to_string(format!("/proc/{}/maps", pid))
         .with_context(|| format!("read /proc/{}/maps", pid))?;
 
-    let so_name = so_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let so_name = so_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     let mut best: Option<MappedSo> = None;
 
@@ -88,11 +85,7 @@ pub fn find_so_base_addr(pid: u32, so_path: &Path) -> Result<Option<MappedSo>> {
 ///   va = base_addr + file_offset - p_offset + p_vaddr
 /// where p_offset/p_vaddr come from the LOAD segment containing
 /// the file_offset.
-pub fn file_offset_to_va(
-    file_offset: u64,
-    base_addr: u64,
-    so_path: &Path,
-) -> Result<u64> {
+pub fn file_offset_to_va(file_offset: u64, base_addr: u64, so_path: &Path) -> Result<u64> {
     use object::{Object, ObjectSegment};
     let data = fs::read(so_path)?;
     let obj = object::File::parse(&*data)?;
@@ -118,12 +111,7 @@ pub fn file_offset_to_va(
 /// `va`: virtual address to write at
 /// `expected`: bytes currently at that address (integrity check)
 /// `new_bytes`: replacement bytes (must be same length as expected)
-pub fn patch_process_memory(
-    pid: u32,
-    va: u64,
-    expected: &[u8],
-    new_bytes: &[u8],
-) -> Result<()> {
+pub fn patch_process_memory(pid: u32, va: u64, expected: &[u8], new_bytes: &[u8]) -> Result<()> {
     if expected.len() != new_bytes.len() {
         anyhow::bail!("expected and new_bytes must be same length");
     }

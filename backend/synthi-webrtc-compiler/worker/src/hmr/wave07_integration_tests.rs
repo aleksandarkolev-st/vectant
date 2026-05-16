@@ -5,17 +5,16 @@
 // file change → classify → dep graph → scope → planner bridge.
 // ============================================================
 
-
 #[cfg(test)]
 mod tests {
     use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
     use crate::hmr::changed_files::{ChangeSet, ChangeType, FileChange};
     use crate::hmr::dependency_graph::DependencyGraph;
     use crate::hmr::dirty_classifier::{classify_file, FileClass};
+    use crate::hmr::planner_decision::ReloadDecision;
     use crate::hmr::rebuild_scope::{calculate_rebuild_scope, RebuildScope, ScopeInput};
     use crate::hmr::scope_planner_bridge::{scope_to_planner, ScopePlannerInput};
     use crate::hmr::shared_header_detect::analyze_shared_headers;
-    use crate::hmr::planner_decision::ReloadDecision;
     use std::collections::HashSet;
 
     // ── Scenario 1: GUI edit → warm reload ──────────────────────
@@ -58,14 +57,19 @@ mod tests {
     #[test]
     fn scenario_shared_header_both() {
         let mut graph = DependencyGraph::new();
-        graph.upsert("src/core/engine.rs", ["src/shared/types.rs".into()].into(), None);
-        graph.upsert("src/gui/render.rs", ["src/shared/types.rs".into()].into(), None);
-
-        let analysis = analyze_shared_headers(
-            &["src/shared/types.rs".into()],
-            &graph,
-            classify_file,
+        graph.upsert(
+            "src/core/engine.rs",
+            ["src/shared/types.rs".into()].into(),
+            None,
         );
+        graph.upsert(
+            "src/gui/render.rs",
+            ["src/shared/types.rs".into()].into(),
+            None,
+        );
+
+        let analysis =
+            analyze_shared_headers(&["src/shared/types.rs".into()], &graph, classify_file);
         assert_eq!(analysis.escalated_scope, Some(RebuildScope::Both));
     }
 

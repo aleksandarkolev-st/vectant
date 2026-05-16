@@ -78,7 +78,8 @@ pub fn patch_split_files(
                 } else if let Some(replaced) = try_replace_line(&gui_out, old, new, &old_tokens) {
                     gui_out = replaced;
                     gui_changed = true;
-                } else if let Some(replaced) = try_replace_line(&shared_out, old, new, &old_tokens) {
+                } else if let Some(replaced) = try_replace_line(&shared_out, old, new, &old_tokens)
+                {
                     shared_out = replaced;
                     shared_changed = true;
                 } else {
@@ -123,7 +124,11 @@ pub fn patch_split_files(
     PatchResult {
         core: if core_changed { Some(core_out) } else { None },
         gui: if gui_changed { Some(gui_out) } else { None },
-        shared: if shared_changed { Some(shared_out) } else { None },
+        shared: if shared_changed {
+            Some(shared_out)
+        } else {
+            None
+        },
         unmatched_count: unmatched,
     }
 }
@@ -254,9 +259,24 @@ fn extract_significant_tokens(line: &str) -> Vec<String> {
             // Skip common keywords and types — focus on user-defined names
             if !matches!(
                 word,
-                "int" | "float" | "double" | "bool" | "char" | "void"
-                    | "if" | "else" | "while" | "for" | "return" | "true" | "false"
-                    | "const" | "static" | "struct" | "auto" | "unsigned"
+                "int"
+                    | "float"
+                    | "double"
+                    | "bool"
+                    | "char"
+                    | "void"
+                    | "if"
+                    | "else"
+                    | "while"
+                    | "for"
+                    | "return"
+                    | "true"
+                    | "false"
+                    | "const"
+                    | "static"
+                    | "struct"
+                    | "auto"
+                    | "unsigned"
             ) {
                 tokens.push(word.to_string());
             }
@@ -310,11 +330,7 @@ fn try_replace_line(
 }
 
 /// Try to find and remove a line from content.
-fn try_remove_line(
-    content: &str,
-    old_line: &str,
-    old_tokens: &[String],
-) -> Option<String> {
+fn try_remove_line(content: &str, old_line: &str, old_tokens: &[String]) -> Option<String> {
     let content_lines: Vec<&str> = content.lines().collect();
     let mut best_idx = None;
     let mut best_score = 0;
@@ -372,7 +388,12 @@ fn apply_value_changes(
         if old_num != new_num {
             // Replace first occurrence only
             if let Some(pos) = result.find(old_num.as_str()) {
-                result = format!("{}{}{}", &result[..pos], new_num, &result[pos + old_num.len()..]);
+                result = format!(
+                    "{}{}{}",
+                    &result[..pos],
+                    new_num,
+                    &result[pos + old_num.len()..]
+                );
             }
         }
     }
@@ -395,7 +416,8 @@ fn extract_numbers(line: &str) -> Vec<String> {
             || (chars[i] == '-'
                 && i + 1 < chars.len()
                 && chars[i + 1].is_ascii_digit()
-                && (i == 0 || matches!(chars.get(i.wrapping_sub(1)), Some(c) if !c.is_ascii_alphanumeric() && *c != '_')))
+                && (i == 0
+                    || matches!(chars.get(i.wrapping_sub(1)), Some(c) if !c.is_ascii_alphanumeric() && *c != '_')))
         {
             let start = i;
             if chars[i] == '-' {
@@ -422,7 +444,8 @@ mod tests {
 
     #[test]
     fn no_changes() {
-        let result = patch_split_files("int x = 1;", "int x = 1;", "// core", "// gui", "// shared");
+        let result =
+            patch_split_files("int x = 1;", "int x = 1;", "// core", "// gui", "// shared");
         assert!(!result.has_changes());
         assert_eq!(result.unmatched_count, 0);
     }
@@ -441,7 +464,10 @@ mod tests {
 
         let patched_gui = result.gui.unwrap();
         assert!(patched_gui.contains("255"), "Should contain 255");
-        assert!(!patched_gui.contains("120"), "Should not contain old value 120");
+        assert!(
+            !patched_gui.contains("120"),
+            "Should not contain old value 120"
+        );
     }
 
     #[test]
@@ -458,7 +484,10 @@ mod tests {
 
         let patched_core = result.core.unwrap();
         assert!(patched_core.contains("8"), "Should contain new value 8");
-        assert!(!patched_core.contains("= 3"), "Should not contain old value 3");
+        assert!(
+            !patched_core.contains("= 3"),
+            "Should not contain old value 3"
+        );
     }
 
     #[test]

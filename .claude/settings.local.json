@@ -26,7 +26,17 @@
       "Bash(timeout 180 python -u -m bench.synthi_report --workspace \"C:/Users/dev/AppData/Local/Temp/synthi_report_ws_wjapybn4\" --no-cleanup --out bench/synthi_report.md)",
       "Bash(echo \"EXIT=$?\")",
       "Bash(python -c ' *)",
-      "Bash(docker compose build *)"
+      "Bash(docker compose build *)",
+      "Bash(git commit *)",
+      "Bash(node --check \"C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade\\\\mcp\\\\synthi-mcp\\\\scripts\\\\gpu-hmr-test.mjs\")",
+      "Bash(dir *)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, '.'\\); from build_manifest import BuildManifest, parse_manifest, validate_manifest_v1; m = parse_manifest\\({'compiler':'g++','common_flags':[],'core_link_flags':[],'gui_link_flags':[],'shared_link_flags':[],'runner_link_flags':[],'system_packages':[],'hot_reload_mode':'swap','confidence':{'overall':'high','runner_synthesis':'high','link_flags':'high','notes':''},'gpu':{'vendor':'cuda','device_compiler':'nvcc','arch':['sm_80'],'device_flags':['-O3'],'runtime_libs':['cudart'],'snapshot_mode':'auto','fatbin_strategy':'sidecar_module'}}\\); print\\('parsed gpu:', m.gpu\\); validate_manifest_v1\\(m\\); print\\('validate ok'\\)\")",
+      "Bash(where py *)",
+      "Bash(py --version)",
+      "Bash(py -3 -c \"import sys; print\\(sys.version\\)\")",
+      "Bash(cargo check *)",
+      "PowerShell(Get-Command *)",
+      "PowerShell(Test-Path *)"
     ]
   }
 }

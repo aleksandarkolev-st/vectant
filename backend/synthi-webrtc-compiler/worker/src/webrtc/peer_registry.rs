@@ -117,15 +117,24 @@ impl PeerHandle {
     /// Snapshot the current build-log DC, if attached. Cheap — clones
     /// the inner `Arc<RTCDataChannel>` under the mutex and releases.
     pub fn build_log_dc_snapshot(&self) -> Option<Arc<RTCDataChannel>> {
-        self.build_log_dc.lock().expect("build_log_dc mutex poisoned").clone()
+        self.build_log_dc
+            .lock()
+            .expect("build_log_dc mutex poisoned")
+            .clone()
     }
 
     pub fn video_track_snapshot(&self) -> Option<Arc<TrackLocalStaticRTP>> {
-        self.video_track.lock().expect("video_track mutex poisoned").clone()
+        self.video_track
+            .lock()
+            .expect("video_track mutex poisoned")
+            .clone()
     }
 
     pub fn audio_track_snapshot(&self) -> Option<Arc<TrackLocalStaticRTP>> {
-        self.audio_track.lock().expect("audio_track mutex poisoned").clone()
+        self.audio_track
+            .lock()
+            .expect("audio_track mutex poisoned")
+            .clone()
     }
 }
 
@@ -185,15 +194,25 @@ impl PeerRegistry {
     }
 
     pub fn remove(&self, peer_id: &str) -> Option<Arc<PeerHandle>> {
-        self.peers.write().expect("peer registry poisoned").remove(peer_id)
+        self.peers
+            .write()
+            .expect("peer registry poisoned")
+            .remove(peer_id)
     }
 
     pub fn get(&self, peer_id: &str) -> Option<Arc<PeerHandle>> {
-        self.peers.read().expect("peer registry poisoned").get(peer_id).cloned()
+        self.peers
+            .read()
+            .expect("peer registry poisoned")
+            .get(peer_id)
+            .cloned()
     }
 
     pub fn contains(&self, peer_id: &str) -> bool {
-        self.peers.read().expect("peer registry poisoned").contains_key(peer_id)
+        self.peers
+            .read()
+            .expect("peer registry poisoned")
+            .contains_key(peer_id)
     }
 
     pub fn len(&self) -> usize {
@@ -201,7 +220,10 @@ impl PeerRegistry {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.peers.read().expect("peer registry poisoned").is_empty()
+        self.peers
+            .read()
+            .expect("peer registry poisoned")
+            .is_empty()
     }
 
     pub fn clear(&self) {
@@ -269,7 +291,10 @@ impl PeerRegistry {
     pub fn attach_build_log(&self, peer_id: &str, dc: Arc<RTCDataChannel>) -> bool {
         let peers = self.peers.read().expect("peer registry poisoned");
         if let Some(existing) = peers.get(peer_id) {
-            *existing.build_log_dc.lock().expect("build_log_dc mutex poisoned") = Some(dc);
+            *existing
+                .build_log_dc
+                .lock()
+                .expect("build_log_dc mutex poisoned") = Some(dc);
             true
         } else {
             false
@@ -279,7 +304,10 @@ impl PeerRegistry {
     pub fn attach_video_track(&self, peer_id: &str, track: Arc<TrackLocalStaticRTP>) -> bool {
         let peers = self.peers.read().expect("peer registry poisoned");
         if let Some(existing) = peers.get(peer_id) {
-            *existing.video_track.lock().expect("video_track mutex poisoned") = Some(track);
+            *existing
+                .video_track
+                .lock()
+                .expect("video_track mutex poisoned") = Some(track);
             true
         } else {
             false
@@ -289,7 +317,10 @@ impl PeerRegistry {
     pub fn attach_audio_track(&self, peer_id: &str, track: Arc<TrackLocalStaticRTP>) -> bool {
         let peers = self.peers.read().expect("peer registry poisoned");
         if let Some(existing) = peers.get(peer_id) {
-            *existing.audio_track.lock().expect("audio_track mutex poisoned") = Some(track);
+            *existing
+                .audio_track
+                .lock()
+                .expect("audio_track mutex poisoned") = Some(track);
             true
         } else {
             false

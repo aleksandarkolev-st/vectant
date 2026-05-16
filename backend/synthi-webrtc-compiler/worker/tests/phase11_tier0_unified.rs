@@ -5,20 +5,32 @@
 // Compiles real C code with gcc, then runs the full Tier 0 v2
 // pipeline: tree-sitter classify → string patch or DWARF+imm patch.
 
-use worker::hmr::tier0_unified::{try_tier0_v2, Tier0V2Outcome};
 use std::process::Command;
+use worker::hmr::tier0_unified::{try_tier0_v2, Tier0V2Outcome};
 
 fn compile_so(dir: &std::path::Path, source: &str, name: &str) -> std::path::PathBuf {
     let src = dir.join(format!("{}.c", name));
     let so = dir.join(format!("lib{}.so", name));
     std::fs::write(&src, source).unwrap();
     let out = Command::new("gcc")
-        .args(["-shared", "-fPIC", "-O0", "-g", "-gdwarf-4", "-fno-merge-constants", "-o"])
+        .args([
+            "-shared",
+            "-fPIC",
+            "-O0",
+            "-g",
+            "-gdwarf-4",
+            "-fno-merge-constants",
+            "-o",
+        ])
         .arg(&so)
         .arg(&src)
         .output()
         .expect("gcc");
-    assert!(out.status.success(), "gcc: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "gcc: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     so
 }
 
@@ -36,7 +48,15 @@ fn string_literal_patch_e2e() {
     let src = dir.path().join("core.c");
     std::fs::write(&src, source).unwrap();
     let out = Command::new("gcc")
-        .args(["-shared", "-fPIC", "-O0", "-g", "-gdwarf-4", "-fno-merge-constants", "-o"])
+        .args([
+            "-shared",
+            "-fPIC",
+            "-O0",
+            "-g",
+            "-gdwarf-4",
+            "-fno-merge-constants",
+            "-o",
+        ])
         .arg(&so)
         .arg(&src)
         .output()
@@ -76,13 +96,12 @@ fn integer_literal_patch_e2e() {
             assert!(r.integer_patches > 0, "should have integer patches");
             // Verify by re-reading the .so with the disassembler
             let so = dir.path().join(so_name);
-            let addrs = worker::hmr::binary_patch::dwarf_line_map::line_to_addresses(
-                &so, "core.c", 2,
-            ).unwrap();
+            let addrs =
+                worker::hmr::binary_patch::dwarf_line_map::line_to_addresses(&so, "core.c", 2)
+                    .unwrap();
             let va: Vec<u64> = addrs.iter().map(|a| a.address).collect();
-            let locs = worker::hmr::binary_patch::imm_patcher::find_immediates(
-                &so, &va, Some(900),
-            ).unwrap();
+            let locs = worker::hmr::binary_patch::imm_patcher::find_immediates(&so, &va, Some(900))
+                .unwrap();
             assert!(!locs.is_empty(), "should find imm32=900 after patch");
         }
         other => panic!("expected Patched, got {:?}", other),
@@ -170,10 +189,22 @@ fn compile_so_named(dir: &std::path::Path, source: &str, src_name: &str, so_name
     let so = dir.join(so_name);
     std::fs::write(&src, source).unwrap();
     let out = Command::new("gcc")
-        .args(["-shared", "-fPIC", "-O0", "-g", "-gdwarf-4", "-fno-merge-constants", "-o"])
+        .args([
+            "-shared",
+            "-fPIC",
+            "-O0",
+            "-g",
+            "-gdwarf-4",
+            "-fno-merge-constants",
+            "-o",
+        ])
         .arg(&so)
         .arg(&src)
         .output()
         .expect("gcc");
-    assert!(out.status.success(), "gcc: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "gcc: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

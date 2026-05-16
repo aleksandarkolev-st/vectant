@@ -6,12 +6,11 @@
 // the serializer, snapshot ring, and size limiter.
 // ============================================================
 
-
 use std::collections::HashMap;
 
 use crate::hmr::state_manager::SchemaVersion;
 use crate::hmr::state_serializer::{serialize_state, SerializerConfig};
-use crate::hmr::state_size_limiter::{SizeCheckResult, StateSizeLimiter, GlobalSizeLimits};
+use crate::hmr::state_size_limiter::{GlobalSizeLimits, SizeCheckResult, StateSizeLimiter};
 use crate::hmr::state_snapshot::{SnapshotReason, SnapshotRing, StateSnapshot};
 
 /// Checkpoint policy.
@@ -127,12 +126,13 @@ impl CheckpointManager {
         };
 
         // Store
-        let mc = self.modules.entry(module_id.to_string()).or_insert_with(|| {
-            ModuleCheckpoint {
+        let mc = self
+            .modules
+            .entry(module_id.to_string())
+            .or_insert_with(|| ModuleCheckpoint {
                 ring: SnapshotRing::new(self.policy.ring_capacity),
                 last_checkpoint_ms: 0,
-            }
-        });
+            });
         let snapshot_id = mc.ring.push(snapshot);
         mc.last_checkpoint_ms = now_ms;
 
@@ -151,7 +151,9 @@ impl CheckpointManager {
 
     /// Get a specific snapshot by id.
     pub fn get_snapshot(&self, module_id: &str, snapshot_id: u64) -> Option<&StateSnapshot> {
-        self.modules.get(module_id).and_then(|mc| mc.ring.get(snapshot_id))
+        self.modules
+            .get(module_id)
+            .and_then(|mc| mc.ring.get(snapshot_id))
     }
 
     /// Remove all checkpoints for a module.
@@ -204,8 +206,24 @@ mod tests {
         let mut mgr = CheckpointManager::new(policy);
         let state = serde_json::json!({"x": 1});
 
-        mgr.capture("m", &state, SchemaVersion::new(1, 0, 0), 1, 0, 1000, SnapshotReason::Checkpoint);
-        let result = mgr.capture("m", &state, SchemaVersion::new(1, 0, 0), 1, 0, 2000, SnapshotReason::Checkpoint);
+        mgr.capture(
+            "m",
+            &state,
+            SchemaVersion::new(1, 0, 0),
+            1,
+            0,
+            1000,
+            SnapshotReason::Checkpoint,
+        );
+        let result = mgr.capture(
+            "m",
+            &state,
+            SchemaVersion::new(1, 0, 0),
+            1,
+            0,
+            2000,
+            SnapshotReason::Checkpoint,
+        );
         assert!(matches!(result, CheckpointResult::Debounced));
     }
 
@@ -218,8 +236,24 @@ mod tests {
         let mut mgr = CheckpointManager::new(policy);
         let state = serde_json::json!({"x": 1});
 
-        mgr.capture("m", &state, SchemaVersion::new(1, 0, 0), 1, 0, 1000, SnapshotReason::PreReload);
-        let result = mgr.capture("m", &state, SchemaVersion::new(1, 0, 0), 1, 0, 1500, SnapshotReason::PreReload);
+        mgr.capture(
+            "m",
+            &state,
+            SchemaVersion::new(1, 0, 0),
+            1,
+            0,
+            1000,
+            SnapshotReason::PreReload,
+        );
+        let result = mgr.capture(
+            "m",
+            &state,
+            SchemaVersion::new(1, 0, 0),
+            1,
+            0,
+            1500,
+            SnapshotReason::PreReload,
+        );
         assert!(matches!(result, CheckpointResult::Captured { .. }));
     }
 }

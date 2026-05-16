@@ -112,7 +112,11 @@ void core_on_load(void* state) {
 "#;
     match classify_ast(old, new) {
         AstClassification::ValueOnly { changes } => {
-            assert!(changes.len() >= 4, "should detect multiple value changes, got {}", changes.len());
+            assert!(
+                changes.len() >= 4,
+                "should detect multiple value changes, got {}",
+                changes.len()
+            );
         }
         other => panic!("expected ValueOnly, got {:?}", other),
     }

@@ -55,18 +55,17 @@ use worker::runtime::process_isolation;
 
 use worker::safety::hardened_ipc::{read_frame_validated, write_frame_with_checksum, IpcConfig};
 
+use capability::HmrStatus;
 use worker::runtime::plugin_contract::{
     ModuleSlot,
     // HotApi, HotGetApiFn, RunnerApi, CORE_STATE_MAGIC, GUI_STATE_MAGIC, LOG_ERROR,
     // LOG_INFO, LOG_WARN, MAX_STATE_ALIGNMENT, RUNNER_API_VERSION, SYNTHI_CORE_ABI_VERSION,
     // SYNTHI_GUI_ABI_VERSION,
-};
-use capability::HmrStatus; // Removed detect_capabilities
+}; // Removed detect_capabilities
 
 use crash_recovery::{
     execute_with_protection, generate_crash_report, install_crash_handlers, set_current_lib_path,
-    set_protection_mode, ProtectionMode,
-    HmrCrashStatus,
+    set_protection_mode, HmrCrashStatus, ProtectionMode,
 };
 
 use hmr_orchestrator::HmrOrchestrator; // Removed SavedState
@@ -80,14 +79,21 @@ use loader::ModuleLoader; // Removed LoadResult
 use state_manager::StateManager;
 use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
+#[cfg(feature = "gpu-hmr")]
+use worker::hmr::adapter_trait::{Adapter, AdapterReloadRequest};
+#[cfg(feature = "gpu-hmr")]
+use worker::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
+#[cfg(feature = "gpu-hmr")]
+use worker::hmr::gpu_module_adapter::{GpuModuleAdapter, GpuModuleAdapterConfig, GpuVendor};
+
 // use enhanced_fingerprint::{extract_fingerprint_from_module}; // Removed AbiFingerprint
 
 // use crate::runtime::hot_reload::v2::{
 //     get_module_abi_version, hot_reload_v2, save_state_msgpack_v2, validate_state_magic,
 //     HotModuleState, HotReloadResult, RUNNER_API,
 // };
-use worker::runtime::legacy_module_state::{AppState, ModuleState};
 use worker::debug_log;
+use worker::runtime::legacy_module_state::{AppState, ModuleState};
 
 // ============================================================
 // INDEPENDENT SWAP DOMAINS: Separate state for each module
@@ -322,14 +328,20 @@ fn main() {
         // Worker manages Xvfb — we still need an X11 connection for XTest
         // input injection (fake_input for mouse events).
         let display_str = std::env::var("DISPLAY").unwrap_or_else(|_| ":99".to_string());
-        debug_log!("[Runner] Worker manages display — connecting to {} for XTest input injection", display_str);
+        debug_log!(
+            "[Runner] Worker manages display — connecting to {} for XTest input injection",
+            display_str
+        );
         match x11rb::connect(Some(&display_str)) {
             Ok((conn, screen_num)) => {
                 let root = conn.setup().roots[screen_num].root;
                 (None, Some(conn), screen_num, root)
             }
             Err(e) => {
-                eprintln!("[Runner] Failed to connect to X11 display {}: {}. Mouse input disabled.", display_str, e);
+                eprintln!(
+                    "[Runner] Failed to connect to X11 display {}: {}. Mouse input disabled.",
+                    display_str, e
+                );
                 (None, None, 0, 0u32)
             }
         }
@@ -342,31 +354,43 @@ fn main() {
     #[cfg(target_os = "linux")]
     let xtest_ready = if let Some(ref conn) = x11_conn {
         match conn.xtest_get_version(2, 2u16) {
-            Ok(cookie) => match cookie.reply() {
-                Ok(ver) => {
-                    debug_log!("[Runner] XTest extension v{}.{} available", ver.major_version, ver.minor_version);
-                    // Enable grab bypass: XTest events will not activate passive grabs
-                    // (e.g. matchbox-WM's button grabs for click-to-focus). Without this,
-                    // the WM intercepts every button event before the app sees it.
-                    match conn.xtest_grab_control(true) {
-                        Ok(_) => {
-                            let _ = conn.flush();
-                            debug_log!("[Runner] XTest grab_control(impervious=true) — WM grabs bypassed");
-                            true
-                        }
-                        Err(e) => {
-                            eprintln!("[Runner] XTest grab_control failed: {}. Falling back to xdotool.", e);
-                            false
+            Ok(cookie) => {
+                match cookie.reply() {
+                    Ok(ver) => {
+                        debug_log!(
+                            "[Runner] XTest extension v{}.{} available",
+                            ver.major_version,
+                            ver.minor_version
+                        );
+                        // Enable grab bypass: XTest events will not activate passive grabs
+                        // (e.g. matchbox-WM's button grabs for click-to-focus). Without this,
+                        // the WM intercepts every button event before the app sees it.
+                        match conn.xtest_grab_control(true) {
+                            Ok(_) => {
+                                let _ = conn.flush();
+                                debug_log!("[Runner] XTest grab_control(impervious=true) — WM grabs bypassed");
+                                true
+                            }
+                            Err(e) => {
+                                eprintln!("[Runner] XTest grab_control failed: {}. Falling back to xdotool.", e);
+                                false
+                            }
                         }
                     }
+                    Err(e) => {
+                        eprintln!(
+                            "[Runner] XTest get_version failed: {}. Mouse input may not work.",
+                            e
+                        );
+                        false
+                    }
                 }
-                Err(e) => {
-                    eprintln!("[Runner] XTest get_version failed: {}. Mouse input may not work.", e);
-                    false
-                }
-            },
+            }
             Err(e) => {
-                debug_log!("[Runner] XTest extension not available: {}. Mouse input may not work.", e);
+                debug_log!(
+                    "[Runner] XTest extension not available: {}. Mouse input may not work.",
+                    e
+                );
                 false
             }
         }
@@ -439,10 +463,7 @@ fn main() {
                             // null and downstream code branches on
                             // sdl_window_id / runtime_handle accordingly.
                             let (win, ren) = if backend_name == "SDL2" {
-                                (
-                                    handle.raw_ptr as *mut SDL_Window,
-                                    handle.renderer_ptr,
-                                )
+                                (handle.raw_ptr as *mut SDL_Window, handle.renderer_ptr)
                             } else {
                                 (ptr::null_mut(), ptr::null_mut())
                             };
@@ -723,6 +744,8 @@ fn main() {
         debug_log!("[Runner] Session ID from env: {}", sid);
     }
     let kv_api = create_kv_api();
+    #[cfg(feature = "gpu-hmr")]
+    let mut gpu_adapters: HashMap<String, GpuModuleAdapter> = HashMap::new();
 
     #[cfg(target_os = "linux")]
     debug_log!("[Runner] Frame capture enabled (Linux build)");
@@ -774,10 +797,9 @@ fn main() {
             let mut legacy_drained: Vec<SDL_Event> = Vec::new();
             let used_trait = {
                 use worker::runtime::window_backend::WindowBackend;
-                if let (Some(_handle), Some(selected)) = (
-                    runtime_handle.as_ref(),
-                    selected_runtime_backend.as_mut(),
-                ) {
+                if let (Some(_handle), Some(selected)) =
+                    (runtime_handle.as_ref(), selected_runtime_backend.as_mut())
+                {
                     selected.backend.pump_events(&mut trait_events_buf);
                     true
                 } else {
@@ -803,9 +825,7 @@ fn main() {
                 trait_events_buf
                     .iter()
                     .filter_map(|ev| match ev {
-                        BackendEvent::Raw { payload, .. } => {
-                            Some(*payload as *mut c_void)
-                        }
+                        BackendEvent::Raw { payload, .. } => Some(*payload as *mut c_void),
                         // Quit and Resized don't carry a Raw pointer;
                         // they're handled elsewhere by the runner
                         // (Quit → core state mutation via the Raw
@@ -896,7 +916,10 @@ fn main() {
                                     eprintln!("{}", generate_crash_report(&crash_info));
                                     let status = HmrCrashStatus::from_crash(&crash_info, true);
                                     debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
-                                    eprintln!("[Runner] on_event crash in module '{}' — continuing", name);
+                                    eprintln!(
+                                        "[Runner] on_event crash in module '{}' — continuing",
+                                        name
+                                    );
                                     // Don't kill the runner; skip this module's event and continue
                                 }
                             }
@@ -1040,7 +1063,8 @@ fn main() {
                                         if xtest_ready {
                                             if let Some(ref conn) = x11_conn {
                                                 // MotionNotify: detail=0, root_x/root_y = target position, deviceid=0 (server default)
-                                                let _ = conn.xtest_fake_input(6, 0, 0, x11_root, x, y, 0);
+                                                let _ = conn
+                                                    .xtest_fake_input(6, 0, 0, x11_root, x, y, 0);
                                                 let _ = conn.flush();
                                             }
                                         }
@@ -1059,9 +1083,13 @@ fn main() {
                                             // Warp pointer to click position first,
                                             // then send button event (which fires at
                                             // the current pointer position).
-                                            let _ = conn.xtest_fake_input(6, 0, 0, x11_root, x, y, 0);
-                                            let event_type: u8 = if type_str == "down" { 4 } else { 5 };
-                                            let _ = conn.xtest_fake_input(event_type, btn, 0, x11_root, 0, 0, 0);
+                                            let _ =
+                                                conn.xtest_fake_input(6, 0, 0, x11_root, x, y, 0);
+                                            let event_type: u8 =
+                                                if type_str == "down" { 4 } else { 5 };
+                                            let _ = conn.xtest_fake_input(
+                                                event_type, btn, 0, x11_root, 0, 0, 0,
+                                            );
                                             let _ = conn.flush();
                                         }
                                     }
@@ -1123,7 +1151,8 @@ fn main() {
                         if current_path == path {
                             debug_log!(
                                 "[Runner] Module '{}' already loaded from {}. Skipping.",
-                                name, path
+                                name,
+                                path
                             );
                             continue;
                         }
@@ -1148,6 +1177,100 @@ fn main() {
                     // Skip render for 1 frame to let on_load initialize state
                     // before on_render uses it — prevents flicker
                     skip_render_frames = 1;
+                }
+                "load_device" => {
+                    // usage: load_device <cuda|rocm|hip> <cubin|hsaco> <kernel1,kernel2,...|->
+                    #[cfg(feature = "gpu-hmr")]
+                    {
+                        if parts.len() < 3 {
+                            eprintln!("[Runner] [GPU HMR] Invalid load_device command format");
+                            continue;
+                        }
+
+                        let vendor_raw = parts[1];
+                        let artifact_path = parts[2];
+                        let kernels_arg = parts.get(3).copied().unwrap_or("-");
+                        let kernels: Vec<String> = kernels_arg
+                            .split(',')
+                            .filter(|s| !s.trim().is_empty() && *s != "-")
+                            .map(|s| s.trim().to_string())
+                            .collect();
+
+                        let (language, vendor) = match vendor_raw {
+                            "cuda" => ("cuda", GpuVendor::Cuda),
+                            "rocm" | "hip" => ("rocm", GpuVendor::Rocm),
+                            other => {
+                                eprintln!("[Runner] [GPU HMR] Unknown device vendor '{}'", other);
+                                continue;
+                            }
+                        };
+
+                        if !gpu_adapters.contains_key(language) {
+                            let mut adapter = GpuModuleAdapter::new(GpuModuleAdapterConfig {
+                                vendor,
+                                ..Default::default()
+                            });
+                            if let Err(e) = adapter.initialize() {
+                                eprintln!(
+                                    "[Runner] [GPU HMR] Device adapter init failed vendor={}: {}",
+                                    language, e
+                                );
+                            }
+                            gpu_adapters.insert(language.to_string(), adapter);
+                        }
+
+                        let artifact_hash = std::fs::metadata(artifact_path)
+                            .map(|m| m.len().to_string())
+                            .unwrap_or_else(|_| "unknown".to_string());
+                        let manifest = BuildManifest::for_language(
+                            session_id
+                                .clone()
+                                .unwrap_or_else(|| "runner-gpu".to_string()),
+                            language,
+                        )
+                        .with_slot(BuildSlot::Custom("device".into()))
+                        .with_artifact(artifact_path, &artifact_hash)
+                        .with_abi_version(&kernels.join("|"))
+                        .with_state_schema_hash(&artifact_hash)
+                        .with_dirty_units(vec![if vendor == GpuVendor::Cuda {
+                            "device.cu".to_string()
+                        } else {
+                            "device.hip".to_string()
+                        }])
+                        .with_exported_symbols(kernels.clone())
+                        .with_capabilities(vec![
+                            "gpu_sidecar_module".to_string(),
+                            "synthi_gpu_launch".to_string(),
+                        ])
+                        .with_snapshot_modes(vec![SnapshotMode::Binary]);
+
+                        let req = AdapterReloadRequest {
+                            reload_id: format!("runner-device-{}-{}", language, frame_count),
+                            module_id: "device".into(),
+                            changed_files: manifest.dirty_units.clone().unwrap_or_default(),
+                            build_manifest: manifest,
+                            preserve_state: true,
+                            timeout_ms: 5000,
+                        };
+
+                        if let Some(adapter) = gpu_adapters.get_mut(language) {
+                            let result = adapter.reload(&req);
+                            eprintln!(
+                                "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact={} kernels={} result={:?}",
+                                language,
+                                artifact_path,
+                                kernels.join(","),
+                                result
+                            );
+                        }
+                    }
+
+                    #[cfg(not(feature = "gpu-hmr"))]
+                    {
+                        eprintln!(
+                            "[Runner] [GPU HMR] load_device ignored; runner built without gpu-hmr"
+                        );
+                    }
                 }
                 "unload" => {
                     if parts.len() == 2 {
@@ -1197,10 +1320,9 @@ fn main() {
                     #[cfg(target_os = "linux")]
                     {
                         use worker::runtime::window_backend::WindowBackend;
-                        let handled_via_trait = if let (Some(handle), Some(selected)) = (
-                            runtime_handle.take(),
-                            selected_runtime_backend.as_mut(),
-                        ) {
+                        let handled_via_trait = if let (Some(handle), Some(selected)) =
+                            (runtime_handle.take(), selected_runtime_backend.as_mut())
+                        {
                             selected.backend.destroy_window(handle);
                             selected.backend.shutdown();
                             true
@@ -1319,8 +1441,7 @@ fn main() {
                                 // thread.  The runner's own heap and SDL state are
                                 // safe since the faulting thread is terminated via
                                 // pthread_exit and never touches shared state again.
-                                let force_restart =
-                                    recovery_action == RecoveryAction::FullRestart
+                                let force_restart = recovery_action == RecoveryAction::FullRestart
                                     || recovery_action == RecoveryAction::Fatal
                                     || (supervisor_enabled
                                         && crash_supervisor.should_force_restart());
@@ -1461,9 +1582,13 @@ fn main() {
                     lib.get(b"gui_render");
 
                 let func_to_call: Option<Symbol<unsafe extern "C" fn(*mut c_void)>> =
-                    if let Ok(f) = render_func { Some(f) }
-                    else if let Ok(f) = gui_render_func { Some(f) }
-                    else { None };
+                    if let Ok(f) = render_func {
+                        Some(f)
+                    } else if let Ok(f) = gui_render_func {
+                        Some(f)
+                    } else {
+                        None
+                    };
 
                 if let Some(f) = func_to_call {
                     #[cfg(unix)]
@@ -1508,10 +1633,9 @@ fn main() {
         {
             use worker::runtime::window_backend::WindowBackend;
             let mut presented_via_trait = false;
-            if let (Some(handle), Some(selected)) = (
-                runtime_handle.as_ref(),
-                selected_runtime_backend.as_mut(),
-            ) {
+            if let (Some(handle), Some(selected)) =
+                (runtime_handle.as_ref(), selected_runtime_backend.as_mut())
+            {
                 if let Err(e) = selected.backend.present_frame(handle) {
                     eprintln!(
                         "[Phase 10g.3a] WindowBackend present_frame failed ({}) — \

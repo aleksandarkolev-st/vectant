@@ -60,7 +60,6 @@ fn ai_http_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-
 // NOTE: `detect_structural_additions` and `perform_structural_ai_update`
 // were removed together with the `Level 2.75` shortcut in `perform_ai_split`.
 // They implemented the SDL-hardcoded "X11→SDL2 translation" delta path
@@ -118,7 +117,10 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     let verified_url = format!("{}/refactor/split/verified", backend_url);
     let split_url = format!("{}/refactor/split", backend_url);
 
-    eprintln!("[AI Split] Calling VERIFIED AI split endpoint: {}", verified_url);
+    eprintln!(
+        "[AI Split] Calling VERIFIED AI split endpoint: {}",
+        verified_url
+    );
     let verified_result: Result<serde_json::Value, anyhow::Error> = async {
         let resp = client
             .post(&verified_url)
@@ -128,13 +130,16 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             .await?
             .error_for_status()?;
         Ok(resp.json::<serde_json::Value>().await?)
-    }.await;
+    }
+    .await;
 
     let raw_response = match verified_result {
         Ok(json) if json.get("result").and_then(|r| r.as_str()).is_some() => json,
         Ok(json) => {
-            eprintln!("[AI Split] Verified returned no result field: {:?}, trying unverified",
-                json.to_string().chars().take(200).collect::<String>());
+            eprintln!(
+                "[AI Split] Verified returned no result field: {:?}, trying unverified",
+                json.to_string().chars().take(200).collect::<String>()
+            );
             client
                 .post(&split_url)
                 .json(&payload)
@@ -145,7 +150,10 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                 .await?
         }
         Err(e) => {
-            eprintln!("[AI Split] Verified endpoint failed ({}), trying unverified", e);
+            eprintln!(
+                "[AI Split] Verified endpoint failed ({}), trying unverified",
+                e
+            );
             let resp = client
                 .post(&split_url)
                 .json(&payload)
@@ -243,7 +251,10 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     let mut res = res;
     if let Some(arch) = raw_response.get("architecture").and_then(|v| v.as_str()) {
         if !arch.is_empty() {
-            eprintln!("[AI Split] architecture cache captured ({} chars)", arch.len());
+            eprintln!(
+                "[AI Split] architecture cache captured ({} chars)",
+                arch.len()
+            );
             if let Some(obj) = res.as_object_mut() {
                 obj.insert(
                     "_synthi_architecture".to_string(),
@@ -266,7 +277,10 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     if let Some(manifest) = raw_response.get("manifest") {
         if !manifest.is_null() {
             let manifest_size = manifest.to_string().len();
-            eprintln!("[AI Split] compile manifest captured ({} bytes)", manifest_size);
+            eprintln!(
+                "[AI Split] compile manifest captured ({} bytes)",
+                manifest_size
+            );
             if let Some(obj) = res.as_object_mut() {
                 obj.insert("_synthi_manifest".to_string(), manifest.clone());
             }
@@ -284,7 +298,11 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // explicit re-stashing is needed here — handler.rs reads
     // `split_data["host_runner"]["content"]` directly. This block is
     // observability only: confirms the AI honoured the 4-file contract.
-    match res.get("host_runner").and_then(|v| v.get("content")).and_then(|c| c.as_str()) {
+    match res
+        .get("host_runner")
+        .and_then(|v| v.get("content"))
+        .and_then(|c| c.as_str())
+    {
         Some(content) if !content.trim().is_empty() => {
             eprintln!(
                 "[AI Split] host_runner.cpp captured ({} bytes)",
@@ -380,7 +398,10 @@ pub async fn perform_ai_diff_patch(
         .json::<serde_json::Value>()
         .await?;
 
-    let elapsed = res.get("elapsed_seconds").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let elapsed = res
+        .get("elapsed_seconds")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
 
     // Response shape: {"edits": [...], "elapsed_seconds": f64}
     // Extra fields are ignored by serde (EditList uses #[serde(default)]
@@ -464,7 +485,10 @@ pub async fn perform_ai_heal(
         .json::<serde_json::Value>()
         .await?;
 
-    let elapsed = res.get("elapsed_seconds").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let elapsed = res
+        .get("elapsed_seconds")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     eprintln!("[AI Heal] {} completed in {:.2}s", module_name, elapsed);
 
     let content = res
@@ -540,7 +564,10 @@ pub async fn try_manifest_heal_retry<F>(
     failed_module: &str,
     source_excerpt_fallback: &str,
     rebuild_cmd: F,
-) -> Option<(std::process::Output, crate::hmr::compile_manifest::CompileManifest)>
+) -> Option<(
+    std::process::Output,
+    crate::hmr::compile_manifest::CompileManifest,
+)>
 where
     F: FnOnce(&crate::hmr::compile_manifest::CompileManifest) -> tokio::process::Command,
 {
@@ -692,31 +719,26 @@ where
             return None;
         }
     };
-    let out = match tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        child.wait_with_output(),
-    )
-    .await
-    {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => {
-            eprintln!("[ManifestHeal/{}] retry wait error: {}", failed_module, e);
-            return None;
-        }
-        Err(_) => {
-            eprintln!(
-                "[ManifestHeal/{}] retry compile timed out after 30s",
-                failed_module
-            );
-            return None;
-        }
-    };
+    let out =
+        match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait_with_output())
+            .await
+        {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => {
+                eprintln!("[ManifestHeal/{}] retry wait error: {}", failed_module, e);
+                return None;
+            }
+            Err(_) => {
+                eprintln!(
+                    "[ManifestHeal/{}] retry compile timed out after 30s",
+                    failed_module
+                );
+                return None;
+            }
+        };
 
     if out.status.success() {
-        eprintln!(
-            "[ManifestHeal/{}] retry compile SUCCEEDED",
-            failed_module
-        );
+        eprintln!("[ManifestHeal/{}] retry compile SUCCEEDED", failed_module);
         Some((out, new_manifest))
     } else {
         let retry_stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -759,9 +781,7 @@ pub async fn perform_ai_heal_manifest(
     architecture: Option<&str>,
 ) -> Result<ManifestHealResult> {
     if undefined_symbols.is_empty() {
-        anyhow::bail!(
-            "perform_ai_heal_manifest called with empty undefined_symbols — caller bug"
-        );
+        anyhow::bail!("perform_ai_heal_manifest called with empty undefined_symbols — caller bug");
     }
 
     let client = reqwest::Client::new();
@@ -818,7 +838,11 @@ pub async fn perform_ai_heal_manifest(
 
     eprintln!(
         "[ManifestHeal] {} in {:.2}s — notes: {}",
-        if unchanged { "UNCHANGED (no fix inferred)" } else { "UPDATED" },
+        if unchanged {
+            "UNCHANGED (no fix inferred)"
+        } else {
+            "UPDATED"
+        },
         elapsed,
         notes.chars().take(120).collect::<String>(),
     );

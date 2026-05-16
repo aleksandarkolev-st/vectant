@@ -64,9 +64,10 @@ async fn run_input_loop(display: String, mut rx: mpsc::UnboundedReceiver<String>
                         continue; // throttle
                     }
                     last_move = now;
-                    xdotool(&display, &[
-                        "mousemove", "--screen", "0", parts[1], parts[2],
-                    ])
+                    xdotool(
+                        &display,
+                        &["mousemove", "--screen", "0", parts[1], parts[2]],
+                    )
                     .await;
                 }
 
@@ -74,11 +75,16 @@ async fn run_input_loop(display: String, mut rx: mpsc::UnboundedReceiver<String>
                 // format: button <down|up> <btn> <x> <y>
                 "button" if parts.len() >= 5 => {
                     // Move to coordinates first, then press/release
-                    xdotool(&display, &[
-                        "mousemove", "--screen", "0", parts[3], parts[4],
-                    ])
+                    xdotool(
+                        &display,
+                        &["mousemove", "--screen", "0", parts[3], parts[4]],
+                    )
                     .await;
-                    let action = if parts[1] == "down" { "mousedown" } else { "mouseup" };
+                    let action = if parts[1] == "down" {
+                        "mousedown"
+                    } else {
+                        "mouseup"
+                    };
                     xdotool(&display, &[action, parts[2]]).await;
                 }
 
@@ -94,7 +100,11 @@ async fn run_input_loop(display: String, mut rx: mpsc::UnboundedReceiver<String>
                         Some(k) => k,
                         None => continue,
                     };
-                    let action = if direction == "down" { "keydown" } else { "keyup" };
+                    let action = if direction == "down" {
+                        "keydown"
+                    } else {
+                        "keyup"
+                    };
                     xdotool(&display, &[action, &xkey]).await;
                 }
 
@@ -169,7 +179,7 @@ fn sdl_keycode_to_xdotool(sdlk: i64) -> Option<String> {
         0x4000_004A => Some("Home".into()),
         0x4000_004B => Some("Prior".into()), // Page Up
         0x4000_004D => Some("End".into()),
-        0x4000_004E => Some("Next".into()),  // Page Down
+        0x4000_004E => Some("Next".into()), // Page Down
 
         // Arrow keys
         0x4000_004F => Some("Right".into()),
@@ -222,7 +232,10 @@ mod tests {
         assert_eq!(sdl_keycode_to_xdotool(0x4000_003A), Some("F1".into()));
         // Modifiers
         assert_eq!(sdl_keycode_to_xdotool(0x4000_00E1), Some("Shift_L".into()));
-        assert_eq!(sdl_keycode_to_xdotool(0x4000_00E0), Some("Control_L".into()));
+        assert_eq!(
+            sdl_keycode_to_xdotool(0x4000_00E0),
+            Some("Control_L".into())
+        );
     }
 
     #[test]

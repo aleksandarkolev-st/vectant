@@ -21,7 +21,6 @@
 // 4. FORBIDDEN: Size-based DWARF search (removed)
 // ============================================================
 
-
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 

@@ -1647,7 +1647,10 @@ pub async fn handle_react_native_emulator_job(
         )
         .await;
 
-        let pipeline = match video_pipeline::EmulatorVideoPipeline::start(cfg.clone(), video_fanout.clone()) {
+        let pipeline = match video_pipeline::EmulatorVideoPipeline::start(
+            cfg.clone(),
+            video_fanout.clone(),
+        ) {
             Ok(p) => Arc::new(p),
             Err(e) => {
                 // If capturing a specific window fails (common under Xvfb / WMs), retry root capture.
@@ -1675,7 +1678,10 @@ pub async fn handle_react_native_emulator_job(
                     )
                     .await;
 
-                    match video_pipeline::EmulatorVideoPipeline::start(cfg.clone(), video_fanout.clone()) {
+                    match video_pipeline::EmulatorVideoPipeline::start(
+                        cfg.clone(),
+                        video_fanout.clone(),
+                    ) {
                         Ok(p) => Arc::new(p),
                         Err(e2) => {
                             emulator_input::unregister_session_sync(&session_id);

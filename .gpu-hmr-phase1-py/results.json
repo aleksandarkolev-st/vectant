@@ -1,0 +1,14 @@
+{"pass":12,"fail":0,"warn":0,"skip":0,"results":[
+  {"id":"P1py.1","status":"pass","detail":"verifier_gpu pytests"},
+  {"id":"P1py.2","status":"pass","detail":"kernel_splitter pytests"},
+  {"id":"P1py.3","status":"pass","detail":"{{USER_CODE_BLOCK}} placeholder present"},
+  {"id":"P1py.4","status":"pass","detail":"all 5 filename markers found (shared.h/core.cpp/gui.cpp/host_runner.cpp/device.cu)"},
+  {"id":"P1py.5","status":"pass","detail":"no-shim contract clause present"},
+  {"id":"P1py.6","status":"pass","detail":"all shim-name matrix entries rejected (suffixes+prefixes+fuzzy)"},
+  {"id":"P1py.7","status":"pass","detail":"new .cu file rejected by rule no_file_creation/no_extra_device_tu"},
+  {"id":"P1py.8","status":"pass","detail":"signature change on tier=runtime without host update rejected"},
+  {"id":"P1py.9","status":"pass","detail":"clean in-place patch accepted"},
+  {"id":"P1py.10","status":"pass","detail":"splitter parsed synthetic response (5 files + manifest + arch)"},
+  {"id":"P1py.11","status":"pass","detail":"splitter rejects malformed JSON via KernelSplitterError"},
+  {"id":"P1py.12","status":"pass","detail":"splitter returned exactly 5 file entries"}
+]}

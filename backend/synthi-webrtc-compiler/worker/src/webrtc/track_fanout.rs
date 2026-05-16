@@ -163,7 +163,9 @@ impl TrackFanout {
         // subscribers. That's not a real error — just means nobody's
         // listening yet. We silently drop.
         let _ = self.tx.send(Arc::new(packet));
-        self.stats.packets_dispatched.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .packets_dispatched
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Register a track for fan-out. Spawns a tokio task that consumes from
@@ -178,14 +180,12 @@ impl TrackFanout {
         let task = tokio::spawn(async move {
             loop {
                 match rx.recv().await {
-                    Ok(packet) => {
-                        match track.write_rtp(&packet).await {
-                            Ok(_) => {}
-                            Err(_) => {
-                                stats.packets_dropped_error.fetch_add(1, Ordering::Relaxed);
-                            }
+                    Ok(packet) => match track.write_rtp(&packet).await {
+                        Ok(_) => {}
+                        Err(_) => {
+                            stats.packets_dropped_error.fetch_add(1, Ordering::Relaxed);
                         }
-                    }
+                    },
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         stats.packets_dropped_lag.fetch_add(n, Ordering::Relaxed);
                     }

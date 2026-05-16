@@ -82,6 +82,8 @@ pub struct CapabilityReport {
     pub can_shim: bool, // Whether we can auto-generate a shim to make it HMR-capable
     pub has_host_kv: bool, // Whether module supports Host KV API
     pub uses_host_context: bool, // Whether module uses *_on_load_host
+    pub has_gpu_contract: bool, // Whether module exposes the GPU HotApi addendum
+    pub has_gpu_state_serialization: bool, // Whether managed device state can be saved/restored
 }
 
 /// Set of detected exports in a library
@@ -128,6 +130,13 @@ pub struct ExportSet {
     pub on_load_host: bool,
     pub host_kv_schemas_len: bool,
     pub host_kv_schemas: bool,
+
+    // GPU HotApi addendum exports
+    pub device_descriptor: bool,
+    pub device_on_load: bool,
+    pub device_save_size: bool,
+    pub device_save_write: bool,
+    pub device_kernel_sig_hash: bool,
 
     // Blocking app indicators
     pub main: bool, // Has `main` symbol (C/C++ entry point)
@@ -184,6 +193,16 @@ impl ExportSet {
             || (self.gui_host_kv_schemas_len && self.gui_host_kv_schemas)
             || (self.host_kv_schemas_len && self.host_kv_schemas)
     }
+
+    /// Check if this module exposes the host-side GPU runtime contract.
+    pub fn has_gpu_contract(&self) -> bool {
+        self.device_descriptor && self.device_on_load && self.device_kernel_sig_hash
+    }
+
+    /// Check if this module can serialize Synthi-managed GPU state.
+    pub fn has_gpu_state_serialization(&self) -> bool {
+        self.device_save_size && self.device_save_write
+    }
 }
 
 /// Inspect a compiled library and detect its capabilities
@@ -214,6 +233,8 @@ pub fn detect_capabilities(lib_path: &Path) -> Result<CapabilityReport, String> 
     let can_shim = can_generate_shim(&exports);
     let has_host_kv = exports.has_host_kv();
     let uses_host_context = exports.uses_host_context();
+    let has_gpu_contract = exports.has_gpu_contract();
+    let has_gpu_state_serialization = exports.has_gpu_state_serialization();
 
     Ok(CapabilityReport {
         module_type,
@@ -224,6 +245,8 @@ pub fn detect_capabilities(lib_path: &Path) -> Result<CapabilityReport, String> 
         can_shim,
         has_host_kv,
         uses_host_context,
+        has_gpu_contract,
+        has_gpu_state_serialization,
     })
 }
 
@@ -247,6 +270,11 @@ fn probe_exports(lib: &Library) -> ExportSet {
     type GuiLoadFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void;
     type SchemaLenFn = unsafe extern "C" fn() -> u32;
     type SchemasFn = unsafe extern "C" fn() -> *const c_void;
+    type DeviceDescriptorFn = unsafe extern "C" fn() -> *const c_void;
+    type DeviceOnLoadFn = unsafe extern "C" fn(*const u8, usize);
+    type DeviceSaveSizeFn = unsafe extern "C" fn() -> usize;
+    type DeviceSaveWriteFn = unsafe extern "C" fn(*mut u8, usize);
+    type DeviceKernelSigHashFn = unsafe extern "C" fn(*const i8) -> u64;
 
     unsafe {
         // Core module exports
@@ -306,6 +334,21 @@ fn probe_exports(lib: &Library) -> ExportSet {
             .get::<Symbol<SchemaLenFn>>(b"host_kv_schemas_len")
             .is_ok();
         exports.host_kv_schemas = lib.get::<Symbol<SchemasFn>>(b"host_kv_schemas").is_ok();
+
+        // GPU HotApi addendum exports
+        exports.device_descriptor = lib
+            .get::<Symbol<DeviceDescriptorFn>>(b"device_descriptor")
+            .is_ok();
+        exports.device_on_load = lib.get::<Symbol<DeviceOnLoadFn>>(b"device_on_load").is_ok();
+        exports.device_save_size = lib
+            .get::<Symbol<DeviceSaveSizeFn>>(b"device_save_size")
+            .is_ok();
+        exports.device_save_write = lib
+            .get::<Symbol<DeviceSaveWriteFn>>(b"device_save_write")
+            .is_ok();
+        exports.device_kernel_sig_hash = lib
+            .get::<Symbol<DeviceKernelSigHashFn>>(b"device_kernel_sig_hash")
+            .is_ok();
 
         // Blocking app indicator
         exports.main = lib.get::<Symbol<VoidFn>>(b"main").is_ok();
@@ -496,6 +539,9 @@ pub struct HotApiInfo {
     pub has_migrate: bool,
     pub has_msgpack_serialization: bool,
     pub has_json_serialization: bool,
+    pub has_gpu_fields: bool,
+    pub has_gpu_contract: bool,
+    pub has_gpu_state_serialization: bool,
 }
 
 /// Validate a new-style hot module that exports hot_get_api
@@ -617,6 +663,9 @@ pub fn validate_hot_api(lib: &Library) -> HotApiValidation {
             && api.save_state_msgpack_write.is_some(),
         has_json_serialization: api.save_state_json_size.is_some()
             && api.save_state_json_write.is_some(),
+        has_gpu_fields: api.has_gpu_fields(),
+        has_gpu_contract: api.has_gpu_contract(),
+        has_gpu_state_serialization: api.has_gpu_state_serialization(),
     });
 
     // Add warnings for missing optional but recommended features
@@ -713,6 +762,8 @@ pub fn detect_capabilities_v2(
             can_shim: false,
             has_host_kv,
             uses_host_context,
+            has_gpu_contract: api_info.has_gpu_contract,
+            has_gpu_state_serialization: api_info.has_gpu_state_serialization,
         };
 
         return Ok((report, Some(hot_validation)));
@@ -726,6 +777,8 @@ pub fn detect_capabilities_v2(
     let can_shim = can_generate_shim(&exports);
     let has_host_kv = exports.has_host_kv();
     let uses_host_context = exports.uses_host_context();
+    let has_gpu_contract = exports.has_gpu_contract();
+    let has_gpu_state_serialization = exports.has_gpu_state_serialization();
 
     let report = CapabilityReport {
         module_type,
@@ -736,6 +789,8 @@ pub fn detect_capabilities_v2(
         can_shim,
         has_host_kv,
         uses_host_context,
+        has_gpu_contract,
+        has_gpu_state_serialization,
     };
 
     Ok((report, Some(hot_validation)))
@@ -956,6 +1011,23 @@ mod tests {
         exports.on_update = false;
         exports.main = true;
         assert!(exports.is_blocking());
+    }
+
+    #[test]
+    fn test_gpu_contract_classification() {
+        let mut exports = ExportSet::default();
+        assert!(!exports.has_gpu_contract());
+        assert!(!exports.has_gpu_state_serialization());
+
+        exports.device_descriptor = true;
+        exports.device_on_load = true;
+        exports.device_kernel_sig_hash = true;
+        assert!(exports.has_gpu_contract());
+        assert!(!exports.has_gpu_state_serialization());
+
+        exports.device_save_size = true;
+        exports.device_save_write = true;
+        assert!(exports.has_gpu_state_serialization());
     }
 
     #[test]

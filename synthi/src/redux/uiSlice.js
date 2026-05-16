@@ -13,6 +13,7 @@ export const initialUiState = {
     treeOnRight: false,
     autoSaveEnabled: true,
     autoCompletionEnabled: true,
+    gpuModeEnabled: true,
     // ULTRAPLAN Phase 8: Bring Your Own Runner mode. When true, the
     // next AI split preserves any existing host_runner.cpp on disk
     // that starts with the `// SYNTHI_USER_RUNNER` sentinel instead
@@ -53,6 +54,12 @@ const uiSlice = createSlice({
         },
         toggleAutoCompletion: (state) => {
             state.autoCompletionEnabled = !state.autoCompletionEnabled;
+        },
+        setGpuModeEnabled: (state, action) => {
+            state.gpuModeEnabled = !!action.payload;
+        },
+        toggleGpuMode: (state) => {
+            state.gpuModeEnabled = !state.gpuModeEnabled;
         },
         // ULTRAPLAN Phase 8
         toggleBringYourOwnRunner: (state) => {
@@ -117,6 +124,8 @@ export const {
     setTreeOrientation,
     toggleAutoSave,
     toggleAutoCompletion,
+    setGpuModeEnabled,
+    toggleGpuMode,
     toggleBringYourOwnRunner,
     startCreate,
     startRename,
@@ -136,6 +145,7 @@ export const selectShowEmulatorPreview = (state) => state.ui.showEmulatorPreview
 export const selectTreeOnRight = (state) => state.ui.treeOnRight;
 export const selectAutoSaveEnabled = (state) => state.ui.autoSaveEnabled;
 export const selectAutoCompletionEnabled = (state) => state.ui.autoCompletionEnabled;
+export const selectGpuModeEnabled = (state) => state.ui.gpuModeEnabled !== false;
 export const selectBringYourOwnRunnerEnabled = (state) => state.ui.bringYourOwnRunnerEnabled;
 export const selectUiActionState = (state) => state.ui.uiActionState;
 export const selectExpandedFolders = (state) => state.ui.expandedFolders || [];

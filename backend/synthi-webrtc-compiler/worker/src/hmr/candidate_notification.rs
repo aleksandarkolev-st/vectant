@@ -24,16 +24,10 @@ pub enum CandidateNotification {
     },
 
     /// Candidate started loading.
-    Loading {
-        preview_id: String,
-        generation: u64,
-    },
+    Loading { preview_id: String, generation: u64 },
 
     /// Candidate health check started.
-    HealthCheckStarted {
-        preview_id: String,
-        generation: u64,
-    },
+    HealthCheckStarted { preview_id: String, generation: u64 },
 
     /// Health check completed.
     HealthCheckCompleted {

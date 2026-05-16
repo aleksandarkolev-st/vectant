@@ -60,18 +60,15 @@ pub fn find_immediates(
         return Ok(Vec::new());
     }
 
-    let data = std::fs::read(so_path)
-        .with_context(|| format!("read {}", so_path.display()))?;
-    let obj = object::File::parse(&*data)
-        .with_context(|| format!("parse ELF {}", so_path.display()))?;
+    let data = std::fs::read(so_path).with_context(|| format!("read {}", so_path.display()))?;
+    let obj =
+        object::File::parse(&*data).with_context(|| format!("parse ELF {}", so_path.display()))?;
 
     let text_section = obj
         .section_by_name(".text")
         .context(".text section not found")?;
     let text_va = text_section.address();
-    let text_file_offset = text_section.file_range()
-        .map(|(off, _)| off)
-        .unwrap_or(0);
+    let text_file_offset = text_section.file_range().map(|(off, _)| off).unwrap_or(0);
     let text_data = text_section.data()?;
 
     let mut results = Vec::new();
@@ -85,15 +82,13 @@ pub fn find_immediates(
         // Decode up to 15 bytes (max x86-64 instruction length)
         let decode_len = remaining.len().min(15);
 
-        let mut decoder = Decoder::with_ip(
-            64,
-            &remaining[..decode_len],
-            addr,
-            DecoderOptions::NONE,
-        );
+        let mut decoder =
+            Decoder::with_ip(64, &remaining[..decode_len], addr, DecoderOptions::NONE);
 
         if let Some(instr) = decoder.iter().next() {
-            if let Some(loc) = extract_immediate(&instr, addr, text_va, text_file_offset, expected_old_value) {
+            if let Some(loc) =
+                extract_immediate(&instr, addr, text_va, text_file_offset, expected_old_value)
+            {
                 results.push(loc);
             }
         }
@@ -105,13 +100,9 @@ pub fn find_immediates(
 /// Patch an integer immediate in a .so file. Reads the file, replaces
 /// the bytes at `location.file_offset` with the new value (little-endian),
 /// writes atomically via temp+rename.
-pub fn patch_immediate(
-    so_path: &Path,
-    location: &ImmediateLocation,
-    new_value: i64,
-) -> Result<()> {
-    let mut bytes = std::fs::read(so_path)
-        .with_context(|| format!("read {}", so_path.display()))?;
+pub fn patch_immediate(so_path: &Path, location: &ImmediateLocation, new_value: i64) -> Result<()> {
+    let mut bytes =
+        std::fs::read(so_path).with_context(|| format!("read {}", so_path.display()))?;
 
     let off = location.file_offset as usize;
     let size = location.size as usize;
@@ -119,7 +110,9 @@ pub fn patch_immediate(
     if off + size > bytes.len() {
         anyhow::bail!(
             "file offset {}+{} exceeds file size {}",
-            off, size, bytes.len()
+            off,
+            size,
+            bytes.len()
         );
     }
 
@@ -128,7 +121,9 @@ pub fn patch_immediate(
     if current != location.current_value {
         anyhow::bail!(
             "immediate at offset {} changed since lookup (expected {}, found {})",
-            off, location.current_value, current
+            off,
+            location.current_value,
+            current
         );
     }
 
@@ -186,7 +181,10 @@ fn extract_immediate(
 
         let disasm = format!(
             "instr@{:#x} len={} imm{}={}",
-            instr_va, instr.len(), size * 8, value
+            instr_va,
+            instr.len(),
+            size * 8,
+            value
         );
 
         return Some(ImmediateLocation {
@@ -208,8 +206,7 @@ fn read_le_signed(bytes: &[u8], size: usize) -> i64 {
         2 => i16::from_le_bytes([bytes[0], bytes[1]]) as i64,
         4 => i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as i64,
         8 => i64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3],
-            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]),
         _ => 0,
     }

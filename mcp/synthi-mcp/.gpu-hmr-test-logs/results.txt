@@ -1,0 +1,25 @@
+PASS   [preflight] frontend reachable  — http://localhost:3000
+PASS   [preflight] collab-server reachable  — http://localhost:1234
+PASS   [preflight] signaling reachable  — ws://localhost:9000
+PASS   [preflight] ai-engine reachable  — http://localhost:8000
+PASS   [preflight] GPU endpoints present  — {"/refactor/split/gpu":422,"/refactor/diff_patch/gpu":422,"/refactor/heal/gpu":200}
+SKIP   [preflight] nvcc on host  — not found
+SKIP   [preflight] hipcc on host  — not found
+SKIP   [preflight] nvcc in worker  — not found
+PASS   [preflight] hipcc in worker  — /opt/rocm/bin/hipcc
+PASS   [preflight] SYNTHI_GPU_HMR flag  — enabled
+PASS   [preflight] MCP tools/list  — transport=docker count=42
+PASS   [seed] create workspace  — id=cmp89573d0002ma01g5cl7au6 slug=gpu-flow-live-1778930230
+PASS   [seed] fixture uses Synthi GPU runtime contract  — synthi_gpu_launch + lifecycle exports
+PASS   [seed] write-files-batch (5 src + manifest)  — 6 files
+PASS   [seed] stage + commit
+PASS   [seed] device.hip present in collab  — 1141 bytes
+PASS   [vendor:rocm] GPU toolchain gate  — worker:/opt/rocm/bin/hipcc
+PASS   [preflight] MCP synthi_attach  — attached; no frame yet
+PASS   [FLOW] inward compile dispatch
+PASS   [FLOW] inward GPU launch observed  — synthi_gpu_launch kernel=particle_flow
+PASS   [FLOW] flow-inward screenshot  — C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-flow-live-1778930230-flow-inward.png
+PASS   [FLOW] outward edit dispatch
+PASS   [FLOW] outward device edit hot-swapped  — [gpu-reload] plan=device_only
+PASS   [FLOW] render loop reports outward flow  — [gpu-flow-demo] frame=3180 avg_radius=169.90 trend=outward
+PASS   [FLOW] flow-outward screenshot  — C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-flow-live-1778930230-flow-outward.png

@@ -51,9 +51,7 @@
 // WindowBackend trait. Inline + integration tests exercise the
 // public surface.
 
-use crate::runtime::window_backend::{
-    BackendEvent, WindowBackend, WindowFlags, WindowHandle,
-};
+use crate::runtime::window_backend::{BackendEvent, WindowBackend, WindowFlags, WindowHandle};
 use anyhow::{anyhow, Result};
 use libloading::{Library, Symbol};
 use std::ffi::{c_char, c_uint, c_void, CString};
@@ -216,8 +214,16 @@ impl SFMLBackend {
             };
         }
         resolve_required!(sf_create, b"sfRenderWindow_create\0", SfRenderWindowCreate);
-        resolve_required!(sf_destroy, b"sfRenderWindow_destroy\0", SfRenderWindowDestroy);
-        resolve_required!(sf_display, b"sfRenderWindow_display\0", SfRenderWindowDisplay);
+        resolve_required!(
+            sf_destroy,
+            b"sfRenderWindow_destroy\0",
+            SfRenderWindowDestroy
+        );
+        resolve_required!(
+            sf_display,
+            b"sfRenderWindow_display\0",
+            SfRenderWindowDisplay
+        );
         resolve_required!(
             sf_poll_event,
             b"sfRenderWindow_pollEvent\0",

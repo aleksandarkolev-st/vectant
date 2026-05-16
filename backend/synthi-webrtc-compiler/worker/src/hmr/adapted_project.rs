@@ -6,7 +6,6 @@
 // can skip AI entirely on subsequent compiles.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -173,15 +172,9 @@ pub fn detect_adapted_project(workspace_dir: &Path) -> AdaptedProjectStatus {
             ),
             None => AdaptedProjectStatus::adapted(core, gui, shared_path),
         },
-        (Some(_), None) => {
-            AdaptedProjectStatus::not_adapted("core module found but no gui module")
-        }
-        (None, Some(_)) => {
-            AdaptedProjectStatus::not_adapted("gui module found but no core module")
-        }
-        (None, None) => {
-            AdaptedProjectStatus::not_adapted("no core/gui split files found")
-        }
+        (Some(_), None) => AdaptedProjectStatus::not_adapted("core module found but no gui module"),
+        (None, Some(_)) => AdaptedProjectStatus::not_adapted("gui module found but no core module"),
+        (None, None) => AdaptedProjectStatus::not_adapted("no core/gui split files found"),
     }
 }
 

@@ -53,13 +53,23 @@ async fn send_raw(stream: &mut UnixStream, payload: &[u8]) -> Result<()> {
 
 async fn recv_raw(stream: &mut UnixStream) -> Result<Vec<u8>> {
     let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await.context("read length prefix")?;
+    stream
+        .read_exact(&mut len_buf)
+        .await
+        .context("read length prefix")?;
     let len = u32::from_le_bytes(len_buf);
     if len > MAX_MESSAGE_SIZE {
-        anyhow::bail!("message too large: {} bytes (max {})", len, MAX_MESSAGE_SIZE);
+        anyhow::bail!(
+            "message too large: {} bytes (max {})",
+            len,
+            MAX_MESSAGE_SIZE
+        );
     }
     let mut payload = vec![0u8; len as usize];
-    stream.read_exact(&mut payload).await.context("read payload")?;
+    stream
+        .read_exact(&mut payload)
+        .await
+        .context("read payload")?;
     Ok(payload)
 }
 
@@ -70,8 +80,8 @@ pub fn socket_path(session_id: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::hmr_protocol::*;
+    use super::*;
     use tokio::net::UnixListener;
 
     #[tokio::test]

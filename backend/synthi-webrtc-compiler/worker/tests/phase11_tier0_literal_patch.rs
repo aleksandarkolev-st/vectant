@@ -5,11 +5,11 @@
 // Tests the value-only literal extraction + file patching surface
 // from tier0_literal_patch.rs.
 
-use worker::hmr::tier0_literal_patch::{
-    extract_string_swaps, patch_so_file, candidate_so_paths, try_tier0_bypass,
-    LiteralKind, LiteralSwap, Tier0Outcome,
-};
 use worker::hmr::edit_classifier::classify_edit;
+use worker::hmr::tier0_literal_patch::{
+    candidate_so_paths, extract_string_swaps, patch_so_file, try_tier0_bypass, LiteralKind,
+    LiteralSwap, Tier0Outcome,
+};
 
 // ── extract_string_swaps ──
 
@@ -217,8 +217,14 @@ fn bypass_patches_both_sos_when_literal_in_both() {
     let result = try_tier0_bypass(dir.path(), &swaps);
     assert!(result.is_some());
     assert_eq!(result.unwrap().len(), 2);
-    assert!(std::fs::read(&core).unwrap().windows(10).any(|w| w == b"PATCHED_OK"));
-    assert!(std::fs::read(&gui).unwrap().windows(10).any(|w| w == b"PATCHED_OK"));
+    assert!(std::fs::read(&core)
+        .unwrap()
+        .windows(10)
+        .any(|w| w == b"PATCHED_OK"));
+    assert!(std::fs::read(&gui)
+        .unwrap()
+        .windows(10)
+        .any(|w| w == b"PATCHED_OK"));
 }
 
 // ── End-to-end pipeline tests ──
