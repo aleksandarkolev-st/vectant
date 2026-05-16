@@ -6,126 +6,269 @@ Date: 2026-05-16
 
 - Repo: `C:\Users\polek\Downloads\test-agent\vectant-ade`
 - Branch: `dev-raf`
+- Host GPU: AMD Radeon RX 9070 XT
+- ROCm arch used by the harness: `gfx1201`
 - Compose project: `vectant-ade`
-- GPU host: AMD Radeon RX 9070 XT, visible to Docker Desktop/WSL through `/dev/dxg`
-- ROCm target arch: `gfx1201`
+- Current validated user demo workspace:
+  - URL: `http://localhost:3000/workspace/gpu-flow-clean-session`
+  - Slug: `gpu-flow-clean-session`
+  - Browser settings: `GUI` on, `GPU` on, `HMR` on
+  - Active file for the visible flip: `device.hip`
 
-## Latest Local Commits
+## Latest Commits To Know
 
+- `3a27bf02 test(gpu-hmr): validate flow demo live`
+- `859bf4be test(gpu-hmr): add particle flow validation`
+- `76711305 docs(gpu-hmr): record abi classifier validation`
 - `f62623ec fix(gpu-hmr): classify kernel abi changes`
-- `05c7257c docs(gpu-hmr): record compose build closeout`
-- `d3ea6464 docs(gpu-hmr): update rx 9070 xt handoff`
-- `7555e8f8 test(gpu-hmr): stabilize rocm p2 log assertions`
-- `63158fd4 test(gpu-hmr): accept manifest module aliases`
-- `c975d802 test(gpu-hmr): accept rocm sidecar reload marker`
-- `947e8146 build(worker): add rocm lld libxml compat`
-- `8918a2c4 test(gpu-hmr): normalize rocm device source`
-- `f272f953 fix(gpu-hmr): carry manifest through mcp compile`
-- `1ed9ce20 docs(gpu-hmr): record rocm wsl visibility`
-- `83ecca30 build(worker): add rocm wsl gpu runtime`
-- `52963c37 docs(gpu-hmr): record worker feature build`
-- `5d312218 build(worker): enable gpu hmr feature in compose`
-- `00ff4f9c test(gpu-hmr): auto-detect compose containers`
 
-## What Changed In This Pass
-
-- Worker compose/Docker path supports the Docker Desktop WSL ROCm shape:
-  - `/dev/dxg` is passed to the worker.
-  - `/usr/lib/wsl/lib/libdxcore.so` is mounted.
-  - `HSA_ENABLE_DXG_DETECTION=1` is set.
-  - Worker image includes ROCm HIP SDK, `hipcc`, `rocminfo`, ROCDXG, and the ROCm `lld`/`libxml2` compatibility fix.
-- `mcp/synthi-mcp/scripts/gpu-hmr-test.mjs` now:
-  - Uses current fixture lifecycle ABI signatures expected by the runner.
-  - Logs and parses fixture buffer pointers plus runner `state_preserved: true`.
-  - Uses timestamped worker-log checkpoints.
-  - Reads full Docker `logs --since` windows for checkpoint searches, avoiding stdout/stderr ordering and tail aging problems.
-  - Caps the post-compile `synthi_wait_hmr` terminal-event wait for GPU runs.
-  - Requires the live ABI-shaped device edit to emit `plan=abi_breaking`, `cold_reload reason=abi_breaking`, or `device_on_load invoked`.
-- Worker GPU ABI classification now carries per-kernel parameter-list signatures into the device `BuildManifest.abi_version`.
-  - Device body-only edits keep the ABI fingerprint stable and continue using fast GPU sidecar swap.
-  - Kernel parameter-list edits change the ABI fingerprint and the GPU module adapter emits `plan=abi_breaking` before the fast-swap path.
-  - The adapter records the last accepted device ABI fingerprint so subsequent device reloads can compare manifests without using the host `prev_manifest`.
-
-## Verified On This Machine
-
-Build:
+Run this after a clean-session resume:
 
 ```powershell
-cd mcp/synthi-mcp
-npm run build
+cd C:\Users\polek\Downloads\test-agent\vectant-ade
+git status --short
+git log --oneline -8
 ```
 
-Result: passed.
+## What Was Built This Session
 
-Targeted Rust verification inside the worker builder image:
+GPU HMR now has two useful validation surfaces:
 
-```powershell
-docker build --target builder --build-arg WORKER_CARGO_FEATURES=gpu-hmr -t synthi-worker-builder-gpu-hmr-test .
-docker run --rm synthi-worker-builder-gpu-hmr-test cargo test --release --features gpu-hmr device_kernel_ -- --nocapture
-docker run --rm synthi-worker-builder-gpu-hmr-test cargo test --release --features gpu-hmr phase3_reload_reports_abi_breaking_when_kernel_signature_changes -- --nocapture
-```
+1. The original deterministic vector fixture:
+   - Phases: `P0,P1,P2`
+   - Validates device compiler dispatch, sidecar reload, snapshot/reuse telemetry, fast device-only swap, and ABI-breaking kernel-signature classification.
 
-Result: build passed; `device_kernel_` ran 4 tests; ABI-breaking adapter test passed and printed `plan=abi_breaking`.
+2. A new user-visible particle-flow fixture:
+   - Phase: `FLOW`
+   - Seeds an SDL2 GUI workspace with GPU-driven particles.
+   - Baseline `device.hip` moves particles inward.
+   - A device-only edit flips `FLOW_DIRECTION` to move particles outward.
+   - Validates the live path through MCP: compile, wait HMR, screenshot, device-only GPU sidecar hot swap, render-loop outward telemetry, second screenshot.
 
-Focused ROCm P0/P1/P2 harness:
-
-```powershell
-cd mcp/synthi-mcp
-$env:SYNTHI_GPU_HMR='1'
-$env:SYNTHI_GPU_VENDOR='rocm'
-$env:SYNTHI_GPU_ARCH='gfx1201'
-$env:ONLY_PHASES='P0,P1,P2'
-node scripts/gpu-hmr-test.mjs
-```
-
-Latest result:
+The latest `FLOW` live run created `gpu-flow-clean-session` and passed:
 
 ```text
-Checked 36: 30 PASS, 0 WARN, 0 FAIL, 6 SKIP
-Phases: P0 pass, P1 pass, P2 pass
+Checked 25: 22 PASS, 0 WARN, 0 FAIL, 3 SKIP
+Phases: FLOW pass
+[FLOW] inward GPU launch observed - synthi_gpu_launch kernel=particle_flow
+[FLOW] outward device edit hot-swapped - [gpu-reload] plan=device_only
+[FLOW] render loop reports outward flow - [gpu-flow-demo] ... trend=outward
 ```
 
-Result artifacts:
+## Important Files
+
+- `mcp/synthi-mcp/scripts/gpu-hmr-test.mjs`
+  - Main GPU HMR harness.
+  - Contains the vector fixture and the new `FLOW` particle fixture.
+  - Search anchors:
+    - `SYNTHI_GPU_HMR_FIXTURE`
+    - `FLOW_SHARED_H`
+    - `FLOW_DEVICE_INWARD`
+    - `FLOW_DEVICE_OUTWARD`
+    - `phaseFlow`
+    - `captureMcpScreenshot`
+
+- `backend/synthi-webrtc-compiler/worker/src/compiler/handler.rs`
+  - Device kernel signature extraction.
+  - Device manifest ABI stamping.
+
+- `backend/synthi-webrtc-compiler/worker/src/hmr/gpu_module_adapter.rs`
+  - GPU sidecar reload planner.
+  - Tracks last accepted device ABI fingerprint.
+  - Emits `plan=device_only` and `plan=abi_breaking`.
 
 - `mcp/synthi-mcp/.gpu-hmr-test-logs/results.txt`
 - `mcp/synthi-mcp/.gpu-hmr-test-logs/results.json`
+  - Latest committed harness result.
 
-Key verified markers include:
+- `mcp/synthi-mcp/.gpu-hmr-test-artifacts/`
+  - Runtime screenshots from `FLOW`.
+  - Ignored by git on purpose.
+
+## Start The Stack
+
+From repo root:
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade
+
+docker-compose up -d --force-recreate redis postgres y-sweet collab-server signaling-server ai-engine ai-gateway frontend worker coturn mcp
+docker compose ps
+```
+
+The user-provided service list is intentional. Keep the stack up while testing live UI/MCP. Only run `docker compose down` when the user is done.
+
+## Build Containers
+
+Full compose build:
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade
+docker compose build
+```
+
+Worker builder image for targeted Rust tests:
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade\backend\synthi-webrtc-compiler\worker
+
+docker build --target builder --build-arg WORKER_CARGO_FEATURES=gpu-hmr -t synthi-worker-builder-gpu-hmr-test .
+```
+
+## Build MCP
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp
+npm run build
+```
+
+## Run The User-Visible Flow Demo
+
+Use this to create or revalidate a particle-flow workspace. If `SLUG` already exists and workspace creation fails, choose a new slug.
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp
+
+$env:SYNTHI_GPU_HMR='1'
+$env:SYNTHI_GPU_VENDOR='rocm'
+$env:SYNTHI_GPU_ARCH='gfx1201'
+$env:SYNTHI_GPU_HMR_FIXTURE='flow'
+$env:ONLY_PHASES='FLOW'
+$env:SLUG='gpu-flow-clean-session'
+
+node scripts/gpu-hmr-test.mjs
+```
+
+Expected result:
 
 ```text
-[preflight] hipcc in worker - /opt/rocm/bin/hipcc
-[vendor:rocm] GPU toolchain gate - worker:/opt/rocm/bin/hipcc
+FLOW pass
+0 WARN
+0 FAIL
+```
+
+Open in browser:
+
+```text
+http://localhost:3000/workspace/gpu-flow-clean-session
+```
+
+Manual UI settings:
+
+- `GUI`: on
+- `GPU`: on
+- `HMR`: on
+- Open `device.hip`
+
+Manual visible flip:
+
+```cpp
+#define FLOW_DIRECTION 1.0f
+```
+
+Run/save: particles flow inward.
+
+```cpp
+#define FLOW_DIRECTION -1.0f
+```
+
+Save with HMR on: particles hot-swap outward.
+
+Watch logs:
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade
+docker compose logs -f worker
+```
+
+Expected good markers:
+
+```text
+[HMR] FallbackDeterministic -> split file edit (device.hip)
+[compile-device] hipcc
+[gpu-reload] plan=device_only
+[gpu-flow-demo] ... trend=outward
+```
+
+Bad marker to investigate:
+
+```text
+[HMR] AI bypass: Proceed -> calling perform_ai_split
+```
+
+That means the worker did not detect the workspace as already adapted, or the user is not in the seeded workspace.
+
+## Run The Vector GPU HMR Validation
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp
+
+$env:SYNTHI_GPU_HMR='1'
+$env:SYNTHI_GPU_VENDOR='rocm'
+$env:SYNTHI_GPU_ARCH='gfx1201'
+$env:SYNTHI_GPU_HMR_FIXTURE='vector'
+$env:ONLY_PHASES='P0,P1,P2'
+
+node scripts/gpu-hmr-test.mjs
+```
+
+Expected key markers:
+
+```text
 [P0] worker invokes device compiler - compile-device] hipcc
 [P0] gpu adapter loaded cubin/hsaco - Device sidecar reload vendor=rocm ... result=Success
 [P1] reload plan emitted - [gpu-reload] plan=mixed
-[P1] snapshot latency within 500ms - snapshot_ms=100 bytes=0.0MiB
-[P1] 2nd-edit snapshot within tight budget (250ms) - snapshot_ms=100
-[P2] fast swap within budget (300ms) - reload_ms=3
+[P2] fast swap within budget (300ms)
 [P2] ABI edit emits abi_breaking cold reload - plan=abi_breaking
 ```
 
-Worker ROCm visibility previously verified in the live worker:
+## Targeted Rust Tests
 
-```text
-/opt/rocm/bin/hipcc
-HIP version: 7.2.53211-e1a6bc5663
-rocminfo reports gfx1201 / AMD Radeon RX 9070 XT
-```
-
-## Current Caveat
-
-The P0/P1/P2 GPU HMR path is live for ROCm on this RX 9070 XT and the ABI-shaped edit now reaches the stricter `plan=abi_breaking` marker through MCP. Remaining work is P3 polish/healer/stream-hang coverage and richer ABI stamping for constant-memory layout drift.
-
-## Final Closeout Commands
-
-The user-requested repository-level Docker commands were run after the green harness commit:
+Run inside the builder image:
 
 ```powershell
-docker compose build
+docker run --rm synthi-worker-builder-gpu-hmr-test cargo test --release --features gpu-hmr device_kernel_ -- --nocapture
+
+docker run --rm synthi-worker-builder-gpu-hmr-test cargo test --release --features gpu-hmr phase3_reload_reports_abi_breaking_when_kernel_signature_changes -- --nocapture
+```
+
+Expected:
+
+- `device_kernel_`: 4 tests pass.
+- ABI-breaking adapter test prints `plan=abi_breaking`, `cold_reload reason=abi_breaking`, and `device_on_load invoked`.
+
+## Stop The Stack
+
+Only when finished:
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade
 docker compose down
 ```
 
-Result:
+## Commit Workflow
 
-- `docker compose build` passed for `frontend`, `ai-engine`, `ai-gateway`, `mcp`, `y-sweet`, `signaling-server`, `collab-server`, and `worker`.
-- `docker compose down` stopped and removed the compose services and default network.
+The user explicitly asked for frequent commits. Keep changes small and commit after each validated step.
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade
+
+git status --short
+git diff --stat
+git add <files>
+git commit -m "short(scope): precise description"
+git status --short
+git log --oneline -5
+```
+
+Do not commit ignored screenshot artifacts from `.gpu-hmr-test-artifacts/`. The latest result summaries in `.gpu-hmr-test-logs/` are tracked and may be committed when they document a validation run.
+
+## Clean-Session First Actions
+
+1. Read this file.
+2. Run `git status --short`.
+3. Run `docker compose ps`.
+4. If stack is down, start it with the command above.
+5. If asked to prove GPU HMR, run the `FLOW` command first because it validates the same path visually.
+6. If asked for low-level correctness, run `P0,P1,P2` and the targeted Rust tests.
+7. Commit any doc/result/code changes before handing back.
