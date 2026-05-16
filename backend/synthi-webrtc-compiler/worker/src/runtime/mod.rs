@@ -3,6 +3,10 @@ pub mod legacy_module_state;
 pub mod platform;
 
 pub mod capability;
+#[cfg(feature = "gpu-hmr")]
+pub mod gpu_runtime_boundary;
+#[cfg(feature = "gpu-hmr")]
+pub mod gpu_runtime_watchdog;
 pub mod loader;
 pub mod process_isolation;
 // pub mod runner_bin; // Removed to avoid circular dependency / duplicate verification

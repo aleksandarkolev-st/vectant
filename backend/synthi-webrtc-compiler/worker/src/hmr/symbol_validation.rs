@@ -9,11 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 /// Required symbols for each module type.
-pub const CORE_REQUIRED_SYMBOLS: &[&str] = &[
-    "hmr_get_state_json",
-    "hmr_set_state_json",
-    "on_update",
-];
+pub const CORE_REQUIRED_SYMBOLS: &[&str] =
+    &["hmr_get_state_json", "hmr_set_state_json", "on_update"];
 
 pub const GUI_REQUIRED_SYMBOLS: &[&str] = &[
     "hmr_get_state_json",
@@ -52,8 +49,11 @@ pub struct SymbolValidationResult {
 impl SymbolValidationResult {
     /// Whether the library supports state serialization.
     pub fn has_state_serialization(&self) -> bool {
-        self.found_required.contains(&"hmr_get_state_json".to_string())
-            && self.found_required.contains(&"hmr_set_state_json".to_string())
+        self.found_required
+            .contains(&"hmr_get_state_json".to_string())
+            && self
+                .found_required
+                .contains(&"hmr_set_state_json".to_string())
     }
 
     /// Whether the library has an on_load hook.
@@ -71,10 +71,7 @@ impl SymbolValidationResult {
 ///
 /// `exported` is the set of symbol names the library actually exports.
 /// `required` is the set of symbols it must have.
-pub fn validate_symbols(
-    exported: &[String],
-    required: &[&str],
-) -> SymbolValidationResult {
+pub fn validate_symbols(exported: &[String], required: &[&str]) -> SymbolValidationResult {
     let exported_set: HashSet<&str> = exported.iter().map(|s| s.as_str()).collect();
 
     let found_required: Vec<String> = required

@@ -82,10 +82,7 @@ impl BenchResult {
             Some(c) => format!("EXIT={}", c),
             None => "FAILED".to_string(),
         };
-        eprintln!(
-            "  [{:>6} ms] {:<30} ({})",
-            ms, self.name, status
-        );
+        eprintln!("  [{:>6} ms] {:<30} ({})", ms, self.name, status);
     }
 }
 
@@ -105,10 +102,7 @@ fn fresh_workspace(label: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "phase9f_{}_{}_{}",
-        label, pid, nanos
-    ));
+    let dir = std::env::temp_dir().join(format!("phase9f_{}_{}_{}", label, pid, nanos));
     std::fs::create_dir_all(&dir).expect("create workspace");
     std::fs::write(dir.join("bench.cpp"), MINIMAL_CPP).expect("write source");
     dir
@@ -162,11 +156,7 @@ async fn bench_split_command(workspace: &std::path::Path, so_out: &std::path::Pa
         "bench.cpp",
         &obj,
         "-std=c++17",
-        &vec![
-            "-fPIC".to_string(),
-            "-O0".to_string(),
-            "-g".to_string(),
-        ],
+        &vec!["-fPIC".to_string(), "-O0".to_string(), "-g".to_string()],
         workspace,
     );
     compile.kill_on_drop(true);
@@ -273,12 +263,8 @@ async fn compile_latency_harness() {
     eprintln!(
         "  - Scenario 1+2 (fused cold, fused repeat): rough baseline for pre-Phase-9 behavior"
     );
-    eprintln!(
-        "  - Scenario 3 (split cold): first split run; minor overhead from the split itself"
-    );
-    eprintln!(
-        "  - Scenario 4 (split warm): this is the Phase 9a+9b win — compile step should be"
-    );
+    eprintln!("  - Scenario 3 (split cold): first split run; minor overhead from the split itself");
+    eprintln!("  - Scenario 4 (split warm): this is the Phase 9a+9b win — compile step should be");
     eprintln!(
         "    a ccache hit (~5-15ms) + pure link (~20-50ms). Target: scenario 4 ≤ 25% of scenario 1."
     );

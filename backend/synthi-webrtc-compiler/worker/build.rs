@@ -3,8 +3,19 @@ use std::path::Path;
 use std::process::Command;
 
 fn main() {
-    if cfg!(target_os = "linux") {
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os == "linux" {
         println!("cargo:rustc-link-lib=X11");
+    }
+
+    if target_os == "linux" && env::var_os("CARGO_FEATURE_GPU_HMR").is_some() {
+        // GPU HMR host modules call the Synthi runtime-boundary C ABI
+        // (`synthi_gpu_launch_raw`, buffer registration, save/restore).
+        // The Rust worker/runner binaries provide those symbols, so they
+        // must be visible to dlopen(RTLD_NOW) when libcore.so/libgui.so are
+        // loaded.
+        println!("cargo:rustc-link-arg-bin=worker=-Wl,--export-dynamic");
+        println!("cargo:rustc-link-arg-bin=runner=-Wl,--export-dynamic");
     }
 
     println!("cargo:rerun-if-changed=proto");

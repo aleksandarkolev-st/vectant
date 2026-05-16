@@ -17,25 +17,21 @@ use crate::hmr::build_manifest::HealthcheckStrategy;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HealthCheckResult {
     /// Candidate is healthy and can replace the current module.
-    Healthy {
-        latency_ms: u64,
-    },
+    Healthy { latency_ms: u64 },
     /// Candidate is unhealthy — rollback to previous module.
-    Unhealthy {
-        reason: String,
-        latency_ms: u64,
-    },
+    Unhealthy { reason: String, latency_ms: u64 },
     /// Health check timed out.
-    Timeout {
-        timeout_ms: u64,
-    },
+    Timeout { timeout_ms: u64 },
     /// Health check skipped (e.g., no strategy configured).
     Skipped,
 }
 
 impl HealthCheckResult {
     pub fn is_healthy(&self) -> bool {
-        matches!(self, HealthCheckResult::Healthy { .. } | HealthCheckResult::Skipped)
+        matches!(
+            self,
+            HealthCheckResult::Healthy { .. } | HealthCheckResult::Skipped
+        )
     }
 
     pub fn is_failure(&self) -> bool {

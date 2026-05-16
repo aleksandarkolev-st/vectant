@@ -6,7 +6,6 @@
 // classloader strategy but for the .NET ecosystem.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Kind of .NET assembly change.

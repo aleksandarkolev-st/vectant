@@ -265,7 +265,9 @@ impl Adapter for DynLibAdapter {
 
     fn snapshot_state(&self) -> Result<Vec<u8>, String> {
         // In production: call hmr_get_state_json() through the loaded library
-        self.last_snapshot.clone().ok_or_else(|| "no state to snapshot".into())
+        self.last_snapshot
+            .clone()
+            .ok_or_else(|| "no state to snapshot".into())
     }
 
     fn restore_state(&mut self, data: &[u8]) -> Result<(), String> {
@@ -287,7 +289,15 @@ mod tests {
     use crate::hmr::build_manifest::{BuildManifest, BuildSlot};
 
     fn test_manifest(artifact: &str) -> BuildManifest {
-        BuildManifest::new("test", "cpp", "DynamicLibrary", 3, BuildSlot::Full, artifact, "abc123")
+        BuildManifest::new(
+            "test",
+            "cpp",
+            "DynamicLibrary",
+            3,
+            BuildSlot::Full,
+            artifact,
+            "abc123",
+        )
     }
 
     #[test]

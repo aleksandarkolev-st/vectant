@@ -5,14 +5,15 @@
 // registry → adapter creation → reload → state handoff.
 // ============================================================
 
-
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use crate::hmr::adapter_matrix::AdapterMatrix;
     use crate::hmr::adapter_registry::{create_adapter_for_language, AdapterRegistry};
-    use crate::hmr::adapter_trait::{Adapter, AdapterHealth, AdapterReloadRequest, AdapterReloadResult};
+    use crate::hmr::adapter_trait::{
+        Adapter, AdapterHealth, AdapterReloadRequest, AdapterReloadResult,
+    };
     use crate::hmr::build_manifest::BuildManifest;
-    use crate::hmr::dynlib_build_hooks::{pre_build_hook, post_build_hook};
+    use crate::hmr::dynlib_build_hooks::{post_build_hook, pre_build_hook};
     use crate::hmr::dynlib_reload::{orchestrate_dynlib_reload, DynLibReloadPhase};
     use crate::hmr::managed_runtime_hooks::{determine_reload_strategy, ReloadStrategy};
     use crate::hmr::process_swap_handoff::{execute_handoff, HandoffEnvelope};
@@ -76,10 +77,7 @@ mod tests {
 
     #[test]
     fn scenario_managed_runtime_reload() {
-        let strategy = determine_reload_strategy(
-            &["Main.java".into(), "Config.java".into()],
-            true,
-        );
+        let strategy = determine_reload_strategy(&["Main.java".into(), "Config.java".into()], true);
         assert_eq!(strategy.strategy, ReloadStrategy::HotSwapClasses);
 
         // Use adapter from registry

@@ -7,7 +7,6 @@
 // versioning scheme.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// ABI version header that every dynlib must expose.
@@ -92,7 +91,8 @@ pub fn canonical_abi_contract() -> DynLibAbiContract {
             RequiredSymbol {
                 name: "hmr_on_update".into(),
                 signature: "fn(dt_ms: u32) -> i32".into(),
-                purpose: "Frame-tick update; returns 0 to continue, negative to signal error".into(),
+                purpose: "Frame-tick update; returns 0 to continue, negative to signal error"
+                    .into(),
             },
             RequiredSymbol {
                 name: "hmr_on_render".into(),
@@ -104,7 +104,9 @@ pub fn canonical_abi_contract() -> DynLibAbiContract {
             OptionalSymbol {
                 name: "hmr_get_state_json".into(),
                 signature: "fn(buf: *mut u8, buf_len: usize) -> i32".into(),
-                purpose: "Serialize current state to JSON; returns bytes written or negative on error".into(),
+                purpose:
+                    "Serialize current state to JSON; returns bytes written or negative on error"
+                        .into(),
                 enables: "state_preservation".into(),
             },
             OptionalSymbol {
@@ -183,13 +185,25 @@ mod tests {
     #[test]
     fn abi_header_compatibility() {
         let current = AbiHeader::CURRENT;
-        let same = AbiHeader { major: 1, minor: 0, patch: 0 };
+        let same = AbiHeader {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        };
         assert!(same.is_compatible_with(&current));
 
-        let newer_minor = AbiHeader { major: 1, minor: 1, patch: 0 };
+        let newer_minor = AbiHeader {
+            major: 1,
+            minor: 1,
+            patch: 0,
+        };
         assert!(newer_minor.is_compatible_with(&current));
 
-        let different_major = AbiHeader { major: 2, minor: 0, patch: 0 };
+        let different_major = AbiHeader {
+            major: 2,
+            minor: 0,
+            patch: 0,
+        };
         assert!(!different_major.is_compatible_with(&current));
     }
 
@@ -220,7 +234,11 @@ mod tests {
 
         let result = validate_symbols_against_contract(&exported, &contract);
         assert!(result.valid);
-        assert!(result.available_capabilities.contains(&"state_preservation".into()));
-        assert!(result.available_capabilities.contains(&"health_monitoring".into()));
+        assert!(result
+            .available_capabilities
+            .contains(&"state_preservation".into()));
+        assert!(result
+            .available_capabilities
+            .contains(&"health_monitoring".into()));
     }
 }

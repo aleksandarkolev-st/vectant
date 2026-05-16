@@ -7,7 +7,6 @@
 // with the new binary and hand off state via IPC.
 // ============================================================
 
-
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -24,7 +23,9 @@ use crate::hmr::process_swap_drain::{drain_child_process, DrainConfig, DrainResu
 use crate::hmr::process_swap_handoff::{
     read_envelope_from_path, write_envelope, write_envelope_to_path, HandoffEnvelope,
 };
-use crate::hmr::process_swap_state_transfer::{select_transport, StateTransferConfig, StateTransport};
+use crate::hmr::process_swap_state_transfer::{
+    select_transport, StateTransferConfig, StateTransport,
+};
 
 /// Configuration for the process-swap adapter.
 #[derive(Debug, Clone)]
@@ -113,9 +114,10 @@ impl ProcessSwapAdapter {
     }
 
     fn build_handoff_envelope(&self, req: &AdapterReloadRequest) -> Option<HandoffEnvelope> {
-        self.last_snapshot.as_ref().filter(|_| req.preserve_state).map(|snapshot| {
-            HandoffEnvelope::new(&req.module_id, 1, snapshot.clone(), now_ms())
-        })
+        self.last_snapshot
+            .as_ref()
+            .filter(|_| req.preserve_state)
+            .map(|snapshot| HandoffEnvelope::new(&req.module_id, 1, snapshot.clone(), now_ms()))
     }
 
     fn spawn_new(&mut self, req: &AdapterReloadRequest) -> Result<(), String> {
@@ -137,9 +139,9 @@ impl ProcessSwapAdapter {
         })?;
         let ready_file = handoff_dir.path().join("ready.signal");
         let handoff_envelope = self.build_handoff_envelope(req);
-        let transport = handoff_envelope.as_ref().map(|envelope| {
-            select_transport(envelope.payload.len(), &self.state_transfer_config)
-        });
+        let transport = handoff_envelope
+            .as_ref()
+            .map(|envelope| select_transport(envelope.payload.len(), &self.state_transfer_config));
 
         let handoff_file = if matches!(transport, Some(StateTransport::TempFile)) {
             let path = handoff_dir.path().join("handoff.msgpack");
@@ -153,9 +155,14 @@ impl ProcessSwapAdapter {
         };
 
         let mut command = Command::new(binary_path);
-        let use_stdio_handoff = handoff_envelope.is_some() && !matches!(transport, Some(StateTransport::TempFile));
+        let use_stdio_handoff =
+            handoff_envelope.is_some() && !matches!(transport, Some(StateTransport::TempFile));
         command
-            .stdin(if use_stdio_handoff { Stdio::piped() } else { Stdio::null() })
+            .stdin(if use_stdio_handoff {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .env("SYNTHI_PROCESS_SWAP_READY_FILE", &ready_file)
@@ -233,7 +240,10 @@ impl ProcessSwapAdapter {
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    return Err(format!("failed while waiting for new process readiness: {}", error));
+                    return Err(format!(
+                        "failed while waiting for new process readiness: {}",
+                        error
+                    ));
                 }
             }
 
@@ -267,7 +277,10 @@ impl ProcessSwapAdapter {
         if let Some(previous_process) = previous {
             if let Err(error) = self.retire_previous(previous_process) {
                 self.health = AdapterHealth::Degraded;
-                eprintln!("[ProcessSwapAdapter] Previous process retirement degraded: {}", error);
+                eprintln!(
+                    "[ProcessSwapAdapter] Previous process retirement degraded: {}",
+                    error
+                );
             }
         }
 
@@ -285,14 +298,16 @@ impl ProcessSwapAdapter {
         match process.child.try_wait() {
             Ok(Some(_)) => Ok(()),
             Ok(None) => {
-                process
-                    .child
-                    .kill()
-                    .map_err(|error| format!("failed to terminate process {}: {}", process.pid, error))?;
+                process.child.kill().map_err(|error| {
+                    format!("failed to terminate process {}: {}", process.pid, error)
+                })?;
                 let _ = process.child.wait();
                 Ok(())
             }
-            Err(error) => Err(format!("failed to inspect process {}: {}", process.pid, error)),
+            Err(error) => Err(format!(
+                "failed to inspect process {}: {}",
+                process.pid, error
+            )),
         }
     }
 }
@@ -421,7 +436,15 @@ mod tests {
     use tempfile::tempdir;
 
     fn test_manifest(artifact: &str) -> BuildManifest {
-        BuildManifest::new("p1", "go", "process_swap", 1, BuildSlot::Full, artifact, "ghi789")
+        BuildManifest::new(
+            "p1",
+            "go",
+            "process_swap",
+            1,
+            BuildSlot::Full,
+            artifact,
+            "ghi789",
+        )
     }
 
     #[cfg(unix)]

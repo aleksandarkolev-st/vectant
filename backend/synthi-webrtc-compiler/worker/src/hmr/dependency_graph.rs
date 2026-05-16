@@ -6,7 +6,6 @@
 // modules for rebuild scope calculation.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -78,10 +77,7 @@ impl DependencyGraph {
 
     /// Get direct dependents (modules that import `name`).
     pub fn direct_dependents(&self, name: &str) -> HashSet<String> {
-        self.dependents
-            .get(name)
-            .cloned()
-            .unwrap_or_default()
+        self.dependents.get(name).cloned().unwrap_or_default()
     }
 
     /// Get transitive closure of all modules affected by changing `name`.

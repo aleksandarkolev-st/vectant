@@ -5,7 +5,7 @@ use crate::compiler::stages::ai_utils::calculate_hash;
 use crate::compiler::stages::compile_helpers::{
     compile_to_object_command, cpp_compile_command, link_object_to_so_command, object_path_for_so,
 };
-use crate::hmr::compile_manifest::CompileManifest;
+use crate::hmr::compile_manifest::{CompileManifest, ModuleKind};
 use crate::hmr::incremental_cache::IncrementalCache;
 use anyhow::{Context, Result};
 use tokio::time::{timeout, Duration};
@@ -38,7 +38,7 @@ pub async fn compile_core(
             &owned_default_manifest
         }
     };
-    let compiler_exe = effective_manifest.compiler.executable();
+    let compiler_exe = effective_manifest.select_compiler(ModuleKind::Core);
     let std_flag = format!("-std={}", effective_manifest.std);
 
     // Skip core compilation if GUI-only rebuild (reuse existing core.so)
@@ -215,7 +215,7 @@ pub async fn compile_core(
                         "core",
                         content,
                         |m| {
-                            let mut cmd = cpp_compile_command(m.compiler.executable());
+                            let mut cmd = cpp_compile_command(m.select_compiler(ModuleKind::Core));
                             cmd.arg(format!("-std={}", m.std));
                             for f in &m.common_flags {
                                 cmd.arg(f);

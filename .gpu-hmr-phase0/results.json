@@ -1,0 +1,12 @@
+{ "pass": 6, "fail": 0, "warn": 0, "skip": 4, "arch": "sm_120", "results": [
+  {"id":"P0.1","status":"skip","detail":"no NVIDIA devices visible to container"},
+  {"id":"P0.2","status":"skip","detail":"nvcc not on PATH (live toolchain checks skipped in no-GPU mode)"},
+  {"id":"P0.3","status":"pass","detail":"Python build_manifest tests"},
+  {"id":"P0.4","status":"pass","detail":"Python gpu_detect classifier"},
+  {"id":"P0.5","status":"pass","detail":"Rust compile_manifest (--features gpu-hmr)"},
+  {"id":"P0.6","status":"pass","detail":"Rust compile_helpers::is_device_compiler"},
+  {"id":"P0.7","status":"pass","detail":"Rust compile_device::populate_device_command"},
+  {"id":"P0.8","status":"pass","detail":"Rust ptxas_info_parser unit tests"},
+  {"id":"P0.9","status":"skip","detail":"live nvcc compile skipped (no GPU or SYNTHI_SKIP_NVCC=1)"},
+  {"id":"P0.10","status":"skip","detail":"nvcc not on PATH"}
+]}

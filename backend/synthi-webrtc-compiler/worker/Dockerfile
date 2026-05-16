@@ -16,6 +16,8 @@ FROM rust:1.88-bookworm AS builder
 
 WORKDIR /build
 
+ARG WORKER_CARGO_FEATURES=""
+
 # Install GStreamer dev headers (required for gstreamer-rs build scripts)
 # and protobuf compiler (required by tonic-build + protoc-bin-vendored)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -43,7 +45,11 @@ RUN mkdir -p src/runtime src/compiler src/hmr src/infra src/safety src/android s
     echo "fn main() {}" > src/main.rs && \
     echo "fn main() {}" > src/runtime/runner_bin.rs && \
     echo "" > src/lib.rs && \
-    cargo build --release 2>/dev/null || true
+    if [ -n "$WORKER_CARGO_FEATURES" ]; then \
+      cargo build --release --features "$WORKER_CARGO_FEATURES" 2>/dev/null || true; \
+    else \
+      cargo build --release 2>/dev/null || true; \
+    fi
 
 # Now copy the real source and build for real
 COPY src/ src/
@@ -51,12 +57,20 @@ COPY cpp_src/ cpp_src/
 
 # Touch main.rs so cargo detects the source change
 RUN touch src/main.rs src/lib.rs && \
-    cargo build --release
+    if [ -n "$WORKER_CARGO_FEATURES" ]; then \
+      cargo build --release --features "$WORKER_CARGO_FEATURES"; \
+    else \
+      cargo build --release; \
+    fi
 
 # ── Stage 2: Runtime ────────────────────────────────────────────────────────
 FROM ubuntu:25.10
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+ARG ROCM_VERSION=7.2.1
+ARG ROCM_UBUNTU_CODENAME=noble
+ARG ROCDXG_VERSION=1.2.0
 
 # ── System compilers & language runtimes ────────────────────────────────────
 # We need the latest GCC for C++26 — gcc-14 only recognises the `-std=c++26`
@@ -82,13 +96,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip \
     # SDL2
     libsdl2-2.0-0 libsdl2-dev \
-    # Runtime utilities used by language runtimes and downloads
-    curl xz-utils \
+    # Runtime utilities used by language runtimes, downloads, and ROCm lld
+    curl xz-utils gnupg libxml2-16 \
     && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-15 100 \
     && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-15 100 \
     && update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-15 100 \
     && update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-15 100 \
+    && ln -sf /lib/x86_64-linux-gnu/libxml2.so.16 /usr/lib/x86_64-linux-gnu/libxml2.so.2 \
     && rm -rf /var/lib/apt/lists/*
+
+# ── ROCm / HIP toolchain for GPU HMR ─────────────────────────────────────────
+# Ubuntu 25.10 is newer than AMD's ROCm packaging target, so we explicitly use
+# the current Ubuntu 24.04 (noble) ROCm 7.2.1 repository. ROCm 7.2.1 is the
+# matching release family for RX 9070 XT / gfx1201 and ROCDXG 1.2.0 WSL support.
+RUN set -eux; \
+    install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key \
+      | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg; \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${ROCM_VERSION} ${ROCM_UBUNTU_CODENAME} main" \
+      > /etc/apt/sources.list.d/rocm.list; \
+    printf 'Package: *\nPin: origin repo.radeon.com\nPin-Priority: 600\n' \
+      > /etc/apt/preferences.d/rocm-pin-600; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends rocm-hip-sdk rocminfo; \
+    curl -fsSL "https://github.com/ROCm/librocdxg/releases/download/v${ROCDXG_VERSION}/rocdxg-roct_${ROCDXG_VERSION}_amd64.deb" \
+      -o /tmp/rocdxg.deb; \
+    apt-get install -y --no-install-recommends /tmp/rocdxg.deb; \
+    rm -f /tmp/rocdxg.deb; \
+    ldconfig; \
+    rm -rf /var/lib/apt/lists/*
+
+ENV ROCM_PATH="/opt/rocm"
+ENV PATH="${ROCM_PATH}/bin:${ROCM_PATH}/llvm/bin:/root/.cargo/bin:${PATH}"
+ENV LD_LIBRARY_PATH="${ROCM_PATH}/lib:${ROCM_PATH}/lib64"
 
 ARG NODE_VERSION=20.20.2
 

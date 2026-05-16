@@ -6,7 +6,6 @@
 // a temporary file for large state payloads.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Transport method for inter-process state transfer.

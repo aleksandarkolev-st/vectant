@@ -7,7 +7,6 @@
 // the output is placed in the correct slot directory.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -31,10 +30,7 @@ impl DynLibCompileFlags {
             position_independent: true,
             shared: true,
             export_all: true,
-            extra: vec![
-                "-fvisibility=default".into(),
-                "-Wl,--no-undefined".into(),
-            ],
+            extra: vec!["-fvisibility=default".into(), "-Wl,--no-undefined".into()],
         }
     }
 
@@ -112,11 +108,7 @@ pub struct PostBuildResult {
 }
 
 /// Compute pre-build configuration for a dynlib reload.
-pub fn pre_build_hook(
-    language: &str,
-    module_id: &str,
-    slot_dir: &str,
-) -> PreBuildResult {
+pub fn pre_build_hook(language: &str, module_id: &str, slot_dir: &str) -> PreBuildResult {
     let flags = DynLibCompileFlags::for_language(language);
 
     let ext = match std::env::consts::OS {

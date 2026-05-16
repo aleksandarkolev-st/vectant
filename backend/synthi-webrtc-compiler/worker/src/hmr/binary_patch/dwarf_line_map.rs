@@ -27,10 +27,9 @@ pub fn line_to_addresses(
     source_file: &str,
     line_number: u32,
 ) -> Result<Vec<LineAddress>> {
-    let data = std::fs::read(so_path)
-        .with_context(|| format!("read {}", so_path.display()))?;
-    let obj = object::File::parse(&*data)
-        .with_context(|| format!("parse ELF {}", so_path.display()))?;
+    let data = std::fs::read(so_path).with_context(|| format!("read {}", so_path.display()))?;
+    let obj =
+        object::File::parse(&*data).with_context(|| format!("parse ELF {}", so_path.display()))?;
 
     let endian = if obj.is_little_endian() {
         RunTimeEndian::Little
@@ -105,7 +104,12 @@ pub fn line_to_addresses(
                     Some(fe) => fe,
                     None => continue,
                 };
-                let file_name = resolve_file_name(file_entry, program.header(), &dwarf.debug_str, &dwarf.debug_line_str);
+                let file_name = resolve_file_name(
+                    file_entry,
+                    program.header(),
+                    &dwarf.debug_str,
+                    &dwarf.debug_line_str,
+                );
                 let file_basename = Path::new(&file_name)
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -139,10 +143,9 @@ pub fn line_to_addresses(
 
 /// Read .rodata section from an ELF file. Returns (file_offset, bytes).
 pub fn read_rodata(so_path: &Path) -> Result<Option<(u64, Vec<u8>)>> {
-    let data = std::fs::read(so_path)
-        .with_context(|| format!("read {}", so_path.display()))?;
-    let obj = object::File::parse(&*data)
-        .with_context(|| format!("parse ELF {}", so_path.display()))?;
+    let data = std::fs::read(so_path).with_context(|| format!("read {}", so_path.display()))?;
+    let obj =
+        object::File::parse(&*data).with_context(|| format!("parse ELF {}", so_path.display()))?;
 
     if let Some(section) = obj.section_by_name(".rodata") {
         let offset = section.file_range().map(|(off, _)| off).unwrap_or(0);
@@ -160,18 +163,14 @@ fn resolve_attr_string(
 ) -> String {
     match attr {
         gimli::AttributeValue::String(s) => s.to_string_lossy().to_string(),
-        gimli::AttributeValue::DebugStrRef(offset) => {
-            debug_str
-                .get_str(offset)
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default()
-        }
-        gimli::AttributeValue::DebugLineStrRef(offset) => {
-            debug_line_str
-                .get_str(offset)
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default()
-        }
+        gimli::AttributeValue::DebugStrRef(offset) => debug_str
+            .get_str(offset)
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        gimli::AttributeValue::DebugLineStrRef(offset) => debug_line_str
+            .get_str(offset)
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }

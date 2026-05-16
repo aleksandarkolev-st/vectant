@@ -1,5 +1,6 @@
-use anyhow::Result;
 use crate::debug_log;
+use anyhow::{Context, Result};
+use std::path::{Component, Path, PathBuf};
 
 use crate::compiler::builder::{
     hash_content, hash_shared_header_semantic, ModuleHashes, RebuildScope,
@@ -15,14 +16,65 @@ static TIER0_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 static TIER0_INELIGIBLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // Import our new modular stages
-use crate::compiler::stages::ai_utils::{perform_ai_split, perform_ai_diff_patch};
+use crate::compiler::stages::ai_utils::{perform_ai_diff_patch, perform_ai_split};
 use crate::compiler::stages::compile_core::compile_core;
+use crate::compiler::stages::compile_device::{compile_device_phase0, DeviceCompileOutcome};
 use crate::compiler::stages::compile_gui::compile_gui;
 use crate::compiler::stages::compile_runner::{compile_runner, HOST_RUNNER_FILENAME};
+use crate::compiler::stages::gpu_runtime_contract::ensure_gpu_runtime_contract_header;
 use crate::compiler::stages::guardrails::{
     apply_core_guardrails, apply_gui_guardrails, apply_shared_guardrails,
 };
 use crate::compiler::stages::runner::handle_runner_execution;
+
+fn compile_request_relpath(path: &str) -> Result<PathBuf> {
+    if path.trim().is_empty() {
+        anyhow::bail!("compile request contains an empty filename");
+    }
+
+    let mut rel = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(part) => rel.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                anyhow::bail!("compile request filename is not workspace-relative: {path}");
+            }
+        }
+    }
+
+    if rel.as_os_str().is_empty() {
+        anyhow::bail!("compile request filename resolves to an empty path: {path}");
+    }
+    Ok(rel)
+}
+
+async fn write_compile_request_file(workspace: &Path, name: &str, content: &str) -> Result<()> {
+    let rel = compile_request_relpath(name)?;
+    let path = workspace.join(&rel);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("creating compile request parent {}", parent.display()))?;
+    }
+    tokio::fs::write(&path, content)
+        .await
+        .with_context(|| format!("writing compile request file {}", path.display()))?;
+    Ok(())
+}
+
+async fn sync_compile_request_workspace(ctx: &CompileContext, req: &CompileRequest) -> Result<()> {
+    for file in &req.files {
+        write_compile_request_file(&ctx.workspace_path, &file.name, &file.content).await?;
+    }
+    write_compile_request_file(&ctx.workspace_path, &req.filename, &req.source).await?;
+    eprintln!(
+        "[Compile] synced inline request files: primary={} additional={}",
+        req.filename,
+        req.files.len()
+    );
+    Ok(())
+}
 
 /// Write the split sidecar to disk with end-to-end operator logging.
 ///
@@ -35,10 +87,7 @@ use crate::compiler::stages::runner::handle_runner_execution;
 /// Uses `eprintln!` (not `debug_log!`) so it surfaces without the
 /// `SYNTHI_WORKER_VERBOSE=1` env var. Operator observability trumps log
 /// noise here; four call sites total.
-async fn write_sidecar_logged(
-    path: &std::path::Path,
-    meta: &serde_json::Value,
-) {
+async fn write_sidecar_logged(path: &std::path::Path, meta: &serde_json::Value) {
     let body = match serde_json::to_string(meta) {
         Ok(s) => s,
         Err(e) => {
@@ -66,11 +115,7 @@ async fn write_sidecar_logged(
             );
         }
         Err(e) => {
-            eprintln!(
-                "[HMR] sidecar WRITE FAILED: {} → {}",
-                path.display(),
-                e
-            );
+            eprintln!("[HMR] sidecar WRITE FAILED: {} → {}", path.display(), e);
         }
     }
 }
@@ -100,17 +145,255 @@ fn apply_edit_list(
     crate::hmr::edit_applier::apply_edit_list(edits, core, gui, shared, host_runner)
 }
 
-use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
 use crate::hmr::adapted_project::detect_adapted_project;
-use crate::hmr::compile_enrichment::CompileEnrichment;
+use crate::hmr::adapter_trait::AdapterReloadResult;
 use crate::hmr::ai_bypass::{check_ai_bypass, AiBypassResult, SplitCache};
+use crate::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
+use crate::hmr::compile_enrichment::CompileEnrichment;
+use crate::hmr::compile_manifest::{CompileManifest, DeviceVendor, ModuleKind};
 use crate::hmr::deterministic_compile::{
     determine_deterministic_scope, validate_deterministic_input, DeterministicCompileInput,
     DeterministicRebuildScope,
 };
-use crate::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
-use crate::hmr::compile_manifest::CompileManifest;
-use crate::hmr::adapter_trait::AdapterReloadResult;
+use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
+
+fn strip_c_like_comments(source: &str) -> String {
+    #[derive(Clone, Copy)]
+    enum State {
+        Normal,
+        Slash,
+        LineComment,
+        BlockComment,
+        BlockStar,
+    }
+
+    let mut out = String::with_capacity(source.len());
+    let mut state = State::Normal;
+    for ch in source.chars() {
+        match (state, ch) {
+            (State::Normal, '/') => state = State::Slash,
+            (State::Normal, _) => out.push(ch),
+            (State::Slash, '/') => {
+                out.push(' ');
+                state = State::LineComment;
+            }
+            (State::Slash, '*') => {
+                out.push(' ');
+                state = State::BlockComment;
+            }
+            (State::Slash, _) => {
+                out.push('/');
+                out.push(ch);
+                state = State::Normal;
+            }
+            (State::LineComment, '\n') => {
+                out.push('\n');
+                state = State::Normal;
+            }
+            (State::LineComment, _) => {}
+            (State::BlockComment, '*') => state = State::BlockStar,
+            (State::BlockComment, '\n') => out.push('\n'),
+            (State::BlockComment, _) => {}
+            (State::BlockStar, '/') => {
+                out.push(' ');
+                state = State::Normal;
+            }
+            (State::BlockStar, '*') => {}
+            (State::BlockStar, '\n') => {
+                out.push('\n');
+                state = State::BlockComment;
+            }
+            (State::BlockStar, _) => state = State::BlockComment,
+        }
+    }
+    if matches!(state, State::Slash) {
+        out.push('/');
+    }
+    out
+}
+
+fn extract_device_kernel_symbols(source: &str) -> Vec<String> {
+    extract_device_kernel_declarations(source)
+        .into_iter()
+        .map(|decl| decl.name)
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeviceKernelDeclaration {
+    name: String,
+    signature: String,
+}
+
+fn extract_device_kernel_declarations(source: &str) -> Vec<DeviceKernelDeclaration> {
+    let uncommented = strip_c_like_comments(source);
+    let launch_bounds = match regex::Regex::new(r"__launch_bounds__\s*\([^)]*\)") {
+        Ok(re) => re,
+        Err(_) => return Vec::new(),
+    };
+    let normalized = launch_bounds.replace_all(&uncommented, " ");
+    let re =
+        match regex::Regex::new(r"__global__[^;{}()]*?\b([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)") {
+            Ok(re) => re,
+            Err(_) => return Vec::new(),
+        };
+    let mut decls: Vec<DeviceKernelDeclaration> = re
+        .captures_iter(&normalized)
+        .filter_map(|caps| {
+            let name = caps.get(1)?.as_str().to_string();
+            let params = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
+            Some(DeviceKernelDeclaration {
+                signature: format!("{}({})", name, normalize_kernel_params(params)),
+                name,
+            })
+        })
+        .collect();
+    decls.sort_by(|a, b| a.name.cmp(&b.name).then(a.signature.cmp(&b.signature)));
+    decls.dedup_by(|a, b| a.name == b.name && a.signature == b.signature);
+    decls
+}
+
+fn extract_device_kernel_signatures(source: &str) -> Vec<String> {
+    extract_device_kernel_declarations(source)
+        .into_iter()
+        .map(|decl| decl.signature)
+        .collect()
+}
+
+fn normalize_kernel_params(params: &str) -> String {
+    let normalized = split_top_level_params(params)
+        .into_iter()
+        .map(|param| normalize_kernel_param(&param))
+        .filter(|param| !param.is_empty() && param != "void")
+        .collect::<Vec<_>>();
+    normalized.join(",")
+}
+
+fn split_top_level_params(params: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut paren = 0_i32;
+    let mut bracket = 0_i32;
+    let mut angle = 0_i32;
+    for ch in params.chars() {
+        match ch {
+            '(' => paren += 1,
+            ')' => paren -= 1,
+            '[' => bracket += 1,
+            ']' => bracket -= 1,
+            '<' => angle += 1,
+            '>' => angle -= 1,
+            ',' if paren == 0 && bracket == 0 && angle == 0 => {
+                out.push(current.trim().to_string());
+                current.clear();
+                continue;
+            }
+            _ => {}
+        }
+        current.push(ch);
+    }
+    if !current.trim().is_empty() {
+        out.push(current.trim().to_string());
+    }
+    out
+}
+
+fn normalize_kernel_param(param: &str) -> String {
+    let without_default = param.split('=').next().unwrap_or(param).trim();
+    let spaced = without_default
+        .replace('*', " * ")
+        .replace('&', " & ")
+        .replace('[', " [ ")
+        .replace(']', " ] ");
+    let mut tokens = spaced
+        .split_whitespace()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+
+    if tokens.len() >= 2 {
+        if let Some(last) = tokens.last() {
+            if is_c_identifier(last) && !is_type_keyword(last) {
+                tokens.pop();
+            }
+        }
+    }
+
+    tokens
+        .join(" ")
+        .replace(" *", "*")
+        .replace(" &", "&")
+        .replace(" [ ]", "[]")
+}
+
+fn is_type_keyword(token: &str) -> bool {
+    matches!(
+        token,
+        "const"
+            | "volatile"
+            | "restrict"
+            | "__restrict__"
+            | "signed"
+            | "unsigned"
+            | "short"
+            | "long"
+            | "int"
+            | "float"
+            | "double"
+            | "char"
+            | "void"
+            | "bool"
+            | "size_t"
+    )
+}
+
+fn is_c_identifier(token: &str) -> bool {
+    let mut chars = token.chars();
+    match chars.next() {
+        Some(ch) if ch == '_' || ch.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn kernel_abi_fingerprint_source(source: &str) -> String {
+    let kernel_symbols = extract_device_kernel_symbols(source);
+    let kernel_signatures = extract_device_kernel_signatures(source);
+    if kernel_signatures.is_empty() {
+        kernel_symbols.join("|")
+    } else {
+        kernel_signatures.join("|")
+    }
+}
+
+fn device_filename_for_vendor(vendor: DeviceVendor) -> &'static str {
+    match vendor {
+        DeviceVendor::Cuda => "device.cu",
+        DeviceVendor::Rocm => "device.hip",
+    }
+}
+
+const GPU_HOST_CONTRACT_REQUIRED_SYMBOLS: &[&str] = &[
+    "device_descriptor",
+    "device_on_load",
+    "device_kernel_sig_hash",
+];
+
+const GPU_HOST_CONTRACT_STATE_SYMBOLS: &[&str] = &["device_save_size", "device_save_write"];
+
+fn missing_gpu_host_contract_symbols(exported_symbols: &[String]) -> Vec<&'static str> {
+    GPU_HOST_CONTRACT_REQUIRED_SYMBOLS
+        .iter()
+        .copied()
+        .filter(|required| !exported_symbols.iter().any(|symbol| symbol == required))
+        .collect()
+}
+
+fn has_gpu_state_serialization_symbols(exported_symbols: &[String]) -> bool {
+    GPU_HOST_CONTRACT_STATE_SYMBOLS
+        .iter()
+        .all(|required| exported_symbols.iter().any(|symbol| symbol == required))
+}
 
 pub async fn handle_compile_request(
     ctx: &CompileContext,
@@ -135,6 +418,8 @@ pub async fn handle_compile_request(
     // Manual logging instead of record_step for now
     debug_log!("[Compile] Step: Handler started");
 
+    sync_compile_request_workspace(ctx, &req).await?;
+
     // ============================================================
     // HMR PIPELINE: Initialize and classify compile loop
     // ============================================================
@@ -143,7 +428,10 @@ pub async fn handle_compile_request(
         let mut orchestrator = ctx.hmr_orchestrator.lock().await;
         let pipeline = orchestrator.pipeline(&session_id);
         pipeline.ensure_adapter(language);
-        (pipeline.rollout_flags.clone(), pipeline.consecutive_failures)
+        (
+            pipeline.rollout_flags.clone(),
+            pipeline.consecutive_failures,
+        )
     };
 
     // ── Compute source hash ──
@@ -210,7 +498,12 @@ pub async fn handle_compile_request(
     let ai_bypass_result = {
         let mut orchestrator = ctx.hmr_orchestrator.lock().await;
         let pipeline = orchestrator.pipeline(&session_id);
-        check_ai_bypass(&pipeline.ai_gate, &split_cache, compile_loop, &source_hash_str)
+        check_ai_bypass(
+            &pipeline.ai_gate,
+            &split_cache,
+            compile_loop,
+            &source_hash_str,
+        )
     };
 
     // ============================================================
@@ -259,9 +552,20 @@ pub async fn handle_compile_request(
             // Cache the result for future Loop A lookups
             split_cache.put(crate::hmr::ai_bypass::CachedSplitResult {
                 source_hash: source_hash_str.clone(),
-                core_code: result.get("core").and_then(|c| c["content"].as_str()).unwrap_or("").to_string(),
-                gui_code: result.get("gui").and_then(|g| g["content"].as_str()).unwrap_or("").to_string(),
-                shared_code: result.get("shared").and_then(|s| s["content"].as_str()).map(|s| s.to_string()),
+                core_code: result
+                    .get("core")
+                    .and_then(|c| c["content"].as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                gui_code: result
+                    .get("gui")
+                    .and_then(|g| g["content"].as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                shared_code: result
+                    .get("shared")
+                    .and_then(|s| s["content"].as_str())
+                    .map(|s| s.to_string()),
                 language: req.language.clone(),
                 cached_at: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -284,7 +588,12 @@ pub async fn handle_compile_request(
             // Loop A, no cache: read existing adapted files from disk.
             let is_editing_split_file = {
                 let fname = req.filename.to_lowercase();
-                fname.contains("core.") || fname.contains("gui.") || fname.contains("shared.")
+                fname.contains("core.")
+                    || fname.contains("gui.")
+                    || fname.contains("shared.")
+                    || fname.contains("host_runner.")
+                    || fname.ends_with("device.cu")
+                    || fname.ends_with("device.hip")
             };
 
             // Always read the current split files from disk
@@ -308,16 +617,20 @@ pub async fn handle_compile_request(
             // pre-Phase-4 3-file project (host_runner_path is None) — the
             // diff_patch prompt builder skips the host_runner block in
             // that case so the prompt stays small.
-            let host_runner_content = if let Some(ref p) = enrichment.adapted_status.host_runner_path {
-                tokio::fs::read_to_string(p).await.unwrap_or_default()
-            } else {
-                String::new()
-            };
+            let host_runner_content =
+                if let Some(ref p) = enrichment.adapted_status.host_runner_path {
+                    tokio::fs::read_to_string(p).await.unwrap_or_default()
+                } else {
+                    String::new()
+                };
 
             if enrichment.adapted_status.is_adapted && is_editing_split_file {
                 // User is editing a split file directly — syncFile already
                 // wrote the new content to disk.  Just use it.
-                debug_log!("[HMR] FallbackDeterministic → split file edit ({})", req.filename);
+                debug_log!(
+                    "[HMR] FallbackDeterministic → split file edit ({})",
+                    req.filename
+                );
                 serde_json::json!({
                     "shared": { "content": shared_content, "filename": "shared.h" },
                     "core": { "content": core_content, "filename": "core.cpp" },
@@ -407,8 +720,8 @@ pub async fn handle_compile_request(
                         // the edit because all hunks were EditTarget::Unknown.
                         // Killing classify removed both the latency regression
                         // and the silent-drop failure mode.
-                        use crate::hmr::edit_classifier::classify_edit;
                         use crate::hmr::diff_patcher::patch_split_files;
+                        use crate::hmr::edit_classifier::classify_edit;
 
                         let sync_classification = classify_edit(&old_source, &req.source);
                         let is_value_only = sync_classification.is_value_only;
@@ -425,9 +738,13 @@ pub async fn handle_compile_request(
                         // the authoritative check that also detects integer
                         // literal changes for DWARF+iced-x86 patching.
                         if is_value_only {
-                            use crate::hmr::ts_value_classifier::{classify_ast, AstClassification};
+                            use crate::hmr::ts_value_classifier::{
+                                classify_ast, AstClassification,
+                            };
                             match classify_ast(&old_source, &req.source) {
-                                AstClassification::ValueOnly { ref changes } if !changes.is_empty() => {
+                                AstClassification::ValueOnly { ref changes }
+                                    if !changes.is_empty() =>
+                                {
                                     eprintln!(
                                         "[HMR] Tier 0 v2 ELIGIBLE: {} value change(s) (tree-sitter confirmed)",
                                         changes.len()
@@ -453,179 +770,201 @@ pub async fn handle_compile_request(
                             Some(architecture_md.as_str())
                         };
 
-                        let (final_core, final_gui, final_shared, final_host_runner) = if is_value_only {
-                            // Tier 1: pure value change — instant regex.
-                            // patch_split_files only knows about core/gui/shared
-                            // (legacy 3-module patcher); host_runner is preserved
-                            // verbatim from disk because Tier 1 is always value
-                            // changes (never structural edits to the runner).
-                            let patch = patch_split_files(
-                                &old_source, &req.source,
-                                &core_content, &gui_content, &shared_content,
-                            );
-                            if patch.has_changes() {
-                                eprintln!("[HMR] Tier 1: instant value patch (0ms)");
-                                (
-                                    patch.core.unwrap_or_else(|| core_content.clone()),
-                                    patch.gui.unwrap_or_else(|| gui_content.clone()),
-                                    patch.shared.unwrap_or_else(|| shared_content.clone()),
-                                    host_runner_content.clone(),
-                                )
-                            } else {
-                                // Regex couldn't find the value — fall through
-                                // to the AI path below rather than drop the edit.
-                                eprintln!("[HMR] Tier 1: regex patch failed despite value_only classification — falling through to AI diff_patch");
-                                match perform_ai_diff_patch(
-                                    &diff,
+                        let (final_core, final_gui, final_shared, final_host_runner) =
+                            if is_value_only {
+                                // Tier 1: pure value change — instant regex.
+                                // patch_split_files only knows about core/gui/shared
+                                // (legacy 3-module patcher); host_runner is preserved
+                                // verbatim from disk because Tier 1 is always value
+                                // changes (never structural edits to the runner).
+                                let patch = patch_split_files(
+                                    &old_source,
+                                    &req.source,
                                     &core_content,
                                     &gui_content,
                                     &shared_content,
-                                    &host_runner_content,
-                                    arch_hint,
-                                ).await {
-                                    Ok(edits) => {
-                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content, &host_runner_content) {
-                                            Ok((c, g, s, h)) => (c, g, s, h),
-                                            Err(apply_err) => {
-                                                eprintln!(
-                                                    "[HMR] Tier 2 (value-fallback) edit apply FAILED: {} → falling through to Tier 3 full re-split",
-                                                    apply_err
-                                                );
-                                                let result = perform_ai_split(&req).await?;
-                                                let fresh_arch = result
-                                                    .get("_synthi_architecture")
-                                                    .and_then(|v| v.as_str())
-                                                    .unwrap_or("");
-                                                let fresh_manifest = result
-                                                    .get("_synthi_manifest")
-                                                    .cloned()
-                                                    .unwrap_or(serde_json::Value::Null);
-                                                let meta = serde_json::json!({
-                                                    "split_hash": source_hash_str,
-                                                    "original_source": req.source,
-                                                    "architecture": fresh_arch,
-                                                    "compile_manifest": fresh_manifest,
-                                                });
-                                                write_sidecar_logged(&sidecar_path, &meta).await;
-                                                return Ok(result);
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!("[HMR] Tier 2 (value-fallback) AI diff_patch failed: {}, falling through to Tier 3 full re-split", e);
-                                        let result = perform_ai_split(&req).await?;
-                                        let fresh_arch = result
-                                            .get("_synthi_architecture")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("");
-                                        let fresh_manifest = result
-                                            .get("_synthi_manifest")
-                                            .cloned()
-                                            .unwrap_or(serde_json::Value::Null);
-                                        let meta = serde_json::json!({
-                                            "split_hash": source_hash_str,
-                                            "original_source": req.source,
-                                            "architecture": fresh_arch,
-                                            "compile_manifest": fresh_manifest,
-                                        });
-                                        write_sidecar_logged(&sidecar_path, &meta).await;
-                                        return Ok(result);
-                                    }
-                                }
-                            }
-                        } else {
-                            // Tier 2: non-value edit.
-                            //
-                            // First check the speculative cache for a hit.
-                            // If the file-sync handler fired a speculative
-                            // diff_patch while the user was pausing and
-                            // the AI call completed before compile, the
-                            // edits are already in the cache keyed by the
-                            // current source hash. Apply them directly and
-                            // skip the live AI call entirely.
-                            //
-                            // On any miss / apply failure, fall through
-                            // transparently to the normal live AI call.
-                            let spec_hash = crate::hmr::speculative_diff_patch::hash_source(&req.source);
-                            // Wait up to 15s for any in-flight speculation
-                            // for this source hash. This de-duplicates the
-                            // Ctrl+S race: the frontend sends the file-sync
-                            // write and the compile request back-to-back,
-                            // so the speculative task is usually still in
-                            // its 300ms debounce when compile arrives. Without
-                            // the wait, handler.rs would fire its own live
-                            // AI call in parallel — two calls for the same
-                            // edit, no benefit. Waiting collapses them to one.
-                            // On miss / timeout, take_matching_or_wait
-                            // returns None and we fall through to the live
-                            // AI call below with no extra latency.
-                            let speculative_applied: Option<(String, String, String, String)> = {
-                                if let Some(cached_edits) =
-                                    crate::hmr::speculative_diff_patch::take_matching_or_wait(
-                                        spec_hash,
-                                        std::time::Duration::from_secs(25),
+                                );
+                                if patch.has_changes() {
+                                    eprintln!("[HMR] Tier 1: instant value patch (0ms)");
+                                    (
+                                        patch.core.unwrap_or_else(|| core_content.clone()),
+                                        patch.gui.unwrap_or_else(|| gui_content.clone()),
+                                        patch.shared.unwrap_or_else(|| shared_content.clone()),
+                                        host_runner_content.clone(),
                                     )
-                                    .await
-                                {
-                                    match apply_edit_list(
-                                        &cached_edits,
+                                } else {
+                                    // Regex couldn't find the value — fall through
+                                    // to the AI path below rather than drop the edit.
+                                    eprintln!("[HMR] Tier 1: regex patch failed despite value_only classification — falling through to AI diff_patch");
+                                    match perform_ai_diff_patch(
+                                        &diff,
                                         &core_content,
                                         &gui_content,
                                         &shared_content,
                                         &host_runner_content,
-                                    ) {
-                                        Ok(tuple) => {
-                                            eprintln!(
+                                        arch_hint,
+                                    )
+                                    .await
+                                    {
+                                        Ok(edits) => {
+                                            match apply_edit_list(
+                                                &edits,
+                                                &core_content,
+                                                &gui_content,
+                                                &shared_content,
+                                                &host_runner_content,
+                                            ) {
+                                                Ok((c, g, s, h)) => (c, g, s, h),
+                                                Err(apply_err) => {
+                                                    eprintln!(
+                                                    "[HMR] Tier 2 (value-fallback) edit apply FAILED: {} → falling through to Tier 3 full re-split",
+                                                    apply_err
+                                                );
+                                                    let result = perform_ai_split(&req).await?;
+                                                    let fresh_arch = result
+                                                        .get("_synthi_architecture")
+                                                        .and_then(|v| v.as_str())
+                                                        .unwrap_or("");
+                                                    let fresh_manifest = result
+                                                        .get("_synthi_manifest")
+                                                        .cloned()
+                                                        .unwrap_or(serde_json::Value::Null);
+                                                    let meta = serde_json::json!({
+                                                        "split_hash": source_hash_str,
+                                                        "original_source": req.source,
+                                                        "architecture": fresh_arch,
+                                                        "compile_manifest": fresh_manifest,
+                                                    });
+                                                    write_sidecar_logged(&sidecar_path, &meta)
+                                                        .await;
+                                                    return Ok(result);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("[HMR] Tier 2 (value-fallback) AI diff_patch failed: {}, falling through to Tier 3 full re-split", e);
+                                            let result = perform_ai_split(&req).await?;
+                                            let fresh_arch = result
+                                                .get("_synthi_architecture")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            let fresh_manifest = result
+                                                .get("_synthi_manifest")
+                                                .cloned()
+                                                .unwrap_or(serde_json::Value::Null);
+                                            let meta = serde_json::json!({
+                                                "split_hash": source_hash_str,
+                                                "original_source": req.source,
+                                                "architecture": fresh_arch,
+                                                "compile_manifest": fresh_manifest,
+                                            });
+                                            write_sidecar_logged(&sidecar_path, &meta).await;
+                                            return Ok(result);
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Tier 2: non-value edit.
+                                //
+                                // First check the speculative cache for a hit.
+                                // If the file-sync handler fired a speculative
+                                // diff_patch while the user was pausing and
+                                // the AI call completed before compile, the
+                                // edits are already in the cache keyed by the
+                                // current source hash. Apply them directly and
+                                // skip the live AI call entirely.
+                                //
+                                // On any miss / apply failure, fall through
+                                // transparently to the normal live AI call.
+                                let spec_hash =
+                                    crate::hmr::speculative_diff_patch::hash_source(&req.source);
+                                // Wait up to 15s for any in-flight speculation
+                                // for this source hash. This de-duplicates the
+                                // Ctrl+S race: the frontend sends the file-sync
+                                // write and the compile request back-to-back,
+                                // so the speculative task is usually still in
+                                // its 300ms debounce when compile arrives. Without
+                                // the wait, handler.rs would fire its own live
+                                // AI call in parallel — two calls for the same
+                                // edit, no benefit. Waiting collapses them to one.
+                                // On miss / timeout, take_matching_or_wait
+                                // returns None and we fall through to the live
+                                // AI call below with no extra latency.
+                                let speculative_applied: Option<(String, String, String, String)> = {
+                                    if let Some(cached_edits) =
+                                        crate::hmr::speculative_diff_patch::take_matching_or_wait(
+                                            spec_hash,
+                                            std::time::Duration::from_secs(25),
+                                        )
+                                        .await
+                                    {
+                                        match apply_edit_list(
+                                            &cached_edits,
+                                            &core_content,
+                                            &gui_content,
+                                            &shared_content,
+                                            &host_runner_content,
+                                        ) {
+                                            Ok(tuple) => {
+                                                eprintln!(
                                                 "[HMR] Tier 2 SPECULATIVE HIT ({} edit(s), skipped AI call)",
                                                 cached_edits.len()
                                             );
-                                            Some(tuple)
-                                        }
-                                        Err(e) => {
-                                            // Speculative was based on stale
-                                            // split contents — anchor doesn't
-                                            // match the live file. Fall through
-                                            // to the live AI call rather than
-                                            // bail to Tier 3.
-                                            eprintln!(
+                                                Some(tuple)
+                                            }
+                                            Err(e) => {
+                                                // Speculative was based on stale
+                                                // split contents — anchor doesn't
+                                                // match the live file. Fall through
+                                                // to the live AI call rather than
+                                                // bail to Tier 3.
+                                                eprintln!(
                                                 "[HMR] Tier 2 speculative apply FAILED: {} → falling through to live AI call",
                                                 e
                                             );
-                                            None
+                                                None
+                                            }
                                         }
+                                    } else {
+                                        None
                                     }
-                                } else {
-                                    None
-                                }
-                            };
+                                };
 
-                            if let Some(quad) = speculative_applied {
-                                quad
-                            } else {
-                                // Live AI call (diff-only output format — ~100
-                                // output tokens, ~1s generation on pro).
-                                eprintln!(
+                                if let Some(quad) = speculative_applied {
+                                    quad
+                                } else {
+                                    // Live AI call (diff-only output format — ~100
+                                    // output tokens, ~1s generation on pro).
+                                    eprintln!(
                                     "[HMR] Tier 2: AI diff_patch (diff={} bytes, arch={} chars, host_runner={} bytes)",
                                     diff.len(),
                                     architecture_md.len(),
                                     host_runner_content.len()
                                 );
-                                match perform_ai_diff_patch(
-                                    &diff,
-                                    &core_content,
-                                    &gui_content,
-                                    &shared_content,
-                                    &host_runner_content,
-                                    arch_hint,
-                                ).await {
-                                    Ok(edits) => {
-                                        eprintln!(
+                                    match perform_ai_diff_patch(
+                                        &diff,
+                                        &core_content,
+                                        &gui_content,
+                                        &shared_content,
+                                        &host_runner_content,
+                                        arch_hint,
+                                    )
+                                    .await
+                                    {
+                                        Ok(edits) => {
+                                            eprintln!(
                                             "[HMR] Tier 2: received {} edit(s), applying locally",
                                             edits.len()
                                         );
-                                        match apply_edit_list(&edits, &core_content, &gui_content, &shared_content, &host_runner_content) {
-                                            Ok((c, g, s, h)) => {
-                                                eprintln!(
+                                            match apply_edit_list(
+                                                &edits,
+                                                &core_content,
+                                                &gui_content,
+                                                &shared_content,
+                                                &host_runner_content,
+                                            ) {
+                                                Ok((c, g, s, h)) => {
+                                                    eprintln!(
                                                     "[HMR] Tier 2 SUCCESS ({} edits, core_changed={} gui_changed={} shared_changed={} host_runner_changed={})",
                                                     edits.len(),
                                                     c != core_content,
@@ -633,62 +972,63 @@ pub async fn handle_compile_request(
                                                     s != shared_content,
                                                     h != host_runner_content
                                                 );
-                                                (c, g, s, h)
-                                            }
-                                            Err(apply_err) => {
-                                                // Anchor missing / ambiguous / unknown module.
-                                                // Don't try to partially apply — fall through
-                                                // to Tier 3 for a correct full re-split.
-                                                eprintln!(
+                                                    (c, g, s, h)
+                                                }
+                                                Err(apply_err) => {
+                                                    // Anchor missing / ambiguous / unknown module.
+                                                    // Don't try to partially apply — fall through
+                                                    // to Tier 3 for a correct full re-split.
+                                                    eprintln!(
                                                     "[HMR] Tier 2 edit apply FAILED: {} → falling through to Tier 3 full re-split",
                                                     apply_err
                                                 );
-                                                let result = perform_ai_split(&req).await?;
-                                                let fresh_arch = result
-                                                    .get("_synthi_architecture")
-                                                    .and_then(|v| v.as_str())
-                                                    .unwrap_or("");
-                                                let fresh_manifest = result
-                                                    .get("_synthi_manifest")
-                                                    .cloned()
-                                                    .unwrap_or(serde_json::Value::Null);
-                                                let meta = serde_json::json!({
-                                                    "split_hash": source_hash_str,
-                                                    "original_source": req.source,
-                                                    "architecture": fresh_arch,
-                                                    "compile_manifest": fresh_manifest,
-                                                });
-                                                write_sidecar_logged(&sidecar_path, &meta).await;
-                                                return Ok(result);
+                                                    let result = perform_ai_split(&req).await?;
+                                                    let fresh_arch = result
+                                                        .get("_synthi_architecture")
+                                                        .and_then(|v| v.as_str())
+                                                        .unwrap_or("");
+                                                    let fresh_manifest = result
+                                                        .get("_synthi_manifest")
+                                                        .cloned()
+                                                        .unwrap_or(serde_json::Value::Null);
+                                                    let meta = serde_json::json!({
+                                                        "split_hash": source_hash_str,
+                                                        "original_source": req.source,
+                                                        "architecture": fresh_arch,
+                                                        "compile_manifest": fresh_manifest,
+                                                    });
+                                                    write_sidecar_logged(&sidecar_path, &meta)
+                                                        .await;
+                                                    return Ok(result);
+                                                }
                                             }
                                         }
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
+                                        Err(e) => {
+                                            eprintln!(
                                             "[HMR] Tier 2 AI diff_patch FAILED: {} → falling through to Tier 3 full re-split",
                                             e
                                         );
-                                        let result = perform_ai_split(&req).await?;
-                                        let fresh_arch = result
-                                            .get("_synthi_architecture")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("");
-                                        let fresh_manifest = result
-                                            .get("_synthi_manifest")
-                                            .cloned()
-                                            .unwrap_or(serde_json::Value::Null);
-                                        let meta = serde_json::json!({
-                                            "split_hash": source_hash_str,
-                                            "original_source": req.source,
-                                            "architecture": fresh_arch,
-                                            "compile_manifest": fresh_manifest,
-                                        });
-                                        write_sidecar_logged(&sidecar_path, &meta).await;
-                                        return Ok(result);
+                                            let result = perform_ai_split(&req).await?;
+                                            let fresh_arch = result
+                                                .get("_synthi_architecture")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            let fresh_manifest = result
+                                                .get("_synthi_manifest")
+                                                .cloned()
+                                                .unwrap_or(serde_json::Value::Null);
+                                            let meta = serde_json::json!({
+                                                "split_hash": source_hash_str,
+                                                "original_source": req.source,
+                                                "architecture": fresh_arch,
+                                                "compile_manifest": fresh_manifest,
+                                            });
+                                            write_sidecar_logged(&sidecar_path, &meta).await;
+                                            return Ok(result);
+                                        }
                                     }
                                 }
-                            }
-                        };
+                            };
 
                         // Write patched files to disk + update sidecar. Preserve
                         // the existing architecture cache AND compile manifest
@@ -789,16 +1129,22 @@ pub async fn handle_compile_request(
     // can track prompt quality and eventually remove guardrails.
     let processed_shared = apply_shared_guardrails(shared_raw);
     if processed_shared != shared_raw {
-        debug_log!("[Guardrail] shared.h was modified by guardrails — prompt produced incorrect output");
+        debug_log!(
+            "[Guardrail] shared.h was modified by guardrails — prompt produced incorrect output"
+        );
     }
     let allow_gui_in_core = enrichment.is_deterministic();
     let processed_core = apply_core_guardrails(core_raw, &processed_shared, allow_gui_in_core);
     if processed_core != core_raw {
-        debug_log!("[Guardrail] core.cpp was modified by guardrails — prompt produced incorrect output");
+        debug_log!(
+            "[Guardrail] core.cpp was modified by guardrails — prompt produced incorrect output"
+        );
     }
     let processed_gui = apply_gui_guardrails(gui_raw, &processed_shared);
     if processed_gui != gui_raw {
-        debug_log!("[Guardrail] gui.cpp was modified by guardrails — prompt produced incorrect output");
+        debug_log!(
+            "[Guardrail] gui.cpp was modified by guardrails — prompt produced incorrect output"
+        );
     }
 
     // ============================================================
@@ -838,13 +1184,28 @@ pub async fn handle_compile_request(
         };
 
         if let Err(e) = validate_deterministic_input(&det_input) {
-            eprintln!("[Handler] Deterministic validation failed: {}, falling back to hash scope", e);
+            eprintln!(
+                "[Handler] Deterministic validation failed: {}, falling back to hash scope",
+                e
+            );
             // Fallback to hash-based scope
             hash_based_rebuild_scope(&prev_hashes, &new_hashes)
         } else {
-            let prev_core_h = if prev_hashes.core_hash != 0 { Some(format!("{}", prev_hashes.core_hash)) } else { None };
-            let prev_gui_h = if prev_hashes.gui_hash != 0 { Some(format!("{}", prev_hashes.gui_hash)) } else { None };
-            let prev_shared_h = if prev_hashes.shared_hash != 0 { Some(format!("{}", prev_hashes.shared_hash)) } else { None };
+            let prev_core_h = if prev_hashes.core_hash != 0 {
+                Some(format!("{}", prev_hashes.core_hash))
+            } else {
+                None
+            };
+            let prev_gui_h = if prev_hashes.gui_hash != 0 {
+                Some(format!("{}", prev_hashes.gui_hash))
+            } else {
+                None
+            };
+            let prev_shared_h = if prev_hashes.shared_hash != 0 {
+                Some(format!("{}", prev_hashes.shared_hash))
+            } else {
+                None
+            };
             let det_scope = determine_deterministic_scope(
                 &det_input,
                 prev_core_h.as_deref(),
@@ -959,23 +1320,32 @@ pub async fn handle_compile_request(
     //      `CompileManifest::sdl2_default()`, preserving exact backward
     //      compatibility with pre-universal-prompt projects.
     let compile_manifest: Option<CompileManifest> = {
-        let from_split_data = split_data
-            .get("_synthi_manifest")
+        let from_request = req
+            .compile_manifest
+            .as_ref()
             .and_then(|v| if v.is_null() { None } else { Some(v) })
             .and_then(CompileManifest::from_json_value);
-        if from_split_data.is_some() {
-            from_split_data
+        if from_request.is_some() {
+            from_request
         } else {
-            // Fallback: re-read sidecar. Cheap — tens of KB at most,
-            // and only on UseCached/edge paths that don't carry the
-            // manifest inside split_data.
-            match tokio::fs::read_to_string(&sidecar_path).await {
-                Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
-                    .ok()
-                    .and_then(|meta| meta.get("compile_manifest").cloned())
-                    .and_then(|v| if v.is_null() { None } else { Some(v) })
-                    .and_then(|v| CompileManifest::from_json_value(&v)),
-                Err(_) => None,
+            let from_split_data = split_data
+                .get("_synthi_manifest")
+                .and_then(|v| if v.is_null() { None } else { Some(v) })
+                .and_then(CompileManifest::from_json_value);
+            if from_split_data.is_some() {
+                from_split_data
+            } else {
+                // Fallback: re-read sidecar. Cheap — tens of KB at most,
+                // and only on UseCached/edge paths that don't carry the
+                // manifest inside split_data.
+                match tokio::fs::read_to_string(&sidecar_path).await {
+                    Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                        .ok()
+                        .and_then(|meta| meta.get("compile_manifest").cloned())
+                        .and_then(|v| if v.is_null() { None } else { Some(v) })
+                        .and_then(|v| CompileManifest::from_json_value(&v)),
+                    Err(_) => None,
+                }
             }
         }
     };
@@ -996,7 +1366,7 @@ pub async fn handle_compile_request(
     match &compile_manifest {
         Some(m) => eprintln!(
             "[HMR] compile_manifest: compiler={}, std={}, gui_link={:?}, hot_reload={}, tier0_safe={}",
-            m.compiler.executable(),
+            m.select_compiler(ModuleKind::Core),
             m.std,
             m.gui_link_flags,
             m.hot_reload_mode.as_str(),
@@ -1004,6 +1374,73 @@ pub async fn handle_compile_request(
         ),
         None => eprintln!("[HMR] compile_manifest: none (falling back to sdl2_default downstream)"),
     }
+
+    if let Some(gpu) = compile_manifest.as_ref().and_then(|m| m.gpu.as_ref()) {
+        let header_path = ensure_gpu_runtime_contract_header(&ctx.workspace_path, gpu).await?;
+        eprintln!(
+            "[compile-device] runtime contract header ready path={}",
+            header_path.display()
+        );
+    }
+
+    let device_source_content: Option<String> = if !req.prefer_gpu_pipeline {
+        if compile_manifest
+            .as_ref()
+            .and_then(|m| m.gpu.as_ref())
+            .is_some()
+        {
+            eprintln!("[compile-device] skipping — GPU pipeline disabled by compile request");
+        }
+        None
+    } else if let Some(gpu) = compile_manifest.as_ref().and_then(|m| m.gpu.as_ref()) {
+        let device_filename = device_filename_for_vendor(gpu.vendor);
+        let from_split = split_data
+            .get("device")
+            .and_then(|v| v.get("content"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                split_data
+                    .get(device_filename)
+                    .and_then(|v| v.get("content"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.to_string())
+            });
+        if let Some(src) = from_split {
+            eprintln!(
+                "[compile-device] source resolved from split_data file={} bytes={}",
+                device_filename,
+                src.len()
+            );
+            Some(src)
+        } else {
+            match tokio::fs::read_to_string(ctx.workspace_path.join(device_filename)).await {
+                Ok(src) if !src.trim().is_empty() => {
+                    eprintln!(
+                        "[compile-device] source resolved from workspace file={} bytes={}",
+                        device_filename,
+                        src.len()
+                    );
+                    Some(src)
+                }
+                Ok(_) => {
+                    eprintln!("[compile-device] skipping — {device_filename} is empty");
+                    None
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[compile-device] skipping — manifest has gpu block but {} was not found: {}",
+                        device_filename, e
+                    );
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    };
 
     // ULTRAPLAN Phase 8: forward the manifest + architecture cache to
     // the frontend over the log data channel. The frontend's
@@ -1102,7 +1539,10 @@ pub async fn handle_compile_request(
                     Some(content)
                 }
                 Err(e) => {
-                    eprintln!("[HMR] host_runner: BYOR sentinel set but read failed: {}", e);
+                    eprintln!(
+                        "[HMR] host_runner: BYOR sentinel set but read failed: {}",
+                        e
+                    );
                     None
                 }
             }
@@ -1254,16 +1694,29 @@ pub async fn handle_compile_request(
                                 if all_ok {
                                     eprintln!(
                                         "[HMR] Tier 0 LIVE: patched {} record(s) in runner pid={}",
-                                        result.patch_records.len(), pid
+                                        result.patch_records.len(),
+                                        pid
                                     );
                                 }
                                 all_ok
-                            } else { false }
-                        } else { false }
-                    } else { false }
-                } else { false };
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
 
-                let method = if live_patched { "live-mem" } else { "disk+reload" };
+                let method = if live_patched {
+                    "live-mem"
+                } else {
+                    "disk+reload"
+                };
                 eprintln!(
                     "[HMR] Tier 0 v2 SUCCESS ({}): {} string + {} integer + {} float patch(es) in {}ms (total: {}ms)",
                     method,
@@ -1285,7 +1738,10 @@ pub async fn handle_compile_request(
                         method, result.string_patches, result.integer_patches, result.float_patches, t0_ms
                     )
                 });
-                let _ = ctx.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+                let _ = ctx
+                    .log_dc
+                    .send_text(serde_json::to_string(&payload).unwrap_or_default())
+                    .await;
                 true
             }
             Tier0V2Outcome::Ineligible(reason) => {
@@ -1295,7 +1751,10 @@ pub async fn handle_compile_request(
             }
             Tier0V2Outcome::Failed(reason) => {
                 TIER0_MISSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                eprintln!("[HMR] Tier 0 v2 failed: {} — falling through to g++", reason);
+                eprintln!(
+                    "[HMR] Tier 0 v2 failed: {} — falling through to g++",
+                    reason
+                );
                 false
             }
         }
@@ -1339,10 +1798,11 @@ pub async fn handle_compile_request(
         }
     }
 
-    let (core_lib_path_opt, gui_lib_path_opt, host_runner_bin_path): (
+    let (core_lib_path_opt, gui_lib_path_opt, host_runner_bin_path, device_compile_outcome): (
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<DeviceCompileOutcome>,
     ) = if tier0_bypassed {
         // Tier 0 patched existing .so files in place — skip g++.
         // Resolve paths from stable symlinks (cheap — two stat calls).
@@ -1360,7 +1820,7 @@ pub async fn handle_compile_request(
                 }
             }
         }
-        (core_opt, gui_opt, None)
+        (core_opt, gui_opt, None, None)
     } else if use_parallel {
         // ─── Parallel path ──────────────────────────────────────────
         // Three futures run concurrently on the tokio runtime. The
@@ -1383,7 +1843,7 @@ pub async fn handle_compile_request(
             &split_data,
             &processed_gui,
             rebuild_scope.clone(),
-            String::new(),  // core_lib_path — vestigial in compile_gui
+            String::new(), // core_lib_path — vestigial in compile_gui
             &output_dir,
             timestamp,
             ext,
@@ -1406,9 +1866,25 @@ pub async fn handle_compile_request(
                 Ok(None)
             }
         };
+        let device_fut = async {
+            if let (Some(source), Some(manifest)) =
+                (device_source_content.as_deref(), compile_manifest.as_ref())
+            {
+                compile_device_phase0(
+                    &ctx.workspace_path,
+                    &output_dir,
+                    timestamp,
+                    source,
+                    manifest,
+                )
+                .await
+            } else {
+                Ok(None)
+            }
+        };
 
-        let (core_res, gui_res, runner_res) =
-            tokio::join!(core_fut, gui_fut, runner_fut);
+        let (core_res, gui_res, runner_res, device_res) =
+            tokio::join!(core_fut, gui_fut, runner_fut, device_fut);
 
         // Propagate core error first (it's the most load-bearing —
         // without core we can't even attempt to load the .so chain).
@@ -1425,7 +1901,8 @@ pub async fn handle_compile_request(
                 None
             }
         };
-        (core_opt, gui_opt, runner_opt)
+        let device_opt = device_res?;
+        (core_opt, gui_opt, runner_opt, device_opt)
     } else {
         // ─── Serial fallback ───────────────────────────────────────
         let core_opt = compile_core(
@@ -1480,7 +1957,21 @@ pub async fn handle_compile_request(
         } else {
             None
         };
-        (core_opt, gui_opt, runner_opt)
+        let device_opt = if let (Some(source), Some(manifest)) =
+            (device_source_content.as_deref(), compile_manifest.as_ref())
+        {
+            compile_device_phase0(
+                &ctx.workspace_path,
+                &output_dir,
+                timestamp,
+                source,
+                manifest,
+            )
+            .await?
+        } else {
+            None
+        };
+        (core_opt, gui_opt, runner_opt, device_opt)
     };
 
     let core_lib_path = core_lib_path_opt
@@ -1489,6 +1980,14 @@ pub async fn handle_compile_request(
 
     if let Some(ref p) = host_runner_bin_path {
         eprintln!("[HMR] host_runner binary: {}", p);
+    }
+    if let Some(ref out) = device_compile_outcome {
+        eprintln!(
+            "[compile-device] sidecar ready artifact={} stderr_bytes={} register_records={}",
+            out.artifact_path.display(),
+            out.stderr.len(),
+            out.diagnostics.register_pressure.len()
+        );
     }
 
     // ULTRAPLAN Phase 9e — emit cache hit-rate snapshot after every
@@ -1514,7 +2013,9 @@ pub async fn handle_compile_request(
     let dirty_units: Vec<String> = match rebuild_scope {
         RebuildScope::CoreOnly => vec!["core".to_string()],
         RebuildScope::GuiOnly => vec!["gui".to_string()],
-        RebuildScope::Both | RebuildScope::FullReload => vec!["core".to_string(), "gui".to_string()],
+        RebuildScope::Both | RebuildScope::FullReload => {
+            vec!["core".to_string(), "gui".to_string()]
+        }
         RebuildScope::None => vec![],
     };
 
@@ -1553,9 +2054,10 @@ pub async fn handle_compile_request(
         RebuildScope::GuiOnly if prev_hashes.gui_hash != 0 => {
             Some(format!("{}", prev_hashes.gui_hash))
         }
-        _ if prev_hashes.core_hash != 0 || prev_hashes.gui_hash != 0 => {
-            Some(combined_hash(&[prev_hashes.core_hash, prev_hashes.gui_hash]))
-        }
+        _ if prev_hashes.core_hash != 0 || prev_hashes.gui_hash != 0 => Some(combined_hash(&[
+            prev_hashes.core_hash,
+            prev_hashes.gui_hash,
+        ])),
         _ => None,
     };
 
@@ -1604,17 +2106,46 @@ pub async fn handle_compile_request(
     // ── Determine capabilities from exported symbols ──
     let capabilities: Vec<String> = {
         let mut caps = Vec::new();
-        if exported_symbols.iter().any(|s| s.contains("on_update") || s.contains("core_on_update")) {
+        let gpu_manifest_enabled = compile_manifest
+            .as_ref()
+            .and_then(|m| m.gpu.as_ref())
+            .is_some();
+        if exported_symbols
+            .iter()
+            .any(|s| s.contains("on_update") || s.contains("core_on_update"))
+        {
             caps.push("hmr_state_update".to_string());
         }
-        if exported_symbols.iter().any(|s| s.contains("hmr_get_state_json")) {
+        if exported_symbols
+            .iter()
+            .any(|s| s.contains("hmr_get_state_json"))
+        {
             caps.push("json_state".to_string());
         }
-        if exported_symbols.iter().any(|s| s.contains("hmr_save_state_binary") || s.contains("on_save_state_binary")) {
+        if exported_symbols
+            .iter()
+            .any(|s| s.contains("hmr_save_state_binary") || s.contains("on_save_state_binary"))
+        {
             caps.push("binary_state".to_string());
         }
         if exported_symbols.iter().any(|s| s.contains("gui_on_render")) {
             caps.push("gui_render".to_string());
+        }
+        if gpu_manifest_enabled {
+            let missing_gpu = missing_gpu_host_contract_symbols(&exported_symbols);
+            if missing_gpu.is_empty() {
+                caps.push("gpu_hotapi_contract".to_string());
+            } else {
+                caps.push("gpu_contract_incomplete".to_string());
+                eprintln!(
+                    "[GPU HMR] host GPU ABI incomplete missing={}",
+                    missing_gpu.join(",")
+                );
+            }
+
+            if has_gpu_state_serialization_symbols(&exported_symbols) {
+                caps.push("gpu_managed_device_state".to_string());
+            }
         }
         caps
     };
@@ -1634,23 +2165,20 @@ pub async fn handle_compile_request(
         modes
     };
 
-    let build_manifest = BuildManifest::for_language(
-        session_id.clone(),
-        language,
-    )
-    .with_slot(build_slot)
-    .with_artifact(&manifest_artifact_path, &manifest_artifact_hash)
-    .with_abi_version(&format!("{}", new_hashes.shared_hash))
-    .with_state_schema_hash(&manifest_state_schema_hash)
-    .with_build_time(build_time_ms)
-    .with_dirty_units(dirty_units)
-    .with_exported_symbols(exported_symbols)
-    .with_capabilities(capabilities)
-    .with_snapshot_modes(snapshot_modes);
+    let build_manifest = BuildManifest::for_language(session_id.clone(), language)
+        .with_slot(build_slot)
+        .with_artifact(&manifest_artifact_path, &manifest_artifact_hash)
+        .with_abi_version(&format!("{}", new_hashes.shared_hash))
+        .with_state_schema_hash(&manifest_state_schema_hash)
+        .with_build_time(build_time_ms)
+        .with_dirty_units(dirty_units.clone())
+        .with_exported_symbols(exported_symbols)
+        .with_capabilities(capabilities)
+        .with_snapshot_modes(snapshot_modes);
 
     // Determine if ABI/schema changed from the previous build
-    let abi_changed = prev_hashes.shared_hash != 0
-        && prev_hashes.shared_hash != new_hashes.shared_hash;
+    let abi_changed =
+        prev_hashes.shared_hash != 0 && prev_hashes.shared_hash != new_hashes.shared_hash;
     let schema_changed = prev_state_schema_hash
         .as_deref()
         .map(|previous| previous != build_manifest.state_schema_hash)
@@ -1662,7 +2190,7 @@ pub async fn handle_compile_request(
         guard.as_ref().map(|s| s.is_hmr_capable).unwrap_or(false)
     };
 
-    let (planner_output, planner_notification, reload_result, pipeline_messages) = {
+    let (planner_output, planner_notification, reload_result, mut pipeline_messages) = {
         let mut orchestrator = ctx.hmr_orchestrator.lock().await;
         let pipeline = orchestrator.pipeline(&session_id);
 
@@ -1684,10 +2212,74 @@ pub async fn handle_compile_request(
             &planner_output,
             &format!("{}", reload_id),
         );
-        notifications.messages.extend(execute_notifications.messages);
+        notifications
+            .messages
+            .extend(execute_notifications.messages);
 
-        (planner_output, planner_notification, reload_result, notifications.messages)
+        (
+            planner_output,
+            planner_notification,
+            reload_result,
+            notifications.messages,
+        )
     };
+
+    if let (Some(device_outcome), Some(manifest), Some(device_source)) = (
+        device_compile_outcome.as_ref(),
+        compile_manifest.as_ref(),
+        device_source_content.as_ref(),
+    ) {
+        if let Some(gpu) = manifest.gpu.as_ref() {
+            let gpu_language = gpu.vendor.as_str();
+            let device_filename = device_filename_for_vendor(gpu.vendor);
+            let mut device_dirty_units = dirty_units.clone();
+            if !device_dirty_units.iter().any(|u| u == device_filename) {
+                device_dirty_units.push(device_filename.to_string());
+            }
+            let kernel_symbols = extract_device_kernel_symbols(device_source);
+            let kernel_abi = kernel_abi_fingerprint_source(device_source);
+            let artifact_path = device_outcome.artifact_path.to_string_lossy().to_string();
+            let artifact_hash = format!(
+                "{}",
+                hash_content(&format!(
+                    "{}:{}:{}",
+                    artifact_path,
+                    device_outcome.stderr.len(),
+                    kernel_abi
+                ))
+            );
+            let device_manifest = BuildManifest::for_language(session_id.clone(), gpu_language)
+                .with_slot(BuildSlot::Custom("device".into()))
+                .with_artifact(&artifact_path, &artifact_hash)
+                .with_abi_version(&format!("{}", hash_content(&kernel_abi)))
+                .with_state_schema_hash(&format!("{}", hash_content(device_source)))
+                .with_build_time(build_time_ms)
+                .with_dirty_units(device_dirty_units)
+                .with_exported_symbols(kernel_symbols)
+                .with_capabilities(vec![
+                    "gpu_sidecar_module".to_string(),
+                    "synthi_gpu_launch".to_string(),
+                ])
+                .with_snapshot_modes(vec![SnapshotMode::Binary]);
+
+            let (gpu_reload_result, gpu_notifications) = {
+                let mut orchestrator = ctx.hmr_orchestrator.lock().await;
+                orchestrator
+                    .pipeline(&session_id)
+                    .execute_gpu_device_reload(
+                        gpu_language,
+                        &device_manifest,
+                        &format!("{}-device", reload_id),
+                    )
+            };
+            debug_log!(
+                "[GPU HMR] Device reload result for {}: {:?}",
+                gpu_language,
+                gpu_reload_result
+            );
+            pipeline_messages.extend(gpu_notifications.messages);
+        }
+    }
 
     // Send planner decision to the frontend
     if let Ok(planner_json) = serde_json::to_string(&planner_notification) {
@@ -1695,7 +2287,8 @@ pub async fn handle_compile_request(
     }
     debug_log!(
         "[HMR Planner] Decision: {:?} — {}",
-        planner_output.decision, planner_output.reason.decision_reason
+        planner_output.decision,
+        planner_output.reason.decision_reason
     );
 
     // Execute adapter reload and collect notifications
@@ -1714,7 +2307,10 @@ pub async fn handle_compile_request(
     let adapter_handled = match (&planner_output.decision, &reload_result) {
         (
             crate::hmr::planner_decision::ReloadDecision::ProcessSwap,
-            AdapterReloadResult::Success { state_preserved, reload_ms },
+            AdapterReloadResult::Success {
+                state_preserved,
+                reload_ms,
+            },
         ) if !dynlib_family => {
             debug_log!(
                 "[HMR] Process-swap reload completed authoritatively: state_preserved={}, reload_ms={}",
@@ -1724,7 +2320,10 @@ pub async fn handle_compile_request(
         }
         (
             crate::hmr::planner_decision::ReloadDecision::ProcessSwap,
-            AdapterReloadResult::Success { state_preserved, reload_ms },
+            AdapterReloadResult::Success {
+                state_preserved,
+                reload_ms,
+            },
         ) => {
             debug_log!(
                 "[HMR] Dynlib adapter preflight reached a process-swap plan (state_preserved={}, reload_ms={}); delegating actual reload to runner",
@@ -1732,18 +2331,27 @@ pub async fn handle_compile_request(
             );
             false
         }
-        (decision, AdapterReloadResult::Success { state_preserved, reload_ms })
-            if decision.is_in_process() && !dynlib_family =>
-        {
+        (
+            decision,
+            AdapterReloadResult::Success {
+                state_preserved,
+                reload_ms,
+            },
+        ) if decision.is_in_process() && !dynlib_family => {
             debug_log!(
                 "[HMR] Adapter reload completed authoritatively: state_preserved={}, reload_ms={}",
-                state_preserved, reload_ms
+                state_preserved,
+                reload_ms
             );
             true
         }
-        (decision, AdapterReloadResult::Success { state_preserved, reload_ms })
-            if decision.is_in_process() && dynlib_family =>
-        {
+        (
+            decision,
+            AdapterReloadResult::Success {
+                state_preserved,
+                reload_ms,
+            },
+        ) if decision.is_in_process() && dynlib_family => {
             debug_log!(
                 "[HMR] Dynlib adapter preflight succeeded (state_preserved={}, reload_ms={}), delegating actual swap to runner",
                 state_preserved, reload_ms
@@ -1809,6 +2417,28 @@ pub async fn handle_compile_request(
         }
         RebuildScope::None => {
             // Nothing to load
+        }
+    }
+
+    if let (Some(device_outcome), Some(manifest), Some(device_source)) = (
+        device_compile_outcome.as_ref(),
+        compile_manifest.as_ref(),
+        device_source_content.as_ref(),
+    ) {
+        if let Some(gpu) = manifest.gpu.as_ref() {
+            let kernel_symbols = extract_device_kernel_symbols(device_source);
+            let device_cmd = format!(
+                "__gpu_device:{}:{}",
+                gpu.vendor.as_str(),
+                kernel_symbols.join(",")
+            );
+            modules_to_load.insert(
+                0,
+                (
+                    device_cmd,
+                    device_outcome.artifact_path.to_string_lossy().to_string(),
+                ),
+            );
         }
     }
 
@@ -1881,7 +2511,11 @@ pub async fn handle_compile_request(
                     break;
                 }
             }
-            if ok { Ok(()) } else { anyhow::bail!("supervisor IPC reload failed") }
+            if ok {
+                Ok(())
+            } else {
+                anyhow::bail!("supervisor IPC reload failed")
+            }
         } else {
             // First compile — spawn supervised session
             eprintln!("[HMR] Phase 12.6: spawning supervised session");
@@ -1908,7 +2542,11 @@ pub async fn handle_compile_request(
                         }
                     }
                     *sup_guard = Some(session);
-                    if ok { Ok(()) } else { anyhow::bail!("supervisor initial load failed") }
+                    if ok {
+                        Ok(())
+                    } else {
+                        anyhow::bail!("supervisor initial load failed")
+                    }
                 }
                 Err(e) => {
                     eprintln!(
@@ -1918,10 +2556,16 @@ pub async fn handle_compile_request(
                     drop(sup_guard);
                     drop(alloc);
                     handle_runner_execution(
-                        ctx, &req, modules_to_load, has_on_update,
-                        enrichment.use_ai_split, new_hashes,
-                        core_lib_path.clone(), gui_lib_path.clone(),
-                        Some(session_id.clone()), host_runner_bin_path.clone(),
+                        ctx,
+                        &req,
+                        modules_to_load,
+                        has_on_update,
+                        enrichment.use_ai_split,
+                        new_hashes,
+                        core_lib_path.clone(),
+                        gui_lib_path.clone(),
+                        Some(session_id.clone()),
+                        host_runner_bin_path.clone(),
                     )
                     .await
                     .map_err(|e| e.into())
@@ -1995,10 +2639,7 @@ fn combined_hash(parts: &[u64]) -> String {
 // HELPER: hash-based rebuild scope (fallback for Loop B)
 // ============================================================
 fn hash_based_rebuild_scope(prev_hashes: &ModuleHashes, new_hashes: &ModuleHashes) -> RebuildScope {
-    if prev_hashes.shared_hash == 0
-        && prev_hashes.core_hash == 0
-        && prev_hashes.gui_hash == 0
-    {
+    if prev_hashes.shared_hash == 0 && prev_hashes.core_hash == 0 && prev_hashes.gui_hash == 0 {
         debug_log!("[Handler] First build - Full Rebuild");
         RebuildScope::Both
     } else if prev_hashes.shared_hash != new_hashes.shared_hash {
@@ -2086,4 +2727,118 @@ pub(crate) fn build_simple_diff(old: &str, new: &str) -> String {
     }
 
     diff
+}
+
+#[cfg(test)]
+mod gpu_host_contract_tests {
+    use super::*;
+
+    fn symbols(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    #[test]
+    fn missing_gpu_host_contract_symbols_reports_required_callbacks() {
+        let missing = missing_gpu_host_contract_symbols(&symbols(&[
+            "device_descriptor",
+            "device_kernel_sig_hash",
+        ]));
+        assert_eq!(missing, vec!["device_on_load"]);
+    }
+
+    #[test]
+    fn gpu_host_contract_accepts_required_lifecycle_symbols() {
+        let missing = missing_gpu_host_contract_symbols(&symbols(&[
+            "device_descriptor",
+            "device_on_load",
+            "device_kernel_sig_hash",
+        ]));
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn gpu_state_serialization_requires_both_save_callbacks() {
+        assert!(!has_gpu_state_serialization_symbols(&symbols(&[
+            "device_save_size",
+        ])));
+        assert!(has_gpu_state_serialization_symbols(&symbols(&[
+            "device_save_size",
+            "device_save_write",
+        ])));
+    }
+
+    #[test]
+    fn device_kernel_symbol_extractor_handles_launch_bounds_positions() {
+        let source = r#"
+extern "C" __global__ void vec_add(const float* a, float* out) {}
+__global__ void __launch_bounds__(256, 2) reduce(const float* in, float* out) {}
+__global__ __launch_bounds__(128) void saxpy(float* y) {}
+"#;
+
+        assert_eq!(
+            extract_device_kernel_symbols(source),
+            vec![
+                "reduce".to_string(),
+                "saxpy".to_string(),
+                "vec_add".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn device_kernel_symbol_extractor_ignores_comments_and_deduplicates() {
+        let source = r#"
+// __global__ void commented_out(float* x) {}
+/*
+__global__ void block_commented(float* x) {}
+*/
+__global__ void live_kernel(float* x) {}
+__global__ void live_kernel(float* x);
+"#;
+
+        assert_eq!(
+            extract_device_kernel_symbols(source),
+            vec!["live_kernel".to_string()]
+        );
+    }
+
+    #[test]
+    fn device_kernel_signature_extractor_tracks_parameter_lists() {
+        let source = r#"
+extern "C" __global__ void vec_add(const float* a, const float* b, float* out, int n) {}
+__global__ void __launch_bounds__(256, 2) reduce(float const* in, float* out) {}
+__global__ void noop(void) {}
+"#;
+
+        assert_eq!(
+            extract_device_kernel_signatures(source),
+            vec![
+                "noop()".to_string(),
+                "reduce(float const*,float*)".to_string(),
+                "vec_add(const float*,const float*,float*,int)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn device_kernel_abi_fingerprint_changes_on_signature_change() {
+        let before = r#"
+extern "C" __global__ void vec_add(const float* a, float* out, int n) {}
+"#;
+        let body_only = r#"
+extern "C" __global__ void vec_add(const float* a, float* out, int n) { out[0] = a[0] + 1.0f; }
+"#;
+        let after = r#"
+extern "C" __global__ void vec_add(const float* a, float* out, int n, float scale) {}
+"#;
+
+        assert_eq!(
+            kernel_abi_fingerprint_source(before),
+            kernel_abi_fingerprint_source(body_only)
+        );
+        assert_ne!(
+            kernel_abi_fingerprint_source(before),
+            kernel_abi_fingerprint_source(after)
+        );
+    }
 }

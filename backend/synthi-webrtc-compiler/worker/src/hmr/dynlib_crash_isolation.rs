@@ -7,7 +7,6 @@
 // of taking down the host process.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Kind of crash that was caught.

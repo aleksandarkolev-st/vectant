@@ -28,9 +28,7 @@
 #![allow(dead_code)]
 
 use worker::runtime::backends::raylib_backend::RaylibBackend;
-use worker::runtime::window_backend::{
-    BackendEvent, WindowBackend, WindowFlags, WindowHandle,
-};
+use worker::runtime::window_backend::{BackendEvent, WindowBackend, WindowFlags, WindowHandle};
 
 // ────────────────────────────────────────────────────────────
 // Shape tests — always run, no raylib required
@@ -75,13 +73,7 @@ fn raylib_create_window_before_init_fails() {
 #[test]
 fn raylib_present_frame_rejects_null_pointer() {
     let mut backend = RaylibBackend::new();
-    let handle = WindowHandle::new(
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        800,
-        600,
-        None,
-    );
+    let handle = WindowHandle::new(std::ptr::null_mut(), std::ptr::null_mut(), 800, 600, None);
     let result = backend.present_frame(&handle);
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
@@ -103,8 +95,7 @@ fn raylib_push_synthetic_event_always_returns_err() {
     );
     let msg = format!("{}", result.unwrap_err());
     assert!(
-        msg.to_lowercase().contains("synthetic")
-            || msg.to_lowercase().contains("not support"),
+        msg.to_lowercase().contains("synthetic") || msg.to_lowercase().contains("not support"),
         "error should explain the limitation: {}",
         msg
     );
@@ -119,7 +110,10 @@ fn raylib_pump_events_before_init_is_safe() {
     let mut events: Vec<BackendEvent> = Vec::new();
     events.push(BackendEvent::Quit); // pre-populate to verify it gets cleared
     backend.pump_events(&mut events);
-    assert!(events.is_empty(), "pump_events should clear the output buffer");
+    assert!(
+        events.is_empty(),
+        "pump_events should clear the output buffer"
+    );
 }
 
 #[test]
@@ -132,26 +126,14 @@ fn raylib_shutdown_before_init_is_a_noop() {
 #[test]
 fn raylib_destroy_window_with_null_pointer_is_safe() {
     let mut backend = RaylibBackend::new();
-    let handle = WindowHandle::new(
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        800,
-        600,
-        None,
-    );
+    let handle = WindowHandle::new(std::ptr::null_mut(), std::ptr::null_mut(), 800, 600, None);
     backend.destroy_window(handle); // must not panic
 }
 
 #[test]
 fn raylib_on_resize_updates_handle_dimensions() {
     let mut backend = RaylibBackend::new();
-    let mut handle = WindowHandle::new(
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        800,
-        600,
-        None,
-    );
+    let mut handle = WindowHandle::new(std::ptr::null_mut(), std::ptr::null_mut(), 800, 600, None);
     backend.on_resize(&mut handle, 1280, 720);
     assert_eq!(handle.width, 1280);
     assert_eq!(handle.height, 720);
@@ -197,9 +179,7 @@ fn raylib_init_attempts_to_load_library() {
 #[test]
 fn raylib_full_lifecycle_smoke() {
     if !raylib_tests_enabled() {
-        eprintln!(
-            "[SKIP] raylib_full_lifecycle: set SYNTHI_RUN_RAYLIB_TESTS=1 to enable"
-        );
+        eprintln!("[SKIP] raylib_full_lifecycle: set SYNTHI_RUN_RAYLIB_TESTS=1 to enable");
         return;
     }
     if std::env::var("DISPLAY").is_err() {

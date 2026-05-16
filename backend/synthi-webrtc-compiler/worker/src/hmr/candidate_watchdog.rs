@@ -6,7 +6,6 @@
 // limits, the watchdog triggers rollback or discard.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -48,10 +47,7 @@ pub enum WatchdogAction {
         limit_ms: u64,
     },
     /// Candidate should be discarded (stale overall).
-    Discard {
-        total_age_ms: u64,
-        limit_ms: u64,
-    },
+    Discard { total_age_ms: u64, limit_ms: u64 },
 }
 
 /// Check whether a candidate has exceeded its timeouts.

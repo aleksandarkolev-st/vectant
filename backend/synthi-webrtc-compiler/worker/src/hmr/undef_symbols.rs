@@ -171,8 +171,7 @@ collect2: error: ld returned 1 exit status
 
     #[test]
     fn parses_modern_gcc_symbol_form() {
-        let stderr =
-            "/usr/bin/ld: /tmp/cc.o: undefined reference to symbol 'glfwInit'\n";
+        let stderr = "/usr/bin/ld: /tmp/cc.o: undefined reference to symbol 'glfwInit'\n";
         let syms = extract_undefined_symbols(stderr);
         assert_eq!(syms.len(), 1);
         assert_eq!(syms[0].name, "glfwInit");

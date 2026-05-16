@@ -58,9 +58,7 @@
 // inline tests + the tests/phase10c_raylib_backend.rs integration
 // tests exercise the public surface.
 
-use crate::runtime::window_backend::{
-    BackendEvent, WindowBackend, WindowFlags, WindowHandle,
-};
+use crate::runtime::window_backend::{BackendEvent, WindowBackend, WindowFlags, WindowHandle};
 use anyhow::{anyhow, Result};
 use libloading::{Library, Symbol};
 use std::ffi::{c_char, c_int, c_void, CString};
@@ -167,11 +165,7 @@ impl RaylibBackend {
         macro_rules! resolve_required {
             ($field:ident, $name:literal, $ty:ty) => {
                 let sym: Symbol<$ty> = lib.get($name).map_err(|e| {
-                    anyhow!(
-                        "symbol {} missing from libraylib: {}",
-                        stringify!($name),
-                        e
-                    )
+                    anyhow!("symbol {} missing from libraylib: {}", stringify!($name), e)
                 })?;
                 self.$field = Some(*sym);
             };
@@ -199,10 +193,18 @@ impl RaylibBackend {
         // may have called it differently. Optional — degrades to
         // "events only poll during BeginDrawing" behavior which is
         // fine for our pump_events surface.
-        resolve_optional!(rl_poll_input_events, b"PollInputEvents\0", RlPollInputEvents);
+        resolve_optional!(
+            rl_poll_input_events,
+            b"PollInputEvents\0",
+            RlPollInputEvents
+        );
         resolve_optional!(rl_set_config_flags, b"SetConfigFlags\0", RlSetConfigFlags);
         resolve_optional!(rl_set_target_fps, b"SetTargetFPS\0", RlSetTargetFPS);
-        resolve_optional!(rl_get_window_handle, b"GetWindowHandle\0", RlGetWindowHandle);
+        resolve_optional!(
+            rl_get_window_handle,
+            b"GetWindowHandle\0",
+            RlGetWindowHandle
+        );
         resolve_optional!(rl_is_window_ready, b"IsWindowReady\0", RlIsWindowReady);
         Ok(())
     }
@@ -247,9 +249,7 @@ impl WindowBackend for RaylibBackend {
         flags: WindowFlags,
     ) -> Result<WindowHandle> {
         if self.lib.is_none() {
-            return Err(anyhow!(
-                "RaylibBackend::create_window called before init"
-            ));
+            return Err(anyhow!("RaylibBackend::create_window called before init"));
         }
         if self.window_active {
             return Err(anyhow!(
