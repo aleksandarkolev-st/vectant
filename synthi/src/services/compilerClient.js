@@ -1801,8 +1801,11 @@ export class CompilerClient {
 
                 const compileManifest = (() => {
                     for (const file of files || []) {
-                        const name = String(file?.name || file?.path || '').replace(/\\/g, '/').replace(/^[./]+/, '');
-                        if (name !== '.synthi/build_manifest.json') continue;
+                        const name = String(file?.name || file?.path || '')
+                            .replace(/\\/g, '/')
+                            .replace(/^\/+/, '')
+                            .replace(/^\.\//, '');
+                        if (name !== '.synthi/build_manifest.json' && name !== 'synthi/build_manifest.json') continue;
                         try {
                             return JSON.parse(file.content);
                         } catch (_) {

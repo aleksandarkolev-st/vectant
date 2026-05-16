@@ -109,7 +109,10 @@ const ADAPTED_COMPILE_FILES = [
     '.synthi/build_manifest.json',
 ];
 
-const normalizeWorkspacePath = (path = '') => String(path).replace(/\\/g, '/').replace(/^[./]+/, '');
+const normalizeWorkspacePath = (path = '') => String(path)
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/^\.\//, '');
 
 // Feature flag: set to true to enable the new docking layout.
 // When false, the existing rigid ResizablePanelGroup layout is used.
@@ -2032,11 +2035,23 @@ export default function EditorPage({ params }) {
         if (!canBeAdaptedCompile) return Array.from(byPath.values());
 
         for (const path of ADAPTED_COMPILE_FILES) {
-            if (path === activePath || byPath.has(path)) continue;
+            const canonicalPath = normalizeWorkspacePath(path);
+            if (canonicalPath === activePath || byPath.has(canonicalPath)) continue;
+            const candidates = canonicalPath.startsWith('.synthi/')
+                ? [canonicalPath, canonicalPath.slice(1)]
+                : [canonicalPath];
             try {
-                const content = await getContentForDependency(path);
+                let content = '';
+                for (const candidate of candidates) {
+                    try {
+                        content = await getContentForDependency(candidate);
+                        if (typeof content === 'string' && content.length > 0) break;
+                    } catch (_) {
+                        // Try the next canonicalization form.
+                    }
+                }
                 if (typeof content === 'string' && content.length > 0) {
-                    byPath.set(path, { name: path, content });
+                    byPath.set(canonicalPath, { name: canonicalPath, content });
                 }
             } catch (_) {
                 // Most projects are not adapted split projects. Missing optional
