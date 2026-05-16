@@ -637,6 +637,98 @@ function getProjectName(cwd, fallback) {
   return fallback;
 }
 
+// ─── Workspace Jail (cd confinement) ────────────────────────────────────────
+
+/**
+ * POSIX-sh init script that overrides `cd` so it can't escape
+ * `$WORKSPACE_DIR`. We ship it as a real file rather than inlining via
+ * env vars because (a) functions can't be exported through env on POSIX
+ * sh, and (b) sourcing keeps the override resilient to /etc/profile and
+ * ~/.bashrc clobbering it later. Sourced via:
+ *   - `$ENV` (POSIX interactive sh / ash / dash / ksh)
+ *   - `$BASH_ENV` (non-interactive bash subshells)
+ *   - one-shot bootstrap injected into `$PROMPT_COMMAND` (interactive bash,
+ *     because `--login` doesn't read either of the above)
+ *
+ * The override resolves the target to an absolute path (via a subshell
+ * `cd … && pwd`) and refuses anything that doesn't start with
+ * `$WORKSPACE_DIR`. `cd` with no args goes to the workspace root, which
+ * matches the HOME override behaviour and is what users expect.
+ *
+ * Bash also gets a `pushd` stub (since `pushd` would bypass our `cd`
+ * function) plus a `PROMPT_COMMAND` safety net that snaps `$PWD` back if
+ * anything else (a script, `exec`, an obscure builtin) moved us outside.
+ * ash has no `pushd`/`PROMPT_COMMAND`, so the `cd` override is the whole
+ * fence there — fine in practice because that's the only escape vector
+ * an interactive ash user has.
+ *
+ * Operator escape hatch: SYNTHI_NO_JAIL=1.
+ */
+function buildJailScript() {
+  return [
+    '# Synthi terminal jail — confines `cd` to "$WORKSPACE_DIR".',
+    '# Sourced from ENV / BASH_ENV / PROMPT_COMMAND bootstrap.',
+    'if [ -z "$WORKSPACE_DIR" ]; then',
+    '  return 0 2>/dev/null || true',
+    'fi',
+    '',
+    'cd() {',
+    '  if [ "$#" -eq 0 ]; then',
+    '    command cd "$WORKSPACE_DIR"',
+    '    return $?',
+    '  fi',
+    '  __synthi_t="$1"',
+    '  case "$__synthi_t" in',
+    '    -) [ -z "$OLDPWD" ] && { printf "cd: OLDPWD not set\\n" >&2; unset __synthi_t; return 1; }; __synthi_t="$OLDPWD";;',
+    '    "~") __synthi_t="$WORKSPACE_DIR";;',
+    '    "~/"*) __synthi_t="$WORKSPACE_DIR/${__synthi_t#~/}";;',
+    '  esac',
+    '  case "$__synthi_t" in',
+    '    /*) ;;',
+    '    *) __synthi_t="$PWD/$__synthi_t";;',
+    '  esac',
+    '  __synthi_r=$(CDPATH= command cd -- "$__synthi_t" 2>/dev/null && pwd) || {',
+    '    printf "cd: %s: No such file or directory\\n" "$1" >&2',
+    '    unset __synthi_t __synthi_r',
+    '    return 1',
+    '  }',
+    '  case "$__synthi_r" in',
+    '    "$WORKSPACE_DIR"|"$WORKSPACE_DIR"/*)',
+    '      command cd -- "$__synthi_r"',
+    '      __synthi_rc=$?',
+    '      ;;',
+    '    *)',
+    '      printf "synthi: terminal is locked to %s\\n" "$WORKSPACE_DIR" >&2',
+    '      __synthi_rc=1',
+    '      ;;',
+    '  esac',
+    '  unset __synthi_t __synthi_r',
+    '  return $__synthi_rc',
+    '}',
+    '',
+    'if [ -n "$BASH_VERSION" ]; then',
+    '  pushd() {',
+    '    printf "synthi: pushd is disabled inside the workspace jail\\n" >&2',
+    '    return 1',
+    '  }',
+    '  __synthi_prompt_check() {',
+    '    case "$PWD" in',
+    '      "$WORKSPACE_DIR"|"$WORKSPACE_DIR"/*) ;;',
+    '      *) command cd "$WORKSPACE_DIR" 2>/dev/null ;;',
+    '    esac',
+    '  }',
+    '  case ":${PROMPT_COMMAND:-}:" in',
+    '    *:__synthi_prompt_check:*) ;;',
+    '    *) PROMPT_COMMAND="__synthi_prompt_check; ${PROMPT_COMMAND:-:}";;',
+    '  esac',
+    'fi',
+    '',
+    '__SYNTHI_JAIL_LOADED=1',
+    'export __SYNTHI_JAIL_LOADED',
+    '',
+  ].join('\n');
+}
+
 
 /**
  * Spawn a PTY process. This is the single point to replace with
@@ -750,6 +842,46 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
     }
   }
 
+  // ── Workspace jail ────────────────────────────────────────────────────
+  // Confine `cd` so the user can't wander outside $WORKSPACE_DIR. See
+  // buildJailScript for the mechanics; this block writes the script,
+  // exposes it to the shell, and arranges for cleanup on PTY exit.
+  let jailRcPath = null;
+  if (
+    cwd &&
+    !process.env.SYNTHI_NO_JAIL &&
+    os.platform() !== 'win32'
+  ) {
+    const shellNameForJail = path.basename(shell || '').toLowerCase().replace(/\.exe$/, '');
+    if (['sh', 'bash', 'dash', 'ash', 'ksh'].includes(shellNameForJail)) {
+      try {
+        const rcPath = path.join(
+          os.tmpdir(),
+          `synthi-shell-rc-${crypto.randomBytes(6).toString('hex')}.sh`
+        );
+        fs.writeFileSync(rcPath, buildJailScript(), { mode: 0o600 });
+        jailRcPath = rcPath;
+        // POSIX interactive shells (ash/dash/sh/ksh) source $ENV at startup.
+        ptyEnv.ENV = rcPath;
+        // Non-interactive bash subshells source $BASH_ENV.
+        ptyEnv.BASH_ENV = rcPath;
+        // Interactive bash --login doesn't read either — bootstrap via
+        // PROMPT_COMMAND, which we already use to reassert PS1. Source
+        // the rcfile once, then drop the bootstrap so we're not re-doing
+        // the disk read every prompt.
+        if (shellNameForJail === 'bash') {
+          const existing = ptyEnv.PROMPT_COMMAND || '';
+          ptyEnv.PROMPT_COMMAND =
+            `if [ -z "$__SYNTHI_JAIL_LOADED" ] && [ -r "${rcPath}" ]; then . "${rcPath}"; fi; ` +
+            existing;
+        }
+      } catch (err) {
+        console.warn('[Terminal] failed to install workspace jail:', err.message);
+        jailRcPath = null;
+      }
+    }
+  }
+
   // Remove sensitive server-side variables
   delete ptyEnv.DATABASE_URL;
   delete ptyEnv.GOOGLE_APPLICATION_CREDENTIALS;
@@ -764,6 +896,17 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
     // On Windows, use ConPTY (default in modern node-pty)
     useConpty: os.platform() === 'win32',
   });
+
+  // Best-effort cleanup of the per-session jail rcfile when the PTY dies.
+  // /tmp survives long enough that a missed unlink isn't a crisis, but
+  // without this the file accumulates across long-lived collab-server
+  // processes. fs.unlink is async with a no-op callback so we don't block
+  // shutdown on disk IO.
+  if (jailRcPath) {
+    ptyProcess.onExit(() => {
+      fs.unlink(jailRcPath, () => {});
+    });
+  }
 
   return { ptyProcess, shell };
 }
