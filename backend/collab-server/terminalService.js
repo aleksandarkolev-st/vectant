@@ -624,7 +624,7 @@ function getDevCliPaths() {
  * @param {object} [opts.env] - Extra environment variables
  * @returns {{ ptyProcess: IPty, shell: string }}
  */
-function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = null }) {
+function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = null, workspaceLabel = null }) {
   // Resolve requested shell type, or fall back to platform default
   const resolved = shellType ? resolveShellType(shellType) : null;
   const shell = resolved ? resolved.executable : getDefaultShell();
@@ -650,24 +650,30 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
     ptyEnv.PATH = extraPaths.join(sep) + sep + (ptyEnv.PATH || '');
   }
 
-  // Display the workspace cwd as "~" in the prompt so users don't see the
-  // long /data/repos/<slug>/<userId> prefix on every line. We only inject a
-  // PS1 for sh-family shells (ash on Alpine, bash, zsh, dash, ksh) — fish
-  // uses a function, and Windows shells use their own prompt mechanism, so
-  // we leave those alone. Operators can opt out with SYNTHI_NO_PS1=1.
+  // Display the workspace cwd as the project label (workspace slug, or the
+  // cwd basename if no slug was provided) so users don't see the long
+  // /data/repos/<slug>/<userId> prefix on every line. We only inject a PS1
+  // for sh-family shells (ash on Alpine, bash, zsh, dash, ksh) — fish uses
+  // a function, and Windows shells use their own prompt mechanism, so we
+  // leave those alone. Operators can opt out with SYNTHI_NO_PS1=1.
   if (cwd && !process.env.SYNTHI_NO_PS1) {
     ptyEnv.WORKSPACE_DIR = cwd;
+    // Sanitise the label so it can't break out of the printf format string
+    // or smuggle ANSI escapes. The slug is already safe but the cwd
+    // basename fallback could in theory contain anything.
+    const rawLabel = workspaceLabel || path.basename(cwd) || 'workspace';
+    ptyEnv.WORKSPACE_LABEL = String(rawLabel).replace(/[^a-zA-Z0-9_@.\-]/g, '_');
     const shellName = path.basename(shell || '').toLowerCase().replace(/\.exe$/, '');
     if (['sh', 'bash', 'dash', 'ash', 'zsh', 'ksh'].includes(shellName)) {
       // POSIX-safe: case + parameter expansion re-evaluated on every prompt.
-      //   $WORKSPACE_DIR        → "~"
-      //   $WORKSPACE_DIR/sub    → "~/sub"
+      //   $WORKSPACE_DIR        → "<label>"
+      //   $WORKSPACE_DIR/sub    → "<label>/sub"
       //   anywhere else         → absolute $PWD (so users can see when they
       //                           cd outside the workspace)
       const ps1 =
         '$(case "$PWD" in ' +
-        '"$WORKSPACE_DIR") printf "~";; ' +
-        '"$WORKSPACE_DIR"/*) printf "~%s" "${PWD#$WORKSPACE_DIR}";; ' +
+        '"$WORKSPACE_DIR") printf "%s" "$WORKSPACE_LABEL";; ' +
+        '"$WORKSPACE_DIR"/*) printf "%s%s" "$WORKSPACE_LABEL" "${PWD#$WORKSPACE_DIR}";; ' +
         '*) printf "%s" "$PWD";; ' +
         'esac) $ ';
       ptyEnv.PS1 = ps1;
@@ -758,6 +764,22 @@ async function resolveWorkspaceCwd(slug, userId) {
     REPOS_DIR;
   const safeId = _safeUserId(userId);
 
+  // Ensure baseDir itself exists before we try anything else. This is
+  // idempotent — mkdir -p succeeds if the dir already exists. Most of the
+  // time this is a no-op; it matters when REPOS_DIR points at a mounted
+  // volume whose parent the container created but the leaf directory
+  // wasn't pre-populated. Without this, the per-workspace mkdir below
+  // could fail with EACCES even though the volume mount is fine, and we'd
+  // silently fall through to $HOME.
+  try {
+    await fsp.mkdir(baseDir, { recursive: true });
+  } catch (err) {
+    console.error(
+      `[Terminal] resolveWorkspaceCwd: cannot create baseDir ${baseDir} (${err.code}: ${err.message}). ` +
+      `Set REPOS_DIR / WORKSPACE_ROOT to a directory the synthi user (uid 1001) can write to.`
+    );
+  }
+
   if (slug) {
     // 1. Per-user directory: repos/<slug>/<userId>  (matches gitService layout)
     if (safeId) {
@@ -847,7 +869,7 @@ function sanitizeResize(cols, rows) {
  */
 async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30) {
   const cwd = await resolveWorkspaceCwd(slug, userId);
-  const { ptyProcess, shell } = createPtyProcess({ cwd, cols, rows });
+  const { ptyProcess, shell } = createPtyProcess({ cwd, cols, rows, workspaceLabel: slug });
 
   // Ring buffer for replay when the frontend connects. We keep the *most
   // recent* MAX_BUFFER chars rather than the oldest — when a long build log
@@ -1062,6 +1084,7 @@ function createTerminalWSS() {
         cols: initialCols,
         rows: initialRows,
         shellType: requestedShellType,
+        workspaceLabel: workspaceSlug,
       }));
     } catch (err) {
       console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);
