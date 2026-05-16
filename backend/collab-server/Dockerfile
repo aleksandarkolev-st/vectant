@@ -26,6 +26,11 @@ ENV NODE_ENV=production
 # git is needed for gitService.js operations.
 RUN apk add --no-cache git
 
+# Claude Code CLI — exposed inside the in-app terminal. Installed globally
+# so it lands in /usr/local/bin (already on PATH, owned by root, readable
+# by the unprivileged synthi user that runs the server).
+RUN npm install -g @anthropic-ai/claude-code
+
 RUN addgroup --system --gid 1001 synthi && \
     adduser --system --uid 1001 synthi
 

@@ -534,6 +534,84 @@ function getSdkPaths() {
   return _cachedSdkPaths;
 }
 
+// ─── Developer CLI Path Discovery ───────────────────────────────────────────
+
+/**
+ * Discover per-user bin directories where common developer CLIs install
+ * (Claude Code, npm globals on Windows, ~/.local/bin from standalone
+ * installers, bun, cargo, pnpm, yarn). Kept separate from discoverSdkPaths
+ * so the SDK list stays untouched.
+ *
+ * In the deployed Alpine image, `npm install -g` lands binaries in
+ * /usr/local/bin which is already on PATH — none of these candidates
+ * exist there and tryAdd skips them silently. On developer laptops the
+ * `claude` CLI commonly lives in ~/.local/bin (standalone installer) or
+ * %APPDATA%\npm (Windows npm-global), neither of which collab-server's
+ * inherited PATH is guaranteed to contain.
+ *
+ * Operator override: set CLAUDE_BIN_DIR to force-add a specific directory.
+ */
+function discoverDevCliPaths() {
+  const found = [];
+  const home = os.homedir();
+  const isWin = os.platform() === 'win32';
+  const sep = isWin ? ';' : ':';
+  const currentPath = (process.env.PATH || '').split(sep).map(p => p.toLowerCase());
+
+  function tryAdd(dir) {
+    if (!dir) return;
+    try {
+      const resolved = path.resolve(dir);
+      const lower = resolved.toLowerCase();
+      if (
+        fs.existsSync(resolved) &&
+        !currentPath.includes(lower) &&
+        !found.some(f => f.toLowerCase() === lower)
+      ) {
+        found.push(resolved);
+      }
+    } catch (_) { /* skip */ }
+  }
+
+  // Explicit override — operators can fix this without code changes.
+  if (process.env.CLAUDE_BIN_DIR) tryAdd(process.env.CLAUDE_BIN_DIR);
+
+  if (isWin) {
+    // npm install -g on Windows drops claude.cmd / claude.ps1 here.
+    if (process.env.APPDATA) tryAdd(path.join(process.env.APPDATA, 'npm'));
+    // Standalone installers (e.g. the claude.ai install script) and other
+    // XDG-ish locations now common on Windows too.
+    tryAdd(path.join(home, '.local', 'bin'));
+    tryAdd(path.join(home, '.bun', 'bin'));
+    tryAdd(path.join(home, '.cargo', 'bin'));
+    if (process.env.LOCALAPPDATA) {
+      tryAdd(path.join(process.env.LOCALAPPDATA, 'pnpm'));
+      tryAdd(path.join(process.env.LOCALAPPDATA, 'Yarn', 'bin'));
+    }
+  } else {
+    tryAdd(path.join(home, '.local', 'bin'));
+    tryAdd(path.join(home, '.npm-global', 'bin'));
+    tryAdd(path.join(home, '.bun', 'bin'));
+    tryAdd(path.join(home, '.cargo', 'bin'));
+    tryAdd(path.join(home, '.local', 'share', 'pnpm'));
+    tryAdd(path.join(home, '.yarn', 'bin'));
+  }
+
+  if (found.length > 0) {
+    console.log('[Terminal] Discovered dev-CLI paths:', found);
+  }
+
+  return found;
+}
+
+let _cachedDevCliPaths = null;
+function getDevCliPaths() {
+  if (_cachedDevCliPaths === null) {
+    _cachedDevCliPaths = discoverDevCliPaths();
+  }
+  return _cachedDevCliPaths;
+}
+
 
 /**
  * Spawn a PTY process. This is the single point to replace with
@@ -564,11 +642,12 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
     ptyEnv.HOME = homeDir;
   }
 
-  // Prepend discovered SDK paths (Flutter, Dart, Android, etc.) to PATH
-  const sdkPaths = getSdkPaths();
-  if (sdkPaths.length > 0) {
+  // Prepend discovered SDK paths (Flutter, Dart, Android, etc.) and per-user
+  // dev-CLI bin dirs (Claude Code, npm-global on Windows, ~/.local/bin) to PATH.
+  const extraPaths = getSdkPaths().concat(getDevCliPaths());
+  if (extraPaths.length > 0) {
     const sep = os.platform() === 'win32' ? ';' : ':';
-    ptyEnv.PATH = sdkPaths.join(sep) + sep + (ptyEnv.PATH || '');
+    ptyEnv.PATH = extraPaths.join(sep) + sep + (ptyEnv.PATH || '');
   }
 
   // Remove sensitive server-side variables
