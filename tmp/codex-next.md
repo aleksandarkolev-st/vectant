@@ -24,6 +24,7 @@ Date: 2026-05-16
 
 ## Latest Commits To Know
 
+- `7d19925a fix(gpu-hmr): derive adapted compile files from manifest`
 - `6c22a9e0 feat(gpu-hmr): add universal gpu worker path`
 - `9534144d docs(gpu-hmr): record cuda compose handoff`
 - `4d1c1788 feat(gpu-hmr): add cuda worker compose path`
@@ -31,7 +32,6 @@ Date: 2026-05-16
 - `f3e76eb9 fix(gpu-hmr): send adapted files from browser`
 - `3a27bf02 test(gpu-hmr): validate flow demo live`
 - `859bf4be test(gpu-hmr): add particle flow validation`
-- `76711305 docs(gpu-hmr): record abi classifier validation`
 
 Run this after a clean-session resume:
 
@@ -82,6 +82,13 @@ Phases: FLOW pass
     - `FLOW_DEVICE_OUTWARD`
     - `phaseFlow`
     - `captureMcpScreenshot`
+
+- `synthi/src/app/workspace/[slug]/page.jsx`
+  - Browser compile no longer treats the adapted GPU source set as a fixed
+    hardcoded list.
+  - It reads `.synthi/build_manifest.json` or `.synthi_split_meta.json`, uses
+    `compile_manifest.files` when present, and falls back to the current
+    5-file GPU split contract only for older manifests.
 
 - `backend/synthi-webrtc-compiler/worker/src/compiler/handler.rs`
   - Device kernel signature extraction.
