@@ -664,12 +664,26 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
       //   $WORKSPACE_DIR/sub    → "~/sub"
       //   anywhere else         → absolute $PWD (so users can see when they
       //                           cd outside the workspace)
-      ptyEnv.PS1 =
+      const ps1 =
         '$(case "$PWD" in ' +
         '"$WORKSPACE_DIR") printf "~";; ' +
         '"$WORKSPACE_DIR"/*) printf "~%s" "${PWD#$WORKSPACE_DIR}";; ' +
         '*) printf "%s" "$PWD";; ' +
         'esac) $ ';
+      ptyEnv.PS1 = ps1;
+
+      // bash --login sources /etc/profile and ~/.bash_profile, both of
+      // which commonly reset PS1, so the env-set PS1 above gets clobbered
+      // by the time the first prompt renders. PROMPT_COMMAND runs *before*
+      // every prompt, so re-asserting PS1 there makes our value win even
+      // after init scripts have run. The literal $(...) inside the
+      // single-quoted assignment is preserved (not evaluated when
+      // PROMPT_COMMAND runs) and gets expanded when bash renders the
+      // prompt — exactly what we want. Safe to single-quote because our
+      // PS1 string contains no single quotes.
+      if (shellName === 'bash') {
+        ptyEnv.PROMPT_COMMAND = `PS1='${ps1}'`;
+      }
     }
   }
 
@@ -835,20 +849,46 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
   const cwd = await resolveWorkspaceCwd(slug, userId);
   const { ptyProcess, shell } = createPtyProcess({ cwd, cols, rows });
 
-  // Buffer output so we can replay it when the frontend connects
+  // Ring buffer for replay when the frontend connects. We keep the *most
+  // recent* MAX_BUFFER chars rather than the oldest — when a long build log
+  // streams past the cap, the tail is what the user actually needs to see.
   const outputBuffer = [];
   const MAX_BUFFER = 100_000; // characters
   let bufferLen = 0;
-  let bufferingActive = true; // Flag to stop buffering when WS connects
+  let bufferingActive = true;
   const onData = (data) => {
-    if (bufferingActive && bufferLen < MAX_BUFFER) {
-      outputBuffer.push(data);
-      bufferLen += data.length;
+    if (!bufferingActive) return;
+    outputBuffer.push(data);
+    bufferLen += data.length;
+    // Evict oldest chunks until we're back under the cap. Guard against
+    // emptying the buffer entirely in the pathological case where a single
+    // chunk is bigger than MAX_BUFFER — keep that one chunk regardless.
+    while (bufferLen > MAX_BUFFER && outputBuffer.length > 1) {
+      const dropped = outputBuffer.shift();
+      bufferLen -= dropped.length;
     }
   };
-  ptyProcess.onData(onData);
+  // node-pty's onData returns an IDisposable. We capture it so the reattach
+  // path can dispose it explicitly instead of leaving a no-op listener
+  // firing for every PTY chunk for the rest of the session's life.
+  const bufferDisposable = ptyProcess.onData(onData);
 
-  // Store in activeSessions — the WebSocket handler will detect this
+  // Orphan reaper — if no WebSocket ever attaches (e.g. an AI tool call
+  // created the headless session and then crashed, or the frontend tab was
+  // closed before reconnect), the PTY and its 100k buffer would live until
+  // process exit. Kill it after HEADLESS_TTL_MS.
+  const HEADLESS_TTL_MS = 5 * 60 * 1000;
+  const orphanTimer = setTimeout(() => {
+    const session = activeSessions.get(sessionId);
+    if (!session || !session.headless) return; // WS attached in the meantime
+    console.warn(`[Terminal] Headless session ${sessionId} orphaned for ${HEADLESS_TTL_MS}ms — killing PTY`);
+    try { bufferDisposable.dispose?.(); } catch (_) {}
+    try { ptyProcess.kill(); } catch (_) {}
+    activeSessions.delete(sessionId);
+  }, HEADLESS_TTL_MS);
+  // Don't hold the event loop open on this timer alone.
+  if (orphanTimer.unref) orphanTimer.unref();
+
   activeSessions.set(sessionId, {
     pty: ptyProcess,
     ws: null,           // No WebSocket yet — frontend will connect later
@@ -857,7 +897,11 @@ async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows =
     unwatchFs: () => {},
     headless: true,     // Flag so WSS handler knows to reattach
     outputBuffer,       // Buffered output for replay
-    stopBuffering: () => { bufferingActive = false; }, // Stop buffering on WS connect
+    stopBuffering: () => {
+      bufferingActive = false;
+      try { bufferDisposable.dispose?.(); } catch (_) {}
+    },
+    orphanTimer,        // Cleared by the reattach handler
   });
 
   console.log(`[Terminal] Headless session ${sessionId} created | cwd=${cwd} | shell=${shell}`);
@@ -904,7 +948,11 @@ function createTerminalWSS() {
 
       console.log(`[Terminal] Reattaching WS to headless session ${sessionId} | cwd=${cwd} | buffered=${outputBuffer.length} chunks`);
 
-      // Stop the headless buffer from growing now that we have a WS
+      // Clear the orphan reaper — we have a WS now.
+      if (existingSession.orphanTimer) clearTimeout(existingSession.orphanTimer);
+
+      // Stop the headless buffer from growing AND dispose its PTY listener
+      // (stopBuffering does both — see createHeadlessSession).
       if (stopBuffering) stopBuffering();
 
       // Start filesystem watcher now that we have a WebSocket
