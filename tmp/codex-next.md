@@ -24,13 +24,14 @@ Date: 2026-05-16
 
 ## Latest Commits To Know
 
+- `6c22a9e0 feat(gpu-hmr): add universal gpu worker path`
+- `9534144d docs(gpu-hmr): record cuda compose handoff`
 - `4d1c1788 feat(gpu-hmr): add cuda worker compose path`
 - `312ea251 fix(gpu-hmr): preserve manifest path in browser compile`
 - `f3e76eb9 fix(gpu-hmr): send adapted files from browser`
 - `3a27bf02 test(gpu-hmr): validate flow demo live`
 - `859bf4be test(gpu-hmr): add particle flow validation`
 - `76711305 docs(gpu-hmr): record abi classifier validation`
-- `f62623ec fix(gpu-hmr): classify kernel abi changes`
 
 Run this after a clean-session resume:
 
