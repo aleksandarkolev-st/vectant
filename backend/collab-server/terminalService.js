@@ -612,6 +612,31 @@ function getDevCliPaths() {
   return _cachedDevCliPaths;
 }
 
+// ─── Project-Name Inference ─────────────────────────────────────────────────
+
+/**
+ * Best-effort project name from the workspace directory.
+ * Reads package.json's `name` field if present (strips npm scope prefix
+ * like `@foo/bar` → `bar`). Falls back to `fallback` for non-Node
+ * projects or empty/malformed package.json. Sync read — workspace files
+ * are local disk, the spawn path is rare, and we want this resolved
+ * before the PTY starts so PS1 is correct on the first prompt.
+ */
+function getProjectName(cwd, fallback) {
+  if (!cwd) return fallback;
+  try {
+    const pkgPath = path.join(cwd, 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      if (pkg && typeof pkg.name === 'string') {
+        const cleaned = pkg.name.replace(/^@[^/]+\//, '').trim();
+        if (cleaned) return cleaned;
+      }
+    }
+  } catch (_) { /* malformed package.json or read error — fall through */ }
+  return fallback;
+}
+
 
 /**
  * Spawn a PTY process. This is the single point to replace with
@@ -642,6 +667,27 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
     ptyEnv.HOME = homeDir;
   }
 
+  // Re-point HOME at the workspace so `cd` (no args) and `~` resolve to the
+  // project root rather than /home/synthi. Trade-off: tools that store
+  // config under $HOME (git --global, npm, claude CLI, etc.) will land
+  // inside the workspace. For most interactive use this is fine, and we
+  // pin a few of the worst offenders to the original home dir below so
+  // they don't pollute the user's repo. Set SYNTHI_NO_HOME_OVERRIDE=1 to
+  // restore the old behavior.
+  if (cwd && !process.env.SYNTHI_NO_HOME_OVERRIDE) {
+    ptyEnv.HOME = cwd;
+    // Keep auth + global config files outside the workspace so the user
+    // doesn't accidentally commit them and doesn't have to re-auth claude
+    // every time they switch project. Each var is the tool's documented
+    // override for "config file location".
+    ptyEnv.GIT_CONFIG_GLOBAL = path.join(homeDir, '.gitconfig');
+    ptyEnv.NPM_CONFIG_USERCONFIG = path.join(homeDir, '.npmrc');
+    ptyEnv.CLAUDE_CONFIG_DIR = path.join(homeDir, '.claude');
+    ptyEnv.XDG_CONFIG_HOME = path.join(homeDir, '.config');
+    ptyEnv.XDG_CACHE_HOME = path.join(homeDir, '.cache');
+    ptyEnv.XDG_DATA_HOME = path.join(homeDir, '.local', 'share');
+  }
+
   // Prepend discovered SDK paths (Flutter, Dart, Android, etc.) and per-user
   // dev-CLI bin dirs (Claude Code, npm-global on Windows, ~/.local/bin) to PATH.
   const extraPaths = getSdkPaths().concat(getDevCliPaths());
@@ -650,30 +696,33 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
     ptyEnv.PATH = extraPaths.join(sep) + sep + (ptyEnv.PATH || '');
   }
 
-  // Display the workspace cwd as the project label (workspace slug, or the
-  // cwd basename if no slug was provided) so users don't see the long
-  // /data/repos/<slug>/<userId> prefix on every line. We only inject a PS1
-  // for sh-family shells (ash on Alpine, bash, zsh, dash, ksh) — fish uses
-  // a function, and Windows shells use their own prompt mechanism, so we
-  // leave those alone. Operators can opt out with SYNTHI_NO_PS1=1.
+  // Display the workspace as "~/<projectName>" so users see a friendly,
+  // local-repo-style path instead of the cryptic /data/repos/<slug>/<userId>
+  // server path or the bare slug. projectName is read from package.json
+  // when present, falling back to the slug, then the cwd basename, then
+  // "workspace". We only inject a PS1 for sh-family shells (ash on Alpine,
+  // bash, zsh, dash, ksh) — fish uses a function, and Windows shells use
+  // their own prompt mechanism, so we leave those alone. Operators can opt
+  // out with SYNTHI_NO_PS1=1.
   if (cwd && !process.env.SYNTHI_NO_PS1) {
     ptyEnv.WORKSPACE_DIR = cwd;
-    // Sanitise the label so it can't break out of the printf format string
-    // or smuggle ANSI escapes. The slug is already safe but the cwd
-    // basename fallback could in theory contain anything.
-    const rawLabel = workspaceLabel || path.basename(cwd) || 'workspace';
+    const slugOrBasename = workspaceLabel || path.basename(cwd) || 'workspace';
+    const rawLabel = getProjectName(cwd, slugOrBasename);
+    // Sanitise so the label can't break out of the printf format string
+    // or smuggle ANSI escapes through. Allow slash so scoped npm names
+    // that survived the strip can still render naturally if needed.
     ptyEnv.WORKSPACE_LABEL = String(rawLabel).replace(/[^a-zA-Z0-9_@.\-]/g, '_');
     const shellName = path.basename(shell || '').toLowerCase().replace(/\.exe$/, '');
     if (['sh', 'bash', 'dash', 'ash', 'zsh', 'ksh'].includes(shellName)) {
       // POSIX-safe: case + parameter expansion re-evaluated on every prompt.
-      //   $WORKSPACE_DIR        → "<label>"
-      //   $WORKSPACE_DIR/sub    → "<label>/sub"
+      //   $WORKSPACE_DIR        → "~/<label>"
+      //   $WORKSPACE_DIR/sub    → "~/<label>/sub"
       //   anywhere else         → absolute $PWD (so users can see when they
       //                           cd outside the workspace)
       const ps1 =
         '$(case "$PWD" in ' +
-        '"$WORKSPACE_DIR") printf "%s" "$WORKSPACE_LABEL";; ' +
-        '"$WORKSPACE_DIR"/*) printf "%s%s" "$WORKSPACE_LABEL" "${PWD#$WORKSPACE_DIR}";; ' +
+        '"$WORKSPACE_DIR") printf "~/%s" "$WORKSPACE_LABEL";; ' +
+        '"$WORKSPACE_DIR"/*) printf "~/%s%s" "$WORKSPACE_LABEL" "${PWD#$WORKSPACE_DIR}";; ' +
         '*) printf "%s" "$PWD";; ' +
         'esac) $ ';
       ptyEnv.PS1 = ps1;
