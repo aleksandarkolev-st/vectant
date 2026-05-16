@@ -1,19 +1,20 @@
 {
-  "slug": "gpu-hmr-1778881702611",
+  "slug": "gpu-flow-live-1778930230",
   "vendor": "rocm",
+  "fixture": "flow",
   "gpu_hmr_flag": true,
-  "run_at": "2026-05-15T21:49:40.328Z",
+  "run_at": "2026-05-16T11:17:50.131Z",
   "config": {
     "fastSwapBudgetMs": 300,
     "watchdogMs": 5000,
     "drainTimeoutMs": 2000
   },
   "summary": {
-    "total": 36,
-    "passed": 30,
+    "total": 25,
+    "passed": 22,
     "warned": 0,
     "failed": 0,
-    "skipped": 6
+    "skipped": 3
   },
   "results": [
     {
@@ -21,252 +22,175 @@
       "name": "frontend reachable",
       "status": "pass",
       "detail": "http://localhost:3000",
-      "ts": "2026-05-15T21:48:23.286Z"
+      "ts": "2026-05-16T11:17:34.181Z"
     },
     {
       "phase": "preflight",
       "name": "collab-server reachable",
       "status": "pass",
       "detail": "http://localhost:1234",
-      "ts": "2026-05-15T21:48:23.287Z"
+      "ts": "2026-05-16T11:17:34.183Z"
     },
     {
       "phase": "preflight",
       "name": "signaling reachable",
       "status": "pass",
       "detail": "ws://localhost:9000",
-      "ts": "2026-05-15T21:48:23.287Z"
+      "ts": "2026-05-16T11:17:34.183Z"
     },
     {
       "phase": "preflight",
       "name": "ai-engine reachable",
       "status": "pass",
       "detail": "http://localhost:8000",
-      "ts": "2026-05-15T21:48:23.287Z"
+      "ts": "2026-05-16T11:17:34.183Z"
     },
     {
       "phase": "preflight",
       "name": "GPU endpoints present",
       "status": "pass",
       "detail": "{\"/refactor/split/gpu\":422,\"/refactor/diff_patch/gpu\":422,\"/refactor/heal/gpu\":200}",
-      "ts": "2026-05-15T21:48:33.694Z"
+      "ts": "2026-05-16T11:17:35.630Z"
     },
     {
       "phase": "preflight",
       "name": "nvcc on host",
       "status": "skip",
       "detail": "not found",
-      "ts": "2026-05-15T21:48:34.109Z"
+      "ts": "2026-05-16T11:17:36.102Z"
     },
     {
       "phase": "preflight",
       "name": "hipcc on host",
       "status": "skip",
       "detail": "not found",
-      "ts": "2026-05-15T21:48:34.109Z"
+      "ts": "2026-05-16T11:17:36.102Z"
     },
     {
       "phase": "preflight",
       "name": "nvcc in worker",
       "status": "skip",
       "detail": "not found",
-      "ts": "2026-05-15T21:48:34.109Z"
+      "ts": "2026-05-16T11:17:36.102Z"
     },
     {
       "phase": "preflight",
       "name": "hipcc in worker",
       "status": "pass",
       "detail": "/opt/rocm/bin/hipcc",
-      "ts": "2026-05-15T21:48:34.109Z"
+      "ts": "2026-05-16T11:17:36.102Z"
     },
     {
       "phase": "preflight",
       "name": "SYNTHI_GPU_HMR flag",
       "status": "pass",
       "detail": "enabled",
-      "ts": "2026-05-15T21:48:34.109Z"
+      "ts": "2026-05-16T11:17:36.102Z"
     },
     {
       "phase": "preflight",
       "name": "MCP tools/list",
       "status": "pass",
       "detail": "transport=docker count=42",
-      "ts": "2026-05-15T21:48:34.803Z"
+      "ts": "2026-05-16T11:17:36.767Z"
     },
     {
       "phase": "seed",
       "name": "create workspace",
       "status": "pass",
-      "detail": "id=cmp7g8ryl0000qr01paqpkrhr slug=gpu-hmr-1778881702611",
-      "ts": "2026-05-15T21:48:35.795Z"
+      "detail": "id=cmp89573d0002ma01g5cl7au6 slug=gpu-flow-live-1778930230",
+      "ts": "2026-05-16T11:17:37.011Z"
     },
     {
       "phase": "seed",
       "name": "fixture uses Synthi GPU runtime contract",
       "status": "pass",
       "detail": "synthi_gpu_launch + lifecycle exports",
-      "ts": "2026-05-15T21:48:35.795Z"
+      "ts": "2026-05-16T11:17:37.012Z"
     },
     {
       "phase": "seed",
       "name": "write-files-batch (5 src + manifest)",
       "status": "pass",
       "detail": "6 files",
-      "ts": "2026-05-15T21:48:35.883Z"
+      "ts": "2026-05-16T11:17:37.093Z"
     },
     {
       "phase": "seed",
       "name": "stage + commit",
       "status": "pass",
       "detail": "",
-      "ts": "2026-05-15T21:48:35.971Z"
+      "ts": "2026-05-16T11:17:37.181Z"
     },
     {
       "phase": "seed",
       "name": "device.hip present in collab",
       "status": "pass",
-      "detail": "272 bytes",
-      "ts": "2026-05-15T21:48:35.974Z"
+      "detail": "1141 bytes",
+      "ts": "2026-05-16T11:17:37.187Z"
     },
     {
       "phase": "vendor:rocm",
       "name": "GPU toolchain gate",
       "status": "pass",
       "detail": "worker:/opt/rocm/bin/hipcc",
-      "ts": "2026-05-15T21:48:35.974Z"
+      "ts": "2026-05-16T11:17:37.187Z"
     },
     {
       "phase": "preflight",
       "name": "MCP synthi_attach",
       "status": "pass",
       "detail": "attached; no frame yet",
-      "ts": "2026-05-15T21:48:37.200Z"
+      "ts": "2026-05-16T11:17:38.546Z"
     },
     {
-      "phase": "P0",
-      "name": "compile dispatch",
+      "phase": "FLOW",
+      "name": "inward compile dispatch",
       "status": "pass",
       "detail": "",
-      "ts": "2026-05-15T21:48:42.374Z"
+      "ts": "2026-05-16T11:17:42.596Z"
     },
     {
-      "phase": "P0",
-      "name": "worker invokes device compiler",
+      "phase": "FLOW",
+      "name": "inward GPU launch observed",
       "status": "pass",
-      "detail": "compile-device] hipcc",
-      "ts": "2026-05-15T21:48:42.419Z"
+      "detail": "synthi_gpu_launch kernel=particle_flow",
+      "ts": "2026-05-16T11:17:42.674Z"
     },
     {
-      "phase": "P0",
-      "name": "gpu adapter loaded cubin/hsaco",
+      "phase": "FLOW",
+      "name": "flow-inward screenshot",
       "status": "pass",
-      "detail": "Device sidecar reload vendor=rocm artifact=/tmp/.tmpNv8xdi/build/device_1778881717.hsaco kernels=vec_add result=Success",
-      "ts": "2026-05-15T21:48:56.750Z"
+      "detail": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-flow-live-1778930230-flow-inward.png",
+      "ts": "2026-05-16T11:17:43.708Z"
     },
     {
-      "phase": "P0",
-      "name": "device compiler not wrapped by ccache",
-      "status": "pass",
-      "detail": "clean",
-      "ts": "2026-05-15T21:48:56.798Z"
-    },
-    {
-      "phase": "P1",
-      "name": "edit dispatch",
+      "phase": "FLOW",
+      "name": "outward edit dispatch",
       "status": "pass",
       "detail": "",
-      "ts": "2026-05-15T21:48:57.187Z"
+      "ts": "2026-05-16T11:17:49.039Z"
     },
     {
-      "phase": "P1",
-      "name": "reload plan emitted",
+      "phase": "FLOW",
+      "name": "outward device edit hot-swapped",
       "status": "pass",
-      "detail": "[gpu-reload] plan=mixed",
-      "ts": "2026-05-15T21:48:57.251Z"
+      "detail": "[gpu-reload] plan=device_only",
+      "ts": "2026-05-16T11:17:49.106Z"
     },
     {
-      "phase": "P1",
-      "name": "buffer pointers reused across swap",
+      "phase": "FLOW",
+      "name": "render loop reports outward flow",
       "status": "pass",
-      "detail": "state_preserved: true",
-      "ts": "2026-05-15T21:48:57.309Z"
+      "detail": "[gpu-flow-demo] frame=3180 avg_radius=169.90 trend=outward",
+      "ts": "2026-05-16T11:17:49.174Z"
     },
     {
-      "phase": "P1",
-      "name": "pre/post pointer overlap",
+      "phase": "FLOW",
+      "name": "flow-outward screenshot",
       "status": "pass",
-      "detail": "state_preserved=true; no pre-edit pointer marker retained",
-      "ts": "2026-05-15T21:48:57.309Z"
-    },
-    {
-      "phase": "P1",
-      "name": "snapshot latency within 500ms",
-      "status": "pass",
-      "detail": "snapshot_ms=100  bytes=0.0MiB",
-      "ts": "2026-05-15T21:48:57.362Z"
-    },
-    {
-      "phase": "P1",
-      "name": "snapshot tier reported",
-      "status": "pass",
-      "detail": "tier=B",
-      "ts": "2026-05-15T21:48:57.417Z"
-    },
-    {
-      "phase": "P1",
-      "name": "2nd-edit snapshot within tight budget (250ms)",
-      "status": "pass",
-      "detail": "snapshot_ms=100  (dirty-bit accounting should skip clean buffers — §6.1.2)",
-      "ts": "2026-05-15T21:49:02.722Z"
-    },
-    {
-      "phase": "P2",
-      "name": "fast-swap dispatch",
-      "status": "pass",
-      "detail": "",
-      "ts": "2026-05-15T21:49:07.966Z"
-    },
-    {
-      "phase": "P2",
-      "name": "fast swap within budget (300ms)",
-      "status": "pass",
-      "detail": "reload_ms=3",
-      "ts": "2026-05-15T21:49:23.199Z"
-    },
-    {
-      "phase": "P2",
-      "name": "abi-break dispatch",
-      "status": "pass",
-      "detail": "",
-      "ts": "2026-05-15T21:49:28.436Z"
-    },
-    {
-      "phase": "P2",
-      "name": "ABI edit emits abi_breaking cold reload",
-      "status": "pass",
-      "detail": "plan=abi_breaking",
-      "ts": "2026-05-15T21:49:40.327Z"
-    },
-    {
-      "phase": "P3-mixed",
-      "name": "phase skipped",
-      "status": "skip",
-      "detail": "filter",
-      "ts": "2026-05-15T21:49:40.327Z"
-    },
-    {
-      "phase": "P3-heal",
-      "name": "phase skipped",
-      "status": "skip",
-      "detail": "filter",
-      "ts": "2026-05-15T21:49:40.327Z"
-    },
-    {
-      "phase": "P3-stream-hang",
-      "name": "phase skipped",
-      "status": "skip",
-      "detail": "filter",
-      "ts": "2026-05-15T21:49:40.327Z"
+      "detail": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-flow-live-1778930230-flow-outward.png",
+      "ts": "2026-05-16T11:17:50.130Z"
     }
   ]
 }

@@ -1233,7 +1233,7 @@ async function postCompileViaMcp({ ctx, files }) {
     gpu_mode: 'auto',
     compile_manifest: ctx.manifest,
     slug: CFG.slug,
-    ...(ctx.fixture === 'flow' ? { width: FLOW_W, height: FLOW_H } : {}),
+    ...(ctx.fixture === 'flow' ? { width: 800, height: 600 } : {}),
   });
   if (!compileRes?.ok) {
     return { ok: false, reason: `mcp_compile_failed:${JSON.stringify(compileRes).slice(0, 240)}` };
@@ -1309,23 +1309,43 @@ async function captureMcpScreenshot(label) {
   }
   try {
     const state = await ensureMcpAttached();
-    await sleep(900);
-    const shot = await state.client.toolCall(
-      'synthi_screenshot',
-      { max_dim: 640, freshness_max_ms: 5000 },
-      20000,
-    );
-    if (shot?.data) {
+    let lastShot = null;
+    for (let attempt = 1; attempt <= 8; ++attempt) {
+      await sleep(attempt === 1 ? 900 : 650);
+      const shot = await state.client.toolCall(
+        'synthi_screenshot',
+        { max_dim: 640, freshness_max_ms: 5000 },
+        20000,
+      );
+      lastShot = shot;
+      if (shot?.data && (await screenshotLooksNonBlank(shot.data))) {
+        const out = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`);
+        await writeFile(out, Buffer.from(shot.data, 'base64'));
+        record('FLOW', `${label} screenshot`, 'pass', attempt > 1 ? `${out} retry=${attempt}` : out);
+        return out;
+      }
+    }
+    if (lastShot?.data) {
       const out = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`);
-      await writeFile(out, Buffer.from(shot.data, 'base64'));
-      record('FLOW', `${label} screenshot`, 'pass', out);
+      await writeFile(out, Buffer.from(lastShot.data, 'base64'));
+      record('FLOW', `${label} screenshot`, 'warn', `saved final retry but frame looked blank: ${out}`);
       return out;
     }
-    record('FLOW', `${label} screenshot`, 'warn', JSON.stringify(shot).slice(0, 180));
+    record('FLOW', `${label} screenshot`, 'warn', JSON.stringify(lastShot).slice(0, 180));
   } catch (e) {
     record('FLOW', `${label} screenshot`, 'warn', e.message.slice(0, 180));
   }
   return null;
+}
+
+async function screenshotLooksNonBlank(base64) {
+  try {
+    const sharp = (await import('sharp')).default;
+    const stats = await sharp(Buffer.from(base64, 'base64')).stats();
+    return stats.channels.some((c) => c.max >= 40 && c.mean >= 1.0);
+  } catch {
+    return true;
+  }
 }
 
 async function postHeal({ slug, tier, error, manifest }) {
