@@ -649,7 +649,7 @@ function getProjectName(cwd, fallback) {
  * @param {object} [opts.env] - Extra environment variables
  * @returns {{ ptyProcess: IPty, shell: string }}
  */
-function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = null, workspaceLabel = null }) {
+function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = null, workspaceName = null, workspaceSlug = null }) {
   // Resolve requested shell type, or fall back to platform default
   const resolved = shellType ? resolveShellType(shellType) : null;
   const shell = resolved ? resolved.executable : getDefaultShell();
@@ -706,8 +706,16 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
   // out with SYNTHI_NO_PS1=1.
   if (cwd && !process.env.SYNTHI_NO_PS1) {
     ptyEnv.WORKSPACE_DIR = cwd;
-    const slugOrBasename = workspaceLabel || path.basename(cwd) || 'workspace';
-    const rawLabel = getProjectName(cwd, slugOrBasename);
+    // Friendly project label, in priority order:
+    //   1. workspaceName  → the friendly DB name plumbed from the frontend
+    //                       (e.g. "test-raf"). This always wins when set.
+    //   2. package.json   → "name" field with npm scope stripped, for Node
+    //                       projects where no friendly name was supplied.
+    //   3. workspaceSlug  → random ID (e.g. "8dkyxku5") — last-resort
+    //                       fallback so users at least see *something*.
+    //   4. cwd basename / literal "workspace"
+    const fallback = workspaceSlug || path.basename(cwd) || 'workspace';
+    const rawLabel = workspaceName || getProjectName(cwd, fallback);
     // Sanitise so the label can't break out of the printf format string
     // or smuggle ANSI escapes through. Allow slash so scoped npm names
     // that survived the strip can still render naturally if needed.
@@ -916,9 +924,13 @@ function sanitizeResize(cols, rows) {
  * @param {number} rows      - Terminal rows (default 30)
  * @returns {{ ptyProcess, shell, cwd, sessionId }}
  */
-async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30) {
+async function createHeadlessSession(sessionId, slug, userId, cols = 120, rows = 30, name = null) {
   const cwd = await resolveWorkspaceCwd(slug, userId);
-  const { ptyProcess, shell } = createPtyProcess({ cwd, cols, rows, workspaceLabel: slug });
+  const { ptyProcess, shell } = createPtyProcess({
+    cwd, cols, rows,
+    workspaceName: name,
+    workspaceSlug: slug,
+  });
 
   // Ring buffer for replay when the frontend connects. We keep the *most
   // recent* MAX_BUFFER chars rather than the oldest — when a long build log
@@ -1006,6 +1018,7 @@ function createTerminalWSS() {
 
     const requestedSessionId = parsedUrl.searchParams.get('sessionId');
     const workspaceSlug = parsedUrl.searchParams.get('workspace') || '';
+    const workspaceName = parsedUrl.searchParams.get('name') || '';
     const requestedUserId = parsedUrl.searchParams.get('userId') || '';
     const initialCols = parseInt(parsedUrl.searchParams.get('cols'), 10) || 80;
     const initialRows = parseInt(parsedUrl.searchParams.get('rows'), 10) || 24;
@@ -1133,7 +1146,8 @@ function createTerminalWSS() {
         cols: initialCols,
         rows: initialRows,
         shellType: requestedShellType,
-        workspaceLabel: workspaceSlug,
+        workspaceName,
+        workspaceSlug,
       }));
     } catch (err) {
       console.error(`[Terminal] Failed to spawn PTY for session ${sessionId}:`, err.message);

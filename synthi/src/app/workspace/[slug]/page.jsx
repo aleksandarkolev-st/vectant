@@ -449,6 +449,26 @@ export default function EditorPage({ params }) {
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
     const [buildLogsCollapsed, setBuildLogsCollapsed] = useState(false);
+
+    // Friendly project name (from the DB) used as the terminal prompt label
+    // and anywhere else a human-readable workspace identifier is wanted.
+    // Falls back to the slug until the fetch resolves so the prompt never
+    // flashes empty. The route param `slug` is what /api/workspace/[slug]
+    // keys by (see app/api/workspace/[workspaceId]/route.js).
+    const [workspaceName, setWorkspaceName] = useState(slug);
+    useEffect(() => {
+        if (!slug) return undefined;
+        let cancelled = false;
+        fetch(`/api/workspace/${encodeURIComponent(slug)}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+                if (cancelled || !data) return;
+                const name = data?.workspace?.name || data?.name;
+                if (name && typeof name === 'string') setWorkspaceName(name);
+            })
+            .catch(() => { /* keep slug fallback */ });
+        return () => { cancelled = true; };
+    }, [slug]);
     const [hmrEnabled, setHmrEnabled] = useState(true);
     const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const [emulatorSessionId, setEmulatorSessionId] = useState(null);
@@ -2749,12 +2769,15 @@ export default function EditorPage({ params }) {
         editorProps: memoEditorProps,
         // AI healing surface so docked panels (HealingSettingsPanel) can consume it
         aiHealing,
+        // Friendly project name surfaced to the terminal panel for the
+        // prompt label (~/<workspaceName> $).
+        workspaceName,
     }), [
         editor, activeFile, mergedDiagnostics, diagnosticSummary,
         showAnalyzingSpinner, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
         getLatestCurrentContent, completionClearSignal, jumpstartPrompt, jumpstartAttachments,
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
-        aiHealing,
+        aiHealing, workspaceName,
     ]);
 
     if (workspaceMissing) {

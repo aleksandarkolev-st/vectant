@@ -78,8 +78,9 @@ export async function GET(request, { params }) {
         return NextResponse.json({ error: 'Workspace ID is required.' }, { status: 400 });
     }
 
+    let workspace;
     try {
-        const workspace = await prisma.workspace.findUnique({
+        workspace = await prisma.workspace.findUnique({
             where: { slug: workspaceId }
         });
 
@@ -90,6 +91,11 @@ export async function GET(request, { params }) {
         console.error('Database Error:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
     }
+    // Slim metadata returned alongside the file tree so clients (e.g. the
+    // workspace page) don't need a second round-trip to learn the friendly
+    // project name. Don't leak the full DB row — only the fields callers
+    // actually need.
+    const workspaceMeta = { id: workspace.id, slug: workspace.slug, name: workspace.name };
 
     const storagePathPrefix = `workspaces/${workspaceId}/`;
 
@@ -135,7 +141,7 @@ export async function GET(request, { params }) {
                             autoPaginate: true, 
                         });
                         const fileTree = buildFileTree(refreshedFiles, storagePathPrefix.length);
-                        return NextResponse.json({ files: fileTree }, { status: 200 });
+                        return NextResponse.json({ files: fileTree, workspace: workspaceMeta }, { status: 200 });
                      }
                  }
              } catch (e) {
@@ -146,7 +152,7 @@ export async function GET(request, { params }) {
         const prefixLength = storagePathPrefix.length;
         const fileTree = buildFileTree(files, prefixLength);
 
-        return NextResponse.json({ files: fileTree }, { status: 200 });
+        return NextResponse.json({ files: fileTree, workspace: workspaceMeta }, { status: 200 });
 
     } catch (error) {
         console.error('GCS Listing Error:', error);
