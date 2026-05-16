@@ -650,6 +650,29 @@ function createPtyProcess({ cwd, cols = 80, rows = 24, env = {}, shellType = nul
     ptyEnv.PATH = extraPaths.join(sep) + sep + (ptyEnv.PATH || '');
   }
 
+  // Display the workspace cwd as "~" in the prompt so users don't see the
+  // long /data/repos/<slug>/<userId> prefix on every line. We only inject a
+  // PS1 for sh-family shells (ash on Alpine, bash, zsh, dash, ksh) — fish
+  // uses a function, and Windows shells use their own prompt mechanism, so
+  // we leave those alone. Operators can opt out with SYNTHI_NO_PS1=1.
+  if (cwd && !process.env.SYNTHI_NO_PS1) {
+    ptyEnv.WORKSPACE_DIR = cwd;
+    const shellName = path.basename(shell || '').toLowerCase().replace(/\.exe$/, '');
+    if (['sh', 'bash', 'dash', 'ash', 'zsh', 'ksh'].includes(shellName)) {
+      // POSIX-safe: case + parameter expansion re-evaluated on every prompt.
+      //   $WORKSPACE_DIR        → "~"
+      //   $WORKSPACE_DIR/sub    → "~/sub"
+      //   anywhere else         → absolute $PWD (so users can see when they
+      //                           cd outside the workspace)
+      ptyEnv.PS1 =
+        '$(case "$PWD" in ' +
+        '"$WORKSPACE_DIR") printf "~";; ' +
+        '"$WORKSPACE_DIR"/*) printf "~%s" "${PWD#$WORKSPACE_DIR}";; ' +
+        '*) printf "%s" "$PWD";; ' +
+        'esac) $ ';
+    }
+  }
+
   // Remove sensitive server-side variables
   delete ptyEnv.DATABASE_URL;
   delete ptyEnv.GOOGLE_APPLICATION_CREDENTIALS;
