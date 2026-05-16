@@ -99,6 +99,21 @@ import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
 import { useViewport } from '@/hooks/useViewport';
 import '../responsive.css';
 
+const ADAPTED_COMPILE_FILES = [
+    'shared.h',
+    'core.cpp',
+    'gui.cpp',
+    'host_runner.cpp',
+    'device.cu',
+    'device.hip',
+    '.synthi/build_manifest.json',
+];
+
+const normalizeWorkspacePath = (path = '') => String(path)
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/^\.\//, '');
+
 // Feature flag: set to true to enable the new docking layout.
 // When false, the existing rigid ResizablePanelGroup layout is used.
 const USE_DOCKING_WM = true;
@@ -2005,6 +2020,48 @@ export default function EditorPage({ params }) {
         }
     }, [rawFiles, slug]);
 
+    const augmentAdaptedCompileFiles = useCallback(async (existingFiles, filename, getContentForDependency) => {
+        const byPath = new Map();
+        for (const file of existingFiles || []) {
+            const name = normalizeWorkspacePath(file?.name || file?.path || '');
+            if (name && typeof file?.content === 'string') {
+                byPath.set(name, { name, content: file.content });
+            }
+        }
+
+        const activePath = normalizeWorkspacePath(filename);
+        const activeExt = (activePath.split('.').pop() || '').toLowerCase();
+        const canBeAdaptedCompile = ['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'cu', 'cuh', 'hip'].includes(activeExt);
+        if (!canBeAdaptedCompile) return Array.from(byPath.values());
+
+        for (const path of ADAPTED_COMPILE_FILES) {
+            const canonicalPath = normalizeWorkspacePath(path);
+            if (canonicalPath === activePath || byPath.has(canonicalPath)) continue;
+            const candidates = canonicalPath.startsWith('.synthi/')
+                ? [canonicalPath, canonicalPath.slice(1)]
+                : [canonicalPath];
+            try {
+                let content = '';
+                for (const candidate of candidates) {
+                    try {
+                        content = await getContentForDependency(candidate);
+                        if (typeof content === 'string' && content.length > 0) break;
+                    } catch (_) {
+                        // Try the next canonicalization form.
+                    }
+                }
+                if (typeof content === 'string' && content.length > 0) {
+                    byPath.set(canonicalPath, { name: canonicalPath, content });
+                }
+            } catch (_) {
+                // Most projects are not adapted split projects. Missing optional
+                // files should not block normal compiles.
+            }
+        }
+
+        return Array.from(byPath.values());
+    }, []);
+
     const handleRun = useCallback(async (options = {}) => {
         const isEvent = options && typeof options.preventDefault === 'function';
         const skipCancel = isEvent ? false : (options.skipCancel || false);
@@ -2058,6 +2115,7 @@ export default function EditorPage({ params }) {
         let additionalFiles = [];
         try {
             additionalFiles = await resolveDependencies(activeFile, rawFiles, getContentForDependency);
+            additionalFiles = await augmentAdaptedCompileFiles(additionalFiles, filename, getContentForDependency);
         } catch (e) {
             console.error("Dependency resolution failed", e);
             appendBuildLog(`Warning: Dependency resolution failed: ${e.message}`);
@@ -2157,7 +2215,7 @@ export default function EditorPage({ params }) {
                 setEmulatorForcedError(msg);
             }
         }
-    }, [activeFile, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob, getLatestCurrentContent, preferGpuPipeline]);
+    }, [activeFile, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob, getLatestCurrentContent, preferGpuPipeline, augmentAdaptedCompileFiles]);
 
     const handleStop = useCallback(async () => {
         const activeSessionId = client?.getActiveSessionId?.();
@@ -2296,6 +2354,7 @@ export default function EditorPage({ params }) {
         let additionalFiles = [];
         try {
             additionalFiles = await resolveDependencies(activeFile, rawFiles, getContentForDependency);
+            additionalFiles = await augmentAdaptedCompileFiles(additionalFiles, filename, getContentForDependency);
         } catch (e) {
             console.error("Dependency resolution failed during save", e);
         }
@@ -2361,7 +2420,7 @@ export default function EditorPage({ params }) {
                 }
             }
         } catch (_) { /* never let healing break save */ }
-    }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent, preferGpuPipeline]);
+    }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent, preferGpuPipeline, augmentAdaptedCompileFiles]);
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);

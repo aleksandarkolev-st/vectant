@@ -476,10 +476,11 @@ export function ErrorOverlay({ className }) {
     const handleCompileDiagnostics = useCallback((event) => {
         const data = event.detail?.data || event.detail;
         console.log('[ErrorOverlay] Received compile-diagnostics:', data);
+        const normalizedDiagnostics = Array.isArray(data?.diagnostics) ? data.diagnostics : [];
         
-        if (data && data.diagnostics && data.diagnostics.length > 0) {
+        if (data && normalizedDiagnostics.length > 0) {
             // Filter to show only errors (not warnings in overlay)
-            const errors = data.diagnostics.filter(d => 
+            const errors = normalizedDiagnostics.filter(d =>
                 d.severity?.toLowerCase() === 'error'
             );
             
@@ -500,8 +501,9 @@ export function ErrorOverlay({ className }) {
         
         if (data?.status === 'compile-error') {
             // Compile error from HMR system
-            if (data.diagnostics && data.diagnostics.length > 0) {
-                setDiagnostics(data.diagnostics);
+            const normalizedDiagnostics = Array.isArray(data.diagnostics) ? data.diagnostics : [];
+            if (normalizedDiagnostics.length > 0) {
+                setDiagnostics(normalizedDiagnostics);
                 setModule(data.module || 'unknown');
                 setCrashInfo(null);
                 setVisible(true);
