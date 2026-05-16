@@ -1,0 +1,29 @@
+# NVIDIA/CUDA override for GPU HMR.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.nvidia.yml build worker
+#   docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d --force-recreate worker mcp frontend
+#
+# Requires the NVIDIA Container Toolkit on the host. The base compose file is
+# ROCm/WSL focused and mounts /dev/dxg; this override resets those AMD mounts
+# and exposes NVIDIA devices instead.
+
+services:
+  worker:
+    build:
+      context: ./backend/synthi-webrtc-compiler/worker
+      dockerfile: Dockerfile.cuda
+      args:
+        WORKER_CARGO_FEATURES: "gpu-hmr"
+    environment:
+      SYNTHI_GPU_HMR: "1"
+      SYNTHI_GPU_VENDOR: "cuda"
+      CUDA_HOME: "/usr/local/cuda"
+      LIBRARY_PATH: "/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs"
+      LD_LIBRARY_PATH: "/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility,graphics,video"
+      HSA_ENABLE_DXG_DETECTION: ""
+    gpus: all
+    devices: !reset []
+    volumes: !reset []

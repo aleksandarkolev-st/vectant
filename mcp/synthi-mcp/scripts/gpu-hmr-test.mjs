@@ -1147,14 +1147,16 @@ function manifestFor(vendor, fixture = activeFixture()) {
       },
     };
   }
+  const cudaIncludeFlags = ['-I/usr/local/cuda/include'];
+  const cudaLinkFlags = ['-L/usr/local/cuda/lib64', '-L/usr/local/cuda/lib64/stubs'];
   return {
     compiler: 'g++',
     std: 'c++17',
-    common_flags: commonFlags,
-    core_link_flags: ['-lcudart', '-lcuda'],
-    gui_link_flags: ['-lcudart', '-lcuda', ...sdlLinkFlags],
+    common_flags: [...commonFlags, ...cudaIncludeFlags],
+    core_link_flags: [...cudaLinkFlags, '-lcudart', '-lcuda'],
+    gui_link_flags: [...cudaLinkFlags, '-lcudart', '-lcuda', ...sdlLinkFlags],
     shared_link_flags: [],
-    runner_link_flags: ['-lcudart', '-lcuda', '-ldl', ...sdlLinkFlags],
+    runner_link_flags: [...cudaLinkFlags, '-lcudart', '-lcuda', '-ldl', ...sdlLinkFlags],
     system_packages: [],
     hot_reload_mode: 'swap',
     confidence,

@@ -8,6 +8,9 @@ Date: 2026-05-16
 - Branch: `dev-raf`
 - Host GPU: AMD Radeon RX 9070 XT
 - ROCm arch used by the harness: `gfx1201`
+- CUDA/NVIDIA path: added as an opt-in worker image + compose override.
+  Use an NVIDIA host with NVIDIA Container Toolkit; current PC cannot live-run
+  CUDA because it has the RX 9070 XT, not an NVIDIA GPU.
 - Compose project: `vectant-ade`
 - Current validated user demo workspace:
   - URL: `http://localhost:3000/workspace/gpu-flow-clean-session`
@@ -60,6 +63,9 @@ Phases: FLOW pass
 - `mcp/synthi-mcp/scripts/gpu-hmr-test.mjs`
   - Main GPU HMR harness.
   - Contains the vector fixture and the new `FLOW` particle fixture.
+  - Vendor switch:
+    - ROCm: `SYNTHI_GPU_VENDOR=rocm`, active file `device.hip`
+    - CUDA: `SYNTHI_GPU_VENDOR=cuda`, active file `device.cu`
   - Search anchors:
     - `SYNTHI_GPU_HMR_FIXTURE`
     - `FLOW_SHARED_H`
@@ -76,6 +82,17 @@ Phases: FLOW pass
   - GPU sidecar reload planner.
   - Tracks last accepted device ABI fingerprint.
   - Emits `plan=device_only` and `plan=abi_breaking`.
+
+- `backend/synthi-webrtc-compiler/worker/Dockerfile.cuda`
+  - CUDA/NVIDIA worker image.
+  - Based on `nvidia/cuda:12.8.0-devel-ubuntu24.04`.
+  - Provides `nvcc`, CUDA headers/libs, CUDA stub-library link path, Rust,
+    SDL2, GStreamer, Xvfb, clangd, and Node.
+
+- `docker-compose.nvidia.yml`
+  - Opt-in compose override for NVIDIA hosts.
+  - Replaces the worker build with `Dockerfile.cuda`.
+  - Resets the ROCm `/dev/dxg` devices/volumes and exposes `gpus: all`.
 
 - `mcp/synthi-mcp/.gpu-hmr-test-logs/results.txt`
 - `mcp/synthi-mcp/.gpu-hmr-test-logs/results.json`
@@ -97,6 +114,36 @@ docker compose ps
 ```
 
 The user-provided service list is intentional. Keep the stack up while testing live UI/MCP. Only run `docker compose down` when the user is done.
+
+## Start The Stack On NVIDIA/CUDA
+
+Host prerequisites:
+
+- NVIDIA driver visible to Docker.
+- NVIDIA Container Toolkit installed and working.
+- For RTX 50 / Blackwell, use CUDA Toolkit 12.8+ and `SYNTHI_GPU_ARCH=sm_120`.
+
+Build the CUDA worker:
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml build worker
+```
+
+Start the stack with the NVIDIA override:
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade
+
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d --force-recreate redis postgres y-sweet collab-server signaling-server ai-engine ai-gateway frontend worker coturn mcp
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml ps
+```
+
+Verify the worker sees CUDA:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml exec worker sh -lc "nvidia-smi && nvcc --version && echo LIBRARY_PATH=$LIBRARY_PATH"
+```
 
 ## Build Containers
 
@@ -197,6 +244,46 @@ Bad marker to investigate:
 ```
 
 That means the worker did not detect the workspace as already adapted, or the user is not in the seeded workspace.
+
+## Run The User-Visible Flow Demo On NVIDIA/CUDA
+
+Use this on an NVIDIA host after starting with `docker-compose.nvidia.yml`:
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp
+
+$env:SYNTHI_GPU_HMR='1'
+$env:SYNTHI_GPU_VENDOR='cuda'
+$env:SYNTHI_GPU_ARCH='sm_120'  # RTX 50/Blackwell. Use sm_80/sm_90/etc. for older cards.
+$env:SYNTHI_GPU_HMR_FIXTURE='flow'
+$env:ONLY_PHASES='FLOW'
+$env:SLUG='gpu-flow-cuda-session'
+
+node scripts/gpu-hmr-test.mjs
+```
+
+Open in browser:
+
+```text
+http://localhost:3000/workspace/gpu-flow-cuda-session
+```
+
+Manual UI settings:
+
+- `GUI`: on
+- `GPU`: on
+- `HMR`: on
+- Open `device.cu`
+
+Expected CUDA markers:
+
+```text
+[HMR] FallbackDeterministic -> split file edit (device.cu)
+[HMR] compile_manifest: compiler=g++ ... gpu=cuda ...
+[compile-device] nvcc
+[gpu-reload] plan=device_only
+Device sidecar reload vendor=cuda ... result=Success
+```
 
 ## Run The Vector GPU HMR Validation
 
