@@ -3766,6 +3766,7 @@ AppState* state = (AppState*)state_ptr;
   "gui_link_flags": ["-lSDL2"],
   "shared_link_flags": [],
   "runner_link_flags": ["-lSDL2", "-ldl"],
+  "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"],
   "system_packages": ["libsdl2-dev"],
   "hot_reload_mode": "swap",
   "confidence": {
@@ -3998,7 +3999,9 @@ extractor can keep them aligned across edits.
 # GPU BUILD MANIFEST SUB-BLOCK
 
 Inside `<synthi_build_manifest>`, in addition to the standard host
-fields, emit a `gpu` sub-object:
+fields, emit a `files` array plus a `gpu` sub-object:
+
+    "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp", "device.cu"],
 
     "gpu": {
       "vendor": "cuda",                       // or "rocm"
@@ -4044,7 +4047,7 @@ not HMR-compatible. Pick `arch` from the source's targeting hints
 ...
 <synthi_kernel_hashes>{...}</synthi_kernel_hashes>
 <synthi_launch_graph>[...]</synthi_launch_graph>
-<synthi_build_manifest>{ ...host fields..., "gpu": { ... } }</synthi_build_manifest>
+<synthi_build_manifest>{ ...host fields..., "files": [...], "gpu": { ... } }</synthi_build_manifest>
 </synthi_arch_cache>
 ```
 
@@ -4055,6 +4058,9 @@ not HMR-compatible. Pick `arch` from the source's targeting hints
 - All five files must be present in the JSON.
 - The build manifest MUST include both the host fields and a non-null
   `gpu` sub-object.
+- The build manifest `files` array MUST list the exact split files emitted
+  in the JSON so browser HMR compiles resend the full adapted project instead
+  of guessing fixed filenames.
 - Every kernel referenced in any `synthi_gpu_launch(...)` call must be
   declared in device.cu/device.hip. Raw `kernel<<<...>>>` host launches
   are invalid split output.

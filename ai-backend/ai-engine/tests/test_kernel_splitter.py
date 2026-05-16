@@ -43,6 +43,7 @@ This project is a CUDA vector-add demo.
   "gui_link_flags": ["-lSDL2"],
   "shared_link_flags": [],
   "runner_link_flags": ["-lSDL2","-ldl","-lcudart","-lcuda"],
+  "files": ["shared.h","core.cpp","gui.cpp","host_runner.cpp","device.cu"],
   "system_packages": [],
   "hot_reload_mode": "swap",
   "confidence": { "overall": "high", "runner_synthesis": "high",
@@ -66,6 +67,7 @@ def test_parses_clean_response():
     assert "device.cu" in parsed["files"]
     assert "vec_add" in parsed["files"]["device.cu"]
     assert parsed["manifest"]["gpu"]["vendor"] == "cuda"
+    assert parsed["manifest"]["files"][-1] == "device.cu"
     assert parsed["kernel_hashes"] == {"vec_add": "0x1234abcd5678ef01"}
     assert isinstance(parsed["launch_graph"], list)
     assert parsed["launch_graph"][0]["kernel"] == "vec_add"

@@ -30,6 +30,7 @@ HOST_ONLY_MANIFEST = {
     "gui_link_flags": ["-lSDL2"],
     "shared_link_flags": [],
     "runner_link_flags": ["-lSDL2", "-ldl"],
+    "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"],
     "system_packages": [],
     "hot_reload_mode": "swap",
     "confidence": {
@@ -60,6 +61,7 @@ def _with_gpu(**overrides):
 def test_host_only_manifest_still_validates():
     m = parse_manifest(HOST_ONLY_MANIFEST)
     assert m.gpu is None
+    assert m.files == ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"]
     validate_manifest_v1(m)  # no raise
 
 

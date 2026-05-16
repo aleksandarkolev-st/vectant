@@ -24,6 +24,7 @@ Manifest format (emitted by the AI inside <synthi_build_manifest>):
       "gui_link_flags": ["-lSDL2"],
       "shared_link_flags": [],
       "runner_link_flags": ["-lSDL2", "-ldl"],
+      "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"],
       "system_packages": ["libsdl2-dev"],
       "hot_reload_mode": "swap" | "process_restart" | "auto",
       "confidence": {
@@ -125,6 +126,10 @@ class BuildManifest(BaseModel):
     gui_link_flags: List[str] = Field(default_factory=list)
     shared_link_flags: List[str] = Field(default_factory=list)
     runner_link_flags: List[str] = Field(default_factory=list)
+    # Source modules that browser-side compile requests should resend once
+    # a workspace has already been adapted. The worker still owns the compile
+    # stages; this prevents the browser from guessing split-project shape.
+    files: List[str] = Field(default_factory=list)
     system_packages: List[str] = Field(default_factory=list)
     hot_reload_mode: HotReloadMode = "swap"
     confidence: ConfidenceBlock

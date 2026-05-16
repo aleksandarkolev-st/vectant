@@ -99,20 +99,69 @@ import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
 import { useViewport } from '@/hooks/useViewport';
 import '../responsive.css';
 
-const ADAPTED_COMPILE_FILES = [
-    'shared.h',
-    'core.cpp',
-    'gui.cpp',
-    'host_runner.cpp',
-    'device.cu',
-    'device.hip',
-    '.synthi/build_manifest.json',
+const ADAPTED_MANIFEST_PATH = '.synthi/build_manifest.json';
+const ADAPTED_SIDECAR_PATH = '.synthi_split_meta.json';
+const ADAPTED_MANIFEST_CANDIDATES = [
+    ADAPTED_MANIFEST_PATH,
+    'synthi/build_manifest.json',
+    ADAPTED_SIDECAR_PATH,
 ];
+const ADAPTED_FALLBACK_HOST_FILES = ['shared.h', 'core.cpp', 'gui.cpp', 'host_runner.cpp'];
 
 const normalizeWorkspacePath = (path = '') => String(path)
     .replace(/\\/g, '/')
     .replace(/^\/+/, '')
     .replace(/^\.\//, '');
+
+const extractCompileManifest = (rawManifestContent, path = '') => {
+    if (typeof rawManifestContent !== 'string' || rawManifestContent.trim().length === 0) {
+        return null;
+    }
+    try {
+        const parsed = JSON.parse(rawManifestContent);
+        if (normalizeWorkspacePath(path) === ADAPTED_SIDECAR_PATH) {
+            return parsed?.compile_manifest && typeof parsed.compile_manifest === 'object'
+                ? parsed.compile_manifest
+                : null;
+        }
+        return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch (_) {
+        return null;
+    }
+};
+
+const deviceFileFromCompileManifest = (manifest) => {
+    const vendor = String(manifest?.gpu?.vendor || '').toLowerCase();
+    if (vendor === 'rocm' || vendor === 'hip') return 'device.hip';
+    if (vendor === 'cuda') return 'device.cu';
+    return null;
+};
+
+const declaredFilesFromCompileManifest = (manifest) => {
+    const rawFiles = Array.isArray(manifest?.files) ? manifest.files : [];
+    return rawFiles
+        .map((entry) => {
+            if (typeof entry === 'string') return entry;
+            if (entry && typeof entry === 'object') return entry.path || entry.name || '';
+            return '';
+        })
+        .map(normalizeWorkspacePath)
+        .filter(Boolean);
+};
+
+const compileFilesFromManifest = (manifest) => {
+    const declared = declaredFilesFromCompileManifest(manifest);
+    if (declared.length > 0) return declared;
+
+    const fallback = [...ADAPTED_FALLBACK_HOST_FILES];
+    const deviceFile = deviceFileFromCompileManifest(manifest);
+    if (deviceFile) {
+        fallback.push(deviceFile);
+    } else {
+        fallback.push('device.cu', 'device.hip');
+    }
+    return fallback;
+};
 
 // Feature flag: set to true to enable the new docking layout.
 // When false, the existing rigid ResizablePanelGroup layout is used.
@@ -2034,10 +2083,41 @@ export default function EditorPage({ params }) {
         const canBeAdaptedCompile = ['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'cu', 'cuh', 'hip'].includes(activeExt);
         if (!canBeAdaptedCompile) return Array.from(byPath.values());
 
-        for (const path of ADAPTED_COMPILE_FILES) {
+        let compileManifest = null;
+        let manifestContent = null;
+        for (const candidate of ADAPTED_MANIFEST_CANDIDATES) {
+            const canonicalCandidate = normalizeWorkspacePath(candidate);
+            const existing = byPath.get(canonicalCandidate);
+            if (existing?.content) {
+                compileManifest = extractCompileManifest(existing.content, canonicalCandidate);
+                manifestContent = existing.content;
+                if (compileManifest) break;
+            }
+            try {
+                const content = await getContentForDependency(candidate);
+                const parsed = extractCompileManifest(content, canonicalCandidate);
+                if (parsed) {
+                    compileManifest = parsed;
+                    manifestContent = content;
+                    break;
+                }
+            } catch (_) {
+                // Not an adapted split workspace, or this manifest path is not present.
+            }
+        }
+
+        if (!compileManifest) return Array.from(byPath.values());
+
+        const manifestForRequest = JSON.stringify(compileManifest, null, 2);
+        byPath.set(ADAPTED_MANIFEST_PATH, {
+            name: ADAPTED_MANIFEST_PATH,
+            content: manifestForRequest || manifestContent || '',
+        });
+
+        for (const path of compileFilesFromManifest(compileManifest)) {
             const canonicalPath = normalizeWorkspacePath(path);
             if (canonicalPath === activePath || byPath.has(canonicalPath)) continue;
-            const candidates = canonicalPath.startsWith('.synthi/')
+            const candidates = canonicalPath.startsWith('.')
                 ? [canonicalPath, canonicalPath.slice(1)]
                 : [canonicalPath];
             try {
@@ -2054,8 +2134,9 @@ export default function EditorPage({ params }) {
                     byPath.set(canonicalPath, { name: canonicalPath, content });
                 }
             } catch (_) {
-                // Most projects are not adapted split projects. Missing optional
-                // files should not block normal compiles.
+                // Manifests can be stale after a user deletes a module. Missing
+                // supplemental files should not block normal compile dispatch;
+                // the worker will surface true compile errors with context.
             }
         }
 

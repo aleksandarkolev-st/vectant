@@ -294,6 +294,9 @@ pub struct CompileManifest {
     pub runner_link_flags: Vec<String>,
 
     #[serde(default)]
+    pub files: Vec<String>,
+
+    #[serde(default)]
     pub system_packages: Vec<String>,
 
     #[serde(default)]
@@ -345,6 +348,12 @@ impl CompileManifest {
             gui_link_flags: vec!["-lSDL2".to_string()],
             shared_link_flags: Vec::new(),
             runner_link_flags: vec!["-lSDL2".to_string(), "-ldl".to_string()],
+            files: vec![
+                "shared.h".to_string(),
+                "core.cpp".to_string(),
+                "gui.cpp".to_string(),
+                "host_runner.cpp".to_string(),
+            ],
             system_packages: vec!["libsdl2-dev".to_string()],
             hot_reload_mode: HotReloadMode::Swap,
             confidence: ConfidenceBlock {
@@ -657,6 +666,7 @@ mod tests {
         "gui_link_flags": ["-lSDL2"],
         "shared_link_flags": [],
         "runner_link_flags": ["-lSDL2","-ldl","-lcudart","-lcuda"],
+        "files": ["shared.h","core.cpp","gui.cpp","host_runner.cpp","device.cu"],
         "system_packages": [],
         "hot_reload_mode": "swap",
         "confidence": {
@@ -683,6 +693,7 @@ mod tests {
         assert_eq!(gpu.vendor, DeviceVendor::Cuda);
         assert_eq!(gpu.device_compiler, DeviceCompiler::Nvcc);
         assert_eq!(gpu.arch, vec!["sm_80".to_string(), "sm_90".to_string()]);
+        assert_eq!(m.files.last().map(|s| s.as_str()), Some("device.cu"));
         assert_eq!(gpu.snapshot_mode, SnapshotMode::Auto);
         assert_eq!(gpu.fatbin_strategy, FatbinStrategy::SidecarModule);
     }
