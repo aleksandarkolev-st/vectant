@@ -13,6 +13,7 @@
 //   cd mcp/synthi-mcp
 //   pnpm build
 //   SYNTHI_GPU_HMR=1 node scripts/gpu-hmr-test.mjs
+//   SYNTHI_GPU_HMR=1 SYNTHI_GPU_HMR_FIXTURE=flow ONLY_PHASES=FLOW node scripts/gpu-hmr-test.mjs
 //
 // Env (see docs §12.2 for the full table):
 //   FRONTEND_URL                 http://localhost:3000
@@ -36,6 +37,7 @@
 //   MCP_CONTAINER                synthi-ide-mcp-1 (auto-detected from compose if absent/stale)
 //   MCP_SIGNALING_URL            ws://signaling-server:9000 (docker transport)
 //   SYNTHI_GPU_USE_MCP           1 (set 0 to use direct AI endpoint probe only)
+//   SYNTHI_GPU_HMR_FIXTURE       vector | flow  (FLOW phase auto-selects flow)
 //   GOOGLE_API_KEY               (only needed if MCP attach is exercised)
 
 import { spawn, execFile } from 'node:child_process';
@@ -85,6 +87,7 @@ const CFG = {
   directAiFallback: process.env.SYNTHI_GPU_DIRECT_AI_FALLBACK === '1',
   skipPhases: new Set((process.env.SKIP_PHASES ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
   onlyPhases: new Set((process.env.ONLY_PHASES ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
+  fixture: (process.env.SYNTHI_GPU_HMR_FIXTURE ?? 'vector').toLowerCase(),
   syncToGcs: true,
 };
 
@@ -115,6 +118,11 @@ function shouldRun(phase) {
   if (CFG.onlyPhases.size > 0 && !CFG.onlyPhases.has(phase)) return false;
   if (CFG.skipPhases.has(phase)) return false;
   return true;
+}
+function activeFixture() {
+  if (CFG.fixture === 'flow') return 'flow';
+  if (CFG.onlyPhases.has('FLOW')) return 'flow';
+  return 'vector';
 }
 function skipIfNoGpuToolchain(phase, ctx, name) {
   if (ctx.toolchain?.ok) return false;
@@ -797,8 +805,302 @@ const DEVICE_CU_HEAL_T3 = DEVICE_CU_PHASE0.replace(
   'c[i + 4] = a[i] + b[i];', // last block over-indexes
 );
 
-function manifestFor(vendor) {
+const FLOW_SHARED_H = `// shared.h - GPU HMR user validation fixture
+#pragma once
+#include "synthi_gpu_runtime.h"
+#include <SDL2/SDL.h>
+#include <cstdint>
+#include <cstddef>
+
+constexpr int FLOW_BALLS = 768;
+constexpr int FLOW_W = 800;
+constexpr int FLOW_H = 600;
+
+struct CoreState {
+    uint32_t magic;
+    uint32_t version;
+    SDL_Renderer* renderer;
+    float* d_x;
+    float* d_y;
+    float h_x[FLOW_BALLS];
+    float h_y[FLOW_BALLS];
+    int n;
+    float cx;
+    float cy;
+    float speed;
+    float last_avg_radius;
+    int flow_trend;
+    uint64_t frame;
+    double accumulator;
+    SynthiGpuRuntime* gpu;
+    std::uintptr_t stream;
+};
+`;
+
+const FLOW_CORE_CPP = `// core.cpp - GPU HMR user validation fixture
+#include "shared.h"
+#include <cuda_runtime.h>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+#define CORE_STATE_MAGIC 0x464C4F57u  // 'FLOW'
+
+static CoreState* g_state = nullptr;
+
+static void flow_register_buffers() {
+    if (!g_state) return;
+    synthi_register(g_state->gpu, g_state->d_x, sizeof(float) * FLOW_BALLS, "flow.x", "persistent");
+    synthi_register(g_state->gpu, g_state->d_y, sizeof(float) * FLOW_BALLS, "flow.y", "persistent");
+}
+
+static void flow_seed_host() {
+    for (int i = 0; i < FLOW_BALLS; ++i) {
+        const float theta = 2.39996323f * (float)i;
+        const float radius = 220.0f + (float)((i * 37) % 110);
+        g_state->h_x[i] = g_state->cx + std::cos(theta) * radius;
+        g_state->h_y[i] = g_state->cy + std::sin(theta) * radius;
+    }
+}
+
+extern "C" void* core_on_load(void* prev, void* renderer) {
+    if (prev) {
+        CoreState* p = (CoreState*) prev;
+        if (p->magic == CORE_STATE_MAGIC && p->version == 1) {
+            g_state = p;
+            g_state->renderer = (SDL_Renderer*) renderer;
+            flow_register_buffers();
+            std::fprintf(stderr, "[gpu-flow-demo] reused state frame=%llu\\n",
+                (unsigned long long) g_state->frame);
+            return p;
+        }
+    }
+
+    g_state = (CoreState*) std::malloc(sizeof(CoreState));
+    std::memset(g_state, 0, sizeof(*g_state));
+    g_state->magic = CORE_STATE_MAGIC;
+    g_state->version = 1;
+    g_state->renderer = (SDL_Renderer*) renderer;
+    g_state->n = FLOW_BALLS;
+    g_state->cx = FLOW_W * 0.5f;
+    g_state->cy = FLOW_H * 0.5f;
+    g_state->speed = 2.35f;
+
+    cudaStream_t stream = nullptr;
+    cudaStreamCreate(&stream);
+    g_state->stream = reinterpret_cast<std::uintptr_t>(stream);
+    cudaMalloc(&g_state->d_x, sizeof(float) * FLOW_BALLS);
+    cudaMalloc(&g_state->d_y, sizeof(float) * FLOW_BALLS);
+
+    flow_seed_host();
+    cudaMemcpy(g_state->d_x, g_state->h_x, sizeof(float) * FLOW_BALLS, cudaMemcpyHostToDevice);
+    cudaMemcpy(g_state->d_y, g_state->h_y, sizeof(float) * FLOW_BALLS, cudaMemcpyHostToDevice);
+    flow_register_buffers();
+
+    std::fprintf(stderr, "[gpu-flow-demo] allocated particles=%d x=0x%llx y=0x%llx\\n",
+        FLOW_BALLS,
+        (unsigned long long) reinterpret_cast<std::uintptr_t>(g_state->d_x),
+        (unsigned long long) reinterpret_cast<std::uintptr_t>(g_state->d_y));
+    return g_state;
+}
+
+extern "C" void core_on_update(void* ctx, double dt) {
+    CoreState* s = (CoreState*) ctx;
+    if (!s) return;
+    g_state = s;
+    dim3 block(256);
+    dim3 grid((s->n + block.x - 1) / block.x);
+    unsigned long long frame = (unsigned long long) s->frame;
+    synthi_gpu_launch(
+        s->gpu,
+        "particle_flow",
+        grid,
+        block,
+        0,
+        s->stream,
+        { &s->d_x, &s->d_y, &s->n, &s->cx, &s->cy, &s->speed, &frame }
+    );
+    s->frame += 1;
+    s->accumulator += dt;
+}
+
+extern "C" const DeviceDescriptor* device_descriptor() {
+    static const char* arches[] = { "sm_80" };
+    static const char* kernels[] = { "particle_flow" };
+    static DeviceDescriptor descriptor = {
+        "cuda",
+        arches,
+        kernels,
+        1,
+        1,
+        0,
+    };
+    return &descriptor;
+}
+
+extern "C" void device_on_load(const unsigned char* /*prev_blob*/, std::size_t /*len*/) {
+    flow_register_buffers();
+    std::fprintf(stderr, "[gpu-flow-demo] device_on_load frame=%llu\\n",
+        (unsigned long long) (g_state ? g_state->frame : 0));
+}
+
+extern "C" std::size_t device_save_size() { return 0; }
+extern "C" void device_save_write(unsigned char* /*out*/, std::size_t /*cap*/) {}
+
+extern "C" unsigned long long device_kernel_sig_hash(const char* name) {
+    return std::strcmp(name, "particle_flow") == 0 ? 0x41f10beef1257781ULL : 0ULL;
+}
+`;
+
+const FLOW_GUI_CPP = `// gui.cpp - renders the live GPU particle flow
+#include "shared.h"
+#include <cuda_runtime.h>
+#include <cmath>
+#include <cstdio>
+
+static void fill_circle(SDL_Renderer* ren, int cx, int cy, int radius) {
+    for (int y = -radius; y <= radius; ++y) {
+        for (int x = -radius; x <= radius; ++x) {
+            if (x * x + y * y <= radius * radius) {
+                SDL_RenderDrawPoint(ren, cx + x, cy + y);
+            }
+        }
+    }
+}
+
+extern "C" void* gui_on_load(void* prev, void* /*renderer*/, void* /*core_api*/) {
+    return prev;
+}
+
+extern "C" void gui_on_render(void* state_void) {
+    CoreState* s = (CoreState*) state_void;
+    if (!s || !s->renderer) return;
+    SDL_Renderer* ren = s->renderer;
+
+    SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(ren, 6, 10, 18, 255);
+    SDL_RenderClear(ren);
+
+    if (s->d_x && s->d_y) {
+        cudaMemcpy(s->h_x, s->d_x, sizeof(float) * FLOW_BALLS, cudaMemcpyDeviceToHost);
+        cudaMemcpy(s->h_y, s->d_y, sizeof(float) * FLOW_BALLS, cudaMemcpyDeviceToHost);
+    }
+
+    float avg_radius = 0.0f;
+    for (int i = 0; i < FLOW_BALLS; ++i) {
+        const float dx = s->h_x[i] - s->cx;
+        const float dy = s->h_y[i] - s->cy;
+        avg_radius += std::sqrt(dx * dx + dy * dy);
+    }
+    avg_radius /= (float) FLOW_BALLS;
+    const float delta = avg_radius - s->last_avg_radius;
+    if (s->last_avg_radius > 1.0f) {
+        if (delta > 0.08f) s->flow_trend = 1;
+        if (delta < -0.08f) s->flow_trend = -1;
+    }
+    s->last_avg_radius = avg_radius;
+
+    SDL_SetRenderDrawColor(ren, 22, 34, 54, 255);
+    for (int r = 80; r <= 320; r += 80) {
+        for (int a = 0; a < 360; a += 6) {
+            float t = (float)a * 0.01745329252f;
+            SDL_RenderDrawPoint(ren, (int)(s->cx + std::cos(t) * r), (int)(s->cy + std::sin(t) * r));
+        }
+    }
+
+    if (s->flow_trend > 0) {
+        SDL_SetRenderDrawColor(ren, 255, 142, 64, 255);
+    } else {
+        SDL_SetRenderDrawColor(ren, 64, 224, 208, 255);
+    }
+    fill_circle(ren, (int)s->cx, (int)s->cy, 18);
+
+    for (int i = 0; i < FLOW_BALLS; ++i) {
+        const float dx = s->h_x[i] - s->cx;
+        const float dy = s->h_y[i] - s->cy;
+        const float radius = std::sqrt(dx * dx + dy * dy);
+        const unsigned char alpha = (unsigned char)(110 + ((i * 17) % 120));
+        if (s->flow_trend > 0) {
+            SDL_SetRenderDrawColor(ren, 255, (unsigned char)(106 + (i % 90)), 44, alpha);
+        } else {
+            SDL_SetRenderDrawColor(ren, 44, (unsigned char)(170 + (i % 70)), 255, alpha);
+        }
+        int dot = radius < 64.0f ? 3 : 2;
+        fill_circle(ren, (int)s->h_x[i], (int)s->h_y[i], dot);
+    }
+
+    if ((s->frame % 60) == 0) {
+        std::fprintf(stderr, "[gpu-flow-demo] frame=%llu avg_radius=%.2f trend=%s\\n",
+            (unsigned long long) s->frame,
+            avg_radius,
+            s->flow_trend > 0 ? "outward" : "inward");
+    }
+}
+`;
+
+const FLOW_DEVICE_INWARD = `// device.cu - GPU HMR flow validation, inward baseline
+#ifndef FLOW_DIRECTION
+#define FLOW_DIRECTION 1.0f
+#endif
+
+extern "C" __global__ void particle_flow(float* x, float* y, int n, float cx, float cy, float speed, unsigned long long frame) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+
+    float dx = cx - x[i];
+    float dy = cy - y[i];
+    float len = sqrtf(dx * dx + dy * dy) + 0.0001f;
+    x[i] += FLOW_DIRECTION * dx / len * speed;
+    y[i] += FLOW_DIRECTION * dy / len * speed;
+
+    float ox = x[i] - cx;
+    float oy = y[i] - cy;
+    float radius = sqrtf(ox * ox + oy * oy);
+    float theta = 2.39996323f * (float)i + 0.015f * (float)(frame % 251ULL);
+    if (FLOW_DIRECTION > 0.0f && radius < 16.0f) {
+        float rr = 310.0f + (float)((i * 19) % 58);
+        x[i] = cx + cosf(theta) * rr;
+        y[i] = cy + sinf(theta) * rr;
+    }
+    if (FLOW_DIRECTION < 0.0f && radius > 388.0f) {
+        float rr = 14.0f + (float)((i * 11) % 24);
+        x[i] = cx + cosf(theta) * rr;
+        y[i] = cy + sinf(theta) * rr;
+    }
+}
+`;
+
+const FLOW_DEVICE_OUTWARD = FLOW_DEVICE_INWARD
+  .replace('inward baseline', 'outward hot-swap edit')
+  .replace('#define FLOW_DIRECTION 1.0f', '#define FLOW_DIRECTION -1.0f');
+
+function flowSourceSetForVendor(vendor) {
   const arch = CFG.gpuArch ?? (vendor === 'rocm' ? 'gfx1201' : 'sm_80');
+  if (vendor !== 'rocm') {
+    return { shared: FLOW_SHARED_H, core: FLOW_CORE_CPP, gui: FLOW_GUI_CPP };
+  }
+  const core = FLOW_CORE_CPP
+    .replace('#include <cuda_runtime.h>', '#include <hip/hip_runtime.h>')
+    .replaceAll('cudaStream_t', 'hipStream_t')
+    .replaceAll('cudaStreamCreate', 'hipStreamCreate')
+    .replaceAll('cudaMalloc', 'hipMalloc')
+    .replaceAll('cudaMemcpyHostToDevice', 'hipMemcpyHostToDevice')
+    .replaceAll('cudaMemcpyDeviceToHost', 'hipMemcpyDeviceToHost')
+    .replaceAll('cudaMemcpy', 'hipMemcpy')
+    .replace('"sm_80"', `"${arch}"`)
+    .replace('"cuda"', '"rocm"');
+  const gui = FLOW_GUI_CPP
+    .replace('#include <cuda_runtime.h>', '#include <hip/hip_runtime.h>')
+    .replaceAll('cudaMemcpyDeviceToHost', 'hipMemcpyDeviceToHost')
+    .replaceAll('cudaMemcpy', 'hipMemcpy');
+  return { shared: FLOW_SHARED_H, core, gui };
+}
+
+function manifestFor(vendor, fixture = activeFixture()) {
+  const arch = CFG.gpuArch ?? (vendor === 'rocm' ? 'gfx1201' : 'sm_80');
+  const flow = fixture === 'flow';
+  const sdlLinkFlags = flow ? ['-lSDL2', '-lm'] : [];
   const commonFlags = [
     '-shared',
     '-fPIC',
@@ -814,7 +1116,7 @@ function manifestFor(vendor) {
     overall: 'high',
     runner_synthesis: 'high',
     link_flags: 'high',
-    notes: `${vendor} GPU HMR fixture`,
+    notes: flow ? `${vendor} GPU HMR particle-flow user validation` : `${vendor} GPU HMR fixture`,
   };
   if (vendor === 'rocm') {
     return {
@@ -826,9 +1128,9 @@ function manifestFor(vendor) {
         '-I/opt/rocm/include',
       ],
       core_link_flags: ['-L/opt/rocm/lib', '-lamdhip64'],
-      gui_link_flags: ['-L/opt/rocm/lib', '-lamdhip64'],
+      gui_link_flags: ['-L/opt/rocm/lib', '-lamdhip64', ...sdlLinkFlags],
       shared_link_flags: [],
-      runner_link_flags: ['-L/opt/rocm/lib', '-lamdhip64', '-ldl'],
+      runner_link_flags: ['-L/opt/rocm/lib', '-lamdhip64', '-ldl', ...sdlLinkFlags],
       system_packages: [],
       hot_reload_mode: 'swap',
       confidence,
@@ -850,9 +1152,9 @@ function manifestFor(vendor) {
     std: 'c++17',
     common_flags: commonFlags,
     core_link_flags: ['-lcudart', '-lcuda'],
-    gui_link_flags: ['-lcudart', '-lcuda'],
+    gui_link_flags: ['-lcudart', '-lcuda', ...sdlLinkFlags],
     shared_link_flags: [],
-    runner_link_flags: ['-lcudart', '-lcuda', '-ldl'],
+    runner_link_flags: ['-lcudart', '-lcuda', '-ldl', ...sdlLinkFlags],
     system_packages: [],
     hot_reload_mode: 'swap',
     confidence,
@@ -900,8 +1202,8 @@ function verifySeedFixtureContract(files) {
   if (!/\bdevice_kernel_sig_hash\s*\(/.test(hostText)) {
     findings.push('missing_device_kernel_sig_hash_export');
   }
-  if (!/\b__global__\s+void\s+vec_add\s*\(/.test(deviceText)) {
-    findings.push('device_missing_vec_add_kernel');
+  if (!/\b__global__\s+void\s+(vec_add|particle_flow)\s*\(/.test(deviceText)) {
+    findings.push('device_missing_gpu_kernel');
   }
   return { ok: findings.length === 0, findings };
 }
@@ -931,6 +1233,7 @@ async function postCompileViaMcp({ ctx, files }) {
     gpu_mode: 'auto',
     compile_manifest: ctx.manifest,
     slug: CFG.slug,
+    ...(ctx.fixture === 'flow' ? { width: FLOW_W, height: FLOW_H } : {}),
   });
   if (!compileRes?.ok) {
     return { ok: false, reason: `mcp_compile_failed:${JSON.stringify(compileRes).slice(0, 240)}` };
@@ -997,6 +1300,32 @@ async function postCompile({ ctx, slug, files, manifest }) {
   }
 
   return postCompileViaAiEngine({ slug, files, manifest });
+}
+
+async function captureMcpScreenshot(label) {
+  if (!CFG.useMcpCompile) {
+    record('FLOW', `${label} screenshot`, 'skip', 'MCP compile disabled');
+    return null;
+  }
+  try {
+    const state = await ensureMcpAttached();
+    await sleep(900);
+    const shot = await state.client.toolCall(
+      'synthi_screenshot',
+      { max_dim: 640, freshness_max_ms: 5000 },
+      20000,
+    );
+    if (shot?.data) {
+      const out = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`);
+      await writeFile(out, Buffer.from(shot.data, 'base64'));
+      record('FLOW', `${label} screenshot`, 'pass', out);
+      return out;
+    }
+    record('FLOW', `${label} screenshot`, 'warn', JSON.stringify(shot).slice(0, 180));
+  } catch (e) {
+    record('FLOW', `${label} screenshot`, 'warn', e.message.slice(0, 180));
+  }
+  return null;
 }
 
 async function postHeal({ slug, tier, error, manifest }) {
@@ -1133,14 +1462,19 @@ async function preflight() {
 }
 
 async function seedWorkspace(vendor) {
-  const m = manifestFor(vendor);
+  const fixture = activeFixture();
+  const m = manifestFor(vendor, fixture);
   const deviceFilename = vendor === 'rocm' ? 'device.hip' : 'device.cu';
-  const sources = sourceSetForVendor(vendor);
-  log('info', `Seeding workspace slug=${CFG.slug} vendor=${vendor}`);
+  const vectorSources = sourceSetForVendor(vendor);
+  const flowSources = flowSourceSetForVendor(vendor);
+  const sources = fixture === 'flow' ? flowSources : { shared: SHARED_H, ...vectorSources };
+  const deviceContent = fixture === 'flow' ? FLOW_DEVICE_INWARD : DEVICE_CU_PHASE0;
+  log('info', `Seeding workspace slug=${CFG.slug} vendor=${vendor} fixture=${fixture}`);
 
   let ws;
   try {
-    ws = await createWorkspace({ name: `${CFG.workspaceName} (${vendor})`, slug: CFG.slug });
+    const suffix = fixture === 'flow' ? 'particle flow' : vendor;
+    ws = await createWorkspace({ name: `${CFG.workspaceName} (${suffix})`, slug: CFG.slug });
   } catch (e) {
     record('seed', 'create workspace', 'fail', e.message.slice(0, 200));
     return null;
@@ -1148,11 +1482,11 @@ async function seedWorkspace(vendor) {
   record('seed', 'create workspace', 'pass', `id=${ws.id} slug=${ws.slug}`);
 
   const files = [
-    { path: 'shared.h', content: SHARED_H },
+    { path: 'shared.h', content: sources.shared },
     { path: 'core.cpp', content: sources.core },
     { path: 'gui.cpp', content: sources.gui },
     { path: 'host_runner.cpp', content: HOST_RUNNER_CPP },
-    { path: deviceFilename, content: deviceSourceForPath(deviceFilename, DEVICE_CU_PHASE0) },
+    { path: deviceFilename, content: deviceSourceForPath(deviceFilename, deviceContent) },
     { path: '.synthi/build_manifest.json', content: JSON.stringify(m, null, 2) },
   ];
 
@@ -1178,7 +1512,8 @@ async function seedWorkspace(vendor) {
 
   // Read back the device file as a content-hash check.
   const got = await readFileViaCollab({ slug: CFG.slug, filePath: deviceFilename });
-  const seedOk = got != null && got.includes('vec_add');
+  const seedNeedle = fixture === 'flow' ? 'particle_flow' : 'vec_add';
+  const seedOk = got != null && got.includes(seedNeedle);
   record('seed', `${deviceFilename} present in collab`, seedOk ? 'pass' : 'fail',
     got ? `${got.length} bytes` : 'not found');
 
@@ -1186,8 +1521,76 @@ async function seedWorkspace(vendor) {
     workspace: ws,
     manifest: m,
     deviceFilename,
+    fixture,
     sourceFiles: new Map(files.map((f) => [f.path, f.content])),
   };
+}
+
+async function phaseFlow(ctx) {
+  if (!shouldRun('FLOW')) return record('FLOW', 'phase skipped', 'skip', 'filter');
+  if (ctx.fixture !== 'flow') {
+    return record('FLOW', 'particle-flow fixture', 'skip',
+      'set SYNTHI_GPU_HMR_FIXTURE=flow or ONLY_PHASES=FLOW');
+  }
+  if (!CFG.gpuHmr) return record('FLOW', 'particle-flow GPU HMR', 'skip', 'feature_flag_off');
+  if (skipIfNoGpuToolchain('FLOW', ctx, 'particle-flow GPU HMR')) return;
+
+  log('info', '── FLOW: live particle-flow GPU HMR validation ──');
+
+  const baselineStart = await workerLogCheckpoint(8 * 1024 * 1024);
+  const baseline = await postCompile({
+    ctx,
+    slug: CFG.slug,
+    files: [{ path: ctx.deviceFilename, content: FLOW_DEVICE_INWARD }],
+    manifest: ctx.manifest,
+  });
+  if (!baseline.ok) {
+    return record('FLOW', 'inward compile dispatch', 'warn', baseline.reason);
+  }
+  record('FLOW', 'inward compile dispatch', 'pass');
+
+  const baselineLaunch = await awaitWorkerLogRegex(
+    /synthi_gpu_launch kernel=particle_flow|Device sidecar reload vendor=.*result=Success/,
+    CFG.hmrTimeoutMs,
+    { after: baselineStart, maxBytes: 8 * 1024 * 1024 },
+  );
+  record('FLOW', 'inward GPU launch observed',
+    baselineLaunch.matched ? 'pass' : 'warn',
+    baselineLaunch.snippet || 'no particle_flow launch marker');
+
+  await captureMcpScreenshot('flow-inward');
+
+  const flipStart = await workerLogCheckpoint(8 * 1024 * 1024);
+  const flip = await postCompile({
+    ctx,
+    slug: CFG.slug,
+    files: [{ path: ctx.deviceFilename, content: FLOW_DEVICE_OUTWARD }],
+    manifest: ctx.manifest,
+  });
+  if (!flip.ok) {
+    return record('FLOW', 'outward edit dispatch', 'warn', flip.reason);
+  }
+  record('FLOW', 'outward edit dispatch', 'pass');
+
+  const fastSwap = await awaitWorkerLogRegex(
+    /\[gpu-reload\].*plan=device_only|state_preserved:\s*true|Device sidecar reload vendor=.*result=Success/,
+    CFG.hmrTimeoutMs,
+    { after: flipStart, maxBytes: 8 * 1024 * 1024 },
+  );
+  record('FLOW', 'outward device edit hot-swapped',
+    fastSwap.matched ? 'pass' : 'warn',
+    fastSwap.snippet || 'no device-only HMR marker');
+
+  const trend = await awaitWorkerLogRegex(
+    /\[gpu-flow-demo\].*trend=outward/,
+    12000,
+    { after: flipStart, maxBytes: 8 * 1024 * 1024 },
+  );
+  record('FLOW', 'render loop reports outward flow',
+    trend.matched ? 'pass' : 'warn',
+    trend.snippet || 'outward trend not observed before timeout');
+
+  await captureMcpScreenshot('flow-outward');
 }
 
 async function phaseP0(ctx) {
@@ -1537,6 +1940,7 @@ async function main() {
   console.log(color.blue + '\n━━━ Synthi GPU-HMR live test ━━━' + color.reset);
   console.log(`  slug         ${CFG.slug}`);
   console.log(`  vendor       ${CFG.vendor}`);
+  console.log(`  fixture      ${activeFixture()}`);
   console.log(`  gpu-hmr flag ${CFG.gpuHmr}`);
   console.log(`  mcp compile  ${CFG.useMcpCompile ? `${CFG.mcpTransport}:${CFG.mcpContainer}` : 'disabled'}`);
   console.log(`  worker log   ${CFG.workerLogPath}`);
@@ -1575,12 +1979,16 @@ async function main() {
       ctx.toolchain.ok ? 'pass' : 'skip',
       ctx.toolchain.ok ? `${ctx.toolchain.source}:${ctx.toolchain.path}` : ctx.toolchain.reason);
     // Phases run sequentially because they share the same workspace state.
-    try { await phaseP0(ctx); }            catch (e) { record('P0',            'unexpected throw', 'fail', e.message.slice(0, 200)); }
-    try { await phaseP1(ctx); }            catch (e) { record('P1',            'unexpected throw', 'fail', e.message.slice(0, 200)); }
-    try { await phaseP2(ctx); }            catch (e) { record('P2',            'unexpected throw', 'fail', e.message.slice(0, 200)); }
-    try { await phaseP3Mixed(ctx); }       catch (e) { record('P3-mixed',      'unexpected throw', 'fail', e.message.slice(0, 200)); }
-    try { await phaseP3Heal(ctx); }        catch (e) { record('P3-heal',       'unexpected throw', 'fail', e.message.slice(0, 200)); }
-    try { await phaseP3StreamHang(ctx); }  catch (e) { record('P3-stream-hang','unexpected throw', 'fail', e.message.slice(0, 200)); }
+    if (ctx.fixture === 'flow') {
+      try { await phaseFlow(ctx); }          catch (e) { record('FLOW',          'unexpected throw', 'fail', e.message.slice(0, 200)); }
+    } else {
+      try { await phaseP0(ctx); }            catch (e) { record('P0',            'unexpected throw', 'fail', e.message.slice(0, 200)); }
+      try { await phaseP1(ctx); }            catch (e) { record('P1',            'unexpected throw', 'fail', e.message.slice(0, 200)); }
+      try { await phaseP2(ctx); }            catch (e) { record('P2',            'unexpected throw', 'fail', e.message.slice(0, 200)); }
+      try { await phaseP3Mixed(ctx); }       catch (e) { record('P3-mixed',      'unexpected throw', 'fail', e.message.slice(0, 200)); }
+      try { await phaseP3Heal(ctx); }        catch (e) { record('P3-heal',       'unexpected throw', 'fail', e.message.slice(0, 200)); }
+      try { await phaseP3StreamHang(ctx); }  catch (e) { record('P3-stream-hang','unexpected throw', 'fail', e.message.slice(0, 200)); }
+    }
   }
 
   await writeSummary();
@@ -1597,7 +2005,7 @@ async function writeSummary() {
   console.log(`  Checked ${results.length}: ${color.green}${passed} PASS${color.reset}  ${color.yellow}${warned} WARN${color.reset}  ${color.red}${failed} FAIL${color.reset}  ${color.dim}${skipped} SKIP${color.reset}`);
 
   // Phase headline
-  const phases = ['P0', 'P1', 'P2', 'P3-mixed', 'P3-heal', 'P3-stream-hang'];
+  const phases = ['FLOW', 'P0', 'P1', 'P2', 'P3-mixed', 'P3-heal', 'P3-stream-hang'];
   const headline = phases.map((p) => {
     const rows = results.filter((r) => r.phase === p);
     if (rows.length === 0) return `${p} -`;
@@ -1619,6 +2027,7 @@ async function writeSummary() {
   const summary = {
     slug: CFG.slug,
     vendor: CFG.vendor,
+    fixture: activeFixture(),
     gpu_hmr_flag: CFG.gpuHmr,
     run_at: new Date().toISOString(),
     config: {
@@ -1644,21 +2053,34 @@ async function writeSummary() {
 }
 
 async function selfCheck() {
-  const files = [
+  const vectorFiles = [
     { path: 'shared.h', content: SHARED_H },
     { path: 'core.cpp', content: CORE_CPP },
     { path: 'gui.cpp', content: GUI_CPP },
     { path: 'host_runner.cpp', content: HOST_RUNNER_CPP },
     { path: 'device.cu', content: DEVICE_CU_PHASE0 },
-    { path: '.synthi/build_manifest.json', content: JSON.stringify(manifestFor('cuda'), null, 2) },
+    { path: '.synthi/build_manifest.json', content: JSON.stringify(manifestFor('cuda', 'vector'), null, 2) },
   ];
-  const contract = verifySeedFixtureContract(files);
-  if (!contract.ok) {
-    console.error(`gpu-hmr-test self-check failed: ${contract.findings.join(', ')}`);
+  const flowFiles = [
+    { path: 'shared.h', content: FLOW_SHARED_H },
+    { path: 'core.cpp', content: FLOW_CORE_CPP },
+    { path: 'gui.cpp', content: FLOW_GUI_CPP },
+    { path: 'host_runner.cpp', content: HOST_RUNNER_CPP },
+    { path: 'device.cu', content: FLOW_DEVICE_INWARD },
+    { path: '.synthi/build_manifest.json', content: JSON.stringify(manifestFor('cuda', 'flow'), null, 2) },
+  ];
+  const vectorContract = verifySeedFixtureContract(vectorFiles);
+  const flowContract = verifySeedFixtureContract(flowFiles);
+  if (!vectorContract.ok || !flowContract.ok) {
+    const findings = [
+      ...vectorContract.findings.map((f) => `vector:${f}`),
+      ...flowContract.findings.map((f) => `flow:${f}`),
+    ];
+    console.error(`gpu-hmr-test self-check failed: ${findings.join(', ')}`);
     process.exitCode = 1;
     return;
   }
-  console.log('gpu-hmr-test self-check passed: fixture uses Synthi GPU runtime contract');
+  console.log('gpu-hmr-test self-check passed: fixtures use Synthi GPU runtime contract');
 }
 
 const entry = process.argv.includes('--self-check') ? selfCheck : main;
