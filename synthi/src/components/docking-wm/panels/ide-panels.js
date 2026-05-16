@@ -93,7 +93,10 @@ export const IDE_PANEL_DEFINITIONS = [
   },
   {
     panelType: IDE_PANEL.EDITOR,
-    displayName: "Editor",
+    // The editor panel is a meta-container for file tabs; its own
+    // tab label is redundant — the file tab strip below already
+    // tells the user what's open. Empty displayName hides the chrome.
+    displayName: "",
     icon: "file-code",
     category: "editor",
     component: EditorPanelWrapper,

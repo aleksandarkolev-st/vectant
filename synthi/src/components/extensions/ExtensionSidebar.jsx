@@ -658,16 +658,43 @@ module.exports = { activate, deactivate };
         {tab === 'installed' ? (
           // ── Installed extensions list ──
           extensions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center px-4">
-              <Puzzle className="w-8 h-8 mb-3" style={{ color: 'var(--text-dim)' }} />
-              <div className="text-[12px] mb-1" style={{ color: 'var(--text-muted)' }}>No extensions installed</div>
-              <div className="text-[11px] mb-3" style={{ color: 'var(--text-dim)' }}>
-                Click <Plus className="inline w-3 h-3" /> to install a test extension, or browse the <span style={{ color: 'var(--accent-secondary)' }}>Marketplace</span> tab.
+            <div className="flex flex-col items-center justify-center h-full text-center px-4 relative">
+              {/* Soft ambient halo behind the icon — signature touch
+                  reserved for empty-state focal moments. */}
+              <div
+                aria-hidden="true"
+                className="absolute pointer-events-none"
+                style={{
+                  width: 160,
+                  height: 160,
+                  borderRadius: '50%',
+                  background: 'radial-gradient(circle, color-mix(in srgb, var(--brand-stop-3) 14%, transparent) 0%, transparent 70%)',
+                  filter: 'blur(8px)',
+                  top: 'calc(50% - 120px)',
+                }}
+              />
+              <div
+                className="relative w-11 h-11 mb-3 rounded-xl flex items-center justify-center"
+                style={{
+                  background: 'color-mix(in srgb, var(--brand-stop-3) 8%, var(--bg-elevated))',
+                  border: '1px solid color-mix(in srgb, var(--brand-stop-3) 22%, transparent)',
+                  boxShadow: '0 0 22px -4px color-mix(in srgb, var(--brand-stop-3) 28%, transparent)',
+                }}
+              >
+                <Puzzle className="w-5 h-5" style={{ color: 'var(--accent-secondary)' }} />
+              </div>
+              <div className="text-[13px] font-medium mb-1" style={{ color: 'var(--text-primary)' }}>No extensions yet</div>
+              <div className="text-[11px] mb-4 max-w-[220px]" style={{ color: 'var(--text-muted)' }}>
+                Click <Plus className="inline w-3 h-3 align-text-bottom" /> to install a test extension, or browse the Marketplace.
               </div>
               <button
                 onClick={() => setTab('marketplace')}
-                className="px-3 py-1.5 text-[11px] font-medium rounded transition-colors"
-                style={{ background: 'color-mix(in srgb, var(--accent-secondary) 15%, transparent)', color: 'var(--accent-secondary)' }}
+                className="px-3.5 py-1.5 text-[11px] font-semibold rounded-md transition-all hover:-translate-y-px"
+                style={{
+                  background: 'var(--brand-gradient-horizontal)',
+                  color: '#ffffff',
+                  boxShadow: '0 4px 16px -4px color-mix(in srgb, var(--brand-stop-3) 40%, transparent)',
+                }}
               >
                 Browse Marketplace
               </button>

@@ -2775,7 +2775,14 @@ export default function EditorPage({ params }) {
 
     return (
         <DockablePanelProvider workspaceId={slug}>
-            <div className={cn('workspace-root flex flex-col h-screen overflow-hidden', viewportClass)} style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}>
+            <div
+                className={cn('workspace-root relative flex flex-col h-screen overflow-hidden', viewportClass)}
+                style={{
+                    background: 'var(--bg-sidebar)',
+                    color: 'var(--text-primary)',
+                    '--workspace-statusbar-terminal-clearance': 'clamp(160px, 24vh, 260px)',
+                }}
+            >
                 <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'var(--bg-editor)', color: 'var(--text-primary)' }}>
                     {/* Hydrate workspace-specific tabs from localStorage */}
                     <WorkspaceHydrator slug={slug} />

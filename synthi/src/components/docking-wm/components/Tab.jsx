@@ -137,15 +137,19 @@ export const Tab = memo(function Tab({
         />
       )}
 
-      {/* Title */}
-      <span
-        style={{
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}
-      >
-        {tab.title}
-      </span>
+      {/* Title — hidden when empty (meta-container panels like the
+          Editor wrapper rely only on the icon since their content
+          carries its own tab strip). */}
+      {tab.title && (
+        <span
+          style={{
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {tab.title}
+        </span>
+      )}
 
       {/* Pin indicator */}
       {tab.pinned && (

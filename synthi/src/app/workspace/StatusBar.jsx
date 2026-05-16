@@ -127,192 +127,192 @@ function StatusBarInner({
   // Determine if there are problems to show (use deferred values)
   const hasProblems = deferredSummary.errors > 0 || deferredSummary.warnings > 0;
 
+  // Floating "island" status bar — three zones inside a single
+  // rounded frosted-glass pill that hovers above the editor.
+  // The outer .status-bar-root keeps reserved vertical space in the
+  // workspace flex column; the inner .status-island is the visible
+  // floating surface.
   return (
-    <div className="status-bar-root h-7 flex-shrink-0 flex items-center justify-between px-3 border-t-2 text-[12px] select-none font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
-      {/* Left Section - Grouped info */}
-      <div className="flex items-center gap-3">
-        {/* Branch Selector - Compact with pill style */}
+    <div className="status-bar-root pointer-events-none absolute inset-x-0 bottom-0 z-30 px-3 pb-1.5 pt-1 flex items-end justify-center" style={{ background: 'transparent' }}>
+      <div className="relative w-1/2 min-w-[640px] pointer-events-auto">
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-[-1px] rounded-full"
+          style={{
+            background: 'var(--brand-gradient-horizontal)',
+            filter: 'blur(5px)',
+            opacity: 0.16,
+            transform: 'translateZ(0) scale(1.006)',
+          }}
+        />
+        <div
+          className="status-island relative z-10 grid grid-cols-3 items-center h-7 px-4 rounded-full text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap overflow-hidden"
+          style={{
+            background:
+              'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, var(--brand-gradient-horizontal) border-box',
+            border: '1px solid transparent',
+            boxShadow:
+              '0 16px 40px -8px rgba(0,0,0,0.85), ' +
+              'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent), ' +
+              'inset 0 -1px 0 0 color-mix(in srgb, black 30%, transparent)',
+            backdropFilter: 'blur(14px) saturate(160%)',
+            WebkitBackdropFilter: 'blur(14px) saturate(160%)',
+          }}
+        >
+      {/* ── LEFT ZONE — file/build state ─────────────────────────── */}
+      <div className="flex items-center gap-1 justify-self-start">
+        {/* Branch */}
         <div className="flex items-center rounded-md px-1">
           <BranchSelector slug={slug} />
         </div>
-        
-        <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
-        
-        {/* Problems Indicator - Clickable to toggle problems panel */}
-        <div 
+
+        {/* Problems */}
+        <div
           onClick={onProblemsClick}
-          className={`flex items-center gap-2 px-2 py-0.5 rounded-md cursor-pointer transition-all`}
-          style={hasProblems ? { background: 'color-mix(in srgb, var(--accent-danger) 3%, transparent)' } : {}}
+          className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)]"
+          style={hasProblems ? { background: 'color-mix(in srgb, var(--accent-danger) 4%, transparent)' } : {}}
         >
           {deferredIsAnalyzing ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--text-secondary)' }} strokeWidth={2} />
-              <span style={{ color: 'var(--text-secondary)' }}>Analyzing...</span>
+              <span style={{ color: 'var(--text-secondary)' }}>Analyzing</span>
             </>
           ) : (
             <>
-              <AlertCircle 
-                className="w-3.5 h-3.5" 
-                style={{ color: deferredSummary.errors > 0 ? 'var(--accent-danger)' : 'var(--text-muted)' }}
-                strokeWidth={2} 
-              />
+              <AlertCircle className="w-3.5 h-3.5" style={{ color: deferredSummary.errors > 0 ? 'var(--accent-danger)' : 'var(--text-muted)' }} strokeWidth={2} />
               <span style={deferredSummary.errors > 0 ? { color: 'var(--accent-danger)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
                 {deferredSummary.errors}
               </span>
-              <AlertTriangle 
-                className="w-3.5 h-3.5" 
-                style={{ color: deferredSummary.warnings > 0 ? 'var(--accent-warning)' : 'var(--text-muted)' }}
-                strokeWidth={2} 
-              />
+              <AlertTriangle className="w-3.5 h-3.5 ml-0.5" style={{ color: deferredSummary.warnings > 0 ? 'var(--accent-warning)' : 'var(--text-muted)' }} strokeWidth={2} />
               <span style={deferredSummary.warnings > 0 ? { color: 'var(--accent-warning)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
                 {deferredSummary.warnings}
               </span>
             </>
           )}
         </div>
-        
-        <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
-        
-        {/* Compiler Status - Pill/Badge shaped indicator with better contrast */}
-        <div className={`status-bar-trim flex items-center gap-2 px-2.5 py-1 transition-all cursor-default`}>
+
+        {/* Compiler */}
+        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md transition-all cursor-default">
           <Cpu className="w-3.5 h-3.5" style={statusStyle.textStyle} strokeWidth={2} />
-          <div className={`w-2 h-2 rounded-full ${statusStyle.dotCls || ''}`} style={statusStyle.dotStyle} />
+          <div className={`w-1.5 h-1.5 rounded-full ${statusStyle.dotCls || ''}`} style={statusStyle.dotStyle} />
           <span className="font-semibold" style={statusStyle.textStyle}>{statusStyle.text}</span>
         </div>
+      </div>
 
-        <div className="status-bar-trim w-px h-4 bg-[#1a1b24]"></div>
-
-        {/* Collab Sync Status - green/yellow/red indicator */}
-        <div className="flex items-center gap-2 px-2.5 py-1 transition-all cursor-default" title={`Collaboration: ${collabStyle.text}`}>
+      {/* ── CENTER ZONE — session / collaboration ────────────────── */}
+      <div className="flex items-center gap-1 justify-self-center">
+        {/* Collab status */}
+        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md transition-all cursor-default" title={`Collaboration: ${collabStyle.text}`}>
           <collabStyle.Icon className={`w-3.5 h-3.5 ${collabStyle.textColor}`} strokeWidth={2} />
-          <div className={`w-2 h-2 rounded-full ${collabStyle.dot}`} />
+          <div className={`w-1.5 h-1.5 rounded-full ${collabStyle.dot}`} />
           <span className={`${collabStyle.textColor} font-semibold`}>{collabStyle.text}</span>
           {otherUserCount > 0 && (
             <span className="flex items-center gap-1 ml-1" title={`${otherUserCount} other user${otherUserCount > 1 ? 's' : ''} online`}>
-              <Users className="w-3 h-3 text-[#7c80a0]" strokeWidth={2} />
-              <span className="text-[#9ba2b8] font-semibold">{otherUserCount}</span>
+              <Users className="w-3 h-3" style={{ color: 'var(--text-muted)' }} strokeWidth={2} />
+              <span className="font-semibold" style={{ color: 'var(--text-secondary)' }}>{otherUserCount}</span>
             </span>
           )}
         </div>
 
-        <div className="status-bar-trim w-px h-4 bg-[#1a1b24]"></div>
-
-        {/* Operator console trigger */}
-        <div className="status-bar-trim flex items-center">
+        {/* Operator */}
+        <div className="flex items-center">
           <OperatorStatusBarButton sessionId={slug} />
         </div>
 
-        {/* Session Sharing Indicator */}
+        {/* LIVE / Guest — session sharing indicators sit at the end of the center zone */}
         {isHost && (
-          <>
-            <div className="w-px h-4 bg-[#1a1b24]"></div>
-            <div className="flex items-center gap-2 px-2.5 py-1 cursor-default" title={`Live session — ${guests.length} guest(s)`}>
-              <Radio className="w-3.5 h-3.5 text-[#ff5757]" strokeWidth={2} />
-              <span className="w-2 h-2 rounded-full bg-[#ff5757] animate-pulse" />
-              <span className="text-[#ff5757] font-semibold">LIVE</span>
-            </div>
-          </>
+          <div
+            className="vt-brand-pulse flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default ml-1"
+            title={`Live session — ${guests.length} guest(s)`}
+            style={{
+              background: 'color-mix(in srgb, var(--brand-stop-2) 8%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--brand-stop-2) 24%, transparent)',
+            }}
+          >
+            <Radio className="w-3.5 h-3.5" style={{ color: 'var(--brand-stop-2)' }} strokeWidth={2} />
+            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--brand-stop-2)' }} />
+            <span className="font-semibold" style={{ color: 'var(--brand-stop-2)' }}>LIVE</span>
+          </div>
         )}
         {isGuest && (
-          <>
-            <div className="w-px h-4 bg-[#1a1b24]"></div>
-            <div className="flex items-center gap-2 px-2.5 py-1 cursor-default" title={`Connected to ${session?.hostName || 'Host'}'s session`}>
-              <Users className="w-3.5 h-3.5 text-[#fbbf24]" strokeWidth={2} />
-              <span className="text-[#fbbf24] font-semibold">Guest</span>
-            </div>
-          </>
+          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default ml-1" title={`Connected to ${session?.hostName || 'Host'}'s session`}>
+            <Users className="w-3.5 h-3.5" style={{ color: 'var(--accent-warning)' }} strokeWidth={2} />
+            <span className="font-semibold" style={{ color: 'var(--accent-warning)' }}>Guest</span>
+          </div>
         )}
       </div>
-      
-      {/* Right Section - Better grouped */}
-      <div className="flex items-center gap-3 mr-1">
-        {/* Self-Healing indicator */}
+
+      {/* ── RIGHT ZONE — healing / extensions / cursor / language ── */}
+      <div className="flex items-center gap-1 justify-self-end mr-1">
+        {/* Healing */}
         <HealingIndicator />
-        <div className="status-bar-trim w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
 
         {/* Extension-contributed status bar items */}
         {extensionStatusBarItems.filter(i => i.text).map((item) => (
           <div
             key={item.id}
-            className="status-bar-trim flex items-center gap-1 px-2 py-0.5 rounded-md cursor-default transition-colors"
+            className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-default transition-colors"
             title={item.tooltip || item.text}
           >
             <span className="font-medium text-[11px]" style={{ color: 'var(--text-secondary)' }}>{item.text}</span>
           </div>
         ))}
-        {extensionStatusBarItems.length > 0 && (
-          <div className="status-bar-trim w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
-        )}
 
         {/* VS Code Server status */}
         {vscodeServerState !== 'disconnected' && (
-          <div className="status-bar-trim flex items-center gap-3">
+          <div
+            className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-colors"
+            style={vscodeServerState === 'running'
+              ? { background: 'color-mix(in srgb, var(--accent-success) 4%, transparent)' }
+              : vscodeServerState === 'error'
+              ? { background: 'color-mix(in srgb, var(--accent-danger) 4%, transparent)' }
+              : {}}
+            title={`VS Code Server: ${vscodeServerState}`}
+          >
             <div
-              className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-colors`}
-              style={vscodeServerState === 'running'
-                ? { background: 'color-mix(in srgb, var(--accent-success) 3%, transparent)' }
-                : vscodeServerState === 'error'
-                ? { background: 'color-mix(in srgb, var(--accent-danger) 3%, transparent)' }
-                : {}}
-              title={`VS Code Server: ${vscodeServerState}`}
+              className={`w-1.5 h-1.5 rounded-full ${vscodeServerState === 'connecting' ? 'animate-pulse' : ''}`}
+              style={{
+                background: vscodeServerState === 'running' ? 'var(--accent-success)'
+                  : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
+                  : vscodeServerState === 'error' ? 'var(--accent-danger)'
+                  : 'var(--text-muted)'
+              }}
+            />
+            <span
+              className="font-medium"
+              style={{
+                color: vscodeServerState === 'running' ? 'var(--accent-success)'
+                  : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
+                  : vscodeServerState === 'error' ? 'var(--accent-danger)'
+                  : 'var(--text-muted)'
+              }}
             >
-              <div
-                className={`w-2 h-2 rounded-full ${vscodeServerState === 'connecting' ? 'animate-pulse' : ''}`}
-                style={{
-                  background: vscodeServerState === 'running' ? 'var(--accent-success)'
-                    : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
-                    : vscodeServerState === 'error' ? 'var(--accent-danger)'
-                    : 'var(--text-muted)'
-                }}
-              />
-              <span
-                className="font-medium text-[11px]"
-                style={{
-                  color: vscodeServerState === 'running' ? 'var(--accent-success)'
-                    : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
-                    : vscodeServerState === 'error' ? 'var(--accent-danger)'
-                    : 'var(--text-muted)'
-                }}
-              >
-                {vscodeServerState === 'running'
-                  ? 'Server'
-                  : vscodeServerState === 'connecting'
-                  ? 'Server...'
-                  : 'Server ✖'}
-              </span>
-            </div>
-            <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
+              {vscodeServerState === 'running' ? 'Server' : vscodeServerState === 'connecting' ? 'Server…' : 'Server ✖'}
+            </span>
           </div>
         )}
 
-        {/* Line/Column - Clearer */}
-        <div className="status-bar-trim flex items-center gap-3">
-          <StatusBarCursorInfo />
-          <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
-        </div>
+        {/* Cursor position */}
+        <StatusBarCursorInfo />
 
-        {/* Language - Pill style with accent on hover */}
-        <div className="status-bar-trim flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all">
-          <Zap className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
+        {/* Language */}
+        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]">
+          <Zap className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
           <span className="font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
         </div>
 
-        {/* ULTRAPLAN Phase 8: AI-detected framework pill. Only shown
-            when the arch cache contained a "## Language & Framework"
-            section — otherwise we fall back to the extension-derived
-            language pill above. */}
+        {/* AI-detected framework pill (when present) */}
         {languageAndFramework && (
-          <div className="status-bar-trim flex items-center gap-3">
-            <div className="w-px h-4" style={{ background: 'var(--border-subtle)' }}></div>
-            <div
-              className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-all"
-              title={`Framework detected from AI architecture cache: ${languageAndFramework}`}
-            >
-              <Cpu className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
-              <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
-            </div>
+          <div
+            className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-all"
+            title={`Framework: ${languageAndFramework}`}
+          >
+            <Cpu className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
+            <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
           </div>
         )}
+      </div>
+        </div>
       </div>
     </div>
   );

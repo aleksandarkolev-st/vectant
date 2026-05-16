@@ -330,10 +330,11 @@ const layoutSlice = createSlice({
         }
       }
 
-      // Create the editor tab
+      // Create the editor tab — empty title (the file-tab strip below
+      // already labels what's open; the meta-container needs no name).
       const tab = createTab({
         panelType: "editor",
-        title: "Editor",
+        title: "",
         closable: false,
       });
       let next = { ...state, tabs: { ...state.tabs, [tab.id]: tab } };

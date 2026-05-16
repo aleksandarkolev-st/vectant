@@ -122,7 +122,9 @@ function RadioRow({ value, onChange, options }) {
         border: '1px solid var(--border-subtle)',
       }}
     >
-      {/* Animated indicator pill — sits behind the buttons */}
+      {/* Animated indicator pill — sits behind the buttons.
+          On "Aggressive" the pill bleeds into the brand gradient,
+          signalling intent: bolder choice, bolder visual. */}
       <div
         aria-hidden
         style={{
@@ -131,14 +133,16 @@ function RadioRow({ value, onChange, options }) {
           bottom: 2,
           left: pill.left,
           width: pill.width,
-          background: 'var(--accent-primary)',
+          background: value === 'aggressive'
+            ? 'var(--brand-gradient)'
+            : 'var(--attention-purple)',
           borderRadius: 4,
-          boxShadow: '0 1px 2px rgba(0,0,0,0.25)',
           opacity: pill.ready ? 1 : 0,
           transition:
-            'left 280ms cubic-bezier(0.34, 1.36, 0.64, 1), width 280ms cubic-bezier(0.34, 1.36, 0.64, 1), opacity 120ms, box-shadow 200ms ease',
-          boxShadow:
-            '0 1px 2px rgba(0,0,0,0.25), 0 0 12px color-mix(in srgb, var(--accent-primary) 28%, transparent)',
+            'left 280ms cubic-bezier(0.34, 1.36, 0.64, 1), width 280ms cubic-bezier(0.34, 1.36, 0.64, 1), opacity 120ms, background 200ms ease, box-shadow 200ms ease',
+          boxShadow: value === 'aggressive'
+            ? '0 1px 2px rgba(0,0,0,0.25), 0 0 14px color-mix(in srgb, var(--brand-stop-3) 38%, transparent)'
+            : '0 1px 2px rgba(0,0,0,0.25), 0 0 12px color-mix(in srgb, var(--attention-purple) 32%, transparent)',
           pointerEvents: 'none',
           zIndex: 0,
         }}

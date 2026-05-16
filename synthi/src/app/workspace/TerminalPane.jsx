@@ -431,7 +431,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
   // ─── Render ───────────────────────────────────────────────────────────
   return (
-    <div className="h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
+    <div className="terminal-pane-shell h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
       <div ref={containerRef} className="h-full w-full" />
 
       {/* Session: View-only terminal overlay for guests without canTerminal */}

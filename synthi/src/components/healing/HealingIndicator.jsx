@@ -55,10 +55,14 @@ export function HealingIndicator() {
           animate: true,
         };
       case 'applying':
+        // AI is actively healing — full signature moment.
+        // Brand-gradient text + pulse glow.
         return {
-          dotColor: 'var(--accent-primary)',
-          textColor: 'var(--accent-primary)',
-          bgColor: 'color-mix(in srgb, var(--accent-primary) 5%, transparent)',
+          dotColor: 'var(--brand-stop-3)',
+          textColor: 'var(--brand-stop-3)',
+          bgColor: 'color-mix(in srgb, var(--brand-stop-3) 8%, transparent)',
+          ringStyle: '0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 28%, transparent), 0 0 14px -2px color-mix(in srgb, var(--brand-stop-3) 38%, transparent)',
+          pulse: true,
           Icon: Loader2,
           animate: true,
         };
@@ -94,8 +98,8 @@ export function HealingIndicator() {
   return (
     <div
       onClick={handleClick}
-      className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all hover:opacity-80"
-      style={{ background: s.bgColor }}
+      className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all hover:opacity-80 ${s.pulse ? 'vt-brand-pulse' : ''}`}
+      style={{ background: s.bgColor, boxShadow: s.ringStyle }}
       title={`${summary}${pendingCount > 0 ? ` (${pendingCount} pending)` : ''}\nClick to toggle`}
     >
       <s.Icon

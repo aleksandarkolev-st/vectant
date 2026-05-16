@@ -3966,11 +3966,18 @@ const EditorPanel = ({
                                                 left: tabIndicator.left,
                                                 width: tabIndicator.width,
                                                 opacity: tabIndicator.visible ? 1 : 0,
-                                                background: 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary), var(--accent-primary))',
-                                                boxShadow: '0 0 8px color-mix(in srgb, var(--accent-primary) 50%, transparent)',
-                                                transition: 'left 0.15s cubic-bezier(0.4, 0, 0.2, 1), width 0.15s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.1s ease',
+                                                backgroundImage: [
+                                                    'var(--brand-gradient-horizontal)',
+                                                    'linear-gradient(90deg, color-mix(in srgb, var(--accent-primary) 78%, transparent), color-mix(in srgb, var(--accent-primary) 78%, transparent))',
+                                                ].join(', '),
+                                                backgroundRepeat: 'no-repeat, no-repeat',
+                                                backgroundSize: `${hoveredTabPath ? '100% 100%' : '0% 100%'}, 100% 100%`,
+                                                boxShadow: hoveredTabPath
+                                                    ? '0 0 8px color-mix(in srgb, var(--brand-stop-3) 28%, transparent)'
+                                                    : '0 0 8px color-mix(in srgb, var(--accent-primary) 30%, transparent)',
+                                                transition: 'left 0.15s cubic-bezier(0.4, 0, 0.2, 1), width 0.15s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.1s ease, background-size 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s ease',
                                                 borderRadius: '2px 2px 0 0',
-                                                willChange: 'left, width',
+                                                willChange: 'left, width, background-size',
                                             }}
                                         />
                                         {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
@@ -4204,7 +4211,8 @@ const EditorPanel = ({
                                     <div className="absolute left-0 right-0 bottom-0 h-[3px] z-20 pointer-events-none">
                                         <div
                                             ref={scrollbarThumbRef}
-                                            className="absolute top-0 bottom-0 bg-gradient-to-r from-[#3a857450] to-[#4a9a8850] rounded-[3px] cursor-pointer pointer-events-auto opacity-0 transition-opacity duration-200 group-hover:opacity-100 [&.visible]:opacity-100"
+                                            className="absolute top-0 bottom-0 rounded-[3px] cursor-pointer pointer-events-auto opacity-0 transition-opacity duration-200 group-hover:opacity-100 [&.visible]:opacity-100"
+                                            style={{ background: 'linear-gradient(90deg, color-mix(in srgb, var(--brand-stop-3) 35%, transparent), color-mix(in srgb, var(--brand-stop-4) 35%, transparent))' }}
                                             onMouseDown={handleThumbMouseDown}
                                         />
                                     </div>
@@ -4458,6 +4466,74 @@ const EditorPanel = ({
                                                 </div>
                                             </div>
                                         )}
+                                        {/* Branded empty state — replaces the bare Monaco buffer
+                                            when no file is open. Atmospheric: ambient gradient halo,
+                                            wordmark, three keyboard hints. */}
+                                        {!activeFile && (!openFiles || openFiles.length === 0) && !diffMode && (
+                                            <div
+                                                className="absolute inset-0 z-10 flex flex-col items-center justify-center pointer-events-none select-none"
+                                                style={{ background: 'var(--bg-editor)' }}
+                                            >
+                                                <div
+                                                    aria-hidden="true"
+                                                    className="absolute pointer-events-none"
+                                                    style={{
+                                                        width: 520,
+                                                        height: 520,
+                                                        borderRadius: '50%',
+                                                        background: 'radial-gradient(circle, color-mix(in srgb, var(--brand-stop-3) 10%, transparent) 0%, color-mix(in srgb, var(--brand-stop-1) 4%, transparent) 35%, transparent 70%)',
+                                                        filter: 'blur(28px)',
+                                                    }}
+                                                />
+                                                <div
+                                                    className="vt-brand-text relative text-[44px] font-semibold tracking-tight leading-none mb-3"
+                                                    style={{ letterSpacing: '-0.02em' }}
+                                                >
+                                                    VECTANT
+                                                </div>
+                                                <div className="relative text-[12px] mb-7" style={{ color: 'var(--text-muted)' }}>
+                                                    An editor that heals, thinks, and ships with you.
+                                                </div>
+                                                <div className="relative flex items-center gap-5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                                             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                            Ctrl
+                                                        </kbd>
+                                                        <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                                             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                            P
+                                                        </kbd>
+                                                        <span className="ml-1">Quick open</span>
+                                                    </div>
+                                                    <span style={{ color: 'var(--text-dim)' }}>·</span>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                                             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                            Ctrl
+                                                        </kbd>
+                                                        <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                                             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                            K
+                                                        </kbd>
+                                                        <span className="ml-1">AI assist</span>
+                                                    </div>
+                                                    <span style={{ color: 'var(--text-dim)' }}>·</span>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                                             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                            Ctrl
+                                                        </kbd>
+                                                        <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                                             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                            B
+                                                        </kbd>
+                                                        <span className="ml-1">Toggle tree</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+
                                         {/* Regular Editor — hidden when diff is active */}
                                         <div className="h-full w-full" style={{ display: diffMode ? 'none' : undefined }}>
                                             <Editor

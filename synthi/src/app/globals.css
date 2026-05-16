@@ -13,51 +13,102 @@
  * The data-theme-type="dark|light" attribute on <html> is set by
  * ThemeProvider for CSS selectors that need to differ by base type. */
 :root {
-  /* Dark Blue-Gray Backgrounds (Unique Synthi Style) - More extreme contrast */
-  --bg-app: #08090d;
-  --bg-editor: #0c0d12;
-  --bg-sidebar: #070810;
-  --bg-panel: #101118;
-  --bg-surface: #14151d;
-  --bg-elevated: #1a1b24;
-  --border-subtle: #1a1b24;
-  --border-medium: #2a2b38;
-  --border-focus: #3a3b52;
-  --border-strong: #42445a;
+  /* Atmospheric Depth backgrounds — deeper, less neutral, more "void" */
+  --bg-app: #06060a;
+  --bg-editor: #0a0b11;
+  --bg-sidebar: #06060a;
+  --bg-panel: #0d0e15;
+  --bg-surface: #131420;
+  --bg-elevated: #1a1c2a;
+  --border-subtle: #1a1c2a;
+  --border-medium: #2b2d3e;
+  --border-focus: #3a3d55;
+  --border-strong: #45485f;
   --text-primary: #f4f5f8;
   --text-secondary: #9ba2b8;
   --text-muted: #5a6178;
   --text-dim: #3d4256;
 
-  /* Synthi Brand Accent - Teal #327464 */
-  --accent-primary: #327464;
-  --accent-secondary: #3d8b78;
-  --accent-tertiary: #4a9e8a;
-  --accent-gradient: linear-gradient(
+  /* ── Vectant Brand Gradient ─────────────────────────────────────
+     Logo gradient stops at the exact positions you specified.
+     These are the ONLY place the saturated brand colors live; use
+     them for signature moments (logo, AI activations, run state,
+     focus rims) — never as a fill on calm surfaces. */
+  --brand-stop-1: #ff3d8a;  /*  17%  pink   */
+  --brand-stop-2: #ff3737;  /*  40%  red    */
+  --brand-stop-3: #a23dff;  /*  71%  purple */
+  --brand-stop-4: #3d6dff;  /* 100%  blue   */
+  --brand-gradient: linear-gradient(
     135deg,
-    #327464 0%,
-    #3d8b78 50%,
-    #4a9e8a 100%
+    var(--brand-stop-1) 17%,
+    var(--brand-stop-2) 40%,
+    var(--brand-stop-3) 71%,
+    var(--brand-stop-4) 100%
   );
-  --accent-glow: 0 0 20px rgba(50, 116, 100, 0.4);
+  --brand-gradient-horizontal: linear-gradient(
+    90deg,
+    var(--brand-stop-1) 17%,
+    var(--brand-stop-2) 40%,
+    var(--brand-stop-3) 71%,
+    var(--brand-stop-4) 100%
+  );
+
+  /* Calm everyday accent — slate-violet that BARELY reads as color.
+     Use for ambient borders, faint hovers, neutral indicators. If
+     it's grabbing your eye, it's the wrong token. */
+  --accent-primary: #6c6885;
+  --accent-secondary: #8a85a8;
+  --accent-tertiary: #4d4870;
+  --accent-gradient: var(--brand-gradient);
+  --accent-glow: 0 0 18px color-mix(in srgb, var(--accent-primary) 22%, transparent);
+
+  /* Attention purple — the rare "this needs your eye RIGHT NOW"
+     moment. Saturated and bright. Use for: active file row in
+     the tree, toggle-ON switches, selected option pills, focused
+     panel borders, status-bar pills representing a live state.
+     If everything uses it, nothing does. */
+  --attention-purple: #b545ff;
+  --attention-glow: 0 0 22px color-mix(in srgb, var(--attention-purple) 38%, transparent);
+  --attention-rim: 0 0 0 1px color-mix(in srgb, var(--attention-purple) 28%, transparent),
+                   0 0 16px -2px color-mix(in srgb, var(--attention-purple) 36%, transparent);
   --accent-danger: #ff5757;
   --accent-danger-soft: #ff575720;
   --accent-success: #4ade80;
   --accent-warning: #fbbf24;
 
-  /* Synthi Syntax Highlighting - Unique Pastel Theme with better contrast */
-  --syntax-keyword: #3a8574;
-  --syntax-string: #a8e6cf;
+  /* Atmospheric Depth tokens — used by .vt-rim, .vt-ambient-* utilities.
+     Rim-glow is a soft outer halo, ambient-haze is a 1px gradient line
+     that fades to 0 at the edges (used on chrome trim). */
+  --rim-glow: 0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 18%, transparent),
+              0 0 14px -2px color-mix(in srgb, var(--brand-stop-3) 22%, transparent);
+  --rim-glow-active: 0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 32%, transparent),
+                     0 0 22px -2px color-mix(in srgb, var(--brand-stop-3) 38%, transparent);
+  --ambient-haze-bottom: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--brand-stop-1) 12%, transparent) 17%,
+    color-mix(in srgb, var(--brand-stop-2) 12%, transparent) 40%,
+    color-mix(in srgb, var(--brand-stop-3) 12%, transparent) 71%,
+    color-mix(in srgb, var(--brand-stop-4) 12%, transparent) 100%,
+    transparent 100%
+  );
+  --depth-shadow-1: 0 1px 0 0 rgba(0,0,0,0.4), 0 2px 8px -4px rgba(0,0,0,0.5);
+  --depth-shadow-2: 0 4px 24px -8px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.02) inset;
+  --depth-shadow-3: 0 12px 48px -12px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.03) inset;
+
+  /* Syntax highlighting — refreshed to harmonize with brand cool-tones */
+  --syntax-keyword: #b5a4ff;
+  --syntax-string: #9be8c4;
   --syntax-function: #7cb8f8;
   --syntax-comment: #454a5e;
-  --syntax-preprocessor: #b8a8f0;
+  --syntax-preprocessor: #d49aff;
   --syntax-number: #f5d142;
   --syntax-type: #8ad4ff;
 
   /* Shadows for depth */
   --shadow-panel: 0 2px 8px rgba(0, 0, 0, 0.6);
   --shadow-dropdown: 0 4px 16px rgba(0, 0, 0, 0.7);
-  --shadow-glow: 0 0 15px rgba(50, 116, 100, 0.2);
+  --shadow-glow: 0 0 18px color-mix(in srgb, var(--brand-stop-3) 18%, transparent);
 
   --radius: 0.625rem;
 
@@ -111,13 +162,13 @@
 }
 
 :root {
-  --background: #0a0b10;
+  --background: #06060a;
   --foreground: #f0f2f5;
-  --card: #0d0e14;
+  --card: #0d0e15;
   --card-foreground: #f0f2f5;
-  --popover: #0d0e14;
+  --popover: #0d0e15;
   --popover-foreground: #f0f2f5;
-  --primary: #327464;
+  --primary: #b545ff;
   --primary-foreground: #ffffff;
   --secondary: #1c1d26;
   --secondary-foreground: #f0f2f5;
@@ -128,30 +179,30 @@
   --destructive: #ff5757;
   --border: #1c1d26;
   --input: #1c1d26;
-  --ring: #327464;
-  --chart-1: #327464;
+  --ring: #b545ff;
+  --chart-1: #b545ff;
   --chart-2: #4ade80;
-  --chart-3: #3d8b78;
+  --chart-3: #a23dff;
   --chart-4: #ff5757;
   --chart-5: #88c0fc;
-  --sidebar: #090a0f;
+  --sidebar: #06060a;
   --sidebar-foreground: #f0f2f5;
-  --sidebar-primary: #327464;
+  --sidebar-primary: #b545ff;
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #1c1d26;
   --sidebar-accent-foreground: #f0f2f5;
   --sidebar-border: #1c1d26;
-  --sidebar-ring: #327464;
+  --sidebar-ring: #b545ff;
 }
 
 .dark {
-  --background: #0a0b10;
+  --background: #06060a;
   --foreground: #f0f2f5;
-  --card: #0d0e14;
+  --card: #0d0e15;
   --card-foreground: #f0f2f5;
-  --popover: #0d0e14;
+  --popover: #0d0e15;
   --popover-foreground: #f0f2f5;
-  --primary: #327464;
+  --primary: #b545ff;
   --primary-foreground: #ffffff;
   --secondary: #1c1d26;
   --secondary-foreground: #f0f2f5;
@@ -162,20 +213,20 @@
   --destructive: #ff5757;
   --border: #1c1d26;
   --input: #1c1d26;
-  --ring: #327464;
-  --chart-1: #327464;
+  --ring: #b545ff;
+  --chart-1: #b545ff;
   --chart-2: #4ade80;
-  --chart-3: #3d8b78;
+  --chart-3: #a23dff;
   --chart-4: #ff5757;
   --chart-5: #88c0fc;
-  --sidebar: #090a0f;
+  --sidebar: #06060a;
   --sidebar-foreground: #f0f2f5;
-  --sidebar-primary: #327464;
+  --sidebar-primary: #b545ff;
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #1c1d26;
   --sidebar-accent-foreground: #f0f2f5;
   --sidebar-border: #1c1d26;
-  --sidebar-ring: #327464;
+  --sidebar-ring: #b545ff;
 }
 
 @layer base {
@@ -623,11 +674,12 @@
   box-shadow: var(--shadow-dropdown);
 }
 
-/* Active line glow for editor */
+/* Active line glow for editor — follows the cursor; uses the
+   attention-purple because *this is the focal line right now*. */
 .synthi-active-line-glow {
-  border-left: 2px solid var(--accent-primary) !important;
+  border-left: 2px solid var(--attention-purple) !important;
   box-shadow: inset 4px 0 8px -4px
-    color-mix(in srgb, var(--accent-primary) 30%, transparent) !important;
+    color-mix(in srgb, var(--attention-purple) 32%, transparent) !important;
 }
 
 /* Custom focus ring for Synthi */
@@ -832,15 +884,15 @@
   color: var(--text-primary);
 }
 
-/* Active / toggled button state */
+/* Active / toggled button state — focal moment, uses attention purple. */
 .th-btn-active {
-  color: var(--accent-primary) !important;
+  color: var(--attention-purple) !important;
   background: color-mix(
     in srgb,
-    var(--accent-primary) 8%,
+    var(--attention-purple) 10%,
     transparent
   ) !important;
-  border: 1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--attention-purple) 30%, transparent) !important;
 }
 
 /* Input field */
@@ -850,9 +902,9 @@
   border-color: var(--border-subtle);
 }
 .th-input:focus {
-  border-color: var(--accent-primary);
+  border-color: var(--attention-purple);
   box-shadow: 0 0 0 2px
-    color-mix(in srgb, var(--accent-primary) 20%, transparent);
+    color-mix(in srgb, var(--attention-purple) 22%, transparent);
 }
 .th-input::placeholder {
   color: var(--text-muted);
@@ -884,12 +936,12 @@
   background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
 }
 
-/* Toggle switch */
+/* Toggle switch — ON state uses attention purple. */
 .th-toggle-on {
   background: linear-gradient(
     to right,
-    var(--accent-primary),
-    var(--accent-secondary)
+    var(--attention-purple),
+    color-mix(in srgb, var(--attention-purple) 75%, white 25%)
   );
 }
 .th-toggle-off {
@@ -953,17 +1005,17 @@
   opacity: 0.85;
 }
 
-/* ── Dashboard tab overrides ── */
+/* ── Dashboard tab overrides — active uses attention purple ── */
 [data-synthi-tab][data-state="active"] {
   background: color-mix(
     in srgb,
-    var(--accent-primary) 15%,
+    var(--attention-purple) 12%,
     transparent
   ) !important;
-  color: var(--accent-tertiary) !important;
+  color: var(--attention-purple) !important;
   border-color: color-mix(
     in srgb,
-    var(--accent-primary) 30%,
+    var(--attention-purple) 32%,
     transparent
   ) !important;
 }
@@ -1022,7 +1074,7 @@
 
 /* Synthi Fix Preview Styling */
 .synthi-fix-preview-code-above {
-  background-color: rgba(50, 116, 100, 0.1);
+  background-color: color-mix(in srgb, var(--accent-primary) 10%, transparent);
   border-left: 3px solid var(--accent-primary);
   color: var(--text-primary);
   font-family: "JetBrains Mono", "Fira Code", monospace;
@@ -1045,9 +1097,9 @@
 }
 
 .synthi-fix-code {
-  color: var(--accent-tertiary); /* Mint/Teal for suggested code */
+  color: var(--accent-secondary);
   font-weight: 600;
-  text-shadow: 0 0 10px rgba(74, 158, 138, 0.2);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent-secondary) 22%, transparent);
 }
 
 .synthi-fix-preview-strikethrough {
@@ -1315,3 +1367,186 @@
     transition: none !important;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   VECTANT — Atmospheric Depth utilities
+   ───────────────────────────────────────────────────────────────────
+   The brand gradient lives in `--brand-gradient`. These utilities are
+   how it leaves a mark on the UI: a 1px hairline at chrome trim
+   edges (.vt-ambient-*), a soft outer halo on focused/active surfaces
+   (.vt-rim, .vt-rim-active), and a single 2-3px vertical "brand bar"
+   stamp for left-edge active indicators (.vt-brand-bar). Pulse the
+   gradient on signature AI moments with .vt-brand-pulse.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Ambient gradient hairlines — 1px line that fades to 0 at both edges.
+   Use at the bottom of TopNav, top of StatusBar, inside edge of
+   ActivityBar. Always at low opacity; the gradient should whisper. */
+.vt-ambient-bottom {
+  position: relative;
+}
+.vt-ambient-bottom::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--ambient-haze-bottom);
+  background-size: 200% 100%;
+  pointer-events: none;
+  opacity: 0.7;
+  animation: vt-ambient-drift 22s ease-in-out infinite;
+}
+
+.vt-ambient-top {
+  position: relative;
+}
+.vt-ambient-top::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -1px;
+  height: 1px;
+  background: var(--ambient-haze-bottom);
+  background-size: 200% 100%;
+  pointer-events: none;
+  opacity: 0.7;
+  animation: vt-ambient-drift 22s ease-in-out infinite;
+}
+
+/* Ambient drift — the gradient hairlines slowly shift back and forth
+   over 22s. Subtle enough to be subliminal; gives the chrome a faint
+   pulse of life without ever announcing itself. */
+@keyframes vt-ambient-drift {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+
+.vt-ambient-right {
+  position: relative;
+}
+.vt-ambient-right::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -1px;
+  width: 1px;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    color-mix(in srgb, var(--brand-stop-1) 12%, transparent) 17%,
+    color-mix(in srgb, var(--brand-stop-2) 12%, transparent) 40%,
+    color-mix(in srgb, var(--brand-stop-3) 12%, transparent) 71%,
+    color-mix(in srgb, var(--brand-stop-4) 12%, transparent) 100%
+  );
+  pointer-events: none;
+  opacity: 0.6;
+}
+
+/* Rim-light — soft halo around the element. The non-active form is
+   barely visible; use vt-rim-active when the element is genuinely the
+   focal point of the user's attention. */
+.vt-rim {
+  box-shadow: var(--rim-glow);
+}
+.vt-rim-active {
+  box-shadow: var(--rim-glow-active);
+}
+
+/* Brand bar — vertical gradient stripe used as a left-edge marker on
+   active rows (file tree, activity bar). 2px wide by default. */
+.vt-brand-bar {
+  position: relative;
+}
+.vt-brand-bar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: linear-gradient(
+    180deg,
+    var(--brand-stop-1) 0%,
+    var(--brand-stop-2) 33%,
+    var(--brand-stop-3) 66%,
+    var(--brand-stop-4) 100%
+  );
+  box-shadow: 0 0 12px -2px color-mix(in srgb, var(--brand-stop-3) 50%, transparent);
+}
+
+/* Brand fill — solid gradient background. Reserved for signature
+   moments: AI streaming, primary CTAs, run state, save flash. */
+.vt-brand-fill {
+  background: var(--brand-gradient);
+  color: #ffffff;
+}
+
+/* Brand text — gradient-clipped wordmark. Use on logo, "Vectant ADE"
+   in copy, and the AI activity label. */
+.vt-brand-text {
+  background: var(--brand-gradient-horizontal);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Pulsing brand glow — AI is doing something. Slow, calm, ~2.2s loop,
+   contained to a soft halo (does not change the element's own color).
+   Honors prefers-reduced-motion. */
+@keyframes vt-brand-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand-stop-3) 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 22px -2px color-mix(in srgb, var(--brand-stop-3) 38%, transparent);
+  }
+}
+.vt-brand-pulse {
+  animation: vt-brand-pulse 2.2s ease-in-out infinite;
+}
+
+/* Streaming gradient sweep — used on AI message left edges and
+   on the send button while a response is streaming. */
+@keyframes vt-brand-sweep {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+.vt-brand-sweep {
+  background: linear-gradient(
+    90deg,
+    var(--brand-stop-1),
+    var(--brand-stop-2),
+    var(--brand-stop-3),
+    var(--brand-stop-4),
+    var(--brand-stop-3),
+    var(--brand-stop-2),
+    var(--brand-stop-1)
+  );
+  background-size: 200% 100%;
+  animation: vt-brand-sweep 3.5s linear infinite;
+}
+
+.terminal-pane-shell .xterm .xterm-scroll-area {
+  padding-bottom: var(--workspace-statusbar-terminal-clearance, 0px);
+}
+
+.terminal-pane-shell .xterm .xterm-viewport {
+  scrollbar-gutter: stable;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vt-brand-pulse,
+  .vt-brand-sweep,
+  .vt-ambient-bottom::after,
+  .vt-ambient-top::before,
+  .vt-ambient-right::after {
+    animation: none !important;
+  }
+}
+

@@ -9,8 +9,11 @@ import { selectTreeOnRight } from "@/redux/uiSlice";
 import { perfMeasureToConsole } from "@/services/perfMarkers";
 import { Virtuoso } from 'react-virtuoso';
 
+// Flat layout — results sit directly against the sidebar background
+// instead of being trapped inside a card. A single hairline divider
+// between sections keeps visual grouping.
 const Section = ({ children, className = "" }) => (
-  <div className={`mx-2 mb-2 rounded-lg border ${className}`} style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+  <div className={className}>
     {children}
   </div>
 );
@@ -41,6 +44,7 @@ export default function SearchView({ slug, onToggleOrientation }) {
   const isRightSide = useAppSelector(selectTreeOnRight);
 
   const [query, setQuery] = useState("");
+  const [isSearchActive, setIsSearchActive] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [results, setResults] = useState([]);
   const [expanded, setExpanded] = useState(() => new Set());
@@ -157,14 +161,36 @@ export default function SearchView({ slug, onToggleOrientation }) {
       <div className="flex-1 overflow-y-auto py-1">
         <Section>
           <div className="px-3 py-2">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} />
+            <div className="relative rounded-lg overflow-visible">
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 rounded-lg border transition-[transform,opacity,box-shadow] duration-200 ease-out"
+                style={{
+                  borderColor: 'var(--attention-purple)',
+                  boxShadow: '0 0 0 2px color-mix(in srgb, var(--attention-purple) 22%, transparent)',
+                  opacity: isSearchActive ? 1 : 0,
+                  transform: isSearchActive ? 'scaleX(1)' : 'scaleX(0)',
+                  transformOrigin: 'center',
+                }}
+              />
+              <Search
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 transition-colors duration-200"
+                style={{ color: isSearchActive ? 'var(--attention-purple)' : 'var(--text-muted)' }}
+              />
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
+                onFocus={() => setIsSearchActive(true)}
+                onBlur={() => setIsSearchActive(false)}
                 placeholder="Search in files"
-                className="w-full h-8 rounded-lg border pl-8 pr-2 text-[12px] outline-none transition-colors"
-                style={{ color: 'var(--text-primary)', background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', '--tw-placeholder-color': 'var(--text-dim)' }}
+                className="w-full h-8 rounded-lg border pl-8 pr-2 text-[12px] outline-none transition-[border-color,color,box-shadow] duration-200"
+                style={{
+                  color: 'var(--text-primary)',
+                  background: 'var(--bg-elevated)',
+                  borderColor: isSearchActive ? 'var(--attention-purple)' : 'var(--border-medium)',
+                  boxShadow: isSearchActive ? '0 0 0 2px color-mix(in srgb, var(--attention-purple) 8%, transparent)' : 'none',
+                  '--tw-placeholder-color': 'var(--text-dim)',
+                }}
               />
             </div>
             <div className="mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>

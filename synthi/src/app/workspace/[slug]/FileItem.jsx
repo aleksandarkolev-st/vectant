@@ -359,7 +359,10 @@ useEffect(() => {
         
         // Create and store new spinner
         const spinner = document.createElement('div');
-        spinner.className = 'ml-2 h-3 w-3 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin';
+        spinner.className = 'ml-2 h-3 w-3 border-2 border-t-transparent rounded-full animate-spin';
+        spinner.style.borderRightColor = 'var(--brand-stop-3)';
+        spinner.style.borderBottomColor = 'var(--brand-stop-4)';
+        spinner.style.borderLeftColor = 'var(--brand-stop-3)';
         
         // Get the file content container
         const fileContent = fileItem.querySelector('.file-content');
@@ -466,16 +469,18 @@ useEffect(() => {
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`file-item relative group flex items-center py-1.5 px-2 rounded-md cursor-pointer transition-all ${
-          isSelected ? 'border-l-[3px]' : 'border-l-[3px] border-transparent'
-        }`}
+        className={`file-item relative group flex items-center py-1.5 px-2 cursor-pointer transition-all ${isSelected ? 'rounded-none' : 'rounded-md'}`}
         style={{
           ...itemStyle,
           ...(isSelected
-            ? { background: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)', borderColor: 'var(--accent-tertiary)', boxShadow: '0 0 0 1px color-mix(in srgb, var(--accent-tertiary) 18%, transparent)' }
+            ? {
+                background: 'color-mix(in srgb, var(--attention-purple) 10%, transparent)',
+                borderRadius: 0,
+                boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--attention-purple) 28%, transparent), 0 0 14px -6px color-mix(in srgb, var(--attention-purple) 26%, transparent)',
+              }
             : {}),
           ...(isDropTarget
-            ? { background: 'color-mix(in srgb, var(--accent-primary) 22%, transparent)', outline: '1px solid var(--accent-tertiary)' }
+            ? { background: 'color-mix(in srgb, var(--attention-purple) 18%, transparent)', outline: '1px solid var(--attention-purple)' }
             : {}),
         }}
         onClick={handleClick}
@@ -483,6 +488,18 @@ useEffect(() => {
       >
         {guidesVisibleForRow &&
           renderTreeGuides(level, maskedAncestorHasNext, hasNextSibling, drawCurrentLevelGuides)}
+        {/* Brand-gradient bar on the active file's left edge.
+            Reserved for the literal current focus of the user — earns its colour. */}
+        {isSelected && (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute left-0 top-0 bottom-0 w-[2px]"
+            style={{
+              background: 'var(--brand-gradient)',
+              boxShadow: '0 0 10px -2px color-mix(in srgb, var(--brand-stop-3) 55%, transparent)',
+            }}
+          />
+        )}
         {isExpandable && (
           <div
             onClick={(e) => {
