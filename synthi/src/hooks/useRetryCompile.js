@@ -74,6 +74,11 @@ export function useRetryCompile({ compilerClient, autoRetry = false } = {}) {
     const state = getPreviewState();
     if (!isPreviewError(state.state)) return;
 
+    const retryRequest = state.compileRequest || state.lastCompileRequest;
+    if (!retryRequest || !compilerClient || typeof compilerClient.compile !== 'function') {
+      return;
+    }
+
     retryCountRef.current += 1;
     setRetryCount(retryCountRef.current);
     setIsRetrying(true);
@@ -82,15 +87,12 @@ export function useRetryCompile({ compilerClient, autoRetry = false } = {}) {
       previewId: state.previewId,
     });
 
-    // If we have a compiler client, trigger actual recompile
-    if (compilerClient && typeof compilerClient.compile === 'function') {
-      // compile() returns a promise — fire and forget here,
-      // lifecycle transitions will be driven by incoming events
-      compilerClient.compile().catch((err) => {
-        console.warn('[useRetryCompile] retry compile failed:', err);
-        setIsRetrying(false);
-      });
-    }
+    // compile() returns a promise — fire and forget here,
+    // lifecycle transitions will be driven by incoming events
+    compilerClient.compile(retryRequest).catch((err) => {
+      console.warn('[useRetryCompile] retry compile failed:', err);
+      setIsRetrying(false);
+    });
   }, [compilerClient]);
 
   const retry = useCallback(() => {

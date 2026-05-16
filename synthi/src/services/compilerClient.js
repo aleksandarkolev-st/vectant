@@ -1799,6 +1799,22 @@ export class CompilerClient {
                 };
                 this.logHandlers.add(handleLog);
 
+                const compileManifest = (() => {
+                    for (const file of files || []) {
+                        const name = String(file?.name || file?.path || '')
+                            .replace(/\\/g, '/')
+                            .replace(/^\/+/, '')
+                            .replace(/^\.\//, '');
+                        if (name !== '.synthi/build_manifest.json' && name !== 'synthi/build_manifest.json') continue;
+                        try {
+                            return JSON.parse(file.content);
+                        } catch (_) {
+                            return null;
+                        }
+                    }
+                    return null;
+                })();
+
                 this.compileChannel.send(JSON.stringify({
                     language: lang,
                     filename: filename || `main.${lang}`,
@@ -1814,6 +1830,7 @@ export class CompilerClient {
                     user_requested_deterministic: userRequestedDeterministic,
                     prefer_gpu_pipeline: preferGpuPipeline !== false,
                     gpu_mode: preferGpuPipeline === false ? 'disabled' : 'auto',
+                    compile_manifest: compileManifest,
                     target: effectiveTarget,
                     project_root: projectRoot,
                     slug: slug || this.slug
