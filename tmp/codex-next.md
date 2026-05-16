@@ -8,9 +8,13 @@ Date: 2026-05-16
 - Branch: `dev-raf`
 - Host GPU: AMD Radeon RX 9070 XT
 - ROCm arch used by the harness: `gfx1201`
-- CUDA/NVIDIA path: added as an opt-in worker image + compose override.
-  Use an NVIDIA host with NVIDIA Container Toolkit; current PC cannot live-run
-  CUDA because it has the RX 9070 XT, not an NVIDIA GPU.
+- GPU worker image path: `Dockerfile.gpu` now ships both CUDA and ROCm/HIP
+  toolchains in one prebuilt-capable image. Compose still needs a host-specific
+  override because Docker exposes NVIDIA (`gpus: all`) and AMD WSL (`/dev/dxg`)
+  devices differently.
+- CUDA/NVIDIA path: use an NVIDIA host with NVIDIA Container Toolkit. The
+  current PC cannot live-run CUDA because it has the RX 9070 XT, not an NVIDIA
+  GPU.
 - Compose project: `vectant-ade`
 - Current validated user demo workspace:
   - URL: `http://localhost:3000/workspace/gpu-flow-clean-session`
@@ -67,6 +71,7 @@ Phases: FLOW pass
   - Main GPU HMR harness.
   - Contains the vector fixture and the new `FLOW` particle fixture.
   - Vendor switch:
+    - Auto: `SYNTHI_GPU_VENDOR=auto` detects the worker GPU/toolchain.
     - ROCm: `SYNTHI_GPU_VENDOR=rocm`, active file `device.hip`
     - CUDA: `SYNTHI_GPU_VENDOR=cuda`, active file `device.cu`
   - Search anchors:
@@ -86,16 +91,35 @@ Phases: FLOW pass
   - Tracks last accepted device ABI fingerprint.
   - Emits `plan=device_only` and `plan=abi_breaking`.
 
-- `backend/synthi-webrtc-compiler/worker/Dockerfile.cuda`
-  - CUDA/NVIDIA worker image.
+- `backend/synthi-webrtc-compiler/worker/Dockerfile.gpu`
+  - Universal GPU worker image intended for prebuilt releases.
   - Based on `nvidia/cuda:12.8.0-devel-ubuntu24.04`.
-  - Provides `nvcc`, CUDA headers/libs, CUDA stub-library link path, Rust,
-    SDL2, GStreamer, Xvfb, clangd, and Node.
+  - Provides `nvcc`, CUDA headers/libs, CUDA stub-library link path, ROCm/HIP
+    SDK, `hipcc`, `rocminfo`, ROCDXG, Rust, SDL2, GStreamer, Xvfb, clangd,
+    and Node.
+
+- `backend/synthi-webrtc-compiler/worker/Dockerfile.cuda`
+  - Older CUDA-only fallback image from the first NVIDIA pass. Prefer
+    `Dockerfile.gpu` now.
 
 - `docker-compose.nvidia.yml`
   - Opt-in compose override for NVIDIA hosts.
-  - Replaces the worker build with `Dockerfile.cuda`.
+  - Uses the universal `Dockerfile.gpu` worker image.
   - Resets the ROCm `/dev/dxg` devices/volumes and exposes `gpus: all`.
+  - Gives ai-engine `SYNTHI_GPU_VENDOR_HINT=cuda` so ambiguous GPU splits target
+    the detected host path.
+
+- `docker-compose.gpu-amd.yml`
+  - Opt-in compose override for AMD/ROCm hosts using the universal GPU worker.
+  - Exposes the Windows/WSL `/dev/dxg` bridge and `libdxcore.so`.
+  - Gives ai-engine `SYNTHI_GPU_VENDOR_HINT=rocm`.
+
+- `scripts/start-gpu-stack.ps1`
+- `scripts/start-gpu-stack.sh`
+  - Host-detecting stack launchers.
+  - Select NVIDIA override when `nvidia-smi` works; select AMD override when
+    `/dev/dxg` is visible; support `-Pull/--pull`, `-Build/--build`, and
+    custom `SYNTHI_WORKER_GPU_IMAGE`.
 
 - `mcp/synthi-mcp/.gpu-hmr-test-logs/results.txt`
 - `mcp/synthi-mcp/.gpu-hmr-test-logs/results.json`
@@ -108,6 +132,35 @@ Phases: FLOW pass
 ## Start The Stack
 
 From repo root:
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade
+
+.\scripts\start-gpu-stack.ps1
+```
+
+Linux/WSL equivalent:
+
+```bash
+cd /path/to/vectant-ade
+scripts/start-gpu-stack.sh
+```
+
+For a prebuilt worker image:
+
+```powershell
+$env:SYNTHI_WORKER_GPU_IMAGE='registry.example.com/vectant-ade-worker-gpu:tag'
+.\scripts\start-gpu-stack.ps1 -Pull
+```
+
+If you know the exact GPU arch, set it before starting so ai-engine can steer
+new GPU split manifests:
+
+```powershell
+$env:SYNTHI_GPU_ARCH='gfx1201'  # RX 9070 XT
+```
+
+Manual/default AMD stack command still works on this PC:
 
 ```powershell
 cd C:\Users\polek\Downloads\test-agent\vectant-ade
@@ -126,7 +179,14 @@ Host prerequisites:
 - NVIDIA Container Toolkit installed and working.
 - For RTX 50 / Blackwell, use CUDA Toolkit 12.8+ and `SYNTHI_GPU_ARCH=sm_120`.
 
-Build the CUDA worker:
+Preferred launcher:
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade
+.\scripts\start-gpu-stack.ps1 -Pull
+```
+
+Build the universal GPU worker locally if no prebuilt image is available:
 
 ```powershell
 cd C:\Users\polek\Downloads\test-agent\vectant-ade
@@ -146,6 +206,12 @@ Verify the worker sees CUDA:
 
 ```powershell
 docker compose -f docker-compose.yml -f docker-compose.nvidia.yml exec worker sh -lc "nvidia-smi && nvcc --version && echo LIBRARY_PATH=$LIBRARY_PATH"
+```
+
+Verify ai-engine has the runtime hint:
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.nvidia.yml exec ai-engine sh -lc "echo vendor=$SYNTHI_GPU_VENDOR_HINT arch=$SYNTHI_GPU_ARCH_HINT"
 ```
 
 ## Build Containers
@@ -180,7 +246,7 @@ Use this to create or revalidate a particle-flow workspace. If `SLUG` already ex
 cd C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp
 
 $env:SYNTHI_GPU_HMR='1'
-$env:SYNTHI_GPU_VENDOR='rocm'
+$env:SYNTHI_GPU_VENDOR='auto'
 $env:SYNTHI_GPU_ARCH='gfx1201'
 $env:SYNTHI_GPU_HMR_FIXTURE='flow'
 $env:ONLY_PHASES='FLOW'
@@ -256,7 +322,7 @@ Use this on an NVIDIA host after starting with `docker-compose.nvidia.yml`:
 cd C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp
 
 $env:SYNTHI_GPU_HMR='1'
-$env:SYNTHI_GPU_VENDOR='cuda'
+$env:SYNTHI_GPU_VENDOR='auto'
 $env:SYNTHI_GPU_ARCH='sm_120'  # RTX 50/Blackwell. Use sm_80/sm_90/etc. for older cards.
 $env:SYNTHI_GPU_HMR_FIXTURE='flow'
 $env:ONLY_PHASES='FLOW'
@@ -294,7 +360,7 @@ Device sidecar reload vendor=cuda ... result=Success
 cd C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp
 
 $env:SYNTHI_GPU_HMR='1'
-$env:SYNTHI_GPU_VENDOR='rocm'
+$env:SYNTHI_GPU_VENDOR='auto'
 $env:SYNTHI_GPU_ARCH='gfx1201'
 $env:SYNTHI_GPU_HMR_FIXTURE='vector'
 $env:ONLY_PHASES='P0,P1,P2'

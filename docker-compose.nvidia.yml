@@ -1,26 +1,33 @@
-# NVIDIA/CUDA override for GPU HMR.
+# NVIDIA/CUDA override for the universal GPU worker image.
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.nvidia.yml build worker
 #   docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d --force-recreate worker mcp frontend
 #
-# Requires the NVIDIA Container Toolkit on the host. The base compose file is
-# ROCm/WSL focused and mounts /dev/dxg; this override resets those AMD mounts
-# and exposes NVIDIA devices instead.
+# Requires the NVIDIA Container Toolkit on the host. The worker image itself
+# ships both CUDA and ROCm/HIP toolchains; this override only resets the AMD
+# /dev/dxg bridge and exposes NVIDIA devices instead.
 
 services:
+  ai-engine:
+    environment:
+      SYNTHI_GPU_VENDOR_HINT: "cuda"
+      SYNTHI_GPU_ARCH_HINT: "${SYNTHI_GPU_ARCH:-}"
+
   worker:
+    image: ${SYNTHI_WORKER_GPU_IMAGE:-vectant-ade-worker-gpu:local}
     build:
       context: ./backend/synthi-webrtc-compiler/worker
-      dockerfile: Dockerfile.cuda
+      dockerfile: Dockerfile.gpu
       args:
         WORKER_CARGO_FEATURES: "gpu-hmr"
     environment:
       SYNTHI_GPU_HMR: "1"
-      SYNTHI_GPU_VENDOR: "cuda"
+      SYNTHI_GPU_VENDOR: "auto"
       CUDA_HOME: "/usr/local/cuda"
-      LIBRARY_PATH: "/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs"
-      LD_LIBRARY_PATH: "/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+      ROCM_PATH: "/opt/rocm"
+      LIBRARY_PATH: "/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs:/opt/rocm/lib:/opt/rocm/lib64"
+      LD_LIBRARY_PATH: "/usr/local/cuda/lib64:/opt/rocm/lib:/opt/rocm/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
       NVIDIA_VISIBLE_DEVICES: "all"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility,graphics,video"
       HSA_ENABLE_DXG_DETECTION: ""

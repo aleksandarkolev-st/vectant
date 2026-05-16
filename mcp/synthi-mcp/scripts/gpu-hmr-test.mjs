@@ -22,7 +22,7 @@
 //   AI_ENGINE_URL                http://localhost:8000
 //   WORKER_LOG_PATH              <repo>/backend/synthi-webrtc-compiler/.run/worker.log
 //   SLUG                         gpu-hmr-<ts>
-//   SYNTHI_GPU_VENDOR            cuda | rocm | both              (default cuda)
+//   SYNTHI_GPU_VENDOR            auto | cuda | rocm | both       (default auto)
 //   SYNTHI_GPU_ARCH              override target arch (cuda: sm_80, rocm: gfx1201)
 //   SYNTHI_GPU_FAST_SWAP_BUDGET_MS 300
 //   SYNTHI_GPU_LAUNCH_WATCHDOG_MS  5000
@@ -64,7 +64,7 @@ const CFG = {
   hostId: process.env.HOST_ID ?? 'gpu-hmr-test',
   workspaceName: process.env.WORKSPACE_NAME ?? 'Synthi GPU-HMR Test',
   gpuHmr: (process.env.SYNTHI_GPU_HMR ?? '0') === '1',
-  vendor: (process.env.SYNTHI_GPU_VENDOR ?? 'cuda').toLowerCase(),
+  vendor: (process.env.SYNTHI_GPU_VENDOR ?? 'auto').toLowerCase(),
   gpuArch: process.env.SYNTHI_GPU_ARCH,
   fastSwapBudgetMs: Number(process.env.SYNTHI_GPU_FAST_SWAP_BUDGET_MS ?? 300),
   watchdogMs: Number(process.env.SYNTHI_GPU_LAUNCH_WATCHDOG_MS ?? 5000),
@@ -514,6 +514,16 @@ function execWhich(cmd) {
   });
 }
 
+function dockerExecText(command, timeoutMs = 10000) {
+  return new Promise((resolve) => {
+    execFile('docker', ['exec', CFG.workerContainer, 'sh', '-lc', command], { timeout: timeoutMs }, (err, stdout) => {
+      if (err) return resolve(undefined);
+      const text = stdout.trim();
+      resolve(text.length > 0 ? text : null);
+    });
+  });
+}
+
 async function probeToolchain() {
   // We probe both the harness host AND, if MCP_TRANSPORT=docker, the worker
   // container. The worker container is what actually has to have nvcc; the
@@ -522,19 +532,36 @@ async function probeToolchain() {
   out.host.nvcc = await execWhich('nvcc');
   out.host.hipcc = await execWhich('hipcc');
 
-  await new Promise((res) => {
-    execFile('docker', ['exec', CFG.workerContainer, 'sh', '-c', 'command -v nvcc || true'], (e, so) => {
-      if (!e) out.worker.nvcc = so.trim() || null;
-      res();
-    });
-  });
-  await new Promise((res) => {
-    execFile('docker', ['exec', CFG.workerContainer, 'sh', '-c', 'command -v hipcc || true'], (e, so) => {
-      if (!e) out.worker.hipcc = so.trim() || null;
-      res();
-    });
-  });
+  out.worker.nvcc = await dockerExecText('command -v nvcc || true');
+  out.worker.hipcc = await dockerExecText('command -v hipcc || true');
+  out.worker.nvidiaGpu = await dockerExecText('nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -n 1 || true');
+  out.worker.rocmGpu = await dockerExecText(
+    'if command -v rocminfo >/dev/null 2>&1; then rocminfo 2>/dev/null | awk \'/Name:/ && $0 !~ /Agent/ { sub(/^[[:space:]]*Name:[[:space:]]*/, ""); print; exit }\'; fi'
+  );
   return out;
+}
+
+function autoVendorFromToolchain(tc) {
+  if (tc.worker.nvidiaGpu && tc.worker.nvcc) return 'cuda';
+  if ((tc.worker.rocmGpu || CFG.hipFakeRuntime) && tc.worker.hipcc) return 'rocm';
+  if (tc.worker.nvcc && !tc.worker.hipcc) return 'cuda';
+  if (tc.worker.hipcc && !tc.worker.nvcc) return 'rocm';
+  if (tc.worker.nvcc) return 'cuda';
+  if (tc.worker.hipcc) return 'rocm';
+  if (tc.host.nvcc && !tc.host.hipcc) return 'cuda';
+  if (tc.host.hipcc && !tc.host.nvcc) return 'rocm';
+  return null;
+}
+
+function vendorsForConfig(tc) {
+  if (CFG.vendor === 'both') return ['cuda', 'rocm'];
+  if (CFG.vendor === 'auto') {
+    const detected = autoVendorFromToolchain(tc);
+    if (detected) return [detected];
+    record('preflight', 'auto GPU vendor detection', 'warn', 'no CUDA/ROCm worker GPU/toolchain detected; defaulting to cuda for skip-aware validation');
+    return ['cuda'];
+  }
+  return [CFG.vendor];
 }
 
 function toolchainForVendor(tc, vendor) {
@@ -1475,6 +1502,14 @@ async function preflight() {
   if (tc.worker.nvcc !== undefined) {
     record('preflight', 'nvcc in worker', tc.worker.nvcc ? 'pass' : 'skip', tc.worker.nvcc ?? 'not found');
     record('preflight', 'hipcc in worker', tc.worker.hipcc ? 'pass' : 'skip', tc.worker.hipcc ?? 'not found');
+    record('preflight', 'NVIDIA GPU visible in worker', tc.worker.nvidiaGpu ? 'pass' : 'skip', tc.worker.nvidiaGpu ?? 'not found');
+    record('preflight', 'ROCm GPU visible in worker', tc.worker.rocmGpu ? 'pass' : 'skip', tc.worker.rocmGpu ?? 'not found');
+    if (CFG.vendor === 'auto') {
+      const detectedVendor = autoVendorFromToolchain(tc);
+      record('preflight', 'auto GPU vendor detection',
+        detectedVendor ? 'pass' : 'warn',
+        detectedVendor ?? 'no vendor detected');
+    }
   }
 
   record('preflight', 'SYNTHI_GPU_HMR flag', CFG.gpuHmr ? 'pass' : 'warn',
@@ -1987,7 +2022,7 @@ async function main() {
     process.exit(1);
   }
 
-  const vendors = CFG.vendor === 'both' ? ['cuda', 'rocm'] : [CFG.vendor];
+  const vendors = vendorsForConfig(pre.tc);
   for (const vendor of vendors) {
     log('info', `── Vendor: ${vendor} ──`);
     const ctx = await seedWorkspace(vendor);

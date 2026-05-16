@@ -121,6 +121,15 @@ def test_build_prompt_attaches_detection_hint():
     assert "cuda" in p
 
 
+def test_build_prompt_attaches_runtime_target_hint(monkeypatch):
+    monkeypatch.setenv("SYNTHI_GPU_VENDOR_HINT", "rocm")
+    monkeypatch.setenv("SYNTHI_GPU_ARCH_HINT", "gfx1201")
+    p = build_prompt("__global__ void k(){}")
+    assert "RUNTIME GPU TARGET" in p
+    assert "vendor=rocm" in p
+    assert "arch=gfx1201" in p
+
+
 def test_build_prompt_attaches_extra_instructions():
     p = build_prompt("x", extra_instructions="don't change kernel names")
     assert "EXTRA INSTRUCTIONS" in p

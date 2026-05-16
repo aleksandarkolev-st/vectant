@@ -35,6 +35,7 @@ manifest, and the same call covers the GPU sub-block).
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence
@@ -186,11 +187,47 @@ def build_prompt(
             f"{detection.vendor_hint}. If your manifest disagrees, you "
             "MUST justify the choice in confidence.notes."
         )
+    runtime_vendor = _runtime_vendor_hint()
+    runtime_arch = _runtime_arch_hint()
+    if runtime_vendor or runtime_arch:
+        target_bits = []
+        if runtime_vendor:
+            target_bits.append(f"vendor={runtime_vendor}")
+        if runtime_arch:
+            target_bits.append(f"arch={runtime_arch}")
+        hint_lines.append(
+            "# RUNTIME GPU TARGET\n"
+            f"Detected worker GPU target: {', '.join(target_bits)}. "
+            "Use this target when the source is ambiguous. If the source "
+            "explicitly uses CUDA or HIP APIs for another vendor, preserve "
+            "that source target unless you can translate it cleanly and "
+            "explain the choice in confidence.notes."
+        )
     if extra_instructions:
         hint_lines.append(f"# EXTRA INSTRUCTIONS\n{extra_instructions}")
     if hint_lines:
         prompt = "\n\n".join(hint_lines) + "\n\n" + prompt
     return prompt
+
+
+def _runtime_vendor_hint() -> Optional[str]:
+    raw = (
+        os.getenv("SYNTHI_GPU_VENDOR_HINT")
+        or os.getenv("SYNTHI_GPU_VENDOR")
+        or ""
+    ).strip().lower()
+    return raw if raw in {"cuda", "rocm"} else None
+
+
+def _runtime_arch_hint() -> Optional[str]:
+    raw = (
+        os.getenv("SYNTHI_GPU_ARCH_HINT")
+        or os.getenv("SYNTHI_GPU_ARCH")
+        or ""
+    ).strip()
+    if not raw or raw.lower() == "auto":
+        return None
+    return raw
 
 
 async def run_kernel_splitter(
