@@ -53,6 +53,15 @@ on the GPU, the app copies those coordinates back to CPU-visible state, and the
 GUI renders them. It does not prove zero-copy CUDA/HIP-to-graphics interop or
 direct GPU framebuffer rendering.
 
+Additional local probes under `tmp/gpu-interop-probes/` prove two narrower
+claims on the RX 9070 XT:
+
+- HIP can directly generate a pixel buffer on the GPU.
+- SDL can render those HIP-generated pixels after CPU copyback and texture
+  upload.
+
+They still do not prove zero-copy VRAM-to-display interop.
+
 The latest live validation workspace was:
 
 ```text
