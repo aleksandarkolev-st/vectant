@@ -19,7 +19,7 @@ function setStoredDefaultShell(shellKey) {
   try { if (shellKey) localStorage.setItem(DEFAULT_SHELL_KEY, shellKey); else localStorage.removeItem(DEFAULT_SHELL_KEY); } catch (_) {}
 }
 
-const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, workspaceSlug = '' }) {
+const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, workspaceSlug = '', workspaceName = '' }) {
   const [defaultShellPref, setDefaultShellPref] = useState(() => getStoredDefaultShell());
   const [terminals, setTerminals] = useState([{ id: 'term-1', label: getShellMeta(getStoredDefaultShell())?.label || 'Terminal', split: false, shellType: getStoredDefaultShell() }]);
   const [activeId, setActiveId] = useState('term-1');
@@ -306,9 +306,9 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
               }}
             >
               <div className={`h-full w-full ${t.split ? 'grid grid-cols-2 gap-0' : ''}`}>
-                <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} shellType={t.shellType || null} />
+                <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} workspaceName={workspaceName} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} shellType={t.shellType || null} />
                 {t.split && (
-                  <TerminalPane key={`${t.id}-split`} terminalId={t.id} paneSide="split" workspaceSlug={workspaceSlug} onFsChange={handleFsChange} shellType={t.shellType || null} />
+                  <TerminalPane key={`${t.id}-split`} terminalId={t.id} paneSide="split" workspaceSlug={workspaceSlug} workspaceName={workspaceName} onFsChange={handleFsChange} shellType={t.shellType || null} />
                 )}
               </div>
             </div>
