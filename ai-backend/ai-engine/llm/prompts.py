@@ -3912,7 +3912,25 @@ extern "C" void gui_on_render(void* state_ptr);
 to `core_on_update` and `gui_on_render`. `gui_on_load` may return its own GUI
 state, but `gui_on_render` must be able to render from the core state pointer.
 Do not allocate `AppState` with `new` or `malloc`; use static storage on the
-first load and reuse `prev_state` on hot reload.
+first load and reuse `prev_state` on hot reload. The safe shape is:
+
+```cpp
+static AppState g_state{};
+
+extern "C" void* core_on_load(void* prev_state, void* renderer) {
+    if (prev_state) {
+        g_state = *reinterpret_cast<AppState*>(prev_state);
+    } else {
+        g_state = AppState{};
+        // initialize first-load fields here
+    }
+    return &g_state;
+}
+```
+
+Never return `new AppState`, `malloc(...)`, `calloc(...)`,
+`std::make_unique<AppState>()`, `std::make_shared<AppState>()`, or the address
+of a stack-local `AppState`.
 
 The second load argument is an opaque host render surface supplied by the
 runner for the selected window backend. Treat it the same way
@@ -3955,6 +3973,29 @@ real runtime code/header surface, not prose:
     argument variable (`&devicePtr`, `&count`, `&dt`). Never cast scalar
     values or bit patterns to `const void*` / `uintptr_t`; that creates fake
     pointers and will crash the GPU runtime.
+
+    Kernel arguments that were literals, macros, constexprs, arithmetic
+    expressions, field/index expressions, or pre/post-increment expressions in
+    the original launch must be copied into named local variables immediately
+    before `synthi_gpu_launch(...)`, then passed by address. Do not pass the
+    expression itself and do not take the address of a temporary.
+
+    Example conversion:
+
+        // user source
+        particle_flow<<<grid, block>>>(deviceX, deviceY, BALLS,
+                                       WIDTH * 0.5f, HEIGHT * 0.5f,
+                                       2.35f, frame++);
+
+        // generated core.cpp
+        int balls_arg = BALLS;
+        float cx_arg = WIDTH * 0.5f;
+        float cy_arg = HEIGHT * 0.5f;
+        float speed_arg = 2.35f;
+        unsigned long long frame_arg = state->frame++;
+        synthi_gpu_launch(gpu, "particle_flow", grid, block, 0, stream,
+                          { &state->deviceX, &state->deviceY, &balls_arg,
+                            &cx_arg, &cy_arg, &speed_arg, &frame_arg });
 
   - Synthi-managed device allocations MUST be registered through the
     runtime registry so the worker can preserve them across sidecar
