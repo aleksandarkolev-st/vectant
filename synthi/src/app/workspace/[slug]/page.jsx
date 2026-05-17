@@ -233,7 +233,7 @@ export default function EditorPage({ params }) {
     // framework pill, CompileErrorCard, and ConfidenceWarning components.
     useCompileManifestListener();
     const hmrState = useHMR();
-    const { gpuModeEnabled, setGpuModeEnabled, preferGpuPipeline } = useGpuMode();
+    const { gpuModeEnabled, gpuTarget, setGpuModeEnabled, setGpuTarget, preferGpuPipeline } = useGpuMode();
     const healingState = useRuntimeHealing({ editorRef, gateway, autoHeal: false });
     const { canRetry, retryCount, isRetrying, retry } = useRetryCompile({ compilerClient: client, autoRetry: true });
 
@@ -2284,6 +2284,7 @@ export default function EditorPage({ params }) {
                 slug, // Pass workspace slug for mobile builds to download synced files
                 sessionId: mobileSid,
                 preferGpuPipeline,
+                gpuTarget,
                 onLog: (line) => {
                     appendBuildLog(line);
                     console.log('[build]', line);
@@ -2302,7 +2303,7 @@ export default function EditorPage({ params }) {
                 setEmulatorForcedError(msg);
             }
         }
-    }, [activeFile, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob, getLatestCurrentContent, preferGpuPipeline, augmentAdaptedCompileFiles]);
+    }, [activeFile, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob, getLatestCurrentContent, preferGpuPipeline, gpuTarget, augmentAdaptedCompileFiles]);
 
     const handleStop = useCallback(async () => {
         const activeSessionId = client?.getActiveSessionId?.();
@@ -2482,6 +2483,7 @@ export default function EditorPage({ params }) {
                 files: additionalFiles,
                 isGui: shouldRunGui,
                 preferGpuPipeline,
+                gpuTarget,
             });
             setIsHmrRecompiling(false);
             console.log('[HMR] Re-run succeeded after save');
@@ -2507,7 +2509,7 @@ export default function EditorPage({ params }) {
                 }
             }
         } catch (_) { /* never let healing break save */ }
-    }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent, preferGpuPipeline, augmentAdaptedCompileFiles]);
+    }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent, preferGpuPipeline, gpuTarget, augmentAdaptedCompileFiles]);
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
@@ -2804,6 +2806,8 @@ export default function EditorPage({ params }) {
                         setHmrEnabled={setHmrEnabled}
                         gpuModeEnabled={gpuModeEnabled}
                         setGpuModeEnabled={setGpuModeEnabled}
+                        gpuTarget={gpuTarget}
+                        setGpuTarget={setGpuTarget}
                         onStop={handleStop}
                         onReload={handleRestart}
                         isRunning={isCompiling}

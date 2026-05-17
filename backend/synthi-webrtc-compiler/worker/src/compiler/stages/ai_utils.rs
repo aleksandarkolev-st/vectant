@@ -102,13 +102,34 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // The LLM JSON inside "result" is: { core: {filename, content}, gui: {...}, shared: {...} }
     eprintln!("[AI Split] Level 3 → full AI split via /refactor/split/verified");
     let client = reqwest::Client::new();
-    let payload = serde_json::json!({
+    let gpu_mode = req
+        .gpu_mode
+        .as_deref()
+        .unwrap_or("auto")
+        .to_ascii_lowercase();
+    let gpu_target_prompt = if req.prefer_gpu_pipeline {
+        match gpu_mode.as_str() {
+            "cuda" => Some("GPU target preference: emit CUDA/NVIDIA-compatible GPU HMR split output when GPU splitting is applicable."),
+            "rocm" | "hip" => Some("GPU target preference: emit ROCm/HIP-compatible GPU HMR split output when GPU splitting is applicable."),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let mut payload = serde_json::json!({
         "code": req.source,
         "lang": req.language,
         "mode": "split",
         "verify": true,
         "auto_repair": true
     });
+    if let Some(prompt) = gpu_target_prompt {
+        payload["prompt"] = serde_json::Value::String(prompt.to_string());
+        eprintln!(
+            "[AI Split] GPU target prompt attached for mode={}",
+            gpu_mode
+        );
+    }
 
     let backend_url = get_ai_backend_url();
 
