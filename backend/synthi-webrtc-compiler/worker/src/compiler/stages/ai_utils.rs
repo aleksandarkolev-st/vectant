@@ -207,7 +207,9 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     let has_gpu_markers = request_has_gpu_markers(req);
     // Split output depends on more than raw source now: the same file can
     // produce CUDA or ROCm sidecars depending on the user's GPU target.
+    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-renderer-ptr-v2";
     let source_hash = calculate_hash(&(
+        AI_SPLIT_CACHE_SCHEMA_VERSION,
         req.source.as_str(),
         req.language.as_str(),
         req.prefer_gpu_pipeline,
