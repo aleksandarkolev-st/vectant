@@ -19,15 +19,13 @@
 // (e.g., the body of a single function without the surrounding
 // file). We parse the full split module content.
 
-use tree_sitter::{Parser, Tree, Node};
+use tree_sitter::{Node, Parser, Tree};
 
 /// Result of the AST-based value classification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AstClassification {
     /// Only literal nodes changed value — eligible for Tier 0.
-    ValueOnly {
-        changes: Vec<LiteralChange>,
-    },
+    ValueOnly { changes: Vec<LiteralChange> },
     /// AST structure changed (nodes added, removed, or retyped).
     Structural,
     /// Parse error on one or both inputs.

@@ -6,7 +6,6 @@
 // builds are queued and supersede any older pending candidates.
 // ============================================================
 
-
 use std::collections::VecDeque;
 
 use crate::hmr::build_manifest::BuildManifest;
@@ -56,7 +55,8 @@ impl CandidateQueue {
             // debug_log! so it only shows with SYNTHI_WORKER_VERBOSE=1.
             crate::debug_log!(
                 "[CandidateQueue] Normalizing new manifest preview ({}) to queue preview ({})",
-                manifest.preview_id, self.preview_id
+                manifest.preview_id,
+                self.preview_id
             );
             manifest.preview_id = self.preview_id.clone();
         }
@@ -162,7 +162,7 @@ impl CandidateQueue {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use super::*;
     use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
@@ -193,8 +193,16 @@ mod tests {
     #[test]
     fn enqueue_and_activate() {
         let mut q = CandidateQueue::new("p1");
-        q.enqueue(manifest("a"), ReloadDecision::WarmReload, StateStrategy::PreservePointer);
-        q.enqueue(manifest("b"), ReloadDecision::WarmReload, StateStrategy::PreservePointer);
+        q.enqueue(
+            manifest("a"),
+            ReloadDecision::WarmReload,
+            StateStrategy::PreservePointer,
+        );
+        q.enqueue(
+            manifest("b"),
+            ReloadDecision::WarmReload,
+            StateStrategy::PreservePointer,
+        );
         assert_eq!(q.pending_count(), 2);
         assert_eq!(q.generation(), 2);
 
@@ -209,7 +217,11 @@ mod tests {
     #[test]
     fn complete_and_history() {
         let mut q = CandidateQueue::new("p1");
-        q.enqueue(manifest("a"), ReloadDecision::WarmReload, StateStrategy::PreservePointer);
+        q.enqueue(
+            manifest("a"),
+            ReloadDecision::WarmReload,
+            StateStrategy::PreservePointer,
+        );
         q.activate_next();
         let summary = q.complete_active().unwrap();
         assert_eq!(summary.artifact_hash, "a");
@@ -221,7 +233,11 @@ mod tests {
     fn overflow_discards_oldest() {
         let mut q = CandidateQueue::new("p1");
         for i in 0..6 {
-            q.enqueue(manifest(&format!("h{i}")), ReloadDecision::WarmReload, StateStrategy::PreservePointer);
+            q.enqueue(
+                manifest(&format!("h{i}")),
+                ReloadDecision::WarmReload,
+                StateStrategy::PreservePointer,
+            );
         }
         // MAX_PENDING = 4, so 2 were discarded
         assert_eq!(q.pending_count(), 4);

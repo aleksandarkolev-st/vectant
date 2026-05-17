@@ -6,7 +6,6 @@
 // from blocking indefinitely on a slow AI backend.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -104,8 +103,8 @@ impl TimeoutGuardian {
         // Compute percentile from history
         let mut sorted: Vec<u64> = self.history.iter().cloned().collect();
         sorted.sort_unstable();
-        let idx = ((self.config.target_percentile as f64 / 100.0)
-            * (sorted.len() as f64 - 1.0)) as usize;
+        let idx =
+            ((self.config.target_percentile as f64 / 100.0) * (sorted.len() as f64 - 1.0)) as usize;
         let percentile_ms = sorted[idx.min(sorted.len() - 1)];
 
         let adaptive = (percentile_ms as f64 * self.config.safety_multiplier) as u64;
@@ -116,10 +115,7 @@ impl TimeoutGuardian {
             _ => adaptive.max(base),
         };
 
-        self.clamp(
-            timeout,
-            TimeoutSource::Historical { percentile_ms },
-        )
+        self.clamp(timeout, TimeoutSource::Historical { percentile_ms })
     }
 
     /// Record a response time.

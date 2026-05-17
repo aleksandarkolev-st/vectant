@@ -37,13 +37,13 @@
 
 use std::fs;
 use std::path::PathBuf;
-use worker::compiler::stages::compile_runner::{
-    build_runner_flag_list, HOST_RUNNER_FILENAME,
-};
+use worker::compiler::stages::compile_runner::{build_runner_flag_list, HOST_RUNNER_FILENAME};
 use worker::hmr::adapted_project::{
     detect_adapted_project, host_runner_is_user_owned, AdaptedProjectStatus, BYOR_SENTINEL,
 };
-use worker::hmr::compile_manifest::{CompileManifest, ConfidenceBlock, ConfidenceLevel, HotReloadMode, Compiler};
+use worker::hmr::compile_manifest::{
+    CompileManifest, Compiler, ConfidenceBlock, ConfidenceLevel, HotReloadMode,
+};
 
 // ============================================================
 // Test fixture helpers
@@ -114,7 +114,12 @@ fn detects_4_file_shape_with_ai_owned_host_runner() {
     assert!(status.is_adapted);
     assert!(status.host_runner_path.is_some());
     assert_eq!(
-        status.host_runner_path.as_ref().unwrap().file_name().unwrap(),
+        status
+            .host_runner_path
+            .as_ref()
+            .unwrap()
+            .file_name()
+            .unwrap(),
         HOST_RUNNER_FILENAME
     );
     assert!(
@@ -345,7 +350,10 @@ fn flag_list_strips_shared_and_fpic_from_common_flags() {
     let flags = build_runner_flag_list(&m);
     assert!(!flags.iter().any(|f| f == "-shared"), "must strip -shared");
     assert!(!flags.iter().any(|f| f == "-fPIC"), "must strip -fPIC");
-    assert!(flags.iter().any(|f| f == "-g"), "non-shared/-fPIC flags must pass through");
+    assert!(
+        flags.iter().any(|f| f == "-g"),
+        "non-shared/-fPIC flags must pass through"
+    );
     assert!(flags.iter().any(|f| f == "-O0"));
 }
 
@@ -386,8 +394,14 @@ fn flag_list_always_appends_ldl_and_rdynamic() {
         vec![], // No runner_link_flags at all
     );
     let flags = build_runner_flag_list(&m);
-    assert!(flags.iter().any(|f| f == "-ldl"), "-ldl must always be present");
-    assert!(flags.iter().any(|f| f == "-rdynamic"), "-rdynamic must always be present");
+    assert!(
+        flags.iter().any(|f| f == "-ldl"),
+        "-ldl must always be present"
+    );
+    assert!(
+        flags.iter().any(|f| f == "-rdynamic"),
+        "-rdynamic must always be present"
+    );
 }
 
 #[test]
@@ -468,12 +482,7 @@ fn flag_list_ordering_std_first_libs_last() {
     // GCC's --as-needed link gating). Verify the structural ordering
     // contract: -std comes first, common compile flags next, link
     // flags later, dlopen boilerplate at the very end.
-    let m = make_test_manifest(
-        Compiler::GccPlusPlus,
-        "c++17",
-        vec!["-O2"],
-        vec!["-lSDL2"],
-    );
+    let m = make_test_manifest(Compiler::GccPlusPlus, "c++17", vec!["-O2"], vec!["-lSDL2"]);
     let flags = build_runner_flag_list(&m);
     let std_idx = flags.iter().position(|f| f == "-std=c++17").unwrap();
     let o2_idx = flags.iter().position(|f| f == "-O2").unwrap();
@@ -481,8 +490,14 @@ fn flag_list_ordering_std_first_libs_last() {
     let ldl_idx = flags.iter().position(|f| f == "-ldl").unwrap();
     let rdynamic_idx = flags.iter().position(|f| f == "-rdynamic").unwrap();
     assert!(std_idx < o2_idx, "-std should come before compile flags");
-    assert!(o2_idx < sdl_idx, "compile flags should come before link flags");
-    assert!(sdl_idx < ldl_idx, "manifest link flags should come before -ldl boilerplate");
+    assert!(
+        o2_idx < sdl_idx,
+        "compile flags should come before link flags"
+    );
+    assert!(
+        sdl_idx < ldl_idx,
+        "manifest link flags should come before -ldl boilerplate"
+    );
     assert!(ldl_idx < rdynamic_idx, "-ldl should come before -rdynamic");
 }
 

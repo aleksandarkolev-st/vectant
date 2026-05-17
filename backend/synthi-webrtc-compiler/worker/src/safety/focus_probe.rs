@@ -114,7 +114,9 @@ pub fn verify_focus(session_id: &str, display: &str) -> (WmClassVerdict, Option<
             f.window_pid,
             f.wm_class.as_deref().unwrap_or(""),
         ),
-        None => WmClassVerdict::Unavailable { reason: "no_focus_sample_yet".to_string() },
+        None => WmClassVerdict::Unavailable {
+            reason: "no_focus_sample_yet".to_string(),
+        },
     };
     (verdict, focus)
 }
@@ -152,10 +154,7 @@ async fn run_xdotool(display: &str, args: &[&str]) -> Result<String, std::io::Er
     if !out.status.success() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Other,
-            format!(
-                "xdotool {:?} exited with {:?}",
-                args, out.status.code()
-            ),
+            format!("xdotool {:?} exited with {:?}", args, out.status.code()),
         ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())

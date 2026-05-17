@@ -33,9 +33,7 @@
 // the public path explicitly.
 
 use worker::runtime::backends::sdl2_backend::SDL2Backend;
-use worker::runtime::window_backend::{
-    BackendEvent, WindowBackend, WindowFlags, WindowHandle,
-};
+use worker::runtime::window_backend::{BackendEvent, WindowBackend, WindowFlags, WindowHandle};
 
 // ────────────────────────────────────────────────────────────
 // Shape tests — always run
@@ -113,7 +111,7 @@ fn push_synthetic_event_rejects_null_payload() {
 #[test]
 fn push_synthetic_event_rejects_undersized_payload() {
     let mut backend = SDL2Backend::new();
-    let buf = [0u8; 4];  // smaller than SDL_Event (~128 bytes)
+    let buf = [0u8; 4]; // smaller than SDL_Event (~128 bytes)
     let result = backend.push_synthetic_event(0, buf.as_ptr() as *const _, buf.len());
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
@@ -124,13 +122,7 @@ fn push_synthetic_event_rejects_undersized_payload() {
 fn present_frame_rejects_null_renderer() {
     let mut backend = SDL2Backend::new();
     // Construct a handle with a null renderer
-    let handle = WindowHandle::new(
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        800,
-        600,
-        None,
-    );
+    let handle = WindowHandle::new(std::ptr::null_mut(), std::ptr::null_mut(), 800, 600, None);
     let result = backend.present_frame(&handle);
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
@@ -140,8 +132,8 @@ fn present_frame_rejects_null_renderer() {
 #[test]
 fn shutdown_before_init_is_a_noop() {
     let mut backend = SDL2Backend::new();
-    backend.shutdown();  // must not panic / fail
-    backend.shutdown();  // idempotent — calling twice should be safe
+    backend.shutdown(); // must not panic / fail
+    backend.shutdown(); // idempotent — calling twice should be safe
 }
 
 // ────────────────────────────────────────────────────────────
@@ -173,9 +165,7 @@ fn sdl_tests_enabled() -> bool {
 #[test]
 fn sdl2_init_and_shutdown_smoke() {
     if !sdl_tests_enabled() {
-        eprintln!(
-            "[SKIP] sdl2_init_and_shutdown_smoke: set SYNTHI_RUN_SDL_TESTS=1 to enable"
-        );
+        eprintln!("[SKIP] sdl2_init_and_shutdown_smoke: set SYNTHI_RUN_SDL_TESTS=1 to enable");
         return;
     }
     let mut backend = SDL2Backend::new();
@@ -195,9 +185,7 @@ fn sdl2_init_and_shutdown_smoke() {
 #[test]
 fn sdl2_full_window_lifecycle_smoke() {
     if !sdl_tests_enabled() {
-        eprintln!(
-            "[SKIP] sdl2_full_window_lifecycle: set SYNTHI_RUN_SDL_TESTS=1 to enable"
-        );
+        eprintln!("[SKIP] sdl2_full_window_lifecycle: set SYNTHI_RUN_SDL_TESTS=1 to enable");
         return;
     }
     if std::env::var("DISPLAY").is_err() {
@@ -217,10 +205,16 @@ fn sdl2_full_window_lifecycle_smoke() {
     let win_result = backend.create_window("test-window", 320, 240, WindowFlags::default());
     match win_result {
         Ok(handle) => {
-            assert!(!handle.raw_ptr.is_null(), "window pointer should be non-null");
+            assert!(
+                !handle.raw_ptr.is_null(),
+                "window pointer should be non-null"
+            );
             assert_eq!(handle.width, 320);
             assert_eq!(handle.height, 240);
-            assert!(handle.x11_window_id.is_some(), "SDL2 backend should expose a window ID");
+            assert!(
+                handle.x11_window_id.is_some(),
+                "SDL2 backend should expose a window ID"
+            );
 
             let mut events: Vec<BackendEvent> = Vec::new();
             backend.pump_events(&mut events);

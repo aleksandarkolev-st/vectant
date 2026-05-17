@@ -6,7 +6,6 @@
 // determines whether the runtime is healthy after a reload.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Health probe configuration.
@@ -105,14 +104,16 @@ impl ManagedHealthProbe {
 
             if metrics.ping_rtt_ms > self.config.ping_timeout_ms {
                 status = ManagedHealthStatus::Degraded;
-                reasons.push(format!("ping RTT {}ms exceeds timeout", metrics.ping_rtt_ms));
+                reasons.push(format!(
+                    "ping RTT {}ms exceeds timeout",
+                    metrics.ping_rtt_ms
+                ));
             }
         }
 
         // Heap check.
         if metrics.heap_max_bytes > 0 {
-            let heap_pct =
-                (metrics.heap_used_bytes as f64 / metrics.heap_max_bytes as f64) * 100.0;
+            let heap_pct = (metrics.heap_used_bytes as f64 / metrics.heap_max_bytes as f64) * 100.0;
 
             if heap_pct >= self.config.heap_critical_pct {
                 status = ManagedHealthStatus::Faulted;

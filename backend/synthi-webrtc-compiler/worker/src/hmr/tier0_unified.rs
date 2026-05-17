@@ -14,14 +14,16 @@
 //      - NumberLiteral (float): DWARF line→addr → find_float_loads → patch IEEE 754
 //   3. Returns Tier0V2Outcome with per-change results
 
-use crate::hmr::ts_value_classifier::{classify_ast, AstClassification, LiteralChange, LiteralKind};
-use crate::hmr::tier0_literal_patch::{
-    LiteralSwap, LiteralKind as SwapKind, candidate_so_paths, patch_so_file, Tier0Outcome,
-};
 use crate::hmr::binary_patch::dwarf_line_map::line_to_addresses;
-use crate::hmr::binary_patch::imm_patcher::{find_immediates, patch_immediate};
 use crate::hmr::binary_patch::float_patcher::{
-    find_float_loads, patch_float, parse_c_float, is_float_literal,
+    find_float_loads, is_float_literal, parse_c_float, patch_float,
+};
+use crate::hmr::binary_patch::imm_patcher::{find_immediates, patch_immediate};
+use crate::hmr::tier0_literal_patch::{
+    candidate_so_paths, patch_so_file, LiteralKind as SwapKind, LiteralSwap, Tier0Outcome,
+};
+use crate::hmr::ts_value_classifier::{
+    classify_ast, AstClassification, LiteralChange, LiteralKind,
 };
 use std::path::{Path, PathBuf};
 
@@ -100,7 +102,10 @@ pub fn try_tier0_v2(
                 } else {
                     skipped.push(format!(
                         "string length mismatch: {:?} ({}) → {:?} ({})",
-                        old_inner, old_inner.len(), new_inner, new_inner.len()
+                        old_inner,
+                        old_inner.len(),
+                        new_inner,
+                        new_inner.len()
                     ));
                 }
             }
@@ -204,7 +209,9 @@ pub fn try_tier0_v2(
                 } else if locs.len() > 1 {
                     skipped.push(format!(
                         "ambiguous: {} instructions with imm={} at line {}",
-                        locs.len(), old_val, change.line
+                        locs.len(),
+                        old_val,
+                        change.line
                     ));
                 }
             }
@@ -269,7 +276,9 @@ pub fn try_tier0_v2(
                 } else if locs.len() > 1 {
                     skipped.push(format!(
                         "ambiguous: {} float loads with value={} at line {}",
-                        locs.len(), old_val, change.line
+                        locs.len(),
+                        old_val,
+                        change.line
                     ));
                 }
             }
@@ -318,7 +327,9 @@ fn parse_c_integer(text: &str) -> Option<i64> {
         i64::from_str_radix(s, 8).ok()
     } else {
         // Strip common suffixes (u, l, ul, ll, ull, f)
-        let cleaned = s.trim_end_matches(|c: char| c == 'u' || c == 'U' || c == 'l' || c == 'L' || c == 'f' || c == 'F');
+        let cleaned = s.trim_end_matches(|c: char| {
+            c == 'u' || c == 'U' || c == 'l' || c == 'L' || c == 'f' || c == 'F'
+        });
         cleaned.parse::<i64>().ok()
     }
 }

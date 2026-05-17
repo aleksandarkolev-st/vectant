@@ -6,16 +6,21 @@
 // fallback → cost tracking.
 // ============================================================
 
-
 #[cfg(test)]
 mod tests {
     use crate::hmr::ai_cache::{AiCache, AiCacheConfig};
-    use crate::hmr::ai_circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitCheckResult, CircuitState};
+    use crate::hmr::ai_circuit_breaker::{
+        CircuitBreaker, CircuitBreakerConfig, CircuitCheckResult, CircuitState,
+    };
     use crate::hmr::ai_cost_tracker::{CostBudget, CostCheckResult, CostModel, CostTracker};
-    use crate::hmr::ai_fallback_chain::{build_fallback_chain, FallbackAdvance, FallbackLevel, FallbackTracker};
+    use crate::hmr::ai_fallback_chain::{
+        build_fallback_chain, FallbackAdvance, FallbackLevel, FallbackTracker,
+    };
     use crate::hmr::ai_request_contract::*;
-    use crate::hmr::ai_response_validator::{validate_response, ResponseValidatorConfig, ResponseVerdict};
-    use crate::hmr::ai_timeout_guardian::{TimeoutGuardian, TimeoutConfig};
+    use crate::hmr::ai_response_validator::{
+        validate_response, ResponseValidatorConfig, ResponseVerdict,
+    };
+    use crate::hmr::ai_timeout_guardian::{TimeoutConfig, TimeoutGuardian};
 
     fn test_request() -> AiRequest {
         AiRequest {

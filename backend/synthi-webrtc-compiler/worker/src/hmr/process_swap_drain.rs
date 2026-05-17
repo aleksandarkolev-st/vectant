@@ -69,10 +69,7 @@ pub struct DrainResult {
 ///
 /// In production: called in a loop with actual request counts.
 /// Here: single-shot evaluation from a simulated snapshot.
-pub fn evaluate_drain(
-    snapshot: &DrainSnapshot,
-    config: &DrainConfig,
-) -> DrainResult {
+pub fn evaluate_drain(snapshot: &DrainSnapshot, config: &DrainConfig) -> DrainResult {
     if snapshot.current_in_flight == 0 {
         return DrainResult {
             outcome: DrainOutcome::Completed,
@@ -120,7 +117,10 @@ pub fn drain_child_process(child: &mut Child, config: &DrainConfig) -> Result<Dr
         Ok(Some(_)) => 0,
         Ok(None) => 1,
         Err(error) => {
-            return Err(format!("failed to inspect child process during drain: {}", error));
+            return Err(format!(
+                "failed to inspect child process during drain: {}",
+                error
+            ));
         }
     };
 
@@ -172,7 +172,9 @@ pub fn drain_child_process(child: &mut Child, config: &DrainConfig) -> Result<Dr
             });
         }
 
-        thread::sleep(std::time::Duration::from_millis(config.poll_interval_ms.max(1)));
+        thread::sleep(std::time::Duration::from_millis(
+            config.poll_interval_ms.max(1),
+        ));
     }
 }
 

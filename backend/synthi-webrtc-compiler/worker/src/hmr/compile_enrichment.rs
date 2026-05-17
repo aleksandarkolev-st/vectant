@@ -7,7 +7,6 @@
 // handler.rs dispatch.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 use crate::hmr::adapted_project::AdaptedProjectStatus;
@@ -116,8 +115,7 @@ mod tests {
             reason: LoopReason::NotAdapted,
         };
         let status = AdaptedProjectStatus::not_adapted("test");
-        let enrichment =
-            CompileEnrichment::from_classification(classification, status, None);
+        let enrichment = CompileEnrichment::from_classification(classification, status, None);
 
         assert!(enrichment.is_ai_assisted());
         assert!(enrichment.use_ai_split);

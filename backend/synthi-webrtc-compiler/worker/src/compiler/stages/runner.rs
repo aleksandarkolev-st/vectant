@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
 use crate::debug_log;
+use anyhow::{Context, Result};
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
@@ -54,8 +54,7 @@ async fn emit_lifecycle_progress(
         },
     });
     if let Some(ms) = estimated_ready_ms {
-        payload["warming_progress"]["estimated_ready_at"] =
-            serde_json::Value::from(now_ms() + ms);
+        payload["warming_progress"]["estimated_ready_at"] = serde_json::Value::from(now_ms() + ms);
     }
     let _ = ctx
         .log_dc
@@ -118,7 +117,9 @@ pub async fn handle_runner_execution(
 
     debug_log!(
         "[Main] Restart check: is_gui={}, has_on_update={}, use_ai_split={}",
-        req.is_gui, has_on_update, use_ai_split
+        req.is_gui,
+        has_on_update,
+        use_ai_split
     );
 
     // Reuse Xvfb/GStreamer if possible. Under `TrackFanout` there's no
@@ -174,7 +175,8 @@ pub async fn handle_runner_execution(
         let gui_mode_changed = state.is_gui != req.is_gui;
         debug_log!(
             "[Main] Restarting runner: gui_mode_changed={}, use_ai_split={}",
-            gui_mode_changed, use_ai_split
+            gui_mode_changed,
+            use_ai_split
         );
 
         // If resolution matches and is_gui matches, we can reuse Xvfb/GStreamer
@@ -266,7 +268,15 @@ pub async fn handle_runner_execution(
                 gst_display_str = wsl_display_str.clone();
 
                 debug_log!("Starting Xvfb on display {}", wsl_display_str);
-                emit_lifecycle_progress(ctx, session_id.as_deref(), "warming", "xvfb_start", 15, Some(5_000)).await;
+                emit_lifecycle_progress(
+                    ctx,
+                    session_id.as_deref(),
+                    "warming",
+                    "xvfb_start",
+                    15,
+                    Some(5_000),
+                )
+                .await;
 
                 let mut xvfb_cmd = Command::new("Xvfb");
                 xvfb_cmd
@@ -315,7 +325,15 @@ pub async fn handle_runner_execution(
                 crate::safety::focus_probe::bind_session_display(sid, &wsl_display_str);
             }
 
-            emit_lifecycle_progress(ctx, session_id.as_deref(), "warming", "gstreamer_start", 40, Some(3_000)).await;
+            emit_lifecycle_progress(
+                ctx,
+                session_id.as_deref(),
+                "warming",
+                "gstreamer_start",
+                40,
+                Some(3_000),
+            )
+            .await;
 
             if gst_pipeline.is_none() {
                 // VP8 only: the per-peer WebRTC track declares video/VP8 so
@@ -368,10 +386,17 @@ pub async fn handle_runner_execution(
                                             bus.timed_pop(gst::ClockTime::from_mseconds(500))
                                         {
                                             if let gst::MessageView::Error(err) = msg.view() {
-                                                println!("Encoder {} failed: {}", encoder, err.error());
+                                                println!(
+                                                    "Encoder {} failed: {}",
+                                                    encoder,
+                                                    err.error()
+                                                );
                                                 let _ = pipe.set_state(gst::State::Null);
                                             } else {
-                                                debug_log!("Encoder {} started successfully.", encoder);
+                                                debug_log!(
+                                                    "Encoder {} started successfully.",
+                                                    encoder
+                                                );
                                                 pipeline = Some(pipe);
                                                 selected_mime_type = mime_type.to_string();
                                                 break;
@@ -389,7 +414,8 @@ pub async fn handle_runner_execution(
                                     Err(err) => {
                                         debug_log!(
                                             "Failed to set state for encoder {}: {}",
-                                            encoder, err
+                                            encoder,
+                                            err
                                         );
                                     }
                                 }
@@ -475,9 +501,14 @@ pub async fn handle_runner_execution(
                             dispatched += 1;
                         } else {
                             unmarshal_fail += 1;
-                            eprintln!("[Runner] Failed to unmarshal RTP packet ({} bytes)", data.len());
+                            eprintln!(
+                                "[Runner] Failed to unmarshal RTP packet ({} bytes)",
+                                data.len()
+                            );
                         }
-                        if dispatched <= 3 || last_log.elapsed() >= std::time::Duration::from_secs(2) {
+                        if dispatched <= 3
+                            || last_log.elapsed() >= std::time::Duration::from_secs(2)
+                        {
                             last_log = std::time::Instant::now();
                             eprintln!(
                                 "[video-rtp] dispatched={} unmarshal_fail={} subscribers={} fanout_dispatched={} fanout_dropped_lag={} fanout_dropped_error={}",
@@ -555,14 +586,14 @@ pub async fn handle_runner_execution(
         if let Some(sid_for_publish) = session_id.clone() {
             let log_dc_for_timing = ctx.log_dc.clone();
             tokio::spawn(async move {
-                let mut interval = tokio::time::interval(
-                    crate::infra::frame_timing::PUBLISH_INTERVAL,
-                );
+                let mut interval =
+                    tokio::time::interval(crate::infra::frame_timing::PUBLISH_INTERVAL);
                 interval.tick().await; // skip the immediate first tick
                 loop {
                     interval.tick().await;
                     crate::infra::frame_timing::publish_snapshots();
-                    let snap = match crate::infra::frame_timing::latest_published(&sid_for_publish) {
+                    let snap = match crate::infra::frame_timing::latest_published(&sid_for_publish)
+                    {
                         Some(s) if s.sample_count > 0 => s,
                         _ => continue,
                     };
@@ -581,9 +612,7 @@ pub async fn handle_runner_execution(
                         },
                         "pipeline_budget_estimate_ms": snap.pipeline_budget_estimate_ms,
                     });
-                    let _ = log_dc_for_timing
-                        .send_text(payload.to_string())
-                        .await;
+                    let _ = log_dc_for_timing.send_text(payload.to_string()).await;
                 }
             });
         }
@@ -613,16 +642,32 @@ pub async fn handle_runner_execution(
 
         debug_log!(
             "Spawning runner ({}): {:?}",
-            if use_per_project_runner { "per-project" } else { "shipped" },
+            if use_per_project_runner {
+                "per-project"
+            } else {
+                "shipped"
+            },
             runner_path
         );
         eprintln!(
             "[Main] Spawning runner ({}): {:?}",
-            if use_per_project_runner { "per-project" } else { "shipped" },
+            if use_per_project_runner {
+                "per-project"
+            } else {
+                "shipped"
+            },
             runner_path
         );
 
-        emit_lifecycle_progress(ctx, session_id.as_deref(), "warming", "runner_spawn", 75, Some(2_000)).await;
+        emit_lifecycle_progress(
+            ctx,
+            session_id.as_deref(),
+            "warming",
+            "runner_spawn",
+            75,
+            Some(2_000),
+        )
+        .await;
 
         let mut cmd = Command::new(&runner_path);
         cmd.env("DISPLAY", &wsl_display_str)
@@ -683,7 +728,15 @@ pub async fn handle_runner_execution(
 
         // Runner is up — flip lifecycle to `ready`. First peer attach
         // moves it to `running` via peer-count tracking (signaling-side).
-        emit_lifecycle_progress(ctx, session_id.as_deref(), "ready", "runner_started", 100, None).await;
+        emit_lifecycle_progress(
+            ctx,
+            session_id.as_deref(),
+            "ready",
+            "runner_started",
+            100,
+            None,
+        )
+        .await;
 
         // Guest-process registry (ultraplan §Security v4 pre-work #5-#6).
         // Record the root PID + binary fingerprint so the focus-lock +
@@ -696,8 +749,8 @@ pub async fn handle_runner_execution(
                     .file_name()
                     .and_then(|s| s.to_str())
                     .map(|s| s.to_string());
-                let registered = crate::safety::guest_registry::GLOBAL_GUEST_REGISTRY
-                    .register(sid, pid, argv0);
+                let registered =
+                    crate::safety::guest_registry::GLOBAL_GUEST_REGISTRY.register(sid, pid, argv0);
                 let summary = serde_json::json!({
                     "sessionId": sid,
                     "type": "guest-registered",
@@ -713,9 +766,7 @@ pub async fn handle_runner_execution(
                     .await;
                 eprintln!(
                     "[GuestRegistry] session={} root_pid={} binary={:?}",
-                    sid,
-                    registered.root_pid,
-                    registered.binary_path,
+                    sid, registered.root_pid, registered.binary_path,
                 );
             }
         }
@@ -844,7 +895,9 @@ pub async fn handle_runner_execution(
                         // Commands may contain multiple lines (e.g. scroll = button down + up)
                         for line in cmd.lines() {
                             if !line.is_empty() {
-                                let _ = stdin_guard.write_all(format!("{}\n", line).as_bytes()).await;
+                                let _ = stdin_guard
+                                    .write_all(format!("{}\n", line).as_bytes())
+                                    .await;
                             }
                         }
                         let _ = stdin_guard.flush().await;
@@ -852,10 +905,7 @@ pub async fn handle_runner_execution(
                     debug_log!("[stdin-input] Input channel closed");
                 });
 
-                debug_log!(
-                    "[Main] stdin input channel registered for session {}",
-                    sid
-                );
+                debug_log!("[Main] stdin input channel registered for session {}", sid);
             }
         } else if req.is_gui {
             // Reusing existing sdl_tx - re-register it in the store
@@ -985,7 +1035,14 @@ pub async fn handle_runner_execution(
                 if !send_failed {
                     // Send all load commands back-to-back (no sleep between them)
                     for (name, path) in &modules_to_load {
-                        let cmd = format!("load {} {}\n", name, path);
+                        let cmd = if let Some(rest) = name.strip_prefix("__gpu_device:") {
+                            let mut fields = rest.splitn(2, ':');
+                            let vendor = fields.next().unwrap_or("cuda");
+                            let kernels = fields.next().filter(|s| !s.is_empty()).unwrap_or("-");
+                            format!("load_device {} {} {}\n", vendor, path, kernels)
+                        } else {
+                            format!("load {} {}\n", name, path)
+                        };
                         debug_log!("[Main] Sending command to runner: {}", cmd.trim());
                         if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
                             eprintln!("[Main] Failed to write to runner stdin: {}", e);

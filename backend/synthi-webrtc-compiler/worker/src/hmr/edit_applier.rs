@@ -81,7 +81,11 @@ pub struct EditList {
 /// for dispatching the edit to the correct module (core/gui/shared).
 pub fn apply_edit(content: &str, edit: &Edit) -> Result<String> {
     if edit.anchor.is_empty() {
-        bail!("edit anchor is empty (module={:?}, op={:?})", edit.module, edit.operation);
+        bail!(
+            "edit anchor is empty (module={:?}, op={:?})",
+            edit.module,
+            edit.operation
+        );
     }
 
     // Count occurrences. Must be exactly 1 for a safe apply.
@@ -127,7 +131,8 @@ pub fn apply_edit(content: &str, edit: &Edit) -> Result<String> {
             s
         }
         EditOperation::Replace => {
-            let mut s = String::with_capacity(content.len() - edit.anchor.len() + edit.content.len());
+            let mut s =
+                String::with_capacity(content.len() - edit.anchor.len() + edit.content.len());
             s.push_str(&content[..start]);
             s.push_str(&edit.content);
             s.push_str(&content[end..]);
@@ -258,7 +263,10 @@ mod tests {
             "old1\nold2",
             "new1\nnew2\nnew3",
         );
-        assert_eq!(apply_edit(content, &e).unwrap(), "begin\nnew1\nnew2\nnew3\nend\n");
+        assert_eq!(
+            apply_edit(content, &e).unwrap(),
+            "begin\nnew1\nnew2\nnew3\nend\n"
+        );
     }
 
     #[test]

@@ -3793,4 +3793,424 @@ AppState* state = (AppState*)state_ptr;
 ```cpp
 {USER_CODE}
 ```
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GPU_SPLIT_PROMPT (GPU_HMR_ULTRAPLAN §5.5)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Sibling of UNIVERSAL_SPLIT_PROMPT for projects flagged by `agents.gpu_detect`
+# as containing `__global__`/`__device__` code. Inherits every host-side rule
+# from the universal prompt by reference — same 4-file shape, same MALLOC /
+# MEMSET / HotApi v2 rules, same <JSON>...</JSON> + <synthi_arch_cache>
+# response format. Adds:
+#
+#   - a 5th `device.cu` (CUDA) or `device.hip` (HIP) file containing every
+#     `__global__`/`__device__` kernel,
+#   - a `gpu` sub-block inside <synthi_build_manifest>,
+#   - HotApi v2.1 GPU fields (`device_descriptor`, `device_on_load`,
+#     `device_save_size`/`device_save_write`, `device_kernel_sig_hash`),
+#   - a launch-graph block inside <synthi_arch_cache>,
+#   - the "runtime boundary, no wrapper-kernel" contract.
+#
+# The prompt is intentionally explicit about what the AI must and must not
+# emit so the mechanical verifier (`verifier_gpu.py`) doesn't have to second-
+# guess intent.
+
+GPU_SPLIT_PROMPT = r"""
+You are a C++ + CUDA/HIP Hot-Module-Reload (HMR) Splitter+Adapter.
+
+You will be given a single-file C++ application that contains GPU kernels
+(CUDA `__global__` / HIP `__global__`). Refactor it into **5 files** that
+work with a dynamic-linking HMR system extended for GPU device modules.
+
+# THE 5 OUTPUT FILES
+
+1. shared.h          - AppState struct + shared types + extern "C" prototypes.
+                       Header-only. No executable code except inline accessors.
+
+2. core.cpp          - logic and state mutation. Compiles to libcore.so.
+                       Calls into the device module through the Synthi
+                       GPU launch boundary declared in shared.h. NO
+                       windowing, NO rendering, NO main(), NO library init.
+
+3. gui.cpp           - rendering and UI. Compiles to libgui.so.
+                       Reads from AppState (filled by core + device); never
+                       directly launches kernels. NO main().
+
+4. host_runner.cpp   - process entry point. Owns the CUDA/HIP context and
+                       the window. dlopens libcore/libgui, dlsyms the
+                       lifecycle functions including the new GPU ones,
+                       calls them every frame. Owns the Synthi-managed
+                       device allocation registry used by tier-B
+                       userspace snapshots.
+
+5. device.cu (CUDA) **OR** device.hip (ROCm) - every `__global__` and
+                       `__device__` symbol. Builds to a sidecar `cubin`
+                       (CUDA) / `hsaco` (HIP) loaded by `cuModuleLoadData`
+                       / `hipModuleLoad`. **Exactly one device file** —
+                       multi-TU splits are reserved for a later phase.
+
+Pick the device extension based on the vendor:
+  - `device.cu` for CUDA (`#include <cuda_runtime.h>` etc.),
+  - `device.hip` for ROCm (`#include <hip/hip_runtime.h>` etc.).
+
+# INHERIT EVERY HOST RULE FROM THE UNIVERSAL SPLIT PROMPT
+
+Every rule from `UNIVERSAL_SPLIT_PROMPT` applies unchanged to shared.h /
+core.cpp / gui.cpp / host_runner.cpp:
+
+  - ZERO HALLUCINATION (no UI/state/strings the user didn't have),
+  - MALLOC PROHIBITION (no `new`/`malloc` for AppState),
+  - MEMSET PROHIBITION (no clobbering preserved state in lifecycle fns),
+  - HotApi v2 lifecycle (`core_on_load(prev_state)`, `gui_on_load(...)`,
+    `hot_get_api()`),
+  - SHARED.H is HEADER-ONLY,
+  - the `<synthi_arch_cache>` and `<synthi_build_manifest>` response shape.
+
+# GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
+
+Synthi does not hot-swap arbitrary raw CUDA/HIP source as-is. Your job
+is to rewrite the user's GPU code into Synthi's hot-swappable GPU ABI,
+then keep that ABI explicit in the emitted source. The ABI boundary is
+real runtime code/header surface, not prose:
+
+  - `shared.h` MUST include the worker-generated contract header:
+
+        #include "synthi_gpu_runtime.h"
+
+    Do not redeclare this ABI by hand. The worker writes this header into
+    the workspace before compiling GPU-enabled projects.
+
+  - raw `kernel<<<grid, block, shared, stream>>>(args...)` launch sites
+    in host code MUST become calls to:
+
+        synthi_gpu_launch(gpu, "kernel", grid, block, shared, stream,
+                          { &arg0, &arg1, ... });
+
+  - Synthi-managed device allocations MUST be registered through the
+    runtime registry so the worker can preserve them across sidecar
+    cubin/hsaco swaps.
+  - This runtime boundary is allowed and required. Forbidden shims are
+    wrapper kernels, extra migration files, and bypass modules that hide
+    the actual source change.
+
+# GPU CONTRACT — HotApi v2.2 GPU ADDENDUM
+
+The ABI is defined in the worker's `plugin_contract.rs`: the host module's
+`HotApi` table has five optional GPU callbacks mirroring the C exports below.
+Emit these exports in the host module (core.cpp) verbatim, replacing the
+kernel-name placeholders with the real kernel names from the project:
+
+```cpp
+// 1. device_descriptor — what does the GPU side need at load time?
+//    Returned as a flat struct so the worker can serialise it without
+//    needing a schema lookup.
+extern "C" {
+  struct DeviceDescriptor {
+    const char* vendor;            // "cuda" or "rocm"
+    const char* const* arches;     // null-terminated list, e.g. {"sm_80", nullptr}
+    const char* const* kernels;    // null-terminated list of __global__ names
+    int num_arches;
+    int num_kernels;
+    int constant_layout_bytes;     // total size of declared __constant__ memory
+  };
+  const DeviceDescriptor* device_descriptor();
+}
+
+// 2. device_on_load — natively patch deserialisation across an ABI edit.
+//    `prev_blob`/`len` is the bytes produced by the OLD module's
+//    device_save_write. The implementation MUST update its own
+//    deserialisation logic in place when the buffer layout changes —
+//    NEVER emit a `device_on_load_v2` or wrapper.
+extern "C" void device_on_load(const unsigned char* prev_blob, size_t len);
+
+// 3. device_save_size / device_save_write — msgpack size-then-write, same
+//    shape as the existing host v2 (`save_state_msgpack_size`/`_write`).
+extern "C" size_t device_save_size();
+extern "C" void   device_save_write(unsigned char* out, size_t cap);
+
+// 4. device_kernel_sig_hash — SipHash-2-4 over the parameter list,
+//    queried by the worker on every reload to decide fast-swap vs
+//    cold-reload. The reference implementation lives in shared.h as
+//    a constexpr-friendly helper; the AI emits a switch on kernel
+//    name returning the precomputed hash.
+extern "C" unsigned long long device_kernel_sig_hash(const char* name);
+```
+
+# DEVICE-SIDE FILE RULES
+
+  - All `__global__` and `__device__` symbols live in `device.cu` (or
+    `device.hip`). Host files launch them only through
+    `synthi_gpu_launch(...)`; do not leave raw triple-chevron host
+    launch sites in the split output.
+  - **No `cuMalloc`/`hipMalloc` outside the Synthi allocation registry**
+    in host_runner.cpp. The registry records `(ptr, size, owner_module,
+    semantic_name, lifetime_hint, dirty)` for every live Synthi-managed
+    allocation so the tier-B userspace snapshot can pack/restore it
+    across an HMR swap.
+  - **Never destroy the CUDA/HIP context inside `device_on_unload`**
+    or the runner's shutdown — the context outlives any cubin swap.
+    `cuModuleUnload`/`hipModuleUnload` and then exit; no
+    `cuCtxDestroy`/`hipCtxDestroy`.
+  - **Constants accessed via `cuModuleGetGlobal` only.** Direct symbol
+    references to `__constant__` memory break across a cubin swap.
+  - **No new `.cu`/`.hip` files.** This split produces exactly one
+    device file. Multi-TU device builds are a later phase.
+  - Tag every `cudaMalloc`/`hipMalloc` call with a one-token lifetime
+    hint at registration time:
+
+        synthi_register(ptr, size, "scratch");    // skipped during snapshot
+        synthi_register(ptr, size, "persistent"); // copied during snapshot
+
+# ABI HASH STAMP
+
+For each `__global__` kernel, compute a SipHash-2-4 of the parameter
+list (normalised: collapse whitespace, drop named parameters, keep
+types only) and put the hashes inside the architecture cache as
+
+    <synthi_kernel_hashes>
+    { "vec_add": "0x1234abcd5678ef01", "scale": "0x0987..." }
+    </synthi_kernel_hashes>
+
+`device_kernel_sig_hash` returns these on the host side. The worker
+compares pre- and post-edit hashes to decide reload plan: unchanged →
+`device_only`, changed → `abi_breaking`.
+
+# LAUNCH GRAPH (inside <synthi_arch_cache>)
+
+For every host launch that you converted to `synthi_gpu_launch(...)` in
+core.cpp / gui.cpp / host_runner.cpp, emit one row inside the arch cache:
+
+    <synthi_launch_graph>
+    [
+      { "site": "core.cpp:42", "kernel": "vec_add",
+        "grid": "(n+255)/256", "block": "256", "shared": 0,
+        "stream": "0", "params": ["const float*","const float*","float*","int"] }
+    ]
+    </synthi_launch_graph>
+
+`grid`/`block`/`shared`/`stream` are string expressions verbatim from
+the source — they're symbolic, not numeric, so the launch-graph
+extractor can keep them aligned across edits.
+
+# GPU BUILD MANIFEST SUB-BLOCK
+
+Inside `<synthi_build_manifest>`, in addition to the standard host
+fields, emit a `gpu` sub-object:
+
+    "gpu": {
+      "vendor": "cuda",                       // or "rocm"
+      "device_compiler": "nvcc",              // or "clang-cuda" or "hipcc"
+      "arch": ["sm_80"],                      // ["gfx90a"] for ROCm
+      "device_flags": ["-O3", "-lineinfo", "--use_fast_math"],
+      "runtime_libs": ["cudart", "cuda"],     // ["amdhip64"] for ROCm
+      "snapshot_mode": "auto",
+      "fatbin_strategy": "sidecar_module"
+    }
+
+`fatbin_strategy` must be `"sidecar_module"` — embedded fatbins are
+not HMR-compatible. Pick `arch` from the source's targeting hints
+(comments, `#pragma`, etc.) or default to `sm_80` (CUDA) /
+`gfx90a` (ROCm) when the source doesn't specify.
+
+# NO-SHIM CONTRACT
+
+  - Never introduce a new kernel whose name looks like `_safe`, `_v2`,
+    `_fallback`, `safe_<existing>`, etc. Patch the existing kernel
+    in place.
+  - Never add a "rescue" host helper that wraps a launch. Use the
+    required `synthi_gpu_launch(...)` runtime boundary directly at the
+    original launch site and fix the launch arguments there.
+  - When a serialisation layout changes, edit `device_on_load` and
+    `device_save_write` IN PLACE rather than emitting a migration
+    wrapper.
+
+# RESPONSE FORMAT — STRICT
+
+```
+<JSON>
+{
+  "shared.h":        "...source...",
+  "core.cpp":        "...source...",
+  "gui.cpp":         "...source...",
+  "host_runner.cpp": "...source...",
+  "device.cu":       "...source..."   // or "device.hip" for ROCm
+}
+</JSON>
+<synthi_arch_cache>
+# Architecture overview (markdown)
+...
+<synthi_kernel_hashes>{...}</synthi_kernel_hashes>
+<synthi_launch_graph>[...]</synthi_launch_graph>
+<synthi_build_manifest>{ ...host fields..., "gpu": { ... } }</synthi_build_manifest>
+</synthi_arch_cache>
+```
+
+# CRITICAL RULES
+
+- Respond with the <JSON>...</JSON> block FIRST, then <synthi_arch_cache>.
+- NO prose before, between, or after the two blocks.
+- All five files must be present in the JSON.
+- The build manifest MUST include both the host fields and a non-null
+  `gpu` sub-object.
+- Every kernel referenced in any `synthi_gpu_launch(...)` call must be
+  declared in device.cu/device.hip. Raw `kernel<<<...>>>` host launches
+  are invalid split output.
+- Every kernel declared in device.cu/device.hip must appear in
+  <synthi_kernel_hashes>.
+- Preserve the user's intent: kernel logic, buffer sizes, launch
+  shapes, frame timing — all unchanged.
+
+# USER SOURCE
+
+```cpp
+{USER_CODE}
+```
+""".strip()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GPU diff + heal prompts (GPU_HMR_ULTRAPLAN §5.5 / §11)
+# ─────────────────────────────────────────────────────────────────────────────
+
+GPU_DIFF_PATCH_PROMPT = r"""
+You are generating EDIT INSTRUCTIONS for a Synthi GPU HMR project.
+
+Return a JSON object:
+
+{
+  "reload_plan": "host_only" | "device_only" | "mixed" | "abi_breaking",
+  "edits": [
+    { "module": "core" | "gui" | "shared" | "host_runner" | "device",
+      "operation": "insert_after" | "insert_before" | "replace" | "delete",
+      "anchor": "...exact existing substring...",
+      "content": "...replacement or insertion..." }
+  ]
+}
+
+Rules:
+- Keep the Synthi GPU runtime boundary intact. Host launch sites must use
+  `synthi_gpu_launch(...)`, not raw `kernel<<<...>>>(...)`.
+- Do not add wrapper kernels such as `_safe`, `_v2`, `_fallback`, or
+  `safe_<kernel>`. Patch existing kernels in place.
+- Do not create new `.cu` or `.hip` files. The Phase-1/2 contract has a
+  single device module.
+- If a kernel signature or constant-memory layout changes, set
+  `reload_plan` to `abi_breaking` unless the edit batch also updates the
+  host launch boundary and lifecycle code.
+- If only the device implementation changes and kernel signatures stay
+  unchanged, set `reload_plan` to `device_only`.
+- If both host and device files change without ABI drift, set
+  `reload_plan` to `mixed`.
+
+ARCHITECTURE CACHE:
+{ARCHITECTURE}
+
+CURRENT FILES:
+shared.h:
+```
+{SHARED_CONTENT}
+```
+
+core.cpp:
+```
+{CORE_CONTENT}
+```
+
+gui.cpp:
+```
+{GUI_CONTENT}
+```
+
+host_runner.cpp:
+```
+{HOST_RUNNER_CONTENT}
+```
+
+device:
+```
+{DEVICE_CONTENT}
+```
+
+USER DIFF:
+```
+{DIFF}
+```
+
+Return only the JSON object. No markdown fences.
+""".strip()
+
+
+GPU_HEAL_SHARED_HEADER = r"""
+You are the Synthi GPU healer. Patch the original split source in place.
+
+Output a JSON object with an `edits` array using the same edit schema as
+GPU diff patch:
+
+{ "edits": [
+  { "module": "core" | "gui" | "shared" | "host_runner" | "device",
+    "operation": "insert_after" | "insert_before" | "replace" | "delete",
+    "anchor": "...exact existing substring...",
+    "content": "...replacement or insertion..." }
+] }
+
+Hard constraints:
+- Do not create files.
+- Do not add wrapper kernels (`*_safe`, `*_v2`, `*_fallback`,
+  `safe_*`, etc.).
+- Do not hide a bug behind a new migration file or bypass module.
+- Host launches must remain on the Synthi runtime boundary:
+  `synthi_gpu_launch(...)`.
+- Runtime boundary calls such as `synthi_gpu_launch(...)`,
+  `synthi_gpu_pack_buffer(...)`, and `synthi_register(...)` are allowed
+  because they are the actual HMR ABI.
+- If a CUDA/HIP runtime fault invalidated the context, patch the source
+  and mark the fix as restart-safe in the edited lifecycle code. The
+  worker may cold-restart after applying the fix.
+""".strip()
+
+
+GPU_HEAL_COMPILE_PROMPT = GPU_HEAL_SHARED_HEADER + r"""
+
+Tier: compile_hard.
+
+Fix the nvcc/hipcc/nvlink compile error by editing the smallest set of
+existing modules. Prefer correcting the existing kernel, include, launch
+boundary, or lifecycle function directly.
+
+HEAL PAYLOAD:
+{PAYLOAD}
+""".strip()
+
+
+GPU_HEAL_PERF_PROMPT = GPU_HEAL_SHARED_HEADER + r"""
+
+Tier: compile_soft.
+
+The compiler succeeded but ptxas/hipcc diagnostics predict a bad launch
+or severe performance issue. Patch the hot kernel directly. Valid fixes
+include `__launch_bounds__`, reducing register pressure, moving a local
+array to shared memory, or splitting work only when the existing launch
+graph and lifecycle code are updated in the same edit batch.
+
+HEAL PAYLOAD:
+{PAYLOAD}
+""".strip()
+
+
+GPU_HEAL_RUNTIME_PROMPT = GPU_HEAL_SHARED_HEADER + r"""
+
+Tier: runtime.
+
+Patch the kernel and/or host launch boundary that caused the runtime
+fault. Bounds checks, stream/event ordering, launch configuration, and
+missing synchronization should be fixed in the original source. Some
+CUDA/HIP faults invalidate the context; in that case patch the source
+for the next cold restart rather than pretending in-place resume is
+always safe.
+
+HEAL PAYLOAD:
+{PAYLOAD}
 """.strip()

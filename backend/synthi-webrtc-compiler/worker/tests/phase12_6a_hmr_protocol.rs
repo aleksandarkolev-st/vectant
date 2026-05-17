@@ -52,7 +52,8 @@ fn response_error_roundtrip() {
 
 #[test]
 fn forward_compat_extra_fields_ignored() {
-    let json = r#"{"type":"Load","command_id":1,"module_name":"core","so_path":"/x","future_field":true}"#;
+    let json =
+        r#"{"type":"Load","command_id":1,"module_name":"core","so_path":"/x","future_field":true}"#;
     let cmd: HmrCommand = serde_json::from_str(json).unwrap();
     assert_eq!(cmd.command_id(), Some(1));
 }

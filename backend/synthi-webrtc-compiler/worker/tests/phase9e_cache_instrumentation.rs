@@ -29,7 +29,9 @@ async fn empty_cache_log_does_not_panic() {
             .unwrap()
             .as_nanos()
     ));
-    let cache = IncrementalCache::new(dir.clone()).await.expect("create cache");
+    let cache = IncrementalCache::new(dir.clone())
+        .await
+        .expect("create cache");
     // Before any lookup, log snapshot should be a no-op (no output)
     cache.log_hit_rate_snapshot();
     let _ = std::fs::remove_dir_all(&dir);
@@ -45,7 +47,9 @@ async fn miss_not_in_index_counter_increments() {
             .unwrap()
             .as_nanos()
     ));
-    let cache = IncrementalCache::new(dir.clone()).await.expect("create cache");
+    let cache = IncrementalCache::new(dir.clone())
+        .await
+        .expect("create cache");
 
     // 5 lookups of different keys on an empty cache — all miss
     // with reason "not_in_index"
@@ -76,11 +80,13 @@ async fn reset_hit_stats_is_idempotent() {
             .unwrap()
             .as_nanos()
     ));
-    let cache = IncrementalCache::new(dir.clone()).await.expect("create cache");
+    let cache = IncrementalCache::new(dir.clone())
+        .await
+        .expect("create cache");
     // Two resets on a fresh cache should be identical
     cache.reset_hit_stats();
     cache.reset_hit_stats();
-    cache.log_hit_rate_snapshot();  // no-op
+    cache.log_hit_rate_snapshot(); // no-op
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -99,7 +105,9 @@ async fn log_snapshot_is_concurrent_safe() {
             .as_nanos()
     ));
     let cache = std::sync::Arc::new(
-        IncrementalCache::new(dir.clone()).await.expect("create cache"),
+        IncrementalCache::new(dir.clone())
+            .await
+            .expect("create cache"),
     );
 
     let mut handles = Vec::new();

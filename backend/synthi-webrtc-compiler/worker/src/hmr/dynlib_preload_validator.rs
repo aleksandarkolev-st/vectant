@@ -6,7 +6,6 @@
 // to avoid crashes during hot swap.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 use crate::hmr::dynlib_abi_contract::AbiHeader;
@@ -66,7 +65,9 @@ impl PreloadResult {
     }
 
     pub fn has_errors(&self) -> bool {
-        self.issues.iter().any(|i| i.severity == IssueSeverity::Error)
+        self.issues
+            .iter()
+            .any(|i| i.severity == IssueSeverity::Error)
     }
 }
 
@@ -201,7 +202,11 @@ mod tests {
 
     #[test]
     fn rejects_wrong_abi() {
-        let bad_abi = AbiHeader { major: 2, minor: 0, patch: 0 };
+        let bad_abi = AbiHeader {
+            major: 2,
+            minor: 0,
+            patch: 0,
+        };
         let result = validate_preload(
             "libmod.so",
             1024,

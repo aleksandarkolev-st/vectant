@@ -372,7 +372,10 @@ extern "C" fn crash_handler(sig: c_int, info: *mut siginfo_t, _context: *mut c_v
     // For signal recovery mode (thread-based execution):
     // Use pthread_exit to terminate ONLY the crashed thread, not the entire process.
     // The main thread's polling loop will detect ABORT_REQUESTED and handle recovery.
-    eprintln!("[CRASH] Plugin crash detected: {} — terminating crashed thread", signal_name);
+    eprintln!(
+        "[CRASH] Plugin crash detected: {} — terminating crashed thread",
+        signal_name
+    );
     unsafe {
         libc::pthread_exit(std::ptr::null_mut());
     }

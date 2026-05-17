@@ -6,10 +6,10 @@
 // Uses the test process itself (via /proc/self) for maps parsing.
 // Full live-patch tests need a child process with a loaded .so.
 
-use worker::hmr::binary_patch::proc_mem_patcher::{
-    find_so_base_addr, file_offset_to_va, patch_process_memory,
-};
 use std::path::Path;
+use worker::hmr::binary_patch::proc_mem_patcher::{
+    file_offset_to_va, find_so_base_addr, patch_process_memory,
+};
 
 #[test]
 fn finds_libc_in_own_maps() {

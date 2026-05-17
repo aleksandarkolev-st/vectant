@@ -28,9 +28,7 @@
 //   cargo test --test phase3_compile_manifest
 // from `backend/synthi-webrtc-compiler/worker/`.
 
-use worker::hmr::compile_manifest::{
-    CompileManifest, ConfidenceLevel, HotReloadMode,
-};
+use worker::hmr::compile_manifest::{CompileManifest, ConfidenceLevel, HotReloadMode};
 
 const SAMPLE_SDL2_JSON: &str = r#"{
     "compiler": "g++",
@@ -52,8 +50,8 @@ const SAMPLE_SDL2_JSON: &str = r#"{
 
 #[test]
 fn parses_sdl2_sample_from_python_wire_format() {
-    let m: CompileManifest = serde_json::from_str(SAMPLE_SDL2_JSON)
-        .expect("SDL2 sample JSON should parse cleanly");
+    let m: CompileManifest =
+        serde_json::from_str(SAMPLE_SDL2_JSON).expect("SDL2 sample JSON should parse cleanly");
     assert_eq!(m.compiler.executable(), "g++");
     assert_eq!(m.std, "c++17");
     assert_eq!(m.gui_link_flags, vec!["-lSDL2".to_string()]);
@@ -79,11 +77,17 @@ fn sdl2_default_matches_legacy_hardcoded_shape() {
     assert_eq!(m.std, "c++17");
     assert!(m.common_flags.contains(&"-shared".to_string()));
     assert!(m.common_flags.contains(&"-fPIC".to_string()));
-    assert!(m.common_flags.contains(&"-D_POSIX_C_SOURCE=199309L".to_string()));
+    assert!(m
+        .common_flags
+        .contains(&"-D_POSIX_C_SOURCE=199309L".to_string()));
     assert!(m.common_flags.contains(&"-g".to_string()));
     assert!(m.common_flags.contains(&"-gdwarf-4".to_string()));
-    assert!(m.common_flags.contains(&"-fno-omit-frame-pointer".to_string()));
-    assert!(m.common_flags.contains(&"-fdiagnostics-format=json".to_string()));
+    assert!(m
+        .common_flags
+        .contains(&"-fno-omit-frame-pointer".to_string()));
+    assert!(m
+        .common_flags
+        .contains(&"-fdiagnostics-format=json".to_string()));
     assert!(m.gui_link_flags.contains(&"-lSDL2".to_string()));
     assert!(m.core_link_flags.is_empty());
     assert_eq!(m.hot_reload_mode, HotReloadMode::Swap);
@@ -261,7 +265,10 @@ fn round_trip_serialize_deserialize() {
     let original = CompileManifest::sdl2_default();
     let serialized = serde_json::to_string(&original).unwrap();
     let decoded: CompileManifest = serde_json::from_str(&serialized).unwrap();
-    assert_eq!(decoded.compiler.executable(), original.compiler.executable());
+    assert_eq!(
+        decoded.compiler.executable(),
+        original.compiler.executable()
+    );
     assert_eq!(decoded.std, original.std);
     assert_eq!(decoded.common_flags, original.common_flags);
     assert_eq!(decoded.gui_link_flags, original.gui_link_flags);

@@ -6,7 +6,6 @@
 // Shared, Config, Resource, or Irrelevant.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -56,8 +55,10 @@ pub fn classify_file(path: &str) -> FileClass {
     let path_lower = path.to_lowercase();
 
     // Irrelevant files
-    if matches!(ext, "md" | "txt" | "log" | "json" | "yaml" | "yml" | "toml" | "lock")
-        && !is_build_config(name)
+    if matches!(
+        ext,
+        "md" | "txt" | "log" | "json" | "yaml" | "yml" | "toml" | "lock"
+    ) && !is_build_config(name)
     {
         return FileClass::Irrelevant;
     }
@@ -79,10 +80,24 @@ pub fn classify_file(path: &str) -> FileClass {
     // Resources
     if matches!(
         ext,
-        "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp"
-            | "glsl" | "vert" | "frag" | "wgsl"
-            | "wav" | "mp3" | "ogg"
-            | "ttf" | "otf" | "woff" | "woff2"
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "svg"
+            | "ico"
+            | "webp"
+            | "glsl"
+            | "vert"
+            | "frag"
+            | "wgsl"
+            | "wav"
+            | "mp3"
+            | "ogg"
+            | "ttf"
+            | "otf"
+            | "woff"
+            | "woff2"
     ) {
         return FileClass::Resource;
     }

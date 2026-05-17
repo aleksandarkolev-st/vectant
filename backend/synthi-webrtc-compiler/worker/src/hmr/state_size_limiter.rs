@@ -6,7 +6,6 @@
 // or exceed the WebRTC data channel capacity.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

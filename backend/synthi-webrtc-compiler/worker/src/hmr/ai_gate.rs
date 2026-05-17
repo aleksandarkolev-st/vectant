@@ -6,7 +6,6 @@
 // steady-state hot path for adapted projects.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -116,19 +115,13 @@ impl AiGate {
             CompileLoop::LoopA => {
                 self.stats.record_blocked();
                 AiGateDecision::Blocked {
-                    reason: format!(
-                        "Loop A (deterministic): AI endpoint '{}' blocked",
-                        endpoint
-                    ),
+                    reason: format!("Loop A (deterministic): AI endpoint '{}' blocked", endpoint),
                 }
             }
             CompileLoop::LoopB => {
                 self.stats.record_allowed();
                 AiGateDecision::Allowed {
-                    reason: format!(
-                        "Loop B (AI-assisted): AI endpoint '{}' allowed",
-                        endpoint
-                    ),
+                    reason: format!("Loop B (AI-assisted): AI endpoint '{}' allowed", endpoint),
                 }
             }
         }

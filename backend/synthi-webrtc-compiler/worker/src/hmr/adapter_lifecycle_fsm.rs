@@ -7,7 +7,6 @@
 // produces events for the telemetry pipeline.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Lifecycle states common to all adapter families.
@@ -102,9 +101,7 @@ impl AdapterLifecycleFsm {
         });
 
         // Side effects.
-        if next == AdapterLifecycleState::Ready
-            && self.state == AdapterLifecycleState::Reloading
-        {
+        if next == AdapterLifecycleState::Ready && self.state == AdapterLifecycleState::Reloading {
             self.reload_count += 1;
         }
         if next == AdapterLifecycleState::Faulted {

@@ -6,10 +6,9 @@
 // call into user code through the ABI contract.
 // ============================================================
 
-
 use std::collections::HashMap;
 
-use crate::hmr::dynlib_abi_contract::{AbiHeader, DynLibAbiContract, canonical_abi_contract};
+use crate::hmr::dynlib_abi_contract::{canonical_abi_contract, AbiHeader, DynLibAbiContract};
 
 /// A resolved symbol with its address (simulated as u64).
 #[derive(Debug, Clone)]
@@ -90,10 +89,7 @@ pub struct ResolveResult {
 ///
 /// In production, this would dlopen and dlsym each symbol.  Here we
 /// accept a list of "exported" symbol names and simulate resolution.
-pub fn resolve_symbols(
-    library_path: &str,
-    exported_names: &[String],
-) -> ResolveResult {
+pub fn resolve_symbols(library_path: &str, exported_names: &[String]) -> ResolveResult {
     let contract = canonical_abi_contract();
     resolve_symbols_with_contract(library_path, exported_names, &contract)
 }
@@ -172,7 +168,9 @@ mod tests {
         let exported = vec!["hmr_init".into()];
         let result = resolve_symbols("libtest.so", &exported);
         assert!(!result.missing_required.is_empty());
-        assert!(result.missing_required.contains(&"hmr_get_abi_version".into()));
+        assert!(result
+            .missing_required
+            .contains(&"hmr_get_abi_version".into()));
     }
 
     #[test]

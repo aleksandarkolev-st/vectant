@@ -1266,27 +1266,31 @@ pub async fn handle_flutter_emulator_job(
         )
         .await;
 
-        let pipeline = match video_pipeline::EmulatorVideoPipeline::start(cfg.clone(), video_fanout.clone()) {
-            Ok(p) => Arc::new(p),
-            Err(e) => {
-                // Fallback to basic root capture
-                cfg.x11_xid = None;
-                send_log(
-                    &log_dc,
-                    &session_id,
-                    "[video] retrying with basic root capture",
-                    "emulator",
-                )
-                .await;
-                match video_pipeline::EmulatorVideoPipeline::start(cfg.clone(), video_fanout.clone()) {
-                    Ok(p) => Arc::new(p),
-                    Err(e2) => {
-                        let _ = emulator_input::unregister_session_sync(&session_id);
-                        bail!("Failed to start video pipeline: {}", e2);
+        let pipeline =
+            match video_pipeline::EmulatorVideoPipeline::start(cfg.clone(), video_fanout.clone()) {
+                Ok(p) => Arc::new(p),
+                Err(e) => {
+                    // Fallback to basic root capture
+                    cfg.x11_xid = None;
+                    send_log(
+                        &log_dc,
+                        &session_id,
+                        "[video] retrying with basic root capture",
+                        "emulator",
+                    )
+                    .await;
+                    match video_pipeline::EmulatorVideoPipeline::start(
+                        cfg.clone(),
+                        video_fanout.clone(),
+                    ) {
+                        Ok(p) => Arc::new(p),
+                        Err(e2) => {
+                            let _ = emulator_input::unregister_session_sync(&session_id);
+                            bail!("Failed to start video pipeline: {}", e2);
+                        }
                     }
                 }
-            }
-        };
+            };
 
         (pipeline, cfg.x11_display.clone())
     };

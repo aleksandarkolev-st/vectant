@@ -897,3 +897,31 @@ The runner detects module type automatically:
 2. Falls back to legacy symbol probing (v1 module)
 
 Both module types can coexist in the same project during transition.
+
+## HotApi v2.2 GPU Addendum
+
+GPU HMR projects still use the host HotApi table. The agent rewrites CUDA/HIP
+launch sites into the Synthi GPU runtime boundary and emits these optional
+callbacks in the host module:
+
+```c
+typedef struct DeviceDescriptor {
+    const char* vendor;             // "cuda" or "rocm"
+    const char* const* arches;      // null-terminated, e.g. {"sm_80", NULL}
+    const char* const* kernels;     // null-terminated __global__ names
+    int num_arches;
+    int num_kernels;
+    int constant_layout_bytes;
+} DeviceDescriptor;
+
+const DeviceDescriptor* device_descriptor(void);
+void device_on_load(const unsigned char* prev_blob, size_t len);
+size_t device_save_size(void);
+void device_save_write(unsigned char* out, size_t cap);
+unsigned long long device_kernel_sig_hash(const char* name);
+```
+
+These are runtime-boundary and lifecycle callbacks, not wrapper kernels. They
+let the worker load sidecar cubin/hsaco modules, verify kernel ABI hashes, and
+save/restore Synthi-managed GPU state. Older host-only modules remain valid:
+the worker checks `struct_size` before reading the v2.2 GPU fields.

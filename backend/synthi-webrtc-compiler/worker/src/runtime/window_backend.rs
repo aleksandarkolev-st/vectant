@@ -130,7 +130,10 @@ pub struct WindowFlags {
 #[derive(Debug)]
 pub enum BackendEvent {
     Quit,
-    Resized { width: u32, height: u32 },
+    Resized {
+        width: u32,
+        height: u32,
+    },
     /// Backend-native event payload, forwarded raw to the user's
     /// on_event callback. The runner must NOT free this — the
     /// backend owns the memory and the pointer is only valid until

@@ -1,7 +1,7 @@
 // Plugin contract defines the ABI - symbols are used via dlsym at runtime.
 
 use core::ffi::c_void;
-use std::ffi::{c_char, c_double, c_uint};
+use std::ffi::{c_char, c_double, c_int, c_uint};
 
 // ============================================================
 // SYNTHI PLUGIN ABI v2.1 - SINGLE-EXPORT ABI
@@ -375,6 +375,43 @@ pub type GetQuiescenceReportFn = unsafe extern "C" fn(
 ) -> bool;
 
 // ============================================================
+// v2.2 GPU FUNCTION TYPES
+// ============================================================
+
+/// Flat GPU device descriptor returned by the host module.
+///
+/// This is intentionally schema-light so the worker can inspect the GPU
+/// runtime contract without knowing project-specific C++ types.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DeviceDescriptor {
+    /// "cuda" or "rocm" as a static null-terminated string.
+    pub vendor: *const c_char,
+    /// Null-terminated array of static architecture strings.
+    pub arches: *const *const c_char,
+    /// Null-terminated array of static kernel symbol names.
+    pub kernels: *const *const c_char,
+    pub num_arches: c_int,
+    pub num_kernels: c_int,
+    pub constant_layout_bytes: c_int,
+}
+
+/// Return the module's GPU descriptor.
+pub type DeviceDescriptorFn = unsafe extern "C" fn() -> *const DeviceDescriptor;
+
+/// Rebind managed GPU state after the worker loads a new sidecar module.
+pub type DeviceOnLoadFn = unsafe extern "C" fn(prev_blob: *const u8, len: usize);
+
+/// Size of the managed GPU state snapshot.
+pub type DeviceSaveSizeFn = unsafe extern "C" fn() -> usize;
+
+/// Write the managed GPU state snapshot into a caller-allocated buffer.
+pub type DeviceSaveWriteFn = unsafe extern "C" fn(out: *mut u8, out_cap: usize);
+
+/// Return the ABI hash for a named kernel's parameter list.
+pub type DeviceKernelSigHashFn = unsafe extern "C" fn(kernel_name: *const c_char) -> u64;
+
+// ============================================================
 // HotApi - THE SINGLE EXPORT TABLE (v2.1)
 // ============================================================
 
@@ -485,10 +522,40 @@ pub struct HotApi {
 
     /// Reserved for future expansion
     pub _reserved: [usize; 4],
+
+    // ============================================================
+    // v2.2 GPU ADDITIONS - Check struct_size before accessing
+    // ============================================================
+    /// GPU descriptor for sidecar module loading and verification.
+    pub device_descriptor: Option<DeviceDescriptorFn>,
+
+    /// Rebind managed device buffers/constants after device module load.
+    pub device_on_load: Option<DeviceOnLoadFn>,
+
+    /// Size of managed device-state snapshot.
+    pub device_save_size: Option<DeviceSaveSizeFn>,
+
+    /// Write managed device-state snapshot into the provided buffer.
+    pub device_save_write: Option<DeviceSaveWriteFn>,
+
+    /// Per-kernel signature hash used by the fast-swap classifier.
+    pub device_kernel_sig_hash: Option<DeviceKernelSigHashFn>,
 }
 
 /// Size of HotApi v2.0 (without v2.1 fields)
 pub const HOT_API_V20_SIZE: usize = 136; // Approximate, adjust based on actual
+
+/// Size threshold for HotApi v2.1 fields. GPU fields were appended after
+/// this boundary, so older v2.1 modules remain semantically readable.
+pub fn hot_api_v21_size() -> usize {
+    core::mem::offset_of!(HotApi, device_descriptor)
+}
+
+/// Size threshold for the complete v2.2 GPU addendum.
+pub fn hot_api_gpu_size() -> usize {
+    core::mem::offset_of!(HotApi, device_kernel_sig_hash)
+        + core::mem::size_of::<Option<DeviceKernelSigHashFn>>()
+}
 
 impl HotApi {
     /// Create a new HotApi with default values
@@ -522,12 +589,35 @@ impl HotApi {
             get_quiescence_report: None,
             error_message: core::ptr::null(),
             _reserved: [0; 4],
+            device_descriptor: None,
+            device_on_load: None,
+            device_save_size: None,
+            device_save_write: None,
+            device_kernel_sig_hash: None,
         }
     }
 
     /// Check if this HotApi has v2.1 fields
     pub fn has_v21_fields(&self) -> bool {
-        (self.struct_size as usize) >= core::mem::size_of::<HotApi>()
+        (self.struct_size as usize) >= hot_api_v21_size()
+    }
+
+    /// Check if this HotApi has the v2.2 GPU addendum fields.
+    pub fn has_gpu_fields(&self) -> bool {
+        (self.struct_size as usize) >= hot_api_gpu_size()
+    }
+
+    /// Check if the required GPU runtime contract callbacks are present.
+    pub fn has_gpu_contract(&self) -> bool {
+        self.has_gpu_fields()
+            && self.device_descriptor.is_some()
+            && self.device_on_load.is_some()
+            && self.device_kernel_sig_hash.is_some()
+    }
+
+    /// Check if this module can serialize Synthi-managed device state.
+    pub fn has_gpu_state_serialization(&self) -> bool {
+        self.has_gpu_fields() && self.device_save_size.is_some() && self.device_save_write.is_some()
     }
 
     /// Get semantic hash (from field or function)
@@ -1140,12 +1230,53 @@ pub trait HostGuestContract {
 mod tests {
     use super::*;
 
+    unsafe extern "C" fn test_device_descriptor() -> *const DeviceDescriptor {
+        core::ptr::null()
+    }
+
+    unsafe extern "C" fn test_device_on_load(_prev_blob: *const u8, _len: usize) {}
+
+    unsafe extern "C" fn test_device_save_size() -> usize {
+        0
+    }
+
+    unsafe extern "C" fn test_device_save_write(_out: *mut u8, _out_cap: usize) {}
+
+    unsafe extern "C" fn test_device_kernel_sig_hash(_kernel_name: *const c_char) -> u64 {
+        0xCAFE
+    }
+
     #[test]
     fn test_module_slot_roundtrip() {
         assert_eq!(ModuleSlot::from_str("core"), Some(ModuleSlot::Core));
         assert_eq!(ModuleSlot::from_str("gui"), Some(ModuleSlot::Gui));
         assert_eq!(ModuleSlot::from_str("main"), Some(ModuleSlot::Main));
         assert_eq!(ModuleSlot::from_str("invalid"), None);
+    }
+
+    #[test]
+    fn hot_api_gpu_fields_are_struct_size_gated() {
+        let mut api = HotApi::new();
+        assert!(api.has_v21_fields());
+        assert!(api.has_gpu_fields());
+        assert!(!api.has_gpu_contract());
+        assert!(!api.has_gpu_state_serialization());
+
+        api.device_descriptor = Some(test_device_descriptor);
+        api.device_on_load = Some(test_device_on_load);
+        api.device_kernel_sig_hash = Some(test_device_kernel_sig_hash);
+        assert!(api.has_gpu_contract());
+        assert!(!api.has_gpu_state_serialization());
+
+        api.device_save_size = Some(test_device_save_size);
+        api.device_save_write = Some(test_device_save_write);
+        assert!(api.has_gpu_state_serialization());
+
+        api.struct_size = hot_api_v21_size() as u32;
+        assert!(api.has_v21_fields());
+        assert!(!api.has_gpu_fields());
+        assert!(!api.has_gpu_contract());
+        assert!(!api.has_gpu_state_serialization());
     }
 
     #[test]

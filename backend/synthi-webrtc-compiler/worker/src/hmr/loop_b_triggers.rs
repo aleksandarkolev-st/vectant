@@ -7,7 +7,6 @@
 // independently tested and documented.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// A specific condition that triggers Loop B.

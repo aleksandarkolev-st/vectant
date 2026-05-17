@@ -161,12 +161,9 @@ mod tests {
 
     #[test]
     fn lifecycle_event_serialization() {
-        let event = PreviewLifecycleEvent::new(
-            PreviewLifecycleState::ReloadApplied,
-            "preview-123",
-        )
-        .with_message("GUI module warm-reloaded")
-        .with_elapsed(420);
+        let event = PreviewLifecycleEvent::new(PreviewLifecycleState::ReloadApplied, "preview-123")
+            .with_message("GUI module warm-reloaded")
+            .with_elapsed(420);
 
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("reload_applied"));

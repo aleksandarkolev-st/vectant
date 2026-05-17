@@ -1,8 +1,11 @@
 pub mod ai_utils;
 pub mod compile_core;
+pub mod compile_device;
 pub mod compile_gui;
 pub mod compile_helpers;
 pub mod compile_runner;
+pub mod gpu_runtime_contract;
 pub mod guardrails;
 pub mod pch;
+pub mod ptxas_info_parser;
 pub mod runner;

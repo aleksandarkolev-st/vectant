@@ -300,11 +300,40 @@ fn is_cpp_compiler(program: &str) -> bool {
     // Tolerate bare names and absolute paths — the manifest's
     // Compiler enum returns "g++" / "clang++" today but the user
     // may override via PATH or absolute paths in the future.
+    //
+    // Device compilers (`nvcc`, `hipcc`, and clang-cuda invocations)
+    // are intentionally EXCLUDED here: ccache doesn't understand
+    // cubin/hsaco artifacts, and even when it caches a host-side
+    // intermediate it can produce subtly wrong PTX on a hit. The
+    // device-compile cache lives in `compile_device.rs` and uses
+    // `IncrementalCache` keyed on (device_src, device_flags, arch_list).
+    // See GPU_HMR_ULTRAPLAN §5.3.
     let base = std::path::Path::new(program)
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(program);
+    if is_device_compiler(base) {
+        return false;
+    }
     matches!(base, "g++" | "gcc" | "clang" | "clang++" | "c++" | "cc")
+}
+
+/// True for any executable that produces GPU device code. We disable
+/// ccache wrapping for these (see `is_cpp_compiler`).
+///
+/// Note: `clang-cuda` isn't a distinct executable — it's clang invoked
+/// with `--cuda-gpu-arch=…`. There's no clean way to detect the CUDA
+/// mode from the executable name alone, so we accept that a clang call
+/// without `--cuda-gpu-arch` still hits ccache. The device-compile
+/// stage routes through `select_compiler(ModuleKind::Device)` and the
+/// device stage uses `system_command(...)` directly (never
+/// `cpp_compile_command`), so the wrap can't accidentally happen.
+pub fn is_device_compiler(program: &str) -> bool {
+    let base = std::path::Path::new(program)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(program);
+    matches!(base, "nvcc" | "hipcc")
 }
 
 #[cfg(test)]
@@ -344,6 +373,47 @@ mod tests {
         // Documented conservative choice — we can extend this list.
         assert!(!is_cpp_compiler("g++-13"));
         assert!(!is_cpp_compiler("clang-16"));
+    }
+
+    #[test]
+    fn nvcc_is_not_a_cpp_compiler_for_ccache_purposes() {
+        // GPU_HMR_ULTRAPLAN §5.3: device compilers must not be wrapped
+        // by ccache — ccache doesn't understand cubin/hsaco hashing
+        // and the device-compile cache (IncrementalCache) lives in
+        // compile_device.rs.
+        assert!(!is_cpp_compiler("nvcc"));
+        assert!(!is_cpp_compiler("/usr/local/cuda/bin/nvcc"));
+    }
+
+    #[test]
+    fn hipcc_is_not_a_cpp_compiler_for_ccache_purposes() {
+        assert!(!is_cpp_compiler("hipcc"));
+        assert!(!is_cpp_compiler("/opt/rocm/bin/hipcc"));
+    }
+
+    #[test]
+    fn is_device_compiler_recognises_nvcc_and_hipcc() {
+        assert!(is_device_compiler("nvcc"));
+        assert!(is_device_compiler("hipcc"));
+        assert!(is_device_compiler("/usr/local/cuda/bin/nvcc"));
+        assert!(is_device_compiler("/opt/rocm/bin/hipcc"));
+        assert!(!is_device_compiler("g++"));
+        assert!(!is_device_compiler("clang++"));
+    }
+
+    #[test]
+    fn cpp_compile_command_for_nvcc_uses_plain_system_command() {
+        // Build the command; we can't inspect the spawned process,
+        // but we can at least confirm the function returns without
+        // requiring `ccache` to exist. The smoke is that for nvcc the
+        // wrap path is skipped, and the helper still returns a Command
+        // that names the right program.
+        let cmd = cpp_compile_command("nvcc");
+        let program = cmd.as_std().get_program().to_string_lossy().into_owned();
+        // Whether it's "nvcc" or wrapped via wsl depends on
+        // system_command's WSL plumbing; assert it does NOT contain
+        // "ccache" — that's the regression we're guarding against.
+        assert!(!program.contains("ccache"), "got program={program}");
     }
 
     #[test]

@@ -56,6 +56,39 @@ ConfidenceLevel = Literal["high", "medium", "low"]
 HotReloadMode = Literal["swap", "process_restart", "auto"]
 Compiler = Literal["g++", "clang++"]
 
+# ─────────────────────────────────────────────────────────────────────────────
+# GPU EXTENSION (GPU_HMR_ULTRAPLAN §5.1)
+# ─────────────────────────────────────────────────────────────────────────────
+# A vendor-neutral GPU block sits alongside the existing host fields on
+# BuildManifest. Every GPU field is OPTIONAL — host-only manifests are
+# unchanged because the gpu sub-block defaults to None. The Rust mirror
+# lives at backend/synthi-webrtc-compiler/worker/src/hmr/compile_manifest.rs.
+DeviceCompiler = Literal["nvcc", "clang-cuda", "hipcc"]
+DeviceVendor   = Literal["cuda", "rocm"]
+SnapshotMode   = Literal["driver_checkpoint", "userspace", "auto"]
+FatbinStrategy = Literal["sidecar_module"]
+
+
+class GpuBuildBlock(BaseModel):
+    """GPU-side build recipe — mirrors the host fields above for the
+    `device.cu` / `device.hip` 5th module that the Kernel Splitter Agent
+    emits. Every field is required when `gpu` is present; the validator
+    enforces `fatbin_strategy == "sidecar_module"` because embedded
+    fatbins can't be hot-swapped (cuModuleLoadData replaces the cubin in
+    place; an in-binary fatbin would require relinking the host .so).
+    """
+
+    vendor: DeviceVendor
+    device_compiler: DeviceCompiler
+    arch: List[str] = Field(default_factory=list)
+    device_flags: List[str] = Field(default_factory=list)
+    runtime_libs: List[str] = Field(default_factory=list)
+    snapshot_mode: SnapshotMode = "auto"
+    fatbin_strategy: FatbinStrategy = "sidecar_module"
+
+    if _PYDANTIC_V2:
+        model_config = ConfigDict(extra="ignore")
+
 
 class ConfidenceBlock(BaseModel):
     """AI's self-reported confidence in the manifest it just generated.
@@ -100,6 +133,12 @@ class BuildManifest(BaseModel):
     # validate_manifest_v1() below — the schema ACCEPTS the shape so
     # V2 doesn't need a migration, but V1 refuses execution.
     build_steps: Optional[List[dict]] = None
+
+    # GPU_HMR_ULTRAPLAN §5.1: optional GPU sub-block. None for host-only
+    # projects (the overwhelming majority). When present, the Rust worker
+    # schedules compile_device alongside the host compile stages and the
+    # GPU module adapter participates in hot-reload.
+    gpu: Optional[GpuBuildBlock] = None
 
     if _PYDANTIC_V2:
         model_config = ConfigDict(extra="ignore")
@@ -182,6 +221,43 @@ def validate_manifest_v1(manifest: BuildManifest) -> None:
             f"Unsupported hot_reload_mode {manifest.hot_reload_mode!r}. "
             "V1 accepts `swap`, `process_restart`, or `auto`."
         )
+
+    # GPU_HMR_ULTRAPLAN §5.1: GPU sub-block sanity
+    if manifest.gpu is not None:
+        g = manifest.gpu
+        if g.fatbin_strategy != "sidecar_module":
+            raise ManifestRejection(
+                f"Unsupported gpu.fatbin_strategy {g.fatbin_strategy!r}. "
+                "Only `sidecar_module` is HMR-compatible — embedded "
+                "fatbins can't be hot-swapped because cuModuleLoadData "
+                "needs an external cubin/hsaco file."
+            )
+        if g.vendor not in ("cuda", "rocm"):
+            raise ManifestRejection(
+                f"Unsupported gpu.vendor {g.vendor!r}. Use `cuda` or `rocm`."
+            )
+        if g.device_compiler not in ("nvcc", "clang-cuda", "hipcc"):
+            raise ManifestRejection(
+                f"Unsupported gpu.device_compiler {g.device_compiler!r}. "
+                "Use `nvcc`, `clang-cuda`, or `hipcc`."
+            )
+        # Vendor / compiler consistency: prevent `cuda` + `hipcc` mixups.
+        cuda_compilers = ("nvcc", "clang-cuda")
+        if g.vendor == "cuda" and g.device_compiler not in cuda_compilers:
+            raise ManifestRejection(
+                f"gpu.vendor=cuda is incompatible with device_compiler="
+                f"{g.device_compiler!r}. Use `nvcc` or `clang-cuda`."
+            )
+        if g.vendor == "rocm" and g.device_compiler != "hipcc":
+            raise ManifestRejection(
+                f"gpu.vendor=rocm is incompatible with device_compiler="
+                f"{g.device_compiler!r}. Use `hipcc`."
+            )
+        if not g.arch:
+            raise ManifestRejection(
+                "gpu.arch must not be empty — declare at least one target "
+                "arch (e.g. [\"sm_80\"] for CUDA, [\"gfx90a\"] for ROCm)."
+            )
 
 
 def parse_manifest(raw: dict | str) -> BuildManifest:

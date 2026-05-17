@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
+use regex::Regex;
 use std::path::{Path, PathBuf};
 use tokio::time::{timeout, Duration};
-use regex::Regex;
 
 use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_javac_errors, DiagnosticEvent};
@@ -61,7 +61,9 @@ pub async fn compile_java(
     // from the package declaration so javac and java can find the class.
     let primary_path = {
         let raw_path = Path::new(&req.filename);
-        let has_dir = raw_path.parent().map_or(false, |p| p != Path::new("") && p != Path::new("."));
+        let has_dir = raw_path
+            .parent()
+            .map_or(false, |p| p != Path::new("") && p != Path::new("."));
 
         if has_dir {
             // Filename already includes a directory path — trust it.
@@ -76,7 +78,9 @@ pub async fn compile_java(
             let full_dir = workspace.join(&pkg_dir);
             eprintln!(
                 "[JavaCompile] Reconstructing path: bare {:?} + package {:?} → {:?}",
-                req.filename, pkg, full_dir.join(stem)
+                req.filename,
+                pkg,
+                full_dir.join(stem)
             );
             full_dir.join(stem)
         } else {
@@ -99,7 +103,9 @@ pub async fn compile_java(
             // has a package declaration, reconstruct the path.
             let file_pkg = extract_package(&file.content);
             let raw = Path::new(&file.name);
-            let has_dir = raw.parent().map_or(false, |p| p != Path::new("") && p != Path::new("."));
+            let has_dir = raw
+                .parent()
+                .map_or(false, |p| p != Path::new("") && p != Path::new("."));
 
             let path = if has_dir {
                 workspace.join(&file.name)
@@ -126,8 +132,8 @@ pub async fn compile_java(
 
     // ── Step 2: Detect JavaFX and build flags ─────────────────────
     let source_content = &req.source;
-    let needs_javafx = source_content.contains("javafx.")
-        || source_content.contains("import javafx");
+    let needs_javafx =
+        source_content.contains("javafx.") || source_content.contains("import javafx");
 
     // ── Step 2b: Detect source root for -sourcepath ───────────────
     // Java packages must match the directory structure. For example,
@@ -169,11 +175,16 @@ pub async fn compile_java(
     eprintln!(
         "[JavaCompile] Running javac in {:?}, files: {:?}",
         workspace,
-        java_files.iter().map(|p| p.file_name().unwrap_or_default()).collect::<Vec<_>>()
+        java_files
+            .iter()
+            .map(|p| p.file_name().unwrap_or_default())
+            .collect::<Vec<_>>()
     );
 
     cmd.kill_on_drop(true);
-    let child = cmd.spawn().context("Failed to spawn javac — is openjdk installed?")?;
+    let child = cmd
+        .spawn()
+        .context("Failed to spawn javac — is openjdk installed?")?;
 
     let output = match timeout(Duration::from_secs(30), child.wait_with_output()).await {
         Ok(Ok(out)) => out,
@@ -196,10 +207,7 @@ pub async fn compile_java(
     if !stderr_text.is_empty() {
         let report = parse_javac_errors(&stderr_text, "java");
         let event = DiagnosticEvent::new("java", report).with_session(session_id);
-        let _ = ctx
-            .log_dc
-            .send_text(event.to_json())
-            .await;
+        let _ = ctx.log_dc.send_text(event.to_json()).await;
 
         // Also stream raw stderr lines for the terminal panel
         for line in stderr_text.lines() {
@@ -286,7 +294,9 @@ fn detect_source_root_from_path(
 
             // Get relative parent dir from workspace
             let relative = if parent_str.starts_with(&ws_str) {
-                parent_str[ws_str.len()..].trim_start_matches('/').to_string()
+                parent_str[ws_str.len()..]
+                    .trim_start_matches('/')
+                    .to_string()
             } else {
                 parent_str.to_string()
             };
