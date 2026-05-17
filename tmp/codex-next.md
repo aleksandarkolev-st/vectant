@@ -214,6 +214,12 @@ PASS render loop reports outward flow - [gpu-flow-dynamic] ... trend=outward
     `/dev/dxg` is visible; support `-Pull/--pull`, `-Build/--build`, and
     custom `SYNTHI_WORKER_GPU_IMAGE`.
 
+- `scripts/run-project.sh`
+  - Linux/WSL convenience wrapper for clean sessions.
+  - Starts the detected GPU stack through `scripts/start-gpu-stack.sh`.
+  - Optional `--validate agent-split|dynamic|flow|vector` runs the matching
+    GPU-HMR harness and prints the workspace URL.
+
 - `mcp/synthi-mcp/.gpu-hmr-test-logs/results.txt`
 - `mcp/synthi-mcp/.gpu-hmr-test-logs/results.json`
   - Latest committed harness result.
@@ -261,6 +267,28 @@ Linux/WSL equivalent:
 ```bash
 cd /path/to/vectant-ade
 scripts/start-gpu-stack.sh
+```
+
+Clean-session Bash wrapper:
+
+```bash
+cd /path/to/vectant-ade
+scripts/run-project.sh --arch gfx1201
+```
+
+Start and run the full user-path GPU split/HMR validation:
+
+```bash
+cd /path/to/vectant-ade
+scripts/run-project.sh --build --arch gfx1201 --validate agent-split
+```
+
+Other validation modes:
+
+```bash
+scripts/run-project.sh --validate dynamic
+scripts/run-project.sh --validate flow --slug gpu-flow-clean-session
+scripts/run-project.sh --validate vector
 ```
 
 For a prebuilt worker image:
@@ -630,7 +658,8 @@ Do not commit ignored screenshot artifacts from `.gpu-hmr-test-artifacts/`. The 
 1. Read this file.
 2. Run `git status --short`.
 3. Run `docker compose ps`.
-4. If stack is down, start it with the command above.
+4. If in Bash/WSL, prefer `scripts/run-project.sh --arch gfx1201`; otherwise
+   start the stack with the command above.
 5. If asked to prove GPU HMR visually, run the `FLOW` command first.
 6. If asked to prove arbitrary file names/dependencies, run the dynamic harness.
 7. If asked for low-level correctness, run `P0,P1,P2` and the targeted Rust tests.
