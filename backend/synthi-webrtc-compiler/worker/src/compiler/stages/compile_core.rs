@@ -48,6 +48,7 @@ pub async fn compile_core(
 
             // Content is already processed by guardrails in the orchestration layer
             let content = processed_core;
+            tokio::fs::write(dir_path.join(fname), content).await?;
 
             // Calculate hash for caching
             let content_hash = calculate_hash(&content);
@@ -80,8 +81,6 @@ pub async fn compile_core(
                 return Ok::<_, anyhow::Error>(Some(path));
             } else {
                 // Cache miss - need to compile
-                tokio::fs::write(dir_path.join(fname), content).await?;
-
                 let core_out = output_dir.join(format!("libcore_{}.{}", timestamp, ext));
 
                 // ULTRAPLAN Phase 9b: split compile+link into two steps

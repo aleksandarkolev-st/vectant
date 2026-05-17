@@ -59,6 +59,7 @@ pub async fn compile_gui(
 
             // Use the already-processed content from Phase 1 (guardrails already applied)
             let content = processed_gui.to_string();
+            tokio::fs::write(dir_path.join(fname), &content).await?;
 
             // ... (Additional GUI Guardrails should be applied here) ...
 
@@ -94,8 +95,6 @@ pub async fn compile_gui(
                 return Ok(Some(path));
             } else {
                 // Cache miss - need to compile
-                tokio::fs::write(dir_path.join(fname), &content).await?;
-
                 let gui_out = output_dir.join(format!("libgui_{}.{}", timestamp, ext));
 
                 // ULTRAPLAN Phase 9b: two-step split (see compile_core.rs
