@@ -96,6 +96,7 @@ import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 
 // ─── New Docking Window Manager ────────────────────────
 import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
+import { useActivityBarDocking } from '@/components/docking-wm/hooks/use-activity-bar-docking';
 
 // ─── Responsive: viewport observer + breakpoint-driven CSS ─────────────
 import { useViewport } from '@/hooks/useViewport';
@@ -2551,11 +2552,20 @@ export default function EditorPage({ params }) {
     const handleMoveLineDown = useCallback(() => editor?.getAction('editor.action.moveLinesDownAction')?.run(), [editor]);
     const handleDuplicateSelection = useCallback(() => editor?.getAction('editor.action.duplicateSelection')?.run(), [editor]);
 
+    const activityBarHandlers = useActivityBarDocking();
+    const onToggleTerminalCb = useCallback(() => {
+        if (USE_DOCKING_WM) {
+            activityBarHandlers.terminal();
+        } else {
+            dispatch(toggleTerminal());
+        }
+    }, [dispatch, activityBarHandlers]);
+
     const EditorPanelComponent = (
         <EditorPanel
             onRun={handleRun}
             onSave={handleSave}
-            onToggleTerminal={() => dispatch(toggleTerminal())}
+            onToggleTerminal={onToggleTerminalCb}
             onEditorMount={handleEditorMount}
             analysisResult={lastResult}
             diagnostics={mergedDiagnostics}
@@ -2685,7 +2695,6 @@ export default function EditorPage({ params }) {
     const onBusyCb = useCallback((b) => setAiBusy(Boolean(b)), []);
     const onCloseProblemsCb = useCallback(() => setShowProblemsPanel(false), []);
     const onOpenScmCb = useCallback(() => setSidebarView('scm'), []);
-    const onToggleTerminalCb = useCallback(() => dispatch(toggleTerminal()), [dispatch]);
     const onProblemsClickCb = useCallback(() => setShowProblemsPanel(prev => !prev), []);
 
     // ── Floating emulator window (renders outside the panel layout)
