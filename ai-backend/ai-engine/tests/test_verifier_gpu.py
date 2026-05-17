@@ -287,6 +287,7 @@ def test_split_rejects_heap_state_and_args_array_launch():
     }
     r = verify_split_output(files=files, manifest_arch=["sm_80"])
     rules = {v.rule for v in r.violations}
+    assert "heap_allocated_app_state" in rules
     assert "launch_args_array" in rules
 
 

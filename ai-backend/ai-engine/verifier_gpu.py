@@ -473,6 +473,21 @@ def verify_split_output(
                     offending_symbol=symbol,
                 )
             )
+    if re.search(
+        r"\bnew\s+AppState\b|\b(?:std::)?make_unique\s*<\s*AppState\s*>|\b(?:std::)?make_shared\s*<\s*AppState\s*>|\b(?:malloc|calloc)\s*\([^;]*\bAppState\b",
+        core_source,
+    ):
+        violations.append(
+            Violation(
+                rule="heap_allocated_app_state",
+                message=(
+                    "core.cpp must not allocate AppState with new/malloc/calloc "
+                    "or smart-pointer factories. Use static module storage and "
+                    "copy preserved fields from prev_state on hot reload."
+                ),
+                offending_module="core.cpp",
+            )
+        )
     if re.search(r'extern\s+"C"[^;{\n]*\b(?:device_descriptor|device_on_load|device_kernel_sig_hash)\s*\(', device_source):
         violations.append(
             Violation(
