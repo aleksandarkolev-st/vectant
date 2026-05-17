@@ -1,8 +1,8 @@
 PASS   [preflight] frontend reachable  — http://localhost:3000
 PASS   [preflight] collab-server reachable  — http://localhost:1234
 PASS   [preflight] signaling reachable  — ws://localhost:9000
-PASS   [preflight] ai-engine reachable  — http://localhost:8000
-PASS   [preflight] GPU endpoints present  — {"/refactor/split/gpu":422,"/refactor/diff_patch/gpu":422,"/refactor/heal/gpu":200}
+WARN   [preflight] ai-engine reachable  — http://localhost:8000
+WARN   [preflight] GPU endpoints present  — {"/refactor/split/gpu":"err:fetch failed","/refactor/diff_patch/gpu":"err:fetch failed","/refactor/heal/gpu":"err:fetch failed"}
 SKIP   [preflight] nvcc on host  — not found
 SKIP   [preflight] hipcc on host  — not found
 PASS   [preflight] nvcc in worker  — /usr/local/cuda/bin/nvcc
@@ -14,7 +14,7 @@ PASS   [preflight] ROCm arch detected in worker  — gfx1201
 PASS   [preflight] auto GPU vendor detection  — rocm
 PASS   [preflight] SYNTHI_GPU_HMR flag  — enabled
 PASS   [preflight] MCP tools/list  — transport=docker count=42
-PASS   [seed] create workspace  — id=cmpa4lohq0001s101jdb87rs9 slug=gpu-flow-live-20260517214544
+PASS   [seed] create workspace  — id=cmpad0nrh0000pu01wkmj8qju slug=gpu-flow-full-synthi-20260518014133
 PASS   [seed] fixture uses Synthi GPU runtime contract  — synthi_gpu_launch + lifecycle exports
 PASS   [seed] write-files-batch (5 src + manifest)  — 6 files
 PASS   [seed] stage + commit
@@ -22,9 +22,9 @@ PASS   [seed] device.hip present in collab  — 1141 bytes
 PASS   [vendor:rocm] GPU toolchain gate  — worker:/opt/rocm/bin/hipcc
 PASS   [preflight] MCP synthi_attach  — attached; no frame yet
 PASS   [FLOW] inward compile dispatch
-PASS   [FLOW] inward GPU launch observed  — Device sidecar reload vendor=rocm artifact=/tmp/.tmpJZ7W3P/build/device_1779043562.hsaco kernels=particle_flow result=Success
-PASS   [FLOW] flow-inward screenshot  — C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-flow-live-20260517214544-flow-inward.png
+PASS   [FLOW] inward GPU launch observed  — Device sidecar reload vendor=rocm artifact=/tmp/.tmplt0lgl/build/device_1779057698.hsaco kernels=particle_flow result=Success
+PASS   [FLOW] flow-inward screenshot  — C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-flow-full-synthi-20260518014133-flow-inward.png
 PASS   [FLOW] outward edit dispatch
-PASS   [FLOW] outward device edit hot-swapped  — [gpu-reload] plan=device_only
+PASS   [FLOW] outward device edit hot-swapped  — Device sidecar reload vendor=rocm artifact=/tmp/.tmplt0lgl/build/device_1779057698.hsaco kernels=particle_flow result=Success
 PASS   [FLOW] render loop reports outward flow  — [gpu-flow-demo] frame=120 avg_radius=224.33 trend=outward
-PASS   [FLOW] flow-outward screenshot  — C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-flow-live-20260517214544-flow-outward.png
+PASS   [FLOW] flow-outward screenshot  — C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-flow-full-synthi-20260518014133-flow-outward.png

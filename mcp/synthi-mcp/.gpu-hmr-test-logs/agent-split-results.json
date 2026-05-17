@@ -3,108 +3,66 @@
     "name": "gpu vendor",
     "status": "pass",
     "detail": "rocm arch=gfx1201",
-    "ts": "2026-05-17T21:32:21.103Z"
+    "ts": "2026-05-17T22:55:24.857Z"
   },
   {
     "name": "monolithic source has no Synthi ABI",
     "status": "pass",
     "detail": "",
-    "ts": "2026-05-17T21:32:21.105Z"
+    "ts": "2026-05-17T22:55:24.859Z"
   },
   {
     "name": "create workspace",
     "status": "pass",
-    "detail": "id=cmpaajm0t000eo1013hp5yizb slug=gpu-ai-flow-shot-20260518003220",
-    "ts": "2026-05-17T21:32:21.773Z"
+    "detail": "id=cmpadifi80001r2014g7q0twx slug=gpu-full-hmr-final-20260518015524",
+    "ts": "2026-05-17T22:55:25.662Z"
   },
   {
     "name": "seed monolithic user source",
     "status": "pass",
     "detail": "main.cpp",
-    "ts": "2026-05-17T21:32:21.813Z"
+    "ts": "2026-05-17T22:55:25.699Z"
   },
   {
     "name": "workspace commit seed",
     "status": "pass",
     "detail": "",
-    "ts": "2026-05-17T21:32:21.894Z"
+    "ts": "2026-05-17T22:55:25.780Z"
   },
   {
     "name": "mcp tools/list",
     "status": "pass",
     "detail": "count=42",
-    "ts": "2026-05-17T21:32:22.296Z"
+    "ts": "2026-05-17T22:55:26.142Z"
   },
   {
     "name": "mcp attach",
     "status": "pass",
     "detail": "attached",
-    "ts": "2026-05-17T21:32:23.518Z"
+    "ts": "2026-05-17T22:55:27.329Z"
   },
   {
     "name": "first compile via MCP",
     "status": "pass",
     "detail": "use_ai_split=true prefer_gpu_pipeline=true",
-    "ts": "2026-05-17T21:32:56.237Z"
+    "ts": "2026-05-17T22:58:27.327Z"
   },
   {
     "name": "worker used GPU split endpoint",
     "status": "pass",
     "detail": "GPU markers detected; calling GPU split endpoint",
-    "ts": "2026-05-17T21:32:56.303Z"
+    "ts": "2026-05-17T22:58:27.376Z"
   },
   {
     "name": "generated device compiled",
-    "status": "pass",
-    "detail": "compile-device] hipcc",
-    "ts": "2026-05-17T21:32:56.365Z"
+    "status": "fail",
+    "detail": "no device compile marker",
+    "ts": "2026-05-17T23:01:27.748Z"
   },
   {
-    "name": "read generated split from worker",
-    "status": "pass",
-    "detail": "worker=/tmp/.tmpVlXuK1",
-    "ts": "2026-05-17T21:32:57.298Z"
-  },
-  {
-    "name": "generated split contains HMR ABI",
-    "status": "pass",
-    "detail": "shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip",
-    "ts": "2026-05-17T21:32:57.298Z"
-  },
-  {
-    "name": "persist generated split to workspace",
-    "status": "pass",
-    "detail": "7 files",
-    "ts": "2026-05-17T21:32:57.344Z"
-  },
-  {
-    "name": "workspace commit generated split",
-    "status": "pass",
-    "detail": "",
-    "ts": "2026-05-17T21:32:57.427Z"
-  },
-  {
-    "name": "device edit compile via MCP",
-    "status": "pass",
-    "detail": "device.hip",
-    "ts": "2026-05-17T21:32:58.654Z"
-  },
-  {
-    "name": "generated device file used for HMR",
-    "status": "pass",
-    "detail": "FallbackDeterministic → split file edit (device.hip",
-    "ts": "2026-05-17T21:32:58.727Z"
-  },
-  {
-    "name": "device-only GPU HMR observed",
-    "status": "pass",
-    "detail": "Device sidecar reload vendor=rocm artifact=/tmp/.tmpVlXuK1/build/device_1779053570.hsaco kernels=particle_flow result=Success",
-    "ts": "2026-05-17T21:32:58.796Z"
-  },
-  {
-    "name": "runner stayed alive after GPU HMR",
-    "status": "pass",
-    "detail": "no runner crash marker",
-    "ts": "2026-05-17T21:33:00.880Z"
+    "name": "fatal",
+    "status": "fail",
+    "detail": "Error: Command failed: docker exec vectant-ade-worker-1 sh -lc cat '/tmp/.tmpLehM3l/.synthi_split_meta.json'\ncat: /tmp/.tmpLehM3l/.synthi_split_meta.json: No such file or directory\n\n    at genericNodeError (node:internal/errors:983:15)\n    at wrappedFn (node:internal/errors:537:14)\n    at ChildProcess.exithandler (node:child_process:414:12)\n    at ChildProcess.emit (node:events:507:28)\n    at maybeClose (node:internal/child_process:1101:16)\n    at ChildProcess._handle.onexit (node:internal/child_process:305:5)",
+    "ts": "2026-05-17T23:01:27.907Z"
   }
 ]
