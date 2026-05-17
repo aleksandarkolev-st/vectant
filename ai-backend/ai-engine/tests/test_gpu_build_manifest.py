@@ -219,3 +219,22 @@ def test_normalizes_ai_gpu_manifest_defaults_for_cuda_dynamic_paths():
     assert parsed.module_files.host_runner == "run/flow_runner_x.cpp"
     assert "-I/usr/local/cuda/include" in parsed.common_flags
     assert "-lcudart" in parsed.runner_link_flags
+
+
+def test_runtime_arch_hint_overrides_ai_gpu_arch_guess():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx90a"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        vendor_hint="rocm",
+        arch_hint="gfx1201",
+    )
+    parsed = parse_manifest(normalized)
+    validate_manifest_v1(parsed)
+    assert parsed.gpu is not None
+    assert parsed.gpu.arch == ["gfx1201"]

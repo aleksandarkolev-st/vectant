@@ -434,7 +434,9 @@ def normalize_gpu_split_manifest(
 
     gpu["vendor"] = vendor
     gpu["device_compiler"] = compiler
-    if not isinstance(gpu.get("arch"), list) or not gpu.get("arch"):
+    if arch_hint:
+        gpu["arch"] = [arch_hint]
+    elif not isinstance(gpu.get("arch"), list) or not gpu.get("arch"):
         gpu["arch"] = [arch]
     gpu["device_flags"] = _normalize_gpu_device_flags(gpu.get("device_flags"), vendor)
     if not isinstance(gpu.get("runtime_libs"), list) or not gpu.get("runtime_libs"):
