@@ -204,10 +204,14 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         .as_deref()
         .unwrap_or("auto")
         .to_ascii_lowercase();
+    let split_model = std::env::var("SYNTHI_GEMINI_MODEL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let has_gpu_markers = request_has_gpu_markers(req);
     // Split output depends on more than raw source now: the same file can
     // produce CUDA or ROCm sidecars depending on the user's GPU target.
-    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v5";
+    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v6";
     let source_hash = calculate_hash(&(
         AI_SPLIT_CACHE_SCHEMA_VERSION,
         req.source.as_str(),
@@ -215,6 +219,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         req.prefer_gpu_pipeline,
         gpu_mode.as_str(),
         has_gpu_markers,
+        split_model.as_deref().unwrap_or(""),
     ));
 
     eprintln!(
@@ -263,6 +268,10 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             "[AI Split] GPU target prompt attached for mode={}",
             gpu_mode
         );
+    }
+    if let Some(model) = &split_model {
+        payload["model"] = serde_json::Value::String(model.clone());
+        eprintln!("[AI Split] Split model override attached: {}", model);
     }
 
     let backend_url = get_ai_backend_url();

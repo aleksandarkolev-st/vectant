@@ -263,6 +263,7 @@ services:
       SIGNALING_URL: "ws://signaling-server:9000"
       COLLAB_SERVER_URL: "http://collab-server:1234"
       AI_BACKEND_URL: "http://ai-engine:8000"
+      SYNTHI_GEMINI_MODEL: "${SYNTHI_GEMINI_MODEL:-}"
       # GStreamer
       GST_DEBUG: "2"
       DISPLAY: ":99"
