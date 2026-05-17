@@ -11,7 +11,7 @@ import { useCollabStatus } from '@/hooks/useCollabStatus';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
 import { getCurrentUser } from '@/services/userIdentity';
-import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw } from 'lucide-react';
 import { HealingIndicator } from '@/components/healing/HealingIndicator';
 import OperatorStatusBarButton from './OperatorStatusBarButton';
 
@@ -29,15 +29,20 @@ const StatusBarCursorInfo = memo(function StatusBarCursorInfo() {
   const positionRaw = useSelector(selectCursorPosition);
   const position = useDeferredValue(positionRaw);
   return (
-    <div className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer transition-colors">
-      <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Ln {position.lineNumber}</span>
-      <span style={{ color: 'var(--text-dim)' }}>:</span>
-      <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>Col {position.column}</span>
+    <div className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer transition-colors" title={`Line ${position.lineNumber}, Column ${position.column}`}>
+      {/* Wide form: "Ln 6 : Col 29" — only when the island can spare the room */}
+      <span className="hidden 2xl:inline font-medium" style={{ color: 'var(--text-secondary)' }}>Ln {position.lineNumber}</span>
+      <span className="hidden 2xl:inline" style={{ color: 'var(--text-dim)' }}>:</span>
+      <span className="hidden 2xl:inline font-medium" style={{ color: 'var(--text-secondary)' }}>Col {position.column}</span>
+      {/* Compact form: "6:29" — default on narrower islands */}
+      <span className="2xl:hidden font-medium tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+        {position.lineNumber}:{position.column}
+      </span>
     </div>
   );
 });
 
-function StatusBarInner({ 
+function StatusBarInner({
   slug,
   compilerStatus = 'disconnected',
   diagnosticSummary = { errors: 0, warnings: 0, total: 0 },
@@ -45,6 +50,12 @@ function StatusBarInner({
   onProblemsClick,
   extensionStatusBarItems = [],
   vscodeServerState = 'disconnected',
+  // Build-controls island (desktop): renders Stop + Restart while a build
+  // is running. Hidden when isRunning is falsy. On mobile these controls
+  // live in the TopNav instead (sm:hidden vs hidden sm:flex).
+  isRunning = false,
+  onStop,
+  onReload,
 }) {
   // PERF: Defer all Redux reads so StatusBar never blocks the editor
   const currentBranchRaw = useSelector(state => state.git?.currentBranch);
@@ -133,8 +144,48 @@ function StatusBarInner({
   // workspace flex column; the inner .status-island is the visible
   // floating surface.
   return (
-    <div className="status-bar-root pointer-events-none absolute inset-x-0 bottom-0 z-30 px-3 pb-1.5 pt-1 flex items-end justify-center" style={{ background: 'transparent' }}>
+    <div className="status-bar-root pointer-events-none absolute inset-x-0 bottom-3 z-30 px-3 flex items-end justify-center" style={{ background: 'transparent' }}>
       <div className="relative w-1/2 min-w-[640px] pointer-events-auto">
+        {/* Build-controls island — hugs the right edge of the status island
+            wrapper, vertically centered. Floats just outside the status pill
+            so the status pill remains exactly centered on the page. Hidden
+            on mobile (the inline TopNav stop/restart handles that case). */}
+        {isRunning && (
+          <div className="absolute left-full ml-2 top-1/2 -translate-y-1/2 hidden sm:block z-20">
+            <div
+              className="flex items-center gap-1 h-7 px-1.5 rounded-full"
+              style={{
+                background: 'var(--bg-elevated)',
+                border: '1px solid color-mix(in srgb, var(--attention-purple) 38%, transparent)',
+                boxShadow:
+                  '0 16px 40px -8px rgba(0,0,0,0.85), ' +
+                  '0 0 18px -4px color-mix(in srgb, var(--attention-purple) 30%, transparent), ' +
+                  'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent)',
+                backdropFilter: 'blur(14px) saturate(160%)',
+                WebkitBackdropFilter: 'blur(14px) saturate(160%)',
+              }}
+            >
+              <button
+                type="button"
+                onClick={onStop}
+                title="Stop"
+                className="h-5 w-5 rounded-md flex items-center justify-center transition-all hover:scale-110 cursor-pointer"
+                style={{ color: '#ff5757' }}
+              >
+                <Square className="w-3 h-3 fill-current" strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                onClick={onReload}
+                title="Restart"
+                className="h-5 w-5 rounded-md flex items-center justify-center transition-all hover:scale-110 cursor-pointer"
+                style={{ color: '#3d6dff' }}
+              >
+                <RotateCw className="w-3 h-3" strokeWidth={2.25} />
+              </button>
+            </div>
+          </div>
+        )}
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-[-1px] rounded-full"
@@ -146,7 +197,7 @@ function StatusBarInner({
           }}
         />
         <div
-          className="status-island relative z-10 grid grid-cols-3 items-center h-7 px-4 rounded-full text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap overflow-hidden"
+          className="status-island relative z-10 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-3 h-7 px-4 rounded-full text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap overflow-hidden"
           style={{
             background:
               'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, var(--brand-gradient-horizontal) border-box',
@@ -160,7 +211,7 @@ function StatusBarInner({
           }}
         >
       {/* ── LEFT ZONE — file/build state ─────────────────────────── */}
-      <div className="flex items-center gap-1 justify-self-start">
+      <div className="flex min-w-0 items-center gap-1 justify-self-start">
         {/* Branch */}
         <div className="flex items-center rounded-md px-1">
           <BranchSelector slug={slug} />
@@ -191,21 +242,20 @@ function StatusBarInner({
           )}
         </div>
 
-        {/* Compiler */}
-        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md transition-all cursor-default">
+        {/* Compiler — keep the status encoded in the icon colour + tooltip
+            so the island stays compact. */}
+        <div className="flex items-center px-1.5 py-0.5 rounded-md transition-all cursor-default" title={`Compiler: ${statusStyle.text}`}>
           <Cpu className="w-3.5 h-3.5" style={statusStyle.textStyle} strokeWidth={2} />
-          <div className={`w-1.5 h-1.5 rounded-full ${statusStyle.dotCls || ''}`} style={statusStyle.dotStyle} />
-          <span className="font-semibold" style={statusStyle.textStyle}>{statusStyle.text}</span>
         </div>
       </div>
 
       {/* ── CENTER ZONE — session / collaboration ────────────────── */}
       <div className="flex items-center gap-1 justify-self-center">
-        {/* Collab status */}
+        {/* Collab status — label hides below xl */}
         <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md transition-all cursor-default" title={`Collaboration: ${collabStyle.text}`}>
           <collabStyle.Icon className={`w-3.5 h-3.5 ${collabStyle.textColor}`} strokeWidth={2} />
           <div className={`w-1.5 h-1.5 rounded-full ${collabStyle.dot}`} />
-          <span className={`${collabStyle.textColor} font-semibold`}>{collabStyle.text}</span>
+          <span className={`${collabStyle.textColor} hidden 2xl:inline font-semibold`}>{collabStyle.text}</span>
           {otherUserCount > 0 && (
             <span className="flex items-center gap-1 ml-1" title={`${otherUserCount} other user${otherUserCount > 1 ? 's' : ''} online`}>
               <Users className="w-3 h-3" style={{ color: 'var(--text-muted)' }} strokeWidth={2} />
@@ -219,7 +269,7 @@ function StatusBarInner({
           <OperatorStatusBarButton sessionId={slug} />
         </div>
 
-        {/* LIVE / Guest — session sharing indicators sit at the end of the center zone */}
+        {/* LIVE / Guest — keep the label even when cramped; this is a critical state */}
         {isHost && (
           <div
             className="vt-brand-pulse flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default ml-1"
@@ -237,13 +287,13 @@ function StatusBarInner({
         {isGuest && (
           <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default ml-1" title={`Connected to ${session?.hostName || 'Host'}'s session`}>
             <Users className="w-3.5 h-3.5" style={{ color: 'var(--accent-warning)' }} strokeWidth={2} />
-            <span className="font-semibold" style={{ color: 'var(--accent-warning)' }}>Guest</span>
+            <span className="hidden 2xl:inline font-semibold" style={{ color: 'var(--accent-warning)' }}>Guest</span>
           </div>
         )}
       </div>
 
       {/* ── RIGHT ZONE — healing / extensions / cursor / language ── */}
-      <div className="flex items-center gap-1 justify-self-end mr-1">
+      <div className="flex min-w-0 max-w-full items-center gap-1 justify-self-end mr-1">
         {/* Healing */}
         <HealingIndicator />
 
@@ -279,7 +329,7 @@ function StatusBarInner({
               }}
             />
             <span
-              className="font-medium"
+              className="hidden 2xl:inline font-medium"
               style={{
                 color: vscodeServerState === 'running' ? 'var(--accent-success)'
                   : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
@@ -295,25 +345,26 @@ function StatusBarInner({
         {/* Cursor position */}
         <StatusBarCursorInfo />
 
-        {/* Language */}
-        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]">
+        {/* Language — label hides below xl */}
+        <div className="flex min-w-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]" title={language}>
           <Zap className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
-          <span className="font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
+          <span className="hidden max-w-[10ch] truncate 2xl:inline font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
         </div>
 
-        {/* AI-detected framework pill (when present) */}
+        {/* AI-detected framework pill — most likely to be cramped, hides earliest */}
         {languageAndFramework && (
           <div
-            className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-all"
+            className="flex min-w-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-all"
             title={`Framework: ${languageAndFramework}`}
           >
             <Cpu className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
-            <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
+            <span className="hidden max-w-[14ch] truncate 2xl:inline font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
           </div>
         )}
       </div>
         </div>
       </div>
+
     </div>
   );
 }

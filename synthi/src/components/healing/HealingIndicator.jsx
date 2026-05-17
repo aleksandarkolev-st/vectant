@@ -107,12 +107,21 @@ export function HealingIndicator() {
         style={{ color: s.dotColor }}
         strokeWidth={2}
       />
-      <span
-        className="font-semibold text-[11px]"
-        style={{ color: s.textColor }}
-      >
-        {enabled ? (appliedCount > 0 ? `${appliedCount}` : 'Heal') : 'Heal Off'}
-      </span>
+      {/* Counts are always shown (they're number-only and tiny).
+          Text labels ("Heal", "Heal Off") hide below xl so cramped
+          islands keep just the icon. */}
+      {enabled && appliedCount > 0 ? (
+        <span className="font-semibold text-[11px]" style={{ color: s.textColor }}>
+          {appliedCount}
+        </span>
+      ) : (
+        <span
+          className="hidden 2xl:inline font-semibold text-[11px]"
+          style={{ color: s.textColor }}
+        >
+          {enabled ? 'Heal' : 'Heal Off'}
+        </span>
+      )}
     </div>
   );
 }

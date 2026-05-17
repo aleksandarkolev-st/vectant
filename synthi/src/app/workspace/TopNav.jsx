@@ -86,9 +86,17 @@ function TopNav({
   const idlePlaceholder = activeFile?.name || 'Search files, symbols…';
 
   return (
-    <div className="topnav-root vt-ambient-bottom flex items-center h-8 px-2 border-b space-x-3 font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
-      <div className="flex items-center justify-center h-full flex-shrink-0 pl-1 pr-2">
-          <img src={isLightTheme ? '/vectant-light-theme.png' : '/vectant-dark-theme.png'} alt="Vectant" className="block h-[16px] w-auto object-contain select-none" draggable={false} />
+    <div className="topnav-root vt-ambient-bottom relative flex items-center h-8 px-2 border-b space-x-3 font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
+      {/* Centered Vectant wordmark — absolutely positioned so it stays
+          dead-center regardless of how the side clusters expand. Dark
+          theme is +2px because its strokes are visibly thinner. */}
+      <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 flex items-center justify-center select-none">
+        <img
+          src={isLightTheme ? '/vectant-light-theme.png' : '/vectant-dark-theme.png'}
+          alt="Vectant"
+          className={`block w-auto object-contain ${isLightTheme ? 'h-[22px]' : 'h-[24px]'}`}
+          draggable={false}
+        />
       </div>
       <div className="topnav-search relative transition-all duration-200 hidden sm:block min-w-0"
            style={{ width: searchOpen ? '420px' : '240px', maxWidth: '100%' }}>
@@ -160,26 +168,40 @@ function TopNav({
           <MessageSquare className="w-4 h-4" strokeWidth={2} />
         </Button>
 
-        {/* Run / Stop / Reload — primary moment, brand-attention treatment.
-            Stop+Reload split appears only while running. */}
+        {/* Run / Stop / Reload — primary moment.
+            Desktop (sm:+): only the Run button lives here. While running
+            it greys out and is non-clickable; the actual Stop + Restart
+            live in the build-controls island next to the status bar.
+            Mobile (< sm): Stop + Restart replace the run button here. */}
         {isRunning ? (
             <>
+                {/* Mobile-only: stop + restart in topnav */}
                 <Button
                     size="sm"
-                    className="h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 text-red-500 hover:text-red-400"
+                    className="sm:hidden h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 text-red-500 hover:text-red-400"
                     onClick={onStop}
-                    title="Stop Code"
+                    title="Stop"
                 >
                     <Square className="w-3.5 h-3.5 fill-current" strokeWidth={2} />
                 </Button>
                 <Button
                     size="sm"
-                    className="h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5"
+                    className="sm:hidden h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5"
                     onClick={onReload}
-                    style={{ color: 'var(--attention-purple)' }}
-                    title="Reload Code"
+                    style={{ color: '#3d6dff' }}
+                    title="Restart"
                 >
                     <RotateCw className="w-3.5 h-3.5" strokeWidth={2} />
+                </Button>
+                {/* Desktop-only: disabled, greyed-out run button */}
+                <Button
+                    size="sm"
+                    disabled
+                    aria-disabled="true"
+                    className="hidden sm:inline-flex h-7 w-7 p-0 rounded-md th-bg-app cursor-not-allowed opacity-40"
+                    title="Running — use the stop/restart controls"
+                >
+                    <Play className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} strokeWidth={2} />
                 </Button>
             </>
         ) : (

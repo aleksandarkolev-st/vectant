@@ -1533,11 +1533,12 @@
 }
 
 .terminal-pane-shell .xterm .xterm-scroll-area {
-  padding-bottom: var(--workspace-statusbar-terminal-clearance, 0px);
+  padding-bottom: calc(var(--workspace-statusbar-terminal-clearance, 0px) + var(--workspace-terminal-overscroll, 46px));
 }
 
 .terminal-pane-shell .xterm .xterm-viewport {
   scrollbar-gutter: stable;
+  scroll-padding-bottom: var(--workspace-terminal-overscroll, 46px);
 }
 
 @media (prefers-reduced-motion: reduce) {

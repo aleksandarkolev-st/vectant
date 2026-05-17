@@ -1,3 +1,29 @@
+# Workspace Chrome Tweaks 2026-05-17
+
+## Scope
+- Keep the floating status island on the bottom edge, only slightly lifted so it lines up with the bottom Vectant icon under Settings in the activity bar.
+- Remove docking chrome from the main editor surface so the editor stays fixed instead of looking like a docked tab.
+- Center the Vectant logo in the top nav and scale it up slightly.
+
+## Checklist
+- [x] Remove the docking tab strip / affordances from editor-only tab groups.
+- [x] Adjust the status island desktop offset so it sits lower and visually aligns with the activity bar footer icon.
+- [x] Increase the centered top-nav Vectant mark size without shifting side controls.
+- [x] Validate the touched frontend files for regressions.
+- [x] Prevent the language/framework pills from clipping inside the status island.
+- [x] Give the terminal extra bottom scroll clearance past the prompt line.
+- [x] Split floating navbar chat from docked chat and add a dock-right action in the popup header.
+- [x] Make activity-bar chat focus the docked right chat and restore the left sidebar to Explorer when moving chat right.
+
+## Review
+- Editor-only docking groups now render without the dock tab strip, drop overlay, or focus outline, so the main editor reads as a fixed surface instead of a docked panel.
+- The floating status island now sits 12px off the bottom edge to line up with the activity-bar footer icon under Settings.
+- The centered Vectant wordmark in the top nav is slightly larger.
+- The status island now lets the language/framework pills shrink and truncate cleanly instead of clipping on the right edge.
+- Terminal panes now keep extra bottom scroll clearance below the prompt so the active command line can be scrolled fully into view under the floating island.
+- The navbar AI chat popup now has its own visibility state plus a dock-right action that moves chat into the right editor column, focuses that docked tab, and switches the left sidebar back to Explorer.
+- Validation: `get_errors` returned clean results for the touched files. A follow-up targeted ESLint attempt on the chat files was ignored by the repo's flat-config matching, so the reliable validation signal for this pass was editor diagnostics plus the existing earlier lint spot-check.
+
 # C++ Compile / HMR Stress Test 2026-05-11
 
 ## Workspace Dependency Prep Rollout 2026-05-14

@@ -469,7 +469,7 @@ useEffect(() => {
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`file-item relative group flex items-center py-1.5 px-2 cursor-pointer transition-all ${isSelected ? 'rounded-none' : 'rounded-md'}`}
+        className={`file-item relative group flex items-center py-1 px-2 cursor-pointer transition-all ${isSelected ? 'rounded-none' : 'rounded-md'}`}
         style={{
           ...itemStyle,
           ...(isSelected
@@ -493,7 +493,7 @@ useEffect(() => {
         {isSelected && (
           <span
             aria-hidden="true"
-            className="pointer-events-none absolute left-0 top-0 bottom-0 w-[2px]"
+            className="pointer-events-none absolute left-0 top-0 bottom-0 w-px"
             style={{
               background: 'var(--brand-gradient)',
               boxShadow: '0 0 10px -2px color-mix(in srgb, var(--brand-stop-3) 55%, transparent)',
@@ -510,7 +510,7 @@ useEffect(() => {
             <ChevronIcon isOpen={isOpen} isSelected={isSelected} />
           </div>
         )}
-        <div className={`w-3.5 h-3.5 mr-2.5 flex-shrink-0 flex items-center justify-center text-sm ${isSelected ? 'opacity-98' : 'opacity-95'}`}>
+        <div className={`w-3 h-3 mr-2 flex-shrink-0 flex items-center justify-center text-[13px] ${isSelected ? 'opacity-98' : 'opacity-95'}`}>
           {currentIcon}
         </div>
         {/* replaced the early return block, stopping files (children from showing during rename) */}
@@ -527,9 +527,9 @@ useEffect(() => {
             style={{ color: 'var(--text-primary)' }}
           />
         ) : (
-          <div className="file-content flex items-center gap-2">
+          <div className="file-content flex items-center gap-1.5">
             <span
-              className="text-[12px] truncate leading-relaxed"
+              className="text-[12px] truncate leading-snug"
               style={isSelected ? { color: 'var(--text-primary)', fontWeight: 600 } : { color: 'var(--text-primary)' }}
             >
               {item.name}
@@ -625,7 +625,7 @@ useEffect(() => {
         <div className="flex flex-col">
           {isParentForCreation && (
             <div
-              className="file-item relative flex items-center py-1 px-2"
+              className="file-item relative flex items-center py-0.5 px-2"
               style={{ paddingLeft: `${(level + 1) * 16 + 8}px`, '--indent-level': level + 1 }}
             >
               {guidesVisibleForRow &&
@@ -636,7 +636,7 @@ useEffect(() => {
                   guidesVisibleForRow && (item.children || []).length >= 2
                 )}
               <div className="flex items-center">
-                <div className="w-4 h-4 mr-2 flex-shrink-0 flex items-center justify-center">
+                <div className="w-3 h-3 mr-2 flex-shrink-0 flex items-center justify-center text-[13px]">
                   {isCreatingFolder ? (
                     <FolderIcon />
                   ) : (

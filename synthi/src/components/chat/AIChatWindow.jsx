@@ -85,6 +85,7 @@ const summarizeLog = (logs = []) => {
 
 const AIChatWindow = ({
     onClose,
+    onDockRight = null,
     isVisible = true,
     activeFile,
     currentCode,
@@ -800,14 +801,34 @@ const AIChatWindow = ({
                             </div>
                         )}
                     </div>
-                    <button
-                        onClick={onClose}
-                        className="p-1.5 rounded-lg transition-all duration-200"
-                        style={{ color: 'var(--text-muted)' }}
-                        title="Close chat"
-                    >
-                        <X className="w-3.5 h-3.5" strokeWidth={1.5} />
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                        {!docked && typeof onDockRight === 'function' && (
+                            <button
+                                type="button"
+                                onClick={onDockRight}
+                                className="px-2 py-1 rounded-md text-[10px] font-semibold transition-all duration-200"
+                                style={{
+                                    color: 'var(--accent-secondary)',
+                                    background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)',
+                                    border: '1px solid color-mix(in srgb, var(--accent-primary) 20%, transparent)',
+                                }}
+                                title="Dock chat to the right"
+                            >
+                                Dock right
+                            </button>
+                        )}
+                        {typeof onClose === 'function' && (
+                            <button
+                                type="button"
+                                onClick={onClose}
+                                className="p-1.5 rounded-lg transition-all duration-200"
+                                style={{ color: 'var(--text-muted)' }}
+                                title="Close chat"
+                            >
+                                <X className="w-3.5 h-3.5" strokeWidth={1.5} />
+                            </button>
+                        )}
+                    </div>
                 </div>
 
                 {/* Code Intel */}

@@ -37,10 +37,15 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
     return node.tabs.map((tid) => allTabs[tid]).filter(Boolean);
   }, [node, allTabs]);
 
+  const isEditorSurface = useMemo(
+    () => tabs.length > 0 && tabs.every((tab) => tab?.panelType === 'editor'),
+    [tabs],
+  );
+
   // Drop zone
   const { dropProps, hoverZone, isOver } = useDropZone({
     nodeId,
-    disabled: false,
+    disabled: isEditorSurface,
   });
 
   if (!node || node.type !== 'tabgroup') {
@@ -63,7 +68,7 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
         minWidth: 0,
         minHeight: 0,
         position: 'relative',
-        outline: isFocused
+        outline: isFocused && !isEditorSurface
           ? '1px solid var(--dock-focus-border, rgba(0,122,204,0.3))'
           : 'none',
         outlineOffset: '-1px',
@@ -71,7 +76,7 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
       }}
     >
       {/* Tab bar */}
-      {tabs.length > 0 && (
+      {tabs.length > 0 && !isEditorSurface && (
         <TabBar
           tabGroupId={nodeId}
           tabs={tabs}
@@ -105,7 +110,7 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
       )}
 
       {/* Drop overlay */}
-      <DropOverlay zone={hoverZone} visible={isOver} />
+      {!isEditorSurface && <DropOverlay zone={hoverZone} visible={isOver} />}
     </div>
   );
 });

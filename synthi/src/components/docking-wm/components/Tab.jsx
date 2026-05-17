@@ -5,7 +5,7 @@
 
 "use client";
 
-import React, { useCallback, memo } from "react";
+import React, { useCallback, useEffect, useRef, memo } from "react";
 import { useDragPanel } from "../hooks/use-drag-panel";
 import { useDockingActions } from "../hooks/use-docking";
 
@@ -90,9 +90,41 @@ export const Tab = memo(function Tab({
   // Get icon from registry
   const icon = tab.icon || panelDef?.icon;
 
+  // The editor panel is a meta-container; its content already provides
+  // its own file-tab strip. We never want the docking system to show
+  // an "Editor" tab on top of it, regardless of whatever title may have
+  // been persisted to localStorage from earlier sessions.
+  if (tab.panelType === 'editor') {
+    return null;
+  }
+
+  // Scroll the tab into view whenever it becomes active — covers the case
+  // where the user clicks an ActivityBar icon while that panel's tab is
+  // off-screen in an overflowing sidebar tab bar.
+  const tabElRef = useRef(null);
+  useEffect(() => {
+    if (isActive && tabElRef.current?.scrollIntoView) {
+      tabElRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'nearest',
+      });
+    }
+  }, [isActive]);
+
+  const composedRef = (el) => {
+    tabElRef.current = el;
+    if (typeof dragProps.ref === 'function') dragProps.ref(el);
+    else if (dragProps.ref) dragProps.ref.current = el;
+  };
+
+  // Strip ref from dragProps so we can compose our own
+  const { ref: _dropDragRef, ...restDragProps } = dragProps;
+
   return (
     <div
-      {...dragProps}
+      {...restDragProps}
+      ref={composedRef}
       data-tab-id={tab.id}
       className={`dock-tab ${isActive ? "dock-tab--active" : ""} ${
         isDragging ? "dock-tab--dragging" : ""
