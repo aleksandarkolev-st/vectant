@@ -1,20 +1,20 @@
 {
-  "slug": "gpu-flow-clean-session",
-  "vendor": "rocm",
+  "slug": "gpu-flow-live-20260517214544",
+  "vendor": "auto",
   "fixture": "flow",
   "gpu_hmr_flag": true,
-  "run_at": "2026-05-16T11:37:09.551Z",
+  "run_at": "2026-05-17T18:46:12.022Z",
   "config": {
     "fastSwapBudgetMs": 300,
     "watchdogMs": 5000,
     "drainTimeoutMs": 2000
   },
   "summary": {
-    "total": 25,
-    "passed": 22,
+    "total": 30,
+    "passed": 26,
     "warned": 0,
     "failed": 0,
-    "skipped": 3
+    "skipped": 4
   },
   "results": [
     {
@@ -22,175 +22,210 @@
       "name": "frontend reachable",
       "status": "pass",
       "detail": "http://localhost:3000",
-      "ts": "2026-05-16T11:36:49.107Z"
+      "ts": "2026-05-17T18:45:45.796Z"
     },
     {
       "phase": "preflight",
       "name": "collab-server reachable",
       "status": "pass",
       "detail": "http://localhost:1234",
-      "ts": "2026-05-16T11:36:49.108Z"
+      "ts": "2026-05-17T18:45:45.797Z"
     },
     {
       "phase": "preflight",
       "name": "signaling reachable",
       "status": "pass",
       "detail": "ws://localhost:9000",
-      "ts": "2026-05-16T11:36:49.108Z"
+      "ts": "2026-05-17T18:45:45.797Z"
     },
     {
       "phase": "preflight",
       "name": "ai-engine reachable",
       "status": "pass",
       "detail": "http://localhost:8000",
-      "ts": "2026-05-16T11:36:49.108Z"
+      "ts": "2026-05-17T18:45:45.797Z"
     },
     {
       "phase": "preflight",
       "name": "GPU endpoints present",
       "status": "pass",
       "detail": "{\"/refactor/split/gpu\":422,\"/refactor/diff_patch/gpu\":422,\"/refactor/heal/gpu\":200}",
-      "ts": "2026-05-16T11:36:52.595Z"
+      "ts": "2026-05-17T18:45:58.452Z"
     },
     {
       "phase": "preflight",
       "name": "nvcc on host",
       "status": "skip",
       "detail": "not found",
-      "ts": "2026-05-16T11:36:53.195Z"
+      "ts": "2026-05-17T18:45:59.696Z"
     },
     {
       "phase": "preflight",
       "name": "hipcc on host",
       "status": "skip",
       "detail": "not found",
-      "ts": "2026-05-16T11:36:53.195Z"
+      "ts": "2026-05-17T18:45:59.696Z"
     },
     {
       "phase": "preflight",
       "name": "nvcc in worker",
-      "status": "skip",
-      "detail": "not found",
-      "ts": "2026-05-16T11:36:53.195Z"
+      "status": "pass",
+      "detail": "/usr/local/cuda/bin/nvcc",
+      "ts": "2026-05-17T18:45:59.696Z"
     },
     {
       "phase": "preflight",
       "name": "hipcc in worker",
       "status": "pass",
       "detail": "/opt/rocm/bin/hipcc",
-      "ts": "2026-05-16T11:36:53.195Z"
+      "ts": "2026-05-17T18:45:59.696Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "NVIDIA GPU visible in worker",
+      "status": "skip",
+      "detail": "not found",
+      "ts": "2026-05-17T18:45:59.696Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "ROCm GPU visible in worker",
+      "status": "pass",
+      "detail": "AMD Ryzen 5 7600X 6-Core Processor",
+      "ts": "2026-05-17T18:45:59.696Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "CUDA arch detected in worker",
+      "status": "skip",
+      "detail": "not found",
+      "ts": "2026-05-17T18:45:59.696Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "ROCm arch detected in worker",
+      "status": "pass",
+      "detail": "gfx1201",
+      "ts": "2026-05-17T18:45:59.696Z"
+    },
+    {
+      "phase": "preflight",
+      "name": "auto GPU vendor detection",
+      "status": "pass",
+      "detail": "rocm",
+      "ts": "2026-05-17T18:45:59.696Z"
     },
     {
       "phase": "preflight",
       "name": "SYNTHI_GPU_HMR flag",
       "status": "pass",
       "detail": "enabled",
-      "ts": "2026-05-16T11:36:53.195Z"
+      "ts": "2026-05-17T18:45:59.696Z"
     },
     {
       "phase": "preflight",
       "name": "MCP tools/list",
       "status": "pass",
       "detail": "transport=docker count=42",
-      "ts": "2026-05-16T11:36:53.874Z"
+      "ts": "2026-05-17T18:46:00.198Z"
     },
     {
       "phase": "seed",
       "name": "create workspace",
       "status": "pass",
-      "detail": "id=cmp89u07j0003ma01wrfjy4kw slug=gpu-flow-clean-session",
-      "ts": "2026-05-16T11:36:54.493Z"
+      "detail": "id=cmpa4lohq0001s101jdb87rs9 slug=gpu-flow-live-20260517214544",
+      "ts": "2026-05-17T18:46:00.718Z"
     },
     {
       "phase": "seed",
       "name": "fixture uses Synthi GPU runtime contract",
       "status": "pass",
       "detail": "synthi_gpu_launch + lifecycle exports",
-      "ts": "2026-05-16T11:36:54.494Z"
+      "ts": "2026-05-17T18:46:00.719Z"
     },
     {
       "phase": "seed",
       "name": "write-files-batch (5 src + manifest)",
       "status": "pass",
       "detail": "6 files",
-      "ts": "2026-05-16T11:36:54.571Z"
+      "ts": "2026-05-17T18:46:00.780Z"
     },
     {
       "phase": "seed",
       "name": "stage + commit",
       "status": "pass",
       "detail": "",
-      "ts": "2026-05-16T11:36:54.669Z"
+      "ts": "2026-05-17T18:46:00.864Z"
     },
     {
       "phase": "seed",
       "name": "device.hip present in collab",
       "status": "pass",
       "detail": "1141 bytes",
-      "ts": "2026-05-16T11:36:54.672Z"
+      "ts": "2026-05-17T18:46:00.867Z"
     },
     {
       "phase": "vendor:rocm",
       "name": "GPU toolchain gate",
       "status": "pass",
       "detail": "worker:/opt/rocm/bin/hipcc",
-      "ts": "2026-05-16T11:36:54.672Z"
+      "ts": "2026-05-17T18:46:00.868Z"
     },
     {
       "phase": "preflight",
       "name": "MCP synthi_attach",
       "status": "pass",
       "detail": "attached; no frame yet",
-      "ts": "2026-05-16T11:36:56.456Z"
+      "ts": "2026-05-17T18:46:02.144Z"
     },
     {
       "phase": "FLOW",
       "name": "inward compile dispatch",
       "status": "pass",
       "detail": "",
-      "ts": "2026-05-16T11:37:01.173Z"
+      "ts": "2026-05-17T18:46:05.796Z"
     },
     {
       "phase": "FLOW",
       "name": "inward GPU launch observed",
       "status": "pass",
-      "detail": "synthi_gpu_launch kernel=particle_flow",
-      "ts": "2026-05-16T11:37:01.370Z"
+      "detail": "Device sidecar reload vendor=rocm artifact=/tmp/.tmpJZ7W3P/build/device_1779043562.hsaco kernels=particle_flow result=Success",
+      "ts": "2026-05-17T18:46:06.441Z"
     },
     {
       "phase": "FLOW",
       "name": "flow-inward screenshot",
       "status": "pass",
-      "detail": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-flow-clean-session-flow-inward.png",
-      "ts": "2026-05-16T11:37:02.422Z"
+      "detail": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-flow-live-20260517214544-flow-inward.png",
+      "ts": "2026-05-17T18:46:07.506Z"
     },
     {
       "phase": "FLOW",
       "name": "outward edit dispatch",
       "status": "pass",
       "detail": "",
-      "ts": "2026-05-16T11:37:08.215Z"
+      "ts": "2026-05-17T18:46:10.931Z"
     },
     {
       "phase": "FLOW",
       "name": "outward device edit hot-swapped",
       "status": "pass",
       "detail": "[gpu-reload] plan=device_only",
-      "ts": "2026-05-16T11:37:08.416Z"
+      "ts": "2026-05-17T18:46:11.005Z"
     },
     {
       "phase": "FLOW",
       "name": "render loop reports outward flow",
       "status": "pass",
-      "detail": "[gpu-flow-demo] frame=50340 avg_radius=205.99 trend=outward",
-      "ts": "2026-05-16T11:37:08.605Z"
+      "detail": "[gpu-flow-demo] frame=120 avg_radius=224.33 trend=outward",
+      "ts": "2026-05-17T18:46:11.074Z"
     },
     {
       "phase": "FLOW",
       "name": "flow-outward screenshot",
       "status": "pass",
-      "detail": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-flow-clean-session-flow-outward.png",
-      "ts": "2026-05-16T11:37:09.550Z"
+      "detail": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-flow-live-20260517214544-flow-outward.png",
+      "ts": "2026-05-17T18:46:12.021Z"
     }
   ]
 }
