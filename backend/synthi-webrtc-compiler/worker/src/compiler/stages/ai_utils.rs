@@ -1,6 +1,6 @@
 use crate::infra::messages::CompileRequest;
 use crate::infra::utils::get_wsl_host_ip;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use reqwest;
 use serde_json;
 use std::collections::hash_map::DefaultHasher;
@@ -207,7 +207,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     let has_gpu_markers = request_has_gpu_markers(req);
     // Split output depends on more than raw source now: the same file can
     // produce CUDA or ROCm sidecars depending on the user's GPU target.
-    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-source-semantics-v4";
+    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v5";
     let source_hash = calculate_hash(&(
         AI_SPLIT_CACHE_SCHEMA_VERSION,
         req.source.as_str(),
@@ -299,15 +299,22 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             }
             Ok(json) => {
                 eprintln!(
-                    "[AI Split] GPU split returned no result field: {:?}; falling back to verified split",
+                    "[AI Split] GPU split returned no result field: {:?}",
                     json.to_string().chars().take(200).collect::<String>()
                 );
+                return Err(anyhow!(
+                    "GPU split endpoint returned no result field for a GPU-preferred compile"
+                ));
             }
             Err(e) => {
                 eprintln!(
-                    "[AI Split] GPU split endpoint failed ({}); falling back to verified split",
+                    "[AI Split] GPU split endpoint failed ({})",
                     e
                 );
+                return Err(anyhow!(
+                    "GPU split endpoint failed for a GPU-preferred compile: {}",
+                    e
+                ));
             }
         }
     }

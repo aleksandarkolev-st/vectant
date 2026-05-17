@@ -4150,6 +4150,13 @@ ROCm/HIP must not. A ROCm `device_flags` list should usually be
 - `shared.h` MUST NOT redeclare `DeviceDescriptor`; it comes from
   `synthi_gpu_runtime.h`.
 - `core.cpp` MUST export `core_on_load` and `core_on_update`.
+- `core.cpp` MUST export `device_descriptor`, `device_on_load`,
+  `device_save_size`, `device_save_write`, and `device_kernel_sig_hash`.
+  These are host-side GPU lifecycle exports; do not put them in the
+  device file.
+- `core.cpp` MUST keep `AppState` in static module storage and return that
+  stable address from `core_on_load`. Do not allocate AppState with
+  `new`, `malloc`, `calloc`, or smart-pointer factories.
 - `gui.cpp` MUST export `gui_on_load` and `gui_on_render`.
 - Preserve the user's intent: kernel logic, buffer sizes, launch
   shapes, frame timing — all unchanged.
