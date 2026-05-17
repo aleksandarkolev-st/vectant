@@ -2047,6 +2047,11 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         raise HTTPException(status_code=422, detail="GPU split requested for source with no GPU markers")
 
     split = None
+    split_model = (
+        req.model
+        or os.getenv("SYNTHI_GEMINI_MODEL")
+        or "gemini-3.1-flash-lite-preview"
+    )
     split_prompt = req.prompt
     max_split_attempts = 3
     for attempt in range(1, max_split_attempts + 1):
@@ -2057,7 +2062,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 lang=req.lang,
                 detection=detection,
                 extra_instructions=split_prompt,
-                model=req.model or "gemini-3.1-flash-lite-preview",
+                model=split_model,
                 api_key=req.api_key,
                 files=req.files,
                 focus=req.focus,
