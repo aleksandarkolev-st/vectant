@@ -1,6 +1,6 @@
 PASS gpu vendor - rocm arch=gfx1201
 PASS monolithic source has no Synthi ABI
-PASS create workspace - id=cmpafdv5f0003o9010sia3zvk slug=gpu-ai-30flash-20260518024750
+PASS create workspace - id=cmpafmqqn0004o901aeqmog9s slug=gpu-ai-31ltie-20260518025444
 PASS seed monolithic user source - main.cpp
 PASS workspace commit seed
 PASS mcp tools/list - count=42
@@ -8,8 +8,8 @@ PASS mcp attach - attached
 PASS first compile via MCP - use_ai_split=true prefer_gpu_pipeline=true
 PASS worker used GPU split endpoint - GPU markers detected; calling GPU split endpoint
 FAIL generated device compiled - no device compile marker
-FAIL fatal - Error: Command failed: docker exec vectant-ade-worker-1 sh -lc cat '/tmp/.tmp2PTGpC/.synthi_split_meta.json'
-cat: /tmp/.tmp2PTGpC/.synthi_split_meta.json: No such file or directory
+FAIL fatal - Error: Command failed: docker exec vectant-ade-worker-1 sh -lc cat '/tmp/.tmpFAn4hN/.synthi_split_meta.json'
+cat: /tmp/.tmpFAn4hN/.synthi_split_meta.json: No such file or directory
 
     at genericNodeError (node:internal/errors:983:15)
     at wrappedFn (node:internal/errors:537:14)
