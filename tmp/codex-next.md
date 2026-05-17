@@ -153,6 +153,13 @@ mcp/synthi-mcp/.gpu-hmr-test-artifacts/gpu-ai-flow-shot-20260518003220-mcp-scree
 
 ## Important Files
 
+- `docs/GPU_HMR_IN_DEPTH_FLOW.md`
+  - End-to-end explanation of the current GPU HMR flow.
+  - Covers user source, compile payloads, AI split routing, verifier behavior,
+    manifest-driven file sending, CUDA/ROCm selection, device-only HMR, MCP
+    screenshot validation, and common failure modes.
+  - Start here when explaining the system to someone new.
+
 - `mcp/synthi-mcp/scripts/gpu-hmr-test.mjs`
   - Main GPU HMR harness.
   - Contains the vector fixture and the new `FLOW` particle fixture.
