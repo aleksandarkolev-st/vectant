@@ -28,6 +28,8 @@ Date: 2026-05-17
 
 ## Latest Commits To Know
 
+- `6a9056fa fix(gpu-hmr): resolve dynamic harness containers`
+- `a58e95e7 docs(gpu-hmr): update dynamic target handoff`
 - `a26b8661 feat(gpu-hmr): add user gpu target preference`
 - `9c194158 test(gpu-hmr): add dynamic workspace harness`
 - `16473c5d feat(gpu-hmr): support manifest role file paths`
@@ -88,6 +90,16 @@ Phases: FLOW pass
 [FLOW] render loop reports outward flow - [gpu-flow-demo] ... trend=outward
 ```
 
+The latest dynamic live run created `gpu-dynamic-validation-20260517170910`
+and passed after rebuilding/recreating `worker` and `frontend`:
+
+```text
+PASS dynamic device filename observed by worker - compile-device] source resolved from workspace file=gpu/dyn_mp9upp6r_54ujz_particle_kernel.hip
+PASS inward GPU launch observed - Device sidecar reload vendor=rocm ... result=Success
+PASS outward edit hot-swapped - [gpu-reload] plan=device_only
+PASS render loop reports outward flow - [gpu-flow-dynamic] ... trend=outward
+```
+
 ## Important Files
 
 - `mcp/synthi-mcp/scripts/gpu-hmr-test.mjs`
@@ -108,6 +120,8 @@ Phases: FLOW pass
 - `mcp/synthi-mcp/scripts/gpu-hmr-dynamic-workspace-test.mjs`
   - Dynamic GPU HMR harness.
   - Creates randomized workspace source names and helper libs.
+  - Auto-detects active compose `mcp` and `worker` containers by service name,
+    so it works with `vectant-ade-*` and older `synthi-ide-*` project names.
   - Use when validating that compile/HMR does not depend on hardcoded adapted
     filenames.
 
@@ -172,6 +186,10 @@ Phases: FLOW pass
 - `mcp/synthi-mcp/.gpu-hmr-test-logs/results.txt`
 - `mcp/synthi-mcp/.gpu-hmr-test-logs/results.json`
   - Latest committed harness result.
+
+- `mcp/synthi-mcp/.gpu-hmr-test-logs/dynamic-results.txt`
+- `mcp/synthi-mcp/.gpu-hmr-test-logs/dynamic-results.json`
+  - Latest committed dynamic-harness result.
 
 - `mcp/synthi-mcp/.gpu-hmr-test-artifacts/`
   - Runtime screenshots from `FLOW`.
@@ -304,6 +322,15 @@ cd C:\Users\polek\Downloads\test-agent\vectant-ade
 docker compose build
 ```
 
+After changing worker/frontend code, rebuild and recreate at least those images
+before live MCP/UI validation:
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade
+docker compose build worker frontend
+docker compose up -d --force-recreate frontend worker mcp
+```
+
 Worker builder image for targeted Rust tests:
 
 ```powershell
@@ -427,6 +454,10 @@ Expected markers:
 [DYNAMIC] outward device edit hot-swapped
 [DYNAMIC] render loop reports outward flow
 ```
+
+If the worker logs show `not adapted, wrapping as single module`, `core.cpp`
+compile errors for `blockIdx`, or `device.hip was not found`, the worker image
+is stale. Rebuild/recreate `worker` and rerun.
 
 ## Run The User-Visible Flow Demo On NVIDIA/CUDA
 
