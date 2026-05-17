@@ -9,6 +9,7 @@ import StoreHydrator from "../components/StoreHydrator";
 import ThemeProvider from "../components/ThemeProvider";
 import { ThemePickerProvider } from "../components/ThemePicker";
 import { ThemeCreatorProvider } from "../components/ThemeCreator";
+import { NewProjectPickerProvider } from "../components/NewProjectPicker";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -46,9 +47,11 @@ export default function RootLayout({ children }) {
           <ThemeProvider>
             <ThemeCreatorProvider>
               <ThemePickerProvider>
-                <NextAuthSessionProvider>
-                  {children}
-                </NextAuthSessionProvider>
+                <NewProjectPickerProvider>
+                  <NextAuthSessionProvider>
+                    {children}
+                  </NextAuthSessionProvider>
+                </NewProjectPickerProvider>
               </ThemePickerProvider>
             </ThemeCreatorProvider>
           </ThemeProvider>

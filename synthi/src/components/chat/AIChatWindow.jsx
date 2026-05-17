@@ -159,6 +159,8 @@ const AIChatWindow = ({
     const [agentMenuOpen, setAgentMenuOpen] = useState(false);
     const [pendingCommands, setPendingCommands] = useState([]); // {id, command, status: 'pending'|'approved'|'rejected'}
     const [contextFileAttached, setContextFileAttached] = useState(false); // active file NOT auto-attached as context
+    const chatInputRef = useRef(null);
+    const [shadowPanelOpen, setShadowPanelOpen] = useState(false);
 
     useEffect(() => {
         try {
@@ -316,6 +318,7 @@ const AIChatWindow = ({
         });
         clearAttachments();
         setInputValue('');
+        if (chatInputRef.current) chatInputRef.current.style.height = '36px';
     });
 
     // Reset local UI state when switching sessions (fixes new chat showing old state)
@@ -333,15 +336,20 @@ const AIChatWindow = ({
         scrollLockRef.current = false;
     }, [activeSessionId]);
 
-    // ── AI Jumpstart: auto-send initial prompt once on first mount ──
-    const hasConsumedInitialPrompt = useRef(false);
+    // ── AI Jumpstart: auto-send initial prompt when it changes ──
+    // Tracks the last prompt actually consumed (not just "consumed at all")
+    // so a second `initialPrompt` — e.g. from the in-workspace
+    // NewProjectPicker "Other" flow that dispatches synthi:jumpstart-trigger —
+    // fires too, while still guarding against React 18 StrictMode double-invoke.
+    const lastConsumedInitialPromptRef = useRef(null);
     useEffect(() => {
         if (!initialPrompt) return;
+        if (lastConsumedInitialPromptRef.current === initialPrompt) return;
 
         // Use a short delay to let the component hydrate and session initialize
         const timer = setTimeout(() => {
-            if (hasConsumedInitialPrompt.current) return;
-            hasConsumedInitialPrompt.current = true;
+            if (lastConsumedInitialPromptRef.current === initialPrompt) return;
+            lastConsumedInitialPromptRef.current = initialPrompt;
             
             const aborter = new AbortController();
             thinkingStartRef.current = Date.now();
@@ -359,6 +367,12 @@ const AIChatWindow = ({
 
             handleSendMessage(initialPrompt, jumpstartAttachmentsList, {
                 includeActiveFile: false,
+                // Jumpstart prompts must run through the agent pipeline so
+                // the AI plans + thinks across many files instead of doing
+                // one single-shot completion. Without this, the auto-send
+                // fires in DIRECT mode and produces tiny output for what
+                // should be a whole-project build.
+                forceAgents: true,
                 controller: aborter,
                 onStreamStart: () => setIsThinking(true),
                 onFirstToken: () => {
@@ -771,7 +785,7 @@ const AIChatWindow = ({
                         <div className="w-6 h-6 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(to bottom right, var(--accent-primary), var(--accent-secondary))', boxShadow: '0 0 12px color-mix(in srgb, var(--accent-primary) 30%, transparent)' }}>
                             <Sparkles className="w-3 h-3 text-white" strokeWidth={2.5} />
                         </div>
-                        <span className="text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>Synthi AI</span>
+                        <span className="text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>Vectant AI</span>
                         {(suggestedCode || fileSuggestions.length > 0) && (
                             <div className="text-[9px] font-semibold px-2 py-0.5 rounded-full" style={{ color: 'var(--accent-secondary)', background: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent)' }}>
                                 {fileSuggestions.length > 0 ? `${fileSuggestions.length} file${fileSuggestions.length > 1 ? 's' : ''}` : 'Ready'}
@@ -842,7 +856,20 @@ const AIChatWindow = ({
                 {/* Synthi Genome — shadow verify cost dashboard (master plan §17 + §22) */}
                 {workspaceSlug ? (
                     <div className="mx-3 mb-1.5">
-                        <ShadowCostPanel workspacePath={workspaceSlug} />
+                        <button
+                            type="button"
+                            onClick={() => setShadowPanelOpen((v) => !v)}
+                            className="w-full flex items-center justify-between text-[11px] px-2 py-1 rounded-md"
+                            style={{ color: 'var(--text-dim)', border: '1px solid var(--border-subtle)' }}
+                        >
+                            <span>Shadow verify spend</span>
+                            <span aria-hidden="true">{shadowPanelOpen ? '▾' : '▸'}</span>
+                        </button>
+                        {shadowPanelOpen ? (
+                            <div className="mt-1.5">
+                                <ShadowCostPanel workspacePath={workspaceSlug} />
+                            </div>
+                        ) : null}
                     </div>
                 ) : null}
 
@@ -1490,12 +1517,15 @@ const AIChatWindow = ({
                 <div className="flex gap-2">
                     <div className="flex-1 flex flex-col gap-0 rounded-xl overflow-hidden transition-all duration-200" style={{ border: '1px solid var(--border-subtle)', background: 'var(--bg-editor)' }}>
                         <textarea
+                            ref={chatInputRef}
                             value={inputValue}
                             onChange={(e) => {
                                 setInputValue(e.target.value);
                                 const maxHeight = 120;
                                 e.target.style.height = 'auto';
-                                const newHeight = Math.min(e.target.scrollHeight, maxHeight);
+                                const newHeight = e.target.value
+                                    ? Math.min(e.target.scrollHeight, maxHeight)
+                                    : 36;
                                 e.target.style.height = newHeight + 'px';
                             }}
                             onKeyPress={handleKeyPress}

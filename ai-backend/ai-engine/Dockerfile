@@ -34,7 +34,11 @@ RUN pip install --no-cache-dir /tmp/wheels/* && rm -rf /tmp/wheels
 
 COPY . .
 
-RUN useradd --system --no-create-home appuser
+# Match uid/gid with collab-server (which owns /data/repos as 1001:1001).
+# Without this, the CodeIntel engine 500s on every workspace load trying to
+# write its index into <workspace>/.code_intel (Permission denied).
+RUN groupadd --system --gid 1001 appuser \
+ && useradd --system --no-create-home --uid 1001 --gid 1001 appuser
 USER appuser
 
 EXPOSE 8000

@@ -16,6 +16,12 @@ pub struct RunnerState {
     pub process: Option<Child>, // Option to allow taking it if needed, or just drop
     pub stdin: Option<Arc<tokio::sync::Mutex<tokio::process::ChildStdin>>>,
     pub output_tx: broadcast::Sender<String>,
+    // Session that owns this runner. Required so cancel-build with a
+    // specific session_id can verify the cancel actually targets the
+    // currently-active runner before tearing down Xvfb/GStreamer — a
+    // stale cancel-build for a previous session must NOT kill the
+    // shared Xvfb of the live session (caused XIO error 110 on :99).
+    pub session_id: Option<String>,
     pub is_gui: bool,
     pub is_hmr_capable: bool, // True if runner was started with HMR-capable code (detected from exports)
     pub hmr_capability: Option<HmrCapability>, // Detailed capability level
@@ -50,6 +56,7 @@ impl RunnerState {
             process,
             stdin: Some(stdin),
             output_tx,
+            session_id: None,
             is_gui: false,
             is_hmr_capable: false,
             hmr_capability: None,
