@@ -136,6 +136,9 @@ pub async fn compile_runner(
     };
     let compiler_exe = effective_manifest.select_compiler(ModuleKind::HostRunner);
     let std_flag = format!("-std={}", effective_manifest.std);
+    let host_runner_filename = effective_manifest
+        .module_file(ModuleKind::HostRunner)
+        .unwrap_or(HOST_RUNNER_FILENAME);
 
     // Pure-function flag construction — see `build_runner_flag_list` for
     // the rules around stripping -shared/-fPIC and appending -ldl/-rdynamic.
@@ -161,52 +164,19 @@ pub async fn compile_runner(
         &[],
     );
 
+    if let Some(cached_bin) = ctx.incremental_cache.get(&cache_key).await {
+        let path = cached_bin.to_string_lossy().to_string();
+        eprintln!("[CompileRunner] Cache HIT (persistent cache)");
+        return Ok(Some(path));
+    }
+
+    // Cache miss — write the source file and compile.
+    tokio::fs::write(dir_path.join(host_runner_filename), host_runner_content).await?;
+
     // Runner binary is named `host_runner_<ts>` — no `lib` prefix, no
     // `.so` extension. Lives in the build/ directory like the other
     // artifacts so cleanup is uniform.
     let runner_out = output_dir.join(format!("host_runner_{}", timestamp));
-
-    if let Some(cached_bin) = ctx.incremental_cache.get(&cache_key).await {
-        // IncrementalCache is content-addressable storage for `.o` object
-        // files (compile inputs to the linker) — it writes every entry as
-        // `<key>.o` with default 0o644 perms. The host_runner case stores
-        // a LINKED EXECUTABLE here, so returning the cached path directly
-        // causes `exec()` to fail with EACCES (object files have no +x
-        // bit, and the linker drives subsequent builds, not exec). Copy
-        // the cached bytes to the timestamped `host_runner_<ts>` exec
-        // path and set the execute bit before handing the path upstream.
-        match tokio::fs::copy(&cached_bin, &runner_out).await {
-            Ok(_) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(md) = tokio::fs::metadata(&runner_out).await {
-                        let mut perms = md.permissions();
-                        perms.set_mode(perms.mode() | 0o111);
-                        let _ = tokio::fs::set_permissions(&runner_out, perms).await;
-                    }
-                }
-                eprintln!(
-                    "[CompileRunner] Cache HIT (persistent cache) — materialised {} → {}",
-                    cached_bin.display(),
-                    runner_out.display()
-                );
-                return Ok(Some(runner_out.to_string_lossy().to_string()));
-            }
-            Err(e) => {
-                eprintln!(
-                    "[CompileRunner] Cache HIT but copy {} → {} failed ({}); falling through to recompile",
-                    cached_bin.display(),
-                    runner_out.display(),
-                    e
-                );
-                // fall through to full compile+link path
-            }
-        }
-    }
-
-    // Cache miss — write the source file and compile.
-    tokio::fs::write(dir_path.join(HOST_RUNNER_FILENAME), host_runner_content).await?;
 
     // ULTRAPLAN Phase 9b: two-step split (see compile_core.rs for the
     // rationale). compile_runner produces an EXECUTABLE (not a .so),
@@ -240,7 +210,7 @@ pub async fn compile_runner(
     // Step 1: compile .cpp → .o (ccache caches this)
     let mut compile_cmd = compile_to_object_command(
         compiler_exe,
-        HOST_RUNNER_FILENAME,
+        host_runner_filename,
         &runner_obj,
         &std_flag,
         &runner_compile_flags,
@@ -326,7 +296,7 @@ pub async fn compile_runner(
                         cmd.arg(f);
                     }
                 }
-                cmd.arg(HOST_RUNNER_FILENAME)
+                cmd.arg(host_runner_filename)
                     .arg("-I.")
                     .arg("-o")
                     .arg(&runner_out);
@@ -392,14 +362,14 @@ pub async fn compile_runner(
             .await
             {
                 Ok(fixed) => {
-                    tokio::fs::write(dir_path.join(HOST_RUNNER_FILENAME), &fixed).await?;
+                    tokio::fs::write(dir_path.join(host_runner_filename), &fixed).await?;
                     let mut retry_cmd = cpp_compile_command(compiler_exe);
                     retry_cmd.arg(&std_flag);
                     for f in &runner_compile_flags {
                         retry_cmd.arg(f);
                     }
                     retry_cmd
-                        .arg(HOST_RUNNER_FILENAME)
+                        .arg(host_runner_filename)
                         .arg("-I.")
                         .arg("-o")
                         .arg(&runner_out);
