@@ -3853,7 +3853,9 @@ work with a dynamic-linking HMR system extended for GPU device modules.
                        lifecycle functions including the new GPU ones,
                        calls them every frame. Owns the Synthi-managed
                        device allocation registry used by tier-B
-                       userspace snapshots.
+                       userspace snapshots. Do not call `synthi_register`,
+                       `synthi_gpu_register_buffer`, or redeclare Synthi GPU
+                       runtime functions here.
 
 5. device.cu (CUDA) **OR** device.hip (ROCm) - every `__global__` and
                        `__device__` symbol. Builds to a sidecar `cubin`
@@ -3878,6 +3880,33 @@ core.cpp / gui.cpp / host_runner.cpp:
   - SHARED.H is HEADER-ONLY,
   - the `<synthi_arch_cache>` and `<synthi_build_manifest>` response shape.
 
+# SYNTHI RUNNER LIFECYCLE ABI — REQUIRED SYMBOLS
+
+The generated host modules are loaded by Synthi's runner through fixed
+`extern "C"` symbols. Emit these exact exports and signatures. Do not invent
+shorter variants such as `core_update`, `core_on_load(AppState*)`,
+`gui_render`, or `gui_on_load(AppState*)`.
+
+In `core.cpp`:
+
+```cpp
+extern "C" void* core_on_load(void* prev_state, void* renderer);
+extern "C" void core_on_update(void* state_ptr, double dt);
+```
+
+In `gui.cpp`:
+
+```cpp
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_state_ptr);
+extern "C" void gui_on_render(void* state_ptr);
+```
+
+`core_on_load` returns the `AppState*` pointer that the runner will pass back
+to `core_on_update` and `gui_on_render`. `gui_on_load` may return its own GUI
+state, but `gui_on_render` must be able to render from the core state pointer.
+Do not allocate `AppState` with `new` or `malloc`; use static storage on the
+first load and reuse `prev_state` on hot reload.
+
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 
 Synthi does not hot-swap arbitrary raw CUDA/HIP source as-is. Your job
@@ -3892,15 +3921,23 @@ real runtime code/header surface, not prose:
     Do not redeclare this ABI by hand. The worker writes this header into
     the workspace before compiling GPU-enabled projects.
 
+    The header already defines `DeviceDescriptor`, `SynthiGpuRuntime`,
+    `synthi_gpu_launch`, and `synthi_register`. Never redeclare those
+    structs/functions in `shared.h` or any other file.
+
   - raw `kernel<<<grid, block, shared, stream>>>(args...)` launch sites
     in host code MUST become calls to:
 
         synthi_gpu_launch(gpu, "kernel", grid, block, shared, stream,
                           { &arg0, &arg1, ... });
 
+    The final argument must be an initializer-list literal. Do not create
+    `void* args[]` and pass that array; it will not match the runtime helper.
+
   - Synthi-managed device allocations MUST be registered through the
     runtime registry so the worker can preserve them across sidecar
     cubin/hsaco swaps.
+    Register buffers from `core.cpp` lifecycle code, not `host_runner.cpp`.
   - This runtime boundary is allowed and required. Forbidden shims are
     wrapper kernels, extra migration files, and bypass modules that hide
     the actual source change.
@@ -3914,19 +3951,8 @@ kernel-name placeholders with the real kernel names from the project:
 
 ```cpp
 // 1. device_descriptor — what does the GPU side need at load time?
-//    Returned as a flat struct so the worker can serialise it without
-//    needing a schema lookup.
-extern "C" {
-  struct DeviceDescriptor {
-    const char* vendor;            // "cuda" or "rocm"
-    const char* const* arches;     // null-terminated list, e.g. {"sm_80", nullptr}
-    const char* const* kernels;    // null-terminated list of __global__ names
-    int num_arches;
-    int num_kernels;
-    int constant_layout_bytes;     // total size of declared __constant__ memory
-  };
-  const DeviceDescriptor* device_descriptor();
-}
+//    DeviceDescriptor is already declared by synthi_gpu_runtime.h.
+extern "C" const DeviceDescriptor* device_descriptor();
 
 // 2. device_on_load — natively patch deserialisation across an ABI edit.
 //    `prev_blob`/`len` is the bytes produced by the OLD module's
@@ -4071,7 +4097,9 @@ not HMR-compatible. Pick `arch` from the source's targeting hints
 
 - Respond with the <JSON>...</JSON> block FIRST, then <synthi_arch_cache>.
 - NO prose before, between, or after the two blocks.
-- All five files must be present in the JSON.
+- All five files must be present in the JSON as filename keys whose values are
+  raw source-code strings. Do not emit nested `{ "filename": ..., "content": ... }`
+  objects, role objects, or JSON inside file contents.
 - The build manifest MUST include both the host fields and a non-null
   `gpu` sub-object.
 - The build manifest `files` array MUST list the exact split files emitted
@@ -4085,6 +4113,10 @@ not HMR-compatible. Pick `arch` from the source's targeting hints
   are invalid split output.
 - Every kernel declared in device.cu/device.hip must appear in
   <synthi_kernel_hashes>.
+- `shared.h` MUST NOT redeclare `DeviceDescriptor`; it comes from
+  `synthi_gpu_runtime.h`.
+- `core.cpp` MUST export `core_on_load` and `core_on_update`.
+- `gui.cpp` MUST export `gui_on_load` and `gui_on_render`.
 - Preserve the user's intent: kernel logic, buffer sizes, launch
   shapes, frame timing — all unchanged.
 

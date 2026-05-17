@@ -1907,7 +1907,16 @@ pub async fn handle_compile_request(
         }
     }
 
-    let use_parallel = num_cpus::get() >= 3;
+    let has_gpu_device_stage = compile_manifest
+        .as_ref()
+        .and_then(|m| m.gpu.as_ref())
+        .is_some()
+        && device_source_content.is_some();
+    let parallel_disabled_by_env = std::env::var("SYNTHI_DISABLE_PARALLEL_COMPILE")
+        .ok()
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    let use_parallel = num_cpus::get() >= 3 && !has_gpu_device_stage && !parallel_disabled_by_env;
     if !tier0_bypassed {
         if use_parallel {
             eprintln!(
@@ -1916,8 +1925,10 @@ pub async fn handle_compile_request(
             );
         } else {
             eprintln!(
-                "[HMR] parallel compile disabled (num_cpus={} < 3) — serial fallback",
-                num_cpus::get()
+                "[HMR] parallel compile disabled (num_cpus={}, gpu_device_stage={}, env_disabled={}) — serial fallback",
+                num_cpus::get(),
+                has_gpu_device_stage,
+                parallel_disabled_by_env
             );
         }
     }

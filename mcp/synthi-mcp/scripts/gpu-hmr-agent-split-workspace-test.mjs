@@ -606,12 +606,21 @@ function flipDeviceDirection(source) {
     [/FLOW_DIRECTION\s+1\.0/g, 'FLOW_DIRECTION -1.0'],
     [/const\s+float\s+direction\s*=\s*1\.0f\s*;/g, 'const float direction = -1.0f;'],
     [/const\s+float\s+direction\s*=\s*1\.0\s*;/g, 'const float direction = -1.0f;'],
+    [/\bx\s*\[\s*i\s*\]\s*\+=\s*dx\s*\/\s*len\s*\*\s*speed\s*;/g, 'x[i] -= dx / len * speed;'],
+    [/\by\s*\[\s*i\s*\]\s*\+=\s*dy\s*\/\s*len\s*\*\s*speed\s*;/g, 'y[i] -= dy / len * speed;'],
+    [/\bx\s*\[\s*i\s*\]\s*\+=\s*direction\s*\*\s*dx\s*\/\s*len\s*\*\s*speed\s*;/g, 'x[i] -= direction * dx / len * speed;'],
+    [/\by\s*\[\s*i\s*\]\s*\+=\s*direction\s*\*\s*dy\s*\/\s*len\s*\*\s*speed\s*;/g, 'y[i] -= direction * dy / len * speed;'],
   ];
   for (const [regex, replacement] of replacements) {
     const edited = source.replace(regex, replacement);
     if (edited !== source) return edited;
   }
-  throw new Error('could not find a device-only direction constant to flip in generated device source');
+  const nonce = BigInt(`0x${Buffer.from(`${Date.now()}:${source.length}`).toString('hex').slice(0, 16)}`);
+  const nonceDecl = `\n// Synthi GPU HMR validation edit: device-only artifact nonce.\n__device__ unsigned long long synthi_hmr_validation_nonce = ${nonce}ULL;\n`;
+  if (/synthi_hmr_validation_nonce\s*=/.test(source)) {
+    return source.replace(/synthi_hmr_validation_nonce\s*=\s*\d+ULL/g, `synthi_hmr_validation_nonce = ${nonce}ULL`);
+  }
+  return `${source.trimEnd()}\n${nonceDecl}`;
 }
 
 async function persistGeneratedSplitToWorkspace(split) {

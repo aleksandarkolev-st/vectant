@@ -44,6 +44,7 @@ from llm.structural_prompts import format_heal_prompt
 from build_manifest import (
     BuildManifest,
     ManifestRejection,
+    normalize_gpu_split_manifest,
     parse_manifest,
     validate_manifest_v1,
     validate_include_link_coverage,
@@ -2045,28 +2046,79 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     if not detection.is_gpu:
         raise HTTPException(status_code=422, detail="GPU split requested for source with no GPU markers")
 
-    try:
-        split = await _run_kernel_splitter(
-            provider=provider,
-            user_code=req.code,
-            lang=req.lang,
-            detection=detection,
-            extra_instructions=req.prompt,
-            model=req.model or "gemini-3.1-flash-lite-preview",
-            api_key=req.api_key,
-            files=req.files,
-            focus=req.focus,
+    split = None
+    split_prompt = req.prompt
+    max_split_attempts = 3
+    for attempt in range(1, max_split_attempts + 1):
+        try:
+            split = await _run_kernel_splitter(
+                provider=provider,
+                user_code=req.code,
+                lang=req.lang,
+                detection=detection,
+                extra_instructions=split_prompt,
+                model=req.model or "gemini-3.1-flash-lite-preview",
+                api_key=req.api_key,
+                files=req.files,
+                focus=req.focus,
+            )
+        except _KernelSplitterError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        if not (split.verification and not split.verification.ok):
+            break
+
+        notes = "\n".join(
+            f"- {v.rule}: {v.message}" for v in split.verification.violations
         )
-    except _KernelSplitterError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.info(
+            "[split/gpu] verifier rejected split attempt %s/%s: %s",
+            attempt,
+            max_split_attempts,
+            notes,
+        )
+        if attempt == max_split_attempts:
+            break
+        split_prompt = "\n\n".join(
+            p for p in [
+                req.prompt,
+                (
+                    "The previous GPU split failed Synthi's verifier. "
+                    "Regenerate the complete five-file split and fix all "
+                    "violations exactly. Do not repeat any rejected pattern:\n"
+                    f"{notes}"
+                ),
+            ] if p
+        )
 
-    if not split.manifest or not isinstance(split.manifest.get("gpu"), dict):
-        raise HTTPException(status_code=422, detail="GPU split response missing manifest.gpu block")
+    if split is None:
+        raise HTTPException(status_code=400, detail="GPU split did not produce a result")
+
+    if split.verification and not split.verification.ok:
+        verification = split.verification.to_dict()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "GPU split failed Synthi verifier after retries",
+                "verification": verification,
+            },
+        )
+
+    manifest_raw = normalize_gpu_split_manifest(
+        split.manifest if isinstance(split.manifest, dict) else {},
+        split_files=split.files,
+        vendor_hint=detection.vendor_hint,
+        arch_hint=(
+            os.getenv("SYNTHI_GPU_ARCH_HINT")
+            or os.getenv("SYNTHI_GPU_ARCH")
+            or None
+        ),
+    )
 
     try:
-        manifest_parsed = parse_manifest(split.manifest)
+        manifest_parsed = parse_manifest(manifest_raw)
         validate_manifest_v1(manifest_parsed)
         manifest_out = manifest_to_dict(manifest_parsed)
     except ManifestRejection as e:
@@ -2199,6 +2251,44 @@ class HealRequest(BaseModel):
     language: str = "cpp"     # defaults to cpp for back-compat
 
 
+def _unwrap_heal_content(result: str) -> str:
+    """Recover complete-file content if the model wrapped it in JSON."""
+
+    stripped = result.strip()
+    if not stripped.startswith("{"):
+        return result
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        for key in ("content", "file_content", "source"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    match = re.search(
+        r'"(?:content|file_content|source)"\s*:\s*"(?P<body>.*)"\s*(?:,|\})',
+        stripped,
+        re.DOTALL,
+    )
+    if not match:
+        return result
+    body = match.group("body")
+    try:
+        return json.loads('"' + body.replace("\n", "\\n").replace("\r", "\\r") + '"').strip()
+    except json.JSONDecodeError:
+        return (
+            body
+            .replace(r"\\", "\\")
+            .replace(r"\"", '"')
+            .replace(r"\n", "\n")
+            .replace(r"\r", "\r")
+            .replace(r"\t", "\t")
+            .strip()
+        )
+
+
 @app.post("/refactor/heal")
 async def refactor_heal(req: HealRequest):
     """
@@ -2242,7 +2332,7 @@ async def refactor_heal(req: HealRequest):
             result = result[3:]
         if result.endswith("```"):
             result = result[:-3]
-        result = result.strip()
+        result = _unwrap_heal_content(result.strip())
 
         elapsed = time.time() - start_time
         print(f"[Heal] {req.module_name} fixed in {elapsed:.2f}s")

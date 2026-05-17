@@ -104,6 +104,52 @@ def test_missing_optional_blocks_are_empty():
     assert parsed["architecture_md"] == ""
 
 
+def test_normalizes_nested_file_objects():
+    raw = '''
+<JSON>{
+  "core": { "core.cpp": "extern \\"C\\" void* core_on_load(void*, void*) { return 0; }\\nextern \\"C\\" void core_on_update(void*, double) {}" },
+  "gui.cpp": { "file_content": "extern \\"C\\" void* gui_on_load(void*, void*, void*) { return 0; }\\nextern \\"C\\" void gui_on_render(void*) {}" },
+  "shared": { "filename": "shared.h", "content": "#include \\"synthi_gpu_runtime.h\\"" },
+  "host_runner.cpp": "int main(){return 0;}",
+  "device": { "filename": "device.hip", "content": "__global__ void particle_flow(float* x) {}" }
+}</JSON>
+'''
+    parsed = parse_kernel_split_response(raw)
+    assert parsed["files"]["core.cpp"].startswith('extern "C"')
+    assert parsed["files"]["gui.cpp"].startswith('extern "C"')
+    assert parsed["files"]["shared.h"] == '#include "synthi_gpu_runtime.h"'
+    assert parsed["files"]["device.hip"].startswith("__global__")
+
+
+def test_normalizes_json_string_file_content_object():
+    raw = '''
+<JSON>{
+  "shared.h": "#include \\"synthi_gpu_runtime.h\\"",
+  "core.cpp": "extern \\"C\\" void* core_on_load(void*, void*) { return 0; }\\nextern \\"C\\" void core_on_update(void*, double) {}",
+  "gui.cpp": "{\\"file_content\\":\\"extern \\\\\\"C\\\\\\" void* gui_on_load(void*, void*, void*) { return 0; }\\\\nextern \\\\\\"C\\\\\\" void gui_on_render(void*) {}\\"}",
+  "host_runner.cpp": "int main(){return 0;}",
+  "device.hip": "__global__ void particle_flow(float* x) {}"
+}</JSON>
+'''
+    parsed = parse_kernel_split_response(raw)
+    assert parsed["files"]["gui.cpp"].startswith('extern "C"')
+
+
+def test_normalizes_json_like_file_content_with_literal_newlines():
+    raw = '''
+<JSON>{
+  "shared.h": "#include \\"synthi_gpu_runtime.h\\"",
+  "core.cpp": "{\\n\\"file_content\\": \\"#include \\\\\\"shared.h\\\\\\"\\nextern \\\\\\"C\\\\\\" void* core_on_load(void*, void*) { return 0; }\\nextern \\\\\\"C\\\\\\" void core_on_update(void*, double) {}\\"\\n}",
+  "gui.cpp": "extern \\"C\\" void* gui_on_load(void*, void*, void*) { return 0; }\\nextern \\"C\\" void gui_on_render(void*) {}",
+  "host_runner.cpp": "int main(){return 0;}",
+  "device.hip": "__global__ void particle_flow(float* x) {}"
+}</JSON>
+'''
+    parsed = parse_kernel_split_response(raw)
+    assert parsed["files"]["core.cpp"].startswith('#include "shared.h"')
+    assert 'extern "C" void core_on_update' in parsed["files"]["core.cpp"]
+
+
 def test_build_prompt_substitutes_user_code():
     code = "__global__ void k(){}"
     p = build_prompt(code)

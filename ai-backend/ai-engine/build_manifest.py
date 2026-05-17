@@ -50,7 +50,7 @@ See HMR_AGNOSTIC_ULTRAPLAN.md §5.3 for the full Point 3 design.
 from __future__ import annotations
 
 import re
-from typing import Any, List, Literal, Optional, Set, Tuple
+from typing import Any, List, Literal, Mapping, Optional, Set, Tuple
 
 try:
     from pydantic import BaseModel, Field, field_validator, ConfigDict
@@ -320,6 +320,127 @@ def manifest_to_dict(manifest: BuildManifest) -> dict:
     if _PYDANTIC_V2:
         return manifest.model_dump(exclude_none=False)
     return manifest.dict()  # type: ignore[attr-defined]
+
+
+def normalize_gpu_split_manifest(
+    raw: Mapping[str, Any] | None,
+    *,
+    split_files: Mapping[str, str],
+    vendor_hint: Optional[str] = None,
+    arch_hint: Optional[str] = None,
+) -> dict:
+    """Fill mechanical defaults the GPU splitter prompt may omit.
+
+    The LLM owns source code and semantic split choices; this helper owns the
+    boilerplate needed by the worker's manifest validator/compile pipeline.
+    """
+
+    manifest = dict(raw or {})
+    file_names = [str(k) for k in split_files.keys()]
+
+    def file_by(predicate, fallback: Optional[str] = None) -> Optional[str]:
+        for name in file_names:
+            if predicate(name.replace("\\", "/").split("/")[-1].lower(), name.lower()):
+                return name
+        return fallback
+
+    gpu = dict(manifest.get("gpu") if isinstance(manifest.get("gpu"), dict) else {})
+    vendor = str(gpu.get("vendor") or vendor_hint or "").lower()
+    if vendor not in {"cuda", "rocm"}:
+        device_name = file_by(lambda base, full: base.endswith(".hip") or ".hip" in full)
+        vendor = "rocm" if device_name else "cuda"
+
+    default_device = "device.hip" if vendor == "rocm" else "device.cu"
+    roles = dict(manifest.get("module_files") if isinstance(manifest.get("module_files"), dict) else {})
+    roles.setdefault("shared", file_by(lambda base, _: base == "shared.h" or "shared" in base, "shared.h"))
+    roles.setdefault("core", file_by(lambda base, _: base == "core.cpp" or "core" in base, "core.cpp"))
+    roles.setdefault("gui", file_by(lambda base, _: base == "gui.cpp" or "gui" in base, "gui.cpp"))
+    roles.setdefault("host_runner", file_by(lambda base, _: "runner" in base, "host_runner.cpp"))
+    roles.setdefault(
+        "device",
+        file_by(lambda base, full: base.endswith((".cu", ".hip")) or "device" in full, default_device),
+    )
+    manifest["module_files"] = roles
+
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        files = file_names
+    for path in roles.values():
+        if path and path not in files:
+            files.append(path)
+    manifest["files"] = [str(p) for p in files]
+
+    manifest["compiler"] = manifest.get("compiler") if manifest.get("compiler") in {"g++", "clang++"} else "g++"
+    manifest.setdefault("std", "c++26")
+    manifest.setdefault("common_flags", [])
+    manifest.setdefault("core_link_flags", [])
+    manifest.setdefault("gui_link_flags", [])
+    manifest.setdefault("shared_link_flags", [])
+    manifest.setdefault("runner_link_flags", [])
+    manifest.setdefault("system_packages", [])
+    manifest.setdefault("hot_reload_mode", "swap")
+    manifest.setdefault(
+        "confidence",
+        {
+            "overall": "high",
+            "runner_synthesis": "high",
+            "link_flags": "high",
+            "notes": "GPU manifest defaults normalized by ai-engine.",
+        },
+    )
+
+    common_flags = list(manifest["common_flags"])
+    host_link_fields = ("core_link_flags", "gui_link_flags", "runner_link_flags")
+    if vendor == "rocm":
+        compiler = "hipcc"
+        arch = arch_hint or "gfx90a"
+        include_flags = ["-D__HIP_PLATFORM_AMD__", "-I/opt/rocm/include"]
+        link_flags = ["-L/opt/rocm/lib", "-lamdhip64"]
+        runtime_libs = ["amdhip64"]
+    else:
+        compiler = "nvcc"
+        arch = arch_hint or "sm_80"
+        include_flags = ["-I/usr/local/cuda/include"]
+        link_flags = ["-L/usr/local/cuda/lib64", "-L/usr/local/cuda/lib64/stubs", "-lcudart", "-lcuda"]
+        runtime_libs = ["cudart", "cuda"]
+
+    for flag in include_flags:
+        if flag not in common_flags:
+            common_flags.append(flag)
+    manifest["common_flags"] = common_flags
+    for field in host_link_fields:
+        values = list(manifest.get(field) or [])
+        for flag in link_flags:
+            if flag not in values:
+                values.append(flag)
+        manifest[field] = values
+
+    source_blob = "\n".join(str(v) for v in split_files.values())
+    if "SDL2/" in source_blob or "SDL_" in source_blob:
+        for field in ("gui_link_flags", "runner_link_flags"):
+            values = list(manifest.get(field) or [])
+            if "-lSDL2" not in values:
+                values.append("-lSDL2")
+            manifest[field] = values
+
+    runner_flags = list(manifest.get("runner_link_flags") or [])
+    for flag in ("-ldl", "-pthread", "-rdynamic"):
+        if flag not in runner_flags:
+            runner_flags.append(flag)
+    manifest["runner_link_flags"] = runner_flags
+
+    gpu["vendor"] = vendor
+    gpu["device_compiler"] = compiler
+    if not isinstance(gpu.get("arch"), list) or not gpu.get("arch"):
+        gpu["arch"] = [arch]
+    if not isinstance(gpu.get("device_flags"), list):
+        gpu["device_flags"] = []
+    if not isinstance(gpu.get("runtime_libs"), list) or not gpu.get("runtime_libs"):
+        gpu["runtime_libs"] = runtime_libs
+    gpu.setdefault("snapshot_mode", "auto")
+    gpu["fatbin_strategy"] = "sidecar_module"
+    manifest["gpu"] = gpu
+    return manifest
 
 
 # ─────────────────────────────────────────────────────────────────────────────

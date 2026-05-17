@@ -102,6 +102,91 @@ _LAUNCH_GRAPH_BLOCK_RE = re.compile(
     r"<synthi_launch_graph>(?P<body>.*?)</synthi_launch_graph>", re.DOTALL
 )
 
+_ROLE_FILENAMES = {
+    "shared": "shared.h",
+    "core": "core.cpp",
+    "gui": "gui.cpp",
+    "host_runner": "host_runner.cpp",
+    "device": "device.cu",
+}
+
+
+def _looks_like_source_file(name: str) -> bool:
+    return bool(re.search(r"\.(?:h|hpp|hh|cpp|cc|cxx|cu|hip)$", name.replace("\\", "/"), re.I))
+
+
+def _extract_embedded_source_object(value: str) -> Optional[str]:
+    """Unwrap model slips like '{"file_content": "...source..."}'.
+
+    Gemini occasionally returns a JSON-looking object as the value for a
+    filename. If the nested string contains literal newlines, `json.loads`
+    rejects it even though the source itself is recoverable.
+    """
+
+    stripped = value.strip()
+    if not stripped.startswith("{"):
+        return None
+    match = re.search(
+        r'"(?:content|file_content|source)"\s*:\s*"(?P<body>.*)"\s*(?:,|\})',
+        stripped,
+        re.DOTALL,
+    )
+    if not match:
+        return None
+    body = match.group("body")
+    try:
+        return json.loads('"' + body.replace("\n", "\\n").replace("\r", "\\r") + '"')
+    except json.JSONDecodeError:
+        return (
+            body
+            .replace(r"\\", "\\")
+            .replace(r"\"", '"')
+            .replace(r"\n", "\n")
+            .replace(r"\r", "\r")
+            .replace(r"\t", "\t")
+        )
+
+
+def _normalise_file_map(files: Mapping[str, Any]) -> Dict[str, str]:
+    """Accept common LLM file-map variants and return filename -> source."""
+
+    out: Dict[str, str] = {}
+
+    def add(name: str, value: Any) -> None:
+        clean_name = str(name).strip().replace("\\", "/")
+        if clean_name in _ROLE_FILENAMES:
+            clean_name = _ROLE_FILENAMES[clean_name]
+        if isinstance(value, str) and value.strip().startswith("{"):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                decoded = None
+            if isinstance(decoded, Mapping):
+                add(clean_name, decoded)
+                return
+            embedded = _extract_embedded_source_object(value)
+            if embedded and _looks_like_source_file(clean_name):
+                out[clean_name] = embedded
+                return
+        if isinstance(value, str) and value.strip() and _looks_like_source_file(clean_name):
+            out[clean_name] = value
+        elif isinstance(value, Mapping):
+            filename = value.get("filename") or value.get("path") or value.get("name")
+            content = value.get("content") or value.get("file_content") or value.get("source")
+            if filename and isinstance(content, str) and content.strip():
+                out[str(filename).strip().replace("\\", "/")] = content
+                return
+            if isinstance(content, str) and content.strip() and _looks_like_source_file(clean_name):
+                out[clean_name] = content
+                return
+            for nested_name, nested_value in value.items():
+                if _looks_like_source_file(str(nested_name)):
+                    add(str(nested_name), nested_value)
+
+    for key, value in files.items():
+        add(str(key), value)
+    return out
+
 
 def _extract_block(pattern: re.Pattern, text: str) -> str:
     m = pattern.search(text)
@@ -136,6 +221,9 @@ def parse_kernel_split_response(raw: str) -> Dict[str, Any]:
             "<JSON> block did not parse to a dict; "
             f"got {type(files).__name__}"
         )
+    files = _normalise_file_map(files)
+    if not files:
+        raise KernelSplitterError("<JSON> block did not contain any source files")
 
     arch_body = _extract_block(_ARCH_BLOCK_RE, raw)
     manifest_body = _extract_block(_MANIFEST_BLOCK_RE, arch_body or raw)

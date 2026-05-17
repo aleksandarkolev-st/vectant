@@ -17,6 +17,7 @@ import pytest
 from build_manifest import (
     BuildManifest,
     ManifestRejection,
+    normalize_gpu_split_manifest,
     parse_manifest,
     validate_manifest_v1,
 )
@@ -151,3 +152,58 @@ def test_gpu_field_round_trips_through_json():
     m = parse_manifest(payload)
     assert m.gpu is not None
     assert m.gpu.device_compiler == "nvcc"
+
+
+def test_normalizes_ai_gpu_manifest_defaults_for_rocm():
+    raw = {
+        "compiler": "hipcc",
+        "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp", "device.hip"],
+        "gpu": {"vendor": "rocm"},
+    }
+    normalized = normalize_gpu_split_manifest(
+        raw,
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "#include <SDL2/SDL.h>",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        vendor_hint="rocm",
+        arch_hint="gfx1201",
+    )
+    parsed = parse_manifest(normalized)
+    validate_manifest_v1(parsed)
+    assert parsed.compiler == "g++"
+    assert parsed.gpu is not None
+    assert parsed.gpu.vendor == "rocm"
+    assert parsed.gpu.device_compiler == "hipcc"
+    assert parsed.gpu.arch == ["gfx1201"]
+    assert parsed.confidence.overall == "high"
+    assert "-I/opt/rocm/include" in parsed.common_flags
+    assert "-lamdhip64" in parsed.core_link_flags
+    assert "-lSDL2" in parsed.gui_link_flags
+    assert "-ldl" in parsed.runner_link_flags
+
+
+def test_normalizes_ai_gpu_manifest_defaults_for_cuda_dynamic_paths():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "cuda"}},
+        split_files={
+            "include/flow_shared_x.h": "",
+            "src/flow_core_x.cpp": "",
+            "src/flow_gui_x.cpp": "",
+            "run/flow_runner_x.cpp": "",
+            "gpu/flow_device_x.cu": "",
+        },
+        vendor_hint="cuda",
+        arch_hint="sm_120",
+    )
+    parsed = parse_manifest(normalized)
+    validate_manifest_v1(parsed)
+    assert parsed.gpu is not None
+    assert parsed.gpu.arch == ["sm_120"]
+    assert parsed.module_files.device == "gpu/flow_device_x.cu"
+    assert parsed.module_files.host_runner == "run/flow_runner_x.cpp"
+    assert "-I/usr/local/cuda/include" in parsed.common_flags
+    assert "-lcudart" in parsed.runner_link_flags

@@ -252,13 +252,57 @@ def test_rejects_new_cu_file():
 def test_split_clean_output_passes():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
-        "core.cpp": "void launch_vec_add() { synthi_gpu_launch(gpu, \"vec_add\", 1, 256, 0, stream, { &a, &b, &c, &n }); }",
-        "gui.cpp": "void draw() {}",
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, { &a, &b, &c, &n }); }',
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
         "host_runner.cpp": "int main() { return 0; }",
         "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
     }
     r = verify_split_output(files=files, manifest_arch=["sm_80"])
     assert r.ok, r.violations
+
+
+def test_split_rejects_missing_lifecycle_exports_and_runtime_redeclaration():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct DeviceDescriptor { int bad; };',
+        "core.cpp": 'extern "C" void core_update(void*) {}',
+        "gui.cpp": 'extern "C" void gui_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert not r.ok
+    rules = {v.rule for v in r.violations}
+    assert "runtime_abi_redeclared" in rules
+    assert "missing_core_lifecycle_export" in rules
+    assert "missing_gui_lifecycle_export" in rules
+
+
+def test_split_rejects_heap_state_and_args_array_launch():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return new AppState(); }\nextern "C" void core_on_update(void*, double) { void* args[] = { &x }; synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, args); }',
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    rules = {v.rule for v in r.violations}
+    assert "app_state_heap_allocation" in rules
+    assert "launch_args_array" in rules
+
+
+def test_split_rejects_invalid_launch_signature_and_runner_registration():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, &x); }',
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": 'int main() { synthi_register(ptr, size, "persistent"); return 0; }',
+        "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    rules = {v.rule for v in r.violations}
+    assert "invalid_synthi_launch_signature" in rules
+    assert "host_runner_registers_gpu_buffers" in rules
 
 
 def test_split_rejects_empty_arch():

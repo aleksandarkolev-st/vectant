@@ -306,6 +306,51 @@ _SYNTHI_LAUNCH_CALL_RE = re.compile(
 )
 
 
+def _iter_call_bodies(source: str, name: str) -> Iterable[str]:
+    needle = f"{name}("
+    cursor = 0
+    while True:
+        start = source.find(needle, cursor)
+        if start < 0:
+            return
+        i = start + len(needle)
+        depth = 1
+        while i < len(source) and depth:
+            if source[i] == "(":
+                depth += 1
+            elif source[i] == ")":
+                depth -= 1
+            i += 1
+        if depth == 0:
+            yield source[start + len(needle): i - 1]
+            cursor = i
+        else:
+            return
+
+
+def _split_top_level_args(body: str) -> List[str]:
+    args: List[str] = []
+    start = 0
+    depth = 0
+    pairs = {"(": ")", "{": "}", "[": "]"}
+    closers = set(pairs.values())
+    stack: List[str] = []
+    for i, ch in enumerate(body):
+        if ch in pairs:
+            stack.append(pairs[ch])
+            depth += 1
+        elif ch in closers and stack and ch == stack[-1]:
+            stack.pop()
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(body[start:i].strip())
+            start = i + 1
+    tail = body[start:].strip()
+    if tail:
+        args.append(tail)
+    return args
+
+
 def verify_split_output(
     *,
     files: Mapping[str, str],
@@ -373,6 +418,94 @@ def verify_split_output(
                     "declaring a private launch contract."
                 ),
                 offending_module="shared.h",
+            )
+        )
+    if "synthi_gpu_runtime.h" in shared_source and re.search(r"\bstruct\s+DeviceDescriptor\b", shared_source):
+        violations.append(
+            Violation(
+                rule="runtime_abi_redeclared",
+                message=(
+                    "shared.h includes synthi_gpu_runtime.h but also redeclares "
+                    "DeviceDescriptor. The worker-generated runtime header owns "
+                    "that ABI; remove the local struct declaration."
+                ),
+                offending_module="shared.h",
+            )
+        )
+
+    core_source = files.get("core.cpp") or ""
+    for symbol in ("core_on_load", "core_on_update"):
+        if not re.search(rf'extern\s+"C"[^;{{\n]*\b{symbol}\s*\(', core_source):
+            violations.append(
+                Violation(
+                    rule="missing_core_lifecycle_export",
+                    message=f"core.cpp must export extern \"C\" {symbol} with the Synthi runner ABI.",
+                    offending_module="core.cpp",
+                    offending_symbol=symbol,
+                )
+            )
+    if re.search(r"\bnew\s+AppState\b|\bmalloc\s*\(\s*sizeof\s*\(\s*AppState\s*\)", core_source):
+        violations.append(
+            Violation(
+                rule="app_state_heap_allocation",
+                message=(
+                    "core.cpp must not allocate AppState with new/malloc. Use "
+                    "static storage or preserve/reuse the prev_state pointer."
+                ),
+                offending_module="core.cpp",
+            )
+        )
+    if re.search(r"\bvoid\s*\*\s+args\s*\[[^\]]*\][^;]*;", core_source) and re.search(
+        r"\bsynthi_gpu_launch\s*\([^;]*\bargs\s*\)", core_source, re.DOTALL
+    ):
+        violations.append(
+            Violation(
+                rule="launch_args_array",
+                message=(
+                    "synthi_gpu_launch must receive an initializer-list literal "
+                    "like `{ &arg0, &arg1 }`, not a `void* args[]` array."
+                ),
+                offending_module="core.cpp",
+            )
+        )
+    for body in _iter_call_bodies(core_source, "synthi_gpu_launch"):
+        args = _split_top_level_args(body)
+        if len(args) != 7 or not args[-1].lstrip().startswith("{"):
+            violations.append(
+                Violation(
+                    rule="invalid_synthi_launch_signature",
+                    message=(
+                        "synthi_gpu_launch must have exactly 7 arguments: "
+                        "gpu, kernel name, grid, block, shared bytes, stream, "
+                        "and an initializer-list literal `{ &arg0, ... }`."
+                    ),
+                    offending_module="core.cpp",
+                )
+            )
+
+    gui_source = files.get("gui.cpp") or ""
+    for symbol in ("gui_on_load", "gui_on_render"):
+        if not re.search(rf'extern\s+"C"[^;{{\n]*\b{symbol}\s*\(', gui_source):
+            violations.append(
+                Violation(
+                    rule="missing_gui_lifecycle_export",
+                    message=f"gui.cpp must export extern \"C\" {symbol} with the Synthi runner ABI.",
+                    offending_module="gui.cpp",
+                    offending_symbol=symbol,
+                )
+            )
+
+    host_runner_source = files.get("host_runner.cpp") or ""
+    if re.search(r"\bsynthi_(?:gpu_)?register", host_runner_source):
+        violations.append(
+            Violation(
+                rule="host_runner_registers_gpu_buffers",
+                message=(
+                    "host_runner.cpp must not call synthi_register or "
+                    "synthi_gpu_register_buffer. Keep device allocation and "
+                    "registration in core.cpp lifecycle code."
+                ),
+                offending_module="host_runner.cpp",
             )
         )
 
