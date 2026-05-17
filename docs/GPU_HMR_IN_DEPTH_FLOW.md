@@ -13,6 +13,21 @@ must preserve the user's original rendering backend instead of assuming SDL2,
 GLFW, winit, OpenGL, Vulkan, etc. Broader language support is a future runtime
 contract problem, not something this path can honestly claim today.
 
+## Tiny Glossary
+
+- **Synthi**: the Vectant workspace/runtime system that compiles, runs, streams,
+  and hot-reloads user projects.
+- **HMR**: Hot Module Replacement; rebuilding and swapping changed code without
+  restarting the whole running app.
+- **GPU HMR**: Synthi HMR extended so CUDA/ROCm device sidecars can be rebuilt
+  and swapped while host state and registered GPU buffers survive.
+- **ABI**: Application Binary Interface; the fixed exported functions and data
+  shapes the runner uses to load generated modules safely.
+- **MCP**: the agent-facing Model Context Protocol tool server used to attach to
+  workspaces, compile, wait for HMR, and capture screenshots.
+- **Sidecar**: the compiled GPU artifact loaded beside the host modules:
+  `cubin` for CUDA or `hsaco` for ROCm/HIP.
+
 ## One-Screen Summary
 
 User source does not need Synthi HMR ABI functions.
@@ -44,6 +59,41 @@ The latest validation artifacts were captured through MCP `synthi_screenshot`:
 ```text
 mcp/synthi-mcp/.gpu-hmr-test-artifacts/gpu-ai-flow-shot-20260518003220-mcp-screenshot-1.png
 mcp/synthi-mcp/.gpu-hmr-test-artifacts/gpu-ai-flow-shot-20260518003220-mcp-screenshot-2.png
+```
+
+## Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Browser
+    participant MCP
+    participant Worker
+    participant AI as AI Engine
+    participant Verifier
+    participant Runner
+
+    User->>Browser: Open workspace and click Run
+    Browser->>Worker: compile(files, prefer_gpu_pipeline, gpu_mode)
+    Worker->>Worker: Detect CUDA/HIP markers
+    Worker->>AI: POST /refactor/split/gpu
+    AI->>Verifier: Check generated split
+    Verifier-->>AI: reject with feedback or accept
+    AI-->>Worker: verified split + manifest
+    Worker->>Worker: Compile host modules and GPU sidecar
+    Worker->>Runner: Start generated host_runner
+    Runner->>Runner: Load core/gui + cubin/hsaco
+    Runner-->>Browser: Video frames + build/HMR events
+
+    User->>Browser: Edit generated device.cu/device.hip
+    Browser->>Worker: compile(all manifest-declared files)
+    Worker->>Worker: Compile new sidecar and compare ABI
+    Worker->>Runner: device_only GPU reload
+    Runner-->>Browser: Updated frames without app restart
+
+    MCP->>Worker: synthi_compile / synthi_wait_hmr
+    MCP->>Runner: synthi_screenshot via session video
+    Runner-->>MCP: frame image
 ```
 
 ## Main Components
@@ -252,6 +302,37 @@ ROCDXG / libdxcore exposure
 
 The image can be universal. The compose override cannot be fully universal
 because Docker exposes NVIDIA and AMD WSL devices differently.
+
+## Security And Isolation Constraints
+
+GPU HMR compiles and executes AI-generated C++ plus CUDA/HIP code. Treat that
+code as untrusted unless the workspace itself is trusted.
+
+Current development validation runs the app inside the worker container, not as
+a native host process. That container boundary is useful, but it is not a
+complete security sandbox:
+
+- GPU device exposure grants the container access to the selected host GPU
+  bridge (`gpus: all` for NVIDIA, `/dev/dxg` for AMD WSL).
+- Build containers may have broad toolchains and filesystem access needed for
+  compiling generated native code.
+- Environment variables and mounted paths must be treated as sensitive.
+- A generated native binary can still consume CPU, memory, disk, GPU memory, or
+  driver resources aggressively.
+
+For production or hostile multi-tenant workloads, run GPU workers with a
+least-privilege profile:
+
+- No unnecessary host mounts.
+- No long-lived credentials in the worker environment.
+- Per-user or per-job isolation boundaries.
+- Resource limits for CPU, memory, disk, and GPU where the platform supports
+  them.
+- Network egress controls if generated code should not call external services.
+- Separate validation workers from developer machines.
+
+The HMR ABI and verifier improve correctness of generated code; they are not a
+security proof. Security has to come from the execution environment.
 
 ## AI Split Routing
 
