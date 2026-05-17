@@ -59,8 +59,25 @@ claims on the RX 9070 XT:
 - HIP can directly generate a pixel buffer on the GPU.
 - SDL can render those HIP-generated pixels after CPU copyback and texture
   upload.
+- HMR works for those two supported paths by loading `v1.hsaco` and `v2.hsaco`
+  in one host process and producing different direct and SDL-readback checksums.
 
-They still do not prove zero-copy VRAM-to-display interop.
+They also tested the larger graphics interop claims and found them unsupported
+in this worker:
+
+- HIP/OpenGL graphics-buffer interop does not compile because
+  `hipGraphicsGLRegisterBuffer` is not declared by the installed ROCm headers.
+- HIP/Vulkan external-memory interop does not compile because Vulkan headers are
+  absent from the worker image.
+- Direct framebuffer display cannot run because the worker exposes no
+  `/dev/fb*` or `/dev/dri/*` devices; it only has the Xvfb `:99` display.
+- CUDA compiles with `nvcc`, but runtime device discovery fails on this AMD host
+  with `cudaErrorInsufficientDriver`.
+
+So the honest current statement is: GPU compute HMR is proven, direct HIP pixel
+generation is proven, and SDL copyback/upload display is proven. Zero-copy
+VRAM-to-display, live CUDA/HIP graphics-buffer sharing, and direct framebuffer
+display are not proven or supported by this stack yet.
 
 The latest live validation workspace was:
 
