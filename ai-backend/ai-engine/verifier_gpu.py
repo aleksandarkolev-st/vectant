@@ -18,18 +18,19 @@ makes a judgement call:
      names look like a `_safe`/`_v2`/`_fallback` extension of an
      existing kernel — or a `safe_<existing>` prefix — are rejected.
 
-  3. **Signature preservation on Tier 2/3.** For heals targeting
-     `device.cu` under the perf or runtime tiers, every existing kernel
-     symbol must still exist with an unchanged parameter list unless
-     the diff also patches the host launch site for it.
+  3. **Signature preservation on Tier 2/3.** For heals targeting the
+     manifest-declared device role under the perf or runtime tiers, every
+     existing kernel symbol must still exist with an unchanged parameter
+     list unless the diff also patches the host launch site for it.
 
-  4. **No new `.cu`/`.hip` files.** The "5 files only" rule from
-     `GPU_SPLIT_PROMPT` — multi-TU device builds are a Phase-5 concern.
+  4. **No new `.cu`/`.hip` files.** The current GPU HMR manifest supports
+     one device translation unit role. Multi-TU device builds require a
+     later manifest/runtime contract.
 
 In addition, split-path checks (§5.6 item 2):
 
   - every host launch has been rewritten to `synthi_gpu_launch(...)`,
-    and every referenced kernel is declared in `device.cu`,
+    and every referenced kernel is declared in the device role file,
   - the declared `gpu.arch` list isn't empty.
 
 The verifier returns a structured rejection (list of `Violation`s)
@@ -91,8 +92,6 @@ _GLOBAL_DECL_RE = re.compile(
     r"__global__\s+(?:void\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
     re.MULTILINE,
 )
-
-_DEVICE_FILES = {"device.cu", "device.hip"}
 
 _NEW_FILE_OPS = {"create", "new", "add_file"}
 
@@ -166,7 +165,7 @@ def verify_heal_output(
         BuildManifest (rule 1: no file creation).
       edits: the healer's `{module, operation, anchor, content}` list.
       existing_kernels: iterable of kernel symbol names defined in the
-        pre-heal `device.cu` / `device.hip`.
+        pre-heal device role.
       existing_device_source: the unedited device file content (used
         for rule 3 — signature preservation).
       host_launch_sites: kernel name → host launch-site source line,
@@ -178,6 +177,10 @@ def verify_heal_output(
     """
     violations: List[Violation] = []
     project_files_set: Set[str] = set(project_files)
+    device_files = {
+        f for f in project_files_set
+        if f.replace("\\", "/").lower().endswith((".cu", ".hip"))
+    }
     allowed_modules = set(project_files_set)
     alias_to_file = _module_aliases(project_files_set)
     allowed_modules.update(alias_to_file)
@@ -201,14 +204,14 @@ def verify_heal_output(
                     offending_module=module,
                 )
             )
-        if normalized_module.endswith(".cu") and normalized_module not in _DEVICE_FILES:
+        if normalized_module.endswith((".cu", ".hip")) and normalized_module not in device_files:
             violations.append(
                 Violation(
                     rule="no_extra_device_tu",
                     message=(
-                        f"Heal output introduces a new .cu file: {module!r}. "
-                        "Multi-TU device builds are a Phase-5 concern; v1 "
-                        "supports a single device.cu / device.hip module."
+                        f"Heal output introduces a new device translation unit: {module!r}. "
+                        "Multi-TU device builds require a later manifest/runtime "
+                        "contract; the current contract supports one device role."
                     ),
                     offending_module=module,
                 )
@@ -218,7 +221,7 @@ def verify_heal_output(
     device_edits = [
         {**e, "module": alias_to_file.get(e.get("module", ""), e.get("module", ""))}
         for e in edits
-        if alias_to_file.get(e.get("module", ""), e.get("module", "")) in _DEVICE_FILES
+        if alias_to_file.get(e.get("module", ""), e.get("module", "")) in device_files
     ]
     introduced_kernels = _collect_new_kernels(device_edits, existing_kernels_set)
     for new_name in introduced_kernels:
@@ -232,7 +235,7 @@ def verify_heal_output(
                         f"resembles an existing kernel {existing_match!r}. Patch "
                         "the existing kernel in place rather than adding a wrapper."
                     ),
-                    offending_module="device.cu",
+                    offending_module=alias_to_file.get("device", "device"),
                     offending_symbol=new_name,
                 )
             )
@@ -258,7 +261,7 @@ def verify_heal_output(
                                 "without removing/updating its host launch "
                                 "site. Patch both sides in one edit batch."
                             ),
-                            offending_module="device.cu",
+                            offending_module=alias_to_file.get("device", "device"),
                             offending_symbol=name,
                         )
                     )
@@ -272,7 +275,7 @@ def verify_heal_output(
                                 f"{name!r} without a matching host launch-site "
                                 "update. Patch both sides in one edit batch."
                             ),
-                            offending_module="device.cu",
+                            offending_module=alias_to_file.get("device", "device"),
                             offending_symbol=name,
                         )
                     )
@@ -351,10 +354,61 @@ def _split_top_level_args(body: str) -> List[str]:
     return args
 
 
+def _manifest_role_path(manifest: Optional[Mapping[str, object]], role: str) -> Optional[str]:
+    if not isinstance(manifest, dict):
+        return None
+    module_files = manifest.get("module_files")
+    if not isinstance(module_files, dict):
+        return None
+    value = module_files.get(role)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip().lstrip("./").replace("\\", "/")
+
+
+def _resolve_split_role_paths(
+    files: Mapping[str, str],
+    manifest: Optional[Mapping[str, object]],
+) -> dict[str, Optional[str]]:
+    def first_existing(candidates: Iterable[str]) -> Optional[str]:
+        for candidate in candidates:
+            if candidate in files:
+                return candidate
+        return None
+
+    paths: dict[str, Optional[str]] = {}
+    fallback_candidates = {
+        "shared": ("shared.h",),
+        "core": ("core.cpp",),
+        "gui": ("gui.cpp",),
+        "host_runner": ("host_runner.cpp",),
+    }
+    for role, candidates in fallback_candidates.items():
+        declared = _manifest_role_path(manifest, role)
+        paths[role] = declared if declared else first_existing(candidates)
+
+    declared_device = _manifest_role_path(manifest, "device")
+    if declared_device:
+        paths["device"] = declared_device
+    else:
+        paths["device"] = first_existing(("device.cu", "device.hip"))
+        if paths["device"] is None:
+            paths["device"] = next(
+                (
+                    name
+                    for name in files
+                    if name.replace("\\", "/").lower().endswith((".cu", ".hip"))
+                ),
+                None,
+            )
+    return paths
+
+
 def verify_split_output(
     *,
     files: Mapping[str, str],
     manifest_arch: Iterable[str],
+    manifest: Optional[Mapping[str, object]] = None,
 ) -> SplitVerificationResult:
     """Verify the Kernel Splitter Agent's output (§5.6 item 2).
 
@@ -366,12 +420,13 @@ def verify_split_output(
       - every host launch site uses `synthi_gpu_launch(...)`, not raw
         CUDA/HIP triple-chevron syntax.
       - every `synthi_gpu_launch(...)` kernel name is declared in
-        `device.cu` / `device.hip`.
-      - `shared.h` includes the worker-generated
+        the manifest-declared device role file.
+      - the manifest-declared shared role includes the worker-generated
         `synthi_gpu_runtime.h` ABI header instead of inventing local
         launch/lifecycle declarations.
-      - the split contains exactly the 5 expected files
-        (shared.h / core.cpp / gui.cpp / host_runner.cpp / device.cu|hip).
+      - the split contains every current GPU HMR semantic role. Filenames
+        come from `compile_manifest.module_files`; canonical names are only
+        fallbacks for older outputs.
     """
     violations: List[Violation] = []
     if not list(manifest_arch):
@@ -382,7 +437,36 @@ def verify_split_output(
             )
         )
 
-    device_source = files.get("device.cu") or files.get("device.hip") or ""
+    role_paths = _resolve_split_role_paths(files, manifest)
+    for role in ("shared", "core", "gui", "host_runner"):
+        path = role_paths.get(role)
+        if not path or path not in files:
+            violations.append(
+                Violation(
+                    rule="split_missing_file",
+                    message=f"Split output is missing required {role} role file.",
+                    offending_module=path or role,
+                )
+            )
+    device_path = role_paths.get("device")
+    if not device_path or device_path not in files:
+        violations.append(
+            Violation(
+                rule="split_missing_device_file",
+                message=(
+                    "GPU split output is missing the manifest-declared device "
+                    "role file. Kernels must live in the dedicated device role."
+                ),
+                offending_module=device_path or "device",
+            )
+        )
+
+    shared_path = role_paths.get("shared") or "shared"
+    core_path = role_paths.get("core") or "core"
+    gui_path = role_paths.get("gui") or "gui"
+    host_runner_path = role_paths.get("host_runner") or "host_runner"
+    device_path = role_paths.get("device") or "device"
+    device_source = files.get(device_path) or ""
     declared_kernels = set(_collect_kernel_signatures(device_source).keys())
     for match in _GLOBAL_DECL_RE.finditer(device_source):
         prefix = device_source[max(0, match.start() - 48) : match.start()]
@@ -395,44 +479,23 @@ def verify_split_output(
                         'extern "C" __global__ so the sidecar loader can '
                         "resolve the unmangled symbol by name."
                     ),
-                    offending_module="device.cu" if "device.cu" in files else "device.hip",
+                    offending_module=device_path,
                     offending_symbol=match.group("name"),
                 )
             )
 
-    expected = {"shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"}
-    has_device_file = "device.cu" in files or "device.hip" in files
-    missing_host = expected - set(files)
-    for f in missing_host:
-        violations.append(
-            Violation(
-                rule="split_missing_file",
-                message=f"Split output is missing required host file: {f}.",
-            )
-        )
-    if not has_device_file:
-        violations.append(
-            Violation(
-                rule="split_missing_device_file",
-                message=(
-                    "GPU split output is missing device.cu (or device.hip). "
-                    "Kernels must live in the dedicated 5th file."
-                ),
-            )
-        )
-
-    shared_source = files.get("shared.h") or ""
+    shared_source = files.get(shared_path) or ""
     if "synthi_gpu_runtime.h" not in shared_source:
         violations.append(
             Violation(
                 rule="missing_gpu_runtime_header",
                 message=(
-                    "shared.h must include \"synthi_gpu_runtime.h\". "
-                    "The GPU ABI lives in the worker-generated runtime "
-                    "header; the agent should conform to it rather than "
-                    "declaring a private launch contract."
+                    "The shared role must include \"synthi_gpu_runtime.h\". "
+                    "The GPU ABI lives in the worker-generated runtime header; "
+                    "the agent should conform to it rather than declaring a "
+                    "private launch contract."
                 ),
-                offending_module="shared.h",
+                offending_module=shared_path,
             )
         )
     if "synthi_gpu_runtime.h" in shared_source and re.search(r"\bstruct\s+DeviceDescriptor\b", shared_source):
@@ -440,22 +503,22 @@ def verify_split_output(
             Violation(
                 rule="runtime_abi_redeclared",
                 message=(
-                    "shared.h includes synthi_gpu_runtime.h but also redeclares "
-                    "DeviceDescriptor. The worker-generated runtime header owns "
-                    "that ABI; remove the local struct declaration."
+                    "The shared role includes synthi_gpu_runtime.h but also "
+                    "redeclares DeviceDescriptor. The worker-generated runtime "
+                    "header owns that ABI; remove the local struct declaration."
                 ),
-                offending_module="shared.h",
+                offending_module=shared_path,
             )
         )
 
-    core_source = files.get("core.cpp") or ""
+    core_source = files.get(core_path) or ""
     for symbol in ("core_on_load", "core_on_update"):
         if not re.search(rf'extern\s+"C"[^;{{\n]*\b{symbol}\s*\(', core_source):
             violations.append(
                 Violation(
                     rule="missing_core_lifecycle_export",
-                    message=f"core.cpp must export extern \"C\" {symbol} with the Synthi runner ABI.",
-                    offending_module="core.cpp",
+                    message=f"The core role must export extern \"C\" {symbol} with the Synthi runner ABI.",
+                    offending_module=core_path,
                     offending_symbol=symbol,
                 )
             )
@@ -465,11 +528,11 @@ def verify_split_output(
                 Violation(
                     rule="missing_core_gpu_lifecycle_export",
                     message=(
-                        f"core.cpp must export extern \"C\" {symbol}. "
+                        f"The core role must export extern \"C\" {symbol}. "
                         "The host GPU lifecycle ABI belongs in the host module, "
-                        "not in device.cu/device.hip."
+                        "not in the device role."
                     ),
-                    offending_module="core.cpp",
+                    offending_module=core_path,
                     offending_symbol=symbol,
                 )
             )
@@ -481,11 +544,11 @@ def verify_split_output(
             Violation(
                 rule="heap_allocated_app_state",
                 message=(
-                    "core.cpp must not allocate AppState with new/malloc/calloc "
+                    "The core role must not allocate AppState with new/malloc/calloc "
                     "or smart-pointer factories. Use static module storage and "
                     "copy preserved fields from prev_state on hot reload."
                 ),
-                offending_module="core.cpp",
+                offending_module=core_path,
             )
         )
     if re.search(r'extern\s+"C"[^;{\n]*\b(?:device_descriptor|device_on_load|device_kernel_sig_hash)\s*\(', device_source):
@@ -493,11 +556,11 @@ def verify_split_output(
             Violation(
                 rule="device_file_owns_host_gpu_lifecycle",
                 message=(
-                    "device.cu/device.hip must contain kernels/device helpers only. "
+                    "The device role must contain kernels/device helpers only. "
                     "Move device_descriptor/device_on_load/device_kernel_sig_hash "
-                    "exports to core.cpp."
+                    "exports to the core role."
                 ),
-                offending_module="device.cu" if "device.cu" in files else "device.hip",
+                offending_module=device_path,
             )
         )
     if re.search(r"\bsynthi_register\s*\(\s*&", core_source):
@@ -505,11 +568,11 @@ def verify_split_output(
             Violation(
                 rule="registers_pointer_slot",
                 message=(
-                    "core.cpp registers the address of a pointer field. Allocate "
+                    "The core role registers the address of a pointer field. Allocate "
                     "the device buffer first, then call synthi_register(ptr, ...), "
                     "not synthi_register(&ptr, ...)."
                 ),
-                offending_module="core.cpp",
+                offending_module=core_path,
             )
         )
     if (
@@ -521,11 +584,11 @@ def verify_split_output(
             Violation(
                 rule="device_buffers_not_allocated",
                 message=(
-                    "core.cpp launches/copies GPU buffers but does not allocate "
+                    "The core role launches/copies GPU buffers but does not allocate "
                     "them. Move the user's cudaMalloc/hipMalloc setup into "
                     "core_on_load before registration and first launch."
                 ),
-                offending_module="core.cpp",
+                offending_module=core_path,
             )
         )
     if re.search(r"\bvoid\s*\*\s+args\s*\[[^\]]*\][^;]*;", core_source) and re.search(
@@ -538,7 +601,7 @@ def verify_split_output(
                     "synthi_gpu_launch must receive an initializer-list literal "
                     "like `{ &arg0, &arg1 }`, not a `void* args[]` array."
                 ),
-                offending_module="core.cpp",
+                offending_module=core_path,
             )
         )
     for body in _iter_call_bodies(core_source, "synthi_gpu_launch"):
@@ -552,7 +615,7 @@ def verify_split_output(
                         "gpu, kernel name, grid, block, shared bytes, stream, "
                         "and an initializer-list literal `{ &arg0, ... }`."
                     ),
-                    offending_module="core.cpp",
+                    offending_module=core_path,
                 )
             )
             continue
@@ -569,7 +632,7 @@ def verify_split_output(
                         "host variables, e.g. `{ &device_ptr, &count, &dt }`. "
                         "Do not cast scalar values or bit patterns to pointers."
                     ),
-                    offending_module="core.cpp",
+                    offending_module=core_path,
                 )
             )
             continue
@@ -587,19 +650,19 @@ def verify_split_output(
                                 "must pass the address of a host-side argument "
                                 "variable, e.g. `{ &device_ptr, &count }`."
                             ),
-                            offending_module="core.cpp",
+                            offending_module=core_path,
                         )
                     )
                     break
 
-    gui_source = files.get("gui.cpp") or ""
+    gui_source = files.get(gui_path) or ""
     for symbol in ("gui_on_load", "gui_on_render"):
         if not re.search(rf'extern\s+"C"[^;{{\n]*\b{symbol}\s*\(', gui_source):
             violations.append(
                 Violation(
                     rule="missing_gui_lifecycle_export",
-                    message=f"gui.cpp must export extern \"C\" {symbol} with the Synthi runner ABI.",
-                    offending_module="gui.cpp",
+                    message=f"The gui role must export extern \"C\" {symbol} with the Synthi runner ABI.",
+                    offending_module=gui_path,
                     offending_symbol=symbol,
                 )
             )
@@ -608,12 +671,12 @@ def verify_split_output(
             Violation(
                 rule="gui_uses_global_window_id_lookup",
                 message=(
-                    "gui.cpp must not recover the renderer through "
+                    "The gui role must not recover the renderer through "
                     "SDL_GetWindowFromID(1). Preserve the user's rendering "
                     "backend and use the host render surface passed through "
                     "gui_on_load instead of guessing a global window id."
                 ),
-                offending_module="gui.cpp",
+                offending_module=gui_path,
             )
         )
     if re.search(
@@ -624,27 +687,27 @@ def verify_split_output(
             Violation(
                 rule="gui_treats_renderer_as_window",
                 message=(
-                    "gui.cpp must not treat gui_on_load's window_ptr as "
+                    "The gui role must not treat gui_on_load's window_ptr as "
                     "SDL_Window*. For SDL2 source, the shipped runner passes "
                     "the stable SDL_Renderer* render surface through that "
                     "historical parameter; for other backends, preserve the "
                     "source backend's corresponding render surface/context."
                 ),
-                offending_module="gui.cpp",
+                offending_module=gui_path,
             )
         )
 
-    host_runner_source = files.get("host_runner.cpp") or ""
+    host_runner_source = files.get(host_runner_path) or ""
     if re.search(r"\bsynthi_(?:gpu_)?register", host_runner_source):
         violations.append(
             Violation(
                 rule="host_runner_registers_gpu_buffers",
                 message=(
-                    "host_runner.cpp must not call synthi_register or "
+                    "The host_runner role must not call synthi_register or "
                     "synthi_gpu_register_buffer. Keep device allocation and "
-                    "registration in core.cpp lifecycle code."
+                    "registration in core role lifecycle code."
                 ),
-                offending_module="host_runner.cpp",
+                offending_module=host_runner_path,
             )
         )
     if host_runner_source and not re.search(r"\bgui_on_(?:load|render)\b|libgui", host_runner_source):
@@ -652,14 +715,14 @@ def verify_split_output(
             Violation(
                 rule="host_runner_omits_gui_module",
                 message=(
-                    "host_runner.cpp must load/call the generated GUI module "
+                    "The host_runner role must load/call the generated GUI module "
                     "or otherwise route rendering through gui_on_render every frame."
                 ),
-                offending_module="host_runner.cpp",
+                offending_module=host_runner_path,
             )
         )
 
-    for host_path in ("core.cpp", "gui.cpp", "host_runner.cpp"):
+    for host_path in (core_path, gui_path, host_runner_path):
         src = files.get(host_path)
         if not src:
             continue
@@ -689,7 +752,7 @@ def verify_split_output(
                             f"Host file {host_path} launches {kernel!r} via "
                             "synthi_gpu_launch(...) "
                             "but no matching __global__ symbol is declared "
-                            "in device.cu/device.hip."
+                            "in the device role."
                         ),
                         offending_module=host_path,
                         offending_symbol=kernel,
@@ -835,16 +898,29 @@ def _host_site_was_removed(
 
 def _module_aliases(project_files: Set[str]) -> dict[str, str]:
     aliases: dict[str, str] = {}
-    if "core.cpp" in project_files:
-        aliases["core"] = "core.cpp"
-    if "gui.cpp" in project_files:
-        aliases["gui"] = "gui.cpp"
-    if "shared.h" in project_files:
-        aliases["shared"] = "shared.h"
-    if "host_runner.cpp" in project_files:
-        aliases["host_runner"] = "host_runner.cpp"
-    if "device.cu" in project_files:
-        aliases["device"] = "device.cu"
-    elif "device.hip" in project_files:
-        aliases["device"] = "device.hip"
+
+    def pick(canonical: str, predicate) -> Optional[str]:
+        if canonical in project_files:
+            return canonical
+        return next(
+            (
+                path
+                for path in sorted(project_files)
+                if predicate(path.replace("\\", "/").split("/")[-1].lower(), path.lower())
+            ),
+            None,
+        )
+
+    role_candidates = {
+        "core": pick("core.cpp", lambda base, _: "core" in base and base.endswith((".cpp", ".cc", ".cxx"))),
+        "gui": pick("gui.cpp", lambda base, _: ("gui" in base or "render" in base) and base.endswith((".cpp", ".cc", ".cxx"))),
+        "shared": pick("shared.h", lambda base, _: "shared" in base and base.endswith((".h", ".hpp"))),
+        "host_runner": pick("host_runner.cpp", lambda base, _: "runner" in base and base.endswith((".cpp", ".cc", ".cxx"))),
+        "device": pick("device.cu", lambda base, _: base.endswith((".cu", ".hip"))),
+    }
+    if role_candidates["device"] is None:
+        role_candidates["device"] = pick("device.hip", lambda base, _: base.endswith((".cu", ".hip")))
+    for role, path in role_candidates.items():
+        if path:
+            aliases[role] = path
     return aliases

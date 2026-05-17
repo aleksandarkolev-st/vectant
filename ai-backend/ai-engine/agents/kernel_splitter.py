@@ -364,7 +364,9 @@ async def run_kernel_splitter(
                 arch_list = [str(a) for a in arch_value]
 
     verification = verify_split_output(
-        files=parsed["files"], manifest_arch=arch_list
+        files=parsed["files"],
+        manifest_arch=arch_list,
+        manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
     )
 
     return KernelSplitResult(

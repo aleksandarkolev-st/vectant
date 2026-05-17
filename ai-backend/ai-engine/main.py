@@ -2086,7 +2086,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 req.prompt,
                 (
                     "The previous GPU split failed Synthi's verifier. "
-                    "Regenerate the complete five-file split and fix all "
+                    "Regenerate the complete GPU role split and fix all "
                     "violations exactly. Do not repeat any rejected pattern:\n"
                     f"{notes}"
                 ),

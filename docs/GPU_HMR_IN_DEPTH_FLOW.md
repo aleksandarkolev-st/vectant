@@ -43,7 +43,7 @@ ordinary user source with CUDA/HIP kernels
   -> verifier rejects bad generated splits
   -> worker compiles host modules and GPU sidecar
   -> shipped GPU runner starts with generated core/gui/device ABI files
-  -> later device-only edit compiles only device.cu/device.hip sidecar
+  -> later device-only edit compiles only the manifest-declared device role
   -> GPU reload planner chooses plan=device_only when ABI is unchanged
   -> runner hot-loads new cubin/hsaco without restarting app state
 ```
@@ -117,7 +117,7 @@ sequenceDiagram
     Runner->>Runner: Load core/gui + cubin/hsaco
     Runner-->>Browser: Video frames + build/HMR events
 
-    User->>Browser: Edit generated device.cu/device.hip
+    User->>Browser: Edit generated device role file
     Browser->>Worker: compile(all manifest-declared files)
     Worker->>Worker: Compile new sidecar and compare ABI
     Worker->>Runner: device_only GPU reload
@@ -210,7 +210,7 @@ ai-backend/ai-engine/main.py
 Responsibilities:
 
 - Run the GPU split prompt.
-- Return the five-file GPU split plus manifest metadata.
+- Return the current GPU role split plus manifest metadata.
 - Verify generated output mechanically before returning it to the worker.
 - Retry with verifier feedback when generated output is invalid.
 
@@ -393,16 +393,21 @@ workspace that compiles incorrectly or cannot HMR the device sidecar.
 
 The GPU split prompt is not supposed to be a demo-specific prompt.
 
-It tells the model to emit:
+It tells the model to emit the current GPU HMR semantic roles:
 
 ```text
-shared.h
-core.cpp
-gui.cpp
-host_runner.cpp
-device.cu or device.hip
+shared
+core
+gui
+host_runner
+device
 .synthi/build_manifest.json
 ```
+
+The examples still use `shared.h`, `core.cpp`, `gui.cpp`, `host_runner.cpp`,
+and `device.cu`/`device.hip` as default filenames. Those are defaults and
+fallbacks, not the only legal paths. The manifest's `module_files` mapping is
+the source of truth.
 
 The generated ABI functions live in generated source, not in user source.
 
@@ -446,7 +451,7 @@ The prompt must not:
 - Recover windows/renderers through hardcoded global IDs.
 - Allocate `AppState` with `new`, `malloc`, `calloc`, or smart pointers.
 - Redeclare `synthi_gpu_runtime.h` structs/functions by hand.
-- Put GPU lifecycle exports in `device.cu` or `device.hip`.
+- Put GPU lifecycle exports in the device role file.
 - Drop kernel branches or reset paths because the current demo seems to work.
 
 ## Verifier Contract
@@ -524,7 +529,7 @@ Detailed first-compile flow:
 6. Worker detects GPU markers.
 7. Worker attaches GPU target preference prompt.
 8. Worker calls ai-engine /refactor/split/gpu.
-9. AI engine asks the model for the five-file split.
+9. AI engine asks the model for the current GPU role split.
 10. AI engine runs verifier_gpu.py.
 11. If verifier rejects output, ai-engine retries with feedback.
 12. Worker receives verified split.
@@ -561,7 +566,7 @@ After the first split exists, the fast path is no longer a full AI split.
 Detailed device-only edit flow:
 
 ```text
-1. User edits generated device.cu/device.hip.
+1. User edits the generated device role file.
 2. Browser sees workspace manifest.
 3. Browser sends all manifest-declared files.
 4. Worker classifies the edit as a split-file edit.
@@ -737,19 +742,38 @@ shot 2: 800x600, visible bright/color pixels
 The two screenshots showed the particle field advancing, which proves that the
 render loop and video path were alive after the AI split and device HMR reload.
 
-## What Is Hardcoded And What Is Not
+## What Is Fixed And What Is Not
 
-Hardcoded runtime ABI:
+Fixed runtime contract:
 
 - Synthi module export names.
 - Synthi GPU runtime boundary header.
-- The five generated roles for the current C++ CUDA/HIP GPU path.
+- Current C++ GPU semantic module roles: `shared`, `core`, `gui`,
+  `host_runner`, and `device`.
 - Device sidecar ABI fingerprinting.
+
+Those role names are stable runtime slots, not required source filenames. The
+browser, MCP harness, worker, and AI response normalization must use
+`compile_manifest.module_files` to map each role to the actual path emitted by
+the split.
+
+Legacy/default fallback filenames:
+
+- `shared.h`
+- `core.cpp`
+- `gui.cpp`
+- `host_runner.cpp`
+- `device.cu` or `device.hip`
+
+These names still appear in prompts, examples, older manifests, tests, and
+backward-compatible fallback paths. They must not be treated as the only valid
+workspace filenames when a manifest declares different paths.
 
 Not hardcoded:
 
 - User source filenames.
 - Adapted workspace filenames.
+- Manifest-declared split file paths.
 - Rendering library choice.
 - CUDA vs ROCm target preference.
 - The user's kernel body semantics.
@@ -757,6 +781,12 @@ Not hardcoded:
 
 The ABI is hardcoded because the runner needs stable symbols to `dlsym`.
 The user does not write those symbols; the AI split generates them.
+
+Not implemented yet:
+
+- Arbitrary numbers of host runtime roles.
+- Multiple device translation units for one GPU sidecar.
+- A non-C++ GPU HMR runtime contract.
 
 ## Common Failure Modes
 

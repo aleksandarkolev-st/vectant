@@ -3815,8 +3815,8 @@ AppState* state = (AppState*)state_ptr;
 # MEMSET / HotApi v2 rules, same <JSON>...</JSON> + <synthi_arch_cache>
 # response format. Adds:
 #
-#   - a 5th `device.cu` (CUDA) or `device.hip` (HIP) file containing every
-#     `__global__`/`__device__` kernel,
+#   - one manifest-declared device role containing every `__global__` /
+#     `__device__` kernel,
 #   - a `gpu` sub-block inside <synthi_build_manifest>,
 #   - HotApi v2.1 GPU fields (`device_descriptor`, `device_on_load`,
 #     `device_save_size`/`device_save_write`, `device_kernel_sig_hash`),
@@ -3831,36 +3831,44 @@ GPU_SPLIT_PROMPT = r"""
 You are a C++ + CUDA/HIP Hot-Module-Reload (HMR) Splitter+Adapter.
 
 You will be given a single-file C++ application that contains GPU kernels
-(CUDA `__global__` / HIP `__global__`). Refactor it into **5 files** that
-work with a dynamic-linking HMR system extended for GPU device modules.
+(CUDA `__global__` / HIP `__global__`). Refactor it into the current Synthi
+GPU HMR semantic roles. The role names are fixed runtime slots, but source
+filenames are not: emit appropriate paths and map each role in
+`compile_manifest.module_files`.
 
-# THE 5 OUTPUT FILES
+# OUTPUT ROLES
 
-1. shared.h          - AppState struct + shared types + extern "C" prototypes.
+1. shared role       - AppState struct + shared types + extern "C" prototypes.
                        Header-only. No executable code except inline accessors.
+                       Default filename: `shared.h`.
 
-2. core.cpp          - logic and state mutation. Compiles to libcore.so.
+2. core role         - logic and state mutation. Compiles to libcore.so.
                        Calls into the device module through the Synthi
-                       GPU launch boundary declared in shared.h. NO
+                       GPU launch boundary declared in the shared role. NO
                        windowing, NO rendering, NO main(), NO library init.
+                       Default filename: `core.cpp`.
 
-3. gui.cpp           - rendering and UI. Compiles to libgui.so.
+3. gui role          - rendering and UI. Compiles to libgui.so.
                        Reads from AppState (filled by core + device); never
                        directly launches kernels. NO main().
+                       Default filename: `gui.cpp`.
 
-4. host_runner.cpp   - process entry point. Owns the CUDA/HIP context and
+4. host_runner role  - process entry point. Owns the CUDA/HIP context and
                        the window. dlopens libcore/libgui, dlsyms
                        core_on_load/core_on_update and
                        gui_on_load/gui_on_render, then calls update+render
                        every frame. Do not call `synthi_register`,
                        `synthi_gpu_register_buffer`, or redeclare Synthi GPU
                        runtime functions here.
+                       Default filename: `host_runner.cpp`.
 
-5. device.cu (CUDA) **OR** device.hip (ROCm) - every `__global__` and
-                       `__device__` symbol. Builds to a sidecar `cubin`
-                       (CUDA) / `hsaco` (HIP) loaded by `cuModuleLoadData`
-                       / `hipModuleLoad`. **Exactly one device file** —
-                       multi-TU splits are reserved for a later phase.
+5. device role       - every `__global__` and `__device__` symbol. Builds to
+                       a sidecar `cubin` (CUDA) / `hsaco` (HIP) loaded by
+                       `cuModuleLoadData` / `hipModuleLoad`. The current
+                       runtime supports one device translation unit role;
+                       multi-TU device builds require a later manifest/runtime
+                       contract. Default filename: `device.cu` for CUDA or
+                       `device.hip` for ROCm.
 
 Pick the device extension based on the vendor:
   - `device.cu` for CUDA (`#include <cuda_runtime.h>` etc.),
@@ -4026,8 +4034,9 @@ extern "C" unsigned long long device_kernel_sig_hash(const char* name);
     `cuCtxDestroy`/`hipCtxDestroy`.
   - **Constants accessed via `cuModuleGetGlobal` only.** Direct symbol
     references to `__constant__` memory break across a cubin swap.
-  - **No new `.cu`/`.hip` files.** This split produces exactly one
-    device file. Multi-TU device builds are a later phase.
+  - **No extra `.cu`/`.hip` translation units.** This split produces exactly
+    one device role. Multi-TU device builds require a later manifest/runtime
+    contract.
   - Tag every `cudaMalloc`/`hipMalloc` call with a one-token lifetime
     hint at registration time:
 
@@ -4135,9 +4144,10 @@ ROCm/HIP must not. A ROCm `device_flags` list should usually be
 
 - Respond with the <JSON>...</JSON> block FIRST, then <synthi_arch_cache>.
 - NO prose before, between, or after the two blocks.
-- All five files must be present in the JSON as filename keys whose values are
-  raw source-code strings. Do not emit nested `{ "filename": ..., "content": ... }`
-  objects, role objects, or JSON inside file contents.
+- Every required semantic role must be present in the JSON as filename keys whose
+  values are raw source-code strings. Do not emit nested
+  `{ "filename": ..., "content": ... }` objects, role objects, or JSON inside
+  file contents.
 - The build manifest MUST include both the host fields and a non-null
   `gpu` sub-object.
 - The build manifest `files` array MUST list the exact split files emitted
