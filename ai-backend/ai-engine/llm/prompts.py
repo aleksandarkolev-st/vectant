@@ -4150,6 +4150,10 @@ ROCm/HIP must not. A ROCm `device_flags` list should usually be
 - `gui.cpp` MUST export `gui_on_load` and `gui_on_render`.
 - Preserve the user's intent: kernel logic, buffer sizes, launch
   shapes, frame timing — all unchanged.
+- Preserve every kernel branch and boundary condition. Do not simplify away
+  wraparound, clamp, reset, respawn, or guard logic even when it looks
+  demo-specific; visible GPU demos depend on those branches continuing to
+  execute after HMR.
 
 # USER SOURCE
 

@@ -207,7 +207,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     let has_gpu_markers = request_has_gpu_markers(req);
     // Split output depends on more than raw source now: the same file can
     // produce CUDA or ROCm sidecars depending on the user's GPU target.
-    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-renderer-ptr-v2";
+    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-preserve-kernel-branches-v3";
     let source_hash = calculate_hash(&(
         AI_SPLIT_CACHE_SCHEMA_VERSION,
         req.source.as_str(),
@@ -243,9 +243,9 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     let client = reqwest::Client::new();
     let gpu_target_prompt = if req.prefer_gpu_pipeline {
         match gpu_mode.as_str() {
-            "cuda" => Some("GPU target preference: emit CUDA/NVIDIA-compatible GPU HMR split output when GPU splitting is applicable."),
-            "rocm" | "hip" => Some("GPU target preference: emit ROCm/HIP-compatible GPU HMR split output when GPU splitting is applicable."),
-            _ => None,
+            "cuda" => Some("GPU target preference: emit CUDA/NVIDIA-compatible GPU HMR split output when GPU splitting is applicable. Preserve every kernel branch and boundary condition exactly, including wraparound, clamp, reset, and respawn logic."),
+            "rocm" | "hip" => Some("GPU target preference: emit ROCm/HIP-compatible GPU HMR split output when GPU splitting is applicable. Preserve every kernel branch and boundary condition exactly, including wraparound, clamp, reset, and respawn logic."),
+            _ => Some("GPU target preference: emit GPU HMR split output when GPU splitting is applicable. Preserve every kernel branch and boundary condition exactly, including wraparound, clamp, reset, and respawn logic."),
         }
     } else {
         None
