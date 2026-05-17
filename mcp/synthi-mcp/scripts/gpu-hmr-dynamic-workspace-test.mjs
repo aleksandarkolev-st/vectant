@@ -8,6 +8,9 @@
 // Run:
 //   cd mcp/synthi-mcp
 //   SYNTHI_GPU_HMR=1 SYNTHI_GPU_VENDOR=auto node scripts/gpu-hmr-dynamic-workspace-test.mjs
+//
+// Container names are auto-detected from docker compose by service name, so
+// this works with compose projects like `vectant-ade` and older `synthi-ide`.
 
 import { spawn, execFile } from 'node:child_process';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
@@ -75,6 +78,39 @@ function execText(cmd, args, timeoutMs = 10000) {
       resolve(`${stdout ?? ''}${stderr ?? ''}`.trim());
     });
   });
+}
+
+async function dockerContainerExists(nameOrId) {
+  if (!nameOrId) return false;
+  const inspected = await execText('docker', ['container', 'inspect', nameOrId], 5000);
+  return typeof inspected === 'string' && inspected.length > 0;
+}
+
+async function resolveDockerContainer(configured, service) {
+  if (await dockerContainerExists(configured)) return configured;
+
+  const repoRoot = path.resolve(__dirname, '../../..');
+  const composeId = await execText(
+    'docker',
+    ['compose', '--project-directory', repoRoot, 'ps', '-q', service],
+    8000,
+  );
+  const id = String(composeId || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
+  if (id) return id;
+
+  const labelIds = await execText(
+    'docker',
+    ['ps', '-q', '--filter', `label=com.docker.compose.service=${service}`],
+    8000,
+  );
+  const labelId = String(labelIds || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
+  return labelId || configured;
+}
+
+async function resolveDockerContainers() {
+  if (CFG.mcpTransport !== 'docker') return;
+  CFG.mcpContainer = await resolveDockerContainer(CFG.mcpContainer, 'mcp');
+  CFG.workerContainer = await resolveDockerContainer(CFG.workerContainer, 'worker');
 }
 
 async function detectVendor() {
@@ -727,6 +763,7 @@ async function compileViaMcp(ctx, primaryPath, content) {
 
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
+  await resolveDockerContainers();
   const vendor = await detectVendor();
   record('gpu vendor', 'pass', vendor);
 
