@@ -2,13 +2,13 @@ services:
   # ── Infrastructure ──────────────────────────────────────────────────────────
   
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
     environment:
       POSTGRES_USER: synthi
       POSTGRES_PASSWORD: password
       POSTGRES_DB: synthi
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -19,9 +19,9 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -35,13 +35,18 @@ services:
       dockerfile: Dockerfile
     image: synthi-y-sweet
     ports:
-      - "8180:8080"
+      - "127.0.0.1:8180:8080"
     volumes:
       - ysweet-data:/data
     restart: unless-stopped
     command: y-sweet serve /data --host 0.0.0.0 --port 8080
     environment:
       - Y_SWEET_AUTH_KEY=dev-secret
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8080'"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
 
   # ── Core Services ──────────────────────────────────────────────────────────
 
@@ -55,30 +60,22 @@ services:
         NEXT_PUBLIC_COLLAB_PORT: "1234"
         NEXT_PUBLIC_COMPILE_SIGNAL_URL: "ws://localhost:9000"
         NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
-        # Browser-side code-intel / provenance hooks call the ai-engine via a
-        # public host URL, not the compose-network hostname. Default to 8081
-        # because Windows commonly reserves the 8000 range in excluded ports.
         NEXT_PUBLIC_CODE_INTEL_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
         NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
+    env_file:
+      - path: ./.env.local
+        required: false
+        # Browser-side code-intel / provenance hooks call the ai-engine via a
+        # public host URL, not the compose-network hostname. Default to 8081
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
-      # Auth (NextAuth.js)
+      # Non-secret local defaults. Auth, OAuth, DB, GCP, and AI credentials
+      # are loaded from the gitignored .env.local file.
       NEXTAUTH_URL: "http://localhost:3000/"
-      NEXTAUTH_SECRET: "YOUR_SECURE_RANDOM_SECRET_KEY"
-      AUTH_SECRET: "YOUR_SECURE_RANDOM_SECRET_KEY"
-      # Database
-      DATABASE_URL: "postgres://synthi:testNegrocito123_@34.32.85.168/synthi"
-      # OAuth Providers
-      GITHUB_ID: "Ov23liSHBwbfjvZhwD6n"
-      GITHUB_SECRET: "1a3f9f34861adfa600ea00fb1d619ea74ff4957c"
-      GOOGLE_CLIENT_ID: "14384285684-lfnucknr088h28hb6svu7dpcb640ms3t.apps.googleusercontent.com"
-      GOOGLE_CLIENT_SECRET: "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"
-      # GCP / Storage
+      # GCP / Storage metadata
       GCP_PROJECT_ID: "overview-synti"
       GCS_BUCKET_NAME: "synthi-cloud-storage"
-      GCP_CLIENT_EMAIL: "file-uploader-service@overview-synti.iam.gserviceaccount.com"
-      GCP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCZ4GiBbEtfsT/j\nl1mnS2MRbjyDjU7wQGeBvi3TD4jmBcWi8EHzp+H1rIxj9fHWBHA2LhEiETN6Hw6z\n4MnEGSLCk+XsGWIJrzc4oX8RGpEg9XLFAHEszSVavaumS4KMSuYc8MTZYsfRjYHd\nZDlej5i8qFsEn9F+UO/oOo/gQuAV2/uiT19qZTs0biKiJKT5a22O44QzD1tk0Fah\nZyvjv1YLGuwnRVNipLFqzxQQOkcJhj3r2KX+BQ+CAseanMzBf3JL+L9tJnnxZ0kD\nW/BYbmvDx48HAhdUZhAv0t0ZL3+1NzW8emVzRuzcsRRlt2v1f69PscAJUmtiHV9E\nPE3Hn5jFAgMBAAECggEAGtFvpU7YfB8KQYI5T9zlsT4DMfJI1bqDz6rzlZtZgq1y\n2okBFZQm34hpF2rf8Sro26h/t+5DiH8tMtB0mca/tiXMpq9t1L5C443R9YspzBK7\nI/aFwwcmAYCZD+yNHiJXpKeZx0FeDfmZrpovHXntZsP4yP+JpXg5t8GtHarKH0To\nhuTcnqKo7BfSjN/sZMGnvIjyja7eACVJU5FG9nd7vNQekm0ZUxLXylOvzBIAW1Xx\nDba3HHX0YIL+nyleZvC4A4JrXE65iPU3dqQvbwkZNsfCTtaE6AFfKiVcAAXf2icw\nU57e8NoH5fwmQ+5VXofhD7jbG8N2+8vZp+552fD7AQKBgQDNdUg2n7SZR75MNwx2\nXusH1U8xrt9R3cE0QE0vFglG7HzkSICXIvYytrdZWyxA0WTaT+xMxDGO4L7Ohuqk\nk8OiJ1r3RblrmING2eXaMl2cEYsZAlRBnrykSDNAIj0kD9S0lGFve+wmxC5Jw7dr\n5BaqpKRwGwHIJ+oewjEst9gcpQKBgQC/usfgUdsXqj0GO1gqMgL2u2bjsWKQHd53\nIC4lsL5kXwj/nCougXtrRIh2n1Gcq17tGPKPkryT5QLnxUu9ZY+6WkNZSJhcfFS8\nXxStrWH8NgCMpFR1O5hREKCYlebXL2zCRTUZS4943E8Olj4CjxLfStuU8t/W1p+b\nsEGB9zIxoQKBgQC0WmSWlqDZALJaguQssGuOR8Ap88DTQ18K9/sI/0YLfSKw3bgL\nc8Q8hknyZWc2StlGDmx2gq6iJkU4VBR7fb54hCWE9C6s9YcfVb1ASYAEtR2uSW4e\n4DHl3/8lKCkVk9P65FmXnGeTLBkZ5XUIf4MqLjautfZddjQ85eh2wbcyhQKBgEHw\n74WLIZtGBa77AhuhD7vkQELXY1rFqxm1i6mS3CiRNvsSrr9H8Ta3X2fM67jCh+dr\nySDwCsOi5Bjqll4RbBlfqgIvIZfNeyc+XFJPa3/e4tl8O0AGuyBGY7WW+MnRmcpH\nGzgT8MhUnSwbKEChDJCXomXcEnhFYKefOyiD6FOBAoGAfiXxNfmK6iTGqG3A+HHI\n1TupEEPZudygJ2Awd1+22iy5++0BqvMf3o0j0JP0u8ArwkcVDWNuLWrpI6aHZIb8\nVb34haFWR82J/tX2NTq9zAQq//d8OAgEH6PDb0K2YlQVOSmPcYWqd7aGVGMW5+QO\nhZeaOzLwbJLOa36t6Ph+70c=\n-----END PRIVATE KEY-----\n"
       # Cloudflare TURN (not used locally — local coturn handles relay)
       CLOUDFLARE_TURN_TOKEN_ID: ""
       CLOUDFLARE_TURN_API_TOKEN: ""
@@ -88,10 +85,6 @@ services:
       LOCAL_TURN_CREDENTIAL: "synthi"
       # Public URLs
       NEXT_PUBLIC_GATEWAY_WS_URL: "ws://localhost:7070/ws"
-      # AI — used by /api/completion, /api/next-edit, /api/chat, /api/theme-generate.
-      # Without this the SDK falls back to ADC and throws
-      # "Could not load the default credentials".
-      GEMINI_API_KEY: "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
       # Inside the compose network the ai-engine is reachable as `ai-engine:8000`,
       # not localhost. Used by RAG fast-context, NEP edit-impact, shadow flows, agent.
       CODE_INTEL_URL: "http://ai-engine:8000"
@@ -99,6 +92,8 @@ services:
       NEXT_PUBLIC_AI_ENGINE_URL: "http://localhost:${AI_ENGINE_HOST_PORT:-8081}"
     depends_on:
       postgres:
+        condition: service_healthy
+      y-sweet:
         condition: service_healthy
       ai-engine:
         condition: service_started
@@ -108,7 +103,7 @@ services:
       context: ./backend/collab-server
       dockerfile: Dockerfile
     ports:
-      - "1234:1234"
+      - "127.0.0.1:1234:1234"
     environment:
       COLLAB_PORT: "1234"
       SPAWNER_MODE: "local"
@@ -138,7 +133,7 @@ services:
       redis:
         condition: service_healthy
       y-sweet:
-        condition: service_started
+        condition: service_healthy
       ai-engine:
         condition: service_started
 
@@ -147,7 +142,7 @@ services:
       context: ./backend/synthi-webrtc-compiler/signaling-server
       dockerfile: Dockerfile
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"
     environment:
       SIGNALING_PORT: "9000"
       REDIS_URL: "redis://redis:6379"
@@ -162,6 +157,9 @@ services:
     build:
       context: ./ai-backend/ai-engine
       dockerfile: Dockerfile
+    env_file:
+      - path: ./.env.local
+        required: false
     ports:
       # Keep container port 8000 stable for inter-service traffic, but avoid
       # assuming the Windows host can also bind 8000.
@@ -175,11 +173,8 @@ services:
     volumes:
       - collab-data:/data
     environment:
-      # API Keys
-      GOOGLE_AI_API_KEY: "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
-      GEMINI_API_KEY: "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
       SYNTHI_AI_MODEL: "gemini-3-flash-preview-preview"
-      OPENAI_API_KEY: "dummy"
+      AI_ENGINE_AUTH_DISABLED: "true"
       # Tell resolve_workspace_path() where to find slug-rooted repos.
       # The collab-data named volume is shared with collab-server (which
       # writes); we don't need depends_on because the volume is created
@@ -192,21 +187,22 @@ services:
       context: ./ai-backend/gateway
       dockerfile: Dockerfile
     ports:
-      - "7070:7070"
+      - "127.0.0.1:7070:7070"
     environment:
       GATEWAY_PORT: "7070"
       GATEWAY_WS_PATH: "/ws"
       BACKEND_URL: "http://ai-engine:8000"
       GATEWAY_CLUSTER: "false"
+      GATEWAY_AUTH_DISABLED: "true"
     depends_on:
       - ai-engine
 
   coturn:
-    image: coturn/coturn:latest
+    image: coturn/coturn:4.7.0-r2@sha256:203b9bf51e84199f91025d411a7bcc7358d50c43a4d9c588079e282a3bbf4ba1
     ports:
-      - "3478:3478"
-      - "3478:3478/udp"
-      - "49152-49200:49152-49200/udp"
+      - "127.0.0.1:3478:3478"
+      - "127.0.0.1:3478:3478/udp"
+      - "127.0.0.1:49152-49200:49152-49200/udp"
 
     command: >
       --no-tls
@@ -238,7 +234,7 @@ services:
     ports:
       # Expose Prometheus /metrics to the host so live-test.mjs can scrape
       # http://127.0.0.1:9464/metrics without a second `docker exec`.
-      - "9464:9464"
+      - "127.0.0.1:9464:9464"
     depends_on:
       - signaling-server
       - worker
@@ -286,11 +282,11 @@ services:
       - "/dev/dxg:/dev/dxg"
     volumes:
       - /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so:ro
-    cap_add:
-      - SYS_PTRACE
+    cap_drop:
+      - ALL
     security_opt:
-      - seccomp=unconfined
-    ipc: host
+      - no-new-privileges:true
+    ipc: private
     shm_size: "8gb"
     depends_on:
       - signaling-server

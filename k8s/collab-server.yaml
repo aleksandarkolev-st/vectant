@@ -65,6 +65,11 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: CODE_INTEL_URL
+            - name: AI_BACKEND_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: AI_BACKEND_AUTH_TOKEN
             # ── Y-Sweet CRDT server ──────────────────────────────────────
             - name: YSWEET_URL
               valueFrom:
@@ -204,7 +209,7 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 20
         - name: edge-proxy
-          image: nginx:1.27-alpine
+          image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -262,7 +267,7 @@ spec:
         # shared PostgreSQL database.  The collab server can connect to
         # 127.0.0.1:5432 when DB access is needed.
         - name: cloud-sql-proxy
-          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1@sha256:5cf206e6b9609aaa666db20c6c6632521985a5412ebbe4835e83d39bc76501e9
           args:
             - "--port=5432"
             - "$(CLOUD_SQL_INSTANCE)"

@@ -6,6 +6,7 @@ import {
   SEARCH_OPEN_ALL_KEYWORD,
   REPLACE_DIVIDER,
 } from '@/lib/nextEdit';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -146,10 +147,10 @@ const fetchImpactCandidates = async ({ workspaceSlug, appliedEdit }) => {
     const res = await fetch(`${CODE_INTEL_URL}/code-intel/edit-impact`, {
       method: 'POST',
       signal: ctrl.signal,
-      headers: {
+      headers: withInternalAiAuth({
         'content-type': 'application/json',
         ...(CODE_INTEL_API_KEY ? { 'x-code-intel-key': CODE_INTEL_API_KEY } : {}),
-      },
+      }),
       body: JSON.stringify({
         workspace_path: workspaceSlug,
         file_path: appliedEdit.path,

@@ -12,7 +12,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Stage 1: Rust build ─────────────────────────────────────────────────────
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS builder
 
 WORKDIR /build
 
@@ -64,7 +64,7 @@ RUN touch src/main.rs src/lib.rs && \
     fi
 
 # ── Stage 2: Runtime ────────────────────────────────────────────────────────
-FROM ubuntu:25.10
+FROM ubuntu:25.10@sha256:4a9232cc47bf99defcc8860ef6222c99773330367fcecbf21ba2edb0b810a31e
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -129,7 +129,9 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 ENV ROCM_PATH="/opt/rocm"
-ENV PATH="${ROCM_PATH}/bin:${ROCM_PATH}/llvm/bin:/root/.cargo/bin:${PATH}"
+ENV RUSTUP_HOME="/usr/local/rustup"
+ENV CARGO_HOME="/usr/local/cargo"
+ENV PATH="${ROCM_PATH}/bin:${ROCM_PATH}/llvm/bin:${CARGO_HOME}/bin:${PATH}"
 ENV LD_LIBRARY_PATH="${ROCM_PATH}/lib:${ROCM_PATH}/lib64"
 
 ARG NODE_VERSION=20.20.2
@@ -149,10 +151,21 @@ RUN set -eux; \
     npm install -g typescript typescript-language-server; \
     npm cache clean --force
 
-# Install Rust toolchain for user code compilation
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --default-toolchain stable --profile minimal
-ENV PATH="/root/.cargo/bin:${PATH}"
+# Install Rust toolchain for user code compilation. Avoid curl|sh by pinning
+# rustup-init and verifying the archive hash before executing it.
+ARG RUSTUP_VERSION=1.28.2
+RUN set -eux; \
+    dpkg_arch="$(dpkg --print-architecture)"; \
+    case "${dpkg_arch}" in \
+      amd64) rust_arch='x86_64-unknown-linux-gnu'; rustup_sha256='20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c' ;; \
+      arm64) rust_arch='aarch64-unknown-linux-gnu'; rustup_sha256='e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c' ;; \
+      *) echo "unsupported architecture: ${dpkg_arch}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${rust_arch}/rustup-init"; \
+    echo "${rustup_sha256}  /tmp/rustup-init" | sha256sum -c -; \
+    chmod +x /tmp/rustup-init; \
+    /tmp/rustup-init -y --default-toolchain stable --profile minimal --no-modify-path; \
+    rm -f /tmp/rustup-init
 
 # ── GStreamer (video encoding pipeline for GUI streaming) ───────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -196,8 +209,8 @@ COPY esm-vscode-hook.mjs /usr/local/bin/esm-vscode-hook.mjs
 RUN userdel -r ubuntu 2>/dev/null || true && \
     useradd -m -s /bin/bash -u 1000 runner
 # Create writable directories the worker needs
-RUN mkdir -p /tmp/synthi /home/runner/.cache && \
-    chown -R runner:runner /home/runner /tmp/synthi
+RUN mkdir -p /tmp/synthi /home/runner/.cache "${CARGO_HOME}" "${RUSTUP_HOME}" && \
+    chown -R runner:runner /home/runner /tmp/synthi "${CARGO_HOME}" "${RUSTUP_HOME}"
 
 WORKDIR /home/runner
 

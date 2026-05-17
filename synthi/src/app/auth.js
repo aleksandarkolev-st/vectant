@@ -1,9 +1,7 @@
 import GoogleProvider from "next-auth/providers/google";
 import GitHubProvider from "next-auth/providers/github";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 import { decryptToken } from "@/lib/tokenCrypto";
-
-const prisma = new PrismaClient();
 
 export const authOptions = {
   session: {
@@ -29,9 +27,6 @@ export const authOptions = {
 
   callbacks: {
     async jwt({ token, account, user }) {
-      if (account) {
-        token.accessToken = account.access_token;
-      }
       // Persist the provider-assigned user id into the JWT so it's
       // available in the session callback below.  `user` is only
       // present on the initial sign-in; on subsequent requests we
@@ -42,10 +37,12 @@ export const authOptions = {
       if (user?.image) {
         token.picture = user.image;
       }
+      if (account?.provider === "github" && account?.access_token) {
+        token.accessToken = account.access_token;
+      }
       return token;
     },
     async session({ session, token }) {
-      session.accessToken = token.accessToken;
       // Propagate the stable user id and avatar into the session
       // object so client-side code (e.g. useSession()) can access
       // session.user.id reliably instead of falling back to email.
@@ -56,10 +53,9 @@ export const authOptions = {
         session.user.image = token.picture;
       }
 
-      // Resolve the per-user GitHub token: a saved PAT wins; otherwise fall
-      // back to the GitHub OAuth access token (only present for users who
-      // signed in via the GitHub provider). Lookup by email since that's the
-      // canonical user identifier used elsewhere in the app.
+      // Resolve the per-user GitHub token from the encrypted server-side PAT.
+      // Preserve GitHub OAuth access token for existing server/client flows.
+      session.accessToken = token.accessToken || null;
       session.githubToken = null;
       session.githubTokenSource = null;
       session.githubLogin = null;
@@ -74,19 +70,25 @@ export const authOptions = {
               session.githubToken = decryptToken(dbUser.githubTokenCipher);
               session.githubTokenSource = "pat";
               session.githubLogin = dbUser.githubLogin || null;
-            } catch (_) {
-              // Stale ciphertext (e.g. AUTH_SECRET rotated) — treat as no PAT
+            } catch (err) {
+              console.warn("Failed to decrypt GitHub token; clearing stale ciphertext", {
+                email: session.user.email,
+                error: err?.message,
+              });
+              session.githubTokenNeedsRelink = true;
+              await prisma.user.update({
+                where: { email: session.user.email },
+                data: { githubTokenCipher: null },
+              });
             }
           }
-        } catch (_) {
-          // DB unavailable — fall through to OAuth token
+        } catch (err) {
+          console.warn("Failed to load GitHub token metadata", {
+            email: session.user.email,
+            error: err?.message,
+          });
         }
       }
-      if (!session.githubToken && session.accessToken) {
-        session.githubToken = session.accessToken;
-        session.githubTokenSource = "oauth";
-      }
-
       return session;
     },
   },

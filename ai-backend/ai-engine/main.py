@@ -9,7 +9,9 @@ import sys
 import os
 import asyncio
 import logging
-from pathlib import Path
+import hmac
+from pathlib import Path, PurePosixPath
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -33,7 +35,7 @@ for module in ['analyzer.proactive', 'analyzer.proactive.semantic_analyzer', 'an
 import time
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Body
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from analyzer import get_analyzer
 from analyzer import supported_languages
@@ -283,14 +285,60 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
+def _parse_allowed_origins() -> List[str]:
+    raw = os.environ.get(
+        "AI_ENGINE_ALLOWED_ORIGINS",
+        "http://localhost:3000,https://beta.synthi.app",
+    )
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 # Add CORS middleware to allow frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict to specific origins
+    allow_origins=_parse_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+AI_ENGINE_AUTH_TOKEN = os.environ.get("AI_BACKEND_AUTH_TOKEN") or os.environ.get("AI_ENGINE_AUTH_TOKEN") or ""
+AI_ENGINE_AUTH_DISABLED = (
+    os.environ.get("AI_ENGINE_AUTH_DISABLED", "false").lower() == "true"
+    and os.environ.get("ENV", "").lower() != "production"
+)
+AI_ENGINE_PUBLIC_PATHS = {"/health"}
+
+
+def _extract_bearer_token(value: str) -> str:
+    if not value:
+        return ""
+    parts = value.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    return ""
+
+
+@app.middleware("http")
+async def require_internal_auth(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path in AI_ENGINE_PUBLIC_PATHS:
+        return await call_next(request)
+    if AI_ENGINE_AUTH_DISABLED:
+        return await call_next(request)
+    if not AI_ENGINE_AUTH_TOKEN:
+        return JSONResponse(
+            {"detail": "AI engine auth token is not configured"},
+            status_code=503,
+        )
+
+    candidate = (
+        request.headers.get("x-synthi-internal-token")
+        or _extract_bearer_token(request.headers.get("authorization", ""))
+    )
+    if not candidate or not hmac.compare_digest(candidate, AI_ENGINE_AUTH_TOKEN):
+        return JSONResponse({"detail": "Authentication required"}, status_code=401)
+    return await call_next(request)
+
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -363,6 +411,61 @@ class AnalyzeAiRequest(BaseModel):
     api_key: Optional[str] = None
 
 
+MAX_AI_REQUEST_CHARS = int(os.environ.get("AI_ENGINE_MAX_AI_REQUEST_CHARS", "32768"))
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_JAILBREAK_MARKERS = (
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "developer mode",
+    "dan mode",
+    "jailbreak",
+    "reveal your system prompt",
+    "print your system prompt",
+)
+
+
+def _strip_llm_text(value: Optional[str], field_name: str) -> Optional[str]:
+    if value is None:
+        return value
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a string")
+
+    return _CONTROL_CHARS_RE.sub("", value)
+
+
+def _sanitize_llm_instructions(value: Optional[str], field_name: str) -> Optional[str]:
+    sanitized = _strip_llm_text(value, field_name)
+    if sanitized is None:
+        return sanitized
+
+    lower = sanitized.lower()
+    if any(marker in lower for marker in _JAILBREAK_MARKERS):
+        raise HTTPException(status_code=400, detail=f"{field_name} contains disallowed prompt-injection markers")
+    return sanitized
+
+
+def enforce_ai_request_limits(req: AnalyzeAiRequest) -> None:
+    req.code = _CONTROL_CHARS_RE.sub("", req.code or "")
+    req.prompt = _sanitize_llm_instructions(req.prompt, "prompt")
+    req.focus = _strip_llm_text(req.focus, "focus")
+    total_chars = len(req.code) + len(req.prompt or "") + len(req.focus or "")
+
+    if req.files:
+        for file in req.files:
+            file.content = _strip_llm_text(file.content, "files.content") or ""
+            if file.path:
+                file.path = _strip_llm_text(file.path, "files.path")
+            if file.name:
+                file.name = _strip_llm_text(file.name, "files.name")
+            total_chars += len(file.content) + len(file.path or "") + len(file.name or "")
+
+    if total_chars > MAX_AI_REQUEST_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"AI analysis request exceeds {MAX_AI_REQUEST_CHARS} characters",
+        )
+
+
 class ProactiveAnalysisRequest(BaseModel):
     """Request for proactive code analysis."""
     code: str
@@ -397,6 +500,43 @@ class ContainerAnalysisRequest(BaseModel):
 COLLAB_SERVER_URL = os.environ.get('COLLAB_SERVER_URL', 'http://localhost:1234')
 
 
+def validate_workspace_relative_path(file_path: str) -> str:
+    if not isinstance(file_path, str) or not file_path.strip():
+        raise ValueError("file_path must be a non-empty workspace-relative path")
+    if "\\" in file_path:
+        raise ValueError("file_path must use POSIX separators")
+
+    path = PurePosixPath(file_path.strip())
+    if path.is_absolute():
+        raise ValueError("file_path must be relative")
+    if any(part in ("", ".", "..") for part in path.parts):
+        raise ValueError("file_path contains an unsafe path segment")
+
+    return path.as_posix()
+
+
+def encode_workspace_path(file_path: str) -> str:
+    safe_path = validate_workspace_relative_path(file_path)
+    return "/".join(quote(part, safe="") for part in PurePosixPath(safe_path).parts)
+
+
+_SAFE_MODULE_FILENAME_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
+
+
+def resolve_under_workspace(workspace_root: str | Path, relative_path: str) -> Path:
+    safe_relative = validate_workspace_relative_path(relative_path)
+    if not _SAFE_MODULE_FILENAME_RE.match(safe_relative):
+        raise ValueError("path contains unsupported characters")
+
+    root = Path(workspace_root).expanduser().resolve()
+    resolved = root.joinpath(*PurePosixPath(safe_relative).parts).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("path escapes workspace root") from exc
+    return resolved
+
+
 async def fetch_file_from_container(slug: str, file_path: str) -> Optional[str]:
     """
     Fetch file content from the collab server (container filesystem).
@@ -408,10 +548,13 @@ async def fetch_file_from_container(slug: str, file_path: str) -> Optional[str]:
     import aiohttp
     
     try:
-        # Use the /file-content endpoint which reads directly from disk
-        url = f"{COLLAB_SERVER_URL}/file-content/{slug}/{file_path}"
+        # Use the /file-content endpoint which reads directly from disk.
+        encoded_slug = quote(slug, safe="")
+        encoded_path = encode_workspace_path(file_path)
+        url = f"{COLLAB_SERVER_URL}/file-content/{encoded_slug}/{encoded_path}"
         
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as resp:
                 if resp.status == 200:
                     content = await resp.text()
@@ -621,26 +764,35 @@ async def analyze_from_container(req: ContainerAnalysisRequest):
     The client should NOT send content - only file paths.
     """
     import hashlib
-    
+
+    try:
+        file_path = validate_workspace_relative_path(req.file_path)
+        related_paths = [
+            validate_workspace_relative_path(path)
+            for path in (req.related_paths or [])
+        ]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     # Fetch main file content from container
-    content = await fetch_file_from_container(req.slug, req.file_path)
+    content = await fetch_file_from_container(req.slug, file_path)
     if content is None:
-        raise HTTPException(status_code=404, detail=f"File not found: {req.file_path}")
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
     
     content_hash = hashlib.md5(content.encode()).hexdigest()[:16]
-    logger.info(f"[CONTAINER] {req.file_path} | {len(content)} chars | hash={content_hash}")
+    logger.info(f"[CONTAINER] {file_path} | {len(content)} chars | hash={content_hash}")
     
     # Build file context
     file_context = FileContext(
-        path=req.file_path,
+        path=file_path,
         content=content,
         language=req.lang,
     )
     
     # Fetch related files from container
     related_files = []
-    if req.related_paths:
-        for rpath in req.related_paths:
+    if related_paths:
+        for rpath in related_paths:
             rcontent = await fetch_file_from_container(req.slug, rpath)
             if rcontent is not None:
                 related_files.append(FileContext(
@@ -1271,6 +1423,8 @@ async def clear_workspace(workspace_id: str):
 
 @app.post("/analyze/ai")
 async def analyze_code_ai(req: AnalyzeAiRequest):
+    enforce_ai_request_limits(req)
+
     def select_provider_name() -> str | None:
         if req.api_key:
             model_name = (req.model or '').lower()
@@ -1341,15 +1495,25 @@ async def refactor_split(req: AnalyzeAiRequest):
     }
 
 @app.post("/refactor/split_file")
-def split_file(file_path: str, api_url: str = "http://localhost:8000/refactor/split"):
-    if not os.path.exists(file_path):
+def split_file(
+    file_path: str,
+    api_url: str = "http://localhost:8000/refactor/split",
+    workspace_root: Optional[str] = None,
+):
+    root = workspace_root or os.environ.get("SPLIT_WORKSPACE_ROOT") or os.getcwd()
+    try:
+        source_path = resolve_under_workspace(root, file_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if not source_path.exists() or not source_path.is_file():
         print(f"File not found: {file_path}")
         return
 
-    with open(file_path, 'r') as f:
+    with source_path.open('r') as f:
         content = f.read()
     
-    ext = os.path.splitext(file_path)[1][1:]
+    ext = source_path.suffix[1:]
     lang = "cpp"
     if ext == "rs": lang = "rust"
     elif ext == "ts": lang = "typescript"
@@ -1362,9 +1526,9 @@ def split_file(file_path: str, api_url: str = "http://localhost:8000/refactor/sp
         "mode": "split"
     }
     
-    print(f"Sending {file_path} to AI for analysis...")
+    print(f"Sending {source_path} to AI for analysis...")
     try:
-        response = requests.post(api_url, json=payload)
+        response = requests.post(api_url, json=payload, timeout=30)
         response.raise_for_status()
         result = response.json().get("result")
         
@@ -1389,8 +1553,13 @@ def split_file(file_path: str, api_url: str = "http://localhost:8000/refactor/sp
         for key, module in data.items():
             if isinstance(module, dict) and "filename" in module and "content" in module:
                 fname = module["filename"]
-                print(f"Writing {fname}...")
-                with open(fname, 'w') as f:
+                try:
+                    target_path = resolve_under_workspace(root, fname)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=f"Unsafe module filename: {exc}")
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                print(f"Writing {target_path}...")
+                with target_path.open('w') as f:
                     f.write(module["content"])
                     
         print("Split complete!")

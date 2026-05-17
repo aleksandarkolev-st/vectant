@@ -42,7 +42,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: signaling
-          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-signaling-server:latest
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-signaling-server:build-tag-required
           ports:
             - containerPort: 9000
               name: ws
@@ -74,7 +74,7 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
         - name: healthz
-          image: hashicorp/http-echo:0.2.3
+          image: hashicorp/http-echo:0.2.3@sha256:ba27d460cd1f22a1a4331bdf74f4fccbc025552357e8a3249c40ae216275de96
           args:
             - "-listen=:8080"
             - "-text=ok"

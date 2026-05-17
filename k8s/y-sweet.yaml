@@ -43,7 +43,7 @@ spec:
         cloud.google.com/gke-nodepool: core-pool
       containers:
         - name: y-sweet
-          image: ghcr.io/jamsocket/y-sweet:latest
+          image: ghcr.io/jamsocket/y-sweet:latest@sha256:d61ba0fa5671cc522e3f4a4c0f6cafbccbfbe66561a9ddba40041e14a22bcff0
           command: ['y-sweet']
           args:
             - serve

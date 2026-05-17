@@ -18,13 +18,8 @@ try:
 except ImportError:
     pass
 
-# Hardcoded fallback Gemini key. Used when GEMINI_API_KEY is not set in the
-# environment. Lets the bench/dev paths run without a separate .env wired up.
-_HARDCODED_GEMINI_KEY = "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
-
-
 def _resolve_gemini_key() -> str:
-    return os.getenv("GEMINI_API_KEY") or _HARDCODED_GEMINI_KEY
+    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
 
 
 @dataclass

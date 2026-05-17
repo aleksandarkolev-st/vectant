@@ -1,8 +1,6 @@
 import { Storage } from '@google-cloud/storage';
 import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { requireWorkspaceAccess } from '@/lib/workspaceAccess';
 
 const storage = new Storage({
     projectId: process.env.GCP_PROJECT_ID,
@@ -78,24 +76,23 @@ export async function GET(request, { params }) {
         return NextResponse.json({ error: 'Workspace ID is required.' }, { status: 400 });
     }
 
-    let workspace;
+    let access;
     try {
-        workspace = await prisma.workspace.findUnique({
-            where: { slug: workspaceId }
-        });
-
-        if (!workspace) {
-            return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-        }
+        access = await requireWorkspaceAccess(workspaceId);
     } catch (error) {
-        console.error('Database Error:', error);
+        console.error('Workspace access check failed:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
     }
-    // Slim metadata returned alongside the file tree so clients (e.g. the
-    // workspace page) don't need a second round-trip to learn the friendly
-    // project name. Don't leak the full DB row — only the fields callers
-    // actually need.
-    const workspaceMeta = { id: workspace.id, slug: workspace.slug, name: workspace.name };
+
+    if (!access.ok) {
+        return NextResponse.json({ error: access.error }, { status: access.status });
+    }
+
+    const workspaceMeta = {
+        id: access.workspace?.id,
+        slug: access.workspace?.slug || workspaceId,
+        name: access.workspace?.name || workspaceId,
+    };
 
     const storagePathPrefix = `workspaces/${workspaceId}/`;
 

@@ -6,10 +6,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 
-const CODE_INTEL_URL = process.env.NEXT_PUBLIC_CODE_INTEL_URL
-    || (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
-        ? window.location.origin
-        : 'http://localhost:8000');
+const CODE_INTEL_API_BASE = '/api/code-intel';
 
 /**
  * @typedef {Object} IndexStatus
@@ -62,7 +59,7 @@ export function useCodeIntelIndex({
         setStatus(prev => ({ ...prev, isIndexing: true, error: null }));
         
         try {
-            const response = await fetch(`${CODE_INTEL_URL}/code-intel/index`, {
+            const response = await fetch(`${CODE_INTEL_API_BASE}/index`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({
@@ -121,7 +118,7 @@ export function useCodeIntelIndex({
         timers.set(filePath, setTimeout(async () => {
             timers.delete(filePath);
             try {
-                const response = await fetch(`${CODE_INTEL_URL}/code-intel/index/file`, {
+                const response = await fetch(`${CODE_INTEL_API_BASE}/index/file`, {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
                     body: JSON.stringify({
@@ -145,7 +142,7 @@ export function useCodeIntelIndex({
      */
     const checkBackendHealth = useCallback(async () => {
         try {
-            const response = await fetch(`${CODE_INTEL_URL}/health`, {
+            const response = await fetch(`${CODE_INTEL_API_BASE}/health`, {
                 method: 'GET',
                 signal: AbortSignal.timeout(3000),
             });
@@ -163,7 +160,7 @@ export function useCodeIntelIndex({
         if (!workspaceSlug || !filePath) return;
         
         try {
-            const response = await fetch(`${CODE_INTEL_URL}/code-intel/index/file/delete`, {
+            const response = await fetch(`${CODE_INTEL_API_BASE}/index/file/delete`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({
@@ -189,7 +186,7 @@ export function useCodeIntelIndex({
         if (!workspaceSlug || !oldPath || !newPath) return;
         
         try {
-            const response = await fetch(`${CODE_INTEL_URL}/code-intel/index/file/rename`, {
+            const response = await fetch(`${CODE_INTEL_API_BASE}/index/file/rename`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({
@@ -218,7 +215,7 @@ export function useCodeIntelIndex({
         // Check backend availability before indexing
         const doAutoIndex = async () => {
             try {
-                const response = await fetch(`${CODE_INTEL_URL}/health`, {
+                const response = await fetch(`${CODE_INTEL_API_BASE}/health`, {
                     method: 'GET',
                     signal: AbortSignal.timeout(3000),
                 });

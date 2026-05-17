@@ -19,7 +19,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  replicas: 0
+  replicas: 2
   selector:
     matchLabels:
       app: frontend
@@ -47,7 +47,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: nextjs
-          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-frontend:latest
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-frontend:build-tag-required
           ports:
             - containerPort: 3000
               name: http
@@ -110,6 +110,11 @@ spec:
                 configMapKeyRef:
                   name: synthi-config
                   key: CODE_INTEL_URL
+            - name: AI_BACKEND_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: AI_BACKEND_AUTH_TOKEN
             # ── TURN credentials (server-side API route) ────────────────────
             - name: CLOUDFLARE_TURN_TOKEN_ID
               valueFrom:
@@ -150,7 +155,7 @@ spec:
         # instance.  The app connects to 127.0.0.1:5432 (localhost) and the
         # proxy handles IAM auth + TLS to Google's network.
         - name: cloud-sql-proxy
-          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1@sha256:5cf206e6b9609aaa666db20c6c6632521985a5412ebbe4835e83d39bc76501e9
           args:
             - "--port=5432"
             - "$(CLOUD_SQL_INSTANCE)"

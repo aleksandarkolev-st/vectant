@@ -77,10 +77,7 @@ async function runTests() {
   console.log('Test 2: Extension has activate function');
   try {
     const exports = {};
-    const // eslint-disable-next-line @next/next/no-assign-module-variable
-// eslint-disable-next-line @next/next/no-assign-module-variable
-// eslint-disable-next-line @next/next/no-assign-module-variable
-module = { exports };
+    const moduleRecord = { exports };
     
     // Create mock vscode
     const mockVscode = {
@@ -97,9 +94,9 @@ module = { exports };
     
     // Execute the extension code
     const factory = new Function('vscode', 'module', HELLO_WORLD_CODE);
-    factory(mockVscode, module);
+    factory(mockVscode, moduleRecord);
     
-    if (typeof module.exports.activate === 'function') {
+    if (typeof moduleRecord.exports.activate === 'function') {
       console.log('  ✓ Extension exports activate()');
     } else {
       console.log('  ✗ Extension does not export activate()');
@@ -114,10 +111,7 @@ module = { exports };
   console.log('Test 3: Extension activation');
   try {
     const exports = {};
-    const // eslint-disable-next-line @next/next/no-assign-module-variable
-// eslint-disable-next-line @next/next/no-assign-module-variable
-// eslint-disable-next-line @next/next/no-assign-module-variable
-module = { exports };
+    const moduleRecord = { exports };
     const subscriptions = [];
     const context = { subscriptions };
     
@@ -137,10 +131,10 @@ module = { exports };
     };
     
     const factory = new Function('vscode', 'module', HELLO_WORLD_CODE);
-    factory(mockVscode, module);
+    factory(mockVscode, moduleRecord);
     
     // Call activate
-    module.exports.activate(context);
+    moduleRecord.exports.activate(context);
     
     if (registeredCommands.has('helloWorld.sayHello')) {
       console.log('  ✓ Command registered');
@@ -164,10 +158,7 @@ module = { exports };
   console.log('Test 4: Command execution');
   try {
     const exports = {};
-    const // eslint-disable-next-line @next/next/no-assign-module-variable
-// eslint-disable-next-line @next/next/no-assign-module-variable
-// eslint-disable-next-line @next/next/no-assign-module-variable
-module = { exports };
+    const moduleRecord = { exports };
     const registeredCommands = new Map();
     
     const mockVscode = {
@@ -183,8 +174,8 @@ module = { exports };
     };
     
     const factory = new Function('vscode', 'module', HELLO_WORLD_CODE);
-    factory(mockVscode, module);
-    module.exports.activate({ subscriptions: [] });
+    factory(mockVscode, moduleRecord);
+    moduleRecord.exports.activate({ subscriptions: [] });
     
     const handler = registeredCommands.get('helloWorld.sayHello');
     if (handler) {

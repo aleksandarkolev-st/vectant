@@ -40,6 +40,15 @@ fn get_ai_backend_url() -> String {
     "http://localhost:8000".to_string()
 }
 
+fn add_ai_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match std::env::var("AI_BACKEND_AUTH_TOKEN").or_else(|_| std::env::var("AI_ENGINE_AUTH_TOKEN")) {
+        Ok(token) if !token.trim().is_empty() => {
+            request.header("x-synthi-internal-token", token)
+        }
+        _ => request,
+    }
+}
+
 /// HTTP timeout for AI backend calls (diff_patch, heal, manifest heal, split).
 ///
 /// Previously hardcoded per call site (60s for diff_patch/heal/manifest_heal,
@@ -122,8 +131,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         verified_url
     );
     let verified_result: Result<serde_json::Value, anyhow::Error> = async {
-        let resp = client
-            .post(&verified_url)
+        let resp = add_ai_auth(client.post(&verified_url))
             .json(&payload)
             .timeout(ai_http_timeout())
             .send()
@@ -140,8 +148,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                 "[AI Split] Verified returned no result field: {:?}, trying unverified",
                 json.to_string().chars().take(200).collect::<String>()
             );
-            client
-                .post(&split_url)
+            add_ai_auth(client.post(&split_url))
                 .json(&payload)
                 .timeout(ai_http_timeout())
                 .send()
@@ -154,8 +161,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                 "[AI Split] Verified endpoint failed ({}), trying unverified",
                 e
             );
-            let resp = client
-                .post(&split_url)
+            let resp = add_ai_auth(client.post(&split_url))
                 .json(&payload)
                 .timeout(ai_http_timeout())
                 .send()
@@ -385,8 +391,7 @@ pub async fn perform_ai_diff_patch(
         "architecture": architecture.unwrap_or(""),
     });
 
-    let res: serde_json::Value = client
-        .post(&url)
+    let res: serde_json::Value = add_ai_auth(client.post(&url))
         .json(&payload)
         // Unified AI HTTP timeout — see `ai_http_timeout` at the top of
         // this file. The previous hardcoded 60s tripped on a live 63s
@@ -473,8 +478,7 @@ pub async fn perform_ai_heal(
         "architecture": architecture.unwrap_or(""),
     });
 
-    let res = client
-        .post(&url)
+    let res = add_ai_auth(client.post(&url))
         .json(&payload)
         // Unified AI HTTP timeout — see `ai_http_timeout` at the top of
         // this file. Heal sends the broken module + g++ errors back to
@@ -804,8 +808,7 @@ pub async fn perform_ai_heal_manifest(
         "architecture": architecture.unwrap_or(""),
     });
 
-    let res: serde_json::Value = client
-        .post(&url)
+    let res: serde_json::Value = add_ai_auth(client.post(&url))
         .json(&payload)
         // Unified AI HTTP timeout — see `ai_http_timeout` at the top of
         // this file. Manifest heal output is tiny (~100-300 tokens of

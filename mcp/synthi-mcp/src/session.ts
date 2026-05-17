@@ -416,9 +416,30 @@ class SessionManager {
     await peer.start();
     dbg(`peer.start() returned; awaiting connected + DCs`);
 
-    const dcWaiter = (label: string, p: Promise<unknown>): Promise<unknown> =>
-      p.then((v) => { dbg(`ready.${label} resolved`); return v; },
-             (e) => { dbg(`ready.${label} rejected: ${(e as Error).message}`); throw e; });
+    const dcWaiter = <T>(label: string, p: Promise<T>): Promise<T> => {
+      let timer: NodeJS.Timeout | null = null;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`ready.${label} timeout after ${attachTimeoutMs}ms`));
+        }, attachTimeoutMs);
+        if (timer.unref) timer.unref();
+      });
+      return Promise.race([p, timeout])
+        .then((v) => {
+          dbg(`ready.${label} resolved`);
+          return v;
+        })
+        .catch((err) => {
+          const cause = err instanceof Error ? err : new Error(String(err));
+          const wrapped = new Error(`ready.${label} failed: ${cause.message}`);
+          (wrapped as Error & { cause?: unknown }).cause = cause;
+          dbg(wrapped.message);
+          throw wrapped;
+        })
+        .finally(() => {
+          if (timer) clearTimeout(timer);
+        });
+    };
     // Wait for the peer connection to reach connected + build-log + terminal + compile.
     const [, buildLogDC, terminalDC, compileDC] = await Promise.all([
       dcWaiter("connected", peer.ready.connected),
@@ -795,6 +816,7 @@ class SessionManager {
       }
       this.attached = null;
     }
+    FrameSink.stopAll();
     this.attachPromise = null;
   }
 
@@ -817,6 +839,7 @@ class SessionManager {
       try { unsub(); } catch { /* ignored */ }
     }
     this.unsubscribers = [];
+    FrameSink.stopAll();
   }
 }
 

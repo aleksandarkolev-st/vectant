@@ -4,11 +4,19 @@ import jwt from 'jsonwebtoken';
 
 export async function GET(req) {
   try {
-    const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+    const authSecret = process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET;
+    if (!authSecret) {
+      return NextResponse.json({ error: 'Auth secret is not configured' }, { status: 500 });
+    }
+    const token = await getToken({ req, secret: authSecret });
     if (!token) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
-    const payload = { user: token.user || token }; // include user data in payload
-    const signed = jwt.sign(payload, process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET, { expiresIn: '15m' });
+    const subject = token.sub || token.userId || token.email || token.name || 'authenticated-user';
+    const signed = jwt.sign(
+      { sub: String(subject), typ: 'gateway' },
+      authSecret,
+      { expiresIn: '15m', audience: 'synthi-gateway' }
+    );
     return NextResponse.json({ token: signed });
   } catch (e) {
     console.error('Failed to create signed token', e?.message || e);

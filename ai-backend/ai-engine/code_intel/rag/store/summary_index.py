@@ -311,9 +311,13 @@ class SummaryIndex:
         # Load vectors
         if self._vectors_path and self._vectors_path.exists():
             try:
-                data = np.load(str(self._vectors_path), allow_pickle=True)
-                self._matrix = data["matrix"].astype(np.float32)
-                self._ids = list(data["ids"])
+                data = np.load(str(self._vectors_path), allow_pickle=False)
+                matrix = data["matrix"]
+                ids = data["ids"]
+                if matrix.dtype == object or ids.dtype == object:
+                    raise ValueError("Summary index contains object arrays; refusing unsafe load")
+                self._matrix = matrix.astype(np.float32)
+                self._ids = list(ids)
                 self._id_to_idx = {did: i for i, did in enumerate(self._ids)}
 
                 # Dimension check. A mismatch typically means the embedding

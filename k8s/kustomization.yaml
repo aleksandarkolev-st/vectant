@@ -28,8 +28,9 @@ namespace: synthi
 resources:
   # 1. Foundation
   - namespace.yaml
-  - secrets.yaml             # Beta default: simple K8s Secret for synthi-secrets
-  # - external-secrets.yaml  # Enable after installing External Secrets Operator CRDs
+  - external-secrets.yaml    # Production default: GCP Secret Manager via ESO
+  # For local/manual deploys without ESO, copy secrets.yaml.example to
+  # secrets.yaml and swap this resource to secrets.yaml.
   - configmap.yaml
   - spawner-rbac.yaml
 
