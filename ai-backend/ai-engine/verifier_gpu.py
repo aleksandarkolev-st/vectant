@@ -558,9 +558,26 @@ def verify_split_output(
                 rule="gui_uses_global_window_id_lookup",
                 message=(
                     "gui.cpp must not recover the renderer through "
-                    "SDL_GetWindowFromID(1). Use the window_ptr passed to "
-                    "gui_on_load, store SDL_GetRenderer((SDL_Window*)window_ptr), "
-                    "and render through that stored renderer."
+                    "SDL_GetWindowFromID(1). The runner passes SDL_Renderer* "
+                    "through gui_on_load's historical window_ptr parameter; "
+                    "cast it directly to SDL_Renderer* and render through that "
+                    "stored renderer."
+                ),
+                offending_module="gui.cpp",
+            )
+        )
+    if re.search(
+        r"\bSDL_GetRenderer\s*\(\s*(?:\(\s*SDL_Window\s*\*\s*\)|reinterpret_cast\s*<\s*SDL_Window\s*\*\s*>\s*\()\s*window_ptr",
+        gui_source,
+    ):
+        violations.append(
+            Violation(
+                rule="gui_treats_renderer_as_window",
+                message=(
+                    "gui.cpp must not treat gui_on_load's window_ptr as "
+                    "SDL_Window*. The shipped runner passes SDL_Renderer* in "
+                    "that parameter, so cast window_ptr directly to "
+                    "SDL_Renderer* and store it before rendering."
                 ),
                 offending_module="gui.cpp",
             )

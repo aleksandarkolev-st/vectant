@@ -344,6 +344,18 @@ def test_split_rejects_brittle_sdl_window_id_lookup():
     assert any(v.rule == "gui_uses_global_window_id_lookup" for v in r.violations)
 
 
+def test_split_rejects_treating_runner_renderer_as_window():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "particle_flow", 1, 256, 0, stream, { &x }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void* window_ptr, void*) { auto r = SDL_GetRenderer((SDL_Window*)window_ptr); return r; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void particle_flow(float*) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "gui_treats_renderer_as_window" for v in r.violations)
+
+
 def test_split_rejects_empty_arch():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"',

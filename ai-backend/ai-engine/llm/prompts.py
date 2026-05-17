@@ -3906,11 +3906,13 @@ state, but `gui_on_render` must be able to render from the core state pointer.
 Do not allocate `AppState` with `new` or `malloc`; use static storage on the
 first load and reuse `prev_state` on hot reload.
 
-For SDL2 splits, `gui_on_load` receives the real `SDL_Window*` as
-`window_ptr`. Store `SDL_GetRenderer((SDL_Window*)window_ptr)` in static GUI
-state or a GUI field. `gui_on_render` must use that stored renderer. Never call
-`SDL_GetWindowFromID(1)` or assume the SDL window id is 1; that can return null
-and crash the runner.
+For SDL2 splits, the historical `window_ptr` parameter actually carries the
+runner-owned `SDL_Renderer*`, not an `SDL_Window*`. Cast it directly to
+`SDL_Renderer*` and store it in static GUI state or a GUI field.
+`gui_on_render` must use that stored renderer. Never call `SDL_GetRenderer` on
+`window_ptr`, never call `SDL_GetWindowFromID(1)`, and never assume the SDL
+window id is 1; those paths can return null or draw to nothing in the shipped
+runner.
 
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 
