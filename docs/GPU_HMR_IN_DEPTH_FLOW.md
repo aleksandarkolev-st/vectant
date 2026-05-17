@@ -42,11 +42,16 @@ ordinary user source with CUDA/HIP kernels
   -> AI engine generates Synthi split files and a build manifest
   -> verifier rejects bad generated splits
   -> worker compiles host modules and GPU sidecar
-  -> runner starts with generated ABI files
+  -> shipped GPU runner starts with generated core/gui/device ABI files
   -> later device-only edit compiles only device.cu/device.hip sidecar
   -> GPU reload planner chooses plan=device_only when ABI is unchanged
   -> runner hot-loads new cubin/hsaco without restarting app state
 ```
+
+The live demo proves **GPU compute HMR**: HIP/CUDA updates particle coordinates
+on the GPU, the app copies those coordinates back to CPU-visible state, and the
+GUI renders them. It does not prove zero-copy CUDA/HIP-to-graphics interop or
+direct GPU framebuffer rendering.
 
 The latest live validation workspace was:
 
@@ -81,7 +86,8 @@ sequenceDiagram
     Verifier-->>AI: reject with feedback or accept
     AI-->>Worker: verified split + manifest
     Worker->>Worker: Compile host modules and GPU sidecar
-    Worker->>Runner: Start generated host_runner
+    Worker->>Worker: Compile generated host_runner for validation
+    Worker->>Runner: Start shipped GPU runner
     Runner->>Runner: Load core/gui + cubin/hsaco
     Runner-->>Browser: Video frames + build/HMR events
 
@@ -499,9 +505,11 @@ Detailed first-compile flow:
 13. Worker writes runtime support headers such as synthi_gpu_runtime.h.
 14. Worker compiles host modules.
 15. Worker compiles device sidecar with nvcc or hipcc.
-16. Worker starts host_runner.
-17. Runner loads core/gui modules and the device sidecar.
-18. Browser receives build/HMR status and video frames.
+16. Worker compiles `host_runner.cpp` for build feedback.
+17. For GPU manifests, worker starts the shipped GPU runner, not the generated
+    host_runner binary.
+18. The shipped runner loads generated core/gui modules and the device sidecar.
+19. Browser receives build/HMR status and video frames.
 ```
 
 Expected good worker markers:
@@ -509,6 +517,7 @@ Expected good worker markers:
 ```text
 [AI Split] GPU markers detected; calling GPU split endpoint
 [compile-device] hipcc
+[HMR] gpu manifest present: using shipped runner for GPU runtime boundary; per-project host_runner compiled only
 Device sidecar reload vendor=rocm ... result=Success
 ```
 

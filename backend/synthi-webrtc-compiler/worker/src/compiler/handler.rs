@@ -1598,11 +1598,12 @@ pub async fn handle_compile_request(
     // window/event loop and dlopens libcore.so + libgui.so. We compile
     // it as a build artifact here.
     //
-    // V1 scope: BUILD only. The runtime-side runner spawn is still the
-    // shipped `runner_bin` binary (with its full HMR protocol + Xvfb /
-    // GStreamer video streaming). Switching the runtime spawn to the
-    // per-project compiled runner is a Phase 5+ concern because it has
-    // implications for how video gets out to the browser.
+    // Runtime selection depends on the manifest. Non-GPU adapted projects
+    // may run the compiled per-project host_runner. GPU manifests keep the
+    // per-project host_runner as build/validation output only: below,
+    // `runtime_host_runner_bin_path` is forced to None so the shipped
+    // runner handles Synthi's GPU runtime boundary, device sidecar loader,
+    // HMR protocol, Xvfb/GStreamer capture, and WebRTC streaming.
     //
     // BYOR mode: when `adapted_status.user_owned_runner` is true (the
     // existing host_runner.cpp on disk starts with `// SYNTHI_USER_RUNNER`),
@@ -2026,12 +2027,13 @@ pub async fn handle_compile_request(
         // without core we can't even attempt to load the .so chain).
         let core_opt = core_res?;
         let gui_opt = gui_res?;
-        // Runner errors are non-fatal in V1 (see below).
+        // Runner errors are non-fatal; a missing compiled runner falls
+        // back to the shipped runner path for this compile.
         let runner_opt = match runner_res {
             Ok(p) => p,
             Err(e) => {
                 eprintln!(
-                    "[HMR] compile_runner FAILED (non-fatal in V1, runtime still uses shipped runner): {}",
+                    "[HMR] compile_runner FAILED (non-fatal; falling back to shipped runner for this compile): {}",
                     e
                 );
                 None
@@ -2084,7 +2086,7 @@ pub async fn handle_compile_request(
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!(
-                        "[HMR] compile_runner FAILED (non-fatal in V1, runtime still uses shipped runner): {}",
+                        "[HMR] compile_runner FAILED (non-fatal; falling back to shipped runner for this compile): {}",
                         e
                     );
                     None

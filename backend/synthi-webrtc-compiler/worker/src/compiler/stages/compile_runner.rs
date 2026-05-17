@@ -5,10 +5,12 @@
 // Compiles the AI-synthesised `host_runner.cpp` (the per-project main()
 // that dlopens libcore.so/libgui.so) into an executable. The compiled
 // runner sits in the workspace's `build/` directory alongside the .so
-// artifacts; for V1 it is a build product only — the live runtime path
-// is still served by the shipped `runner` binary in `runtime/runner_bin.rs`.
-// Wiring the compiled per-project runner into runtime spawn is a Phase 5+
-// concern (it has implications for video streaming via Xvfb/GStreamer).
+// artifacts. For non-GPU manifests the compiled runner can be handed to
+// the runtime spawn path. For GPU manifests it is still intentionally a
+// build/validation product only: handler.rs forces the live runtime back
+// through the shipped `runner` binary so Synthi's GPU runtime boundary,
+// device sidecar loader, HMR protocol, Xvfb/GStreamer capture, and
+// WebRTC streaming stay intact.
 //
 // Caching:
 //   - content-addressable cache key = hash(host_runner content + flags)
