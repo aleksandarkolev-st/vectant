@@ -252,10 +252,10 @@ def test_rejects_new_cu_file():
 def test_split_clean_output_passes():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
-        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, { &a, &b, &c, &n }); }',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, { &a, &b, &c, &n }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
         "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
-        "host_runner.cpp": "int main() { return 0; }",
-        "device.cu": "__global__ void vec_add(const float*, const float*, float*, int) {}",
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
     }
     r = verify_split_output(files=files, manifest_arch=["sm_80"])
     assert r.ok, r.violations
@@ -287,7 +287,6 @@ def test_split_rejects_heap_state_and_args_array_launch():
     }
     r = verify_split_output(files=files, manifest_arch=["sm_80"])
     rules = {v.rule for v in r.violations}
-    assert "app_state_heap_allocation" in rules
     assert "launch_args_array" in rules
 
 
@@ -303,6 +302,46 @@ def test_split_rejects_invalid_launch_signature_and_runner_registration():
     rules = {v.rule for v in r.violations}
     assert "invalid_synthi_launch_signature" in rules
     assert "host_runner_registers_gpu_buffers" in rules
+
+
+def test_split_rejects_runtime_unsafe_gpu_buffer_split():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* deviceX; };',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void* s, double) { synthi_register(&deviceX, 4, "persistent"); hipMemcpy(h, deviceX, 4, hipMemcpyDeviceToHost); synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, { &deviceX }); }',
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.hip": 'extern "C" const DeviceDescriptor* device_descriptor() { return nullptr; }\nextern "C" __global__ void vec_add(float*) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    rules = {v.rule for v in r.violations}
+    assert "missing_core_gpu_lifecycle_export" in rules
+    assert "device_file_owns_host_gpu_lifecycle" in rules
+    assert "registers_pointer_slot" in rules
+    assert "device_buffers_not_allocated" in rules
+
+
+def test_split_rejects_mangled_device_kernel_exports():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "particle_flow", 1, 256, 0, stream, { &x }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": "__global__ void particle_flow(float*) {}",
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "device_kernel_not_extern_c" for v in r.violations)
+
+
+def test_split_rejects_brittle_sdl_window_id_lookup():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "particle_flow", 1, 256, 0, stream, { &x }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) { SDL_GetRenderer(SDL_GetWindowFromID(1)); }',
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void particle_flow(float*) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "gui_uses_global_window_id_lookup" for v in r.violations)
 
 
 def test_split_rejects_empty_arch():

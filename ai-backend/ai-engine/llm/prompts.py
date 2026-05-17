@@ -3849,11 +3849,10 @@ work with a dynamic-linking HMR system extended for GPU device modules.
                        directly launches kernels. NO main().
 
 4. host_runner.cpp   - process entry point. Owns the CUDA/HIP context and
-                       the window. dlopens libcore/libgui, dlsyms the
-                       lifecycle functions including the new GPU ones,
-                       calls them every frame. Owns the Synthi-managed
-                       device allocation registry used by tier-B
-                       userspace snapshots. Do not call `synthi_register`,
+                       the window. dlopens libcore/libgui, dlsyms
+                       core_on_load/core_on_update and
+                       gui_on_load/gui_on_render, then calls update+render
+                       every frame. Do not call `synthi_register`,
                        `synthi_gpu_register_buffer`, or redeclare Synthi GPU
                        runtime functions here.
 
@@ -3907,6 +3906,12 @@ state, but `gui_on_render` must be able to render from the core state pointer.
 Do not allocate `AppState` with `new` or `malloc`; use static storage on the
 first load and reuse `prev_state` on hot reload.
 
+For SDL2 splits, `gui_on_load` receives the real `SDL_Window*` as
+`window_ptr`. Store `SDL_GetRenderer((SDL_Window*)window_ptr)` in static GUI
+state or a GUI field. `gui_on_render` must use that stored renderer. Never call
+`SDL_GetWindowFromID(1)` or assume the SDL window id is 1; that can return null
+and crash the runner.
+
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 
 Synthi does not hot-swap arbitrary raw CUDA/HIP source as-is. Your job
@@ -3937,7 +3942,19 @@ real runtime code/header surface, not prose:
   - Synthi-managed device allocations MUST be registered through the
     runtime registry so the worker can preserve them across sidecar
     cubin/hsaco swaps.
+    Allocate buffers in `core_on_load` with the original
+    `cudaMalloc`/`hipMalloc` calls, seed/copy any initial host arrays to the
+    device before the first launch, then register the allocated pointer value.
     Register buffers from `core.cpp` lifecycle code, not `host_runner.cpp`.
+    Never register the address of a pointer field:
+
+        // wrong: registers the CPU slot that stores the pointer
+        synthi_register(&state->deviceX, bytes, "persistent");
+
+        // right: allocates the GPU buffer, then registers the GPU pointer
+        hipMalloc(&state->deviceX, bytes);
+        synthi_register(state->deviceX, bytes, "persistent");
+
   - This runtime boundary is allowed and required. Forbidden shims are
     wrapper kernels, extra migration files, and bypass modules that hide
     the actual source change.
@@ -3946,8 +3963,10 @@ real runtime code/header surface, not prose:
 
 The ABI is defined in the worker's `plugin_contract.rs`: the host module's
 `HotApi` table has five optional GPU callbacks mirroring the C exports below.
-Emit these exports in the host module (core.cpp) verbatim, replacing the
-kernel-name placeholders with the real kernel names from the project:
+Emit these exports in the host module (`core.cpp`) verbatim, replacing the
+kernel-name placeholders with the real kernel names from the project. Do not
+emit these host lifecycle exports in `device.cu` / `device.hip`; the device
+file is for kernels/device helpers only:
 
 ```cpp
 // 1. device_descriptor — what does the GPU side need at load time?
@@ -3980,6 +3999,13 @@ extern "C" unsigned long long device_kernel_sig_hash(const char* name);
     `device.hip`). Host files launch them only through
     `synthi_gpu_launch(...)`; do not leave raw triple-chevron host
     launch sites in the split output.
+  - Every kernel that will be loaded by name MUST be exported with C
+    linkage so the sidecar loader can resolve the exact symbol:
+
+        extern "C" __global__ void particle_flow(...);
+
+    Do not emit plain `__global__ void particle_flow(...)`; C++ name
+    mangling makes `hipModuleGetFunction` / `cuModuleGetFunction` fail.
   - **No `cuMalloc`/`hipMalloc` outside the Synthi allocation registry**
     in host_runner.cpp. The registry records `(ptr, size, owner_module,
     semantic_name, lifetime_hint, dirty)` for every live Synthi-managed
@@ -4059,6 +4085,9 @@ fields, emit a `files` array plus a `gpu` sub-object:
 not HMR-compatible. Pick `arch` from the source's targeting hints
 (comments, `#pragma`, etc.) or default to `sm_80` (CUDA) /
 `gfx90a` (ROCm) when the source doesn't specify.
+Use vendor-correct device flags: CUDA may use `--use_fast_math`, but
+ROCm/HIP must not. A ROCm `device_flags` list should usually be
+`["-O3", "-lineinfo"]`.
 
 # NO-SHIM CONTRACT
 

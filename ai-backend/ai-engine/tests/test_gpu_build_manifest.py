@@ -158,7 +158,15 @@ def test_normalizes_ai_gpu_manifest_defaults_for_rocm():
     raw = {
         "compiler": "hipcc",
         "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp", "device.hip"],
-        "gpu": {"vendor": "rocm"},
+        "gpu": {
+            "vendor": "rocm",
+            "device_flags": [
+                "-O3",
+                "-lineinfo",
+                "--use_fast_math",
+                "--generate-code=arch=compute_80,code=sm_80",
+            ],
+        },
     }
     normalized = normalize_gpu_split_manifest(
         raw,
@@ -184,6 +192,10 @@ def test_normalizes_ai_gpu_manifest_defaults_for_rocm():
     assert "-lamdhip64" in parsed.core_link_flags
     assert "-lSDL2" in parsed.gui_link_flags
     assert "-ldl" in parsed.runner_link_flags
+    assert "--use_fast_math" not in parsed.gpu.device_flags
+    assert "--generate-code=arch=compute_80,code=sm_80" not in parsed.gpu.device_flags
+    assert "-O3" in parsed.gpu.device_flags
+    assert "-lineinfo" in parsed.gpu.device_flags
 
 
 def test_normalizes_ai_gpu_manifest_defaults_for_cuda_dynamic_paths():

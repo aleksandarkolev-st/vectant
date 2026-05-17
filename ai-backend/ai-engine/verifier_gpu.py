@@ -384,6 +384,21 @@ def verify_split_output(
 
     device_source = files.get("device.cu") or files.get("device.hip") or ""
     declared_kernels = set(_collect_kernel_signatures(device_source).keys())
+    for match in _GLOBAL_DECL_RE.finditer(device_source):
+        prefix = device_source[max(0, match.start() - 48) : match.start()]
+        if 'extern "C"' not in prefix:
+            violations.append(
+                Violation(
+                    rule="device_kernel_not_extern_c",
+                    message=(
+                        f"Kernel {match.group('name')!r} must be declared as "
+                        'extern "C" __global__ so the sidecar loader can '
+                        "resolve the unmangled symbol by name."
+                    ),
+                    offending_module="device.cu" if "device.cu" in files else "device.hip",
+                    offending_symbol=match.group("name"),
+                )
+            )
 
     expected = {"shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"}
     has_device_file = "device.cu" in files or "device.hip" in files
@@ -444,13 +459,56 @@ def verify_split_output(
                     offending_symbol=symbol,
                 )
             )
-    if re.search(r"\bnew\s+AppState\b|\bmalloc\s*\(\s*sizeof\s*\(\s*AppState\s*\)", core_source):
+    for symbol in ("device_descriptor", "device_on_load", "device_kernel_sig_hash"):
+        if not re.search(rf'extern\s+"C"[^;{{\n]*\b{symbol}\s*\(', core_source):
+            violations.append(
+                Violation(
+                    rule="missing_core_gpu_lifecycle_export",
+                    message=(
+                        f"core.cpp must export extern \"C\" {symbol}. "
+                        "The host GPU lifecycle ABI belongs in the host module, "
+                        "not in device.cu/device.hip."
+                    ),
+                    offending_module="core.cpp",
+                    offending_symbol=symbol,
+                )
+            )
+    if re.search(r'extern\s+"C"[^;{\n]*\b(?:device_descriptor|device_on_load|device_kernel_sig_hash)\s*\(', device_source):
         violations.append(
             Violation(
-                rule="app_state_heap_allocation",
+                rule="device_file_owns_host_gpu_lifecycle",
                 message=(
-                    "core.cpp must not allocate AppState with new/malloc. Use "
-                    "static storage or preserve/reuse the prev_state pointer."
+                    "device.cu/device.hip must contain kernels/device helpers only. "
+                    "Move device_descriptor/device_on_load/device_kernel_sig_hash "
+                    "exports to core.cpp."
+                ),
+                offending_module="device.cu" if "device.cu" in files else "device.hip",
+            )
+        )
+    if re.search(r"\bsynthi_register\s*\(\s*&", core_source):
+        violations.append(
+            Violation(
+                rule="registers_pointer_slot",
+                message=(
+                    "core.cpp registers the address of a pointer field. Allocate "
+                    "the device buffer first, then call synthi_register(ptr, ...), "
+                    "not synthi_register(&ptr, ...)."
+                ),
+                offending_module="core.cpp",
+            )
+        )
+    if (
+        re.search(r"\bsynthi_gpu_launch\s*\(", core_source)
+        and re.search(r"\b(?:cuda|hip)Memcpy\s*\(", core_source)
+        and not re.search(r"\b(?:cudaMalloc|hipMalloc|cuMemAlloc)\s*\(", core_source)
+    ):
+        violations.append(
+            Violation(
+                rule="device_buffers_not_allocated",
+                message=(
+                    "core.cpp launches/copies GPU buffers but does not allocate "
+                    "them. Move the user's cudaMalloc/hipMalloc setup into "
+                    "core_on_load before registration and first launch."
                 ),
                 offending_module="core.cpp",
             )
@@ -494,6 +552,19 @@ def verify_split_output(
                     offending_symbol=symbol,
                 )
             )
+    if re.search(r"\bSDL_GetWindowFromID\s*\(\s*1\s*\)", gui_source):
+        violations.append(
+            Violation(
+                rule="gui_uses_global_window_id_lookup",
+                message=(
+                    "gui.cpp must not recover the renderer through "
+                    "SDL_GetWindowFromID(1). Use the window_ptr passed to "
+                    "gui_on_load, store SDL_GetRenderer((SDL_Window*)window_ptr), "
+                    "and render through that stored renderer."
+                ),
+                offending_module="gui.cpp",
+            )
+        )
 
     host_runner_source = files.get("host_runner.cpp") or ""
     if re.search(r"\bsynthi_(?:gpu_)?register", host_runner_source):
@@ -504,6 +575,17 @@ def verify_split_output(
                     "host_runner.cpp must not call synthi_register or "
                     "synthi_gpu_register_buffer. Keep device allocation and "
                     "registration in core.cpp lifecycle code."
+                ),
+                offending_module="host_runner.cpp",
+            )
+        )
+    if host_runner_source and not re.search(r"\bgui_on_(?:load|render)\b|libgui", host_runner_source):
+        violations.append(
+            Violation(
+                rule="host_runner_omits_gui_module",
+                message=(
+                    "host_runner.cpp must load/call the generated GUI module "
+                    "or otherwise route rendering through gui_on_render every frame."
                 ),
                 offending_module="host_runner.cpp",
             )

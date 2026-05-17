@@ -436,14 +436,55 @@ def normalize_gpu_split_manifest(
     gpu["device_compiler"] = compiler
     if not isinstance(gpu.get("arch"), list) or not gpu.get("arch"):
         gpu["arch"] = [arch]
-    if not isinstance(gpu.get("device_flags"), list):
-        gpu["device_flags"] = []
+    gpu["device_flags"] = _normalize_gpu_device_flags(gpu.get("device_flags"), vendor)
     if not isinstance(gpu.get("runtime_libs"), list) or not gpu.get("runtime_libs"):
         gpu["runtime_libs"] = runtime_libs
     gpu.setdefault("snapshot_mode", "auto")
     gpu["fatbin_strategy"] = "sidecar_module"
     manifest["gpu"] = gpu
     return manifest
+
+
+def _normalize_gpu_device_flags(raw_flags: Any, vendor: str) -> List[str]:
+    """Keep AI-emitted device flags compatible with the selected backend."""
+
+    if not isinstance(raw_flags, list):
+        raw_flags = []
+
+    normalized: List[str] = []
+    seen: Set[str] = set()
+
+    def add(flag: str) -> None:
+        if flag and flag not in seen:
+            normalized.append(flag)
+            seen.add(flag)
+
+    for raw in raw_flags:
+        flag = str(raw).strip()
+        if not flag:
+            continue
+        if vendor == "rocm" and flag in {"--use_fast_math", "--use-fast-math"}:
+            # hipcc's clang device path rejects nvcc's CUDA-only spelling.
+            continue
+        if vendor == "rocm" and (
+            flag.startswith("-arch=sm_")
+            or flag.startswith("--gpu-architecture=sm_")
+            or flag.startswith("-gencode")
+            or flag.startswith("--generate-code")
+        ):
+            continue
+        if vendor == "cuda" and (
+            flag.startswith("--offload-arch=gfx")
+            or flag.startswith("--amdgpu-target=")
+            or flag.startswith("--rocm-path")
+        ):
+            continue
+        add(flag)
+
+    for default in ("-O3", "-lineinfo"):
+        add(default)
+
+    return normalized
 
 
 # ─────────────────────────────────────────────────────────────────────────────

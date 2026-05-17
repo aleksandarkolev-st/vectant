@@ -744,6 +744,11 @@ async function run() {
   );
   record('device-only GPU HMR observed', hotSwap.matched ? 'pass' : 'fail', hotSwap.snippet || 'no device-only reload marker');
 
+  await sleep(2000);
+  const afterReload = await readWorkerLogTail(4 * 1024 * 1024, secondStart?.at ? { since: secondStart.at } : {});
+  const crashMatch = afterReload.match(/Runner process (?:has already )?exited[^\n]*|SIGSEGV|core dumped|module loading could begin|module-load-failed|mismatch rollback|Device reload result .*Failed/);
+  record('runner stayed alive after GPU HMR', crashMatch ? 'fail' : 'pass', crashMatch?.[0] || 'no runner crash marker');
+
   await writeResults();
   console.log(`url: ${CFG.frontendUrl}/workspace/${CFG.slug}`);
   const failures = results.filter((r) => r.status === 'fail');
