@@ -1,7 +1,8 @@
 param(
     [switch]$Build,
     [switch]$Pull,
-    [string]$Image = $env:SYNTHI_WORKER_GPU_IMAGE
+    [string]$Image = $env:SYNTHI_WORKER_GPU_IMAGE,
+    [string]$Arch = $env:SYNTHI_GPU_ARCH
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,6 +35,43 @@ function Test-AmdDxg {
     }
 }
 
+function Convert-NvidiaComputeCapability {
+    param([string]$Capability)
+    $clean = ($Capability -replace "\s", "").Trim()
+    if ($clean -match "^[0-9]+(\.[0-9]+)?$") {
+        return "sm_$($clean -replace '\.', '')"
+    }
+    return $null
+}
+
+function Get-NvidiaArch {
+    try {
+        $cap = (& nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>$null | Select-Object -First 1)
+        return Convert-NvidiaComputeCapability $cap
+    } catch {
+        return $null
+    }
+}
+
+function Get-RocmArch {
+    try {
+        $gfx = (& wsl.exe sh -lc "if command -v rocminfo >/dev/null 2>&1; then rocminfo 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9a-z]*'; elif command -v rocm_agent_enumerator >/dev/null 2>&1; then rocm_agent_enumerator 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9a-z]*'; fi" 2>$null | Select-Object -First 1)
+        if ($gfx) { return $gfx.Trim() }
+    } catch {
+        # Fall through to Windows GPU-name fallback.
+    }
+
+    try {
+        $names = (Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name) -join "`n"
+        if ($names -match "RX 90(60|70)") {
+            return "gfx1201"
+        }
+    } catch {
+        return $null
+    }
+    return $null
+}
+
 $override = $null
 $vendor = $null
 if (Test-Nvidia) {
@@ -48,11 +86,32 @@ if (Test-Nvidia) {
     $vendor = "auto"
 }
 
+if (-not $Arch -or $Arch -eq "auto") {
+    if ($vendor -eq "cuda") {
+        $Arch = Get-NvidiaArch
+    } elseif ($vendor -eq "rocm") {
+        $Arch = Get-RocmArch
+    } else {
+        $Arch = $null
+    }
+    $archSource = if ($Arch) { "auto-detected" } else { "auto-unresolved" }
+} else {
+    $archSource = "override"
+}
+
+if ($Arch) {
+    $env:SYNTHI_GPU_ARCH = $Arch
+} elseif (Test-Path Env:SYNTHI_GPU_ARCH) {
+    Remove-Item Env:SYNTHI_GPU_ARCH
+}
+
 Write-Host "Using GPU override: $override"
 Write-Host "Detected vendor: $vendor"
 Write-Host "Worker image: $Image"
 if ($env:SYNTHI_GPU_ARCH) {
-    Write-Host "GPU arch hint: $env:SYNTHI_GPU_ARCH"
+    Write-Host "GPU arch hint: $env:SYNTHI_GPU_ARCH ($archSource)"
+} else {
+    Write-Host "GPU arch hint: auto (not resolved before startup)"
 }
 
 $compose = @("compose", "-f", "docker-compose.yml", "-f", $override)

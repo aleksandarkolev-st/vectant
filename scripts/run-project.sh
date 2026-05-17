@@ -11,6 +11,7 @@ validation="none"
 slug=""
 vendor="${SYNTHI_GPU_VENDOR:-auto}"
 arch="${SYNTHI_GPU_ARCH:-}"
+arch_source=""
 
 usage() {
   cat <<'USAGE'
@@ -23,14 +24,16 @@ Options:
   --pull                   Pull the configured worker GPU image before starting.
   --image IMAGE            Worker GPU image tag to use.
   --vendor auto|cuda|rocm  GPU target for validation scripts. Default: auto.
-  --arch ARCH              GPU arch hint, e.g. gfx1201, sm_80, sm_120.
+  --arch ARCH              Override GPU arch hint, e.g. gfx1201, sm_80, sm_120.
   --slug SLUG              Workspace slug for validation.
   --validate NAME          none | agent-split | dynamic | flow | vector.
                            Default: none.
   --help, -h               Show this help.
 
 Recommended full user-path validation:
-  scripts/run-project.sh --build --arch gfx1201 --validate agent-split
+  scripts/run-project.sh --build --validate agent-split
+
+Use --vendor/--arch only when you want to override auto detection.
 
 After startup:
   Frontend: http://localhost:3000
@@ -120,6 +123,74 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+detect_host_vendor() {
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+    printf '%s\n' cuda
+    return 0
+  fi
+  if [ -e /dev/dxg ] || command -v rocminfo >/dev/null 2>&1; then
+    printf '%s\n' rocm
+    return 0
+  fi
+  printf '%s\n' auto
+}
+
+detect_cuda_arch() {
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    return 1
+  fi
+  local cap
+  cap="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null | awk 'NF { print $1; exit }')"
+  cap="${cap//$'\r'/}"
+  cap="${cap//[[:space:]]/}"
+  if [[ "$cap" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    printf 'sm_%s\n' "${cap/./}"
+    return 0
+  fi
+  return 1
+}
+
+detect_rocm_arch() {
+  local gfx
+  if command -v rocminfo >/dev/null 2>&1; then
+    gfx="$(rocminfo 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9a-z]*' || true)"
+    if [ -n "$gfx" ]; then
+      printf '%s\n' "$gfx"
+      return 0
+    fi
+  fi
+  if command -v rocm_agent_enumerator >/dev/null 2>&1; then
+    gfx="$(rocm_agent_enumerator 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9a-z]*' || true)"
+    if [ -n "$gfx" ]; then
+      printf '%s\n' "$gfx"
+      return 0
+    fi
+  fi
+  if command -v powershell.exe >/dev/null 2>&1; then
+    local names
+    names="$(powershell.exe -NoProfile -Command 'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name' 2>/dev/null | tr -d '\r' || true)"
+    case "$names" in
+      *"RX 9070"*|*"RX 9060"*)
+        printf '%s\n' gfx1201
+        return 0
+        ;;
+    esac
+  fi
+  return 1
+}
+
+auto_detect_arch() {
+  local effective_vendor="$vendor"
+  if [ "$effective_vendor" = "auto" ]; then
+    effective_vendor="$(detect_host_vendor)"
+  fi
+  case "$effective_vendor" in
+    cuda) detect_cuda_arch ;;
+    rocm) detect_rocm_arch ;;
+    *) return 1 ;;
+  esac
+}
+
 start_args=()
 if [ "$build" -eq 1 ]; then
   start_args+=(--build)
@@ -131,6 +202,19 @@ if [ -n "$image" ]; then
   start_args+=(--image "$image")
 fi
 
+if [ -z "$arch" ] || [ "$arch" = "auto" ]; then
+  detected_arch="$(auto_detect_arch || true)"
+  if [ -n "$detected_arch" ]; then
+    arch="$detected_arch"
+    arch_source="auto-detected"
+  else
+    arch=""
+    arch_source="auto-unresolved"
+  fi
+else
+  arch_source="override"
+fi
+
 if [ -n "$arch" ]; then
   export SYNTHI_GPU_ARCH="$arch"
 fi
@@ -138,6 +222,11 @@ export SYNTHI_GPU_VENDOR="$vendor"
 export SYNTHI_GPU_HMR=1
 
 echo "==> Starting GPU stack"
+if [ -n "$arch" ]; then
+  echo "==> GPU arch hint: $arch ($arch_source)"
+else
+  echo "==> GPU arch hint: auto (not resolved before startup)"
+fi
 scripts/start-gpu-stack.sh "${start_args[@]}"
 
 if [ "$validation" = "none" ]; then

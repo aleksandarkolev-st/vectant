@@ -127,6 +127,29 @@ async function detectVendor() {
   throw new Error('could not auto-detect GPU vendor; set SYNTHI_GPU_VENDOR=cuda or rocm');
 }
 
+function archProbeCommand(vendor) {
+  if (vendor === 'cuda') {
+    return "if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null | awk 'NF { gsub(/\\./, \"\", $1); print \"sm_\" $1; exit }'; fi";
+  }
+  return "if command -v rocminfo >/dev/null 2>&1; then rocminfo 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9a-z]*'; elif command -v rocm_agent_enumerator >/dev/null 2>&1; then rocm_agent_enumerator 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9a-z]*'; fi";
+}
+
+async function detectArch(vendor) {
+  if (CFG.gpuArch && CFG.gpuArch.toLowerCase() !== 'auto') return CFG.gpuArch;
+  if (CFG.mcpTransport !== 'docker') return vendor === 'rocm' ? 'gfx90a' : 'sm_80';
+  const out = await execText('docker', [
+    'exec',
+    CFG.workerContainer,
+    'sh',
+    '-lc',
+    archProbeCommand(vendor),
+  ]);
+  const detected = String(out || '').trim().split(/\s+/).find((v) => (
+    vendor === 'cuda' ? /^sm_\d+$/.test(v) : /^gfx[0-9][0-9a-z]*$/.test(v)
+  ));
+  return detected || (vendor === 'rocm' ? 'gfx90a' : 'sm_80');
+}
+
 async function createWorkspace({ name, slug }) {
   return httpJson('POST', `${CFG.frontendUrl}/api/workspace`, { name, slug });
 }
@@ -631,8 +654,7 @@ extern "C" __global__ void particle_flow(float* x, float* y, int n, float cx, fl
 `;
 }
 
-function manifestFor(vendor, paths) {
-  const arch = CFG.gpuArch ?? (vendor === 'rocm' ? 'gfx1201' : 'sm_80');
+function manifestFor(vendor, paths, arch) {
   const commonFlags = [
     '-shared',
     '-fPIC',
@@ -715,9 +737,9 @@ function sourceFiles(vendor, paths, manifest) {
   ];
 }
 
-async function seedWorkspace(vendor) {
+async function seedWorkspace(vendor, arch) {
   const paths = makePaths(vendor);
-  const manifest = manifestFor(vendor, paths);
+  const manifest = manifestFor(vendor, paths, arch);
   const files = sourceFiles(vendor, paths, manifest);
   const workspace = await createWorkspace({
     name: `Synthi GPU-HMR Dynamic (${vendor})`,
@@ -765,9 +787,12 @@ async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await resolveDockerContainers();
   const vendor = await detectVendor();
-  record('gpu vendor', 'pass', vendor);
+  const arch = await detectArch(vendor);
+  CFG.gpuArch = arch;
+  process.env.SYNTHI_GPU_ARCH = arch;
+  record('gpu vendor', 'pass', `${vendor} arch=${arch}`);
 
-  const ctx = await seedWorkspace(vendor);
+  const ctx = await seedWorkspace(vendor, arch);
   const inwardStart = await workerCheckpoint();
   await compileViaMcp(ctx, ctx.paths.device, deviceSource('1.0f', vendor));
   record('inward compile via MCP', 'pass', ctx.paths.device);

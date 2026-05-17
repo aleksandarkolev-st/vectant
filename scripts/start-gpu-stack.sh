@@ -52,6 +52,50 @@ has_amd_dxg() {
   [ -e /dev/dxg ]
 }
 
+detect_cuda_arch() {
+  if ! command -v nvidia-smi >/dev/null 2>&1; then
+    return 1
+  fi
+  local cap
+  cap="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null | awk 'NF { print $1; exit }')"
+  cap="${cap//$'\r'/}"
+  cap="${cap//[[:space:]]/}"
+  if [[ "$cap" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    printf 'sm_%s\n' "${cap/./}"
+    return 0
+  fi
+  return 1
+}
+
+detect_rocm_arch() {
+  local gfx
+  if command -v rocminfo >/dev/null 2>&1; then
+    gfx="$(rocminfo 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9a-z]*' || true)"
+    if [ -n "$gfx" ]; then
+      printf '%s\n' "$gfx"
+      return 0
+    fi
+  fi
+  if command -v rocm_agent_enumerator >/dev/null 2>&1; then
+    gfx="$(rocm_agent_enumerator 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9a-z]*' || true)"
+    if [ -n "$gfx" ]; then
+      printf '%s\n' "$gfx"
+      return 0
+    fi
+  fi
+  if command -v powershell.exe >/dev/null 2>&1; then
+    local names
+    names="$(powershell.exe -NoProfile -Command 'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name' 2>/dev/null | tr -d '\r' || true)"
+    case "$names" in
+      *"RX 9070"*|*"RX 9060"*)
+        printf '%s\n' gfx1201
+        return 0
+        ;;
+    esac
+  fi
+  return 1
+}
+
 if has_nvidia; then
   override="docker-compose.nvidia.yml"
   vendor="cuda"
@@ -64,11 +108,32 @@ else
   vendor="auto"
 fi
 
+if [ -z "${SYNTHI_GPU_ARCH:-}" ] || [ "${SYNTHI_GPU_ARCH:-}" = "auto" ]; then
+  if [ "$vendor" = "cuda" ]; then
+    detected_arch="$(detect_cuda_arch || true)"
+  elif [ "$vendor" = "rocm" ]; then
+    detected_arch="$(detect_rocm_arch || true)"
+  else
+    detected_arch=""
+  fi
+  if [ -n "$detected_arch" ]; then
+    export SYNTHI_GPU_ARCH="$detected_arch"
+    arch_source="auto-detected"
+  else
+    unset SYNTHI_GPU_ARCH
+    arch_source="auto-unresolved"
+  fi
+else
+  arch_source="override"
+fi
+
 echo "Using GPU override: $override"
 echo "Detected vendor: $vendor"
 echo "Worker image: $image"
 if [ -n "${SYNTHI_GPU_ARCH:-}" ]; then
-  echo "GPU arch hint: $SYNTHI_GPU_ARCH"
+  echo "GPU arch hint: $SYNTHI_GPU_ARCH ($arch_source)"
+else
+  echo "GPU arch hint: auto (not resolved before startup)"
 fi
 
 compose=(docker compose -f docker-compose.yml -f "$override")

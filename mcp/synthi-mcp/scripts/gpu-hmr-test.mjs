@@ -23,7 +23,7 @@
 //   WORKER_LOG_PATH              <repo>/backend/synthi-webrtc-compiler/.run/worker.log
 //   SLUG                         gpu-hmr-<ts>
 //   SYNTHI_GPU_VENDOR            auto | cuda | rocm | both       (default auto)
-//   SYNTHI_GPU_ARCH              override target arch (cuda: sm_80, rocm: gfx1201)
+//   SYNTHI_GPU_ARCH              optional target arch override (e.g. sm_80, sm_120, gfx1201)
 //   SYNTHI_GPU_FAST_SWAP_BUDGET_MS 300
 //   SYNTHI_GPU_LAUNCH_WATCHDOG_MS  5000
 //   SYNTHI_GPU_DRAIN_TIMEOUT_MS    2000
@@ -524,6 +524,25 @@ function dockerExecText(command, timeoutMs = 10000) {
   });
 }
 
+async function detectWorkerGpuArch(vendor) {
+  if (CFG.gpuArch && CFG.gpuArch.toLowerCase() !== 'auto') return CFG.gpuArch;
+  const command = vendor === 'cuda'
+    ? "if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null | awk 'NF { gsub(/\\./, \"\", $1); print \"sm_\" $1; exit }'; fi"
+    : "if command -v rocminfo >/dev/null 2>&1; then rocminfo 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9a-z]*'; elif command -v rocm_agent_enumerator >/dev/null 2>&1; then rocm_agent_enumerator 2>/dev/null | grep -m1 -o 'gfx[0-9][0-9a-z]*'; fi";
+  const out = await dockerExecText(command);
+  const detected = String(out || '').trim().split(/\s+/).find((v) => (
+    vendor === 'cuda' ? /^sm_\d+$/.test(v) : /^gfx[0-9][0-9a-z]*$/.test(v)
+  ));
+  return detected || null;
+}
+
+function archForVendor(vendor, tc = null) {
+  if (CFG.gpuArch && CFG.gpuArch.toLowerCase() !== 'auto') return CFG.gpuArch;
+  if (vendor === 'cuda' && tc?.worker?.cudaArch) return tc.worker.cudaArch;
+  if (vendor === 'rocm' && tc?.worker?.rocmArch) return tc.worker.rocmArch;
+  return vendor === 'rocm' ? 'gfx90a' : 'sm_80';
+}
+
 async function probeToolchain() {
   // We probe both the harness host AND, if MCP_TRANSPORT=docker, the worker
   // container. The worker container is what actually has to have nvcc; the
@@ -538,6 +557,8 @@ async function probeToolchain() {
   out.worker.rocmGpu = await dockerExecText(
     'if command -v rocminfo >/dev/null 2>&1; then rocminfo 2>/dev/null | awk \'/Name:/ && $0 !~ /Agent/ { sub(/^[[:space:]]*Name:[[:space:]]*/, ""); print; exit }\'; fi'
   );
+  out.worker.cudaArch = await detectWorkerGpuArch('cuda');
+  out.worker.rocmArch = await detectWorkerGpuArch('rocm');
   return out;
 }
 
@@ -752,8 +773,7 @@ int main() {
 }
 `;
 
-function sourceSetForVendor(vendor) {
-  const arch = CFG.gpuArch ?? (vendor === 'rocm' ? 'gfx1201' : 'sm_80');
+function sourceSetForVendor(vendor, arch = archForVendor(vendor)) {
   if (vendor !== 'rocm') {
     return { core: CORE_CPP, gui: GUI_CPP };
   }
@@ -1102,8 +1122,7 @@ const FLOW_DEVICE_OUTWARD = FLOW_DEVICE_INWARD
   .replace('inward baseline', 'outward hot-swap edit')
   .replace('#define FLOW_DIRECTION 1.0f', '#define FLOW_DIRECTION -1.0f');
 
-function flowSourceSetForVendor(vendor) {
-  const arch = CFG.gpuArch ?? (vendor === 'rocm' ? 'gfx1201' : 'sm_80');
+function flowSourceSetForVendor(vendor, arch = archForVendor(vendor)) {
   if (vendor !== 'rocm') {
     return { shared: FLOW_SHARED_H, core: FLOW_CORE_CPP, gui: FLOW_GUI_CPP };
   }
@@ -1124,8 +1143,7 @@ function flowSourceSetForVendor(vendor) {
   return { shared: FLOW_SHARED_H, core, gui };
 }
 
-function manifestFor(vendor, fixture = activeFixture()) {
-  const arch = CFG.gpuArch ?? (vendor === 'rocm' ? 'gfx1201' : 'sm_80');
+function manifestFor(vendor, fixture = activeFixture(), arch = archForVendor(vendor)) {
   const flow = fixture === 'flow';
   const sdlLinkFlags = flow ? ['-lSDL2', '-lm'] : [];
   const commonFlags = [
@@ -1504,6 +1522,8 @@ async function preflight() {
     record('preflight', 'hipcc in worker', tc.worker.hipcc ? 'pass' : 'skip', tc.worker.hipcc ?? 'not found');
     record('preflight', 'NVIDIA GPU visible in worker', tc.worker.nvidiaGpu ? 'pass' : 'skip', tc.worker.nvidiaGpu ?? 'not found');
     record('preflight', 'ROCm GPU visible in worker', tc.worker.rocmGpu ? 'pass' : 'skip', tc.worker.rocmGpu ?? 'not found');
+    record('preflight', 'CUDA arch detected in worker', tc.worker.cudaArch ? 'pass' : 'skip', tc.worker.cudaArch ?? 'not found');
+    record('preflight', 'ROCm arch detected in worker', tc.worker.rocmArch ? 'pass' : 'skip', tc.worker.rocmArch ?? 'not found');
     if (CFG.vendor === 'auto') {
       const detectedVendor = autoVendorFromToolchain(tc);
       record('preflight', 'auto GPU vendor detection',
@@ -1518,15 +1538,16 @@ async function preflight() {
   return { feOk, colOk, sigOk, aiOk, ep, tc };
 }
 
-async function seedWorkspace(vendor) {
+async function seedWorkspace(vendor, tc = null) {
   const fixture = activeFixture();
-  const m = manifestFor(vendor, fixture);
+  const arch = archForVendor(vendor, tc);
+  const m = manifestFor(vendor, fixture, arch);
   const deviceFilename = vendor === 'rocm' ? 'device.hip' : 'device.cu';
-  const vectorSources = sourceSetForVendor(vendor);
-  const flowSources = flowSourceSetForVendor(vendor);
+  const vectorSources = sourceSetForVendor(vendor, arch);
+  const flowSources = flowSourceSetForVendor(vendor, arch);
   const sources = fixture === 'flow' ? flowSources : { shared: SHARED_H, ...vectorSources };
   const deviceContent = fixture === 'flow' ? FLOW_DEVICE_INWARD : DEVICE_CU_PHASE0;
-  log('info', `Seeding workspace slug=${CFG.slug} vendor=${vendor} fixture=${fixture}`);
+  log('info', `Seeding workspace slug=${CFG.slug} vendor=${vendor} arch=${arch} fixture=${fixture}`);
 
   let ws;
   try {
@@ -2025,7 +2046,7 @@ async function main() {
   const vendors = vendorsForConfig(pre.tc);
   for (const vendor of vendors) {
     log('info', `── Vendor: ${vendor} ──`);
-    const ctx = await seedWorkspace(vendor);
+    const ctx = await seedWorkspace(vendor, pre.tc);
     if (!ctx) {
       record(`seed:${vendor}`, 'seed failed; skipping phases', 'fail');
       continue;

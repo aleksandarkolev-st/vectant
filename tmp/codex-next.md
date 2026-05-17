@@ -217,6 +217,8 @@ PASS render loop reports outward flow - [gpu-flow-dynamic] ... trend=outward
 - `scripts/run-project.sh`
   - Linux/WSL convenience wrapper for clean sessions.
   - Starts the detected GPU stack through `scripts/start-gpu-stack.sh`.
+  - Defaults to auto vendor/arch detection; `--vendor` and `--arch` are
+    explicit overrides, not the normal path.
   - Optional `--validate agent-split|dynamic|flow|vector` runs the matching
     GPU-HMR harness and prints the workspace URL.
 
@@ -273,14 +275,14 @@ Clean-session Bash wrapper:
 
 ```bash
 cd /path/to/vectant-ade
-scripts/run-project.sh --arch gfx1201
+scripts/run-project.sh
 ```
 
 Start and run the full user-path GPU split/HMR validation:
 
 ```bash
 cd /path/to/vectant-ade
-scripts/run-project.sh --build --arch gfx1201 --validate agent-split
+scripts/run-project.sh --build --validate agent-split
 ```
 
 Other validation modes:
@@ -658,8 +660,8 @@ Do not commit ignored screenshot artifacts from `.gpu-hmr-test-artifacts/`. The 
 1. Read this file.
 2. Run `git status --short`.
 3. Run `docker compose ps`.
-4. If in Bash/WSL, prefer `scripts/run-project.sh --arch gfx1201`; otherwise
-   start the stack with the command above.
+4. If in Bash/WSL, prefer `scripts/run-project.sh`; otherwise start the stack
+   with the command above.
 5. If asked to prove GPU HMR visually, run the `FLOW` command first.
 6. If asked to prove arbitrary file names/dependencies, run the dynamic harness.
 7. If asked for low-level correctness, run `P0,P1,P2` and the targeted Rust tests.
