@@ -3943,6 +3943,10 @@ real runtime code/header surface, not prose:
 
     The final argument must be an initializer-list literal. Do not create
     `void* args[]` and pass that array; it will not match the runtime helper.
+    Every initializer-list entry must be the address of a real host-side
+    argument variable (`&devicePtr`, `&count`, `&dt`). Never cast scalar
+    values or bit patterns to `const void*` / `uintptr_t`; that creates fake
+    pointers and will crash the GPU runtime.
 
   - Synthi-managed device allocations MUST be registered through the
     runtime registry so the worker can preserve them across sidecar

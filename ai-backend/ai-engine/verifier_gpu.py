@@ -555,6 +555,42 @@ def verify_split_output(
                     offending_module="core.cpp",
                 )
             )
+            continue
+
+        launch_args = args[-1].strip()
+        if "(uintptr_t)" in launch_args or "reinterpret_cast" in launch_args or re.search(
+            r"\(\s*const\s+void\s*\*\s*\)", launch_args
+        ):
+            violations.append(
+                Violation(
+                    rule="launch_arg_pointer_cast",
+                    message=(
+                        "synthi_gpu_launch arguments must be addresses of real "
+                        "host variables, e.g. `{ &device_ptr, &count, &dt }`. "
+                        "Do not cast scalar values or bit patterns to pointers."
+                    ),
+                    offending_module="core.cpp",
+                )
+            )
+            continue
+
+        if launch_args.endswith("}"):
+            entries = _split_top_level_args(launch_args[1:-1])
+            for entry in entries:
+                stripped = entry.strip()
+                if stripped and not stripped.startswith("&"):
+                    violations.append(
+                        Violation(
+                            rule="launch_arg_not_address",
+                            message=(
+                                "Every synthi_gpu_launch initializer-list entry "
+                                "must pass the address of a host-side argument "
+                                "variable, e.g. `{ &device_ptr, &count }`."
+                            ),
+                            offending_module="core.cpp",
+                        )
+                    )
+                    break
 
     gui_source = files.get("gui.cpp") or ""
     for symbol in ("gui_on_load", "gui_on_render"):

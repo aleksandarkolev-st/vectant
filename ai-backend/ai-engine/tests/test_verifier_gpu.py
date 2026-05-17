@@ -305,6 +305,48 @@ def test_split_rejects_invalid_launch_signature_and_runner_registration():
     assert "host_runner_registers_gpu_buffers" in rules
 
 
+def test_split_rejects_pointer_cast_launch_arguments():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* x; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'int n = 1; float dt = 0.1f; '
+            'synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, '
+            '{ &x, (const void*)(uintptr_t)n, (const void*)(uintptr_t)*(unsigned int*)&dt }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": 'extern "C" __global__ void vec_add(float*, int, float) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    rules = {v.rule for v in r.violations}
+    assert "launch_arg_pointer_cast" in rules
+
+
+def test_split_rejects_non_address_launch_arguments():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* x; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'int n = 1; synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, { &x, n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": 'extern "C" __global__ void vec_add(float*, int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    rules = {v.rule for v in r.violations}
+    assert "launch_arg_not_address" in rules
+
+
 def test_split_rejects_runtime_unsafe_gpu_buffer_split():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* deviceX; };',
