@@ -3906,13 +3906,16 @@ state, but `gui_on_render` must be able to render from the core state pointer.
 Do not allocate `AppState` with `new` or `malloc`; use static storage on the
 first load and reuse `prev_state` on hot reload.
 
-For SDL2 splits, the historical `window_ptr` parameter actually carries the
-runner-owned `SDL_Renderer*`, not an `SDL_Window*`. Cast it directly to
-`SDL_Renderer*` and store it in static GUI state or a GUI field.
-`gui_on_render` must use that stored renderer. Never call `SDL_GetRenderer` on
-`window_ptr`, never call `SDL_GetWindowFromID(1)`, and never assume the SDL
-window id is 1; those paths can return null or draw to nothing in the shipped
-runner.
+The second load argument is an opaque host render surface supplied by the
+runner for the selected window backend. Treat it the same way
+`UNIVERSAL_SPLIT_PROMPT` treats backend handles: preserve the rendering
+library from the user's source, store the supplied handle/context in state when
+that backend needs it, and render through that stored backend handle. Do not
+invent a different graphics library, do not create replacement windows or
+renderers in `gui.cpp`, and do not recover global/synthetic window handles by
+id. If the original source's backend normally derives one handle from another,
+move that ownership/setup to the backend-owning runner path and pass only the
+stable render surface into the hot module.
 
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 
@@ -4150,10 +4153,10 @@ ROCm/HIP must not. A ROCm `device_flags` list should usually be
 - `gui.cpp` MUST export `gui_on_load` and `gui_on_render`.
 - Preserve the user's intent: kernel logic, buffer sizes, launch
   shapes, frame timing — all unchanged.
-- Preserve every kernel branch and boundary condition. Do not simplify away
-  wraparound, clamp, reset, respawn, or guard logic even when it looks
-  demo-specific; visible GPU demos depend on those branches continuing to
-  execute after HMR.
+- Preserve device-source semantics exactly. Every original kernel branch,
+  guard, boundary condition, constant, reset path, and host/device copy that
+  can affect output must survive the split unchanged unless it is only being
+  mechanically routed through the Synthi GPU launch/runtime ABI.
 
 # USER SOURCE
 
