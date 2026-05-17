@@ -224,6 +224,61 @@ async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCI
 // Removed: `const GUI_TOOLS = &["Xvfb", "matchbox-window-manager"]` — the
 // runner now handles input via stdin, no external GUI tooling needed.
 
+/// Convert JavaScript `ev.key` names to X11 keysyms (XK_*).
+/// Used by the runner's XTest fake_input path so raw-Xlib user apps
+/// (those reading via XNextEvent on a window with KeyPressMask) actually
+/// receive the keystroke. SDL apps already get their events via the
+/// SDL_PushEvent path keyed on the SDL keycode below; this is the
+/// parallel path for non-SDL apps. Keysym values are from
+/// /usr/include/X11/keysymdef.h. ASCII printable codepoints (0x20..0x7E)
+/// are valid keysyms verbatim; only "named" keys need a table.
+fn js_key_to_x11_keysym(key: &str) -> u32 {
+    match key {
+        " " => 0x0020,
+        "Enter" | "Return"      => 0xFF0D,
+        "Escape"                => 0xFF1B,
+        "Backspace"             => 0xFF08,
+        "Tab"                   => 0xFF09,
+        "Delete"                => 0xFFFF,
+        "Insert"                => 0xFF63,
+        "Home"                  => 0xFF50,
+        "End"                   => 0xFF57,
+        "PageUp"                => 0xFF55,
+        "PageDown"              => 0xFF56,
+        "ArrowLeft"             => 0xFF51,
+        "ArrowUp"               => 0xFF52,
+        "ArrowRight"            => 0xFF53,
+        "ArrowDown"             => 0xFF54,
+        "F1"  => 0xFFBE, "F2"  => 0xFFBF, "F3"  => 0xFFC0, "F4"  => 0xFFC1,
+        "F5"  => 0xFFC2, "F6"  => 0xFFC3, "F7"  => 0xFFC4, "F8"  => 0xFFC5,
+        "F9"  => 0xFFC6, "F10" => 0xFFC7, "F11" => 0xFFC8, "F12" => 0xFFC9,
+        "Shift"   | "ShiftLeft"   => 0xFFE1,
+        "ShiftRight"              => 0xFFE2,
+        "Control" | "ControlLeft" => 0xFFE3,
+        "ControlRight"            => 0xFFE4,
+        "Alt"     | "AltLeft"     => 0xFFE9,
+        "AltRight"                => 0xFFEA,
+        "Meta"    | "MetaLeft"    => 0xFFEB,
+        "MetaRight"               => 0xFFEC,
+        "CapsLock"                => 0xFFE5,
+        "NumLock"                 => 0xFF7F,
+        "ScrollLock"              => 0xFF14,
+        // Single character — for printable ASCII the keysym IS the codepoint.
+        // X11 distinguishes upper-case vs lower-case via separate keysyms,
+        // which is correct (XK_a = 0x61, XK_A = 0x41) — pass the raw char
+        // through so the browser's shift state is preserved end-to-end.
+        other => {
+            let mut chars = other.chars();
+            if let (Some(c), None) = (chars.next(), chars.next()) {
+                if c.is_ascii() && !c.is_control() {
+                    return c as u32;
+                }
+            }
+            0
+        }
+    }
+}
+
 /// Convert JavaScript `ev.key` names to SDL2 keycodes (SDLK_*)
 /// The runner's `input key down/up <keycode>` protocol expects integer SDL keycodes.
 fn js_key_to_sdl_keycode(key: &str) -> i32 {
@@ -368,6 +423,16 @@ async fn dc_send_with_backpressure(
     data: &Bytes,
     label: &str,
 ) -> anyhow::Result<()> {
+    // Fast-fail if the channel is permanently dead (closed/closing). Retrying with
+    // exponential backoff burns ~620ms per call and floods logs when an upstream
+    // pump (LSP, build log) keeps producing messages after the peer disconnected.
+    let state = dc.ready_state();
+    if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
+        && state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Connecting
+    {
+        return Err(anyhow::anyhow!("DataChannel not open (state={:?})", state));
+    }
+
     // Wait for the SCTP send buffer to drain below the threshold
     let mut waited = 0u32;
     while dc.buffered_amount().await > DC_BUFFER_THRESHOLD {
@@ -397,6 +462,12 @@ async fn dc_send_with_backpressure(
         match dc.send(data).await {
             Ok(_) => return Ok(()),
             Err(e) => {
+                // Bail immediately if the channel transitioned to closed mid-send.
+                let state = dc.ready_state();
+                if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
+                    return Err(anyhow::anyhow!("DataChannel not open (state={:?}): {}", state, e));
+                }
+
                 retries += 1;
                 if retries > DC_SEND_MAX_RETRIES {
                     debug_log!(
@@ -427,6 +498,14 @@ async fn dc_send_text_with_backpressure(
     text: String,
     label: &str,
 ) -> anyhow::Result<()> {
+    // See dc_send_with_backpressure: fast-fail on dead channel to stop log spam.
+    let state = dc.ready_state();
+    if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open
+        && state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Connecting
+    {
+        return Err(anyhow::anyhow!("DataChannel not open (state={:?})", state));
+    }
+
     // Wait for buffer to drain
     let mut waited = 0u32;
     while dc.buffered_amount().await > DC_BUFFER_THRESHOLD {
@@ -446,6 +525,11 @@ async fn dc_send_text_with_backpressure(
         match dc.send_text(text.clone()).await {
             Ok(_) => return Ok(()),
             Err(e) => {
+                let state = dc.ready_state();
+                if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
+                    return Err(anyhow::anyhow!("DataChannel not open (state={:?}): {}", state, e));
+                }
+
                 retries += 1;
                 if retries > DC_SEND_MAX_RETRIES {
                     debug_log!(
@@ -470,12 +554,68 @@ async fn dc_send_text_with_backpressure(
     }
 }
 
+/// Install no-op Xlib error handlers so a broken X11 connection to Xvfb
+/// does not exit() the worker process. The default libX11 IO handler calls
+/// exit(1) when the X server socket dies — which happens whenever a runner
+/// tears down mid-stream during a reset/restart. We dlopen libX11 lazily so
+/// the worker still builds and runs on hosts where libX11 isn't installed.
+fn install_x11_error_handlers() {
+    use std::os::raw::{c_int, c_void};
+
+    extern "C" fn xio_noop(_display: *mut c_void) -> c_int {
+        eprintln!("[worker] X11 IO error suppressed (display connection broken)");
+        0
+    }
+    extern "C" fn xerror_noop(_display: *mut c_void, _event: *mut c_void) -> c_int {
+        // Non-fatal X protocol errors; log nothing to avoid spam.
+        0
+    }
+
+    unsafe {
+        let lib = match libloading::Library::new("libX11.so.6")
+            .or_else(|_| libloading::Library::new("libX11.so"))
+        {
+            Ok(l) => l,
+            Err(e) => {
+                debug_log!("[worker] libX11 not loadable ({e}); skipping XIO handler install");
+                return;
+            }
+        };
+
+        type XSetIOErrorHandlerFn =
+            unsafe extern "C" fn(extern "C" fn(*mut c_void) -> c_int)
+                -> extern "C" fn(*mut c_void) -> c_int;
+        type XSetErrorHandlerFn =
+            unsafe extern "C" fn(extern "C" fn(*mut c_void, *mut c_void) -> c_int)
+                -> extern "C" fn(*mut c_void, *mut c_void) -> c_int;
+
+        if let Ok(set_io) = lib.get::<XSetIOErrorHandlerFn>(b"XSetIOErrorHandler\0") {
+            set_io(xio_noop);
+            debug_log!("[worker] Installed no-op XSetIOErrorHandler");
+        }
+        if let Ok(set_err) = lib.get::<XSetErrorHandlerFn>(b"XSetErrorHandler\0") {
+            set_err(xerror_noop);
+            debug_log!("[worker] Installed no-op XSetErrorHandler");
+        }
+
+        // Leak the handle: the handlers live for the lifetime of the
+        // process, so the library must stay loaded.
+        std::mem::forget(lib);
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     debug_log!("=== WORKER BUILD 2026-02-06-LSP-DEBUG ===");
     debug_log!("[Worker] Starting up (PID: {})", std::process::id());
     debug_log!("Worker starting...");
     debug_log!("Operating System: {}", std::env::consts::OS);
+
+    // Prevent broken X11 connections (e.g. Xvfb tear-down during a reset
+    // mid-build) from exit(1)-ing the worker. Must run before any X-using
+    // code (GStreamer ximagesrc, x11rb input emulation) so the default
+    // handlers don't latch in.
+    install_x11_error_handlers();
 
     // v2.1: Print security audit at startup (requirement #9)
     if std::env::var("SYNTHI_SECURITY_AUDIT")
@@ -1564,6 +1704,129 @@ async fn create_peer(
     Ok(pc)
 }
 
+fn directory_has_entries(path: &std::path::Path) -> bool {
+    match std::fs::read_dir(path) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(_) => false,
+    }
+}
+
+async fn copy_workspace_tree(
+    src_root: &std::path::Path,
+    dst_root: &std::path::Path,
+) -> Result<()> {
+    tokio::fs::create_dir_all(dst_root)
+        .await
+        .with_context(|| format!("Failed to create {}", dst_root.display()))?;
+
+    let mut stack: Vec<(std::path::PathBuf, std::path::PathBuf)> =
+        vec![(src_root.to_path_buf(), dst_root.to_path_buf())];
+
+    while let Some((src_dir, dst_dir)) = stack.pop() {
+        let mut rd = tokio::fs::read_dir(&src_dir)
+            .await
+            .with_context(|| format!("Failed to read dir {}", src_dir.display()))?;
+
+        while let Some(ent) = rd.next_entry().await? {
+            let src_path = ent.path();
+            let dst_path = dst_dir.join(ent.file_name());
+            let ft = ent.file_type().await?;
+
+            if ft.is_dir() {
+                tokio::fs::create_dir_all(&dst_path).await.ok();
+                stack.push((src_path, dst_path));
+            } else if ft.is_file() {
+                if let Some(parent) = dst_path.parent() {
+                    tokio::fs::create_dir_all(parent).await.ok();
+                }
+                tokio::fs::copy(&src_path, &dst_path).await.with_context(|| {
+                    format!(
+                        "Failed to copy {} -> {}",
+                        src_path.display(),
+                        dst_path.display()
+                    )
+                })?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn resolve_mobile_workspace_path(
+    slug: &str,
+    session_workspace_path: &std::path::Path,
+    platform: &str,
+) -> Result<std::path::PathBuf> {
+    let local_dir = std::path::PathBuf::from("/synthi").join(slug);
+    let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
+        .ok()
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
+        })
+        .unwrap_or(false);
+
+    if force_redownload && local_dir.exists() {
+        if let Err(e) = tokio::fs::remove_dir_all(&local_dir).await {
+            debug_log!(
+                "[{}] Failed to clear existing workspace {}: {}",
+                platform,
+                local_dir.display(),
+                e
+            );
+        } else {
+            debug_log!(
+                "[{}] Cleared existing workspace {} (force redownload)",
+                platform,
+                local_dir.display()
+            );
+        }
+    }
+
+    let session_has_files = directory_has_entries(session_workspace_path);
+
+    match storage::download(slug, None).await {
+        Ok(path) => {
+            if session_has_files {
+                copy_workspace_tree(session_workspace_path, &path).await?;
+                debug_log!(
+                    "[{}] Overlaid active session workspace onto {}",
+                    platform,
+                    path.display()
+                );
+            }
+            Ok(path)
+        }
+        Err(download_err) => {
+            if session_has_files {
+                copy_workspace_tree(session_workspace_path, &local_dir).await?;
+                debug_log!(
+                    "[{}] GCS workspace unavailable; seeded {} from active session workspace {}",
+                    platform,
+                    local_dir.display(),
+                    session_workspace_path.display()
+                );
+                return Ok(local_dir);
+            }
+
+            if directory_has_entries(&local_dir) {
+                debug_log!(
+                    "[{}] GCS workspace unavailable; reusing existing local workspace {}",
+                    platform,
+                    local_dir.display()
+                );
+                return Ok(local_dir);
+            }
+
+            Err(anyhow::anyhow!(
+                "Failed to download workspace: {}",
+                download_err
+            ))
+        }
+    }
+}
+
 async fn wire_peer_channels(
     pc: &Arc<RTCPeerConnection>,
     peer_id: String,
@@ -1706,19 +1969,43 @@ async fn wire_peer_channels(
                                             }
                                         }
 
-                                        // Stop any running runner process/pipeline
+                                        // Stop the runner ONLY if this cancel actually
+                                        // targets the currently-active session. A stale
+                                        // cancel-build for a previous session (frontend
+                                        // can send these during reconnect/cleanup) used
+                                        // to unconditionally `take()` the runner store —
+                                        // killing the shared Xvfb of the live session
+                                        // and producing `XIO: fatal IO error 110` on the
+                                        // live runner's X connection. Now we match the
+                                        // request's session_id against the runner's own,
+                                        // and only take/kill if they match (or if the
+                                        // request didn't specify a session, i.e.
+                                        // cancel-everything semantics).
                                         {
                                             let mut guard = runner_store_for_msg.lock().await;
-                                            if let Some(state) = guard.take() {
-                                                if let Some(mut child) = state.process {
-                                                    let _ = child.kill().await;
+                                            let session_matches = match (&target_session, guard.as_ref().and_then(|s| s.session_id.as_ref())) {
+                                                (None, _) => true, // cancel-all
+                                                (Some(req_sid), Some(state_sid)) => req_sid == state_sid,
+                                                (Some(_), None) => false, // request targets a session but runner has none recorded; do not touch
+                                            };
+                                            if session_matches {
+                                                if let Some(state) = guard.take() {
+                                                    if let Some(mut child) = state.process {
+                                                        let _ = child.kill().await;
+                                                    }
+                                                    if let Some(mut child) = state.xvfb_process {
+                                                        let _ = child.kill().await;
+                                                    }
+                                                    if let Some(pipeline) = state.gst_pipeline {
+                                                        let _ = pipeline.set_state(gst::State::Null);
+                                                    }
                                                 }
-                                                if let Some(mut child) = state.xvfb_process {
-                                                    let _ = child.kill().await;
-                                                }
-                                                if let Some(pipeline) = state.gst_pipeline {
-                                                    let _ = pipeline.set_state(gst::State::Null);
-                                                }
+                                            } else {
+                                                debug_log!(
+                                                    "[Main] cancel-build session_id={:?} does not match active runner session={:?}; leaving runner alive",
+                                                    target_session,
+                                                    guard.as_ref().and_then(|s| s.session_id.clone())
+                                                );
                                             }
                                         }
 
@@ -1778,6 +2065,7 @@ async fn wire_peer_channels(
                                                 });
                                                 let project_root = req.project_root.clone();
                                                 let slug = req.slug.clone();
+                                                let session_workspace_path = workspace_path_for_compile.as_ref().clone();
                                                 let log_clone = log.clone();
                                                 let rn_video_fanout = video_fanout_for_msg.clone();
                                                 tokio::spawn(async move {
@@ -1787,31 +2075,11 @@ async fn wire_peer_channels(
                                                     // dramatically speeding up subsequent mobile builds.
                                                     // To force a clean slate, set SYNTHI_MOBILE_FORCE_REDOWNLOAD=1.
                                                     let workspace_path = if let Some(s) = &slug {
-                                                        let local_dir = std::path::PathBuf::from("/synthi").join(s);
-                                                        let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
-                                                            .ok()
-                                                            .map(|v| {
-                                                                let v = v.trim().to_ascii_lowercase();
-                                                                matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
-                                                            })
-                                                            .unwrap_or(false);
-
-                                                        if force_redownload && local_dir.exists() {
-                                                            if let Err(e) = std::fs::remove_dir_all(&local_dir) {
-                                                                debug_log!(
-                                                                    "[Mobile] Failed to clear existing workspace {}: {}",
-                                                                    local_dir.display(),
-                                                                    e
-                                                                );
-                                                            } else {
-                                                                debug_log!(
-                                                                    "[Mobile] Cleared existing workspace {} (force redownload)",
-                                                                    local_dir.display()
-                                                                );
-                                                            }
-                                                        }
-
-                                                        match storage::download(&s, None).await {
+                                                        match resolve_mobile_workspace_path(
+                                                            s,
+                                                            session_workspace_path.as_path(),
+                                                            "Mobile",
+                                                        ).await {
                                                             Ok(path) => {
                                                                 debug_log!("[Mobile] Workspace ready at: {}", path.display());
                                                                 path
@@ -1862,30 +2130,16 @@ async fn wire_peer_channels(
                                                 });
                                                 let project_root = req.project_root.clone();
                                                 let slug = req.slug.clone();
+                                                let session_workspace_path = workspace_path_for_compile.as_ref().clone();
                                                 let log_clone = log.clone();
                                                 let flutter_video_fanout = video_fanout_for_msg.clone();
                                                 tokio::spawn(async move {
                                                     let workspace_path = if let Some(s) = &slug {
-                                                        let local_dir = std::path::PathBuf::from("/synthi").join(s);
-                                                        let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
-                                                            .ok()
-                                                            .map(|v| {
-                                                                let v = v.trim().to_ascii_lowercase();
-                                                                matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
-                                                            })
-                                                            .unwrap_or(false);
-
-                                                        if force_redownload && local_dir.exists() {
-                                                            if let Err(e) = std::fs::remove_dir_all(&local_dir) {
-                                                                debug_log!(
-                                                                    "[Flutter] Failed to clear existing workspace {}: {}",
-                                                                    local_dir.display(),
-                                                                    e
-                                                                );
-                                                            }
-                                                        }
-
-                                                        match storage::download(&s, None).await {
+                                                        match resolve_mobile_workspace_path(
+                                                            s,
+                                                            session_workspace_path.as_path(),
+                                                            "Flutter",
+                                                        ).await {
                                                             Ok(path) => {
                                                                 debug_log!("[Flutter] Workspace ready at: {}", path.display());
                                                                 path
@@ -2179,9 +2433,23 @@ async fn wire_peer_channels(
                                                     if let Some(typ) = evt.get("type").and_then(|x| x.as_str()) {
                                                         if typ == "stop-runner" {
                                                             debug_log!("[worker] stop-runner requested for session {}", sid);
-                                                            // Take and destroy runner state
+                                                            // Same defence as cancel-build: only tear down the
+                                                            // runner if its recorded session matches `sid`. A
+                                                            // stop-runner for a stale/previous session must not
+                                                            // kill the Xvfb that the currently-live session is
+                                                            // streaming through.
                                                             let mut rg = runner_store_term.lock().await;
-                                                            if let Some(mut state) = rg.take() {
+                                                            let session_matches = rg.as_ref()
+                                                                .and_then(|s| s.session_id.as_deref())
+                                                                .map(|state_sid| state_sid == sid)
+                                                                .unwrap_or(false);
+                                                            if !session_matches {
+                                                                debug_log!(
+                                                                    "[worker] stop-runner sid={} does not match active runner sid={:?}; leaving runner alive",
+                                                                    sid,
+                                                                    rg.as_ref().and_then(|s| s.session_id.clone())
+                                                                );
+                                                            } else if let Some(mut state) = rg.take() {
                                                                 // Stop GStreamer pipeline FIRST (before killing Xvfb)
                                                                 // to avoid capture-from-dead-display crashes
                                                                 if let Some(ref pipeline) = state.gst_pipeline {
@@ -2265,9 +2533,16 @@ async fn wire_peer_channels(
                                                                     if let Some(action) = evt.get("action").and_then(|x| x.as_str()) {
                                                                         if let Some(key) = evt.get("key").and_then(|k| k.as_str()) {
                                                                             let sdlk = js_key_to_sdl_keycode(key);
-                                                                            if sdlk != 0 {
+                                                                            let xks  = js_key_to_x11_keysym(key);
+                                                                            if sdlk != 0 || xks != 0 {
                                                                                 let dir = if action == "down" || action == "press" { "down" } else { "up" };
-                                                                                cmd = format!("input key {} {}", dir, sdlk);
+                                                                                // Extended protocol: `input key <dir> <sdl_keycode> <x11_keysym>`.
+                                                                                // The runner uses the SDL keycode for SDL_PushEvent (SDL apps)
+                                                                                // and the X11 keysym for xtest_fake_input (raw-Xlib apps that
+                                                                                // read via XNextEvent on KeyPressMask, e.g. the snake demo).
+                                                                                // Trailing field is backward-compatible: older runners that
+                                                                                // only parse 4 tokens will ignore the keysym.
+                                                                                cmd = format!("input key {} {} {}", dir, sdlk, xks);
                                                                             }
                                                                         }
                                                                     }

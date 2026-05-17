@@ -151,6 +151,7 @@ export const TerminalPanelWrapper = memo(function TerminalPanelWrapper({ data })
         visible={true}
         onCloseAll={() => {}}
         workspaceSlug={ctx?.workspaceSlug}
+        workspaceName={ctx?.workspaceName}
       />
     </div>
   );

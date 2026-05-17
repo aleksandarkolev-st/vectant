@@ -24,7 +24,7 @@ import {
 } from '@/redux/workspaceSlice';
 import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition, selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { fetchGitStatus, closeConflictResolver } from '@/redux/gitSlice';
-import { Circle, Save, Sparkles, Loader2, X } from 'lucide-react';
+import { Circle, Save, Sparkles, Loader2, X, Plus, TerminalSquare } from 'lucide-react';
 import { getFileIcon } from '@/utils/fileIcons';
 import {
     ResizableHandle,
@@ -463,7 +463,8 @@ const EditorPanel = ({
                 try {
                     await initSynthiFileSystem(
                         fileCacheEntriesRef.current,
-                        rawFilesRef.current
+                        rawFilesRef.current,
+                        slug
                     );
                     console.log('[SynthiFS] Virtual filesystem pre-initialized during service startup');
                 } catch (e) {
@@ -491,10 +492,10 @@ const EditorPanel = ({
     // etc.) to resolve files that only exist on the remote worker.
     useEffect(() => {
         if (!servicesReady) return;
-        initSynthiFileSystem(fileCacheEntries, rawFiles).catch(e =>
+        initSynthiFileSystem(fileCacheEntries, rawFiles, slug).catch(e =>
             console.warn('[SynthiFS] Failed to init virtual filesystem:', e)
         );
-    }, [servicesReady, fileCacheEntries, rawFiles]);
+    }, [servicesReady, fileCacheEntries, rawFiles, slug]);
 
     // ── Worker file-sync seeding ────────────────────────────────
     // Push every cached workspace file to the worker disk as soon as the
@@ -4692,22 +4693,49 @@ const EditorPanel = ({
         </>);
     }
 
+    const showReopenBar = !showTerminal && !dockingMode;
     return (
         <ResizablePanel defaultSize={76} minSize={20}>
-            <ResizablePanelGroup direction="vertical" className="h-full">
-                <ResizablePanel defaultSize={70} minSize={20}>
-                    {editorUI}
-                </ResizablePanel>
+            <div
+                className="h-full grid"
+                style={{ gridTemplateRows: showReopenBar ? 'minmax(0, 1fr) auto' : 'minmax(0, 1fr)' }}
+            >
+                <ResizablePanelGroup direction="vertical" className="h-full min-h-0">
+                    <ResizablePanel defaultSize={70} minSize={20}>
+                        {editorUI}
+                    </ResizablePanel>
 
-                {showTerminal && (
-                    <>
-                        <ResizableHandle className="h-px" style={{ background: 'var(--border-subtle)' }} />
-                        <ResizablePanel defaultSize={30} minSize={15}>
-                            <TerminalManagerDyn visible={true} onCloseAll={onToggleTerminal} workspaceSlug={slug} />
-                        </ResizablePanel>
-                    </>
+                    {showTerminal && (
+                        <>
+                            <ResizableHandle className="h-px" style={{ background: 'var(--border-subtle)' }} />
+                            <ResizablePanel defaultSize={30} minSize={15}>
+                                <TerminalManagerDyn visible={true} onCloseAll={onToggleTerminal} workspaceSlug={slug} />
+                            </ResizablePanel>
+                        </>
+                    )}
+                </ResizablePanelGroup>
+
+                {showReopenBar && (
+                    <div
+                        className="h-7 flex items-center justify-end px-2 border-t select-none"
+                        style={{
+                            borderColor: 'var(--border-subtle)',
+                            background: 'var(--bg-sidebar)',
+                        }}
+                    >
+                        <button
+                            className="h-6 flex items-center gap-1.5 px-2 rounded text-xs font-medium th-btn-ghost transition-colors"
+                            onClick={onToggleTerminal}
+                            title="Open Terminal"
+                            style={{ color: 'var(--text-secondary)' }}
+                        >
+                            <TerminalSquare className="w-3.5 h-3.5" strokeWidth={2} />
+                            <span>Terminal</span>
+                            <Plus className="w-3.5 h-3.5 ml-0.5" strokeWidth={2} />
+                        </button>
+                    </div>
                 )}
-            </ResizablePanelGroup>
+            </div>
             {pendingClose && (
                 <UnsavedChangesDialog
                     fileName={pendingClose.name}

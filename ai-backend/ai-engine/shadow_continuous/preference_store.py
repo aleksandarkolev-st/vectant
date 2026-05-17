@@ -8,7 +8,10 @@ Master plan §14 + §17:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import tempfile
 import time
 from datetime import date
 from pathlib import Path
@@ -18,9 +21,16 @@ DAILY_SPEND_CAP_USD = 0.50
 
 
 def _root(repo: Path) -> Path:
-    d = repo / ".shadow" / "continuous"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    in_repo = repo / ".shadow" / "continuous"
+    try:
+        in_repo.mkdir(parents=True, exist_ok=True)
+        return in_repo
+    except OSError:
+        base = os.environ.get("SHADOW_STATE_DIR") or os.path.join(tempfile.gettempdir(), "synthi-shadow")
+        key = hashlib.sha1(str(repo).encode("utf-8")).hexdigest()[:16]
+        d = Path(base) / key / "continuous"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
 
 def _settings_file(repo: Path) -> Path:

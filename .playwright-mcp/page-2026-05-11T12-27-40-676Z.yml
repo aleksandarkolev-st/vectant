@@ -1,0 +1,239 @@
+- generic [active] [ref=e2]:
+  - region "Notifications alt+T"
+  - alert [ref=e1]
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - img "Vectant" [ref=e7]
+        - generic [ref=e8]:
+          - img [ref=e9]
+          - textbox "main.cpp" [ref=e12]
+        - generic [ref=e14]:
+          - button "No missed events" [ref=e15]:
+            - img [ref=e16]
+          - button "History for src/com/example/gui/main.cpp" [ref=e19]:
+            - img [ref=e20]
+          - generic [ref=e24]: Solo
+          - button "Share" [ref=e25]:
+            - img [ref=e26]
+            - text: Share
+        - generic [ref=e32]:
+          - button "Toggle Terminal" [ref=e33] [cursor=pointer]:
+            - img
+          - button "Toggle Chat" [ref=e34] [cursor=pointer]:
+            - img
+          - button "Run Code" [ref=e35] [cursor=pointer]:
+            - img
+          - button [ref=e36] [cursor=pointer]:
+            - img
+      - generic [ref=e37]:
+        - generic [ref=e39]:
+          - generic [ref=e40]:
+            - generic [ref=e41]:
+              - button "Explorer" [ref=e42]:
+                - img [ref=e44]
+                - tooltip "Explorer"
+              - button "Search" [ref=e48]:
+                - img [ref=e50]
+                - tooltip "Search"
+              - button "Source Control" [ref=e53]:
+                - img [ref=e55]
+                - tooltip "Source Control"
+              - button "Extensions" [ref=e59]:
+                - img [ref=e61]
+                - tooltip "Extensions"
+              - button "AI Chat" [ref=e63]:
+                - img [ref=e65]
+                - tooltip "AI Chat"
+              - button "AI Healing" [ref=e67]:
+                - img [ref=e69]
+                - tooltip "AI Healing"
+              - button "Pull Requests" [ref=e72]:
+                - img [ref=e74]
+                - tooltip "Pull Requests"
+            - generic [ref=e78]:
+              - button "Settings" [ref=e79]:
+                - img [ref=e81]
+                - tooltip "Settings"
+              - generic "Synthi AI" [ref=e84] [cursor=pointer]:
+                - img [ref=e85]
+          - generic [ref=e91]:
+            - generic [ref=e93]:
+              - tablist [ref=e94]:
+                - generic [ref=e95]:
+                  - tab "⠿  Explorer Close Explorer" [selected] [ref=e96]:
+                    - text: ⠿
+                    - generic [ref=e97]: 
+                    - generic [ref=e98]: Explorer
+                    - button "Close Explorer" [ref=e99] [cursor=pointer]:
+                      - img [ref=e100]
+                  - tab "⠿  Search Close Search" [ref=e102]:
+                    - text: ⠿
+                    - generic [ref=e103]: 
+                    - generic [ref=e104]: Search
+                    - button "Close Search" [ref=e105] [cursor=pointer]:
+                      - img [ref=e106]
+                  - tab "⠿  Source Control Close Source Control" [ref=e108]:
+                    - text: ⠿
+                    - generic [ref=e109]: 
+                    - generic [ref=e110]: Source Control
+                    - button "Close Source Control" [ref=e111] [cursor=pointer]:
+                      - img [ref=e112]
+                  - tab "⠿ Extensions Close Extensions" [ref=e114]:
+                    - text: ⠿
+                    - generic [ref=e115]: Extensions
+                    - button "Close Extensions" [ref=e116] [cursor=pointer]:
+                      - img [ref=e117]
+                - button "Toggle maximize" [ref=e120] [cursor=pointer]:
+                  - img [ref=e121]
+              - tabpanel [ref=e124]:
+                - generic [ref=e126]:
+                  - generic [ref=e129]:
+                    - img [ref=e130]
+                    - generic [ref=e132]: Explorer
+                    - button "Move to right" [ref=e134]:
+                      - img [ref=e135]
+                  - generic [ref=e141]:
+                    - generic [ref=e143] [cursor=pointer]:
+                      - img [ref=e145]
+                      - img [ref=e148]
+                      - generic [ref=e151]: src
+                    - generic [ref=e153] [cursor=pointer]:
+                      - img [ref=e155]
+                      - img [ref=e158]
+                      - generic [ref=e161]: com
+                    - generic [ref=e163] [cursor=pointer]:
+                      - img [ref=e165]
+                      - img [ref=e168]
+                      - generic [ref=e171]: example
+                    - generic [ref=e173] [cursor=pointer]:
+                      - img [ref=e175]
+                      - img [ref=e178]
+                      - generic [ref=e181]: app
+                    - generic [ref=e183] [cursor=pointer]:
+                      - img [ref=e185]
+                      - img [ref=e188]
+                      - generic [ref=e191]: gui
+                    - generic [ref=e193] [cursor=pointer]:
+                      - img [ref=e195]
+                      - generic [ref=e198]: HelloWorldGUI.java
+                    - generic [ref=e200] [cursor=pointer]:
+                      - img [ref=e202]
+                      - generic [ref=e205]: main.cpp
+                    - generic [ref=e207] [cursor=pointer]:
+                      - img [ref=e209]
+                      - generic [ref=e212]: HelloWorld.java
+                    - generic [ref=e214] [cursor=pointer]:
+                      - img [ref=e216]
+                      - generic [ref=e219]: HelloWorld.java
+                    - generic [ref=e221] [cursor=pointer]:
+                      - img [ref=e223]
+                      - generic [ref=e226]: README.md
+            - separator [ref=e227]
+            - generic [ref=e229]:
+              - generic [ref=e231]:
+                - tablist [ref=e232]:
+                  - tab "⠿  Editor" [selected] [ref=e234]:
+                    - text: ⠿
+                    - generic [ref=e235]: 
+                    - generic [ref=e236]: Editor
+                  - button "Toggle maximize" [ref=e238] [cursor=pointer]:
+                    - img [ref=e239]
+                - tabpanel [ref=e242]:
+                  - generic [ref=e244]:
+                    - generic [ref=e245]:
+                      - generic [ref=e247]:
+                        - generic "src/com/example/gui/HelloWorldGUI.java" [ref=e249] [cursor=pointer]:
+                          - img [ref=e251]
+                          - generic [ref=e254]: HelloWorldGUI.java
+                        - generic "src/com/example/gui/main.cpp" [ref=e257] [cursor=pointer]:
+                          - img [ref=e259]
+                          - generic [ref=e261]:
+                            - generic [ref=e262]: main.cpp
+                            - generic [ref=e263]: src › com › example › gui
+                      - generic [ref=e265]:
+                        - generic [ref=e266]:
+                          - button "👥" [ref=e267]:
+                            - generic [ref=e268]: 👥
+                          - generic [ref=e270]: Solo
+                        - img [ref=e272]
+                        - button [ref=e275]:
+                          - img [ref=e276]
+                    - code [ref=e286]:
+                      - generic [ref=e287]:
+                        - textbox "Editor content"
+                        - textbox [ref=e288]
+                        - generic [ref=e291]:
+                          - generic [ref=e294]: "1"
+                          - generic [ref=e295]:
+                            - generic [ref=e296] [cursor=pointer]: 
+                            - generic [ref=e297]: "2"
+                          - generic [ref=e299]: "3"
+                          - generic [ref=e301]: "4"
+                          - generic [ref=e303]: "5"
+                          - generic [ref=e305]: "6"
+                        - generic [ref=e316]:
+                          - generic [ref=e318]: "#include <iostream>"
+                          - generic [ref=e320]: "int main(){"
+                          - generic [ref=e322]: std::cout << "Hello v0\n";
+                          - generic [ref=e324]: return 0;
+                          - generic [ref=e326]: "}"
+              - separator [ref=e336]
+              - generic [ref=e338]:
+                - tablist [ref=e339]:
+                  - generic [ref=e340]:
+                    - tab "⠿  Terminal Close Terminal" [selected] [ref=e341]:
+                      - text: ⠿
+                      - generic [ref=e342]: 
+                      - generic [ref=e343]: Terminal
+                      - button "Close Terminal" [ref=e344] [cursor=pointer]:
+                        - img [ref=e345]
+                    - tab "⠿ Output Close Output" [ref=e347]:
+                      - text: ⠿
+                      - generic [ref=e348]: Output
+                      - button "Close Output" [ref=e349] [cursor=pointer]:
+                        - img [ref=e350]
+                  - button "Toggle maximize" [ref=e353] [cursor=pointer]:
+                    - img [ref=e354]
+                - tabpanel [ref=e357]:
+                  - generic [ref=e359]:
+                    - generic [ref=e360]:
+                      - generic [ref=e362] [cursor=pointer]:
+                        - img [ref=e363]
+                        - generic [ref=e366]: Terminal
+                        - button "Close Terminal" [ref=e367]:
+                          - img [ref=e368]
+                      - generic [ref=e371]:
+                        - 'button "New Terminal (Ctrl+Shift+`)" [ref=e372]':
+                          - img [ref=e373]
+                        - button "Select Shell Type" [ref=e374]:
+                          - img [ref=e375]
+                        - button "Split Terminal" [ref=e377]:
+                          - img [ref=e378]
+                        - button "Close Terminal Panel" [ref=e382]:
+                          - img [ref=e383]
+                    - textbox "Terminal input" [ref=e395]
+        - separator [ref=e398]
+    - generic [ref=e400]:
+      - generic [ref=e401]:
+        - combobox [ref=e403] [cursor=pointer]:
+          - img
+          - generic: main
+          - img
+        - generic [ref=e405] [cursor=pointer]:
+          - img [ref=e406]
+          - generic [ref=e408]: "0"
+          - img [ref=e409]
+          - generic [ref=e411]: "0"
+        - 'generic "Collaboration: Synced" [ref=e413]':
+          - img [ref=e414]
+          - generic [ref=e419]: Synced
+          - generic "1 other user online" [ref=e420]:
+            - img [ref=e421]
+            - generic [ref=e426]: "1"
+      - 'generic "Self-Heal: Off Click to toggle" [ref=e428] [cursor=pointer]':
+        - img [ref=e429]
+        - generic [ref=e433]: Heal Off
+  - generic [ref=e434]:
+    - alert
+    - alert
