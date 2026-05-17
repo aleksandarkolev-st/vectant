@@ -1,6 +1,6 @@
 # Codex Next Session Handoff - GPU HMR / RX 9070 XT
 
-Date: 2026-05-16
+Date: 2026-05-17
 
 ## Current State
 
@@ -16,6 +16,10 @@ Date: 2026-05-16
   current PC cannot live-run CUDA because it has the RX 9070 XT, not an NVIDIA
   GPU.
 - Compose project: `vectant-ade`
+- UI GPU target preference now exists in settings and the workspace gear menu:
+  `AUTO`, `CUDA`, `ROCM`. It is persisted in local UI prefs and sent as
+  `gpu_mode` on compile requests. Existing adapted manifests still define the
+  actual device source/vendor for that workspace.
 - Current validated user demo workspace:
   - URL: `http://localhost:3000/workspace/gpu-flow-clean-session`
   - Slug: `gpu-flow-clean-session`
@@ -24,14 +28,15 @@ Date: 2026-05-16
 
 ## Latest Commits To Know
 
+- `a26b8661 feat(gpu-hmr): add user gpu target preference`
+- `9c194158 test(gpu-hmr): add dynamic workspace harness`
+- `16473c5d feat(gpu-hmr): support manifest role file paths`
+- `f172e324 docs(gpu-hmr): note manifest-driven compile files`
 - `7d19925a fix(gpu-hmr): derive adapted compile files from manifest`
 - `6c22a9e0 feat(gpu-hmr): add universal gpu worker path`
 - `9534144d docs(gpu-hmr): record cuda compose handoff`
 - `4d1c1788 feat(gpu-hmr): add cuda worker compose path`
 - `312ea251 fix(gpu-hmr): preserve manifest path in browser compile`
-- `f3e76eb9 fix(gpu-hmr): send adapted files from browser`
-- `3a27bf02 test(gpu-hmr): validate flow demo live`
-- `859bf4be test(gpu-hmr): add particle flow validation`
 
 Run this after a clean-session resume:
 
@@ -43,7 +48,7 @@ git log --oneline -8
 
 ## What Was Built This Session
 
-GPU HMR now has two useful validation surfaces:
+GPU HMR now has three useful validation surfaces:
 
 1. The original deterministic vector fixture:
    - Phases: `P0,P1,P2`
@@ -55,6 +60,23 @@ GPU HMR now has two useful validation surfaces:
    - Baseline `device.hip` moves particles inward.
    - A device-only edit flips `FLOW_DIRECTION` to move particles outward.
    - Validates the live path through MCP: compile, wait HMR, screenshot, device-only GPU sidecar hot swap, render-loop outward telemetry, second screenshot.
+
+3. A dynamic-path GPU HMR fixture:
+   - Script: `mcp/synthi-mcp/scripts/gpu-hmr-dynamic-workspace-test.mjs`
+   - Generates randomized source paths for shared/core/gui/runner/device files
+     plus helper headers under nonstandard directories.
+   - Writes `.synthi/build_manifest.json` with `files` and `module_files`, so
+     the browser and worker discover roles semantically instead of depending on
+     hardcoded names like `core.cpp` or `device.hip`.
+   - Validates through MCP compile + wait-HMR, then checks worker logs for the
+     randomized device filename, GPU launch telemetry, device-only reload, and
+     outward flow after the device edit.
+
+The browser compile path now sends all manifest-declared files for adapted
+workspaces. It reads `.synthi/build_manifest.json` or
+`.synthi_split_meta.json::compile_manifest`, includes every `files` entry and
+every `module_files` role path, and only falls back to the old 5-file contract
+for older manifests.
 
 The latest `FLOW` live run created `gpu-flow-clean-session` and passed:
 
@@ -83,12 +105,30 @@ Phases: FLOW pass
     - `phaseFlow`
     - `captureMcpScreenshot`
 
+- `mcp/synthi-mcp/scripts/gpu-hmr-dynamic-workspace-test.mjs`
+  - Dynamic GPU HMR harness.
+  - Creates randomized workspace source names and helper libs.
+  - Use when validating that compile/HMR does not depend on hardcoded adapted
+    filenames.
+
 - `synthi/src/app/workspace/[slug]/page.jsx`
   - Browser compile no longer treats the adapted GPU source set as a fixed
     hardcoded list.
   - It reads `.synthi/build_manifest.json` or `.synthi_split_meta.json`, uses
-    `compile_manifest.files` when present, and falls back to the current
-    5-file GPU split contract only for older manifests.
+    `compile_manifest.files` and `compile_manifest.module_files`, and falls
+    back to the current 5-file GPU split contract only for older manifests.
+
+- `synthi/src/redux/uiSlice.js`
+- `synthi/src/services/compilerClient.js`
+- `synthi/src/app/workspace/TopNav.jsx`
+- `synthi/src/components/SettingsPanelContent.jsx`
+  - User-facing GPU target preference.
+  - Persisted values: `auto`, `cuda`, `rocm`.
+  - Sent to worker compile requests as `gpu_mode`.
+
+- `backend/synthi-webrtc-compiler/worker/src/compiler/stages/ai_utils.rs`
+  - For AI full splits, `gpu_mode=cuda|rocm` adds a target preference prompt
+    before calling ai-engine.
 
 - `backend/synthi-webrtc-compiler/worker/src/compiler/handler.rs`
   - Device kernel signature extraction.
@@ -137,6 +177,26 @@ Phases: FLOW pass
   - Runtime screenshots from `FLOW`.
   - Ignored by git on purpose.
 
+## What Model HMR Uses
+
+Most HMR paths use no model:
+
+- Adapted split-file edits, deterministic HMR classification, Tier 0/Tier 1
+  host reloads, and GPU device-only sidecar swaps are worker/runtime logic.
+- The live GPU flow fixture's inward/outward device edit should stay on this
+  non-model path and log `FallbackDeterministic -> split file edit`.
+
+When HMR falls back to a full AI split, the worker calls ai-engine
+`/refactor/split/verified`. That endpoint currently passes
+`model=req.model or "gemini-3.1-flash-lite-preview"` into the Gemini provider.
+The Gemini provider itself defaults `SYNTHI_GEMINI_MODEL` to the same model
+when no explicit model is supplied. The compose env currently contains
+`SYNTHI_AI_MODEL=gemini-3-flash-preview-preview`, but this is not the model
+used by the verified split route unless a caller maps it into `req.model`.
+
+The GPU-specific `/refactor/split/gpu` route also defaults to
+`gemini-3.1-flash-lite-preview`.
+
 ## Start The Stack
 
 From repo root:
@@ -178,6 +238,19 @@ docker compose ps
 ```
 
 The user-provided service list is intentional. Keep the stack up while testing live UI/MCP. Only run `docker compose down` when the user is done.
+
+## GPU Target UI
+
+The user can pick the desired GPU target without editing env vars:
+
+- Workspace top-right gear menu -> `GPU Target` -> `AUTO`, `CUDA`, `ROCM`.
+- Full Settings panel -> `GPU Target` -> `AUTO`, `CUDA`, `ROCM`.
+- Top nav GPU pill shows the current target when GPU mode is enabled.
+
+This setting is a compile-request preference. For already-adapted workspaces,
+the manifest still controls the actual device file and vendor. For first-time
+AI splits, the worker adds a target hint to the ai-engine split request when
+`CUDA` or `ROCM` is selected.
 
 ## Start The Stack On NVIDIA/CUDA
 
@@ -322,6 +395,39 @@ Bad marker to investigate:
 
 That means the worker did not detect the workspace as already adapted, or the user is not in the seeded workspace.
 
+## Run Dynamic-Filename GPU HMR Validation
+
+Use this when validating that arbitrary workspace file names and helper libs
+still compile and hot-reload. Choose a fresh `SLUG` if the workspace already
+exists.
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp
+
+$env:SYNTHI_GPU_HMR='1'
+$env:SYNTHI_GPU_VENDOR='auto'
+$env:SYNTHI_GPU_ARCH='gfx1201'
+$env:SLUG='gpu-dynamic-clean-session'
+
+node scripts/gpu-hmr-dynamic-workspace-test.mjs
+```
+
+Expected result:
+
+```text
+DYNAMIC pass
+0 FAIL
+```
+
+Expected markers:
+
+```text
+[DYNAMIC] worker saw dynamic device filename
+[DYNAMIC] inward GPU launch observed
+[DYNAMIC] outward device edit hot-swapped
+[DYNAMIC] render loop reports outward flow
+```
+
 ## Run The User-Visible Flow Demo On NVIDIA/CUDA
 
 Use this on an NVIDIA host after starting with `docker-compose.nvidia.yml`:
@@ -433,6 +539,7 @@ Do not commit ignored screenshot artifacts from `.gpu-hmr-test-artifacts/`. The 
 2. Run `git status --short`.
 3. Run `docker compose ps`.
 4. If stack is down, start it with the command above.
-5. If asked to prove GPU HMR, run the `FLOW` command first because it validates the same path visually.
-6. If asked for low-level correctness, run `P0,P1,P2` and the targeted Rust tests.
-7. Commit any doc/result/code changes before handing back.
+5. If asked to prove GPU HMR visually, run the `FLOW` command first.
+6. If asked to prove arbitrary file names/dependencies, run the dynamic harness.
+7. If asked for low-level correctness, run `P0,P1,P2` and the targeted Rust tests.
+8. Commit any doc/result/code changes before handing back.
