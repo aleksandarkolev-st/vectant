@@ -28,18 +28,22 @@ Date: 2026-05-17
 
 ## Latest Commits To Know
 
+- `a5dc06df fix(gpu-hmr): fail hard on gpu split rejection`
+- `0199fb81 fix(gpu-hmr): reject heap app state splits`
+- `a8aab702 fix(gpu-hmr): keep split prompt backend agnostic`
+- `97926102 fix(gpu-hmr): preserve generated kernel branches`
+- `f1575610 fix(gpu-hmr): version ai split cache contract`
+- `27bdb00b fix(gpu-hmr): teach ai renderer pointer abi`
+- `801371e7 test(gpu-hmr): validate ai generated flow`
+- `34a20d8a fix(gpu-hmr): run gpu splits on shipped runner`
+- `ecc556a7 fix(gpu-hmr): materialize cached ai split sources`
+- `4a2e83c4 fix(gpu-hmr): harden ai generated rocm splits`
+- `5bf45dc2 fix(gpu-hmr): compile rocm ai splits reliably`
+- `0e951103 fix(gpu-hmr): harden ai generated split flow`
 - `8c37dab8 test(gpu-hmr): add full agent split harness`
 - `6a9056fa fix(gpu-hmr): resolve dynamic harness containers`
 - `a58e95e7 docs(gpu-hmr): update dynamic target handoff`
 - `a26b8661 feat(gpu-hmr): add user gpu target preference`
-- `9c194158 test(gpu-hmr): add dynamic workspace harness`
-- `16473c5d feat(gpu-hmr): support manifest role file paths`
-- `f172e324 docs(gpu-hmr): note manifest-driven compile files`
-- `7d19925a fix(gpu-hmr): derive adapted compile files from manifest`
-- `6c22a9e0 feat(gpu-hmr): add universal gpu worker path`
-- `9534144d docs(gpu-hmr): record cuda compose handoff`
-- `4d1c1788 feat(gpu-hmr): add cuda worker compose path`
-- `312ea251 fix(gpu-hmr): preserve manifest path in browser compile`
 
 Run this after a clean-session resume:
 
@@ -88,9 +92,18 @@ GPU HMR now has four useful validation surfaces:
      generated files into the workspace, edits only the generated device role
      file, and verifies device-only GPU HMR. This is the "real user source ->
      agent split -> generated ABI files -> HMR" validation path.
-   - Status: added, `node --check` passed, and targeted WSL Rust tests for
-     GPU split routing/normalization passed. Live Docker/MCP validation is
-     pending because Docker Desktop wedged during this turn.
+   - Status: live Docker/MCP validation passed on `gpu-ai-flow-shot-20260518003220`.
+     The ai-engine verifier rejected two bad generations before accepting the
+     third, the worker compiled the generated `device.hip` with `hipcc`, and a
+     generated-device edit reloaded through GPU HMR without restarting the
+     runner.
+
+The GPU split prompt is intentionally backend/library agnostic. It now tells
+the model to preserve the user's original rendering library and treat the load
+argument as an opaque host render surface. It does not tell the model to use
+SDL2-specific recovery APIs or hardcoded window IDs. Backend-specific SDL2
+checks in `verifier_gpu.py` are rejection rules for known bad output, not the
+contract users must follow.
 
 The browser compile path now sends all manifest-declared files for adapted
 workspaces. It reads `.synthi/build_manifest.json` or
@@ -116,6 +129,26 @@ PASS dynamic device filename observed by worker - compile-device] source resolve
 PASS inward GPU launch observed - Device sidecar reload vendor=rocm ... result=Success
 PASS outward edit hot-swapped - [gpu-reload] plan=device_only
 PASS render loop reports outward flow - [gpu-flow-dynamic] ... trend=outward
+```
+
+The latest full-path AI split live run created
+`gpu-ai-flow-shot-20260518003220` and passed:
+
+```text
+PASS first compile via MCP - use_ai_split=true prefer_gpu_pipeline=true
+PASS worker used GPU split endpoint - GPU markers detected; calling GPU split endpoint
+PASS generated device compiled - compile-device] hipcc
+PASS generated split contains HMR ABI - shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip
+PASS device-only GPU HMR observed - Device sidecar reload vendor=rocm ... result=Success
+PASS runner stayed alive after GPU HMR - no runner crash marker
+```
+
+MCP screenshot validation also passed for that workspace using
+`synthi_screenshot`. Local artifacts:
+
+```text
+mcp/synthi-mcp/.gpu-hmr-test-artifacts/gpu-ai-flow-shot-20260518003220-mcp-screenshot-1.png
+mcp/synthi-mcp/.gpu-hmr-test-artifacts/gpu-ai-flow-shot-20260518003220-mcp-screenshot-2.png
 ```
 
 ## Important Files

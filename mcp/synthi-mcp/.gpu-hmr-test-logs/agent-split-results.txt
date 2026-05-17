@@ -1,6 +1,6 @@
 PASS gpu vendor - rocm arch=gfx1201
 PASS monolithic source has no Synthi ABI
-PASS create workspace - id=cmpa92jvq0008o101vfjipwyc slug=gpu-ai-flow-live-20260517235104
+PASS create workspace - id=cmpaajm0t000eo1013hp5yizb slug=gpu-ai-flow-shot-20260518003220
 PASS seed monolithic user source - main.cpp
 PASS workspace commit seed
 PASS mcp tools/list - count=42
@@ -8,11 +8,11 @@ PASS mcp attach - attached
 PASS first compile via MCP - use_ai_split=true prefer_gpu_pipeline=true
 PASS worker used GPU split endpoint - GPU markers detected; calling GPU split endpoint
 PASS generated device compiled - compile-device] hipcc
-PASS read generated split from worker - worker=/tmp/.tmp8mogws
+PASS read generated split from worker - worker=/tmp/.tmpVlXuK1
 PASS generated split contains HMR ABI - shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip
 PASS persist generated split to workspace - 7 files
 PASS workspace commit generated split
 PASS device edit compile via MCP - device.hip
 PASS generated device file used for HMR - FallbackDeterministic → split file edit (device.hip
-PASS device-only GPU HMR observed - [gpu-reload] plan=device_only
+PASS device-only GPU HMR observed - Device sidecar reload vendor=rocm artifact=/tmp/.tmpVlXuK1/build/device_1779053570.hsaco kernels=particle_flow result=Success
 PASS runner stayed alive after GPU HMR - no runner crash marker
