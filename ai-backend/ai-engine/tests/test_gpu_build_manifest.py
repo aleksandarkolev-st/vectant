@@ -174,7 +174,7 @@ def test_normalizes_ai_gpu_manifest_defaults_for_rocm():
     )
     parsed = parse_manifest(normalized)
     validate_manifest_v1(parsed)
-    assert parsed.compiler == "g++"
+    assert parsed.compiler == "clang++"
     assert parsed.gpu is not None
     assert parsed.gpu.vendor == "rocm"
     assert parsed.gpu.device_compiler == "hipcc"

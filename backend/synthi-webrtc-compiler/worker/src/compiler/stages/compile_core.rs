@@ -277,30 +277,51 @@ pub async fn compile_core(
                         ).await {
                             Ok(fixed) => {
                                 tokio::fs::write(dir_path.join(fname), &fixed).await?;
-                                let mut retry_cmd = cpp_compile_command(compiler_exe);
-                                retry_cmd.arg(&std_flag);
-                                for f in &effective_manifest.common_flags {
-                                    retry_cmd.arg(f);
-                                }
-                                retry_cmd
-                                    .arg(fname)
-                                    .arg("-I.")
-                                    .arg("-o")
-                                    .arg(&core_out);
-                                for f in &effective_manifest.core_link_flags {
-                                    retry_cmd.arg(f);
-                                }
-                                retry_cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
-                                retry_cmd.current_dir(dir_path);
-                                retry_cmd.kill_on_drop(true);
-                                if let Ok(retry_child) = retry_cmd.spawn() {
-                                    if let Ok(Ok(retry_out)) = timeout(Duration::from_secs(30), retry_child.wait_with_output()).await {
+                                let mut retry_compile_cmd = compile_to_object_command(
+                                    compiler_exe,
+                                    fname,
+                                    &core_obj,
+                                    &std_flag,
+                                    &common_flags_with_pch,
+                                    dir_path,
+                                );
+                                retry_compile_cmd.kill_on_drop(true);
+                                if let Ok(retry_child) = retry_compile_cmd.spawn() {
+                                    if let Ok(Ok(retry_out)) =
+                                        timeout(Duration::from_secs(30), retry_child.wait_with_output()).await
+                                    {
                                         if retry_out.status.success() {
-                                            eprintln!("[CompileCore] AI heal succeeded on attempt {}", attempt + 1);
-                                            healed = true;
-                                            break;
+                                            let mut retry_link_cmd = link_object_to_so_command(
+                                                compiler_exe,
+                                                &core_obj,
+                                                &core_out,
+                                                &link_flags,
+                                                dir_path,
+                                            );
+                                            retry_link_cmd.kill_on_drop(true);
+                                            if let Ok(link_child) = retry_link_cmd.spawn() {
+                                                if let Ok(Ok(link_out)) = timeout(
+                                                    Duration::from_secs(30),
+                                                    link_child.wait_with_output(),
+                                                )
+                                                .await
+                                                {
+                                                    if link_out.status.success() {
+                                                        eprintln!(
+                                                            "[CompileCore] AI heal succeeded on attempt {}",
+                                                            attempt + 1
+                                                        );
+                                                        healed = true;
+                                                        break;
+                                                    }
+                                                    heal_stderr =
+                                                        String::from_utf8_lossy(&link_out.stderr).to_string();
+                                                }
+                                            }
+                                        } else {
+                                            heal_stderr =
+                                                String::from_utf8_lossy(&retry_out.stderr).to_string();
                                         }
-                                        heal_stderr = String::from_utf8_lossy(&retry_out.stderr).to_string();
                                         heal_content = fixed;
                                     }
                                 }

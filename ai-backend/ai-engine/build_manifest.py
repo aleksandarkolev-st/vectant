@@ -393,6 +393,7 @@ def normalize_gpu_split_manifest(
     host_link_fields = ("core_link_flags", "gui_link_flags", "runner_link_flags")
     if vendor == "rocm":
         compiler = "hipcc"
+        manifest["compiler"] = "clang++"
         arch = arch_hint or "gfx90a"
         include_flags = ["-D__HIP_PLATFORM_AMD__", "-I/opt/rocm/include"]
         link_flags = ["-L/opt/rocm/lib", "-lamdhip64"]
@@ -407,6 +408,8 @@ def normalize_gpu_split_manifest(
     for flag in include_flags:
         if flag not in common_flags:
             common_flags.append(flag)
+    if "-fPIC" not in common_flags:
+        common_flags.append("-fPIC")
     manifest["common_flags"] = common_flags
     for field in host_link_fields:
         values = list(manifest.get(field) or [])
