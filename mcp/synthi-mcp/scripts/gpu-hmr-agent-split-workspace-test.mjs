@@ -41,6 +41,7 @@ const CFG = {
     ?? path.resolve(__dirname, '../../../backend/synthi-webrtc-compiler/.run/worker.log'),
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
+  fixture: (process.env.SYNTHI_GPU_AGENT_FIXTURE ?? 'flow').toLowerCase(),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
 };
 
@@ -414,6 +415,8 @@ function runtimeApi(vendor) {
 }
 
 function monolithicSource(vendor) {
+  if (CFG.fixture === 'complex-flow') return complexFlowSource(vendor);
+
   const api = runtimeApi(vendor);
   const target = vendor === 'rocm' ? 'rocm' : 'cuda';
   return `// User-authored single-file GPU app.
@@ -517,6 +520,192 @@ int main(int, char**) {
 
     ${api.free}(deviceX);
     ${api.free}(deviceY);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return 0;
+}
+`;
+}
+
+function complexFlowSource(vendor) {
+  const api = runtimeApi(vendor);
+  const target = vendor === 'rocm' ? 'rocm' : 'cuda';
+  return `// User-authored single-file GPU app.
+// More complex fixture: two kernels, persistent velocity/hue buffers, and
+// branch-heavy device math. No Synthi split/HMR ABI appears in this file.
+// GPU_TARGET: ${target}
+// LINK: -lSDL2 ${api.link}
+// BUILD: ${api.build} main.cpp -lSDL2 ${api.link}
+#include <SDL2/SDL.h>
+${runtimeInclude(vendor)}
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+
+#ifndef FLOW_DIRECTION
+#define FLOW_DIRECTION 1.0f
+#endif
+
+constexpr int BALLS = 768;
+constexpr int WIDTH = 800;
+constexpr int HEIGHT = 600;
+
+__device__ float wrap_unit(float v) {
+    while (v < 0.0f) v += 1.0f;
+    while (v >= 1.0f) v -= 1.0f;
+    return v;
+}
+
+extern "C" __global__ void particle_flow(
+    float* x,
+    float* y,
+    float* vx,
+    float* vy,
+    float* hue,
+    int n,
+    float cx,
+    float cy,
+    float baseSpeed,
+    float wobble,
+    unsigned long long frame) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+
+    float dx = cx - x[i];
+    float dy = cy - y[i];
+    float len = sqrtf(dx * dx + dy * dy) + 0.0001f;
+    float swirl = sinf((float)i * 0.017f + (float)(frame % 997ULL) * 0.025f);
+    const float direction = FLOW_DIRECTION; // SYNTHI_HMR_DIRECTION_TOKEN
+    float ax = direction * dx / len * baseSpeed + (-dy / len) * wobble * swirl;
+    float ay = direction * dy / len * baseSpeed + ( dx / len) * wobble * swirl;
+
+    vx[i] = vx[i] * 0.84f + ax * 0.16f;
+    vy[i] = vy[i] * 0.84f + ay * 0.16f;
+    x[i] += vx[i];
+    y[i] += vy[i];
+
+    float ox = x[i] - cx;
+    float oy = y[i] - cy;
+    float radius = sqrtf(ox * ox + oy * oy);
+    float theta = 2.39996323f * (float)i + 0.011f * (float)(frame % 389ULL);
+    if (direction > 0.0f && radius < 18.0f) {
+        float rr = 330.0f + (float)((i * 29) % 70);
+        x[i] = cx + cosf(theta) * rr;
+        y[i] = cy + sinf(theta) * rr;
+        vx[i] *= -0.15f;
+        vy[i] *= -0.15f;
+    }
+    if (direction < 0.0f && radius > 420.0f) {
+        float rr = 24.0f + (float)((i * 13) % 38);
+        x[i] = cx + cosf(theta) * rr;
+        y[i] = cy + sinf(theta) * rr;
+        vx[i] = -vx[i] * 0.25f;
+        vy[i] = -vy[i] * 0.25f;
+    }
+    hue[i] = wrap_unit(hue[i] + 0.0015f + 0.0009f * swirl);
+}
+
+extern "C" __global__ void cool_hue(float* hue, int n, float amount) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    hue[i] = wrap_unit(hue[i] - amount + 0.00003f * (float)((i * 17) % 31));
+}
+
+static void seed(float* x, float* y, float* vx, float* vy, float* hue) {
+    for (int i = 0; i < BALLS; ++i) {
+        float theta = 2.39996323f * (float)i;
+        float radius = 230.0f + (float)((i * 37) % 130);
+        x[i] = WIDTH * 0.5f + cosf(theta) * radius;
+        y[i] = HEIGHT * 0.5f + sinf(theta) * radius;
+        vx[i] = -sinf(theta) * 0.65f;
+        vy[i] =  cosf(theta) * 0.65f;
+        hue[i] = (float)((i * 23) % 360) / 360.0f;
+    }
+}
+
+static void color(float h, unsigned char& r, unsigned char& g, unsigned char& b) {
+    h = h - floorf(h);
+    float x = 1.0f - fabsf(fmodf(h * 6.0f, 2.0f) - 1.0f);
+    float rr = 0.0f, gg = 0.0f, bb = 0.0f;
+    if (h < 1.0f / 6.0f) { rr = 1.0f; gg = x; }
+    else if (h < 2.0f / 6.0f) { rr = x; gg = 1.0f; }
+    else if (h < 3.0f / 6.0f) { gg = 1.0f; bb = x; }
+    else if (h < 4.0f / 6.0f) { gg = x; bb = 1.0f; }
+    else if (h < 5.0f / 6.0f) { rr = x; bb = 1.0f; }
+    else { rr = 1.0f; bb = x; }
+    r = (unsigned char)(32.0f + rr * 210.0f);
+    g = (unsigned char)(40.0f + gg * 190.0f);
+    b = (unsigned char)(48.0f + bb * 180.0f);
+}
+
+int main(int, char**) {
+    SDL_Init(SDL_INIT_VIDEO);
+    SDL_Window* window = SDL_CreateWindow("Synthi Agent Complex GPU Split", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, WIDTH, HEIGHT, 0);
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+
+    float hostX[BALLS];
+    float hostY[BALLS];
+    float hostVX[BALLS];
+    float hostVY[BALLS];
+    float hostHue[BALLS];
+    seed(hostX, hostY, hostVX, hostVY, hostHue);
+
+    float* deviceX = nullptr;
+    float* deviceY = nullptr;
+    float* deviceVX = nullptr;
+    float* deviceVY = nullptr;
+    float* deviceHue = nullptr;
+    ${api.malloc}(&deviceX, sizeof(float) * BALLS);
+    ${api.malloc}(&deviceY, sizeof(float) * BALLS);
+    ${api.malloc}(&deviceVX, sizeof(float) * BALLS);
+    ${api.malloc}(&deviceVY, sizeof(float) * BALLS);
+    ${api.malloc}(&deviceHue, sizeof(float) * BALLS);
+    ${api.memcpy}(deviceX, hostX, sizeof(float) * BALLS, ${api.h2d});
+    ${api.memcpy}(deviceY, hostY, sizeof(float) * BALLS, ${api.h2d});
+    ${api.memcpy}(deviceVX, hostVX, sizeof(float) * BALLS, ${api.h2d});
+    ${api.memcpy}(deviceVY, hostVY, sizeof(float) * BALLS, ${api.h2d});
+    ${api.memcpy}(deviceHue, hostHue, sizeof(float) * BALLS, ${api.h2d});
+
+    bool running = true;
+    unsigned long long frame = 0;
+    while (running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) running = false;
+        }
+
+        dim3 block(256);
+        dim3 grid((BALLS + block.x - 1) / block.x);
+        particle_flow<<<grid, block>>>(deviceX, deviceY, deviceVX, deviceVY, deviceHue,
+                                       BALLS, WIDTH * 0.5f, HEIGHT * 0.5f,
+                                       2.55f, 1.85f, frame++);
+        cool_hue<<<grid, block>>>(deviceHue, BALLS, 0.0007f);
+        ${api.sync}();
+        ${api.memcpy}(hostX, deviceX, sizeof(float) * BALLS, ${api.d2h});
+        ${api.memcpy}(hostY, deviceY, sizeof(float) * BALLS, ${api.d2h});
+        ${api.memcpy}(hostHue, deviceHue, sizeof(float) * BALLS, ${api.d2h});
+
+        SDL_SetRenderDrawColor(renderer, 6, 8, 16, 255);
+        SDL_RenderClear(renderer);
+        for (int i = 0; i < BALLS; ++i) {
+            unsigned char r = 0, g = 0, b = 0;
+            color(hostHue[i], r, g, b);
+            SDL_SetRenderDrawColor(renderer, r, g, b, 255);
+            SDL_Rect rect{(int)hostX[i], (int)hostY[i], 3, 3};
+            SDL_RenderFillRect(renderer, &rect);
+        }
+        SDL_RenderPresent(renderer);
+        if ((frame % 150ULL) == 0ULL) {
+            std::fprintf(stderr, "[user-gpu-complex-flow] frame=%llu hue0=%.3f\\n", frame, hostHue[0]);
+        }
+    }
+
+    ${api.free}(deviceX);
+    ${api.free}(deviceY);
+    ${api.free}(deviceVX);
+    ${api.free}(deviceVY);
+    ${api.free}(deviceHue);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
@@ -673,6 +862,7 @@ async function run() {
     process.env.SYNTHI_GPU_ARCH = arch;
   }
   record('gpu vendor', 'pass', `${vendor} arch=${arch ?? 'auto'}`);
+  record('fixture', 'pass', CFG.fixture);
 
   const source = monolithicSource(vendor);
   assertNoSynthiAbi(source);
