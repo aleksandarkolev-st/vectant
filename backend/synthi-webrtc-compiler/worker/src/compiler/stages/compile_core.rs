@@ -238,7 +238,15 @@ pub async fn compile_core(
                         // The retry command wrote to `core_out` already.
                     } else {
                         // ── AI Heal Loop: let the AI fix its own compile errors ──
-                    let shared_for_heal = tokio::fs::read_to_string(dir_path.join("shared.h")).await.unwrap_or_default();
+                    let shared_for_heal = tokio::fs::read_to_string(
+                        dir_path.join(
+                            effective_manifest
+                                .module_file(ModuleKind::Shared)
+                                .unwrap_or("shared.h"),
+                        ),
+                    )
+                    .await
+                    .unwrap_or_default();
                     // Read the cached split architecture from the sidecar so the
                     // heal prompt has the same project-specific "Forbidden Patterns"
                     // context that diff_patch uses. Empty string falls back to

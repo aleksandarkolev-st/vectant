@@ -63,6 +63,66 @@ async fn write_compile_request_file(workspace: &Path, name: &str, content: &str)
     Ok(())
 }
 
+fn workspace_relative_string(workspace: &Path, path: &Path) -> String {
+    let rel = path.strip_prefix(workspace).unwrap_or(path);
+    rel.to_string_lossy().replace('\\', "/")
+}
+
+fn adapted_module_filename(
+    status: &AdaptedProjectStatus,
+    workspace: &Path,
+    kind: ModuleKind,
+    fallback: &str,
+) -> String {
+    let path = match kind {
+        ModuleKind::Shared => status.shared_path.as_ref(),
+        ModuleKind::Core => status.core_path.as_ref(),
+        ModuleKind::Gui => status.gui_path.as_ref(),
+        ModuleKind::HostRunner => status.host_runner_path.as_ref(),
+        ModuleKind::Device => None,
+    };
+    path.map(|p| workspace_relative_string(workspace, p))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn normalized_request_filename(path: &str) -> Option<String> {
+    compile_request_relpath(path)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+}
+
+fn is_editing_adapted_module_or_device(
+    filename: &str,
+    status: &AdaptedProjectStatus,
+    workspace: &Path,
+    request_manifest: Option<&CompileManifest>,
+) -> bool {
+    let Some(req_name) = normalized_request_filename(filename) else {
+        return false;
+    };
+    let mut candidates = Vec::new();
+    if let Some(ref p) = status.shared_path {
+        candidates.push(workspace_relative_string(workspace, p));
+    }
+    if let Some(ref p) = status.core_path {
+        candidates.push(workspace_relative_string(workspace, p));
+    }
+    if let Some(ref p) = status.gui_path {
+        candidates.push(workspace_relative_string(workspace, p));
+    }
+    if let Some(ref p) = status.host_runner_path {
+        candidates.push(workspace_relative_string(workspace, p));
+    }
+    if let Some(device) = request_manifest.and_then(|m| m.device_source_filename()) {
+        candidates.push(device.replace('\\', "/").trim_start_matches("./").to_string());
+    }
+    candidates.push("device.cu".to_string());
+    candidates.push("device.hip".to_string());
+    candidates
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(&req_name))
+}
+
 async fn sync_compile_request_workspace(ctx: &CompileContext, req: &CompileRequest) -> Result<()> {
     for file in &req.files {
         write_compile_request_file(&ctx.workspace_path, &file.name, &file.content).await?;
@@ -145,7 +205,7 @@ fn apply_edit_list(
     crate::hmr::edit_applier::apply_edit_list(edits, core, gui, shared, host_runner)
 }
 
-use crate::hmr::adapted_project::detect_adapted_project;
+use crate::hmr::adapted_project::{detect_adapted_project, AdaptedProjectStatus};
 use crate::hmr::adapter_trait::AdapterReloadResult;
 use crate::hmr::ai_bypass::{check_ai_bypass, AiBypassResult, SplitCache};
 use crate::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
@@ -443,6 +503,11 @@ pub async fn handle_compile_request(
 
     // Try to read persisted split hash from sidecar
     let sidecar_path = ctx.workspace_path.join(".synthi_split_meta.json");
+    let request_compile_manifest = req
+        .compile_manifest
+        .as_ref()
+        .and_then(|v| if v.is_null() { None } else { Some(v) })
+        .and_then(CompileManifest::from_json_value);
     if adapted_status.is_adapted {
         if let Ok(meta_raw) = tokio::fs::read_to_string(&sidecar_path).await {
             if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_raw) {
@@ -586,15 +651,36 @@ pub async fn handle_compile_request(
         }
         AiBypassResult::FallbackDeterministic => {
             // Loop A, no cache: read existing adapted files from disk.
-            let is_editing_split_file = {
-                let fname = req.filename.to_lowercase();
-                fname.contains("core.")
-                    || fname.contains("gui.")
-                    || fname.contains("shared.")
-                    || fname.contains("host_runner.")
-                    || fname.ends_with("device.cu")
-                    || fname.ends_with("device.hip")
-            };
+            let shared_filename = adapted_module_filename(
+                &enrichment.adapted_status,
+                &ctx.workspace_path,
+                ModuleKind::Shared,
+                "shared.h",
+            );
+            let core_filename = adapted_module_filename(
+                &enrichment.adapted_status,
+                &ctx.workspace_path,
+                ModuleKind::Core,
+                "core.cpp",
+            );
+            let gui_filename = adapted_module_filename(
+                &enrichment.adapted_status,
+                &ctx.workspace_path,
+                ModuleKind::Gui,
+                "gui.cpp",
+            );
+            let host_runner_filename = adapted_module_filename(
+                &enrichment.adapted_status,
+                &ctx.workspace_path,
+                ModuleKind::HostRunner,
+                HOST_RUNNER_FILENAME,
+            );
+            let is_editing_split_file = is_editing_adapted_module_or_device(
+                &req.filename,
+                &enrichment.adapted_status,
+                &ctx.workspace_path,
+                request_compile_manifest.as_ref(),
+            );
 
             // Always read the current split files from disk
             let core_content = if let Some(ref p) = enrichment.adapted_status.core_path {
@@ -632,9 +718,9 @@ pub async fn handle_compile_request(
                     req.filename
                 );
                 serde_json::json!({
-                    "shared": { "content": shared_content, "filename": "shared.h" },
-                    "core": { "content": core_content, "filename": "core.cpp" },
-                    "gui": { "content": gui_content, "filename": "gui.cpp" }
+                    "shared": { "content": shared_content, "filename": shared_filename },
+                    "core": { "content": core_content, "filename": core_filename },
+                    "gui": { "content": gui_content, "filename": gui_filename }
                 })
             } else if enrichment.adapted_status.is_adapted {
                 // User is editing original source (main.cpp).  Diff-patch the
@@ -691,9 +777,9 @@ pub async fn handle_compile_request(
                     if diff.is_empty() {
                         debug_log!("[HMR] No diff detected");
                         serde_json::json!({
-                            "shared": { "content": shared_content, "filename": "shared.h" },
-                            "core": { "content": core_content, "filename": "core.cpp" },
-                            "gui": { "content": gui_content, "filename": "gui.cpp" }
+                            "shared": { "content": shared_content, "filename": shared_filename },
+                            "core": { "content": core_content, "filename": core_filename },
+                            "gui": { "content": gui_content, "filename": gui_filename }
                         })
                     } else {
                         // ── Tiered patching (no AI classifier) ──
@@ -1070,10 +1156,10 @@ pub async fn handle_compile_request(
                         write_sidecar_logged(&sidecar_path, &meta).await;
 
                         serde_json::json!({
-                            "shared": { "content": final_shared, "filename": "shared.h" },
-                            "core": { "content": final_core, "filename": "core.cpp" },
-                            "gui": { "content": final_gui, "filename": "gui.cpp" },
-                            "host_runner": { "content": final_host_runner, "filename": "host_runner.cpp" },
+                            "shared": { "content": final_shared, "filename": shared_filename },
+                            "core": { "content": final_core, "filename": core_filename },
+                            "gui": { "content": final_gui, "filename": gui_filename },
+                            "host_runner": { "content": final_host_runner, "filename": host_runner_filename },
                             "_synthi_manifest": sidecar_manifest_json.clone(),
                         })
                     }
@@ -1393,7 +1479,10 @@ pub async fn handle_compile_request(
         }
         None
     } else if let Some(gpu) = compile_manifest.as_ref().and_then(|m| m.gpu.as_ref()) {
-        let device_filename = device_filename_for_vendor(gpu.vendor);
+        let device_filename = compile_manifest
+            .as_ref()
+            .and_then(|m| m.device_source_filename())
+            .unwrap_or_else(|| device_filename_for_vendor(gpu.vendor));
         let from_split = split_data
             .get("device")
             .and_then(|v| v.get("content"))
@@ -1564,7 +1653,13 @@ pub async fn handle_compile_request(
         if let Some(content) = from_split {
             // Persist to workspace so detect_adapted_project picks it up
             // on the next compile and the user can see / edit the file.
-            let host_runner_disk = ctx.workspace_path.join(HOST_RUNNER_FILENAME);
+            let host_runner_disk_name = adapted_module_filename(
+                &enrichment.adapted_status,
+                &ctx.workspace_path,
+                ModuleKind::HostRunner,
+                HOST_RUNNER_FILENAME,
+            );
+            let host_runner_disk = ctx.workspace_path.join(&host_runner_disk_name);
             match tokio::fs::write(&host_runner_disk, &content).await {
                 Ok(()) => {
                     eprintln!(
@@ -1655,8 +1750,37 @@ pub async fn handle_compile_request(
         use crate::hmr::tier0_unified::{try_tier0_v2, Tier0V2Outcome};
         let t0_start = std::time::Instant::now();
         let old_src = tier0_old_source.as_deref().unwrap_or("");
-        let source_files: &[(&str, &str)] = &[("core", "core.cpp"), ("gui", "gui.cpp")];
-        match try_tier0_v2(&output_dir, old_src, &req.source, source_files) {
+        let tier0_core_filename = split_data
+            .get("core")
+            .and_then(|v| v.get("filename"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                adapted_module_filename(
+                    &enrichment.adapted_status,
+                    &ctx.workspace_path,
+                    ModuleKind::Core,
+                    "core.cpp",
+                )
+            });
+        let tier0_gui_filename = split_data
+            .get("gui")
+            .and_then(|v| v.get("filename"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                adapted_module_filename(
+                    &enrichment.adapted_status,
+                    &ctx.workspace_path,
+                    ModuleKind::Gui,
+                    "gui.cpp",
+                )
+            });
+        let source_files = [
+            ("core", tier0_core_filename.as_str()),
+            ("gui", tier0_gui_filename.as_str()),
+        ];
+        match try_tier0_v2(&output_dir, old_src, &req.source, &source_files) {
             Tier0V2Outcome::Patched(result) => {
                 let t0_ms = t0_start.elapsed().as_millis();
                 let total_ms = compile_start.elapsed().as_millis();
@@ -1875,6 +1999,7 @@ pub async fn handle_compile_request(
                     &output_dir,
                     timestamp,
                     source,
+                    manifest.device_source_filename(),
                     manifest,
                 )
                 .await
@@ -1965,6 +2090,7 @@ pub async fn handle_compile_request(
                 &output_dir,
                 timestamp,
                 source,
+                manifest.device_source_filename(),
                 manifest,
             )
             .await?

@@ -131,6 +131,8 @@ const extractCompileManifest = (rawManifestContent, path = '') => {
 };
 
 const deviceFileFromCompileManifest = (manifest) => {
+    const declaredDevice = normalizeWorkspacePath(manifest?.module_files?.device || '');
+    if (declaredDevice) return declaredDevice;
     const vendor = String(manifest?.gpu?.vendor || '').toLowerCase();
     if (vendor === 'rocm' || vendor === 'hip') return 'device.hip';
     if (vendor === 'cuda') return 'device.cu';
@@ -139,14 +141,18 @@ const deviceFileFromCompileManifest = (manifest) => {
 
 const declaredFilesFromCompileManifest = (manifest) => {
     const rawFiles = Array.isArray(manifest?.files) ? manifest.files : [];
-    return rawFiles
+    const moduleFiles = manifest?.module_files && typeof manifest.module_files === 'object'
+        ? Object.values(manifest.module_files)
+        : [];
+    return [...rawFiles, ...moduleFiles]
         .map((entry) => {
             if (typeof entry === 'string') return entry;
             if (entry && typeof entry === 'object') return entry.path || entry.name || '';
             return '';
         })
         .map(normalizeWorkspacePath)
-        .filter(Boolean);
+        .filter(Boolean)
+        .filter((entry, index, all) => all.indexOf(entry) === index);
 };
 
 const compileFilesFromManifest = (manifest) => {

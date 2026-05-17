@@ -324,6 +324,8 @@ fn make_test_manifest(
         gui_link_flags: vec![],
         shared_link_flags: vec![],
         runner_link_flags: runner_link_flags.into_iter().map(String::from).collect(),
+        files: vec![],
+        module_files: Default::default(),
         system_packages: vec![],
         hot_reload_mode: HotReloadMode::Swap,
         confidence: ConfidenceBlock {
@@ -333,6 +335,7 @@ fn make_test_manifest(
             notes: String::new(),
         },
         build_steps: None,
+        gpu: None,
     }
 }
 

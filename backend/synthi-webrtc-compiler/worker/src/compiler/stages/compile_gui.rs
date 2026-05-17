@@ -233,7 +233,15 @@ pub async fn compile_gui(
                     } else {
 
                     // ── AI Heal Loop ──
-                    let shared_for_heal = tokio::fs::read_to_string(dir_path.join("shared.h")).await.unwrap_or_default();
+                    let shared_for_heal = tokio::fs::read_to_string(
+                        dir_path.join(
+                            effective_manifest
+                                .module_file(ModuleKind::Shared)
+                                .unwrap_or("shared.h"),
+                        ),
+                    )
+                    .await
+                    .unwrap_or_default();
                     // Read the cached split architecture from the sidecar so the
                     // heal prompt has the same project-specific "Forbidden Patterns"
                     // context that diff_patch uses.

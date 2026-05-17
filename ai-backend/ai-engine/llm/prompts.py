@@ -3767,6 +3767,12 @@ AppState* state = (AppState*)state_ptr;
   "shared_link_flags": [],
   "runner_link_flags": ["-lSDL2", "-ldl"],
   "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"],
+  "module_files": {
+    "shared": "shared.h",
+    "core": "core.cpp",
+    "gui": "gui.cpp",
+    "host_runner": "host_runner.cpp"
+  },
   "system_packages": ["libsdl2-dev"],
   "hot_reload_mode": "swap",
   "confidence": {
@@ -3786,6 +3792,8 @@ AppState* state = (AppState*)state_ptr;
 - NO markdown headers outside the arch cache.
 - The build manifest MUST be valid JSON parseable by Python json.loads.
 - All four files must be present in the JSON, even if some are nearly empty.
+- The build manifest `module_files` object MUST map `shared`, `core`,
+  `gui`, and `host_runner` to the exact JSON filenames.
 - Preserve the user's intent: button colors, sizes, frame timing, etc. must
   survive the split unchanged.
 
@@ -4003,6 +4011,14 @@ fields, emit a `files` array plus a `gpu` sub-object:
 
     "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp", "device.cu"],
 
+    "module_files": {
+      "shared": "shared.h",
+      "core": "core.cpp",
+      "gui": "gui.cpp",
+      "host_runner": "host_runner.cpp",
+      "device": "device.cu"
+    },
+
     "gpu": {
       "vendor": "cuda",                       // or "rocm"
       "device_compiler": "nvcc",              // or "clang-cuda" or "hipcc"
@@ -4047,7 +4063,7 @@ not HMR-compatible. Pick `arch` from the source's targeting hints
 ...
 <synthi_kernel_hashes>{...}</synthi_kernel_hashes>
 <synthi_launch_graph>[...]</synthi_launch_graph>
-<synthi_build_manifest>{ ...host fields..., "files": [...], "gpu": { ... } }</synthi_build_manifest>
+<synthi_build_manifest>{ ...host fields..., "files": [...], "module_files": {...}, "gpu": { ... } }</synthi_build_manifest>
 </synthi_arch_cache>
 ```
 
@@ -4061,6 +4077,9 @@ not HMR-compatible. Pick `arch` from the source's targeting hints
 - The build manifest `files` array MUST list the exact split files emitted
   in the JSON so browser HMR compiles resend the full adapted project instead
   of guessing fixed filenames.
+- The build manifest `module_files` object MUST map the semantic roles
+  (`shared`, `core`, `gui`, `host_runner`, `device`) to the exact JSON
+  filenames. This is required even when you choose nonstandard names.
 - Every kernel referenced in any `synthi_gpu_launch(...)` call must be
   declared in device.cu/device.hip. Raw `kernel<<<...>>>` host launches
   are invalid split output.

@@ -77,6 +77,7 @@ pub async fn compile_device_phase0(
     output_dir: &std::path::Path,
     timestamp: i64,
     device_source: &str,
+    source_filename_override: Option<&str>,
     manifest: &CompileManifest,
 ) -> Result<Option<DeviceCompileOutcome>> {
     if device_source.trim().is_empty() {
@@ -94,14 +95,30 @@ pub async fn compile_device_phase0(
             "[compile-device] gpu-hmr feature OFF — declining to compile (vendor={})",
             gpu.vendor.as_str()
         );
-        let _ = (workspace_dir, output_dir, timestamp, device_source, manifest, gpu);
+        let _ = (
+            workspace_dir,
+            output_dir,
+            timestamp,
+            device_source,
+            source_filename_override,
+            manifest,
+            gpu,
+        );
         return Ok(None);
     }
 
     #[cfg(feature = "gpu-hmr")]
     {
-        compile_device_inner(workspace_dir, output_dir, timestamp, device_source, manifest, gpu)
-            .await
+        compile_device_inner(
+            workspace_dir,
+            output_dir,
+            timestamp,
+            device_source,
+            source_filename_override,
+            manifest,
+            gpu,
+        )
+        .await
     }
 }
 
@@ -111,6 +128,7 @@ async fn compile_device_inner(
     output_dir: &std::path::Path,
     timestamp: i64,
     device_source: &str,
+    source_filename_override: Option<&str>,
     manifest: &CompileManifest,
     gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
 ) -> Result<Option<DeviceCompileOutcome>> {
@@ -119,12 +137,21 @@ async fn compile_device_inner(
     // log lines name the actual binary the worker spawned.
     let compiler_exe = manifest
         .select_compiler(crate::hmr::compile_manifest::ModuleKind::Device);
-    let (source_filename, artifact_ext) = match gpu.vendor {
+    let (default_source_filename, artifact_ext) = match gpu.vendor {
         DeviceVendor::Cuda => (DEVICE_CU_FILENAME, "cubin"),
         DeviceVendor::Rocm => (DEVICE_HIP_FILENAME, "hsaco"),
     };
+    let source_filename = source_filename_override
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(default_source_filename);
 
-    tokio::fs::write(workspace_dir.join(source_filename), device_source)
+    let source_path = workspace_dir.join(source_filename);
+    if let Some(parent) = source_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .context("creating device source parent dir")?;
+    }
+    tokio::fs::write(&source_path, device_source)
         .await
         .context("writing device source")?;
     tokio::fs::create_dir_all(output_dir)
@@ -334,8 +361,9 @@ mod tests {
         let mut manifest = CompileManifest::sdl2_default();
         manifest.gpu = Some(cuda_block());
         let tmp = tempfile::tempdir().unwrap();
-        let out =
-            compile_device_phase0(tmp.path(), tmp.path(), 1, "", &manifest).await.unwrap();
+        let out = compile_device_phase0(tmp.path(), tmp.path(), 1, "", None, &manifest)
+            .await
+            .unwrap();
         assert!(out.is_none());
     }
 
@@ -343,10 +371,16 @@ mod tests {
     async fn missing_gpu_block_returns_none() {
         let manifest = CompileManifest::sdl2_default();
         let tmp = tempfile::tempdir().unwrap();
-        let out =
-            compile_device_phase0(tmp.path(), tmp.path(), 1, "__global__ void k() {}", &manifest)
-                .await
-                .unwrap();
+        let out = compile_device_phase0(
+            tmp.path(),
+            tmp.path(),
+            1,
+            "__global__ void k() {}",
+            None,
+            &manifest,
+        )
+        .await
+        .unwrap();
         assert!(out.is_none());
     }
 
@@ -362,6 +396,7 @@ mod tests {
             tmp.path(),
             1,
             "__global__ void k() {}",
+            None,
             &manifest,
         )
         .await

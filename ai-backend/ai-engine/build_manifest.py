@@ -25,6 +25,13 @@ Manifest format (emitted by the AI inside <synthi_build_manifest>):
       "shared_link_flags": [],
       "runner_link_flags": ["-lSDL2", "-ldl"],
       "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"],
+      "module_files": {
+        "shared": "shared.h",
+        "core": "core.cpp",
+        "gui": "gui.cpp",
+        "host_runner": "host_runner.cpp",
+        "device": "device.cu"
+      },
       "system_packages": ["libsdl2-dev"],
       "hot_reload_mode": "swap" | "process_restart" | "auto",
       "confidence": {
@@ -110,6 +117,24 @@ class ConfidenceBlock(BaseModel):
         model_config = ConfigDict(extra="ignore")
 
 
+class ModuleFilesBlock(BaseModel):
+    """Semantic split-module role paths.
+
+    `files` is the full set of source files the browser should resend after
+    adaptation. `module_files` tells the worker which arbitrary path owns each
+    compile role, so projects are not coupled to core.cpp/gui.cpp/shared.h.
+    """
+
+    shared: Optional[str] = None
+    core: Optional[str] = None
+    gui: Optional[str] = None
+    host_runner: Optional[str] = None
+    device: Optional[str] = None
+
+    if _PYDANTIC_V2:
+        model_config = ConfigDict(extra="ignore")
+
+
 class BuildManifest(BaseModel):
     """Everything the Rust worker needs to know to compile a user's project.
 
@@ -130,6 +155,8 @@ class BuildManifest(BaseModel):
     # a workspace has already been adapted. The worker still owns the compile
     # stages; this prevents the browser from guessing split-project shape.
     files: List[str] = Field(default_factory=list)
+    # Semantic module role paths for dynamically named split projects.
+    module_files: ModuleFilesBlock = Field(default_factory=ModuleFilesBlock)
     system_packages: List[str] = Field(default_factory=list)
     hot_reload_mode: HotReloadMode = "swap"
     confidence: ConfidenceBlock

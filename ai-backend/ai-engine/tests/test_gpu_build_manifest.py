@@ -65,6 +65,29 @@ def test_host_only_manifest_still_validates():
     validate_manifest_v1(m)  # no raise
 
 
+def test_module_files_accept_dynamic_role_paths():
+    raw = dict(HOST_ONLY_MANIFEST)
+    raw["files"] = [
+        "include/flow_shared_x.h",
+        "src/flow_core_x.cpp",
+        "src/flow_gui_x.cpp",
+        "run/flow_runner_x.cpp",
+        "gpu/flow_device_x.hip",
+        "include/flow_palette_x.h",
+    ]
+    raw["module_files"] = {
+        "shared": "include/flow_shared_x.h",
+        "core": "src/flow_core_x.cpp",
+        "gui": "src/flow_gui_x.cpp",
+        "host_runner": "run/flow_runner_x.cpp",
+        "device": "gpu/flow_device_x.hip",
+    }
+    m = parse_manifest(raw)
+    assert m.module_files.core == "src/flow_core_x.cpp"
+    assert m.module_files.device == "gpu/flow_device_x.hip"
+    validate_manifest_v1(m)
+
+
 def test_cuda_manifest_validates():
     m = parse_manifest(_with_gpu(vendor="cuda", device_compiler="nvcc"))
     assert m.gpu is not None

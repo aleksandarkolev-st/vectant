@@ -136,6 +136,9 @@ pub async fn compile_runner(
     };
     let compiler_exe = effective_manifest.select_compiler(ModuleKind::HostRunner);
     let std_flag = format!("-std={}", effective_manifest.std);
+    let host_runner_filename = effective_manifest
+        .module_file(ModuleKind::HostRunner)
+        .unwrap_or(HOST_RUNNER_FILENAME);
 
     // Pure-function flag construction — see `build_runner_flag_list` for
     // the rules around stripping -shared/-fPIC and appending -ldl/-rdynamic.
@@ -168,7 +171,7 @@ pub async fn compile_runner(
     }
 
     // Cache miss — write the source file and compile.
-    tokio::fs::write(dir_path.join(HOST_RUNNER_FILENAME), host_runner_content).await?;
+    tokio::fs::write(dir_path.join(host_runner_filename), host_runner_content).await?;
 
     // Runner binary is named `host_runner_<ts>` — no `lib` prefix, no
     // `.so` extension. Lives in the build/ directory like the other
@@ -207,7 +210,7 @@ pub async fn compile_runner(
     // Step 1: compile .cpp → .o (ccache caches this)
     let mut compile_cmd = compile_to_object_command(
         compiler_exe,
-        HOST_RUNNER_FILENAME,
+        host_runner_filename,
         &runner_obj,
         &std_flag,
         &runner_compile_flags,
@@ -293,7 +296,7 @@ pub async fn compile_runner(
                         cmd.arg(f);
                     }
                 }
-                cmd.arg(HOST_RUNNER_FILENAME)
+                cmd.arg(host_runner_filename)
                     .arg("-I.")
                     .arg("-o")
                     .arg(&runner_out);
@@ -359,14 +362,14 @@ pub async fn compile_runner(
             .await
             {
                 Ok(fixed) => {
-                    tokio::fs::write(dir_path.join(HOST_RUNNER_FILENAME), &fixed).await?;
+                    tokio::fs::write(dir_path.join(host_runner_filename), &fixed).await?;
                     let mut retry_cmd = cpp_compile_command(compiler_exe);
                     retry_cmd.arg(&std_flag);
                     for f in &runner_compile_flags {
                         retry_cmd.arg(f);
                     }
                     retry_cmd
-                        .arg(HOST_RUNNER_FILENAME)
+                        .arg(host_runner_filename)
                         .arg("-I.")
                         .arg("-o")
                         .arg(&runner_out);
