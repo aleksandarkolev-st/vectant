@@ -1,6 +1,7 @@
 PASS gpu vendor - rocm arch=gfx1201
+PASS fixture - complex-flow
 PASS monolithic source has no Synthi ABI
-PASS create workspace - id=cmpafppe10005o901lfjrqq82 slug=gpu-ai-lite-cachekey-20260518025703
+PASS create workspace - id=cmpafs7r90006o901uhr26jbq slug=gpu-ai-complex-20260518025900
 PASS seed monolithic user source - main.cpp
 PASS workspace commit seed
 PASS mcp tools/list - count=42
@@ -13,6 +14,6 @@ PASS generated split contains HMR ABI - shared.h, core.cpp, gui.cpp, host_runner
 PASS persist generated split to workspace - 7 files
 PASS workspace commit generated split
 PASS device edit compile via MCP - device.hip
-PASS generated device file used for HMR - FallbackDeterministic → split file edit (device.hip
+PASS generated device file used for HMR - compile-device] hipcc -> /tmp/.tmpnnTFPF/build/device_1779062350.hsaco  args=CommandArgs { inner: ["--genco", "--offload-arch=gfx1201", "-O3", "-lineinfo", "-o", "/tmp/.tmpnnTFPF/build/device_1779062350.hsaco", "device.hip
 PASS device-only GPU HMR observed - [gpu-reload] plan=device_only
 PASS runner stayed alive after GPU HMR - no runner crash marker
