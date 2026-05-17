@@ -2132,6 +2132,21 @@ pub async fn handle_compile_request(
     // loads only, no lock acquisition. Prints nothing on the first
     // compile of a session (all zeros) and starts reporting from
     // the second compile onward.
+    let runtime_host_runner_bin_path = if compile_manifest
+        .as_ref()
+        .and_then(|m| m.gpu.as_ref())
+        .is_some()
+    {
+        if host_runner_bin_path.is_some() {
+            eprintln!(
+                "[HMR] gpu manifest present: using shipped runner for GPU runtime boundary; per-project host_runner compiled only"
+            );
+        }
+        None
+    } else {
+        host_runner_bin_path.clone()
+    };
+
     ctx.incremental_cache.log_hit_rate_snapshot();
 
     // Manual logging
@@ -2626,13 +2641,13 @@ pub async fn handle_compile_request(
     let use_supervisor = std::env::var("SYNTHI_PATH_C_SUPERVISOR")
         .map(|v| v == "1")
         .unwrap_or(false)
-        && host_runner_bin_path.is_some();
+        && runtime_host_runner_bin_path.is_some();
 
     let runtime_reload_start = std::time::Instant::now();
     let runner_result = if use_supervisor {
         use crate::runtime::path_c::supervisor::spawn_supervised;
 
-        let bin_path = host_runner_bin_path.as_ref().unwrap();
+        let bin_path = runtime_host_runner_bin_path.as_ref().unwrap();
         let req_width = req.width.unwrap_or(800);
         let req_height = req.height.unwrap_or(600);
 
@@ -2702,7 +2717,7 @@ pub async fn handle_compile_request(
                         core_lib_path.clone(),
                         gui_lib_path.clone(),
                         Some(session_id.clone()),
-                        host_runner_bin_path.clone(),
+                        runtime_host_runner_bin_path.clone(),
                     )
                     .await
                     .map_err(|e| e.into())
@@ -2721,7 +2736,7 @@ pub async fn handle_compile_request(
             core_lib_path,
             gui_lib_path,
             Some(session_id.clone()),
-            host_runner_bin_path.clone(),
+            runtime_host_runner_bin_path.clone(),
         )
         .await
     };
