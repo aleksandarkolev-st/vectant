@@ -60,6 +60,127 @@ fn ai_http_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+fn text_has_gpu_markers(source: &str) -> bool {
+    let lower = source.to_ascii_lowercase();
+    source.contains("__global__")
+        || source.contains("__device__")
+        || source.contains("<<<")
+        || lower.contains("cuda_runtime")
+        || lower.contains("hip_runtime")
+        || lower.contains("cudamalloc")
+        || lower.contains("hipmalloc")
+}
+
+fn request_has_gpu_markers(req: &CompileRequest) -> bool {
+    if text_has_gpu_markers(&req.source) {
+        return true;
+    }
+    req.files
+        .iter()
+        .any(|file| text_has_gpu_markers(&file.content))
+}
+
+fn split_content(value: Option<&serde_json::Value>) -> Option<String> {
+    match value {
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.to_string()),
+        Some(serde_json::Value::Object(map)) => map
+            .get("content")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+fn manifest_module_file(manifest: &serde_json::Value, role: &str) -> Option<String> {
+    manifest
+        .get("module_files")
+        .and_then(|v| v.get(role))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim_start_matches("./").replace('\\', "/"))
+}
+
+fn default_device_filename(manifest: &serde_json::Value) -> &'static str {
+    match manifest
+        .get("gpu")
+        .and_then(|gpu| gpu.get("vendor"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "rocm" | "hip" => "device.hip",
+        _ => "device.cu",
+    }
+}
+
+fn insert_split_role(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    role: &str,
+    filename: &str,
+    content: String,
+) {
+    obj.insert(
+        role.to_string(),
+        serde_json::json!({
+            "filename": filename,
+            "content": content,
+        }),
+    );
+}
+
+fn normalize_split_response(
+    mut split: serde_json::Value,
+    manifest: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let Some(manifest) = manifest else {
+        return split;
+    };
+    let Some(obj) = split.as_object_mut() else {
+        return split;
+    };
+
+    for (role, fallback) in [
+        ("shared", "shared.h"),
+        ("core", "core.cpp"),
+        ("gui", "gui.cpp"),
+        ("host_runner", "host_runner.cpp"),
+    ] {
+        let filename = manifest_module_file(manifest, role).unwrap_or_else(|| fallback.to_string());
+        let already_role_keyed = obj
+            .get(role)
+            .and_then(|v| v.get("content"))
+            .and_then(|v| v.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if already_role_keyed {
+            continue;
+        }
+        if let Some(content) = split_content(obj.get(&filename)).or_else(|| split_content(obj.get(role))) {
+            insert_split_role(obj, role, &filename, content);
+        }
+    }
+
+    let device_filename = manifest_module_file(manifest, "device")
+        .unwrap_or_else(|| default_device_filename(manifest).to_string());
+    let device_role_keyed = obj
+        .get("device")
+        .and_then(|v| v.get("content"))
+        .and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if !device_role_keyed {
+        if let Some(content) =
+            split_content(obj.get(&device_filename)).or_else(|| split_content(obj.get("device")))
+        {
+            insert_split_role(obj, "device", &device_filename, content);
+        }
+    }
+
+    split
+}
+
 // NOTE: `detect_structural_additions` and `perform_structural_ai_update`
 // were removed together with the `Level 2.75` shortcut in `perform_ai_split`.
 // They implemented the SDL-hardcoded "X11→SDL2 translation" delta path
@@ -78,12 +199,28 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // architecture cache, which handles all edit kinds language-agnostically.
     // perform_ai_split is only called for first-compile splits and Tier 3
     // fallbacks — both of those want correct full splits, not cheap deltas.
-    let source_hash = calculate_hash(&req.source);
+    let gpu_mode = req
+        .gpu_mode
+        .as_deref()
+        .unwrap_or("auto")
+        .to_ascii_lowercase();
+    let has_gpu_markers = request_has_gpu_markers(req);
+    // Split output depends on more than raw source now: the same file can
+    // produce CUDA or ROCm sidecars depending on the user's GPU target.
+    let source_hash = calculate_hash(&(
+        req.source.as_str(),
+        req.language.as_str(),
+        req.prefer_gpu_pipeline,
+        gpu_mode.as_str(),
+        has_gpu_markers,
+    ));
 
     eprintln!(
-        "[AI Split] ENTER (src_hash={}, src_len={})",
+        "[AI Split] ENTER (cache_key={}, src_len={}, gpu_mode={}, gpu_markers={})",
         source_hash,
-        req.source.len()
+        req.source.len(),
+        gpu_mode,
+        has_gpu_markers
     );
 
     {
@@ -102,11 +239,6 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // The LLM JSON inside "result" is: { core: {filename, content}, gui: {...}, shared: {...} }
     eprintln!("[AI Split] Level 3 → full AI split via /refactor/split/verified");
     let client = reqwest::Client::new();
-    let gpu_mode = req
-        .gpu_mode
-        .as_deref()
-        .unwrap_or("auto")
-        .to_ascii_lowercase();
     let gpu_target_prompt = if req.prefer_gpu_pipeline {
         match gpu_mode.as_str() {
             "cuda" => Some("GPU target preference: emit CUDA/NVIDIA-compatible GPU HMR split output when GPU splitting is applicable."),
@@ -133,56 +265,102 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
 
     let backend_url = get_ai_backend_url();
 
-    // Try verified endpoint first; fall back to unverified if it times out.
-    // Both return {"result": "<json>", "lang": "..."} — same parser handles both.
+    // GPU sources need the 5-file kernel splitter, not the host-only
+    // universal splitter. Try it first when the request actually contains
+    // CUDA/HIP markers; fall back to the verified host splitter if the GPU
+    // endpoint rejects the source or is unavailable.
     let verified_url = format!("{}/refactor/split/verified", backend_url);
     let split_url = format!("{}/refactor/split", backend_url);
+    let gpu_split_url = format!("{}/refactor/split/gpu", backend_url);
 
-    eprintln!(
-        "[AI Split] Calling VERIFIED AI split endpoint: {}",
-        verified_url
-    );
-    let verified_result: Result<serde_json::Value, anyhow::Error> = async {
-        let resp = client
-            .post(&verified_url)
-            .json(&payload)
-            .timeout(ai_http_timeout())
-            .send()
-            .await?
-            .error_for_status()?;
-        Ok(resp.json::<serde_json::Value>().await?)
-    }
-    .await;
-
-    let raw_response = match verified_result {
-        Ok(json) if json.get("result").and_then(|r| r.as_str()).is_some() => json,
-        Ok(json) => {
-            eprintln!(
-                "[AI Split] Verified returned no result field: {:?}, trying unverified",
-                json.to_string().chars().take(200).collect::<String>()
-            );
-            client
-                .post(&split_url)
-                .json(&payload)
-                .timeout(ai_http_timeout())
-                .send()
-                .await?
-                .json::<serde_json::Value>()
-                .await?
-        }
-        Err(e) => {
-            eprintln!(
-                "[AI Split] Verified endpoint failed ({}), trying unverified",
-                e
-            );
+    let mut raw_response: Option<serde_json::Value> = None;
+    if req.prefer_gpu_pipeline && gpu_mode != "disabled" && has_gpu_markers {
+        eprintln!(
+            "[AI Split] GPU markers detected; calling GPU split endpoint: {}",
+            gpu_split_url
+        );
+        let gpu_result: Result<serde_json::Value, anyhow::Error> = async {
             let resp = client
-                .post(&split_url)
+                .post(&gpu_split_url)
                 .json(&payload)
                 .timeout(ai_http_timeout())
                 .send()
                 .await?
                 .error_for_status()?;
-            resp.json::<serde_json::Value>().await?
+            Ok(resp.json::<serde_json::Value>().await?)
+        }
+        .await;
+        match gpu_result {
+            Ok(json) if json.get("result").and_then(|r| r.as_str()).is_some() => {
+                eprintln!("[AI Split] GPU split endpoint returned a 5-file split");
+                raw_response = Some(json);
+            }
+            Ok(json) => {
+                eprintln!(
+                    "[AI Split] GPU split returned no result field: {:?}; falling back to verified split",
+                    json.to_string().chars().take(200).collect::<String>()
+                );
+            }
+            Err(e) => {
+                eprintln!(
+                    "[AI Split] GPU split endpoint failed ({}); falling back to verified split",
+                    e
+                );
+            }
+        }
+    }
+
+    let raw_response = if let Some(json) = raw_response {
+        json
+    } else {
+        // Try verified endpoint first; fall back to unverified if it times out.
+        // Both return {"result": "<json>", "lang": "..."} — same parser handles both.
+        eprintln!(
+            "[AI Split] Calling VERIFIED AI split endpoint: {}",
+            verified_url
+        );
+        let verified_result: Result<serde_json::Value, anyhow::Error> = async {
+            let resp = client
+                .post(&verified_url)
+                .json(&payload)
+                .timeout(ai_http_timeout())
+                .send()
+                .await?
+                .error_for_status()?;
+            Ok(resp.json::<serde_json::Value>().await?)
+        }
+        .await;
+
+        match verified_result {
+            Ok(json) if json.get("result").and_then(|r| r.as_str()).is_some() => json,
+            Ok(json) => {
+                eprintln!(
+                    "[AI Split] Verified returned no result field: {:?}, trying unverified",
+                    json.to_string().chars().take(200).collect::<String>()
+                );
+                client
+                    .post(&split_url)
+                    .json(&payload)
+                    .timeout(ai_http_timeout())
+                    .send()
+                    .await?
+                    .json::<serde_json::Value>()
+                    .await?
+            }
+            Err(e) => {
+                eprintln!(
+                    "[AI Split] Verified endpoint failed ({}), trying unverified",
+                    e
+                );
+                let resp = client
+                    .post(&split_url)
+                    .json(&payload)
+                    .timeout(ai_http_timeout())
+                    .send()
+                    .await?
+                    .error_for_status()?;
+                resp.json::<serde_json::Value>().await?
+            }
         }
     };
 
@@ -269,7 +447,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // The Python response wrapper is `{result: "...", architecture: "...", ...}`.
     // The architecture is a plain markdown string (may be empty if the split
     // model forgot to emit the <synthi_arch_cache> XML block).
-    let mut res = res;
+    let mut res = normalize_split_response(res, raw_response.get("manifest"));
     if let Some(arch) = raw_response.get("architecture").and_then(|v| v.as_str()) {
         if !arch.is_empty() {
             eprintln!(
@@ -873,4 +1051,54 @@ pub async fn perform_ai_heal_manifest(
         unchanged,
         notes,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn detects_gpu_markers_in_source_text() {
+        assert!(text_has_gpu_markers("__global__ void step(float* x) {}"));
+        assert!(text_has_gpu_markers("#include <hip/hip_runtime.h>"));
+        assert!(text_has_gpu_markers("kernel<<<grid, block>>>(x);"));
+        assert!(!text_has_gpu_markers("int main() { return 0; }"));
+    }
+
+    #[test]
+    fn normalizes_gpu_filename_map_to_role_entries() {
+        let split = json!({
+            "include/flow_state.hpp": "#pragma once\n",
+            "src/flow_core.cpp": "extern \"C\" void core_on_update(void*, double) {}",
+            "ui/flow_gui.cpp": "extern \"C\" void gui_on_render(void*) {}",
+            "run/flow_runner.cpp": "int main() { return 0; }",
+            "gpu/flow_device.hip": "extern \"C\" __global__ void particle_flow(float* x) {}"
+        });
+        let manifest = json!({
+            "module_files": {
+                "shared": "include/flow_state.hpp",
+                "core": "src/flow_core.cpp",
+                "gui": "ui/flow_gui.cpp",
+                "host_runner": "run/flow_runner.cpp",
+                "device": "gpu/flow_device.hip"
+            },
+            "gpu": { "vendor": "rocm" }
+        });
+
+        let normalized = normalize_split_response(split, Some(&manifest));
+
+        assert_eq!(
+            normalized["core"]["filename"].as_str(),
+            Some("src/flow_core.cpp")
+        );
+        assert_eq!(
+            normalized["device"]["filename"].as_str(),
+            Some("gpu/flow_device.hip")
+        );
+        assert!(normalized["device"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("particle_flow"));
+    }
 }

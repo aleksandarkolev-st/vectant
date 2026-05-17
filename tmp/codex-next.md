@@ -50,7 +50,7 @@ git log --oneline -8
 
 ## What Was Built This Session
 
-GPU HMR now has three useful validation surfaces:
+GPU HMR now has four useful validation surfaces:
 
 1. The original deterministic vector fixture:
    - Phases: `P0,P1,P2`
@@ -73,6 +73,23 @@ GPU HMR now has three useful validation surfaces:
    - Validates through MCP compile + wait-HMR, then checks worker logs for the
      randomized device filename, GPU launch telemetry, device-only reload, and
      outward flow after the device edit.
+
+4. A full-path agent-split GPU HMR fixture:
+   - Script: `mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs`
+   - Seeds ordinary monolithic user `main.cpp` containing CUDA/HIP kernels and
+     no Synthi ABI exports (`core_on_update`, `gui_on_render`,
+     `device_on_load`, etc.).
+   - Triggers MCP compile with `use_ai_split=true`, `prefer_gpu_pipeline=true`,
+     and `gpu_mode=<detected vendor>`.
+   - Worker now routes such GPU sources to ai-engine `/refactor/split/gpu`
+     instead of the host-only `/refactor/split/verified` route.
+   - The script reads the generated split/manifest from the worker, persists
+     generated files into the workspace, edits only the generated device role
+     file, and verifies device-only GPU HMR. This is the "real user source ->
+     agent split -> generated ABI files -> HMR" validation path.
+   - Status: added, `node --check` passed, and targeted WSL Rust tests for
+     GPU split routing/normalization passed. Live Docker/MCP validation is
+     pending because Docker Desktop wedged during this turn.
 
 The browser compile path now sends all manifest-declared files for adapted
 workspaces. It reads `.synthi/build_manifest.json` or
@@ -125,6 +142,13 @@ PASS render loop reports outward flow - [gpu-flow-dynamic] ... trend=outward
   - Use when validating that compile/HMR does not depend on hardcoded adapted
     filenames.
 
+- `mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs`
+  - Full-path user validation harness.
+  - Starts with monolithic user code only, proves the agent generates the
+    Synthi HMR ABI internally, then hot-swaps a generated GPU device file.
+  - Use this to answer "does the user need to write `extern "C"` ABI exports?"
+    The expected answer is no; the agent creates those files.
+
 - `synthi/src/app/workspace/[slug]/page.jsx`
   - Browser compile no longer treats the adapted GPU source set as a fixed
     hardcoded list.
@@ -141,8 +165,14 @@ PASS render loop reports outward flow - [gpu-flow-dynamic] ... trend=outward
   - Sent to worker compile requests as `gpu_mode`.
 
 - `backend/synthi-webrtc-compiler/worker/src/compiler/stages/ai_utils.rs`
-  - For AI full splits, `gpu_mode=cuda|rocm` adds a target preference prompt
-    before calling ai-engine.
+  - For AI full splits, `gpu_mode=cuda|rocm` adds a target preference prompt.
+  - If the compile request contains CUDA/HIP markers and GPU pipeline is
+    enabled, first calls ai-engine `/refactor/split/gpu`.
+  - Normalizes the GPU splitter's filename-keyed result into role-keyed
+    `shared/core/gui/host_runner/device` entries, so the existing compile
+    stages consume the same shape as CPU HMR.
+  - Split cache key now includes source, language, GPU mode, GPU enabled state,
+    and GPU-marker presence so CUDA/ROCm target preferences do not cross-pollute.
 
 - `backend/synthi-webrtc-compiler/worker/src/compiler/handler.rs`
   - Device kernel signature extraction.
@@ -458,6 +488,36 @@ Expected markers:
 If the worker logs show `not adapted, wrapping as single module`, `core.cpp`
 compile errors for `blockIdx`, or `device.hip was not found`, the worker image
 is stale. Rebuild/recreate `worker` and rerun.
+
+## Run Full Agent-Split GPU HMR Validation
+
+Use this to prove the real user path. The seeded `main.cpp` is normal
+CUDA/HIP-style user code and does not contain Synthi lifecycle exports.
+
+```powershell
+cd C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp
+
+$env:SYNTHI_GPU_HMR='1'
+$env:SYNTHI_GPU_VENDOR='auto'
+$env:SYNTHI_GPU_ARCH='gfx1201'
+$env:SLUG='gpu-agent-split-clean-session'
+
+node scripts/gpu-hmr-agent-split-workspace-test.mjs
+```
+
+Expected markers:
+
+```text
+monolithic source has no Synthi ABI
+worker used GPU split endpoint
+generated split contains HMR ABI
+generated device file used for HMR
+device-only GPU HMR observed
+```
+
+If this fails before the second compile, inspect the ai-engine split response
+and worker logs for `/refactor/split/gpu`. If it fails on the second compile,
+the generated manifest or device role path was not persisted/sent correctly.
 
 ## Run The User-Visible Flow Demo On NVIDIA/CUDA
 
