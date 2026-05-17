@@ -28,6 +28,7 @@ Date: 2026-05-17
 
 ## Latest Commits To Know
 
+- `8c37dab8 test(gpu-hmr): add full agent split harness`
 - `6a9056fa fix(gpu-hmr): resolve dynamic harness containers`
 - `a58e95e7 docs(gpu-hmr): update dynamic target handoff`
 - `a26b8661 feat(gpu-hmr): add user gpu target preference`
