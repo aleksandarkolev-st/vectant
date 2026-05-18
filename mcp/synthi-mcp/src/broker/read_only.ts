@@ -12,6 +12,7 @@ import {
   type BrokerViewport,
 } from "./contracts.js";
 import { brokerRuntime } from "./runtime.js";
+import { sharedFrameCache } from "./frame_cache.js";
 
 type FrameSourceWithInfo = {
   hasFrame: () => boolean;
@@ -38,6 +39,15 @@ export function recordBrokerFrameObservation(input: {
     ingest_ts_ms: ingestTs,
     viewport,
     is_keyframe: input.is_keyframe ?? false,
+  });
+  sharedFrameCache.putFrame({
+    session_id: input.session_id,
+    frame_seq: input.frame.seq,
+    frame_ts_ms: input.frame.ts,
+    ingest_ts_ms: ingestTs,
+    viewport,
+    data: input.frame.data,
+    now: ingestTs,
   });
   return makeBrokerFrameEvent({
     event_id: entry.seq,

@@ -2,6 +2,14 @@ import { currentEnrichedProvider, enrichedAvailable } from "../enriched/provider
 import { MAX_PENDING } from "../escape_hatch/queue.js";
 import { resolveBrokerInputMode } from "../broker/input_gate.js";
 import { brokerSloDefinitions, type BrokerSloDefinition } from "../broker/slo.js";
+import {
+  DEFAULT_SHARED_FRAME_CACHE_MAX_ENTRIES,
+  DEFAULT_SHARED_FRAME_CACHE_TTL_MS,
+} from "../broker/frame_cache.js";
+import {
+  resolveBrokerWorkerPoolSize,
+  resolveBrokerWorkerQueueSize,
+} from "../broker/worker_pool.js";
 
 /**
  * Protocol version + capability manifest. Returned from `synthi_attach` so
@@ -90,6 +98,17 @@ export interface CapabilityManifest {
     dispatch_input: boolean;
     postcondition_types: string[];
     slo_definitions: BrokerSloDefinition[];
+    shared_frame_cache: {
+      available: boolean;
+      ttl_ms: number;
+      max_entries: number;
+      deterministic_dedupe: boolean;
+      shared_inference_cache: boolean;
+      worker_pool: {
+        max_concurrency: number;
+        max_queue: number;
+      };
+    };
     lease_d0: {
       default_lease_ms: number;
       max_lease_ms: number;
@@ -214,6 +233,17 @@ export function buildManifest(
       dispatch_input: true,
       postcondition_types: ["pixel_match", "lifecycle_event", "custom_app_signal", "event_log"],
       slo_definitions: brokerSloDefinitions(),
+      shared_frame_cache: {
+        available: true,
+        ttl_ms: DEFAULT_SHARED_FRAME_CACHE_TTL_MS,
+        max_entries: DEFAULT_SHARED_FRAME_CACHE_MAX_ENTRIES,
+        deterministic_dedupe: true,
+        shared_inference_cache: true,
+        worker_pool: {
+          max_concurrency: resolveBrokerWorkerPoolSize(),
+          max_queue: resolveBrokerWorkerQueueSize(),
+        },
+      },
       lease_d0: {
         default_lease_ms: 15_000,
         max_lease_ms: 15_000,

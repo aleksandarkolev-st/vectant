@@ -110,3 +110,28 @@ export {
   type BrokerSloMetricName,
   type BrokerSloSample,
 } from "./slo.js";
+export {
+  DEFAULT_BROKER_WORKER_POOL_SIZE,
+  DEFAULT_BROKER_WORKER_QUEUE_SIZE,
+  BrokerWorkerPool,
+  brokerVisualWorkerPool,
+  resolveBrokerWorkerPoolSize,
+  resolveBrokerWorkerQueueSize,
+  type BrokerWorkerPoolStats,
+} from "./worker_pool.js";
+export {
+  DEFAULT_INFERENCE_CACHE_TTL_MS,
+  DEFAULT_SHARED_FRAME_CACHE_MAX_ENTRIES,
+  DEFAULT_SHARED_FRAME_CACHE_TTL_MS,
+  SharedFrameCache,
+  SharedInferenceCache,
+  promptHash,
+  sharedFrameCache,
+  sharedInferenceCache,
+  type BrokerFrameCacheEntry,
+  type BrokerFrameCachePut,
+  type BrokerFrameCacheViewport,
+  type BrokerInferenceCacheStats,
+  type BrokerInferenceEnvelope,
+  type BrokerVisualDedupeResult,
+} from "./frame_cache.js";
