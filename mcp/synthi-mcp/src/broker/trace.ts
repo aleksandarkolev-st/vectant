@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eventLog } from "../events/index.js";
 import { resolveLeaseOwner } from "../arbitration/lease.js";
+import { brokerSloRecorder } from "./slo.js";
 
 export interface BrokerAckChain {
   transport_ack: { ack_id: string; ts: number };
@@ -30,6 +31,20 @@ export function normalizeToolCallId(value: unknown): string {
 }
 
 export function recordBrokerInputTrace(input: BrokerTraceInput): void {
+  const browserAckAccepted = input.browser_acked_at !== undefined && input.ack_chain?.browser_ack?.accepted !== false;
+  brokerSloRecorder.recordRatio("input_ack_timeout_rate", browserAckAccepted ? 0 : 1, 1, input.received_at);
+  const postcondition = input.detail?.["postcondition"];
+  if (postcondition && typeof postcondition === "object") {
+    const p = postcondition as Record<string, unknown>;
+    if (p["supported"] === true) {
+      brokerSloRecorder.recordRatio(
+        "input_postcondition_success_rate",
+        input.ack_chain?.effect_verified?.verified === true ? 1 : 0,
+        1,
+        input.verified_at ?? input.unverified_at ?? input.browser_acked_at ?? input.dispatched_at
+      );
+    }
+  }
   eventLog.push({
     kind: "input",
     action: input.action,

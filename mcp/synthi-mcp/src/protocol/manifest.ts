@@ -1,6 +1,7 @@
 import { currentEnrichedProvider, enrichedAvailable } from "../enriched/provider.js";
 import { MAX_PENDING } from "../escape_hatch/queue.js";
 import { resolveBrokerInputMode } from "../broker/input_gate.js";
+import { brokerSloDefinitions, type BrokerSloDefinition } from "../broker/slo.js";
 
 /**
  * Protocol version + capability manifest. Returned from `synthi_attach` so
@@ -88,6 +89,7 @@ export interface CapabilityManifest {
     input_mode: "shadow" | "enforce";
     dispatch_input: boolean;
     postcondition_types: string[];
+    slo_definitions: BrokerSloDefinition[];
     lease_d0: {
       default_lease_ms: number;
       max_lease_ms: number;
@@ -211,6 +213,7 @@ export function buildManifest(
       input_mode: resolveBrokerInputMode(),
       dispatch_input: true,
       postcondition_types: ["pixel_match", "lifecycle_event", "custom_app_signal", "event_log"],
+      slo_definitions: brokerSloDefinitions(),
       lease_d0: {
         default_lease_ms: 15_000,
         max_lease_ms: 15_000,

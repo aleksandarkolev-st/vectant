@@ -1,7 +1,7 @@
 import sharp from "sharp";
 import { session } from "../session.js";
 import { eventLog } from "../events/index.js";
-import { recordBrokerFrameObservation } from "../broker/index.js";
+import { brokerSloRecorder, recordBrokerFrameObservation } from "../broker/index.js";
 import {
   errorFromException,
   errorResponse,
@@ -142,12 +142,17 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       session_id: attached.sessionId,
       frame,
     });
+    const responseTs = Date.now();
+    brokerSloRecorder.recordDuration("screenshot_age_p95", responseTs - frame.ts, responseTs);
     eventLog.push({
       kind: "usage",
       metric: "screenshot",
       value: 1,
       detail: {
         bytes: png.length,
+        frame_ts: frame.ts,
+        response_ts: responseTs,
+        screenshot_age_ms: responseTs - frame.ts,
         ...(resultMeta.crop !== undefined ? { cropped: true } : {}),
         ...(resultMeta.scaled === true ? { scaled: true } : {}),
       },

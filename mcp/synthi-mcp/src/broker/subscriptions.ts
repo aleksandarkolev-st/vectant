@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { EventLogEntry } from "../events/types.js";
 import { brokerError, type BrokerErrorPayload } from "./errors.js";
 import type { BrokerPrincipal } from "./auth.js";
+import { brokerSloRecorder } from "./slo.js";
 
 export type BrokerTopic = "frames" | "events" | "health_updates" | "logs";
 
@@ -122,13 +123,27 @@ export class BrokerSubscriptionRegistry {
       if (sub.session_id !== eventSessionId(event, sub.session_id)) continue;
       if (!eventMatchesTopics(event, sub.topics)) continue;
       const maxQueue = event.kind === "frame" ? MAX_FRAME_QUEUE : MAX_CONTROL_QUEUE;
+      let droppedFrames = 0;
       while (sub.queue.length >= maxQueue) {
         const dropped = sub.queue.shift();
-        if (dropped?.kind === "frame" || event.kind === "frame") sub.dropped_frames += 1;
+        if (dropped?.kind === "frame" || event.kind === "frame") {
+          sub.dropped_frames += 1;
+          droppedFrames += 1;
+        }
       }
       sub.queue.push(event);
       sub.cursor = event.seq;
       sub.last_emit_at = now;
+      const ingestTs = event.kind === "frame" ? event.ingest_ts_ms : event.ts;
+      brokerSloRecorder.recordDuration("broker_fanout_latency_p95", now - ingestTs, now, {
+        subscription_id: sub.subscription_id,
+        event_kind: event.kind,
+      });
+      if (event.kind === "frame") {
+        brokerSloRecorder.recordRatio("subscriber_frame_drop_rate", droppedFrames, 1, now, {
+          subscription_id: sub.subscription_id,
+        });
+      }
     }
   }
 

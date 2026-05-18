@@ -1,6 +1,7 @@
 import { eventLog } from "../events/index.js";
 import { leaseRegistry } from "../arbitration/lease.js";
 import type { BrokerState } from "./contracts.js";
+import { brokerSloRecorder } from "./slo.js";
 
 export interface BrokerRecoveryIncident {
   recovery_start_ts: number;
@@ -52,6 +53,7 @@ class BrokerRuntime {
       },
       ts: now,
     });
+    brokerSloRecorder.recordDuration("broker_recovery_time_p95", now - incident.recovery_start_ts, now);
     const completed = this.recovery;
     this.recovery = null;
     return completed ? { ...completed } : null;

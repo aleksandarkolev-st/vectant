@@ -97,3 +97,16 @@ export {
   type BrokerAckChain,
   type BrokerTraceInput,
 } from "./trace.js";
+export {
+  BROKER_SLO_DEFINITIONS,
+  brokerSloDefinitions,
+  brokerSloRecorder,
+  BrokerSloRecorder,
+  type BrokerSloAcceptance,
+  type BrokerSloAggregation,
+  type BrokerSloComparison,
+  type BrokerSloDefinition,
+  type BrokerSloGate,
+  type BrokerSloMetricName,
+  type BrokerSloSample,
+} from "./slo.js";

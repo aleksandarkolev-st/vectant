@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { regionPHash } from "../util/phash.js";
 import { DEFAULT_TTL_MS, LocateCache } from "./cache.js";
 import { selectBackend, type VisionBackend } from "./backends.js";
+import { brokerSloRecorder } from "../broker/slo.js";
 import type {
   CacheEntry,
   LocateArgs,
@@ -58,6 +59,7 @@ export class LocateEngine {
    * agent's own bookkeeping.
    */
   async resolve(args: LocateArgs, ctx: LocateDispatchCtx): Promise<LocateResult> {
+    const requestTs = Date.now();
     const now = ctx.now ?? Date.now();
     const backend = selectBackend(args.preferred_vision_backend);
 
@@ -84,6 +86,9 @@ export class LocateEngine {
           region_phash: payload.region_phash,
           hamming_distance: res.hamming_distance ?? 0,
           ts: now,
+        });
+        brokerSloRecorder.recordDuration("locate_cache_hit_latency_p95", Date.now() - requestTs, Date.now(), {
+          backend: backend.name,
         });
         return payload;
       }
