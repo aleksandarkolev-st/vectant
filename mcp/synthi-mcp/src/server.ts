@@ -40,6 +40,7 @@ import { resetGuestTool } from "./tools/reset_guest.js";
 import { verifyTool } from "./tools/verify.js";
 import { compileTool } from "./tools/compile.js";
 import { reportSourceStateTool } from "./tools/report_source_state.js";
+import { dispatchInputTool } from "./tools/dispatch_input.js";
 import { describeTool } from "./tools/describe.js";
 import { acquireInputTool } from "./tools/acquire_input.js";
 import { renewInputTool } from "./tools/renew_input.js";
@@ -566,6 +567,34 @@ const TOOLS = [
         },
       },
       required: ["predicate"],
+    },
+  },
+  {
+    name: "synthi_dispatch_input",
+    description:
+      "Broker-mediated state-changing input endpoint. Requires lease_id and fresh based_on_frame_seq when SYNTHI_BROKER_INPUT_MODE=enforce. Returns transport_ack, browser_ack, optional effect_verified, ack_chain, and explicit unverified:true when no postcondition is supplied.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tool_call_id: { type: "string" },
+        lease_id: { type: "string" },
+        based_on_frame_seq: { type: "number" },
+        based_on_viewport: {
+          type: "object",
+          properties: { w: { type: "number" }, h: { type: "number" }, dpr: { type: "number" } },
+          required: ["w", "h", "dpr"],
+        },
+        action: {
+          type: "object",
+          description: "Supported actions: {tool:'synthi_mouse',kind:'click'|'move',x,y,button?} or {tool:'synthi_keyboard',kind:'type',text} or {tool:'synthi_keyboard',kind:'key',key}.",
+        },
+        postcondition: {
+          type: "object",
+          description: "Supported: pixel_match, lifecycle_event, custom_app_signal, event_log. DOM/URL/vision classes return UNSUPPORTED_POSTCONDITION_TYPE until corresponding session capabilities are present.",
+        },
+        timeout_ms: { type: "number" },
+      },
+      required: ["lease_id", "based_on_frame_seq", "action"],
     },
   },
   {
@@ -1109,6 +1138,8 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await compileTool(args)) as CallToolResult;
       case "synthi_report_source_state":
         return (await reportSourceStateTool(args)) as CallToolResult;
+      case "synthi_dispatch_input":
+        return (await dispatchInputTool(args)) as CallToolResult;
       case "synthi_describe":
         return (await describeTool(args, signal ? { signal } : undefined)) as CallToolResult;
       case "synthi_acquire_input":

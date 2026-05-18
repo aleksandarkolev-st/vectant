@@ -86,3 +86,14 @@ export {
   type BrokerFallbackResult,
   type BrokerFallbackState,
 } from "./fallback.js";
+export {
+  verifyBrokerPostcondition,
+  type BrokerPostcondition,
+  type BrokerPostconditionResult,
+} from "./postconditions.js";
+export {
+  normalizeToolCallId,
+  recordBrokerInputTrace,
+  type BrokerAckChain,
+  type BrokerTraceInput,
+} from "./trace.js";

@@ -86,6 +86,8 @@ export interface CapabilityManifest {
     normalized_errors: boolean;
     replay_cursor: boolean;
     input_mode: "shadow" | "enforce";
+    dispatch_input: boolean;
+    postcondition_types: string[];
     lease_d0: {
       default_lease_ms: number;
       max_lease_ms: number;
@@ -207,6 +209,8 @@ export function buildManifest(
       normalized_errors: true,
       replay_cursor: true,
       input_mode: resolveBrokerInputMode(),
+      dispatch_input: true,
+      postcondition_types: ["pixel_match", "lifecycle_event", "custom_app_signal", "event_log"],
       lease_d0: {
         default_lease_ms: 15_000,
         max_lease_ms: 15_000,
