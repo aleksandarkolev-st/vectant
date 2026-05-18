@@ -110,12 +110,29 @@ fn request_file_context(req: &CompileRequest) -> Vec<(String, String)> {
     files
 }
 
-fn gpu_arch_hint() -> Option<String> {
-    std::env::var("SYNTHI_GPU_ARCH_HINT")
-        .ok()
-        .or_else(|| std::env::var("SYNTHI_GPU_ARCH").ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto"))
+fn normalize_gpu_arch_hint(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("auto") {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn gpu_arch_hint(req: &CompileRequest) -> Option<String> {
+    req.gpu_arch
+        .as_deref()
+        .and_then(normalize_gpu_arch_hint)
+        .or_else(|| {
+            std::env::var("SYNTHI_GPU_ARCH_HINT")
+                .ok()
+                .and_then(|s| normalize_gpu_arch_hint(&s))
+        })
+        .or_else(|| {
+            std::env::var("SYNTHI_GPU_ARCH")
+                .ok()
+                .and_then(|s| normalize_gpu_arch_hint(&s))
+        })
 }
 
 fn split_content(value: Option<&serde_json::Value>) -> Option<String> {
@@ -250,7 +267,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         .filter(|s| !s.is_empty());
     let has_gpu_markers = request_has_gpu_markers(req);
     let file_context = request_file_context(req);
-    let arch_hint = gpu_arch_hint();
+    let arch_hint = gpu_arch_hint(req);
     // Split output depends on more than raw source now: the same file can
     // produce different output depending on the user's project files and GPU
     // target. Include both so large multi-file projects and arch changes do
@@ -323,6 +340,9 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             }))
             .collect::<Vec<_>>()
     });
+    if let Some(arch) = &arch_hint {
+        payload["gpu_arch"] = serde_json::Value::String(arch.clone());
+    }
     if let Some(prompt) = gpu_target_prompt {
         payload["prompt"] = serde_json::Value::String(prompt.to_string());
         eprintln!(

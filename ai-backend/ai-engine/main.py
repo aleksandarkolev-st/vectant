@@ -362,6 +362,7 @@ class AnalyzeAiRequest(BaseModel):
     focus: Optional[str] = None
     model: Optional[str] = None
     api_key: Optional[str] = None
+    gpu_arch: Optional[str] = None
 
 
 class ProactiveAnalysisRequest(BaseModel):
@@ -2117,12 +2118,18 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
             },
         )
 
+    request_arch_hint = (
+        req.gpu_arch.strip()
+        if req.gpu_arch and req.gpu_arch.strip().lower() != "auto"
+        else None
+    )
     manifest_raw = normalize_gpu_split_manifest(
         split.manifest if isinstance(split.manifest, dict) else {},
         split_files=split.files,
         vendor_hint=detection.vendor_hint,
         arch_hint=(
-            os.getenv("SYNTHI_GPU_ARCH_HINT")
+            request_arch_hint
+            or os.getenv("SYNTHI_GPU_ARCH_HINT")
             or os.getenv("SYNTHI_GPU_ARCH")
             or None
         ),

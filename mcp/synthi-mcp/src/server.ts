@@ -199,6 +199,10 @@ const TOOLS = [
           enum: ["auto", "disabled"],
           description: "GPU mode from the IDE toggle. 'auto' lets the worker detect/use GPU HMR; 'disabled' routes through the host-only path.",
         },
+        gpu_arch: {
+          type: "string",
+          description: "Optional target GPU architecture forwarded to the worker, for example gfx1201 or sm_80.",
+        },
         compile_manifest: {
           type: "object",
           description: "Optional worker compile manifest. Used by deterministic MCP flows before a split sidecar exists.",
