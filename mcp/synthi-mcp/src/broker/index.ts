@@ -28,6 +28,7 @@ export {
   DEFAULT_IDEMPOTENCY_TTL_MS,
   IdempotencyStore,
   stablePayloadHash,
+  type IdempotencyLookup,
   type IdempotencyRecord,
   type IdempotencyResult,
 } from "./idempotency.js";
@@ -50,3 +51,24 @@ export {
   type BrokerInputGateError,
   type BrokerInputMode,
 } from "./input_gate.js";
+export {
+  authenticateBrokerBearer,
+  authorizeBrokerCapability,
+  principalKey,
+  type BrokerAuthConfig,
+  type BrokerAuthError,
+  type BrokerAuthOk,
+  type BrokerCapability,
+  type BrokerPrincipal,
+  type BrokerRole,
+} from "./auth.js";
+export {
+  BrokerSubscriptionRegistry,
+  type BrokerSubscribeOk,
+  type BrokerResumeOk,
+  type BrokerSubscriberHealth,
+  type BrokerSubscription,
+  type BrokerSubscriptionError,
+  type BrokerTopic,
+} from "./subscriptions.js";
+export { BrokerControlPlane } from "./control_api.js";

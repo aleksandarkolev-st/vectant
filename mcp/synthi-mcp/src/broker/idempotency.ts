@@ -13,6 +13,11 @@ export type IdempotencyResult<T> =
   | { status: "replay"; record: IdempotencyRecord<T> }
   | { status: "conflict"; record: IdempotencyRecord<T> };
 
+export type IdempotencyLookup<T> =
+  | { status: "miss" }
+  | { status: "replay"; record: IdempotencyRecord<T> }
+  | { status: "conflict"; record: IdempotencyRecord<T> };
+
 export const DEFAULT_IDEMPOTENCY_TTL_MS = 15 * 60 * 1000;
 
 export class IdempotencyStore<T = unknown> {
@@ -47,6 +52,21 @@ export class IdempotencyStore<T = unknown> {
     };
     this.records.set(key, record);
     return { status: "stored", record };
+  }
+
+  lookup(input: {
+    scope: string;
+    idempotency_key: string;
+    payload: unknown;
+    now?: number;
+  }): IdempotencyLookup<T> {
+    const now = input.now ?? Date.now();
+    this.evictExpired(now);
+    const existing = this.records.get(this.key(input.scope, input.idempotency_key));
+    if (!existing) return { status: "miss" };
+    const payloadHash = stablePayloadHash(input.payload);
+    if (existing.payload_hash !== payloadHash) return { status: "conflict", record: existing };
+    return { status: "replay", record: existing };
   }
 
   size(now: number = Date.now()): number {
