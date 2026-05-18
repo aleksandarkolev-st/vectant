@@ -80,6 +80,44 @@ fn request_has_gpu_markers(req: &CompileRequest) -> bool {
         .any(|file| text_has_gpu_markers(&file.content))
 }
 
+fn normalized_request_path(path: &str) -> String {
+    path.replace('\\', "/")
+        .trim()
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string()
+}
+
+fn request_file_context(req: &CompileRequest) -> Vec<(String, String)> {
+    let mut files: Vec<(String, String)> = Vec::new();
+    let primary = normalized_request_path(&req.filename);
+    if !primary.is_empty() {
+        files.push((primary, req.source.clone()));
+    }
+
+    for file in &req.files {
+        let name = normalized_request_path(&file.name);
+        if name.is_empty() {
+            continue;
+        }
+        if let Some((_, content)) = files.iter_mut().find(|(existing, _)| existing == &name) {
+            *content = file.content.clone();
+        } else {
+            files.push((name, file.content.clone()));
+        }
+    }
+
+    files
+}
+
+fn gpu_arch_hint() -> Option<String> {
+    std::env::var("SYNTHI_GPU_ARCH_HINT")
+        .ok()
+        .or_else(|| std::env::var("SYNTHI_GPU_ARCH").ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto"))
+}
+
 fn split_content(value: Option<&serde_json::Value>) -> Option<String> {
     match value {
         Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.to_string()),
@@ -157,7 +195,9 @@ fn normalize_split_response(
         if already_role_keyed {
             continue;
         }
-        if let Some(content) = split_content(obj.get(&filename)).or_else(|| split_content(obj.get(role))) {
+        if let Some(content) =
+            split_content(obj.get(&filename)).or_else(|| split_content(obj.get(role)))
+        {
             insert_split_role(obj, role, &filename, content);
         }
     }
@@ -209,24 +249,32 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let has_gpu_markers = request_has_gpu_markers(req);
+    let file_context = request_file_context(req);
+    let arch_hint = gpu_arch_hint();
     // Split output depends on more than raw source now: the same file can
-    // produce CUDA or ROCm sidecars depending on the user's GPU target.
-    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v6";
+    // produce different output depending on the user's project files and GPU
+    // target. Include both so large multi-file projects and arch changes do
+    // not reuse stale monolithic split output.
+    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v7";
     let source_hash = calculate_hash(&(
         AI_SPLIT_CACHE_SCHEMA_VERSION,
-        req.source.as_str(),
         req.language.as_str(),
+        req.filename.as_str(),
+        &file_context,
         req.prefer_gpu_pipeline,
         gpu_mode.as_str(),
+        arch_hint.as_deref().unwrap_or(""),
         has_gpu_markers,
         split_model.as_deref().unwrap_or(""),
     ));
 
     eprintln!(
-        "[AI Split] ENTER (cache_key={}, src_len={}, gpu_mode={}, gpu_markers={})",
+        "[AI Split] ENTER (cache_key={}, src_len={}, files={}, gpu_mode={}, gpu_arch={}, gpu_markers={})",
         source_hash,
         req.source.len(),
+        file_context.len(),
         gpu_mode,
+        arch_hint.as_deref().unwrap_or("auto"),
         has_gpu_markers
     );
 
@@ -247,11 +295,15 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     eprintln!("[AI Split] Level 3 → full AI split via /refactor/split/verified");
     let client = reqwest::Client::new();
     let gpu_target_prompt = if req.prefer_gpu_pipeline {
-        match gpu_mode.as_str() {
+        let base = match gpu_mode.as_str() {
             "cuda" => Some("GPU target preference: emit CUDA/NVIDIA-compatible GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI."),
             "rocm" | "hip" => Some("GPU target preference: emit ROCm/HIP-compatible GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI."),
             _ => Some("GPU target preference: emit GPU HMR split output when GPU splitting is applicable. Preserve source semantics exactly: every original kernel branch, guard, boundary condition, constant, reset path, and host/device copy must survive unchanged except for mechanical routing through Synthi's GPU runtime ABI."),
-        }
+        };
+        base.map(|text| match arch_hint.as_deref() {
+            Some(arch) => format!("{text} Target device architecture: {arch}. The compile manifest gpu.arch must use this architecture."),
+            None => text.to_string(),
+        })
     } else {
         None
     };
@@ -260,7 +312,16 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         "lang": req.language,
         "mode": "split",
         "verify": true,
-        "auto_repair": true
+        "auto_repair": true,
+        "focus": normalized_request_path(&req.filename),
+        "files": file_context
+            .iter()
+            .map(|(name, content)| serde_json::json!({
+                "path": name,
+                "name": name,
+                "content": content
+            }))
+            .collect::<Vec<_>>()
     });
     if let Some(prompt) = gpu_target_prompt {
         payload["prompt"] = serde_json::Value::String(prompt.to_string());
@@ -316,10 +377,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                 ));
             }
             Err(e) => {
-                eprintln!(
-                    "[AI Split] GPU split endpoint failed ({})",
-                    e
-                );
+                eprintln!("[AI Split] GPU split endpoint failed ({})", e);
                 return Err(anyhow!(
                     "GPU split endpoint failed for a GPU-preferred compile: {}",
                     e
