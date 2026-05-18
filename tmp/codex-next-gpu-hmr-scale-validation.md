@@ -372,6 +372,102 @@ Collect concrete evidence for every item. The final report should name the
 workspace slug, the commands run, the model used, the worker log markers, the
 HMR result, screenshot artifact paths, and the commits created.
 
+## Required Reports And Timing Evidence
+
+Every validation script must save machine-readable and human-readable reports.
+Do not rely only on console output. Use the existing report style under
+`mcp/synthi-mcp/.gpu-hmr-test-logs/` and screenshot/artifact style under
+`mcp/synthi-mcp/.gpu-hmr-test-artifacts/`, or create a clearly named sibling
+directory for the scale test.
+
+Save at least:
+
+```text
+scale-validation-results.json
+scale-validation-results.txt
+<slug>-first-compile.png
+<slug>-post-hmr.png
+```
+
+The JSON report should include enough timing and context to answer "how long
+did it actually take?" without re-running the test:
+
+```json
+{
+  "slug": "gpu-scale-validation-...",
+  "repo_commit": "...",
+  "model": "gemini-3.1-flash-lite-preview",
+  "vendor": "rocm",
+  "arch": "gfx1201",
+  "workspace_file_count": 237,
+  "relevant_file_count": 24,
+  "started_at": "2026-05-19T...",
+  "finished_at": "2026-05-19T...",
+  "phases": [
+    {
+      "name": "first_ai_split_compile",
+      "compile_dispatched_at": "2026-05-19T...",
+      "wait_hmr_started_at": "2026-05-19T...",
+      "wait_hmr_finished_at": "2026-05-19T...",
+      "wait_hmr_elapsed_ms": 123456,
+      "wait_hmr_status": "applied",
+      "wall_elapsed_ms": 130000,
+      "worker_log_markers": [
+        "GPU markers detected; calling GPU split endpoint",
+        "GPU split endpoint returned a 5-file split",
+        "compile-device] hipcc"
+      ]
+    },
+    {
+      "name": "device_only_hmr",
+      "compile_dispatched_at": "2026-05-19T...",
+      "wait_hmr_elapsed_ms": 8912,
+      "wait_hmr_status": "applied",
+      "gpu_reload_plan": "device_only"
+    }
+  ],
+  "screenshots": [
+    {
+      "path": "...first-compile.png",
+      "width": 800,
+      "height": 600,
+      "visible_pixels": 12345,
+      "mean_luma": 42.7,
+      "captured_after_phase": "first_ai_split_compile"
+    },
+    {
+      "path": "...post-hmr.png",
+      "width": 800,
+      "height": 600,
+      "visible_pixels": 12510,
+      "mean_luma": 45.1,
+      "captured_after_phase": "device_only_hmr",
+      "differs_from_first": true
+    }
+  ]
+}
+```
+
+At minimum, record both values for every compile/HMR phase:
+
+- Wall-clock time measured by the script around compile + wait.
+- `elapsedMs` returned by `synthi_wait_hmr`.
+
+These numbers are not interchangeable. Wall-clock time tells how long the
+harness actually waited. `synthi_wait_hmr.elapsedMs` tells how long the MCP HMR
+waiter observed from its own wait call. Save both so slow AI generation, slow
+compile, missed terminal events, or screenshot latency can be diagnosed later.
+
+Also save reproducibility context:
+
+- Git commit before the run.
+- Docker compose files used.
+- Container IDs or image IDs for `worker`, `ai-engine`, `frontend`, and `mcp`.
+- `SYNTHI_GEMINI_MODEL`, `SYNTHI_GPU_VENDOR`, `SYNTHI_GPU_ARCH`.
+- Whether the worker and ai-engine were restarted before the run.
+- Whether the test intentionally cleared or bypassed any AI split cache.
+- Log checkpoint offsets used to search worker logs.
+
 Useful log markers:
 
 ```text
