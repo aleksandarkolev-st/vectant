@@ -3926,6 +3926,7 @@ extern "C" void* core_on_load(void* prev_state, void* renderer) {
         g_state = AppState{};
         // initialize first-load fields here
     }
+    g_state.renderer = renderer;
     return &g_state;
 }
 ```
@@ -3952,6 +3953,11 @@ surface/context supplied by the runner and preserved in the generated state.
 If `gui_on_render` calls rendering APIs, their target handle/context must be a
 field read from that preserved state, typed according to the user's original
 backend.
+When `gui_on_render` uses `state->renderer` or `app_state.renderer`, the core
+role must store the runner-provided render surface into that same field in
+`core_on_load` before returning the core state. Do not leave the renderer field
+null, stale, or only initialized in `gui_on_load`; the runner passes the core
+state pointer to `gui_on_render`.
 
 `gui_on_render` must be complete executable drawing code. Never leave comments
 such as "rendering logic here", TODOs, placeholders, omitted drawing code, or

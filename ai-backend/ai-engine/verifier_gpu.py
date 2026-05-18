@@ -112,6 +112,13 @@ _SDL_RENDER_API_RE = re.compile(r"\bSDL_Render[A-Za-z0-9_]*\s*\(")
 _SDL_SUBSTANTIAL_DRAW_RE = re.compile(
     r"\bSDL_Render(?:FillRect|DrawRect|DrawLine|DrawLines|DrawPoints|Copy|CopyEx|Geometry)\s*\("
 )
+_GUI_STATE_RENDERER_FIELD_RE = re.compile(r"(?:->|\.)\s*(?P<name>renderer)\b")
+_CORE_RENDERER_FIELD_ASSIGN_RE = re.compile(
+    r"(?:->|\.)\s*renderer\s*=\s*"
+    r"(?:(?:reinterpret_cast|static_cast)\s*<[^>]+>\s*\(\s*)?"
+    r"(?:\([^)]*\)\s*)?"
+    r"(?:renderer|window_ptr|render_surface|surface|context|host_ctx\s*->\s*renderer|ctx\s*->\s*renderer)\b"
+)
 _GUI_DEVICE_POINTER_DEREF_RE = re.compile(
     r"(?:->|\.)\s*(?P<name>(?:d_|device)[A-Za-z0-9_]*)\s*\["
 )
@@ -828,6 +835,27 @@ def verify_split_output(
                     "backend-specific representation from preserved state."
                 ),
                 offending_module=gui_path,
+            )
+        )
+    if (
+        _SDL_RENDER_API_RE.search(gui_source)
+        and _GUI_STATE_RENDERER_FIELD_RE.search(gui_source)
+        and not _CORE_RENDERER_FIELD_ASSIGN_RE.search(core_source)
+    ):
+        violations.append(
+            Violation(
+                rule="gui_render_surface_not_initialized",
+                message=(
+                    "The gui role renders through state->renderer, but the "
+                    "core role never stores the render surface passed to "
+                    "core_on_load into AppState.renderer. The Synthi runner "
+                    "passes the core state to gui_on_render, so leaving that "
+                    "field null produces black frames. Assign the second "
+                    "core_on_load argument to the renderer field before "
+                    "returning the core state."
+                ),
+                offending_module=core_path,
+                offending_symbol="renderer",
             )
         )
     device_deref = _GUI_DEVICE_POINTER_DEREF_RE.search(gui_source)

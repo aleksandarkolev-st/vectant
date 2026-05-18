@@ -448,6 +448,39 @@ def test_split_rejects_zeroed_host_mirror_used_for_render():
     assert any(v.rule == "host_visible_mirror_zeroed_for_render" for v in r.violations)
 
 
+def test_split_rejects_uninitialized_gui_render_surface():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* h_x; float* h_y; int n; void* renderer; };',
+        "core.cpp": (
+            '#include <hip/hip_runtime.h>\n'
+            'static AppState g_state{};\n'
+            'extern "C" void* core_on_load(void* prev, void* renderer) { '
+            'if (prev) { g_state = *reinterpret_cast<AppState*>(prev); } '
+            'else { g_state.n = 1024; g_state.h_x = new float[1024]; g_state.h_y = new float[1024]; '
+            'for (int i = 0; i < g_state.n; ++i) { g_state.h_x[i] = (float)((i % 80) * 10); g_state.h_y[i] = (float)((i / 80) * 10); } } '
+            'return &g_state; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { &d_x, &d_y, &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include <SDL2/SDL.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void* core) { return core; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            'auto* s = (AppState*)state_ptr; '
+            'SDL_Renderer* renderer = reinterpret_cast<SDL_Renderer*>(s->renderer); '
+            'SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255); SDL_RenderClear(renderer); '
+            'SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255); '
+            'for (int i = 0; i < s->n; ++i) { SDL_Rect r{(int)s->h_x[i], (int)s->h_y[i], 4, 4}; SDL_RenderFillRect(renderer, &r); } }'
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.cu": 'extern "C" __global__ void step(float*, float*, int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert any(v.rule == "gui_render_surface_not_initialized" for v in r.violations)
+
+
 def test_split_allows_device_init_kernel_before_update():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* d_particles; int n; };',
