@@ -121,6 +121,10 @@ _GPU_MEM_INIT_RE = re.compile(
     r"\b(?:cudaMemset|hipMemset)\s*\(",
     re.DOTALL,
 )
+_GPU_INIT_KERNEL_LAUNCH_RE = re.compile(
+    r"\bsynthi_gpu_launch\s*\([^;]*\"[^\"]*(?:init|seed|setup|reset)[^\"]*\"",
+    re.IGNORECASE | re.DOTALL,
+)
 
 _NEW_FILE_OPS = {"create", "new", "add_file"}
 
@@ -687,6 +691,7 @@ def verify_split_output(
         re.search(r"\bsynthi_gpu_launch\s*\(", core_source)
         and _GPU_MEM_ALLOC_RE.search(core_source)
         and not _GPU_MEM_INIT_RE.search(core_source)
+        and not _GPU_INIT_KERNEL_LAUNCH_RE.search(core_source)
     ):
         violations.append(
             Violation(
@@ -694,10 +699,12 @@ def verify_split_output(
                 message=(
                     "The core role allocates GPU buffers and launches kernels "
                     "but never initializes those buffers with a host-to-device "
-                    "copy or memset. Preserve the user's initial state in "
-                    "host-visible mirrors, then call cudaMemcpy/hipMemcpy with "
-                    "HostToDevice or cudaMemset/hipMemset before the first "
-                    "synthi_gpu_launch."
+                    "copy, memset, or dedicated init/seed kernel. Preserve "
+                    "the user's initial state in host-visible mirrors, then "
+                    "either call cudaMemcpy/hipMemcpy with HostToDevice, call "
+                    "cudaMemset/hipMemset, or launch a real initialization "
+                    "kernel such as init_particles before the first update "
+                    "kernel."
                 ),
                 offending_module=core_path,
             )

@@ -3988,7 +3988,10 @@ constructor or setup logic that creates initial positions, velocities, colors,
 counts, bounds, and constants. Fill the host mirrors with those values, then
 copy them to the CUDA/HIP buffers with `cudaMemcpyHostToDevice` or
 `hipMemcpyHostToDevice` (or use a deterministic memset only when that is truly
-the user's intended initial value) before the first `synthi_gpu_launch`.
+the user's intended initial value) before the first update launch. A dedicated
+init/seed kernel is also valid if it writes every displayed value before the
+first update kernel. The first frame must have on-screen, non-overlapping data
+that matches the user's setup, not uninitialized zeros or offscreen values.
 
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 
