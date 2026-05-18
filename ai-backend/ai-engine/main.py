@@ -2042,6 +2042,12 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
 
     provider = get_provider(provider_name=select_provider_name(), use_custom=bool(req.api_key))
     file_map = _file_map_from_request(req)
+    logger.info(
+        "[split/gpu] request file context count=%s focus=%s names=%s",
+        len(file_map),
+        req.focus or "",
+        list(file_map.keys())[:30],
+    )
     detection = _detect_gpu_project(file_map or {req.focus or "input.cpp": req.code})
     if not detection.is_gpu:
         raise HTTPException(status_code=422, detail="GPU split requested for source with no GPU markers")
