@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eventLog } from "../events/index.js";
 import { resolveLeaseOwner } from "../arbitration/lease.js";
 import { brokerSloRecorder } from "./slo.js";
+import { auditBrokerEvent } from "./security.js";
 
 export interface BrokerAckChain {
   transport_ack: { ack_id: string; ts: number };
@@ -45,6 +46,20 @@ export function recordBrokerInputTrace(input: BrokerTraceInput): void {
       );
     }
   }
+  auditBrokerEvent({
+    action: "dispatch_input",
+    principal: input.agent_id ?? resolveLeaseOwner(),
+    payload: {
+      tool_call_id: input.tool_call_id ?? null,
+      session_id: input.session_id,
+      agent_id: input.agent_id ?? resolveLeaseOwner(),
+      frame_seq: input.frame_seq ?? null,
+      lease_id: input.lease_id ?? null,
+      action: input.action,
+      browser_acked: browserAckAccepted,
+      verified: input.ack_chain?.effect_verified?.verified ?? null,
+    },
+  });
   eventLog.push({
     kind: "input",
     action: input.action,

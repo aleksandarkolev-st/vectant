@@ -3,6 +3,7 @@ import type { EventLogEntry } from "../events/types.js";
 import { brokerError, type BrokerErrorPayload } from "./errors.js";
 import type { BrokerPrincipal } from "./auth.js";
 import { brokerSloRecorder } from "./slo.js";
+import { redactBrokerEvent } from "./security.js";
 
 export type BrokerTopic = "frames" | "events" | "health_updates" | "logs";
 
@@ -131,7 +132,14 @@ export class BrokerSubscriptionRegistry {
           droppedFrames += 1;
         }
       }
-      sub.queue.push(event);
+      let fanoutEvent: EventLogEntry;
+      try {
+        fanoutEvent = redactBrokerEvent(event, sub.principal.role);
+      } catch {
+        if (event.kind === "frame") sub.dropped_frames += 1;
+        continue;
+      }
+      sub.queue.push(fanoutEvent);
       sub.cursor = event.seq;
       sub.last_emit_at = now;
       const ingestTs = event.kind === "frame" ? event.ingest_ts_ms : event.ts;

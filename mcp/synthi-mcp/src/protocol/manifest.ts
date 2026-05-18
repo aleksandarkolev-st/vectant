@@ -11,6 +11,7 @@ import {
   resolveBrokerWorkerQueueSize,
 } from "../broker/worker_pool.js";
 import { resolveBrokerReplayRetentionPolicy } from "../broker/replay.js";
+import { resolveBrokerProviderPolicy } from "../broker/security.js";
 
 /**
  * Protocol version + capability manifest. Returned from `synthi_attach` so
@@ -62,6 +63,12 @@ export interface CapabilityManifest {
     injection_heuristic_prescreen: boolean;
     sensitive_action_interstitial: boolean;
     keystroke_rate_cap_per_sec: number;
+    broker_redaction_pipeline: boolean;
+    append_only_audit_log: boolean;
+    third_party_inference_policy: {
+      allow_third_party_inference: boolean;
+      denied_providers: string[];
+    };
   };
   arbitration: {
     input_lease_supported: boolean;
@@ -184,6 +191,12 @@ export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate
     injection_heuristic_prescreen: true,
     sensitive_action_interstitial: false,
     keystroke_rate_cap_per_sec: 500,
+    broker_redaction_pipeline: true,
+    append_only_audit_log: true,
+    third_party_inference_policy: {
+      allow_third_party_inference: false,
+      denied_providers: ["claude_api", "gemini_api"],
+    },
   },
   limits: {
     event_log_capacity: 1024,
@@ -220,6 +233,7 @@ export function buildManifest(
     (enabled ? "frame_advance_observed" : "no_frame_advance_seen_yet");
   const localUrl = process.env["SYNTHI_LOCAL_VISION_URL"];
   const replayRetention = resolveBrokerReplayRetentionPolicy();
+  const providerPolicy = resolveBrokerProviderPolicy();
   const manifest: CapabilityManifest = {
     tools: [...advertisedTools],
     ...STATIC_MANIFEST,
@@ -284,6 +298,12 @@ export function buildManifest(
         action_batching: true,
       },
     },
+  };
+  manifest.security = {
+    ...manifest.security,
+    broker_redaction_pipeline: true,
+    append_only_audit_log: true,
+    third_party_inference_policy: providerPolicy,
   };
   return manifest;
 }

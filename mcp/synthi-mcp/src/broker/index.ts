@@ -144,3 +144,15 @@ export {
   type BrokerInferenceEnvelope,
   type BrokerVisualDedupeResult,
 } from "./frame_cache.js";
+export {
+  ImmutableAuditLog,
+  assertBrokerProviderAllowed,
+  auditBrokerEvent,
+  brokerAuditLog,
+  redactBrokerEvent,
+  redactBrokerPayload,
+  resolveBrokerProviderPolicy,
+  type BrokerAuditEntry,
+  type BrokerProviderPolicy,
+  type BrokerRedactionOptions,
+} from "./security.js";

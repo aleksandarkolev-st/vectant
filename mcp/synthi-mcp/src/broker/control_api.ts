@@ -18,6 +18,7 @@ import {
   makeBrokerHealthStatus,
   type BrokerHealthStatus,
 } from "./contracts.js";
+import { auditBrokerEvent, redactBrokerEvent } from "./security.js";
 
 export class BrokerControlPlane {
   readonly subscriptions = new BrokerSubscriptionRegistry();
@@ -56,6 +57,15 @@ export class BrokerControlPlane {
       oldest_event_id: this.log.firstSeq(),
     });
     if (result.ok) {
+      auditBrokerEvent({
+        action: "subscribe",
+        principal: input.principal,
+        payload: {
+          session_id: input.session_id,
+          topics: input.topics,
+          subscription_id: result.subscription_id,
+        },
+      });
       this.idempotency.remember({
         scope: this.scope(input.principal, "subscribe", input.session_id),
         idempotency_key: input.idempotency_key,
@@ -75,6 +85,11 @@ export class BrokerControlPlane {
     if (sub.principal.tenant_id !== input.principal.tenant_id || sub.principal.subject !== input.principal.subject) {
       return { ok: false, error: brokerError("FORBIDDEN", { reason: "subscription_owner_mismatch" }) };
     }
+    auditBrokerEvent({
+      action: "unsubscribe",
+      principal: input.principal,
+      payload: { subscription_id: input.subscription_id },
+    });
     return this.subscriptions.unsubscribe(input.subscription_id);
   }
 
@@ -88,6 +103,14 @@ export class BrokerControlPlane {
     if (sub.principal.tenant_id !== input.principal.tenant_id || sub.principal.subject !== input.principal.subject) {
       return { ok: false, error: brokerError("FORBIDDEN", { reason: "subscription_owner_mismatch" }) };
     }
+    auditBrokerEvent({
+      action: "resume",
+      principal: input.principal,
+      payload: {
+        subscription_id: input.subscription_id,
+        last_seen_event_id: input.last_seen_event_id,
+      },
+    });
     return this.subscriptions.resume({
       subscription_id: input.subscription_id,
       last_seen_event_id: input.last_seen_event_id,
@@ -105,11 +128,30 @@ export class BrokerControlPlane {
   }): BrokerReplayOk | { ok: false; error: BrokerErrorPayload } {
     const auth = authorizeBrokerCapability(input.principal, "replay_logs", input.session_id);
     if (auth) return auth;
-    return queryBrokerReplay(this.log, {
+    const result = queryBrokerReplay(this.log, {
       from_event_id: input.from_event_id,
       to_event_id: input.to_event_id,
       limit: input.limit,
     });
+    if (!result.ok) return result;
+    auditBrokerEvent({
+      action: "replay",
+      principal: input.principal,
+      payload: {
+        session_id: input.session_id,
+        from_event_id: input.from_event_id,
+        to_event_id: input.to_event_id ?? null,
+        returned_events: result.events.length,
+      },
+    });
+    try {
+      return {
+        ...result,
+        events: result.events.map((event) => redactBrokerEvent(event, input.principal.role)),
+      };
+    } catch {
+      return { ok: false, error: brokerError("FORBIDDEN", { reason: "redaction_failed" }) };
+    }
   }
 
   health(input: {

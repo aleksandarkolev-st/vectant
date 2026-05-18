@@ -2,6 +2,7 @@ import { locateEngine } from "../locate/index.js";
 import type { LocateArgs, LocateBackendName } from "../locate/index.js";
 import { session } from "../session.js";
 import { requestRegistry } from "../util/request_registry.js";
+import { assertBrokerProviderAllowed } from "../broker/index.js";
 import {
   errorFromException,
   errorResponse,
@@ -64,6 +65,16 @@ export async function locateTool(args: unknown, extra?: LocateToolExtra): Promis
     ...(typeof a.handle_id === "string" ? { handle_id: a.handle_id } : {}),
     ...(typeof a.reuse_handle === "boolean" ? { reuse_handle: a.reuse_handle } : {}),
   };
+  const chosenBackend = backend ?? (process.env["SYNTHI_VISION_BACKEND"] as LocateBackendName | undefined) ?? "agent_side";
+  const hints = a.hints && typeof a.hints === "object" ? a.hints as Record<string, unknown> : {};
+  const providerGate = assertBrokerProviderAllowed({
+    provider: chosenBackend,
+    sends_screenshot: (chosenBackend === "claude_api" || chosenBackend === "gemini_api") && !hints["prefer_region"],
+    session_id: attached.sessionId,
+  });
+  if (!providerGate.ok) {
+    return errorResponse(providerGate.error.error, providerGate.error as unknown as Record<string, unknown>);
+  }
 
   // Register the call so (a) the SDK-supplied signal propagates to the
   // vision backend and (b) operators/shutdown can cancel in-flight calls
