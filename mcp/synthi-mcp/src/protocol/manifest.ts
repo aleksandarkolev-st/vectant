@@ -10,6 +10,7 @@ import {
   resolveBrokerWorkerPoolSize,
   resolveBrokerWorkerQueueSize,
 } from "../broker/worker_pool.js";
+import { resolveBrokerReplayRetentionPolicy } from "../broker/replay.js";
 
 /**
  * Protocol version + capability manifest. Returned from `synthi_attach` so
@@ -94,6 +95,13 @@ export interface CapabilityManifest {
     read_only_observation: boolean;
     normalized_errors: boolean;
     replay_cursor: boolean;
+    failed_action_timeline: boolean;
+    replay_retention: {
+      short_horizon_ms: number;
+      long_horizon_ms: number;
+      persisted: boolean;
+      max_replay_limit: number;
+    };
     input_mode: "shadow" | "enforce";
     dispatch_input: boolean;
     postcondition_types: string[];
@@ -202,6 +210,7 @@ export function buildManifest(
     runtime.frame_seq_gate_reason ??
     (enabled ? "frame_advance_observed" : "no_frame_advance_seen_yet");
   const localUrl = process.env["SYNTHI_LOCAL_VISION_URL"];
+  const replayRetention = resolveBrokerReplayRetentionPolicy();
   const manifest: CapabilityManifest = {
     tools: [...advertisedTools],
     ...STATIC_MANIFEST,
@@ -229,6 +238,13 @@ export function buildManifest(
       read_only_observation: true,
       normalized_errors: true,
       replay_cursor: true,
+      failed_action_timeline: true,
+      replay_retention: {
+        short_horizon_ms: replayRetention.short_horizon_ms,
+        long_horizon_ms: replayRetention.long_horizon_ms,
+        persisted: replayRetention.persisted,
+        max_replay_limit: replayRetention.max_replay_limit,
+      },
       input_mode: resolveBrokerInputMode(),
       dispatch_input: true,
       postcondition_types: ["pixel_match", "lifecycle_event", "custom_app_signal", "event_log"],

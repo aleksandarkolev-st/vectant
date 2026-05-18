@@ -59,6 +59,21 @@ export async function dispatchInputTool(args: unknown): Promise<ToolResponse> {
     await attached.channels.sendInput(frames);
   } catch (err) {
     for (const p of pending) p.cancel();
+    recordBrokerInputTrace({
+      tool_call_id: toolCallId,
+      session_id: attached.sessionId,
+      action: actionName,
+      frame_seq: typeof a.based_on_frame_seq === "number" ? a.based_on_frame_seq : undefined,
+      lease_id: typeof a.lease_id === "string" ? a.lease_id : undefined,
+      input_ack_ids: pending.map((p) => p.id),
+      received_at: receivedAt,
+      dispatched_at: transportAck.ts,
+      ack_chain: { transport_ack: transportAck },
+      detail: {
+        error_code: "INPUT_ACK_TIMEOUT",
+        reason: err instanceof Error ? err.message : String(err),
+      },
+    });
     return errorResponse("INPUT_ACK_TIMEOUT", brokerError("INPUT_ACK_TIMEOUT", {
       reason: err instanceof Error ? err.message : String(err),
     }) as unknown as Record<string, unknown>);
@@ -125,6 +140,25 @@ export async function dispatchInputTool(args: unknown): Promise<ToolResponse> {
 
   const postcondition = await verifyBrokerPostcondition(a.postcondition, timeoutMs);
   if (!postcondition.supported) {
+    const unsupportedAt = Date.now();
+    const ackChain = {
+      transport_ack: transportAck,
+      browser_ack: { accepted: true, ts: browserAckedAt, dispatch_ids: ackResults.map((r) => r.dispatch_id) },
+    };
+    recordBrokerInputTrace({
+      tool_call_id: toolCallId,
+      session_id: attached.sessionId,
+      action: actionName,
+      frame_seq: typeof a.based_on_frame_seq === "number" ? a.based_on_frame_seq : undefined,
+      lease_id: typeof a.lease_id === "string" ? a.lease_id : undefined,
+      input_ack_ids: ackResults.map((r) => r.dispatch_id),
+      received_at: receivedAt,
+      dispatched_at: transportAck.ts,
+      browser_acked_at: browserAckedAt,
+      unverified_at: unsupportedAt,
+      ack_chain: ackChain,
+      detail: { postcondition },
+    });
     return errorResponse("UNSUPPORTED_POSTCONDITION_TYPE", brokerError("UNSUPPORTED_POSTCONDITION_TYPE", {
       postcondition_type: postcondition.type,
       evidence: postcondition.evidence,

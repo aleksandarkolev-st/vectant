@@ -33,11 +33,20 @@ export {
   type IdempotencyResult,
 } from "./idempotency.js";
 export {
+  DEFAULT_FAILED_ACTION_HORIZON_MS,
+  DEFAULT_LONG_REPLAY_RETENTION_MS,
   MAX_REPLAY_LIMIT,
+  queryFailedActionTimeline,
   queryBrokerReplay,
+  resolveBrokerReplayRetentionPolicy,
+  type BrokerFailedActionTimelineEntry,
+  type BrokerFailedActionTimelineEvent,
+  type BrokerFailedActionTimelineOk,
+  type BrokerFailedActionTimelineRequest,
   type BrokerReplayError,
   type BrokerReplayOk,
   type BrokerReplayRequest,
+  type BrokerReplayRetentionPolicy,
 } from "./replay.js";
 export {
   currentBrokerHealthStatus,
