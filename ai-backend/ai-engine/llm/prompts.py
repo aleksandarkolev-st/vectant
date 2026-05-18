@@ -3983,6 +3983,13 @@ code. Store host mirrors such as `particles`, `x`, `y`, or `rgba` in `AppState`
 and update those mirrors in `core_on_update` with `cudaMemcpy`/`hipMemcpy` after
 the GPU launch.
 
+Do not leave GPU buffers uninitialized. In `core_on_load`, preserve the user's
+constructor or setup logic that creates initial positions, velocities, colors,
+counts, bounds, and constants. Fill the host mirrors with those values, then
+copy them to the CUDA/HIP buffers with `cudaMemcpyHostToDevice` or
+`hipMemcpyHostToDevice` (or use a deterministic memset only when that is truly
+the user's intended initial value) before the first `synthi_gpu_launch`.
+
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 
 Synthi does not hot-swap arbitrary raw CUDA/HIP source as-is. Your job

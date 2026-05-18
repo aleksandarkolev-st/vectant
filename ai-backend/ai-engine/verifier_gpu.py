@@ -115,6 +115,12 @@ _SDL_SUBSTANTIAL_DRAW_RE = re.compile(
 _GUI_DEVICE_POINTER_DEREF_RE = re.compile(
     r"(?:->|\.)\s*(?P<name>(?:d_|device)[A-Za-z0-9_]*)\s*\["
 )
+_GPU_MEM_ALLOC_RE = re.compile(r"\b(?:cudaMalloc|hipMalloc|cuMemAlloc)\s*\(")
+_GPU_MEM_INIT_RE = re.compile(
+    r"\b(?:cudaMemcpy|hipMemcpy)\s*\([^;]*\b(?:cudaMemcpyHostToDevice|hipMemcpyHostToDevice)\b|"
+    r"\b(?:cudaMemset|hipMemset)\s*\(",
+    re.DOTALL,
+)
 
 _NEW_FILE_OPS = {"create", "new", "add_file"}
 
@@ -673,6 +679,25 @@ def verify_split_output(
                     "The core role launches/copies GPU buffers but does not allocate "
                     "them. Move the user's cudaMalloc/hipMalloc setup into "
                     "core_on_load before registration and first launch."
+                ),
+                offending_module=core_path,
+            )
+        )
+    if (
+        re.search(r"\bsynthi_gpu_launch\s*\(", core_source)
+        and _GPU_MEM_ALLOC_RE.search(core_source)
+        and not _GPU_MEM_INIT_RE.search(core_source)
+    ):
+        violations.append(
+            Violation(
+                rule="device_buffers_not_initialized",
+                message=(
+                    "The core role allocates GPU buffers and launches kernels "
+                    "but never initializes those buffers with a host-to-device "
+                    "copy or memset. Preserve the user's initial state in "
+                    "host-visible mirrors, then call cudaMemcpy/hipMemcpy with "
+                    "HostToDevice or cudaMemset/hipMemset before the first "
+                    "synthi_gpu_launch."
                 ),
                 offending_module=core_path,
             )
