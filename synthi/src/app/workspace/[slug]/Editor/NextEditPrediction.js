@@ -1121,10 +1121,11 @@ export const useNextEditPrediction = ({
 
     const cacheEntries = typeof getFileCacheEntries === 'function'
       ? getFileCacheEntries() : [];
-    const { files } = buildNepContextPacket({
+    const { files, codeIntel } = buildNepContextPacket({
       activePath,
       activeContent: liveActiveContent,
       cacheEntries,
+      recentEdits: recentEditsRef.current,
     });
 
     if (typeof console !== 'undefined' && console.info) {
@@ -1170,6 +1171,7 @@ export const useNextEditPrediction = ({
       cursor,
       recentEdits: recentEditsRef.current.map((e) => ({ path: e.path, snippet: e.snippet })),
       files,
+      codeIntel,
       // Phase 2: send the last applied edit so the route can pull impact
       // candidates from the symbol graph and inject them into the prompt.
       // Falls back to a synthetic edit derived from the user's last
@@ -1195,6 +1197,7 @@ export const useNextEditPrediction = ({
         recentEdits: payload.recentEdits,
         filePaths: Object.keys(files),
         files,
+        codeIntel,
         appliedEdit,
       },
     });

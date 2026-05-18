@@ -367,6 +367,7 @@ export const useAiCompletion = ({
             rawContext,
             fallbackCode: code,
             editorInstance,
+            monacoInstance,
             cursorPosition,
             workspaceSlug,
             getFileCacheEntries,
@@ -700,7 +701,7 @@ export const useAiCompletion = ({
                     aiCompletionActiveRequestIdRef.current = null;
                 }
             });
-    }, [activeFile, activeLanguage, breadcrumb, cancelActiveCompletion, code, editorInstance, hasActiveDiff]);
+    }, [activeFile, activeLanguage, breadcrumb, cancelActiveCompletion, code, editorInstance, hasActiveDiff, monacoInstance]);
 
     return {
         aiCompletionState,

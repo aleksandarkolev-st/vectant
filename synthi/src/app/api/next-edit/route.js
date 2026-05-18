@@ -7,6 +7,7 @@ import {
   REPLACE_DIVIDER,
 } from '@/lib/nextEdit';
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { renderCodeIntelHints } from '@/utils/aiContextBroker';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -340,7 +341,7 @@ const renderImpactBlock = (candidates) => {
   return ['<impact_candidates>', ...lines, '</impact_candidates>'].join('\n');
 };
 
-const buildPrompt = ({ recentEditsBlock, filesBlock, contextBlock, impactBlock, language, activePath, cursor }) => {
+const buildPrompt = ({ recentEditsBlock, filesBlock, contextBlock, impactBlock, codeIntelBlock, language, activePath, cursor }) => {
   // The format spec teaches the model both `SEARCH` and `SEARCH ALL` so the
   // wire format is in distribution from day one — Phase 1 logs `SEARCH ALL`
   // with `phase2_required` instead of executing it (Section 1 / Section 5).
@@ -384,6 +385,9 @@ const buildPrompt = ({ recentEditsBlock, filesBlock, contextBlock, impactBlock, 
     '',
     recentEditsBlock || null,
     recentEditsBlock ? '' : null,
+    codeIntelBlock ? 'IDE SIGNALS (read-only, deterministic context ranking and symbols):' : null,
+    codeIntelBlock || null,
+    codeIntelBlock ? '' : null,
     impactBlock ? 'CROSS-FILE IMPACT CANDIDATES (read-only, ranked by symbol-graph proximity to the user’s last accepted edit; emit blocks against these files when the trajectory suggests a refactor chain):' : null,
     impactBlock || null,
     impactBlock ? '' : null,
@@ -433,6 +437,7 @@ export async function POST(request) {
 
   const recentEditsBlock = renderRecentEdits(body?.recentEdits || []);
   const contextBlock = renderContext(body?.references || []);
+  const codeIntelBlock = renderCodeIntelHints(body?.codeIntel || {});
 
   // Bail early: NEP needs at least a recent-edits trajectory or the file
   // contents to predict against. Without either, the model is just guessing.
@@ -500,6 +505,7 @@ export async function POST(request) {
     filesBlock,
     contextBlock,
     impactBlock,
+    codeIntelBlock,
     language,
     activePath,
     cursor,

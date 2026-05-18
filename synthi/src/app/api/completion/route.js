@@ -6,6 +6,7 @@ import {
   COMPLETION_CLOSE,
 } from '@/lib/completion';
 import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { renderCodeIntelHints } from '@/utils/aiContextBroker';
 import { GoogleGenAI } from "@google/genai";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -342,8 +343,9 @@ const formatReferences = (refs) => {
   return sections.join('\n\n');
 };
 
-const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
+const buildPrompt = ({ prefix, suffix, language, filePath, references, codeIntel }) => {
   const refBlock = formatReferences(references);
+  const codeIntelBlock = renderCodeIntelHints(codeIntel);
   // Fill-in-the-middle framing for an instruction-tuned model. Flash-Lite
   // has no FIM tokens (`<|fim_prefix|>` etc.), so we approximate the task
   // through natural-language BEFORE/AFTER labels and rely on the model's
@@ -377,10 +379,13 @@ const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
     '- If you cannot identify a clear gap to fill, output empty.',
     '- No explanations, no fences, no commentary, no leading or trailing blank lines.',
     `- Wrap the entire output in ${COMPLETION_OPEN}...${COMPLETION_CLOSE} and emit nothing else.`,
-    refBlock
-      ? '- CONTEXT below = related symbols (for types) + recent edits (lines starting `+ ` show what was just typed and signal user intent).'
+    (refBlock || codeIntelBlock)
+      ? '- CONTEXT below = deterministic IDE signals, related symbols, and recent edits (lines starting `+ ` show what was just typed and signal user intent).'
       : null,
     '',
+    codeIntelBlock ? 'IDE SIGNALS (read-only):' : null,
+    codeIntelBlock || null,
+    codeIntelBlock ? '' : null,
     refBlock ? 'CONTEXT (read-only, from other files):' : null,
     refBlock || null,
     refBlock ? '' : null,
@@ -442,6 +447,7 @@ export async function POST(request) {
     language,
     filePath: body?.contextBlocks?.filePath || null,
     references,
+    codeIntel: body?.contextBlocks?.codeIntel || null,
   });
 
   // Streaming response: pipe each Gemini chunk straight to the client. The

@@ -79,6 +79,79 @@ const normalizeCacheEntries = (cacheEntries) => {
   return Array.isArray(cacheEntries) ? cacheEntries : Array.from(cacheEntries);
 };
 
+const IDENT_RE = /[A-Za-z_][A-Za-z0-9_]{2,}/g;
+const CODE_SCOPE_RE = /^\s*(?:(?:export|pub|private|protected|public|static|async|virtual|inline|constexpr)\s+)*(?:class|struct|enum|interface|type|function|fn|def|impl|trait|namespace)\s+[A-Za-z_][A-Za-z0-9_:<>.]*/;
+
+export const extractContextIdentifiers = (text, limit = 16) => {
+  if (typeof text !== 'string' || !text) return [];
+  const seen = new Set();
+  const out = [];
+  IDENT_RE.lastIndex = 0;
+  let match;
+  while ((match = IDENT_RE.exec(text))) {
+    const ident = match[0];
+    if (seen.has(ident)) continue;
+    seen.add(ident);
+    out.push(ident);
+    if (out.length >= limit) break;
+  }
+  return out;
+};
+
+const findEnclosingScope = ({ fullDocument, cursorOffset, maxLines = 120 }) => {
+  if (typeof fullDocument !== 'string' || !fullDocument) return [];
+  const before = fullDocument.slice(0, Math.max(0, cursorOffset));
+  const lines = before.split(/\r?\n/);
+  const start = Math.max(0, lines.length - maxLines);
+  const scopes = [];
+  for (let i = lines.length - 1; i >= start; i--) {
+    const line = lines[i] || '';
+    if (!CODE_SCOPE_RE.test(line)) continue;
+    scopes.unshift({ line: i + 1, text: line.trim() });
+    if (scopes.length >= 4) break;
+  }
+  return scopes;
+};
+
+const collectNearbyDiagnostics = ({ monacoInstance, model, cursorPosition, radius = 20 }) => {
+  if (!monacoInstance?.editor?.getModelMarkers || !model?.uri || !cursorPosition) return [];
+  try {
+    const markers = monacoInstance.editor.getModelMarkers({ resource: model.uri }) || [];
+    const cursorLine = cursorPosition.lineNumber || 1;
+    return markers
+      .filter((marker) => Math.abs((marker.startLineNumber || 1) - cursorLine) <= radius)
+      .slice(0, 8)
+      .map((marker) => ({
+        line: marker.startLineNumber,
+        column: marker.startColumn,
+        severity: marker.severity,
+        message: marker.message,
+      }));
+  } catch (_) {
+    return [];
+  }
+};
+
+const pathDir = (path) => {
+  if (!path || !path.includes('/')) return '';
+  return path.slice(0, path.lastIndexOf('/'));
+};
+
+const pathExt = (path) => {
+  const file = (path || '').split('/').pop() || '';
+  const idx = file.lastIndexOf('.');
+  return idx >= 0 ? file.slice(idx + 1).toLowerCase() : '';
+};
+
+const countIdentifierHits = (content, identifiers) => {
+  if (!content || !identifiers.length) return 0;
+  let hits = 0;
+  for (const ident of identifiers) {
+    if (content.includes(ident)) hits += 1;
+  }
+  return hits;
+};
+
 export const buildAutocompleteContextPacket = ({
   activeFile,
   activeLanguage,
@@ -86,6 +159,7 @@ export const buildAutocompleteContextPacket = ({
   rawContext,
   fallbackCode = '',
   editorInstance,
+  monacoInstance = null,
   cursorPosition,
   workspaceSlug = null,
   getFileCacheEntries,
@@ -103,6 +177,8 @@ export const buildAutocompleteContextPacket = ({
   const cursorOffset = getOffsetAtCursor({ model, fullDocument, cursorPosition });
   const beforeCursor = takeLastChars(fullDocument.slice(0, cursorOffset));
   const afterCursor = takeFirstChars(fullDocument.slice(cursorOffset));
+  const enclosingScopes = findEnclosingScope({ fullDocument, cursorOffset });
+  const nearbyDiagnostics = collectNearbyDiagnostics({ monacoInstance, model, cursorPosition });
 
   let selectedText = '';
   try {
@@ -163,6 +239,11 @@ export const buildAutocompleteContextPacket = ({
         languageHint: activeLanguage,
         fileHeader: fileHeader || null,
         fileTail: fileTail || null,
+        codeIntel: {
+          enclosingScopes,
+          nearbyDiagnostics,
+          cursorIdentifiers: extractContextIdentifiers(beforeCursor.slice(-600), 8),
+        },
       },
     },
   };
@@ -172,15 +253,83 @@ export const buildNepContextPacket = ({
   activePath,
   activeContent,
   cacheEntries,
+  recentEdits = [],
+  maxFiles = 16,
 }) => {
   const files = {};
   if (activePath && typeof activeContent === 'string') {
     files[activePath] = activeContent;
   }
+
+  const recentPaths = new Set((recentEdits || []).map((entry) => entry?.path).filter(Boolean));
+  const editText = (recentEdits || [])
+    .map((entry) => [
+      entry?.snippet,
+      entry?.searchText,
+      entry?.replaceText,
+      entry?.insertedText,
+    ].filter(Boolean).join('\n'))
+    .join('\n');
+  const touchedIdentifiers = extractContextIdentifiers(editText, 24);
+  const activeDir = pathDir(activePath);
+  const activeExt = pathExt(activePath);
+
+  const ranked = [];
   for (const [path, content] of normalizeCacheEntries(cacheEntries)) {
     if (!path || typeof content !== 'string') continue;
     if (path === activePath) continue;
-    files[path] = content;
+    let score = 0;
+    if (recentPaths.has(path)) score += 30;
+    if (pathDir(path) === activeDir) score += 12;
+    if (pathExt(path) === activeExt) score += 4;
+    score += countIdentifierHits(content, touchedIdentifiers) * 6;
+    if (score <= 0 && ranked.length >= maxFiles) continue;
+    ranked.push({ path, content, score });
   }
-  return { files };
+
+  ranked
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+    .slice(0, maxFiles)
+    .forEach(({ path, content }) => {
+      files[path] = content;
+    });
+
+  return {
+    files,
+    codeIntel: {
+      touchedIdentifiers,
+      rankedFilePaths: ranked.slice(0, maxFiles).map(({ path, score }) => ({ path, score })),
+      activeDir,
+      activeExt,
+    },
+  };
+};
+
+export const renderCodeIntelHints = (codeIntel = {}) => {
+  const lines = [];
+  if (Array.isArray(codeIntel.enclosingScopes) && codeIntel.enclosingScopes.length) {
+    lines.push('Enclosing scopes:');
+    for (const scope of codeIntel.enclosingScopes) {
+      lines.push(`- L${scope.line}: ${scope.text}`);
+    }
+  }
+  if (Array.isArray(codeIntel.nearbyDiagnostics) && codeIntel.nearbyDiagnostics.length) {
+    lines.push('Nearby diagnostics:');
+    for (const diagnostic of codeIntel.nearbyDiagnostics) {
+      lines.push(`- L${diagnostic.line}: ${diagnostic.message}`);
+    }
+  }
+  if (Array.isArray(codeIntel.cursorIdentifiers) && codeIntel.cursorIdentifiers.length) {
+    lines.push(`Cursor identifiers: ${codeIntel.cursorIdentifiers.join(', ')}`);
+  }
+  if (Array.isArray(codeIntel.touchedIdentifiers) && codeIntel.touchedIdentifiers.length) {
+    lines.push(`Touched identifiers: ${codeIntel.touchedIdentifiers.join(', ')}`);
+  }
+  if (Array.isArray(codeIntel.rankedFilePaths) && codeIntel.rankedFilePaths.length) {
+    lines.push('Ranked context files:');
+    for (const file of codeIntel.rankedFilePaths.slice(0, 8)) {
+      lines.push(`- ${file.path} score=${file.score}`);
+    }
+  }
+  return lines.join('\n');
 };
