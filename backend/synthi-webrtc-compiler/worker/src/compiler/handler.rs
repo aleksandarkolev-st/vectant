@@ -2378,7 +2378,15 @@ pub async fn handle_compile_request(
         )
     };
 
-    if let (Some(device_outcome), Some(manifest), Some(device_source)) = (
+    let gpu_sidecar_loaded_by_runner = compile_manifest
+        .as_ref()
+        .and_then(|m| m.gpu.as_ref())
+        .is_some();
+    if gpu_sidecar_loaded_by_runner && device_compile_outcome.is_some() {
+        debug_log!(
+            "[GPU HMR] Skipping worker-side device reload; shipped runner will load sidecar"
+        );
+    } else if let (Some(device_outcome), Some(manifest), Some(device_source)) = (
         device_compile_outcome.as_ref(),
         compile_manifest.as_ref(),
         device_source_content.as_ref(),
