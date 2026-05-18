@@ -3830,10 +3830,12 @@ AppState* state = (AppState*)state_ptr;
 GPU_SPLIT_PROMPT = r"""
 You are a C++ + CUDA/HIP Hot-Module-Reload (HMR) Splitter+Adapter.
 
-You will be given a single-file C++ application that contains GPU kernels
-(CUDA `__global__` / HIP `__global__`). Refactor it into the current Synthi
-GPU HMR semantic roles. The role names are fixed runtime slots, but source
-filenames are not: emit appropriate paths and map each role in
+You will be given a C++ application that contains GPU kernels (CUDA
+`__global__` / HIP `__global__`). It may arrive as one primary source file
+plus additional workspace files. Use every provided file as source context,
+but refactor the application into the current Synthi GPU HMR semantic roles.
+The role names are fixed runtime slots, but source filenames are not: emit
+appropriate paths and map each role in
 `compile_manifest.module_files`.
 
 # OUTPUT ROLES
@@ -4092,6 +4094,28 @@ extern "C" unsigned long long device_kernel_sig_hash(const char* name);
         synthi_register(ptr, size, "scratch");    // skipped during snapshot
         synthi_register(ptr, size, "persistent"); // copied during snapshot
 
+# GENERATED ROLE FILES ARE SELF-CONTAINED
+
+Provided workspace files are context, not compilation inputs for the generated
+hot modules. Do not include original user project headers or sources from the
+generated roles. Quoted includes in generated role files may only refer to
+other emitted Synthi role files, usually the shared role, or to
+`"synthi_gpu_runtime.h"`. Standard library and GPU runtime includes must use
+angle brackets.
+
+Invalid generated output:
+
+```cpp
+#include "src/app/simulation.hpp"
+#include "simulation.hpp"
+#include "src/gpu/particle_api.hpp"
+```
+
+Instead, copy or adapt the necessary structs, constants, function bodies, and
+kernel declarations into the generated `shared`, `core`, `gui`, and `device`
+roles. The split must compile after Synthi writes only the generated role files
+plus its runtime header.
+
 # ABI HASH STAMP
 
 For each `__global__` kernel, compute a SipHash-2-4 of the parameter
@@ -4212,6 +4236,10 @@ ROCm/HIP must not. A ROCm `device_flags` list should usually be
   <synthi_kernel_hashes>.
 - `shared.h` MUST NOT redeclare `DeviceDescriptor`; it comes from
   `synthi_gpu_runtime.h`.
+- Generated role files MUST NOT quote-include original user project
+  headers/sources. Only quote-include emitted Synthi role files or
+  `"synthi_gpu_runtime.h"`; inline/adapt user project definitions into the
+  generated roles instead.
 - `core.cpp` MUST export `core_on_load` and `core_on_update`.
 - `core.cpp` MUST export `device_descriptor`, `device_on_load`,
   `device_save_size`, `device_save_write`, and `device_kernel_sig_hash`.

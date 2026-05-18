@@ -42,6 +42,7 @@ re-prompts with the rejection notes appended to
 from __future__ import annotations
 
 import re
+import posixpath
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Iterable, List, Mapping, Optional, Set
@@ -92,6 +93,7 @@ _GLOBAL_DECL_RE = re.compile(
     r"__global__\s+(?:void\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
     re.MULTILINE,
 )
+_QUOTED_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
 
 _NEW_FILE_OPS = {"create", "new", "add_file"}
 
@@ -366,6 +368,13 @@ def _manifest_role_path(manifest: Optional[Mapping[str, object]], role: str) -> 
     return value.strip().lstrip("./").replace("\\", "/")
 
 
+def _normalize_generated_path(path: str) -> str:
+    value = path.strip().replace("\\", "/")
+    while value.startswith("./"):
+        value = value[2:]
+    return posixpath.normpath(value)
+
+
 def _resolve_split_role_paths(
     files: Mapping[str, str],
     manifest: Optional[Mapping[str, object]],
@@ -467,6 +476,47 @@ def verify_split_output(
     host_runner_path = role_paths.get("host_runner") or "host_runner"
     device_path = role_paths.get("device") or "device"
     device_source = files.get(device_path) or ""
+
+    allowed_include_paths: Set[str] = {"synthi_gpu_runtime.h"}
+    for path in (shared_path, core_path, gui_path, host_runner_path, device_path):
+        if path and path in files:
+            normalized = _normalize_generated_path(path)
+            allowed_include_paths.add(normalized)
+            allowed_include_paths.add(posixpath.basename(normalized))
+
+    for role_path in (shared_path, core_path, gui_path, host_runner_path, device_path):
+        src = files.get(role_path)
+        if not src:
+            continue
+        role_dir = posixpath.dirname(_normalize_generated_path(role_path))
+        for match in _QUOTED_INCLUDE_RE.finditer(src):
+            included = match.group(1).strip()
+            normalized_include = _normalize_generated_path(included)
+            basename = posixpath.basename(normalized_include)
+            resolved_from_role = _normalize_generated_path(
+                posixpath.join(role_dir, included)
+            )
+            if (
+                normalized_include in allowed_include_paths
+                or basename in allowed_include_paths
+                or resolved_from_role in allowed_include_paths
+            ):
+                continue
+            violations.append(
+                Violation(
+                    rule="generated_role_includes_project_header",
+                    message=(
+                        f"Generated role file includes project header {included!r}. "
+                        "GPU split output must be self-contained role code: use the "
+                        "provided workspace files as source context and copy/adapt "
+                        "needed structs, constants, and helpers into the generated "
+                        "roles instead of including original user project headers."
+                    ),
+                    offending_module=role_path,
+                    offending_symbol=included,
+                )
+            )
+
     declared_kernels = set(_collect_kernel_signatures(device_source).keys())
     for match in _GLOBAL_DECL_RE.finditer(device_source):
         prefix = device_source[max(0, match.start() - 48) : match.start()]

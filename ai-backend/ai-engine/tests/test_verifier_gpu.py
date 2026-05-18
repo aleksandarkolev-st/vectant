@@ -283,6 +283,44 @@ def test_split_clean_output_with_manifest_dynamic_paths_passes():
     assert r.ok, r.violations
 
 
+def test_split_allows_quoted_includes_of_generated_role_paths():
+    files = {
+        "src/state/shared_runtime_abc123.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "host/core_loop_abc123.cpp": '#include "../src/state/shared_runtime_abc123.h"\nextern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, { &a, &b, &c, &n }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
+        "render/gui_surface_abc123.cpp": '#include "shared_runtime_abc123.h"\nextern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "run/flow_runner_abc123.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "gpu/kernels/particle_kernel_abc123.hip": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
+    }
+    manifest = {
+        "module_files": {
+            "shared": "src/state/shared_runtime_abc123.h",
+            "core": "host/core_loop_abc123.cpp",
+            "gui": "render/gui_surface_abc123.cpp",
+            "host_runner": "run/flow_runner_abc123.cpp",
+            "device": "gpu/kernels/particle_kernel_abc123.hip",
+        },
+        "gpu": {"vendor": "rocm", "arch": ["gfx1201"]},
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], manifest=manifest)
+    assert r.ok, r.violations
+
+
+def test_split_rejects_generated_role_including_project_header():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\n#include "simulation.hpp"\nstruct AppState { int n; };',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, { &a, &b, &c, &n }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert any(
+        v.rule == "generated_role_includes_project_header"
+        and v.offending_symbol == "simulation.hpp"
+        for v in r.violations
+    )
+
+
 def test_split_rejects_missing_lifecycle_exports_and_runtime_redeclaration():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct DeviceDescriptor { int bad; };',
