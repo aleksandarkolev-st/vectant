@@ -679,6 +679,30 @@ def verify_split_output(
                 offending_module=gui_path,
             )
         )
+    implicit_surface_lookup = re.search(
+        r"\b(?:"
+        r"SDL_GL_GetCurrentWindow|"
+        r"glfwGetCurrentContext|"
+        r"glXGetCurrentContext|"
+        r"eglGetCurrentContext|"
+        r"wglGetCurrentContext|"
+        r"glutGetWindow"
+        r")\s*\(",
+        gui_source,
+    )
+    if implicit_surface_lookup:
+        violations.append(
+            Violation(
+                rule="gui_uses_implicit_render_surface_lookup",
+                message=(
+                    "The gui role must not recover the render surface through "
+                    "implicit current/global backend APIs. The hot module must "
+                    "use the stable host render surface/context passed through "
+                    "gui_on_load/core_on_load."
+                ),
+                offending_module=gui_path,
+            )
+        )
     if re.search(
         r"\bSDL_GetRenderer\s*\(\s*(?:\(\s*SDL_Window\s*\*\s*\)|reinterpret_cast\s*<\s*SDL_Window\s*\*\s*>\s*\()\s*window_ptr",
         gui_source,

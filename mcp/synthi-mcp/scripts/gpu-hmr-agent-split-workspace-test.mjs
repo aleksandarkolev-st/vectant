@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -877,6 +878,29 @@ async function compileGeneratedDevice(split, editedDevice) {
 
 async function assertMcpScreenshot() {
   const state = await ensureMcpAttached();
+  const analyzeImage = async (data) => {
+    if (!data) return { bytes: 0, visiblePixels: 0, meanLuma: 0 };
+    const bytes = Math.floor(data.length * 3 / 4);
+    const input = Buffer.from(data, 'base64');
+    const { data: raw, info } = await sharp(input)
+      .removeAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    let visiblePixels = 0;
+    let lumaTotal = 0;
+    for (let i = 0; i < raw.length; i += info.channels) {
+      const r = raw[i] ?? 0;
+      const g = raw[i + 1] ?? 0;
+      const b = raw[i + 2] ?? 0;
+      const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      lumaTotal += luma;
+      if (luma > 24 || Math.max(r, g, b) - Math.min(r, g, b) > 30) {
+        visiblePixels += 1;
+      }
+    }
+    const pixels = Math.max(1, info.width * info.height);
+    return { bytes, visiblePixels, meanLuma: lumaTotal / pixels };
+  };
   const capture = async () => {
     const shot = await state.client.toolCallRaw(
       'synthi_screenshot',
@@ -885,31 +909,44 @@ async function assertMcpScreenshot() {
     );
     const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
     const meta = shot.json || {};
+    const analysis = await analyzeImage(image?.data);
     return {
       meta,
       width: Number(meta.w || meta.width || 0),
       height: Number(meta.h || meta.height || 0),
       seq: Number(meta.seq || 0),
-      bytes: image ? Math.floor(image.data.length * 3 / 4) : 0,
+      ...analysis,
     };
   };
-  const first = await capture();
-  await sleep(750);
-  const second = await capture();
+  const isVisibleFrame = (shot) =>
+    shot.width >= 320 &&
+    shot.height >= 240 &&
+    shot.bytes > 512 &&
+    shot.visiblePixels > 500;
+  const deadline = Date.now() + 15000;
+  const samples = [];
+  while (Date.now() < deadline) {
+    const shot = await capture();
+    samples.push(shot);
+    if (samples.filter(isVisibleFrame).length >= 2) break;
+    await sleep(500);
+  }
+  const visible = samples.filter(isVisibleFrame);
+  const first = visible[0] ?? samples[0] ?? { meta: {}, width: 0, height: 0, seq: 0, bytes: 0, visiblePixels: 0, meanLuma: 0 };
+  const second = visible.find((shot) => shot.seq > first.seq) ?? visible[1] ?? samples[samples.length - 1] ?? first;
   const ok =
-    first.width >= 320 &&
-    first.height >= 240 &&
-    first.bytes > 512 &&
+    isVisibleFrame(first) &&
     second.width === first.width &&
     second.height === first.height &&
     second.bytes > 512 &&
+    second.visiblePixels > 500 &&
     second.seq > first.seq;
   record(
     'mcp screenshot after hmr',
     ok ? 'pass' : 'fail',
     ok
-      ? `${first.width}x${first.height} seq=${first.seq}->${second.seq} bytes~${first.bytes}/${second.bytes}`
-      : `invalid screenshot first=${JSON.stringify(first.meta).slice(0, 120)} second=${JSON.stringify(second.meta).slice(0, 120)} bytes~${first.bytes}/${second.bytes}`,
+      ? `${first.width}x${first.height} seq=${first.seq}->${second.seq} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes}`
+      : `invalid screenshot first=${JSON.stringify(first.meta).slice(0, 120)} second=${JSON.stringify(second.meta).slice(0, 120)} visible=${first.visiblePixels}/${second.visiblePixels} luma=${first.meanLuma.toFixed(1)}/${second.meanLuma.toFixed(1)} bytes~${first.bytes}/${second.bytes}`,
   );
   if (!ok) throw new Error('MCP screenshot after HMR did not return a valid frame');
 }

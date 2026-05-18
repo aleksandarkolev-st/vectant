@@ -3943,6 +3943,14 @@ id. If the original source's backend normally derives one handle from another,
 move that ownership/setup to the backend-owning runner path and pass only the
 stable render surface into the hot module.
 
+The hot module must not rediscover a window, renderer, graphics context, or
+swapchain through implicit "current", default, global-id, singleton, or newly
+created backend handles. All rendering must flow through the host render
+surface/context supplied by the runner and preserved in the generated state.
+If `gui_on_render` calls rendering APIs, their target handle/context must be a
+field read from that preserved state, typed according to the user's original
+backend.
+
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 
 Synthi does not hot-swap arbitrary raw CUDA/HIP source as-is. Your job
