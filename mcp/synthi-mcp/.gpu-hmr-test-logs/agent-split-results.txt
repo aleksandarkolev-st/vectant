@@ -1,7 +1,7 @@
 PASS gpu vendor - rocm arch=gfx1201
 PASS fixture - complex-flow
 PASS monolithic source has no Synthi ABI
-PASS create workspace - id=cmpafs7r90006o901uhr26jbq slug=gpu-ai-complex-20260518025900
+PASS create workspace - id=cmpafvf9v0007o901ams06ifb slug=gpu-ai-complex-shot-20260518030129
 PASS seed monolithic user source - main.cpp
 PASS workspace commit seed
 PASS mcp tools/list - count=42
@@ -9,11 +9,15 @@ PASS mcp attach - attached
 PASS first compile via MCP - use_ai_split=true prefer_gpu_pipeline=true
 PASS worker used GPU split endpoint - GPU markers detected; calling GPU split endpoint
 PASS generated device compiled - compile-device] hipcc
-PASS read generated split from worker - worker=/tmp/.tmpnnTFPF
+PASS read generated split from worker - worker=/tmp/.tmpGNR6Y4
 PASS generated split contains HMR ABI - shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip
 PASS persist generated split to workspace - 7 files
 PASS workspace commit generated split
 PASS device edit compile via MCP - device.hip
-PASS generated device file used for HMR - compile-device] hipcc -> /tmp/.tmpnnTFPF/build/device_1779062350.hsaco  args=CommandArgs { inner: ["--genco", "--offload-arch=gfx1201", "-O3", "-lineinfo", "-o", "/tmp/.tmpnnTFPF/build/device_1779062350.hsaco", "device.hip
+PASS generated device file used for HMR - FallbackDeterministic → split file edit (device.hip
 PASS device-only GPU HMR observed - [gpu-reload] plan=device_only
-PASS runner stayed alive after GPU HMR - no runner crash marker
+FAIL mcp screenshot after hmr - invalid screenshot meta={"w":800,"h":600,"ts":1779062538890,"seq":41,"original_w":800,"original_h":600,"mimeType":"image/png"} bytes~1497
+FAIL fatal - Error: MCP screenshot after HMR did not return a valid frame
+    at assertMcpScreenshot (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs:887:18)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async run (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs:972:3)
