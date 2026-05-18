@@ -42,6 +42,7 @@ import {
 } from '@/utils/nepRecentEdits';
 import { classifyEdit } from '@/lib/editKindClassifier';
 import { recordNepEvent, isNepKilled, checkServerKill } from '@/lib/nepTelemetry';
+import { recordAiReplaySample } from '@/lib/aiReplayHarness';
 import { gitClient } from '@/services/gitClient';
 import { fileCache } from '@/services/fileCache';
 import { loadScheduler } from '@/services/loadScheduler';
@@ -262,6 +263,7 @@ export const useNextEditPrediction = ({
   const lastFireRef = useRef(0);
   const debounceTimerRef = useRef(null);
   const abortRef = useRef(null);
+  const nepRequestSeqRef = useRef(0);
   const sessionFireCountRef = useRef(0);
 
   // Validated queue. Each entry is one of:
@@ -1057,6 +1059,7 @@ export const useNextEditPrediction = ({
 
     const controller = new AbortController();
     abortRef.current = controller;
+    const requestId = ++nepRequestSeqRef.current;
 
     const activePath = activeFile?.path || activeFile?.name || null;
     const liveActiveContent = getLiveFileContent
@@ -1166,6 +1169,7 @@ export const useNextEditPrediction = ({
     }
 
     const payload = {
+      requestId,
       workspaceSlug: workspaceSlug || null,
       language: activeLanguage || 'plaintext',
       activePath,
@@ -1183,6 +1187,22 @@ export const useNextEditPrediction = ({
     recordNepEvent('fire', {
       has_applied_edit: Boolean(lastAppliedEditRef.current),
       has_synthetic_edit: Boolean(appliedEdit) && !lastAppliedEditRef.current,
+      request_id: requestId,
+    });
+    recordAiReplaySample({
+      feature: 'nep',
+      phase: 'request',
+      requestId,
+      payload: {
+        workspaceSlug: workspaceSlug || null,
+        language: activeLanguage || 'plaintext',
+        activePath,
+        cursor,
+        recentEdits: payload.recentEdits,
+        filePaths: Object.keys(files),
+        files,
+        appliedEdit,
+      },
     });
 
     let res;
@@ -1249,6 +1269,17 @@ export const useNextEditPrediction = ({
           recordNepEvent('rejected', {
             reason: result.reason || REJECT_REASONS.PARSE_ERROR,
             detail: result.detail,
+            request_id: requestId,
+          });
+          recordAiReplaySample({
+            feature: 'nep',
+            phase: 'parse_rejected',
+            requestId,
+            payload: {
+              reason: result.reason || REJECT_REASONS.PARSE_ERROR,
+              detail: result.detail,
+              raw: result.raw,
+            },
           });
           if (typeof console !== 'undefined' && console.info) {
             console.info(`[NEP] block parse-rejected: reason=${result.reason} detail=${result.detail || ''}`);
@@ -1257,6 +1288,12 @@ export const useNextEditPrediction = ({
         }
         recordNepEvent('emitted');
         const block = result.block;
+        recordAiReplaySample({
+          feature: 'nep',
+          phase: 'emitted',
+          requestId,
+          payload: { block },
+        });
         await hydrateFile(block.path);
         if (controller.signal.aborted) return;
         const v = validateBlock(block, liveReader);
@@ -1264,16 +1301,28 @@ export const useNextEditPrediction = ({
         let entry = null;
         if (block.kind === NEP_BLOCK_KIND.SEARCH) {
           if (!v.ok) {
-            recordNepEvent('rejected', { reason: v.reason, path: v.path || block.path });
+            recordNepEvent('rejected', { reason: v.reason, path: v.path || block.path, request_id: requestId });
+            recordAiReplaySample({
+              feature: 'nep',
+              phase: 'validate_rejected',
+              requestId,
+              payload: { reason: v.reason, path: v.path || block.path, block },
+            });
             if (typeof console !== 'undefined' && console.info) {
               console.info(`[NEP] block validate-rejected: path=${block.path} reason=${v.reason} cross_file=${block.path !== activePath}`);
             }
             continue;
           }
-          recordNepEvent('validated', { kind: block.kind });
           const line = locateBlock(block, liveReader);
           if (!line) continue;
-          entry = { kind: NEP_BLOCK_KIND.SEARCH, block, location: { path: block.path, line } };
+          recordNepEvent('validated', { kind: block.kind, request_id: requestId });
+          recordAiReplaySample({
+            feature: 'nep',
+            phase: 'validated',
+            requestId,
+            payload: { kind: block.kind, path: block.path, block, line },
+          });
+          entry = { kind: NEP_BLOCK_KIND.SEARCH, requestId, block, location: { path: block.path, line } };
           if (typeof console !== 'undefined' && console.info) {
             console.info(`[NEP] block validated: path=${block.path}:${line} cross_file=${block.path !== activePath}`);
           }
@@ -1281,16 +1330,28 @@ export const useNextEditPrediction = ({
           // Phase 2 treats phase2_required as the OPPORTUNITY to enter the
           // confirm flow — the validator's "reject" was the Phase 1 stub.
           if (!v.ok && v.reason !== REJECT_REASONS.PHASE2_REQUIRED) {
-            recordNepEvent('rejected', { reason: v.reason, path: v.path || block.path });
+            recordNepEvent('rejected', { reason: v.reason, path: v.path || block.path, request_id: requestId });
+            recordAiReplaySample({
+              feature: 'nep',
+              phase: 'validate_rejected',
+              requestId,
+              payload: { reason: v.reason, path: v.path || block.path, block },
+            });
             continue;
           }
-          recordNepEvent('validated', { kind: block.kind });
+          recordNepEvent('validated', { kind: block.kind, request_id: requestId });
           const live = liveReader(block.path);
           if (typeof live !== 'string') continue;
           const offsets = findAllOffsets(live, block.search);
           if (offsets.length === 0) continue;
           const sites = offsets.map((offset) => ({ offset, line: offsetToLine(live, offset) }));
-          entry = { kind: NEP_BLOCK_KIND.SEARCH_ALL, block, sites, cursor: 0 };
+          entry = { kind: NEP_BLOCK_KIND.SEARCH_ALL, requestId, block, sites, cursor: 0 };
+          recordAiReplaySample({
+            feature: 'nep',
+            phase: 'validated',
+            requestId,
+            payload: { kind: block.kind, path: block.path, block, sites },
+          });
           if (typeof console !== 'undefined' && console.info) {
             console.info(`[NEP] SEARCH ALL validated: path=${block.path} sites=${sites.length}`);
           }
@@ -1318,7 +1379,7 @@ export const useNextEditPrediction = ({
           return false;
         })();
         if (isDuplicate) {
-          recordNepEvent('rejected', { reason: 'duplicate', path: entry.block?.path });
+          recordNepEvent('rejected', { reason: 'duplicate', path: entry.block?.path, request_id: requestId });
           continue;
         }
         queueRef.current.push(entry);
@@ -1494,7 +1555,18 @@ export const useNextEditPrediction = ({
         replace: entry.block.replace,
       };
     }
-    recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH, path, via: writeResult?.via });
+    recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH, path, via: writeResult?.via, request_id: entry.requestId || null });
+    recordAiReplaySample({
+      feature: 'nep',
+      phase: 'accepted',
+      requestId: entry.requestId || null,
+      payload: {
+        kind: NEP_BLOCK_KIND.SEARCH,
+        path,
+        via: writeResult?.via,
+        block: entry.block,
+      },
+    });
   }, [getLiveFileContent, writeFileContent, runOnApply]);
 
   /**
@@ -1559,7 +1631,22 @@ export const useNextEditPrediction = ({
           (async () => {
             try {
               await applySearchAllSite(entry, entry.cursor ?? 0);
-              recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH_ALL, path: entry.block.path });
+              recordNepEvent('accepted', {
+                kind: NEP_BLOCK_KIND.SEARCH_ALL,
+                path: entry.block.path,
+                request_id: entry.requestId || null,
+              });
+              recordAiReplaySample({
+                feature: 'nep',
+                phase: 'accepted',
+                requestId: entry.requestId || null,
+                payload: {
+                  kind: NEP_BLOCK_KIND.SEARCH_ALL,
+                  path: entry.block.path,
+                  site: entry.cursor ?? 0,
+                  block: entry.block,
+                },
+              });
             } catch (err) {
               recordNepEvent('rejected', { reason: 'apply_failed', detail: err?.message });
               resetToIdle('apply-failed');
@@ -1623,8 +1710,24 @@ export const useNextEditPrediction = ({
               await writeFileContent(path, next);
               await runOnApply(path, next);
               for (let i = 0; i < count; i++) {
-                recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH_ALL, path, batch: true });
+                recordNepEvent('accepted', {
+                  kind: NEP_BLOCK_KIND.SEARCH_ALL,
+                  path,
+                  batch: true,
+                  request_id: entry.requestId || null,
+                });
               }
+              recordAiReplaySample({
+                feature: 'nep',
+                phase: 'accepted_batch',
+                requestId: entry.requestId || null,
+                payload: {
+                  kind: NEP_BLOCK_KIND.SEARCH_ALL,
+                  path,
+                  count,
+                  block: entry.block,
+                },
+              });
             } catch (err) {
               recordNepEvent('rejected', { reason: 'apply_failed', detail: err?.message });
             }

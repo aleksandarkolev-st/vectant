@@ -25,6 +25,11 @@ import {
   REJECT_REASONS,
 } from '../src/lib/nextEdit.js';
 import { pushNepEdit, bufferBytes, NEP_BUFFER_BYTES } from '../src/utils/nepRecentEdits.js';
+import {
+  recordAiReplaySample,
+  aiReplaySnapshot,
+  clearAiReplaySamples,
+} from '../src/lib/aiReplayHarness.js';
 
 assert.equal(
   extractCompletion('<|completion|>return value;<|/completion|>'),
@@ -98,6 +103,19 @@ for (let i = 0; i < 20; i++) {
 assert.ok(bufferBytes(buf) <= NEP_BUFFER_BYTES);
 assert.equal(buf.at(-1).searchText, 'oldName');
 assert.equal(buf.at(-1).replaceText, 'newName');
+
+clearAiReplaySamples();
+recordAiReplaySample({
+  feature: 'autocomplete',
+  phase: 'request',
+  requestId: 'req-1',
+  payload: { prompt: 'x'.repeat(40_000) },
+});
+const replay = aiReplaySnapshot({ requestId: 'req-1' });
+assert.equal(replay.length, 1);
+assert.equal(replay[0].feature, 'autocomplete');
+assert.equal(replay[0].phase, 'request');
+assert.equal(replay[0].requestId, 'req-1');
 `;
 
 try {
@@ -109,6 +127,7 @@ try {
   for (const rel of [
     'src/lib/completion.js',
     'src/lib/nextEdit.js',
+    'src/lib/aiReplayHarness.js',
     'src/utils/nepRecentEdits.js',
   ]) {
     await writeFile(

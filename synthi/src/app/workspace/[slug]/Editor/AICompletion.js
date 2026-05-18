@@ -13,6 +13,7 @@ import {
     pushRecentEdit,
 } from '@/utils/completionContext';
 import { recordAiCompletionEvent } from '@/lib/aiCompletionTelemetry';
+import { recordAiReplaySample } from '@/lib/aiReplayHarness';
 import {
     trimCompletionContext,
     takeLastChars,
@@ -264,6 +265,15 @@ export const useAiCompletion = ({
                     reason: 'accept_blocked_unstable',
                     request_id: cached.requestId || null,
                 });
+                recordAiReplaySample({
+                    feature: 'autocomplete',
+                    phase: 'accept_blocked',
+                    requestId: cached.requestId || null,
+                    payload: {
+                        reason: 'unstable_multiline',
+                        suggestion: text,
+                    },
+                });
                 return;
             }
             recordAiCompletionEvent('cancelled', {
@@ -331,7 +341,25 @@ export const useAiCompletion = ({
         notifyCompletionCacheChange();
         setAiCompletionState('applied');
         recordAiCompletionEvent('accepted', { lines: acceptedLines, request_id: cached.requestId || null });
-    }, [editorInstance, monacoInstance, hasActiveDiff]); // Added dependency
+        recordAiReplaySample({
+            feature: 'autocomplete',
+            phase: 'accepted',
+            requestId: cached.requestId || null,
+            payload: {
+                language: cached.language || activeLanguage,
+                lines: acceptedLines,
+                text,
+                range: rangeToReplace
+                    ? {
+                        startLineNumber: rangeToReplace.startLineNumber,
+                        startColumn: rangeToReplace.startColumn,
+                        endLineNumber: rangeToReplace.endLineNumber,
+                        endColumn: rangeToReplace.endColumn,
+                    }
+                    : null,
+            },
+        });
+    }, [editorInstance, monacoInstance, hasActiveDiff, activeLanguage]); // Added dependency
 
     const requestAiCompletion = useCallback((isAutoTrigger = false, manualContext = null, meta = {}) => {
         if (!activeFile || !editorInstance) return;
@@ -503,6 +531,20 @@ export const useAiCompletion = ({
             console.debug('[AICompletion] reference assembly failed:', e?.message);
         }
 
+        recordAiReplaySample({
+            feature: 'autocomplete',
+            phase: 'request',
+            requestId,
+            payload: {
+                language: activeLanguage,
+                source: isAutoTrigger ? 'auto' : 'manual',
+                activePath: activeFile?.path || activeFile?.name || null,
+                cursor: payload.cursor,
+                contextBlocks: payload.contextBlocks,
+                code: context,
+                references: payload.references || [],
+            },
+        });
         // Stream the completion: render partial ghost text as Gemini emits it,
         // Cursor / Copilot style. The /api/completion route returns a chunked
         // text/plain stream of raw model text; we keep a buffer of accumulated
@@ -550,6 +592,18 @@ export const useAiCompletion = ({
                     request_id: requestId,
                     latency_ms: Date.now() - fireStartedAt,
                     lines: countSuggestionLines(visible),
+                });
+                recordAiReplaySample({
+                    feature: 'autocomplete',
+                    phase: 'visible',
+                    requestId,
+                    payload: {
+                        language: activeLanguage,
+                        latency_ms: Date.now() - fireStartedAt,
+                        lines: countSuggestionLines(visible),
+                        stable: stickyStable,
+                        suggestion: visible,
+                    },
                 });
             }
 
@@ -629,6 +683,16 @@ export const useAiCompletion = ({
                             request_id: requestId,
                             latency_ms: Date.now() - fireStartedAt,
                         });
+                        recordAiReplaySample({
+                            feature: 'autocomplete',
+                            phase: 'rejected',
+                            requestId,
+                            payload: {
+                                reason: !body.trim() ? 'empty_response' : 'echo_or_unsanitized',
+                                latency_ms: Date.now() - fireStartedAt,
+                                raw: body,
+                            },
+                        });
                     }
                 } catch (_) {
                     if (isCurrentRequest()) setAiCompletionState('idle');
@@ -678,6 +742,16 @@ export const useAiCompletion = ({
                         reason: !raw.trim() ? 'empty_response' : 'echo_or_unsanitized',
                         request_id: requestId,
                         latency_ms: Date.now() - fireStartedAt,
+                    });
+                    recordAiReplaySample({
+                        feature: 'autocomplete',
+                        phase: 'rejected',
+                        requestId,
+                        payload: {
+                            reason: !raw.trim() ? 'empty_response' : 'echo_or_unsanitized',
+                            latency_ms: Date.now() - fireStartedAt,
+                            raw,
+                        },
                     });
                 }
             } catch (e) {
