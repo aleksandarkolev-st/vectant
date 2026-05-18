@@ -258,6 +258,7 @@ export const useNextEditPrediction = ({
   const [fireCapReached, setFireCapReached] = useState(false);
 
   const recentEditsRef = useRef([]);
+  const previousContentByPathRef = useRef(new Map());
   const lastFireRef = useRef(0);
   const debounceTimerRef = useRef(null);
   const abortRef = useRef(null);
@@ -308,6 +309,7 @@ export const useNextEditPrediction = ({
   // ── lifecycle: workspace reset ──────────────────────────────────────────
   useEffect(() => {
     recentEditsRef.current = resetNepBuffer();
+    previousContentByPathRef.current = new Map();
     queueRef.current = [];
     queueIndexRef.current = 0;
     lastAppliedEditRef.current = null;
@@ -902,6 +904,11 @@ export const useNextEditPrediction = ({
   // ── recent-edit capture ─────────────────────────────────────────────────
   useEffect(() => {
     if (!enabled || !editorInstance) return undefined;
+    try {
+      const path = activeFile?.path || activeFile?.name || null;
+      const model = editorInstance.getModel?.();
+      if (path && model) previousContentByPathRef.current.set(path, model.getValue?.() ?? '');
+    } catch (_) { /* seed is best-effort */ }
 
     const disposable = editorInstance.onDidChangeModelContent?.((event) => {
       try {
@@ -911,6 +918,8 @@ export const useNextEditPrediction = ({
         if (!model) return;
         const changes = Array.isArray(event?.changes) ? event.changes : [];
         if (!changes.length) return;
+        const previousContent = previousContentByPathRef.current.get(path);
+        const nextContent = model.getValue?.() ?? '';
 
         const sorted = [...changes].sort((a, b) => {
           const al = a?.range?.startLineNumber ?? 0;
@@ -919,7 +928,16 @@ export const useNextEditPrediction = ({
           return (a?.range?.startColumn ?? 0) - (b?.range?.startColumn ?? 0);
         });
         const insertedText = sorted.map((c) => c?.text || '').join('').replace(/\s+$/u, '');
-        if (!insertedText.trim()) return;
+        const deletedText = (typeof previousContent === 'string')
+          ? sorted.map((c) => {
+              const off = Number(c?.rangeOffset);
+              const len = Number(c?.rangeLength);
+              if (!Number.isFinite(off) || !Number.isFinite(len) || len <= 0) return '';
+              return previousContent.slice(off, off + len);
+            }).join('').replace(/\s+$/u, '')
+          : '';
+        previousContentByPathRef.current.set(path, nextContent);
+        if (!insertedText.trim() && !deletedText.trim()) return;
 
         const firstRange = sorted[0]?.range;
         const lastRange = sorted[sorted.length - 1]?.range || firstRange;
@@ -946,16 +964,20 @@ export const useNextEditPrediction = ({
         const before = readLines(ctxStart, Math.max(ctxStart, startLine - 1));
         const after = readLines(Math.min(totalLines, endLine + 1), ctxEnd);
 
-        const markInserted = (t) => t.split('\n').map((l) => `+ ${l}`).join('\n');
+        const markInserted = (t) => (t ? t.split('\n').map((l) => `+ ${l}`).join('\n') : '');
+        const markDeleted = (t) => (t ? t.split('\n').map((l) => `- ${l}`).join('\n') : '');
         const markContext = (t) => (t ? t.split('\n').map((l) => `  ${l}`).join('\n') : '');
         const headerLine = `@@ ${path} L${startLine}-${endLine} @@`;
         const snippet = [
           headerLine,
           markContext(before),
+          markDeleted(deletedText),
           markInserted(insertedText),
           markContext(after),
         ].filter(Boolean).join('\n');
 
+        const searchText = deletedText.trim() ? deletedText : insertedText;
+        const replaceText = deletedText.trim() ? insertedText : insertedText;
         recentEditsRef.current = pushNepEdit(recentEditsRef.current, {
           path,
           snippet,
@@ -965,6 +987,8 @@ export const useNextEditPrediction = ({
           // fire (and every fire until an apply lands) skips edit-impact
           // and the model sees no cross-file candidates.
           insertedText,
+          searchText,
+          replaceText,
         });
 
         if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
@@ -1129,11 +1153,14 @@ export const useNextEditPrediction = ({
       const buf = recentEditsRef.current;
       if (Array.isArray(buf) && buf.length) {
         const last = buf[buf.length - 1];
-        const text = (typeof last?.insertedText === 'string' && last.insertedText.trim())
-          ? last.insertedText
+        const search = (typeof last?.searchText === 'string' && last.searchText.trim())
+          ? last.searchText
+          : ((typeof last?.insertedText === 'string' && last.insertedText.trim()) ? last.insertedText : null);
+        const replace = typeof last?.replaceText === 'string'
+          ? last.replaceText
           : null;
-        if (last?.path && text) {
-          appliedEdit = { path: last.path, search: text, replace: text, kind: null };
+        if (last?.path && search) {
+          appliedEdit = { path: last.path, search, replace: replace ?? search, kind: null };
         }
       }
     }
