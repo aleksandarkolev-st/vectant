@@ -107,6 +107,11 @@ _PLACEHOLDER_RENDER_RE = re.compile(
     r"render(?:ing)?\s+code\s+here|omitted)\b",
     re.IGNORECASE,
 )
+_SDL_RENDER_PRESENT_RE = re.compile(r"\bSDL_RenderPresent\s*\(")
+_SDL_RENDER_API_RE = re.compile(r"\bSDL_Render[A-Za-z0-9_]*\s*\(")
+_SDL_SUBSTANTIAL_DRAW_RE = re.compile(
+    r"\bSDL_Render(?:FillRect|DrawRect|DrawLine|DrawLines|DrawPoints|Copy|CopyEx|Geometry)\s*\("
+)
 
 _NEW_FILE_OPS = {"create", "new", "add_file"}
 
@@ -758,6 +763,35 @@ def verify_split_output(
                 ),
                 offending_module=gui_path,
                 offending_symbol=placeholder_render.group(0),
+            )
+        )
+    render_present = _SDL_RENDER_PRESENT_RE.search(gui_source)
+    if render_present:
+        violations.append(
+            Violation(
+                rule="gui_calls_sdl_render_present",
+                message=(
+                    "The gui role must not call SDL_RenderPresent(). The "
+                    "Synthi runner presents the frame after gui_on_render "
+                    "returns; generated code should only clear and draw."
+                ),
+                offending_module=gui_path,
+                offending_symbol="SDL_RenderPresent",
+            )
+        )
+    if _SDL_RENDER_API_RE.search(gui_source) and not _SDL_SUBSTANTIAL_DRAW_RE.search(gui_source):
+        violations.append(
+            Violation(
+                rule="gui_render_too_sparse",
+                message=(
+                    "The gui role uses SDL rendering APIs but does not draw "
+                    "any substantial visible primitive. A first frame that "
+                    "only clears or draws isolated pixels can compile yet "
+                    "remain black under screenshot validation; render filled "
+                    "rects, lines, geometry, textures, or another visible "
+                    "backend-specific representation from preserved state."
+                ),
+                offending_module=gui_path,
             )
         )
     if re.search(r"\bSDL_GetWindowFromID\s*\(\s*1\s*\)", gui_source):

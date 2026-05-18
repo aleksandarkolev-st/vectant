@@ -349,6 +349,31 @@ def test_split_rejects_placeholder_gui_render():
     assert any(v.rule == "gui_render_placeholder" for v in r.violations)
 
 
+def test_split_rejects_sdl_present_and_sparse_point_render():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { void* renderer; };',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "vec_add", 1, 256, 0, nullptr, { &a, &b, &c, &n }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
+        "gui.cpp": (
+            '#include <SDL2/SDL.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* s) { '
+            'auto* r = (SDL_Renderer*)s; '
+            'SDL_SetRenderDrawColor(r, 0, 0, 0, 255); '
+            'SDL_RenderClear(r); '
+            'SDL_SetRenderDrawColor(r, 255, 255, 255, 255); '
+            'SDL_RenderDrawPoint(r, 400, 300); '
+            'SDL_RenderPresent(r); '
+            '}'
+        ),
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    rules = {v.rule for v in r.violations}
+    assert "gui_calls_sdl_render_present" in rules
+    assert "gui_render_too_sparse" in rules
+
+
 def test_split_rejects_missing_lifecycle_exports_and_runtime_redeclaration():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct DeviceDescriptor { int bad; };',

@@ -3963,6 +3963,19 @@ is not directly drawable, maintain or copy enough host-visible render data, or
 draw a faithful visible representation from the preserved state, but do not
 compile a blank renderer.
 
+For SDL/SDL2 output, screenshot validation expects substantial visible pixels.
+Do not rely on a single `SDL_RenderDrawPoint`, an all-black clear, or a sparse
+marker. Draw filled particle rectangles, lines, textures, geometry, or another
+non-black representation that covers hundreds of pixels on the first frame.
+Never call `SDL_RenderPresent`; the runner presents automatically after
+`gui_on_render` returns.
+
+When a generated device kernel updates positions, colors, or other values that
+the GUI must display, keep host-visible mirror arrays in `AppState` and copy
+the device outputs back after `synthi_gpu_launch` before the GUI reads them.
+Device-only HMR edits must be able to change what `gui_on_render` draws without
+changing the host ABI.
+
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 
 Synthi does not hot-swap arbitrary raw CUDA/HIP source as-is. Your job
