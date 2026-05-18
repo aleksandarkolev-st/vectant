@@ -866,23 +866,39 @@ async function compileGeneratedDevice(split, editedDevice) {
 
 async function assertMcpScreenshot() {
   const state = await ensureMcpAttached();
-  const shot = await state.client.toolCallRaw(
-    'synthi_screenshot',
-    { freshness_max_ms: 15000 },
-    30000,
-  );
-  const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
-  const meta = shot.json || {};
-  const width = Number(meta.w || meta.width || 0);
-  const height = Number(meta.h || meta.height || 0);
-  const bytes = image ? Math.floor(image.data.length * 3 / 4) : 0;
-  const ok = width >= 320 && height >= 240 && bytes > 4096;
+  const capture = async () => {
+    const shot = await state.client.toolCallRaw(
+      'synthi_screenshot',
+      { freshness_max_ms: 15000 },
+      30000,
+    );
+    const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
+    const meta = shot.json || {};
+    return {
+      meta,
+      width: Number(meta.w || meta.width || 0),
+      height: Number(meta.h || meta.height || 0),
+      seq: Number(meta.seq || 0),
+      bytes: image ? Math.floor(image.data.length * 3 / 4) : 0,
+    };
+  };
+  const first = await capture();
+  await sleep(750);
+  const second = await capture();
+  const ok =
+    first.width >= 320 &&
+    first.height >= 240 &&
+    first.bytes > 512 &&
+    second.width === first.width &&
+    second.height === first.height &&
+    second.bytes > 512 &&
+    second.seq > first.seq;
   record(
     'mcp screenshot after hmr',
     ok ? 'pass' : 'fail',
     ok
-      ? `${width}x${height} seq=${meta.seq ?? 'n/a'} bytes~${bytes}`
-      : `invalid screenshot meta=${JSON.stringify(meta).slice(0, 160)} bytes~${bytes}`,
+      ? `${first.width}x${first.height} seq=${first.seq}->${second.seq} bytes~${first.bytes}/${second.bytes}`
+      : `invalid screenshot first=${JSON.stringify(first.meta).slice(0, 120)} second=${JSON.stringify(second.meta).slice(0, 120)} bytes~${first.bytes}/${second.bytes}`,
   );
   if (!ok) throw new Error('MCP screenshot after HMR did not return a valid frame');
 }
