@@ -17,6 +17,58 @@ including hundreds of ordinary project files and separate `.cpp`, `.hpp`,
 `.hip`, and/or `.cu` sources. A single monolithic `main.cpp` is useful as a
 smoke test, but it is not enough.
 
+## End Goal - Definition Of Done
+
+The end goal is to prove, with automated evidence, that Synthi GPU HMR works
+end-to-end for a real user project and is not hardcoded to any specific
+rendering/windowing library.
+
+The final result must demonstrate this exact path:
+
+```text
+ordinary multi-file user project
+  -> browser or MCP sends the project file set
+  -> worker detects CUDA/HIP markers
+  -> worker sends the full relevant file context to ai-engine /refactor/split/gpu
+  -> AI generates Synthi runtime split files and manifest
+  -> worker compiles host code and HIP/CUDA sidecar
+  -> user-visible preview renders non-black frames
+  -> device-only edit recompiles sidecar
+  -> synthi_wait_hmr reports applied
+  -> screenshot proves the app changed without a full restart
+```
+
+The proof must include:
+
+- A workspace seeded only with ordinary user files, not pre-generated Synthi
+  split files.
+- At least one validation project with 200+ workspace files.
+- Separate host and device source files, including `.hip` or `.cu`.
+- No user-authored Synthi ABI exports in the starting project.
+- MCP-driven compile, HMR wait, screenshot capture, and app interaction where
+  needed.
+- Screenshot analysis that proves visible non-black frames after first compile
+  and after device-only HMR.
+- Worker/ai-engine evidence that the GPU split endpoint saw the relevant
+  project files, not just the active editor file.
+- Device-only GPU HMR evidence, not a full rebuild/full restart disguised as
+  HMR.
+- Separate commits for every patch and every meaningful test/harness addition.
+
+The proof must not rely on:
+
+- SDL2-only generation.
+- A renderer-specific hardcoded path such as assuming SDL2, GLFW, OpenGL,
+  Vulkan, or any other library when the user did not choose it.
+- User source filenames matching Synthi generated role names.
+- A pre-split workspace where `core.cpp`, `gui.cpp`, `host_runner.cpp`,
+  `shared.h`, or `device.hip` already exist.
+- Manual browser inspection without MCP screenshot evidence.
+- A single-file `main.cpp` smoke test as the only validation.
+
+If any of these conditions are not met, do not claim the pipeline is stable or
+fully working.
+
 ## Commit Discipline - Hard Requirement
 
 Every patch must be a separate commit. Do not batch unrelated fixes into one
