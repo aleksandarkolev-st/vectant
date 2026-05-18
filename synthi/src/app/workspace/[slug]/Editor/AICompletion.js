@@ -93,7 +93,6 @@ export const useAiCompletion = ({
     const aiLastRequestRef = useRef({ context: '', time: 0 });
     const aiLastAutoRef = useRef(0);
     const aiDebounceTimerRef = useRef(null);
-    const inlineAcceptCommandIdRef = useRef(null);
 
     // Ring buffer of recent edits across files. Each completion request reads
     // this so the model knows what the user just touched — the strongest
@@ -670,7 +669,6 @@ export const useAiCompletion = ({
         aiCompletionAbortControllerRef,
         aiLastRequestRef,
         aiLastAutoRef,
-        aiDebounceTimerRef,
-        inlineAcceptCommandIdRef
+        aiDebounceTimerRef
     };
 };

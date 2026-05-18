@@ -2715,8 +2715,7 @@ const EditorPanel = ({
         cancelActiveCompletion,
         aiCompletionCacheRef,
         aiCompletionCursorRef,
-        aiDebounceTimerRef,
-        inlineAcceptCommandIdRef
+        aiDebounceTimerRef
     } = useAiCompletion({
         activeFile,
         activeLanguage,
@@ -2845,8 +2844,6 @@ const EditorPanel = ({
         aiCompletionState,
         aiCompletionCacheRef,
         aiCompletionCursorRef,
-        inlineAcceptCommandIdRef,
-        applyAiCompletionText,
         rawFiles,
         fileCacheEntries,
         activeFile,

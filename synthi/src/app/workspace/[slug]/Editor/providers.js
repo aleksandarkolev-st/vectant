@@ -7,8 +7,6 @@ export const useEditorProviders = ({
     aiCompletionState,
     aiCompletionCacheRef,
     aiCompletionCursorRef,
-    inlineAcceptCommandIdRef,
-    applyAiCompletionText,
     rawFiles = [],
     fileCacheEntries = new Map(),
     activeFile,
@@ -209,8 +207,7 @@ export const useEditorProviders = ({
                         range: new monacoInstance.Range(
                             position.lineNumber, position.column,
                             position.lineNumber, position.column
-                        ),
-                        command: inlineAcceptCommandIdRef.current ? { id: inlineAcceptCommandIdRef.current } : undefined
+                        )
                     }]
                 };
             },
@@ -220,7 +217,7 @@ export const useEditorProviders = ({
         inlineCompletionProviderRef.current = provider;
 
         return () => inlineCompletionProviderRef.current?.dispose();
-    }, [editorInstance, monacoInstance, activeLanguage, aiCompletionState, aiCompletionCacheRef, aiCompletionCursorRef, inlineAcceptCommandIdRef]);
+    }, [editorInstance, monacoInstance, activeLanguage, aiCompletionState, aiCompletionCacheRef, aiCompletionCursorRef]);
 
     // 1b. Tokenized ghost text overlay
     //
@@ -508,18 +505,6 @@ export const useEditorProviders = ({
             tokenizerWidgetRef.current = null;
         };
     }, [editorInstance, monacoInstance, activeLanguage, aiCompletionCacheRef, aiCompletionCursorRef]);
-
-    // 2. Register Command for Accept
-    useEffect(() => {
-        if (!editorInstance) return;
-        const commandId = editorInstance.addCommand(0, () => {
-            const cached = aiCompletionCacheRef.current;
-            if (cached?.suggestion) {
-                applyAiCompletionText(cached.suggestion);
-            }
-        });
-        inlineAcceptCommandIdRef.current = commandId;
-    }, [editorInstance, applyAiCompletionText, aiCompletionCacheRef, inlineAcceptCommandIdRef]);
 
     // 3. Hover Provider (Diagnostics with Fix Preview)
     useEffect(() => {
