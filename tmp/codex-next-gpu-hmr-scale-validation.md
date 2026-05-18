@@ -343,6 +343,20 @@ agent sees:
 - `synthi_compile`: trigger the actual compile path.
 - `synthi_wait_hmr`: wait for compile/HMR terminal events.
 - `synthi_screenshot`: capture the live GUI preview.
+- `synthi_click`, `synthi_mouse`, `synthi_keyboard`, and `synthi_click_text`:
+  interact with the running application or browser-visible session when the
+  test needs to press UI controls, type input, move the mouse, or exercise an
+  interactive app state.
+- `synthi_acquire_input` and `synthi_release_input`: take and release an input
+  lease when sending interactive input so concurrent human/agent actions are
+  easier to reason about.
+
+The next session should use these tools autonomously. It can attach to a
+workspace, trigger compiles, wait for HMR, capture screenshots, and interact
+with the application it is testing. Do not tell the user to click Run or inspect
+the preview manually unless all automation paths are blocked. The whole point of
+this validation is that the agent can drive the same public tools an end-user or
+agent workflow depends on.
 
 The relevant scripts are:
 
@@ -350,10 +364,31 @@ The relevant scripts are:
 mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs
 mcp/synthi-mcp/scripts/gpu-hmr-dynamic-workspace-test.mjs
 mcp/synthi-mcp/scripts/gpu-hmr-test.mjs
+mcp/synthi-mcp/scripts/live-test.mjs
+mcp/synthi-mcp/scripts/release-smoke.mjs
 ```
 
-The scale test should use MCP to prove the public path. A passing compiler log
-or a generated manifest is not enough if the user still sees a black preview.
+When generating a new seed-workspace or scale-test script, do not start from a
+blank page. There are many existing examples in `mcp/synthi-mcp/scripts/` for:
+
+- Creating a workspace through the collab/frontend APIs.
+- Writing batches of files into the workspace.
+- Staging and committing seeded workspace contents.
+- Spawning or attaching an MCP client.
+- Listing MCP tools.
+- Calling `synthi_compile`.
+- Waiting on `synthi_wait_hmr`.
+- Capturing and analyzing `synthi_screenshot` frames with `sharp`.
+- Reading worker logs and checking for HMR/GPU markers.
+- Persisting result JSON/text artifacts.
+
+Reuse those patterns. Prefer extracting small helpers or adding a new focused
+script beside the existing GPU HMR harnesses over inventing a separate ad-hoc
+test runner.
+
+The scale test should use MCP to prove the public path. A passing compiler log,
+generated manifest, or manually inspected browser is not enough if the user
+still sees a black preview or if MCP cannot reproduce the visible state.
 
 For screenshots, collect before/after evidence:
 
