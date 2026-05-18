@@ -14,6 +14,7 @@ import type { WaitArgs } from "../wait/index.js";
 import { dispatchAckRegistry, type PendingDispatch } from "../util/dispatch_ack_registry.js";
 import { leaseRegistry } from "../arbitration/lease.js";
 import { inputQueueDepth } from "../correctness/input_queue_depth.js";
+import { checkBrokerInputGate } from "../broker/index.js";
 import {
   errorFromException,
   errorResponse,
@@ -77,6 +78,8 @@ interface RawArgs {
   await_ack?: unknown;
   ack_timeout_ms?: unknown;
   lease_id?: unknown;
+  based_on_frame_seq?: unknown;
+  based_on_viewport?: unknown;
 }
 
 const VALID_ACTIONS = ["click", "move", "down", "up", "drag", "wheel", "double_click"] as const;
@@ -158,8 +161,6 @@ export async function mouseTool(args: unknown): Promise<ToolResponse> {
 
   // B2 measurement: count inputs dispatched while a compile is in
   // progress. No-op outside the compile window.
-  inputQueueDepth.recordDispatch(`mouse:${action}`);
-
   const button = typeof a.button === "string" ? (a.button as MouseButtonName) : "left";
   if (!["left", "right", "middle"].includes(button)) {
     return errorResponse("invalid_args", { field: "button", allowed: ["left", "right", "middle"] });
@@ -248,6 +249,16 @@ export async function mouseTool(args: unknown): Promise<ToolResponse> {
           });
         }
         const code = buttonNameToCode(button);
+        const brokerGate = await checkBrokerInputGate({
+          attached,
+          action: `mouse:${action}`,
+          scope: "mouse",
+          lease_id: a.lease_id,
+          based_on_frame_seq: a.based_on_frame_seq,
+          based_on_viewport: a.based_on_viewport,
+        });
+        if (brokerGate) return errorResponse(brokerGate.error, brokerGate);
+        inputQueueDepth.recordDispatch(`mouse:${action}`);
         const nFrames =
           action === "click" ? 2 :
           action === "double_click" ? 4 :
@@ -282,6 +293,16 @@ export async function mouseTool(args: unknown): Promise<ToolResponse> {
           return errorResponse("invalid_args", { field: "toX/toY", expected: "numbers" });
         }
         const code = buttonNameToCode(button);
+        const brokerGate = await checkBrokerInputGate({
+          attached,
+          action: "mouse:drag",
+          scope: "mouse",
+          lease_id: a.lease_id,
+          based_on_frame_seq: a.based_on_frame_seq,
+          based_on_viewport: a.based_on_viewport,
+        });
+        if (brokerGate) return errorResponse(brokerGate.error, brokerGate);
+        inputQueueDepth.recordDispatch("mouse:drag");
         if (awaitAck) ackAlloc = allocateDispatches(3, ackTimeoutMs);
         const ids = ackAlloc?.ids ?? [];
         const frames: string[] = [
@@ -294,6 +315,16 @@ export async function mouseTool(args: unknown): Promise<ToolResponse> {
       }
       case "wheel": {
         const deltaY = typeof a.deltaY === "number" ? a.deltaY : 0;
+        const brokerGate = await checkBrokerInputGate({
+          attached,
+          action: "mouse:wheel",
+          scope: "mouse",
+          lease_id: a.lease_id,
+          based_on_frame_seq: a.based_on_frame_seq,
+          based_on_viewport: a.based_on_viewport,
+        });
+        if (brokerGate) return errorResponse(brokerGate.error, brokerGate);
+        inputQueueDepth.recordDispatch("mouse:wheel");
         if (awaitAck) ackAlloc = allocateDispatches(1, ackTimeoutMs);
         const id = ackAlloc?.ids[0];
         await attached.channels.sendInput([encodeWheel(attached.sessionId, deltaY, id)]);

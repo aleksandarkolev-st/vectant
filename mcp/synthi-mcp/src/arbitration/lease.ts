@@ -21,8 +21,11 @@
 
 import { randomUUID } from "node:crypto";
 import { eventLog } from "../events/index.js";
+import type { BrokerErrorCode } from "../broker/errors.js";
 
 export type LeaseMode = "advisory" | "single-holder";
+export type LeaseScope = "mouse" | "keyboard";
+export type LeasePriority = "normal" | "urgent_human_override";
 
 export interface InputLease {
   lease_id: string;
@@ -30,6 +33,11 @@ export interface InputLease {
   expires_at: number;
   lease_ms: number;
   owner: string;
+  scope: LeaseScope[];
+  preemptible: boolean;
+  priority: LeasePriority;
+  reason: string | null;
+  continuous_owner_since: number;
 }
 
 export interface AcquireResult {
@@ -55,13 +63,42 @@ export interface DispatchBlocked {
   current: InputLease;
 }
 
+export interface LeaseValidationAllowed {
+  allowed: true;
+  lease: InputLease;
+}
+
+export interface LeaseValidationBlocked {
+  allowed: false;
+  error: Extract<BrokerErrorCode, "LEASE_REQUIRED" | "LEASE_EXPIRED" | "LEASE_DENIED" | "LEASE_PREEMPTED">;
+  current: InputLease | null;
+  detail: Record<string, unknown>;
+}
+
 const MIN_LEASE_MS = 50;
-const MAX_LEASE_MS = 10 * 60 * 1000; // 10 min
+export const DEFAULT_LEASE_MS = 15_000;
+export const MAX_LEASE_MS = 15_000;
+export const MAX_CONTINUOUS_OWNERSHIP_MS = 60_000;
 
 export function resolveLeaseMode(): LeaseMode {
   const raw = process.env["SYNTHI_LEASE_MODE"];
   if (raw === "single-holder") return "single-holder";
   return "advisory";
+}
+
+export function resolveLeaseOwner(): string {
+  const explicit = process.env["SYNTHI_AGENT_ID"] || process.env["SYNTHI_AGENT_SUBJECT"];
+  if (explicit && explicit.trim().length > 0) return explicit.trim();
+  return "mcp_agent";
+}
+
+function normalizeScope(scope: readonly LeaseScope[] | undefined): LeaseScope[] {
+  if (!scope || scope.length === 0) return ["mouse", "keyboard"];
+  const out: LeaseScope[] = [];
+  for (const item of scope) {
+    if ((item === "mouse" || item === "keyboard") && !out.includes(item)) out.push(item);
+  }
+  return out.length > 0 ? out : ["mouse", "keyboard"];
 }
 
 class LeaseRegistry {
@@ -82,10 +119,19 @@ class LeaseRegistry {
   acquireWithPolicy(
     lease_ms: number,
     owner: string = "mcp_agent",
-    opts: { takeover?: boolean } = {}
+    opts: {
+      takeover?: boolean;
+      scope?: readonly LeaseScope[];
+      preemptible?: boolean;
+      priority?: LeasePriority;
+      reason?: string | null;
+    } = {}
   ): AcquireResult | AcquireRejection {
     const current = this.currentLease();
-    if (resolveLeaseMode() === "single-holder" && current && !opts.takeover) {
+    const singleHolderRequired =
+      resolveLeaseMode() === "single-holder" ||
+      process.env["SYNTHI_BROKER_INPUT_MODE"] === "enforce";
+    if (singleHolderRequired && current && !opts.takeover) {
       return { ok: false, error: "lease_already_held", current };
     }
     let evicted: InputLease | undefined;
@@ -100,7 +146,7 @@ class LeaseRegistry {
         source: "mcp_internal",
       });
     }
-    const lease = this.mint(lease_ms, owner);
+    const lease = this.mint(lease_ms, owner, opts);
     return evicted ? { ok: true, lease, evicted } : { ok: true, lease };
   }
 
@@ -112,23 +158,123 @@ class LeaseRegistry {
     return { allowed: false, error: "input_lease_held_by_other", current };
   }
 
-  private mint(lease_ms: number, owner: string): InputLease {
+  validateForBrokerInput(
+    callerLeaseId: string | undefined,
+    scope: LeaseScope,
+    now: number = Date.now()
+  ): LeaseValidationAllowed | LeaseValidationBlocked {
+    if (!callerLeaseId) {
+      return {
+        allowed: false,
+        error: "LEASE_REQUIRED",
+        current: this.currentLease(),
+        detail: { scope },
+      };
+    }
+    this.evictExpired(now);
+    const lease = this.active.get(callerLeaseId) ?? null;
+    if (!lease) {
+      return {
+        allowed: false,
+        error: "LEASE_EXPIRED",
+        current: null,
+        detail: { lease_id: callerLeaseId, scope },
+      };
+    }
+    if (lease.expires_at <= now) {
+      this.active.delete(lease.lease_id);
+      this.acquireOrder.delete(lease.lease_id);
+      return {
+        allowed: false,
+        error: "LEASE_EXPIRED",
+        current: null,
+        detail: {
+          lease_id: callerLeaseId,
+          scope,
+          expires_at: lease.expires_at,
+          received_at: now,
+        },
+      };
+    }
+    if (!lease.scope.includes(scope)) {
+      return {
+        allowed: false,
+        error: "LEASE_DENIED",
+        current: lease,
+        detail: {
+          lease_id: callerLeaseId,
+          requested_scope: scope,
+          lease_scope: lease.scope,
+        },
+      };
+    }
+    return { allowed: true, lease };
+  }
+
+  renew(
+    lease_id: string,
+    extend_ms: number,
+    now: number = Date.now()
+  ): { ok: true; lease: InputLease } | { ok: false; error: "LEASE_EXPIRED"; detail: Record<string, unknown> } {
+    this.evictExpired(now);
+    const lease = this.active.get(lease_id);
+    if (!lease || lease.expires_at <= now) {
+      if (lease) {
+        this.active.delete(lease_id);
+        this.acquireOrder.delete(lease_id);
+      }
+      return { ok: false, error: "LEASE_EXPIRED", detail: { lease_id, received_at: now } };
+    }
+    const ms = Math.max(MIN_LEASE_MS, Math.min(MAX_LEASE_MS, Math.floor(extend_ms)));
+    const ownershipCeiling = lease.continuous_owner_since + MAX_CONTINUOUS_OWNERSHIP_MS;
+    const nextExpiresAt = Math.min(now + ms, ownershipCeiling);
+    const renewed: InputLease = {
+      ...lease,
+      expires_at: nextExpiresAt,
+      lease_ms: Math.max(0, nextExpiresAt - now),
+    };
+    this.active.set(lease_id, renewed);
+    eventLog.push({
+      kind: "console",
+      level: "info",
+      message: `[input_lease] renewed lease_id=${lease_id} expires_at=${renewed.expires_at}`,
+      source: "mcp_internal",
+    });
+    return { ok: true, lease: renewed };
+  }
+
+  private mint(
+    lease_ms: number,
+    owner: string,
+    opts: {
+      scope?: readonly LeaseScope[];
+      preemptible?: boolean;
+      priority?: LeasePriority;
+      reason?: string | null;
+    } = {}
+  ): InputLease {
     const ms = Math.max(MIN_LEASE_MS, Math.min(MAX_LEASE_MS, Math.floor(lease_ms)));
+    const acquiredAt = Date.now();
     const lease: InputLease = {
       lease_id: `lease_${randomUUID()}`,
-      acquired_at: Date.now(),
-      expires_at: Date.now() + ms,
+      acquired_at: acquiredAt,
+      expires_at: acquiredAt + ms,
       lease_ms: ms,
       owner,
+      scope: normalizeScope(opts.scope),
+      preemptible: opts.preemptible ?? true,
+      priority: opts.priority ?? "normal",
+      reason: opts.reason ?? null,
+      continuous_owner_since: acquiredAt,
     };
     this.acquireOrder.set(lease.lease_id, ++this.acquireCounter);
     this.active.set(lease.lease_id, lease);
     eventLog.push({
       kind: "console",
       level: "info",
-      message: `[input_lease] acquired lease_id=${lease.lease_id} ms=${ms} owner=${owner}`,
-      source: "mcp_internal",
-    });
+        message: `[input_lease] acquired lease_id=${lease.lease_id} ms=${ms} owner=${owner} scope=${lease.scope.join(",")}`,
+        source: "mcp_internal",
+      });
     return lease;
   }
 
@@ -180,8 +326,7 @@ class LeaseRegistry {
     return Array.from(this.active.values());
   }
 
-  private evictExpired(): void {
-    const now = Date.now();
+  private evictExpired(now: number = Date.now()): void {
     for (const [id, lease] of this.active) {
       if (lease.expires_at <= now) {
         this.active.delete(id);

@@ -8,6 +8,7 @@ import type { LogArgs, WaitArgs } from "../wait/index.js";
 import { dispatchAckRegistry, type PendingDispatch } from "../util/dispatch_ack_registry.js";
 import { leaseRegistry } from "../arbitration/lease.js";
 import { inputQueueDepth } from "../correctness/input_queue_depth.js";
+import { checkBrokerInputGate } from "../broker/index.js";
 import {
   errorFromException,
   errorResponse,
@@ -46,6 +47,8 @@ interface RawArgs {
   await_ack?: unknown;
   ack_timeout_ms?: unknown;
   lease_id?: unknown;
+  based_on_frame_seq?: unknown;
+  based_on_viewport?: unknown;
 }
 
 const VALID_ACTIONS = ["type", "key", "chord"] as const;
@@ -81,8 +84,6 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
       caller_lease_id: callerLeaseId ?? null,
     });
   }
-
-  inputQueueDepth.recordDispatch(`keyboard:${action}`);
 
   if (a.waitFor !== undefined) {
     const waitArgs = a.waitFor as WaitArgs & { timeoutMs?: number };
@@ -122,6 +123,17 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
   let recordedKeys: string[] = [];
   let ackResults: Array<{ dispatch_id: string; accepted: boolean; reason?: string; elapsedMs: number }> | null = null;
   try {
+    const brokerGate = await checkBrokerInputGate({
+      attached,
+      action: `keyboard:${action}`,
+      scope: "keyboard",
+      lease_id: a.lease_id,
+      based_on_frame_seq: a.based_on_frame_seq,
+      based_on_viewport: a.based_on_viewport,
+    });
+    if (brokerGate) return errorResponse(brokerGate.error, brokerGate);
+    inputQueueDepth.recordDispatch(`keyboard:${action}`);
+
     switch (action) {
       case "type": {
         if (typeof a.text !== "string") {

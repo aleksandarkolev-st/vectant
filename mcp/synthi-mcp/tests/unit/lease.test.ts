@@ -25,11 +25,24 @@ describe("leaseRegistry", () => {
     expect(a.expires_at - a.acquired_at).toBe(5000);
   });
 
-  it("acquire clamps lease_ms into [50, 600000]", () => {
+  it("acquire clamps lease_ms into [50, 15000]", () => {
     const tiny = leaseRegistry.acquire(1, "x");
     expect(tiny.lease_ms).toBe(50);
     const huge = leaseRegistry.acquire(24 * 60 * 60 * 1000, "y");
-    expect(huge.lease_ms).toBe(10 * 60 * 1000);
+    expect(huge.lease_ms).toBe(15_000);
+  });
+
+  it("leases carry D0 scope and audit fields", () => {
+    const lease = leaseRegistry.acquireWithPolicy(5000, "agent_a", {
+      scope: ["mouse"],
+      preemptible: false,
+      reason: "checkout_flow",
+    });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected acquire rejection");
+    expect(lease.lease.scope).toEqual(["mouse"]);
+    expect(lease.lease.preemptible).toBe(false);
+    expect(lease.lease.reason).toBe("checkout_flow");
   });
 
   it("release by id removes only that lease + surfaces not_found for unknown ids", () => {
@@ -65,5 +78,47 @@ describe("leaseRegistry", () => {
     leaseRegistry.acquire(5000, "x");
     leaseRegistry.release();
     expect(eventLog.size()).toBeGreaterThanOrEqual(before + 2);
+  });
+
+  it("renews active leases before expiry", () => {
+    const lease = leaseRegistry.acquire(15_000, "x");
+    const renewed = leaseRegistry.renew(lease.lease_id, 15_000, lease.acquired_at + 10_000);
+    expect(renewed.ok).toBe(true);
+    if (!renewed.ok) throw new Error("unexpected renewal rejection");
+    expect(renewed.lease.expires_at).toBe(lease.acquired_at + 25_000);
+    expect(renewed.lease.lease_ms).toBe(15_000);
+  });
+
+  it("rejects renewal after expiry", () => {
+    const lease = leaseRegistry.acquire(100, "x");
+    const renewed = leaseRegistry.renew(lease.lease_id, 15_000, lease.acquired_at + 200);
+    expect(renewed.ok).toBe(false);
+  });
+
+  it("validates broker input leases by id and scope", () => {
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "x", { scope: ["mouse"] });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected acquire rejection");
+    expect(leaseRegistry.validateForBrokerInput(lease.lease.lease_id, "mouse").allowed).toBe(true);
+    const blocked = leaseRegistry.validateForBrokerInput(lease.lease.lease_id, "keyboard");
+    expect(blocked.allowed).toBe(false);
+    if (blocked.allowed) throw new Error("unexpected validation success");
+    expect(blocked.error).toBe("LEASE_DENIED");
+  });
+
+  it("broker enforce mode rejects a second active lease without takeover", () => {
+    const prev = process.env["SYNTHI_BROKER_INPUT_MODE"];
+    process.env["SYNTHI_BROKER_INPUT_MODE"] = "enforce";
+    try {
+      const first = leaseRegistry.acquireWithPolicy(5_000, "a");
+      expect(first.ok).toBe(true);
+      const second = leaseRegistry.acquireWithPolicy(5_000, "b");
+      expect(second.ok).toBe(false);
+      if (second.ok) throw new Error("unexpected second lease");
+      expect(second.error).toBe("lease_already_held");
+    } finally {
+      if (prev === undefined) delete process.env["SYNTHI_BROKER_INPUT_MODE"];
+      else process.env["SYNTHI_BROKER_INPUT_MODE"] = prev;
+    }
   });
 });

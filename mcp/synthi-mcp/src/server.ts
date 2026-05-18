@@ -42,6 +42,7 @@ import { compileTool } from "./tools/compile.js";
 import { reportSourceStateTool } from "./tools/report_source_state.js";
 import { describeTool } from "./tools/describe.js";
 import { acquireInputTool } from "./tools/acquire_input.js";
+import { renewInputTool } from "./tools/renew_input.js";
 import { releaseInputTool } from "./tools/release_input.js";
 import { requestHumanTool } from "./tools/request_human.js";
 import { annotateAndAskTool } from "./tools/annotate_and_ask.js";
@@ -233,6 +234,19 @@ const TOOLS = [
           default: "left",
           description: "Mouse button.",
         },
+        lease_id: {
+          type: "string",
+          description: "Input lease id from synthi_acquire_input. Required when SYNTHI_BROKER_INPUT_MODE=enforce.",
+        },
+        based_on_frame_seq: {
+          type: "number",
+          description: "Frame seq the click is based on. Required when SYNTHI_BROKER_INPUT_MODE=enforce.",
+        },
+        based_on_viewport: {
+          type: "object",
+          properties: { w: { type: "number" }, h: { type: "number" }, dpr: { type: "number" } },
+          required: ["w", "h", "dpr"],
+        },
       },
       required: ["x", "y"],
     },
@@ -245,6 +259,19 @@ const TOOLS = [
       type: "object",
       properties: {
         text: { type: "string", description: "Text to type." },
+        lease_id: {
+          type: "string",
+          description: "Input lease id from synthi_acquire_input. Required when SYNTHI_BROKER_INPUT_MODE=enforce.",
+        },
+        based_on_frame_seq: {
+          type: "number",
+          description: "Frame seq the typing action is based on. Required when SYNTHI_BROKER_INPUT_MODE=enforce.",
+        },
+        based_on_viewport: {
+          type: "object",
+          properties: { w: { type: "number" }, h: { type: "number" }, dpr: { type: "number" } },
+          required: ["w", "h", "dpr"],
+        },
       },
       required: ["text"],
     },
@@ -457,7 +484,17 @@ const TOOLS = [
         },
         lease_id: {
           type: "string",
-          description: "Optional input-lease id (from synthi_acquire_input). Phase-1 wire-only: when a lease is held by another caller and this id doesn't match, the MCP emits a security event of code:\"rate_limit_warning\" with detail.code=\"input_without_current_lease\". Worker-side enforcement is phase 2c.",
+          description: "Input lease id from synthi_acquire_input. Required when SYNTHI_BROKER_INPUT_MODE=enforce.",
+        },
+        based_on_frame_seq: {
+          type: "number",
+          description: "Frame seq the action is based on. Required for broker-enforced input; rejected if stale or more than one frame behind.",
+        },
+        based_on_viewport: {
+          type: "object",
+          properties: { w: { type: "number" }, h: { type: "number" }, dpr: { type: "number" } },
+          required: ["w", "h", "dpr"],
+          description: "Optional viewport/DPR observed with based_on_frame_seq. Broker-enforced input rejects if the current viewport changed.",
         },
       },
       required: ["action"],
@@ -500,7 +537,17 @@ const TOOLS = [
         },
         lease_id: {
           type: "string",
-          description: "Optional input-lease id (from synthi_acquire_input). Same advisory semantics as synthi_mouse.lease_id.",
+          description: "Input lease id from synthi_acquire_input. Required when SYNTHI_BROKER_INPUT_MODE=enforce.",
+        },
+        based_on_frame_seq: {
+          type: "number",
+          description: "Frame seq the action is based on. Required for broker-enforced input; rejected if stale or more than one frame behind.",
+        },
+        based_on_viewport: {
+          type: "object",
+          properties: { w: { type: "number" }, h: { type: "number" }, dpr: { type: "number" } },
+          required: ["w", "h", "dpr"],
+          description: "Optional viewport/DPR observed with based_on_frame_seq. Broker-enforced input rejects if the current viewport changed.",
         },
       },
       required: ["action"],
@@ -549,20 +596,42 @@ const TOOLS = [
   {
     name: "synthi_acquire_input",
     description:
-      "Acquire an input lease for the session. Phase 1 records the lease + owner + expiry in the MCP event log; worker-side enforcement (actual single-holder gating) lands in phase 2c. Capability manifest reports arbitration.enforcement:'wire-only' today. Returns {lease_id, acquired_at, expires_at, lease_ms, owner, enforcement}.",
+      "Acquire a D0 input lease for the session. Owner is derived server-side; client-supplied owner is ignored. Default/max lease duration is 15000ms, renewable up to 60000ms continuous ownership. Required before broker-enforced input.",
     inputSchema: {
       type: "object",
       properties: {
         lease_ms: {
           type: "number",
-          description: "Lease duration in milliseconds. Clamped to [50, 600000]. Default 30000.",
+          description: "Lease duration in milliseconds. Clamped to [50, 15000]. Default 15000.",
         },
-        owner: {
+        scope: {
+          type: "array",
+          items: { type: "string", enum: ["mouse", "keyboard"] },
+          description: "Lease scope. Defaults to both mouse and keyboard.",
+        },
+        preemptible: {
+          type: "boolean",
+          description: "Whether the lease may be preempted by policy. Default true.",
+        },
+        reason: {
           type: "string",
-          description: "Optional short owner label stamped onto the lease (e.g. 'claude-code', 'cursor').",
+          description: "Short audit reason for acquiring input control.",
         },
       },
       required: [],
+    },
+  },
+  {
+    name: "synthi_renew_input",
+    description:
+      "Renew an active D0 input lease before expiry. Renewal after expiry deterministically returns LEASE_EXPIRED. Continuous ownership is capped at 60000ms.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        lease_id: { type: "string", description: "Lease id returned by synthi_acquire_input." },
+        extend_ms: { type: "number", description: "Renewal duration in ms. Clamped to [50, 15000]. Default 15000." },
+      },
+      required: ["lease_id"],
     },
   },
   {
@@ -1044,6 +1113,8 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await describeTool(args, signal ? { signal } : undefined)) as CallToolResult;
       case "synthi_acquire_input":
         return (await acquireInputTool(args)) as CallToolResult;
+      case "synthi_renew_input":
+        return (await renewInputTool(args)) as CallToolResult;
       case "synthi_release_input":
         return (await releaseInputTool(args)) as CallToolResult;
       case "synthi_request_human":

@@ -1,5 +1,12 @@
 import { session } from "../session.js";
-import { leaseRegistry, resolveLeaseMode } from "../arbitration/lease.js";
+import {
+  DEFAULT_LEASE_MS,
+  MAX_LEASE_MS,
+  leaseRegistry,
+  resolveLeaseMode,
+  resolveLeaseOwner,
+  type LeaseScope,
+} from "../arbitration/lease.js";
 import {
   errorResponse,
   jsonResponse,
@@ -20,17 +27,29 @@ import {
  * session from bypassing the MCP-local registry) is a follow-up — see
  * the worker's PeerRegistry scaffold.
  *
- * Input: {lease_ms:number, owner?:string, takeover?:boolean}.
- * Output: {ok, lease_id, acquired_at, expires_at, lease_ms, enforcement, evicted_lease_id?}.
+ * Input: {lease_ms:number, scope?:("mouse"|"keyboard")[], takeover?:boolean, reason?:string}.
+ * Output: {ok, lease_id, acquired_at, expires_at, lease_ms, owner, scope, enforcement, evicted_lease_id?}.
  */
 
 interface RawArgs {
   lease_ms?: unknown;
   owner?: unknown;
   takeover?: unknown;
+  scope?: unknown;
+  preemptible?: unknown;
+  reason?: unknown;
 }
 
-const DEFAULT_LEASE_MS = 30_000;
+function parseScope(raw: unknown): LeaseScope[] | "invalid" | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) return "invalid";
+  const out: LeaseScope[] = [];
+  for (const item of raw) {
+    if (item !== "mouse" && item !== "keyboard") return "invalid";
+    if (!out.includes(item)) out.push(item);
+  }
+  return out;
+}
 
 export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
   const a = (args ?? {}) as RawArgs;
@@ -44,13 +63,27 @@ export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
     }
     leaseMs = a.lease_ms;
   }
-  const owner = typeof a.owner === "string" && a.owner.length > 0 ? a.owner : "mcp_agent";
+  if (leaseMs > MAX_LEASE_MS) leaseMs = MAX_LEASE_MS;
+  const scope = parseScope(a.scope);
+  if (scope === "invalid") {
+    return errorResponse("invalid_args", { field: "scope", expected: "array of 'mouse'|'keyboard'" });
+  }
+  const owner = resolveLeaseOwner();
   const takeover = a.takeover === true;
+  const preemptible = typeof a.preemptible === "boolean" ? a.preemptible : true;
+  const reason = typeof a.reason === "string" && a.reason.length > 0 ? a.reason : null;
 
   const mode = resolveLeaseMode();
-  const enforcement = mode === "single-holder" ? "mcp-local" : "wire-only";
+  const enforcement = process.env["SYNTHI_BROKER_INPUT_MODE"] === "enforce"
+    ? "server"
+    : mode === "single-holder" ? "mcp-local" : "wire-only";
 
-  const result = leaseRegistry.acquireWithPolicy(leaseMs, owner, { takeover });
+  const result = leaseRegistry.acquireWithPolicy(leaseMs, owner, {
+    takeover,
+    ...(scope !== undefined ? { scope } : {}),
+    preemptible,
+    reason,
+  });
   if (!result.ok) {
     return errorResponse(result.error, {
       current_lease_id: result.current.lease_id,
@@ -66,6 +99,11 @@ export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
     expires_at: result.lease.expires_at,
     lease_ms: result.lease.lease_ms,
     owner: result.lease.owner,
+    scope: result.lease.scope,
+    preemptible: result.lease.preemptible,
+    priority: result.lease.priority,
+    reason: result.lease.reason,
+    continuous_owner_since: result.lease.continuous_owner_since,
     enforcement,
     ...(result.evicted ? { evicted_lease_id: result.evicted.lease_id } : {}),
   });

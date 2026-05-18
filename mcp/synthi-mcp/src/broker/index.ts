@@ -43,3 +43,10 @@ export {
   currentBrokerLifecycleEvent,
   recordBrokerFrameObservation,
 } from "./read_only.js";
+export {
+  brokerInputEnforced,
+  checkBrokerInputGate,
+  resolveBrokerInputMode,
+  type BrokerInputGateError,
+  type BrokerInputMode,
+} from "./input_gate.js";

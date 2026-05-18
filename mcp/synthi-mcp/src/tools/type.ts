@@ -1,5 +1,6 @@
 import { session } from "../session.js";
 import { encodeTypeSequence } from "../wire/input.js";
+import { checkBrokerInputGate } from "../broker/index.js";
 import {
   errorFromException,
   errorResponse,
@@ -9,6 +10,9 @@ import {
 
 interface TypeArgs {
   text?: unknown;
+  lease_id?: unknown;
+  based_on_frame_seq?: unknown;
+  based_on_viewport?: unknown;
 }
 
 export async function typeTool(args: unknown): Promise<ToolResponse> {
@@ -24,6 +28,15 @@ export async function typeTool(args: unknown): Promise<ToolResponse> {
 
   try {
     const attached = session.require();
+    const brokerGate = await checkBrokerInputGate({
+      attached,
+      action: "keyboard:type",
+      scope: "keyboard",
+      lease_id: a.lease_id,
+      based_on_frame_seq: a.based_on_frame_seq,
+      based_on_viewport: a.based_on_viewport,
+    });
+    if (brokerGate) return errorResponse(brokerGate.error, brokerGate);
     const frames = encodeTypeSequence(attached.sessionId, a.text);
     // MVP rate cap: 500 keys/sec. encodeTypeSequence emits 2 frames per char
     // (down+up), so 2ms between frames → ≤500 keys/sec.

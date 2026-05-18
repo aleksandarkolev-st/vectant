@@ -1,5 +1,6 @@
 import { currentEnrichedProvider, enrichedAvailable } from "../enriched/provider.js";
 import { MAX_PENDING } from "../escape_hatch/queue.js";
+import { resolveBrokerInputMode } from "../broker/input_gate.js";
 
 /**
  * Protocol version + capability manifest. Returned from `synthi_attach` so
@@ -80,6 +81,17 @@ export interface CapabilityManifest {
     endpoint?: string;
     reason?: string;
   };
+  broker?: {
+    read_only_observation: boolean;
+    normalized_errors: boolean;
+    replay_cursor: boolean;
+    input_mode: "shadow" | "enforce";
+    lease_d0: {
+      default_lease_ms: number;
+      max_lease_ms: number;
+      max_continuous_ownership_ms: number;
+    };
+  };
 }
 
 /**
@@ -140,6 +152,9 @@ export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate
 };
 
 function resolveArbitrationManifest(): CapabilityManifest["arbitration"] {
+  if (resolveBrokerInputMode() === "enforce") {
+    return { input_lease_supported: true, enforcement: "server" };
+  }
   const mode = process.env["SYNTHI_LEASE_MODE"] === "single-holder" ? "mcp-local" : "wire-only";
   return { input_lease_supported: true, enforcement: mode };
 }
@@ -187,6 +202,17 @@ export function buildManifest(
     local_vision: localUrl
       ? { available: true, endpoint: localUrl }
       : { available: false, reason: "SYNTHI_LOCAL_VISION_URL_not_set" },
+    broker: {
+      read_only_observation: true,
+      normalized_errors: true,
+      replay_cursor: true,
+      input_mode: resolveBrokerInputMode(),
+      lease_d0: {
+        default_lease_ms: 15_000,
+        max_lease_ms: 15_000,
+        max_continuous_ownership_ms: 60_000,
+      },
+    },
   };
   return manifest;
 }
