@@ -112,6 +112,9 @@ _SDL_RENDER_API_RE = re.compile(r"\bSDL_Render[A-Za-z0-9_]*\s*\(")
 _SDL_SUBSTANTIAL_DRAW_RE = re.compile(
     r"\bSDL_Render(?:FillRect|DrawRect|DrawLine|DrawLines|DrawPoints|Copy|CopyEx|Geometry)\s*\("
 )
+_GUI_DEVICE_POINTER_DEREF_RE = re.compile(
+    r"(?:->|\.)\s*(?P<name>(?:d_|device)[A-Za-z0-9_]*)\s*\["
+)
 
 _NEW_FILE_OPS = {"create", "new", "add_file"}
 
@@ -792,6 +795,22 @@ def verify_split_output(
                     "backend-specific representation from preserved state."
                 ),
                 offending_module=gui_path,
+            )
+        )
+    device_deref = _GUI_DEVICE_POINTER_DEREF_RE.search(gui_source)
+    if device_deref:
+        violations.append(
+            Violation(
+                rule="gui_dereferences_device_pointer",
+                message=(
+                    f"The gui role indexes {device_deref.group('name')} as if "
+                    "it were host memory. Device pointers allocated with "
+                    "cudaMalloc/hipMalloc are not CPU-addressable in "
+                    "gui_on_render; copy GPU outputs into host-visible mirror "
+                    "fields in core_on_update before rendering."
+                ),
+                offending_module=gui_path,
+                offending_symbol=device_deref.group("name"),
             )
         )
     if re.search(r"\bSDL_GetWindowFromID\s*\(\s*1\s*\)", gui_source):

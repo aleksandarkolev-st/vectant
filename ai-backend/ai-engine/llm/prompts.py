@@ -3976,6 +3976,13 @@ the device outputs back after `synthi_gpu_launch` before the GUI reads them.
 Device-only HMR edits must be able to change what `gui_on_render` draws without
 changing the host ABI.
 
+Never dereference or index CUDA/HIP device pointers in `gui_on_render`.
+Pointers named like `d_particles`, `device_x`, or other cudaMalloc/hipMalloc
+results are GPU addresses and will crash when read by SDL/OpenGL/CPU drawing
+code. Store host mirrors such as `particles`, `x`, `y`, or `rgba` in `AppState`
+and update those mirrors in `core_on_update` with `cudaMemcpy`/`hipMemcpy` after
+the GPU launch.
+
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 
 Synthi does not hot-swap arbitrary raw CUDA/HIP source as-is. Your job

@@ -374,6 +374,30 @@ def test_split_rejects_sdl_present_and_sparse_point_render():
     assert "gui_render_too_sparse" in rules
 
 
+def test_split_rejects_gui_device_pointer_dereference():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct Particle { float x; float y; }; struct AppState { Particle* d_particles; int n; };',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { &d_particles, &n }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
+        "gui.cpp": (
+            '#include <SDL2/SDL.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            'auto* s = (AppState*)state_ptr; '
+            'SDL_Rect r{(int)s->d_particles[0].x, (int)s->d_particles[0].y, 8, 8}; '
+            'SDL_RenderFillRect((SDL_Renderer*)0, &r); '
+            '}'
+        ),
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.cu": 'extern "C" __global__ void step(float*) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert any(
+        v.rule == "gui_dereferences_device_pointer"
+        and v.offending_symbol == "d_particles"
+        for v in r.violations
+    )
+
+
 def test_split_rejects_missing_lifecycle_exports_and_runtime_redeclaration():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct DeviceDescriptor { int bad; };',
