@@ -4300,6 +4300,12 @@ ROCm/HIP must not. A ROCm `device_flags` list should usually be
 - `gui_on_render` MUST perform concrete drawing that produces visible
   non-black frames. Placeholder comments, TODOs, and empty render bodies are
   invalid.
+- If `gui_on_render` draws from host-visible mirror arrays copied from GPU
+  buffers, those mirrors must contain varied, on-screen values before the
+  first render. Do not `memset` rendered positions/pixels to all zeroes or
+  update every particle/pixel with the same constant so primitives overlap.
+  Inline the user's constructor/setup math from the provided project files,
+  or use an init kernel and copy the initialized data back before rendering.
 - Preserve the user's intent: kernel logic, buffer sizes, launch
   shapes, frame timing — all unchanged.
 - Preserve device-source semantics exactly. Every original kernel branch,

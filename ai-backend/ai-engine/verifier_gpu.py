@@ -125,6 +125,7 @@ _GPU_INIT_KERNEL_LAUNCH_RE = re.compile(
     r"\bsynthi_gpu_launch\s*\([^;]*\"[^\"]*(?:init|seed|setup|reset)[^\"]*\"",
     re.IGNORECASE | re.DOTALL,
 )
+_GUI_HOST_MIRROR_INDEX_RE = re.compile(r"(?:->|\.)\s*(?P<name>h_[A-Za-z_][A-Za-z0-9_]*)\s*\[")
 
 _NEW_FILE_OPS = {"create", "new", "add_file"}
 
@@ -845,6 +846,36 @@ def verify_split_output(
                 offending_symbol=device_deref.group("name"),
             )
         )
+    rendered_host_mirrors = {
+        match.group("name") for match in _GUI_HOST_MIRROR_INDEX_RE.finditer(gui_source)
+    }
+    for mirror in sorted(rendered_host_mirrors):
+        zeroed_mirror = re.search(
+            rf"\bmemset\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*(?:->|\.)\s*)?"
+            rf"{re.escape(mirror)}\s*,\s*0\s*,",
+            core_source,
+        ) or re.search(
+            rf"\bstd::fill(?:_n)?\s*\([^;]*\b{re.escape(mirror)}\b[^;]*,\s*(?:0|0\.0f?)\s*\)",
+            core_source,
+        )
+        if zeroed_mirror:
+            violations.append(
+                Violation(
+                    rule="host_visible_mirror_zeroed_for_render",
+                    message=(
+                        f"The gui role renders coordinates or pixels from "
+                        f"{mirror}, but the core role initializes that host-visible "
+                        "mirror entirely to zero. That makes generated primitives "
+                        "overlap at the origin or stay black in first-frame screenshot "
+                        "validation. Populate rendered host mirrors with varied, "
+                        "on-screen initial values from the user's setup logic, or "
+                        "launch a real init kernel and copy those values back before "
+                        "the first render."
+                    ),
+                    offending_module=core_path,
+                    offending_symbol=mirror,
+                )
+            )
     if re.search(r"\bSDL_GetWindowFromID\s*\(\s*1\s*\)", gui_source):
         violations.append(
             Violation(

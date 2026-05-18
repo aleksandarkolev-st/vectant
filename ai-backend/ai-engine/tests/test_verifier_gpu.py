@@ -417,6 +417,37 @@ def test_split_rejects_uninitialized_device_buffers():
     assert any(v.rule == "device_buffers_not_initialized" for v in r.violations)
 
 
+def test_split_rejects_zeroed_host_mirror_used_for_render():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* d_particles; float* h_particles; int n; void* renderer; };',
+        "core.cpp": (
+            '#include <hip/hip_runtime.h>\n'
+            'extern "C" void* core_on_load(void*, void* renderer) { '
+            'static AppState s; s.renderer = renderer; s.n = 1024; '
+            'hipMalloc(&s.d_particles, 8192); s.h_particles = new float[2048]; '
+            'memset(s.h_particles, 0, 8192); '
+            'hipMemcpy(s.d_particles, s.h_particles, 8192, hipMemcpyHostToDevice); '
+            'return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { &d_particles, &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include <SDL2/SDL.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            'auto* s = (AppState*)state_ptr; SDL_Rect r = { '
+            '(int)s->h_particles[0], (int)s->h_particles[1], 2, 2 }; '
+            'SDL_RenderFillRect((SDL_Renderer*)s->renderer, &r); }'
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.cu": 'extern "C" __global__ void step(float*, int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert any(v.rule == "host_visible_mirror_zeroed_for_render" for v in r.violations)
+
+
 def test_split_allows_device_init_kernel_before_update():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* d_particles; int n; };',
