@@ -318,6 +318,18 @@ class McpClient {
     if (!textBlock?.text) return {};
     try { return JSON.parse(textBlock.text); } catch { return { raw: textBlock.text }; }
   }
+
+  async toolCallRaw(name, args, timeoutMs = CFG.mcpRequestTimeoutMs) {
+    const res = await this.request('tools/call', { name, arguments: args }, timeoutMs);
+    const content = Array.isArray(res?.content) ? res.content : [];
+    const textBlock = content.find((b) => b?.type === 'text');
+    if (res.isError) throw new Error(`tool ${name} isError: ${textBlock?.text ?? JSON.stringify(res.content)}`);
+    let json = {};
+    if (textBlock?.text) {
+      try { json = JSON.parse(textBlock.text); } catch { json = { raw: textBlock.text }; }
+    }
+    return { json, content };
+  }
 }
 
 let mcpState = null;
@@ -852,6 +864,29 @@ async function compileGeneratedDevice(split, editedDevice) {
   }, CFG.hotSwapTimeoutMs);
 }
 
+async function assertMcpScreenshot() {
+  const state = await ensureMcpAttached();
+  const shot = await state.client.toolCallRaw(
+    'synthi_screenshot',
+    { freshness_max_ms: 15000 },
+    30000,
+  );
+  const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
+  const meta = shot.json || {};
+  const width = Number(meta.w || meta.width || 0);
+  const height = Number(meta.h || meta.height || 0);
+  const bytes = image ? Math.floor(image.data.length * 3 / 4) : 0;
+  const ok = width >= 320 && height >= 240 && bytes > 4096;
+  record(
+    'mcp screenshot after hmr',
+    ok ? 'pass' : 'fail',
+    ok
+      ? `${width}x${height} seq=${meta.seq ?? 'n/a'} bytes~${bytes}`
+      : `invalid screenshot meta=${JSON.stringify(meta).slice(0, 160)} bytes~${bytes}`,
+  );
+  if (!ok) throw new Error('MCP screenshot after HMR did not return a valid frame');
+}
+
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await resolveDockerContainers();
@@ -933,6 +968,8 @@ async function run() {
     secondStart,
   );
   record('device-only GPU HMR observed', hotSwap.matched ? 'pass' : 'fail', hotSwap.snippet || 'no device-only reload marker');
+
+  await assertMcpScreenshot();
 
   await sleep(2000);
   const afterReload = await readWorkerLogTail(4 * 1024 * 1024, secondStart?.at ? { since: secondStart.at } : {});
