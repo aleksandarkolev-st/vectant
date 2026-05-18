@@ -94,6 +94,14 @@ _GLOBAL_DECL_RE = re.compile(
     re.MULTILINE,
 )
 _QUOTED_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
+_FORBIDDEN_GPU_RUNTIME_ACCESSOR_RE = re.compile(
+    r"\b(?P<name>"
+    r"synthi_get_gpu_context|"
+    r"synthi_get_context|"
+    r"synthi_get_gpu_runtime|"
+    r"synthi_gpu_context"
+    r")\s*\("
+)
 
 _NEW_FILE_OPS = {"create", "new", "add_file"}
 
@@ -599,6 +607,21 @@ def verify_split_output(
                     "copy preserved fields from prev_state on hot reload."
                 ),
                 offending_module=core_path,
+            )
+        )
+    for match in _FORBIDDEN_GPU_RUNTIME_ACCESSOR_RE.finditer(core_source):
+        violations.append(
+            Violation(
+                rule="invented_gpu_runtime_accessor",
+                message=(
+                    f"The core role calls {match.group('name')}(), but "
+                    "synthi_gpu_runtime.h does not expose a GPU context getter. "
+                    "Do not invent runtime accessors; pass nullptr to "
+                    "synthi_gpu_launch/synthi_register unless the ABI provides "
+                    "a real SynthiGpuRuntime* handle."
+                ),
+                offending_module=core_path,
+                offending_symbol=match.group("name"),
             )
         )
     if re.search(r'extern\s+"C"[^;{\n]*\b(?:device_descriptor|device_on_load|device_kernel_sig_hash)\s*\(', device_source):

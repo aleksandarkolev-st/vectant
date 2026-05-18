@@ -3974,11 +3974,16 @@ real runtime code/header surface, not prose:
   - raw `kernel<<<grid, block, shared, stream>>>(args...)` launch sites
     in host code MUST become calls to:
 
-        synthi_gpu_launch(gpu, "kernel", grid, block, shared, stream,
+        synthi_gpu_launch(nullptr, "kernel", grid, block, shared, stream,
                           { &arg0, &arg1, ... });
 
     The final argument must be an initializer-list literal. Do not create
     `void* args[]` and pass that array; it will not match the runtime helper.
+    The first argument is a `SynthiGpuRuntime*`. The current runtime boundary
+    does not expose a getter; pass `nullptr` unless a real ABI-provided handle
+    is already available. Never call or invent `synthi_get_gpu_context()`,
+    `synthi_get_context()`, or similar helpers.
+
     Every initializer-list entry must be the address of a real host-side
     argument variable (`&devicePtr`, `&count`, `&dt`). Never cast scalar
     values or bit patterns to `const void*` / `uintptr_t`; that creates fake
@@ -4003,7 +4008,7 @@ real runtime code/header surface, not prose:
         float cy_arg = HEIGHT * 0.5f;
         float speed_arg = 2.35f;
         unsigned long long frame_arg = state->frame++;
-        synthi_gpu_launch(gpu, "particle_flow", grid, block, 0, stream,
+        synthi_gpu_launch(nullptr, "particle_flow", grid, block, 0, stream,
                           { &state->deviceX, &state->deviceY, &balls_arg,
                             &cx_arg, &cy_arg, &speed_arg, &frame_arg });
 
@@ -4232,6 +4237,9 @@ ROCm/HIP must not. A ROCm `device_flags` list should usually be
 - Every kernel referenced in any `synthi_gpu_launch(...)` call must be
   declared in device.cu/device.hip. Raw `kernel<<<...>>>` host launches
   are invalid split output.
+- Do not call invented GPU runtime accessors such as
+  `synthi_get_gpu_context()` or `synthi_get_context()`. Pass `nullptr` as the
+  `SynthiGpuRuntime*` argument unless a real ABI-provided handle exists.
 - Every kernel declared in device.cu/device.hip must appear in
   <synthi_kernel_hashes>.
 - `shared.h` MUST NOT redeclare `DeviceDescriptor`; it comes from
