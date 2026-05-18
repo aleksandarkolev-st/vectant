@@ -13,8 +13,10 @@
  * Behaviour:
  *   - Type to filter themes by name
  *   - Arrow Up/Down navigates within a column; Left/Right switches column
- *   - Selection only highlights — the live UI does not preview a theme
- *   - Enter / click confirms; Escape cancels
+ *   - Selection only highlights — the live UI does not preview on hover
+ *   - HOLD RIGHT-CLICK on a row to preview that theme; the picker hides
+ *     while held and the preview is reverted on release
+ *   - Enter / left-click confirms; Escape cancels
  *   - Grouped within each column by source: Built-in → Extensions → User
  */
 
@@ -27,6 +29,8 @@ import {
   selectUserThemes,
   setActiveTheme,
   deleteUserTheme,
+  previewTheme,
+  clearPreview,
 } from '@/redux/themeSlice';
 import { Palette, Check, Sun, Moon, MonitorSmartphone, Plus, Pencil, Trash2 } from 'lucide-react';
 import { useThemeCreator } from '@/components/ThemeCreator';
@@ -120,6 +124,7 @@ function ThemePickerOverlay({ onClose }) {
     return active?.type === 'light' ? 'light' : 'dark';
   });
   const [selectedIdx, setSelectedIdx] = useState(0);
+  const [previewingThemeId, setPreviewingThemeId] = useState(null);
   const inputRef = useRef(null);
   const listRef = useRef(null);
 
@@ -168,6 +173,31 @@ function ThemePickerOverlay({ onClose }) {
     );
     items[selectedIdx]?.scrollIntoView({ block: 'nearest' });
   }, [selectedIdx, column]);
+
+  // ── Right-click preview lifecycle ────────────────────────
+  // While a preview is active, listen globally for mouse-up / window blur
+  // to revert. We also clear on unmount so closing the picker mid-preview
+  // never leaves a stale preview applied.
+  useEffect(() => {
+    if (!previewingThemeId) return;
+    const stop = () => {
+      dispatch(clearPreview());
+      setPreviewingThemeId(null);
+    };
+    window.addEventListener('mouseup', stop);
+    window.addEventListener('blur', stop);
+    return () => {
+      window.removeEventListener('mouseup', stop);
+      window.removeEventListener('blur', stop);
+    };
+  }, [previewingThemeId, dispatch]);
+
+  useEffect(() => () => { dispatch(clearPreview()); }, [dispatch]);
+
+  const startPreview = useCallback((themeId) => {
+    dispatch(previewTheme(themeId));
+    setPreviewingThemeId(themeId);
+  }, [dispatch]);
 
   // ── Confirm / cancel ─────────────────────────────────────
   const confirm = useCallback((themeId) => {
@@ -253,6 +283,7 @@ function ThemePickerOverlay({ onClose }) {
         key={theme.id}
         data-theme-item
         data-column={colName}
+        title="Hold right-click to preview"
         className={cn(
           'group flex items-center gap-2 px-3 py-1.5 cursor-pointer text-sm transition-colors duration-75',
           isSelected && 'ring-1 ring-inset'
@@ -265,6 +296,13 @@ function ThemePickerOverlay({ onClose }) {
           ringColor: isSelected ? 'var(--accent-primary)' : undefined,
         }}
         onClick={() => confirm(theme.id)}
+        onContextMenu={(e) => e.preventDefault()}
+        onMouseDown={(e) => {
+          if (e.button === 2) {
+            e.preventDefault();
+            startPreview(theme.id);
+          }
+        }}
         onMouseEnter={() => {
           setColumn(colName);
           setSelectedIdx(idx);
@@ -398,10 +436,18 @@ function ThemePickerOverlay({ onClose }) {
     );
   };
 
+  const isPreviewing = previewingThemeId !== null;
+
   return (
     <div
       className="fixed inset-0 z-[9999] flex items-start justify-center pt-[15vh]"
-      style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)' }}
+      style={{
+        background: 'rgba(0,0,0,0.45)',
+        backdropFilter: 'blur(2px)',
+        opacity: isPreviewing ? 0 : 1,
+        pointerEvents: isPreviewing ? 'none' : 'auto',
+        transition: 'opacity 80ms ease-out',
+      }}
       onClick={backdropClick}
     >
       <div
@@ -465,7 +511,7 @@ function ThemePickerOverlay({ onClose }) {
             color: 'var(--text-muted)',
           }}
         >
-          <span>↑↓ Navigate &middot; ←→ Switch column &middot; Enter Confirm &middot; Esc Cancel</span>
+          <span>↑↓ Navigate &middot; ←→ Switch column &middot; Right-click hold to preview &middot; Enter Confirm &middot; Esc Cancel</span>
           <span>Ctrl+K Ctrl+T</span>
         </div>
       </div>
