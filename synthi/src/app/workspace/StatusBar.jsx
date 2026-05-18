@@ -488,7 +488,7 @@ function StatusBarInner({
             />
           </div>
         )}
-        <div className="status-island-pill-wrapper relative w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))]">
+        <div className="status-island-pill-wrapper relative w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))] flex justify-center">
           {/* Build-controls island — hugs the right edge of the status island
               wrapper, vertically centered. Floats just outside the status pill
               so the status pill remains exactly centered on the page. Hidden
@@ -544,30 +544,20 @@ function StatusBarInner({
                 lives in the keyframes' 100% (fill-mode: both). */}
             <div
               aria-hidden="true"
-              className={`pointer-events-none absolute inset-[-1px] ${isEntering ? 'status-island-entrance-halo' : ''}`}
+              className={`status-island-halo-bg pointer-events-none absolute inset-[-1px] rounded-full ${isEntering ? 'status-island-entrance-halo' : ''}`}
               style={{
                 background: 'var(--brand-gradient-horizontal)',
                 filter: 'blur(5px)',
                 opacity: isEntering ? undefined : 0.16,
                 transform: 'translateZ(0) scale(1.006)',
-                /* Halo morphs in lockstep with the pill silhouette so
-                   it never reads as round-behind-rectangle. */
-                borderRadius: phase === 'expanded' ? '12px' : '999px',
-                transition: 'border-radius 440ms cubic-bezier(0.32, 0.72, 0, 1)',
               }}
             />
             <div
-              className={`status-island relative z-10 h-7 text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap ${isEntering ? 'status-island-entrance-shell status-island-entering' : ''} ${phase === 'collapsing' ? 'status-island-collapsing-shell' : ''} ${isCompact ? 'is-compact' : ''}`}
+              className={`status-island relative z-10 h-7 rounded-full text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap ${isEntering ? 'status-island-entrance-shell status-island-entering' : ''} ${phase === 'collapsing' ? 'status-island-collapsing-shell' : ''} ${isCompact ? 'is-compact' : ''}`}
               style={{
                 background:
                   'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, var(--brand-gradient-horizontal) border-box',
                 border: '1px solid transparent',
-                /* Border-radius morphs from 999px (round) when collapsed
-                   or entering, to 10px (rounded rectangle) when fully
-                   expanded. The transition runs in parallel to the
-                   transform scale so the shape eases as the island
-                   unfurls — without touching the existing keyframes. */
-                borderRadius: phase === 'expanded' ? '10px' : '999px',
                 /* Drop shadow stays through the morph — paint-only and cheap.
                    Insets give the raised feel. */
                 boxShadow:
@@ -582,34 +572,9 @@ function StatusBarInner({
                 WebkitBackdropFilter: 'blur(14px) saturate(160%)',
                 transition:
                   'backdrop-filter 240ms ease-out, ' +
-                  '-webkit-backdrop-filter 240ms ease-out, ' +
-                  'border-radius 440ms cubic-bezier(0.32, 0.72, 0, 1)',
+                  '-webkit-backdrop-filter 240ms ease-out',
               }}
             >
-              {/* Permanent bracket caps — left + right of the pill, with
-                  a tiny gap. They scale with the pill (children of the
-                  scaled element) so they ride the entrance/collapse
-                  morph naturally. Hidden during the 'logo' phase because
-                  the VectantLogoCollapsed component renders its own pair
-                  inside the V button at that point. */}
-              {hasCollapsedOnce && (
-                <>
-                  <img
-                    src="/vectant/left_bracket_full.png"
-                    alt=""
-                    aria-hidden="true"
-                    className="status-island-cap-bracket status-island-cap-bracket--left"
-                    draggable={false}
-                  />
-                  <img
-                    src="/vectant/right_bracket_full.png"
-                    alt=""
-                    aria-hidden="true"
-                    className="status-island-cap-bracket status-island-cap-bracket--right"
-                    draggable={false}
-                  />
-                </>
-              )}
               <div className={`status-island-row flex h-full items-center px-4 ${isEntering ? 'status-island-entrance-content' : ''} ${phase === 'collapsing' ? 'status-island-collapse-content' : ''}`}>
               {/* ── LEFT ZONE — file/build state. flex-shrink-0 so a long
             language name in the right zone can't squeeze branch / problems
@@ -635,8 +600,8 @@ function StatusBarInner({
             click can never accidentally reposition the island. */}
         {dragHandle}
         {/* Branch */}
-        <div className="flex items-center rounded-md px-1">
-          <BranchSelector slug={slug} compact={isCompact} />
+        <div className="status-island-branch flex items-center rounded-md px-1">
+          <BranchSelector slug={slug} />
         </div>
 
         {/* Problems */}

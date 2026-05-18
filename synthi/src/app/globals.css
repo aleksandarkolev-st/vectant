@@ -2133,13 +2133,15 @@
   animation: status-island-collapse-content 140ms ease-in both;
 }
 
-/* Ambient glow halo also fades fast — it lives outside the pill and
-   would otherwise hang around as a bright smear while the shell
-   collapses behind it. */
-.status-island-phase--collapsing .status-island-entrance-halo,
-.status-island-phase--collapsing [class*="status-island-entrance-halo"] {
-  opacity: 0 !important;
+/* Ambient glow halo also fades fast — it lives as a sibling div with
+   inline opacity: 0.16 once the entrance settles, so we target the
+   stable .status-island-halo-bg class (NOT the temporary entrance
+   class which only exists during first mount). */
+.status-island-halo-bg {
   transition: opacity 140ms ease-in;
+}
+.status-island-phase--collapsing .status-island-halo-bg {
+  opacity: 0 !important;
 }
 
 /* Drop backdrop-filter for the same compositor reason as during
@@ -2172,71 +2174,105 @@
   to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 }
 
-/* ── Cap brackets on the expanded pill ─────────────────────────────
-   Two bracket images sit just outside the pill's L/R edges with a 1px
-   gap, becoming permanent decoration on the expanded silhouette. They
-   are CHILDREN of the .status-island so they inherit its transform —
-   when the pill scales during entrance/collapse, the brackets scale
-   with it, staying flush to the edges throughout the morph.
+/* ── Compact mode (shrink, not hide) ───────────────────────────────
+   Per user feedback: snapping display:none feels too rigid. Instead,
+   each hideable element shrinks its width + opacity + margins over
+   240ms so the island bunches up smoothly.
 
-   They're hidden in 'logo' phase because the VectantLogoCollapsed
-   component renders its own pair (inside the V button, in a tight
-   logo formation, not at the pill edges). */
-.status-island-cap-bracket {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  height: 28px;
-  width: auto;
-  pointer-events: none;
-  user-select: none;
-  z-index: 11;
+   .status-island-label   → text spans (Heal / Operator / Synced / ...)
+   .status-island-number  → numeric counts (problems, users, healing)
+   .status-island-cursor  → cursor position (Ln/Col)
+
+   Notes:
+   - max-width is the workhorse — it animates fine and works for
+     inline / inline-block / flex children.
+   - We override display: inline → inline-block on labels because max-
+     width doesn't apply to pure inline elements; overflow:hidden +
+     vertical-align:middle keep the visual identical when expanded.
+   - The Tailwind `hidden 2xl:inline` pattern still hides labels below
+     2xl so this only animates at the breakpoint where labels render. */
+
+.status-island .status-island-label {
+  display: inline-block;
+  overflow: hidden;
+  white-space: nowrap;
+  vertical-align: middle;
+  max-width: 12ch;
   opacity: 1;
-  transition: opacity 200ms ease-out;
+  transition:
+    max-width 240ms ease-out,
+    opacity 200ms ease-out,
+    margin 240ms ease-out,
+    padding 240ms ease-out;
 }
-
-.status-island-cap-bracket--left {
-  /* Right edge of bracket sits 1px to the left of the pill's left edge. */
-  right: calc(100% + 1px);
-}
-
-.status-island-cap-bracket--right {
-  /* Left edge of bracket sits 1px to the right of the pill's right edge. */
-  left: calc(100% + 1px);
-}
-
-/* Logo phase: cap brackets off (the logo's own brackets are showing). */
-.status-island-phase--logo .status-island-cap-bracket {
+.status-island.is-compact .status-island-label {
+  max-width: 0 !important;
   opacity: 0;
+  margin-left: 0;
+  margin-right: 0;
+  padding-left: 0;
+  padding-right: 0;
 }
 
-/* Expanding: fade in toward the end so they appear AS the pill
-   reaches full width — reads as the brackets "snapping" into place
-   alongside the pill silhouette. */
-.status-island-phase--expanding .status-island-cap-bracket {
+.status-island .status-island-number {
+  display: inline-block;
+  overflow: hidden;
+  white-space: nowrap;
+  vertical-align: middle;
+  max-width: 4ch;
+  opacity: 1;
+  transition: max-width 240ms ease-out, opacity 200ms ease-out, margin 240ms ease-out;
+}
+.status-island.is-compact .status-island-number {
+  max-width: 0;
   opacity: 0;
-  animation: status-island-cap-fade-in 220ms ease-out 480ms both;
-}
-@keyframes status-island-cap-fade-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+  margin-left: 0;
+  margin-right: 0;
 }
 
-/* Collapsing: fade out at the very start so they don't hover in place
-   while the pill shrinks beneath them. */
-.status-island-phase--collapsing .status-island-cap-bracket {
-  opacity: 0;
-  transition: opacity 120ms ease-in;
+.status-island .status-island-cursor {
+  overflow: hidden;
+  max-width: 120px;
+  opacity: 1;
+  transition:
+    max-width 240ms ease-out,
+    opacity 200ms ease-out,
+    padding 240ms ease-out,
+    margin 240ms ease-out;
 }
-
-/* ── Compact mode ──────────────────────────────────────────────────── */
-/* Hides all text labels in the expanded island. Per the user's
-   spec: icons + dots only — every textual readout including counts
-   and the cursor position goes away. */
-.status-island.is-compact .status-island-label,
-.status-island.is-compact .status-island-number,
 .status-island.is-compact .status-island-cursor {
-  display: none !important;
+  max-width: 0;
+  opacity: 0;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* BranchSelector — strip the text + chevron via CSS targeting on the
+   wrapper. Keeps the GitBranch icon (first svg) visible. Uses the same
+   shrink language as the rest so it joins the bunch-up animation. */
+.status-island .status-island-branch button > span,
+.status-island .status-island-branch button > svg:last-child {
+  overflow: hidden;
+  max-width: 12ch;
+  opacity: 1;
+  transition: max-width 240ms ease-out, opacity 200ms ease-out, margin 240ms ease-out;
+}
+.status-island.is-compact .status-island-branch button > span,
+.status-island.is-compact .status-island-branch button > svg:last-child {
+  max-width: 0;
+  opacity: 0;
+  margin-left: 0;
+  margin-right: 0;
+}
+.status-island .status-island-branch button {
+  transition: gap 240ms ease-out, padding 240ms ease-out;
+}
+.status-island.is-compact .status-island-branch button {
+  gap: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
 }
 
 /* Bunch-up animation — when compact toggles on, gap between items
