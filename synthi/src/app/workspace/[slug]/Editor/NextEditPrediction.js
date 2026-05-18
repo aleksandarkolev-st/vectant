@@ -1607,19 +1607,18 @@ export const useNextEditPrediction = ({
               advanceQueue();
               return;
             }
-            let count = 0;
-            {
-              let pos = 0;
-              while ((pos = live.indexOf(search, pos)) !== -1) {
-                count += 1;
-                pos += search.length;
-              }
-            }
+            const offsets = findAllOffsets(live, search);
+            const remaining = offsets.slice(Math.max(0, entry.cursor ?? 0));
+            const count = remaining.length;
             if (count === 0) {
               advanceQueue();
               return;
             }
-            const next = live.split(search).join(replace);
+            let next = live;
+            for (let i = remaining.length - 1; i >= 0; i--) {
+              const offset = remaining[i];
+              next = next.slice(0, offset) + replace + next.slice(offset + search.length);
+            }
             try {
               await writeFileContent(path, next);
               await runOnApply(path, next);
