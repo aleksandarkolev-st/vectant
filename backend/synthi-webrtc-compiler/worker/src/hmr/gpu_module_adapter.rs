@@ -702,6 +702,17 @@ impl Adapter for GpuModuleAdapter {
 
         let first_device_load =
             self.active_module_handle.is_none() && self.module_manager.primary().is_none();
+        if first_device_load {
+            let init_code = unsafe { (symbols.cu_init)(0) };
+            if init_code != 0 {
+                self.health = AdapterHealth::Degraded;
+                self.phase = GpuPhase::Ready;
+                return AdapterReloadResult::Failed {
+                    error: format!("GPU driver init failed before first sidecar load: {init_code}"),
+                    recoverable: true,
+                };
+            }
+        }
         let drain = if first_device_load {
             DrainOutcome::Synced {
                 scope: DrainScope::Context,
