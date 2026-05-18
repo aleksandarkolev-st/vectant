@@ -191,6 +191,9 @@ export const useAiCompletion = ({
         let changed = false;
         const cancelledRequestId = aiCompletionActiveRequestIdRef.current;
         aiCompletionActiveRequestIdRef.current = null;
+        const visibleSuggestion = aiCompletionCacheRef.current?.suggestion
+            ? aiCompletionCacheRef.current
+            : null;
 
         if (aiCompletionAbortControllerRef.current) {
             try {
@@ -205,6 +208,15 @@ export const useAiCompletion = ({
 
         if (resetSuggestion) {
             if (aiCompletionCacheRef.current?.suggestion || aiCompletionCursorRef.current) {
+                if (visibleSuggestion?.suggestion) {
+                    recordAiCompletionEvent('dismissed', {
+                        reason,
+                        request_id: visibleSuggestion.requestId || cancelledRequestId,
+                        age_ms: visibleSuggestion.createdAt ? Date.now() - visibleSuggestion.createdAt : null,
+                        lines: countSuggestionLines(visibleSuggestion.suggestion),
+                        stable: visibleSuggestion.stable !== false,
+                    });
+                }
                 aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
                 aiCompletionCursorRef.current = null;
                 changed = true;
@@ -250,6 +262,12 @@ export const useAiCompletion = ({
         if (text.includes('\n') && cached.stable === false) {
             const safe = lastCompletePrefix(text);
             if (!safe) {
+                recordAiCompletionEvent('accept_blocked', {
+                    reason: 'unstable_multiline',
+                    request_id: cached.requestId || null,
+                    lines: countSuggestionLines(text),
+                    age_ms: cached.createdAt ? Date.now() - cached.createdAt : null,
+                });
                 recordAiCompletionEvent('cancelled', {
                     reason: 'accept_blocked_unstable',
                     request_id: cached.requestId || null,
@@ -265,6 +283,13 @@ export const useAiCompletion = ({
                 });
                 return;
             }
+            recordAiCompletionEvent('accept_adjusted', {
+                reason: 'truncated_to_stable_prefix',
+                request_id: cached.requestId || null,
+                accepted_lines: countSuggestionLines(safe),
+                suggested_lines: countSuggestionLines(text),
+                age_ms: cached.createdAt ? Date.now() - cached.createdAt : null,
+            });
             recordAiCompletionEvent('cancelled', {
                 reason: 'accept_truncated_to_stable_prefix',
                 request_id: cached.requestId || null,
@@ -329,7 +354,12 @@ export const useAiCompletion = ({
         aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
         notifyCompletionCacheChange();
         setAiCompletionState('applied');
-        recordAiCompletionEvent('accepted', { lines: acceptedLines, request_id: cached.requestId || null });
+        recordAiCompletionEvent('accepted', {
+            lines: acceptedLines,
+            request_id: cached.requestId || null,
+            age_ms: cached.createdAt ? Date.now() - cached.createdAt : null,
+            stable: cached.stable !== false,
+        });
         recordAiReplaySample({
             feature: 'autocomplete',
             phase: 'accepted',
@@ -509,6 +539,7 @@ export const useAiCompletion = ({
                 context,
                 language: activeLanguage,
                 requestId,
+                createdAt: prev?.requestId === requestId ? (prev.createdAt || Date.now()) : Date.now(),
                 suggestion: visible,
                 suggestionRange,
                 stable: stickyStable,

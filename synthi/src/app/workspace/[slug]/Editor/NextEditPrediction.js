@@ -852,6 +852,27 @@ export const useNextEditPrediction = ({
   }, []);
 
   const resetToIdle = useCallback((reason = 'reset') => {
+    const remaining = Math.max(0, queueRef.current.length - queueIndexRef.current);
+    if (remaining > 0 && reason !== 'drained') {
+      const entry = queueRef.current[queueIndexRef.current];
+      recordNepEvent('dismissed', {
+        reason,
+        remaining,
+        kind: entry?.kind || null,
+        path: entry?.block?.path || entry?.location?.path || null,
+        request_id: entry?.requestId || null,
+      });
+      recordAiReplaySample({
+        feature: 'nep',
+        phase: 'dismissed',
+        requestId: entry?.requestId || null,
+        payload: {
+          reason,
+          remaining,
+          entry,
+        },
+      });
+    }
     cancelInflight(reason);
     queueRef.current = [];
     queueIndexRef.current = 0;
@@ -1711,6 +1732,23 @@ export const useNextEditPrediction = ({
           // Shift+Tab → skip this site.
           e.preventDefault();
           e.stopPropagation();
+          recordNepEvent('skipped', {
+            kind: NEP_BLOCK_KIND.SEARCH_ALL,
+            path: entry.block.path,
+            site: entry.cursor ?? 0,
+            request_id: entry.requestId || null,
+          });
+          recordAiReplaySample({
+            feature: 'nep',
+            phase: 'skipped',
+            requestId: entry.requestId || null,
+            payload: {
+              kind: NEP_BLOCK_KIND.SEARCH_ALL,
+              path: entry.block.path,
+              site: entry.cursor ?? 0,
+              block: entry.block,
+            },
+          });
           entry.cursor = (entry.cursor ?? 0) + 1;
           if (entry.cursor < (entry.sites?.length ?? 0)) {
             renderJumpHint(entry, { confirm: true });

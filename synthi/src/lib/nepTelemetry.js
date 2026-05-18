@@ -13,6 +13,7 @@
 //   - predictions_validated: passed Section 2 validator (N=1 SEARCH, or
 //     SEARCH ALL with N≥1 in Phase 2).
 //   - predictions_accepted: user pressed Tab and apply landed.
+//   - skipped/dismissed: user explicitly skipped or abandoned an armed prediction.
 //
 // Rejection-reason breakdown is stored as a flat counter map keyed by the
 // REJECT_REASONS values from lib/nextEdit.
@@ -39,6 +40,8 @@ const DEFAULT_STATE = () => ({
   emitted: 0,
   validated: 0,
   accepted: 0,
+  skipped: 0,
+  dismissed: 0,
   rejection_reasons: {},
   // Rolling window: array of `{ ts, kind, reason? }` events. Trimmed when
   // older than WINDOW_MS or when the array exceeds 5000 entries (~150 KB).
@@ -113,6 +116,8 @@ const scheduleUpload = () => {
  *   - 'validated'   — block passed validator
  *   - 'accepted'    — user accepted (apply landed)
  *   - 'rejected'    — block rejected; `reason` is one of REJECT_REASONS
+ *   - 'skipped'     — user skipped a SEARCH ALL site
+ *   - 'dismissed'   — armed queue was abandoned without apply
  */
 export const recordNepEvent = (kind, payload = {}) => {
   const s = state();
@@ -122,6 +127,8 @@ export const recordNepEvent = (kind, payload = {}) => {
   if (kind === 'emitted') s.emitted += 1;
   if (kind === 'validated') s.validated += 1;
   if (kind === 'accepted') s.accepted += 1;
+  if (kind === 'skipped') s.skipped += 1;
+  if (kind === 'dismissed') s.dismissed += 1;
   if (kind === 'rejected') {
     const reason = payload?.reason || 'unknown';
     s.rejection_reasons[reason] = (s.rejection_reasons[reason] || 0) + 1;
@@ -139,15 +146,17 @@ export const rollingStats = () => {
   const s = state();
   const cutoff = Date.now() - NEP_KILL_THRESHOLDS.WINDOW_MS;
   const events = s.events.filter((e) => e.ts >= cutoff);
-  let emitted = 0, validated = 0, accepted = 0;
+  let emitted = 0, validated = 0, accepted = 0, skipped = 0, dismissed = 0;
   for (const e of events) {
     if (e.kind === 'emitted') emitted += 1;
     else if (e.kind === 'validated') validated += 1;
     else if (e.kind === 'accepted') accepted += 1;
+    else if (e.kind === 'skipped') skipped += 1;
+    else if (e.kind === 'dismissed') dismissed += 1;
   }
   const accept_rate = validated > 0 ? accepted / validated : null;
   const reject_rate = emitted > 0 ? (emitted - validated) / emitted : null;
-  return { emitted, validated, accepted, accept_rate, reject_rate, n_total: emitted };
+  return { emitted, validated, accepted, skipped, dismissed, accept_rate, reject_rate, n_total: emitted };
 };
 
 /**
@@ -281,6 +290,8 @@ export const telemetrySnapshot = () => {
     emitted: s.emitted,
     validated: s.validated,
     accepted: s.accepted,
+    skipped: s.skipped,
+    dismissed: s.dismissed,
     fires_total: s.fires_total,
     rejection_reasons: { ...s.rejection_reasons },
     rolling: rollingStats(),
