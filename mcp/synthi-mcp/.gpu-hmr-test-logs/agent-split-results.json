@@ -3,120 +3,120 @@
     "name": "gpu vendor",
     "status": "pass",
     "detail": "rocm arch=gfx1201",
-    "ts": "2026-05-18T00:01:30.336Z"
+    "ts": "2026-05-18T00:03:24.492Z"
   },
   {
     "name": "fixture",
     "status": "pass",
     "detail": "complex-flow",
-    "ts": "2026-05-18T00:01:30.337Z"
+    "ts": "2026-05-18T00:03:24.493Z"
   },
   {
     "name": "monolithic source has no Synthi ABI",
     "status": "pass",
     "detail": "",
-    "ts": "2026-05-18T00:01:30.337Z"
+    "ts": "2026-05-18T00:03:24.494Z"
   },
   {
     "name": "create workspace",
     "status": "pass",
-    "detail": "id=cmpafvf9v0007o901ams06ifb slug=gpu-ai-complex-shot-20260518030129",
-    "ts": "2026-05-18T00:01:31.022Z"
+    "detail": "id=cmpafxv6l0008o9011p911v94 slug=gpu-ai-complex-shot-20260518030324",
+    "ts": "2026-05-18T00:03:24.726Z"
   },
   {
     "name": "seed monolithic user source",
     "status": "pass",
     "detail": "main.cpp",
-    "ts": "2026-05-18T00:01:31.065Z"
+    "ts": "2026-05-18T00:03:24.765Z"
   },
   {
     "name": "workspace commit seed",
     "status": "pass",
     "detail": "",
-    "ts": "2026-05-18T00:01:31.145Z"
+    "ts": "2026-05-18T00:03:24.841Z"
   },
   {
     "name": "mcp tools/list",
     "status": "pass",
     "detail": "count=42",
-    "ts": "2026-05-18T00:01:31.524Z"
+    "ts": "2026-05-18T00:03:25.188Z"
   },
   {
     "name": "mcp attach",
     "status": "pass",
     "detail": "attached",
-    "ts": "2026-05-18T00:01:32.692Z"
+    "ts": "2026-05-18T00:03:26.377Z"
   },
   {
     "name": "first compile via MCP",
     "status": "pass",
     "detail": "use_ai_split=true prefer_gpu_pipeline=true",
-    "ts": "2026-05-18T00:02:16.949Z"
+    "ts": "2026-05-18T00:04:27.505Z"
   },
   {
     "name": "worker used GPU split endpoint",
     "status": "pass",
     "detail": "GPU markers detected; calling GPU split endpoint",
-    "ts": "2026-05-18T00:02:17.007Z"
+    "ts": "2026-05-18T00:04:27.560Z"
   },
   {
     "name": "generated device compiled",
     "status": "pass",
     "detail": "compile-device] hipcc",
-    "ts": "2026-05-18T00:02:17.066Z"
+    "ts": "2026-05-18T00:04:27.613Z"
   },
   {
     "name": "read generated split from worker",
     "status": "pass",
-    "detail": "worker=/tmp/.tmpGNR6Y4",
-    "ts": "2026-05-18T00:02:17.857Z"
+    "detail": "worker=/tmp/.tmp2DtEHi",
+    "ts": "2026-05-18T00:04:28.312Z"
   },
   {
     "name": "generated split contains HMR ABI",
     "status": "pass",
     "detail": "shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip",
-    "ts": "2026-05-18T00:02:17.857Z"
+    "ts": "2026-05-18T00:04:28.312Z"
   },
   {
     "name": "persist generated split to workspace",
     "status": "pass",
     "detail": "7 files",
-    "ts": "2026-05-18T00:02:17.903Z"
+    "ts": "2026-05-18T00:04:28.352Z"
   },
   {
     "name": "workspace commit generated split",
     "status": "pass",
     "detail": "",
-    "ts": "2026-05-18T00:02:17.982Z"
+    "ts": "2026-05-18T00:04:28.433Z"
   },
   {
     "name": "device edit compile via MCP",
     "status": "pass",
     "detail": "device.hip",
-    "ts": "2026-05-18T00:02:18.794Z"
+    "ts": "2026-05-18T00:04:29.432Z"
   },
   {
     "name": "generated device file used for HMR",
     "status": "pass",
     "detail": "FallbackDeterministic → split file edit (device.hip",
-    "ts": "2026-05-18T00:02:18.861Z"
+    "ts": "2026-05-18T00:04:29.493Z"
   },
   {
     "name": "device-only GPU HMR observed",
     "status": "pass",
-    "detail": "[gpu-reload] plan=device_only",
-    "ts": "2026-05-18T00:02:18.922Z"
+    "detail": "Device sidecar reload vendor=rocm artifact=/tmp/.tmp2DtEHi/build/device_1779062660.hsaco kernels=cool_hue,particle_flow result=Success",
+    "ts": "2026-05-18T00:04:29.552Z"
   },
   {
     "name": "mcp screenshot after hmr",
-    "status": "fail",
-    "detail": "invalid screenshot meta={\"w\":800,\"h\":600,\"ts\":1779062538890,\"seq\":41,\"original_w\":800,\"original_h\":600,\"mimeType\":\"image/png\"} bytes~1497",
-    "ts": "2026-05-18T00:02:18.932Z"
+    "status": "pass",
+    "detail": "800x600 seq=46->69 bytes~1497/1497",
+    "ts": "2026-05-18T00:04:30.326Z"
   },
   {
-    "name": "fatal",
-    "status": "fail",
-    "detail": "Error: MCP screenshot after HMR did not return a valid frame\n    at assertMcpScreenshot (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs:887:18)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async run (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-agent-split-workspace-test.mjs:972:3)",
-    "ts": "2026-05-18T00:02:18.933Z"
+    "name": "runner stayed alive after GPU HMR",
+    "status": "pass",
+    "detail": "no runner crash marker",
+    "ts": "2026-05-18T00:04:32.396Z"
   }
 ]
