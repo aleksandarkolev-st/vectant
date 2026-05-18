@@ -8,9 +8,9 @@
   "ui": {
     "bgApp":        "#fdf6e3",
     "bgEditor":     "#fdf6e3",
-    "bgSidebar":    "#eee8d5",
+    "bgSidebar":    "#f3ecd3",
     "bgPanel":      "#eee8d5",
-    "bgSurface":    "#eee8d5",
+    "bgSurface":    "#e8e2cd",
     "bgElevated":   "#fdf6e3",
 
     "borderSubtle": "#eee8d5",
@@ -53,8 +53,8 @@
     "primaryForeground":        "#fdf6e3",
     "secondary":                "#eee8d5",
     "secondaryForeground":      "#586e75",
-    "muted":                    "#eee8d5",
-    "mutedForeground":          "#93a1a1",
+    "muted":                    "#e8e2cd",
+    "mutedForeground":          "#839496",
     "accent":                   "#eee8d5",
     "accentForeground":         "#586e75",
     "destructive":              "#dc322f",
@@ -79,7 +79,7 @@
   "editor": {
     "editor.background":                    "#fdf6e3",
     "editor.foreground":                    "#657b83",
-    "editorCursor.foreground":              "#d30102",
+    "editorCursor.foreground":              "#cb4b16",
     "editor.lineHighlightBackground":       "#eee8d5",
     "editor.lineHighlightBorder":           "#eee8d500",
     "editorLineNumber.foreground":          "#93a1a1",
@@ -117,7 +117,7 @@
   "terminal": {
     "background":                   "#fdf6e3",
     "foreground":                   "#657b83",
-    "cursor":                       "#d30102",
+    "cursor":                       "#cb4b16",
     "cursorAccent":                 "#fdf6e3",
     "selectionBackground":          "rgba(38, 139, 210, 0.3)",
     "selectionForeground":          "#586e75",

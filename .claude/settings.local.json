@@ -36,7 +36,9 @@
       "Bash(py -3 -c \"import sys; print\\(sys.version\\)\")",
       "Bash(cargo check *)",
       "PowerShell(Get-Command *)",
-      "PowerShell(Test-Path *)"
+      "PowerShell(Test-Path *)",
+      "Bash(node -e 'JSON.parse\\(require\\('\\\\''fs'\\\\''\\).readFileSync\\('\\\\''__TRACKED_VAR__'\\\\'','\\\\''utf8'\\\\''\\)\\); console.log\\('\\\\''OK: __TRACKED_VAR__'\\\\''\\)')",
+      "Bash(docker system df *)"
     ]
   }
 }
