@@ -80,6 +80,12 @@ const FileItem = memo(({
     const BASE = 8;
     const xForCol = (colIndex) => BASE + colIndex * INDENT + INDENT / 2;
     const connectorX = xForCol(guideLevel - 1);
+    const connectorEndX = BASE + guideLevel * INDENT - 2;
+    const connectorWidth = Math.max(connectorEndX - connectorX, 6);
+    const guideColor = showAllGuides
+      ? 'color-mix(in srgb, var(--border-medium) 76%, var(--attention-purple) 24%)'
+      : 'color-mix(in srgb, var(--border-medium) 92%, transparent)';
+    const guideOpacity = showAllGuides ? 0.95 : 0.72;
 
     return (
       <div
@@ -91,21 +97,51 @@ const FileItem = memo(({
             draw ? (
               <div
                 key={`tree-v-${colIndex}`}
-                className="absolute top-0 bottom-0 w-px opacity-100"
-                style={{ left: `${xForCol(colIndex)}px`, background: 'var(--border-medium)' }}
+                data-tree-guide="ancestor-vertical"
+                className="absolute top-0 bottom-0 w-px"
+                style={{
+                  left: `${xForCol(colIndex)}px`,
+                  background: guideColor,
+                  opacity: guideOpacity,
+                }}
               />
             ) : null
           )}
 
         {drawCurrentLevel && (
           <>
-            {/* Current column vertical connector */}
             <div
-              className="absolute top-0 w-px opacity-100"
+              data-tree-guide="current-vertical-top"
+              className="absolute top-0 w-px"
               style={{
                 left: `${connectorX}px`,
-                bottom: guideHasNextSibling ? 0 : "50%",
-                background: 'var(--border-medium)',
+                height: '50%',
+                background: guideColor,
+                opacity: guideOpacity,
+              }}
+            />
+            {guideHasNextSibling && (
+              <div
+                data-tree-guide="current-vertical-bottom"
+                className="absolute bottom-0 w-px"
+                style={{
+                  left: `${connectorX}px`,
+                  top: '50%',
+                  background: guideColor,
+                  opacity: guideOpacity,
+                }}
+              />
+            )}
+            <div
+              data-tree-guide="current-horizontal"
+              className="absolute h-px"
+              style={{
+                left: `${connectorX}px`,
+                top: '50%',
+                width: `${connectorWidth}px`,
+                background: guideColor,
+                opacity: guideOpacity,
+                transform: 'translateY(-0.5px)',
               }}
             />
           </>
@@ -317,7 +353,7 @@ useEffect(() => {
 
   // Only show indicators for a container if it has 2+ items.
   // This flag controls the connector for the *current* nesting level.
-  const drawCurrentLevelGuides = guidesVisibleForRow && parentChildCount >= 2;
+  const drawCurrentLevelGuides = guidesVisibleForRow && level > 0 && (showAllGuides || parentChildCount >= 2);
 
   const maskedAncestorHasNext = (() => {
     if (showAllGuides) return ancestorHasNext;
@@ -633,7 +669,7 @@ useEffect(() => {
                   level + 1,
                   [...ancestorHasNext, hasNextSibling && drawCurrentLevelGuides],
                   (item.children || []).length > 0,
-                  guidesVisibleForRow && (item.children || []).length >= 2
+                  guidesVisibleForRow && (showAllGuides || (item.children || []).length >= 2)
                 )}
               <div className="flex items-center">
                 <div className="w-3 h-3 mr-2 flex-shrink-0 flex items-center justify-center text-[13px]">

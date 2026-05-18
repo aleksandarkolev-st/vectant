@@ -38,12 +38,58 @@ function EditorTabStripImpl() {
   const [hoveredTabPath, setHoveredTabPath] = useState(null);
   const [isStripHovered, setStripHovered] = useState(false);
   const [isScrollbarActive, setScrollbarActive] = useState(false);
+  const [isOverflowing, setOverflowing] = useState(false);
   const [tabIndicator, setTabIndicator] = useState({
     left: 0,
     width: 0,
     visible: false,
     isHovered: false,
   });
+
+  const centerActiveTab = useCallback(() => {
+    const container = tabsContainerRef.current;
+    if (!container) return;
+
+    const tabButtons = Array.from(container.querySelectorAll(':scope > button'));
+    const firstTab = tabButtons[0];
+    const lastTab = tabButtons[tabButtons.length - 1];
+
+    const maxScrollLeft = Math.max(container.scrollWidth - container.clientWidth, 0);
+    if (maxScrollLeft <= 0) {
+      if (container.scrollLeft !== 0) {
+        container.scrollLeft = 0;
+      }
+      return;
+    }
+
+    if (maxScrollLeft <= container.clientWidth * 0.4) {
+      if (!firstTab || !lastTab) {
+        container.scrollLeft = maxScrollLeft / 2;
+        return;
+      }
+
+      const contentLeft = firstTab.offsetLeft;
+      const contentRight = lastTab.offsetLeft + lastTab.offsetWidth;
+      const contentCenter = (contentLeft + contentRight) / 2;
+      const desiredScrollLeft = Math.min(
+        Math.max(contentCenter - container.clientWidth / 2, 0),
+        maxScrollLeft,
+      );
+      container.scrollLeft = desiredScrollLeft;
+      return;
+    }
+
+    const activeTab = activeTabRef.current;
+    if (!activeTab) return;
+
+    const desiredScrollLeft = activeTab.offsetLeft + activeTab.offsetWidth / 2 - container.clientWidth / 2;
+    const nextScrollLeft = Math.min(Math.max(desiredScrollLeft, 0), maxScrollLeft);
+
+    container.scrollTo({
+      left: nextScrollLeft,
+      behavior: 'smooth',
+    });
+  }, []);
 
   const handleSelect = useCallback((file) => {
     if (!file || file.path === activeFile?.path) return;
@@ -63,7 +109,10 @@ function EditorTabStripImpl() {
     if (!container || !thumb) return;
 
     const { scrollWidth, clientWidth, scrollLeft } = container;
-    if (scrollWidth <= clientWidth + 1) {
+    const nextOverflowing = scrollWidth > clientWidth + 1;
+    setOverflowing((current) => (current === nextOverflowing ? current : nextOverflowing));
+
+    if (!nextOverflowing) {
       thumb.style.display = 'none';
       return;
     }
@@ -150,16 +199,11 @@ function EditorTabStripImpl() {
     document.addEventListener('mouseup', handleMouseUp);
   }, []);
 
-  // Scroll the active tab into view when it changes (Ctrl+P, etc.)
+  // Keep the active tab centered in the smart strip whenever the active
+  // editor changes or the strip has to reflow.
   useEffect(() => {
-    if (activeTabRef.current?.scrollIntoView) {
-      activeTabRef.current.scrollIntoView({
-        behavior: 'smooth',
-        block: 'nearest',
-        inline: 'nearest',
-      });
-    }
-  }, [activeFile?.path]);
+    centerActiveTab();
+  }, [activeFile?.path, openFiles.length, centerActiveTab]);
 
   useLayoutEffect(() => {
     window.requestAnimationFrame(() => {
@@ -174,6 +218,7 @@ function EditorTabStripImpl() {
 
     const resizeObserver = new ResizeObserver(() => {
       window.requestAnimationFrame(() => {
+        centerActiveTab();
         updateIndicator();
         updateScrollbar();
       });
@@ -183,7 +228,7 @@ function EditorTabStripImpl() {
     return () => {
       resizeObserver.disconnect();
     };
-  }, [updateIndicator, updateScrollbar]);
+  }, [centerActiveTab, updateIndicator, updateScrollbar]);
 
   useEffect(() => () => {
     if (scrollTimeoutRef.current) {
@@ -217,6 +262,7 @@ function EditorTabStripImpl() {
           style={{
             scrollbarWidth: 'none',
             borderBottom: '1px solid var(--border-subtle)',
+            justifyContent: isOverflowing ? 'flex-start' : 'center',
           }}
         >
           {openFiles.map((file) => {

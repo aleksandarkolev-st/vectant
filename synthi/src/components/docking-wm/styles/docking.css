@@ -223,10 +223,32 @@
   min-height: 0 !important;
 }
 
+.dock-tab-group > * {
+  transition:
+    opacity 300ms ease-out,
+    transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+
+.dock-tab-group[data-sidebar-edge="left"] > * {
+  transform-origin: left center;
+}
+
+.dock-tab-group[data-sidebar-edge="right"] > * {
+  transform-origin: right center;
+}
+
 .dock-tab-group--collapsed > * {
   opacity: 0;
   pointer-events: none;
-  transition: opacity 200ms ease-out;
+}
+
+.dock-tab-group[data-sidebar-edge="left"].dock-tab-group--collapsed > * {
+  transform: translateX(-10px) scaleX(0.94);
+}
+
+.dock-tab-group[data-sidebar-edge="right"].dock-tab-group--collapsed > * {
+  transform: translateX(10px) scaleX(0.94);
 }
 
 /* The splitter next to a collapsed group also slides out of the way so

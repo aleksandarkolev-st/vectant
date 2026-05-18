@@ -175,6 +175,45 @@ function findDockPanelInGroup(layout, groupId, panelType) {
     return null;
 }
 
+function nodeContainsCategory(layout, nodeId, category) {
+    const node = layout?.nodes?.[nodeId];
+    if (!node) return false;
+
+    if (node.type === 'tabgroup') {
+        return (node.tabs || []).some((tabId) => {
+            const tab = layout?.tabs?.[tabId];
+            return tab && getDockGroupCategory(tab.panelType) === category;
+        });
+    }
+
+    return (node.children || []).some((childId) => nodeContainsCategory(layout, childId, category));
+}
+
+function findDockRightRailTarget(layout) {
+    const nodes = layout?.nodes || {};
+    const editorGroupId = findDockGroup(layout, 'editor');
+    if (!editorGroupId) return null;
+
+    let targetNodeId = editorGroupId;
+    let currentNodeId = editorGroupId;
+
+    while (currentNodeId) {
+        const parentId = nodes[currentNodeId]?.parentId;
+        const parent = parentId ? nodes[parentId] : null;
+        if (!parent || parent.type !== 'split') break;
+
+        const containsBottom = nodeContainsCategory(layout, parentId, 'bottom');
+        const containsSidebar = nodeContainsCategory(layout, parentId, 'sidebar');
+
+        if (!containsBottom || containsSidebar) break;
+
+        targetNodeId = parentId;
+        currentNodeId = parentId;
+    }
+
+    return targetNodeId;
+}
+
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
     const store = useAppStore();
@@ -2755,11 +2794,11 @@ export default function EditorPage({ params }) {
         if (!chatPanel) return false;
 
         const sidebarGroupId = findDockGroup(layout, 'sidebar');
-        const editorGroupId = findDockGroup(layout, 'editor');
+        const dockRightTargetNodeId = findDockRightRailTarget(layout);
 
-        if (editorGroupId && chatPanel.groupId === sidebarGroupId) {
+        if (dockRightTargetNodeId && chatPanel.groupId === sidebarGroupId) {
             dispatch(splitNodeAction({
-                targetNodeId: editorGroupId,
+                targetNodeId: dockRightTargetNodeId,
                 tabId: chatPanel.tabId,
                 zone: DROP_ZONE.RIGHT,
                 ratio: 0.34,

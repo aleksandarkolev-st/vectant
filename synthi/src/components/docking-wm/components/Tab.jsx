@@ -138,9 +138,9 @@ export const Tab = memo(function Tab({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: "6px",
+        gap: "5px",
         height: "100%",
-        padding: "0 10px",
+        padding: "0 9px",
         fontSize: "12px",
         color: isActive
           ? "var(--dock-tab-active-fg, #fff)"
@@ -203,8 +203,8 @@ export const Tab = memo(function Tab({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            width: "18px",
-            height: "18px",
+            width: "16px",
+            height: "16px",
             padding: 0,
             border: "none",
             borderRadius: "3px",

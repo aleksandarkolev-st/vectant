@@ -111,7 +111,6 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
   // Drop zone
   const { dropProps, hoverZone, isOver } = useDropZone({
     nodeId,
-    disabled: isEditorSurface,
   });
 
   // Auto-collapse for sidebar groups (Phase B).
@@ -152,6 +151,7 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
       {...collapseBind}
       data-drop-node-id={nodeId}
       data-tabgroup-id={nodeId}
+      data-sidebar-edge={sidebarEdge || ''}
       data-sidebar-collapsed={isCollapsed ? 'true' : 'false'}
       className={`dock-tab-group ${isFocused ? 'dock-tab-group--focused' : ''} ${
         isOver ? 'dock-tab-group--drag-over' : ''
@@ -223,7 +223,7 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
       )}
 
       {/* Drop overlay */}
-      {!isEditorSurface && <DropOverlay zone={hoverZone} visible={isOver} />}
+      <DropOverlay zone={hoverZone} visible={isOver} />
     </div>
   );
 });

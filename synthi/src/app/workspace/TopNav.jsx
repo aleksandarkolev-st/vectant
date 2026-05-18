@@ -87,63 +87,71 @@ function TopNav({
   const idlePlaceholder = activeFile?.name || 'Search files, symbols…';
 
   return (
-    <div className="topnav-root vt-ambient-bottom relative flex items-center h-10 px-2 border-b space-x-2 font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
-      {/* Vectant wordmark — left-anchored so the centered slot can host
-          the lifted file-tab strip without collision. Dark theme is +2px
-          because its strokes are visibly thinner than the light variant. */}
-      <div className="flex items-center justify-center h-full flex-shrink-0 pl-1 pr-2 select-none">
-        <img
-          src={isLightTheme ? '/vectant-light-theme.png' : '/vectant-dark-theme.png'}
-          alt="Vectant"
-          className={`block w-auto object-contain ${isLightTheme ? 'h-[22px]' : 'h-[24px]'}`}
-          draggable={false}
-        />
-      </div>
-      <div className="topnav-search relative transition-all duration-200 hidden sm:block min-w-0"
-           style={{ width: searchOpen ? '420px' : '240px', maxWidth: '100%' }}>
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} strokeWidth={1.5} />
-        <input
-          type="text"
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          onFocus={() => setSearchOpen(true)}
-          onBlur={() => setTimeout(() => setSearchOpen(false), 200)}
-          placeholder={searchOpen ? "Search files, symbols, commands…" : idlePlaceholder}
-          className="w-full h-6 th-input text-[12px] rounded-md pl-8 pr-3 outline-none border transition-all duration-200"
-        />
-        {/* Search Results Dropdown */}
-        {searchOpen && searchText && (
-          <div className="absolute left-0 right-0 top-full mt-1 th-surface-dropdown border rounded-lg shadow-lg z-[100] max-h-60 overflow-y-auto">
-            {searchResults.length > 0 ? (
-              searchResults.map((file) => (
-                <div
-                  key={file.path}
-                  className="flex items-center px-3 py-2.5 cursor-pointer th-dropdown-item text-sm"
-                  onClick={() => handleFileSelect(file)}
-                >
-                  <span className="mr-2.5 flex-shrink-0 text-base">{getFileIcon(file.name)}</span>
-                  <div className="flex flex-col overflow-hidden min-w-0">
-                    <span className="truncate font-medium">{file.name}</span>
-                    <span className="truncate text-xs" style={{ color: 'var(--text-muted)' }}>{file.path}</span>
+    <div
+      className="topnav-root vt-ambient-bottom relative grid h-10 grid-cols-[minmax(0,1fr)_minmax(0,760px)_minmax(0,1fr)] xl:grid-cols-[minmax(0,1fr)_minmax(0,860px)_minmax(0,1fr)] items-center gap-2 px-2 border-b font-[var(--font-ui)]"
+      style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        {/* Vectant wordmark — left-anchored so the centered slot can host
+            the lifted file-tab strip without collision. Dark theme is +2px
+            because its strokes are visibly thinner than the light variant. */}
+        <div className="flex items-center justify-center h-full flex-shrink-0 pl-1 pr-2 select-none">
+          <img
+            src={isLightTheme ? '/vectant-light-theme.png' : '/vectant-dark-theme.png'}
+            alt="Vectant"
+            className={`block w-auto object-contain ${isLightTheme ? 'h-[22px]' : 'h-[24px]'}`}
+            draggable={false}
+          />
+        </div>
+        <div
+          className="topnav-search relative transition-all duration-200 hidden sm:block min-w-0"
+          style={{ width: searchOpen ? '420px' : '240px', maxWidth: '100%' }}
+        >
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} strokeWidth={1.5} />
+          <input
+            type="text"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            onFocus={() => setSearchOpen(true)}
+            onBlur={() => setTimeout(() => setSearchOpen(false), 200)}
+            placeholder={searchOpen ? "Search files, symbols, commands…" : idlePlaceholder}
+            className="w-full h-6 th-input text-[12px] rounded-md pl-8 pr-3 outline-none border transition-all duration-200"
+          />
+          {/* Search Results Dropdown */}
+          {searchOpen && searchText && (
+            <div className="absolute left-0 right-0 top-full mt-1 th-surface-dropdown border rounded-lg shadow-lg z-[100] max-h-60 overflow-y-auto">
+              {searchResults.length > 0 ? (
+                searchResults.map((file) => (
+                  <div
+                    key={file.path}
+                    className="flex items-center px-3 py-2.5 cursor-pointer th-dropdown-item text-sm"
+                    onClick={() => handleFileSelect(file)}
+                  >
+                    <span className="mr-2.5 flex-shrink-0 text-base">{getFileIcon(file.name)}</span>
+                    <div className="flex flex-col overflow-hidden min-w-0">
+                      <span className="truncate font-medium">{file.name}</span>
+                      <span className="truncate text-xs" style={{ color: 'var(--text-muted)' }}>{file.path}</span>
+                    </div>
                   </div>
-                </div>
-              ))
-            ) : (
-              <div className="px-3 py-2.5 text-sm" style={{ color: 'var(--text-muted)' }}>No results found</div>
-            )}
-          </div>
-        )}
+                ))
+              ) : (
+                <div className="px-3 py-2.5 text-sm" style={{ color: 'var(--text-muted)' }}>No results found</div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Smart strip — open file tabs lifted into the TopNav row.
           Click-only, edge-fades into the surrounding chrome at both ends,
           horizontally scrollable when there are more tabs than fit. */}
-      <div className="topnav-tabs flex-1 min-w-0 h-full flex items-center justify-center px-2 lg:px-3">
-        <div className="w-full max-w-[760px] xl:max-w-[860px] h-full flex items-center min-w-0">
+      <div className="topnav-tabs min-w-0 h-full flex items-center justify-center px-2 lg:px-3">
+        <div className="w-full h-full flex items-center min-w-0">
           <EditorTabStrip />
         </div>
       </div>
 
+      <div className="flex min-w-0 items-center justify-self-end gap-2">
         {/* Collaboration — avatars, inbox, history, session share, knocks.
             Hidden on narrow widths to keep the run controls reachable. */}
         {slug && (
@@ -310,6 +318,7 @@ function TopNav({
             </div>
           </PopoverContent>
         </Popover>
+        </div>
       </div>
     </div>
   );
