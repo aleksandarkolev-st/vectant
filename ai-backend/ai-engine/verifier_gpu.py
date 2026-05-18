@@ -102,6 +102,11 @@ _FORBIDDEN_GPU_RUNTIME_ACCESSOR_RE = re.compile(
     r"synthi_gpu_context"
     r")\s*\("
 )
+_PLACEHOLDER_RENDER_RE = re.compile(
+    r"\b(?:TODO|stub|placeholder|rendering logic|draw(?:ing)?\s+code\s+here|"
+    r"render(?:ing)?\s+code\s+here|omitted)\b",
+    re.IGNORECASE,
+)
 
 _NEW_FILE_OPS = {"create", "new", "add_file"}
 
@@ -739,6 +744,22 @@ def verify_split_output(
                     offending_symbol=symbol,
                 )
             )
+    placeholder_render = _PLACEHOLDER_RENDER_RE.search(gui_source)
+    if placeholder_render:
+        violations.append(
+            Violation(
+                rule="gui_render_placeholder",
+                message=(
+                    f"The gui role contains placeholder render text "
+                    f"{placeholder_render.group(0)!r}. gui_on_render must "
+                    "contain complete backend-specific drawing code that "
+                    "updates the supplied render surface and produces visible "
+                    "non-black frames; comments or stubs are invalid split output."
+                ),
+                offending_module=gui_path,
+                offending_symbol=placeholder_render.group(0),
+            )
+        )
     if re.search(r"\bSDL_GetWindowFromID\s*\(\s*1\s*\)", gui_source):
         violations.append(
             Violation(

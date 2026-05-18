@@ -3953,6 +3953,16 @@ If `gui_on_render` calls rendering APIs, their target handle/context must be a
 field read from that preserved state, typed according to the user's original
 backend.
 
+`gui_on_render` must be complete executable drawing code. Never leave comments
+such as "rendering logic here", TODOs, placeholders, omitted drawing code, or
+empty render functions. The first rendered frames must be visibly non-black.
+Preserve the user's rendering backend: for SDL/SDL2 sources, use the supplied
+`SDL_Renderer*` render surface and issue concrete SDL drawing calls; for other
+backends, use that backend's supplied render surface/context. If the GPU state
+is not directly drawable, maintain or copy enough host-visible render data, or
+draw a faithful visible representation from the preserved state, but do not
+compile a blank renderer.
+
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 
 Synthi does not hot-swap arbitrary raw CUDA/HIP source as-is. Your job
@@ -4257,6 +4267,9 @@ ROCm/HIP must not. A ROCm `device_flags` list should usually be
   stable address from `core_on_load`. Do not allocate AppState with
   `new`, `malloc`, `calloc`, or smart-pointer factories.
 - `gui.cpp` MUST export `gui_on_load` and `gui_on_render`.
+- `gui_on_render` MUST perform concrete drawing that produces visible
+  non-black frames. Placeholder comments, TODOs, and empty render bodies are
+  invalid.
 - Preserve the user's intent: kernel logic, buffer sizes, launch
   shapes, frame timing — all unchanged.
 - Preserve device-source semantics exactly. Every original kernel branch,
