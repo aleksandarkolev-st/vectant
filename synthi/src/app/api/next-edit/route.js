@@ -6,6 +6,8 @@ import {
   SEARCH_OPEN_ALL_KEYWORD,
   REPLACE_DIVIDER,
 } from '@/lib/nextEdit';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { renderCodeIntelHints } from '@/utils/aiContextBroker';
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -75,6 +77,97 @@ const limit = (text, max) => {
   return text.length <= max ? text : text.slice(0, max - 1) + '…';
 };
 
+const NEP_IDENT_RE = /[A-Za-z_][A-Za-z0-9_]{2,}/g;
+
+const extractIdentifiers = (text) => {
+  if (typeof text !== 'string' || !text) return [];
+  const seen = new Set();
+  const out = [];
+  NEP_IDENT_RE.lastIndex = 0;
+  let m;
+  while ((m = NEP_IDENT_RE.exec(text))) {
+    const ident = m[0];
+    if (seen.has(ident)) continue;
+    seen.add(ident);
+    out.push(ident);
+    if (out.length >= 12) break;
+  }
+  return out;
+};
+
+const lineToOffset = (content, line) => {
+  const target = Math.max(1, Number(line) || 1);
+  if (target <= 1) return 0;
+  let current = 1;
+  for (let i = 0; i < content.length; i++) {
+    if (content.charCodeAt(i) === 10) {
+      current += 1;
+      if (current === target) return i + 1;
+    }
+  }
+  return content.length;
+};
+
+const offsetToLine = (content, offset) => {
+  let line = 1;
+  const end = Math.max(0, Math.min(content.length, offset));
+  for (let i = 0; i < end; i++) {
+    if (content.charCodeAt(i) === 10) line += 1;
+  }
+  return line;
+};
+
+const exactSliceAround = (content, centerOffset, max) => {
+  if (content.length <= max) {
+    return { snippet: content, startLine: 1, truncated: false };
+  }
+
+  const center = Math.max(0, Math.min(content.length, Number(centerOffset) || 0));
+  let start = Math.max(0, center - Math.floor(max / 2));
+  if (start > 0) {
+    const nl = content.indexOf('\n', start);
+    if (nl !== -1 && nl < center) start = nl + 1;
+  }
+  let end = Math.min(content.length, start + max);
+  if (end < content.length) {
+    const nl = content.lastIndexOf('\n', end);
+    if (nl > start && nl >= center) end = nl;
+  }
+  if (end <= start) end = Math.min(content.length, start + max);
+  return {
+    snippet: content.slice(start, end),
+    startLine: offsetToLine(content, start),
+    truncated: start > 0 || end < content.length,
+  };
+};
+
+const chooseFileSlice = ({ path, content, activePath, cursor, appliedEdit, impactCandidates, max }) => {
+  if (typeof content !== 'string') return { snippet: '', startLine: 1, truncated: false };
+  let center = 0;
+
+  if (path && path === activePath && cursor?.line) {
+    center = lineToOffset(content, cursor.line);
+  } else {
+    const candidate = Array.isArray(impactCandidates)
+      ? impactCandidates.find((c) => c?.file === path)
+      : null;
+    const symbols = [
+      candidate?.symbol,
+      ...extractIdentifiers(appliedEdit?.search || ''),
+      ...extractIdentifiers(appliedEdit?.replace || ''),
+    ].filter(Boolean);
+    for (const symbol of symbols) {
+      const idx = content.indexOf(symbol);
+      if (idx !== -1) {
+        center = idx;
+        break;
+      }
+    }
+  }
+
+  return exactSliceAround(content, center, max);
+};
+
 /**
  * Render the recent-edits ring buffer block. The client either sends the
  * snippets pre-rendered (one diff per entry, headers preserved) or sends raw
@@ -89,7 +182,7 @@ const renderRecentEdits = (recentEdits) => {
   return [RECENT_EDITS_OPEN, ...sections, RECENT_EDITS_CLOSE].join('\n');
 };
 
-const renderFiles = (files) => {
+const renderFiles = (files, opts = {}) => {
   if (!files || typeof files !== 'object') return '';
   const entries = Array.isArray(files)
     ? files
@@ -103,8 +196,22 @@ const renderFiles = (files) => {
     if (used >= NEP_FILES_BUDGET_CHARS) break;
     const remaining = Math.min(NEP_PER_FILE_CHARS, NEP_FILES_BUDGET_CHARS - used);
     if (remaining <= 0) break;
-    const snippet = limit(content, remaining);
-    sections.push(`<file path="${path}">\n${snippet}\n</file>`);
+    const { snippet, startLine, truncated } = chooseFileSlice({
+      path,
+      content,
+      activePath: opts.activePath,
+      cursor: opts.cursor,
+      appliedEdit: opts.appliedEdit,
+      impactCandidates: opts.impactCandidates,
+      max: remaining,
+    });
+    if (!snippet) continue;
+    const attrs = [
+      `path="${path}"`,
+      truncated ? 'truncated="true"' : null,
+      startLine && startLine > 1 ? `startLine="${startLine}"` : null,
+    ].filter(Boolean).join(' ');
+    sections.push(`<file ${attrs}>\n${snippet}\n</file>`);
     used += snippet.length + path.length + 24;
   }
   return sections.join('\n');
@@ -146,10 +253,10 @@ const fetchImpactCandidates = async ({ workspaceSlug, appliedEdit }) => {
     const res = await fetch(`${CODE_INTEL_URL}/code-intel/edit-impact`, {
       method: 'POST',
       signal: ctrl.signal,
-      headers: {
+      headers: withInternalAiAuth({
         'content-type': 'application/json',
         ...(CODE_INTEL_API_KEY ? { 'x-code-intel-key': CODE_INTEL_API_KEY } : {}),
-      },
+      }),
       body: JSON.stringify({
         workspace_path: workspaceSlug,
         file_path: appliedEdit.path,
@@ -234,7 +341,19 @@ const renderImpactBlock = (candidates) => {
   return ['<impact_candidates>', ...lines, '</impact_candidates>'].join('\n');
 };
 
-const buildPrompt = ({ recentEditsBlock, filesBlock, contextBlock, impactBlock, language, activePath, cursor }) => {
+const renderValidationFeedback = (feedback) => {
+  if (!Array.isArray(feedback) || !feedback.length) return '';
+  const lines = feedback.slice(0, 6).map((item) => {
+    const reason = item?.reason || 'unknown';
+    const path = item?.path || 'unknown';
+    const detail = item?.detail ? ` detail=${String(item.detail).slice(0, 120)}` : '';
+    const search = item?.search ? ` search=${JSON.stringify(String(item.search).slice(0, 160))}` : '';
+    return `- ${path}: ${reason}${detail}${search}`;
+  });
+  return ['<validation_feedback>', ...lines, '</validation_feedback>'].join('\n');
+};
+
+const buildPrompt = ({ recentEditsBlock, filesBlock, contextBlock, impactBlock, codeIntelBlock, validationFeedbackBlock, language, activePath, cursor }) => {
   // The format spec teaches the model both `SEARCH` and `SEARCH ALL` so the
   // wire format is in distribution from day one — Phase 1 logs `SEARCH ALL`
   // with `phase2_required` instead of executing it (Section 1 / Section 5).
@@ -278,6 +397,12 @@ const buildPrompt = ({ recentEditsBlock, filesBlock, contextBlock, impactBlock, 
     '',
     recentEditsBlock || null,
     recentEditsBlock ? '' : null,
+    validationFeedbackBlock ? 'VALIDATION FEEDBACK FROM PRIOR PASS (do not repeat these rejected SEARCH anchors; choose exact unique text from CURRENT FILE CONTENTS):' : null,
+    validationFeedbackBlock || null,
+    validationFeedbackBlock ? '' : null,
+    codeIntelBlock ? 'IDE SIGNALS (read-only, deterministic context ranking and symbols):' : null,
+    codeIntelBlock || null,
+    codeIntelBlock ? '' : null,
     impactBlock ? 'CROSS-FILE IMPACT CANDIDATES (read-only, ranked by symbol-graph proximity to the user’s last accepted edit; emit blocks against these files when the trajectory suggests a refactor chain):' : null,
     impactBlock || null,
     impactBlock ? '' : null,
@@ -327,6 +452,8 @@ export async function POST(request) {
 
   const recentEditsBlock = renderRecentEdits(body?.recentEdits || []);
   const contextBlock = renderContext(body?.references || []);
+  const codeIntelBlock = renderCodeIntelHints(body?.codeIntel || {});
+  const validationFeedbackBlock = renderValidationFeedback(body?.validationFeedback || []);
 
   // Bail early: NEP needs at least a recent-edits trajectory or the file
   // contents to predict against. Without either, the model is just guessing.
@@ -380,7 +507,12 @@ export async function POST(request) {
   // touched), then impact-candidate hydration. renderFiles applies the
   // shared budget in this order, so cached content always wins on contention.
   const filesForPrompt = { ...cachedFiles, ...impactContents };
-  const filesBlock = renderFiles(filesForPrompt);
+  const filesBlock = renderFiles(filesForPrompt, {
+    activePath,
+    cursor,
+    appliedEdit,
+    impactCandidates,
+  });
 
   const impactBlock = renderImpactBlock(impactCandidates);
 
@@ -389,6 +521,8 @@ export async function POST(request) {
     filesBlock,
     contextBlock,
     impactBlock,
+    codeIntelBlock,
+    validationFeedbackBlock,
     language,
     activePath,
     cursor,

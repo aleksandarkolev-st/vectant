@@ -605,7 +605,7 @@ class VectorIndex:
         # Load vectors
         if os.path.exists(vectors_path):
             try:
-                data = np.load(vectors_path, allow_pickle=True)
+                data = np.load(vectors_path, allow_pickle=False)
                 loaded_dimension = int(data['dimension'][0]) if 'dimension' in data else None
                 
                 # Check for dimension mismatch (e.g., switching embedding models)
@@ -617,8 +617,12 @@ class VectorIndex:
                     self._clear_for_rebuild(vectors_path, meta_path)
                     return
                 
-                self._ids = data['ids'].tolist()
-                self._matrix = data['vectors'].astype(np.float32)
+                ids = data['ids']
+                vectors = data['vectors']
+                if ids.dtype == object or vectors.dtype == object:
+                    raise ValueError("Vector index contains object arrays; refusing unsafe load")
+                self._ids = ids.tolist()
+                self._matrix = vectors.astype(np.float32)
                 
                 # Verify loaded vectors have correct dimension
                 if self._matrix is not None and len(self._matrix) > 0:

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
 
 /**
  * Synthi Genome — /api/shadow/cost
@@ -24,7 +25,7 @@ export async function GET(request) {
     try {
         const res = await fetch(
             `${AI_ENGINE_BASE}/shadow/cost/state?workspace_path=${encodeURIComponent(workspace_path)}`,
-            { method: 'GET' }
+            { method: 'GET', headers: withInternalAiAuth() }
         );
         const json = await res.json().catch(() => ({}));
         return NextResponse.json(json, { status: res.status });
@@ -49,7 +50,7 @@ export async function POST(request) {
     try {
         const res = await fetch(`${AI_ENGINE_BASE}/shadow/cost/cap`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: withInternalAiAuth({ 'content-type': 'application/json' }),
             body: JSON.stringify({
                 workspace_path: body.workspace_path,
                 daily_cap_usd: body.daily_cap_usd,

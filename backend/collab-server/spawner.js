@@ -36,4 +36,4 @@ const impl = require(moduleForMode[mode]);
 
 console.log(`[Spawner] Using ${mode} backend`);
 
-module.exports = Object.assign({ mode }, impl);
+module.exports = Object.assign({ mode, pickMode }, impl);

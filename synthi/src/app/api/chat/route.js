@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/auth';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
 import { TOOL_DECLARATIONS, executeTool, isComplexTask } from './toolDefinitions.js';
 
 const encoder = new TextEncoder();
@@ -159,7 +160,7 @@ async function fireShadowRun({ workspacePath, userId, userRequest, files, intent
         const effectivePath = userId ? `${workspacePath}/${userId}` : workspacePath;
         const res = await fetch(`${CODE_INTEL_BASE}/shadow/run`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: withInternalAiAuth({ 'content-type': 'application/json' }),
             signal: AbortSignal.timeout(8000),
             body: JSON.stringify({
                 workspace_path: effectivePath,
@@ -238,7 +239,7 @@ async function classifyIntent(query, context = null) {
     try {
         const response = await fetch(`${CODE_INTEL_BASE}/classify/intent`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: withInternalAiAuth({ 'content-type': 'application/json' }),
             body: JSON.stringify({ query, context }),
             signal: AbortSignal.timeout(3000), // Fast timeout - intent classification should be quick
         });
@@ -459,7 +460,7 @@ async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 30000, 
         const effectivePath = userId ? `${workspacePath}/${userId}` : workspacePath;
         const response = await fetch(`${CODE_INTEL_BASE}/code-intel/context`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: withInternalAiAuth({ 'content-type': 'application/json' }),
             body: JSON.stringify({
                 workspace_path: effectivePath,
                 query: query,
@@ -927,6 +928,22 @@ const streamGeminiWithTools = async ({
                 if (fnCalls.length === 0) {
                     // No tool calls — model produced final text. Stream it out.
                     const finalText = parts.map((p) => p.text || '').join('');
+                    // Defensive: if Gemini returned an empty candidate with no
+                    // text AND we haven't collected any files via tool calls,
+                    // it means the response was blocked (safety filter), hit
+                    // a token limit, or returned an empty payload. Emit an
+                    // explicit error so the frontend can show something
+                    // useful instead of the silent "No response received".
+                    if (!finalText && collectedFiles.length === 0) {
+                        const finishReason = candidate?.finishReason || 'unknown';
+                        const safetyRatings = candidate?.safetyRatings || [];
+                        const blocked = safetyRatings.find((r) => r.blocked || r.probability === 'HIGH');
+                        const reason = blocked
+                            ? `blocked by safety filter (${blocked.category || 'unknown category'})`
+                            : `Gemini returned an empty response (finishReason: ${finishReason})`;
+                        console.warn(`[Chat API] Empty Gemini response: ${reason}`);
+                        await writeEvent({ error: reason });
+                    }
                     const CHUNK_SIZE = 120;
                     for (let i = 0; i < finalText.length; i += CHUNK_SIZE) {
                         await writeEvent({ delta: finalText.slice(i, i + CHUNK_SIZE) });
@@ -1127,6 +1144,15 @@ const streamGeminiWithTools = async ({
             const validation = validateResponseFormat(accumulatedText);
             if (!validation.isValid && validation.errors.length > 0) {
                 await writeEvent({ validationError: validation.errors.join('\n'), validationFailed: true });
+            }
+            // Defensive: if the post-tool-rounds final streaming call gave us
+            // nothing AND no tool calls produced files, surface that as an
+            // explicit error event. Otherwise the frontend silently shows a
+            // generic empty-response message and the user has no idea the
+            // model returned an empty stream.
+            if (!accumulatedText && collectedFiles.length === 0) {
+                console.warn('[Chat API] Empty Gemini stream after tool rounds');
+                await writeEvent({ error: 'Vectant AI returned an empty response after exhausting tool rounds. This typically means the model hit a safety filter, rate limit, or the prompt was too long.' });
             }
             // Emit collected files as structured event — reliable delivery
             if (collectedFiles.length > 0) {

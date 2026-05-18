@@ -26,7 +26,6 @@ export const useEditorEvents = ({
     editorInstance,
     monacoInstance,
     cancelActiveCompletion,
-    requestAiCompletion,
     hasActiveDiff,
     aiAutoEnabled = true,
     rawFiles = [],
@@ -390,29 +389,12 @@ export const useEditorEvents = ({
                     return;
                 }
 
-                // AI is active — keep the cache. The inline-completion
-                // provider's prefix-matching (computeVisibleSuggestion in
-                // providers.js) re-slices the visible ghost text as the
-                // user types along the suggestion. Resetting on every
-                // keystroke erased the suggestion before the user could
-                // accept it, which made AI completions feel like they
-                // "never showed". We still abort any in-flight stream —
-                // the prompt context just changed, so requestAiCompletion
-                // below fires a fresh one.
+                // AI is active — keep the cache. The consolidated
+                // onDidChangeModelContent path in Editor.jsx owns the
+                // debounced refresh; this onDidType listener only tears down
+                // any in-flight stream so visible ghost text can be re-sliced
+                // as the user types along the suggestion.
                 cancelActiveCompletion({ resetSuggestion: false, reason: 'typing' });
-
-                // Cursor / Copilot style: any keystroke can trigger a
-                // completion. Rate-limiting and dedup live inside
-                // requestAiCompletion (MIN_AUTO_INTERVAL_MS cooldown +
-                // context-equality cache check), so cheap requests get
-                // skipped automatically without us gating on punctuation.
-                const lastChar = (text || '').slice(-1);
-                const isEnter = lastChar === '\n';
-                const isPunctuation = /[\(\)\{\}\[\];,]/.test(lastChar);
-                requestAiCompletion(true, null, {
-                    reason: isEnter ? 'enter' : (isPunctuation ? 'punctuation' : 'typing'),
-                    enterTrigger: isEnter,
-                });
             }));
             disposables.push(editorInstance.onDidChangeCursorSelection((e) => {
                 // Ignore cursor moves that come from normal typing; only cancel if the
@@ -451,5 +433,5 @@ export const useEditorEvents = ({
         return () => {
             disposables.forEach((disposable) => disposable?.dispose?.());
         };
-    }, [editorInstance, monacoInstance, cancelActiveCompletion, requestAiCompletion, hasActiveDiff, aiAutoEnabled, rawFiles, dispatch, activeFile, fileCacheEntries, resolveSystemHeader]);
+    }, [editorInstance, monacoInstance, cancelActiveCompletion, hasActiveDiff, aiAutoEnabled, rawFiles, dispatch, activeFile, fileCacheEntries, resolveSystemHeader]);
 };

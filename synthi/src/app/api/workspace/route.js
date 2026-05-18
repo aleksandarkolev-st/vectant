@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
+import prisma from '@/lib/prisma';
 import { Storage } from '@google-cloud/storage';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/app/auth';
 
 
 const storage = new Storage({
@@ -12,7 +14,6 @@ const storage = new Storage({
 });
 const BUCKET_NAME = process.env.GCS_BUCKET_NAME;
 
-const prisma = new PrismaClient();
 
 export async function GET(request) {
     const { searchParams } = new URL(request.url);
@@ -38,11 +39,24 @@ export async function GET(request) {
 
 export async function POST(request) {
     try {
+        const session = await getServerSession(authOptions);
+        const email = session?.user?.email;
+        if (!email) {
+            return NextResponse.json({ error: 'Authentication required.' }, { status: 401 });
+        }
+
         const { name, slug, repoUrl } = await request.json();
 
         if (!name) {
             return NextResponse.json({ error: 'Workspace name is required.' }, { status: 400 });
         }
+
+        const user = await prisma.user.upsert({
+            where: { email },
+            update: {},
+            create: { email },
+            select: { id: true },
+        });
 
         // Use provided slug (collab server) or generate one
         let finalSlug = slug;
@@ -58,12 +72,22 @@ export async function POST(request) {
                     name,
                     slug: finalSlug,
                     repoUrl: repoUrl || null,
+                    memberships: {
+                        create: {
+                            userId: user.id,
+                        },
+                    },
                 },
             });
         } catch (dbErr) {
             // Handle unique constraint on slug gracefully
             if (dbErr?.code === 'P2002' && dbErr?.meta?.target && dbErr.meta.target.includes('slug')) {
-                // If a workspace with this slug already exists, return 409
+                const existingWorkspace = await prisma.workspace.findUnique({
+                    where: { slug: finalSlug },
+                });
+                if (existingWorkspace) {
+                    return NextResponse.json({ error: 'Workspace slug already exists.' }, { status: 409 });
+                }
                 return NextResponse.json({ error: 'Workspace slug already exists.' }, { status: 409 });
             }
             throw dbErr;

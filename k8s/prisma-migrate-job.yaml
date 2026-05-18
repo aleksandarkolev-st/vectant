@@ -5,8 +5,10 @@
 #  the Cloud SQL Auth Proxy sidecar.
 #
 #  Usage:
+#    IMAGE_TAG=<immutable build tag>
 #    kubectl delete job prisma-migrate -n synthi --ignore-not-found
-#    kubectl apply -f k8s/prisma-migrate-job.yaml
+#    sed "s|synthi-prisma-migrate:build-tag-required|synthi-prisma-migrate:${IMAGE_TAG}|g" \
+#      k8s/prisma-migrate-job.yaml | kubectl apply -f -
 #    kubectl wait --for=condition=complete job/prisma-migrate -n synthi --timeout=120s
 #    kubectl logs job/prisma-migrate -n synthi -c migrate
 #
@@ -43,7 +45,7 @@ spec:
       containers:
         # ── Migration runner ────────────────────────────────────────────────
         - name: migrate
-          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-prisma-migrate:latest
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-prisma-migrate:build-tag-required
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -88,7 +90,7 @@ spec:
 
         # ── Cloud SQL Auth Proxy sidecar ──────────────────────────────────
         - name: cloud-sql-proxy
-          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1@sha256:5cf206e6b9609aaa666db20c6c6632521985a5412ebbe4835e83d39bc76501e9
           args:
             - "--port=5432"
             - "--admin-port=9091"

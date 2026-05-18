@@ -1,10 +1,8 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { PrismaClient } from '@prisma/client';
 import { authOptions } from '@/app/auth';
+import prisma from '@/lib/prisma';
 import { encryptToken } from '@/lib/tokenCrypto';
-
-const prisma = new PrismaClient();
 
 async function requireUserEmail() {
   const session = await getServerSession(authOptions);

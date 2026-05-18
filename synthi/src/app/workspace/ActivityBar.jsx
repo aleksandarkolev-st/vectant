@@ -105,14 +105,14 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
         )}
       </div>
 
-      {/* Synthi AI Badge */}
+      {/* Vectant AI Badge */}
       <div className="dock-activitybar-bottom mt-auto mb-3 flex flex-col items-center">
         {bottomItems.map(renderButton)}
         <div 
           onClick={() => onSelect('ai')}
           className="w-7 h-7 rounded-lg border flex items-center justify-center cursor-pointer transition-all group mt-2" 
           style={{ background: 'color-mix(in srgb, var(--accent-primary) 7%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-primary) 19%, transparent)' }} 
-          title="Synthi AI"
+          title="Vectant AI"
         >
           <Sparkles className="w-3.5 h-3.5 opacity-70 group-hover:opacity-100" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
         </div>

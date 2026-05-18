@@ -24,7 +24,7 @@ import {
 } from '@/redux/workspaceSlice';
 import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition, selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { fetchGitStatus, closeConflictResolver } from '@/redux/gitSlice';
-import { Circle, Save, Sparkles, Loader2, X } from 'lucide-react';
+import { Circle, Save, Sparkles, Loader2, X, Plus, TerminalSquare } from 'lucide-react';
 import { getFileIcon } from '@/utils/fileIcons';
 import {
     ResizableHandle,
@@ -50,6 +50,7 @@ import { EDITOR_OPTIONS, getResponsiveEditorOverrides } from './options';
 import { useViewport } from '@/hooks/useViewport';
 import { useAiCompletion } from './AICompletion';
 import { useNextEditPrediction } from './NextEditPrediction';
+import { canHandleTabIntent, TAB_INTENT_OWNER, updateTabIntentState } from './tabIntentRouter';
 import { useDiffManager } from './diffManager';
 import { useGitGutter } from './gitGutterService';
 import { useEditorProviders } from './providers';
@@ -272,6 +273,7 @@ const EditorPanel = ({
     const [diffModeEverActive, setDiffModeEverActive] = useState(false);
     const diffEditorRef = useRef(null);
     const latestCodeRef = useRef(code);
+    const activeDiffCheckRef = useRef(() => false);
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
     // P0: Debounced Redux sync — only flush content to Redux after 300ms pause
@@ -463,7 +465,8 @@ const EditorPanel = ({
                 try {
                     await initSynthiFileSystem(
                         fileCacheEntriesRef.current,
-                        rawFilesRef.current
+                        rawFilesRef.current,
+                        slug
                     );
                     console.log('[SynthiFS] Virtual filesystem pre-initialized during service startup');
                 } catch (e) {
@@ -491,10 +494,10 @@ const EditorPanel = ({
     // etc.) to resolve files that only exist on the remote worker.
     useEffect(() => {
         if (!servicesReady) return;
-        initSynthiFileSystem(fileCacheEntries, rawFiles).catch(e =>
+        initSynthiFileSystem(fileCacheEntries, rawFiles, slug).catch(e =>
             console.warn('[SynthiFS] Failed to init virtual filesystem:', e)
         );
-    }, [servicesReady, fileCacheEntries, rawFiles]);
+    }, [servicesReady, fileCacheEntries, rawFiles, slug]);
 
     // ── Worker file-sync seeding ────────────────────────────────
     // Push every cached workspace file to the worker disk as soon as the
@@ -2713,8 +2716,7 @@ const EditorPanel = ({
         cancelActiveCompletion,
         aiCompletionCacheRef,
         aiCompletionCursorRef,
-        aiDebounceTimerRef,
-        inlineAcceptCommandIdRef
+        aiDebounceTimerRef
     } = useAiCompletion({
         activeFile,
         activeLanguage,
@@ -2727,7 +2729,10 @@ const EditorPanel = ({
         // each request so it always sees the latest workspace contents.
         getFileCacheEntries: () => fileCacheEntriesRef.current || [],
         workspaceSlug: slug,
-        hasActiveDiff: () => false,
+        hasActiveDiff: () => {
+            try { return !!activeDiffCheckRef.current?.(); }
+            catch (_) { return false; }
+        },
     });
 
     // --- Next-Edit Prediction (NEP) — Phase 1, feature-flagged off by default ---
@@ -2738,6 +2743,7 @@ const EditorPanel = ({
     // having to hoist the whole save pipeline above the hook chain.
     const persistNepApplyRef = useRef(null);
     const {
+        nepState,
         predictedPaths: nepPredictedPaths,
         fireCapReached: nepFireCapReached,
         fireCap: nepFireCap,
@@ -2830,6 +2836,7 @@ const EditorPanel = ({
         activeFileIdentity
     });
     const activeDiffCheck = hasActiveDiffFromDiffManager;
+    activeDiffCheckRef.current = activeDiffCheck || (() => false);
 
     // --- Monaco Providers ---
     useEditorProviders({
@@ -2839,8 +2846,6 @@ const EditorPanel = ({
         aiCompletionState,
         aiCompletionCacheRef,
         aiCompletionCursorRef,
-        inlineAcceptCommandIdRef,
-        applyAiCompletionText,
         rawFiles,
         fileCacheEntries,
         activeFile,
@@ -2975,7 +2980,6 @@ const EditorPanel = ({
         editorInstance,
         monacoInstance,
         cancelActiveCompletion,
-        requestAiCompletion,
         hasActiveDiff: activeDiffCheck,
         aiAutoEnabled,
         rawFiles,
@@ -3089,7 +3093,15 @@ const EditorPanel = ({
         // edits causes unnecessary visual disruption.
         if (selfEditFlagRef?.current) return;
 
-        cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
+        if (activeDiffCheck()) {
+            cancelActiveCompletion({ resetSuggestion: true, reason: 'diff-active' });
+            return;
+        }
+
+        // Keep the visible cache while the user types along the suggestion.
+        // providers.js re-slices ghost text against the live cursor; this
+        // path just aborts stale streams before scheduling a fresh request.
+        cancelActiveCompletion({ resetSuggestion: false, reason: 'edit' });
 
         // Debounce AI Auto-Complete. The previous 900ms wait was the dominant
         // contributor to perceived completion latency: with a typical 500-800ms
@@ -3367,10 +3379,27 @@ const EditorPanel = ({
 
     // Key bindings (Ctrl+S, Alt+F)
     useEffect(() => {
+        updateTabIntentState({
+            nepState,
+            aiCompletionState,
+            hasAiSuggestion: Boolean(aiCompletionCacheRef.current?.suggestion),
+        });
+    }, [aiCompletionState, aiCompletionCacheRef, nepState]);
+
+    useEffect(() => {
         const handleKeyDown = (e) => {
             if (e.key === 'Tab') {
                 const cached = aiCompletionCacheRef.current;
-                if (aiCompletionState === 'ready' && cached?.suggestion) {
+                const hasAiSuggestion = Boolean(cached?.suggestion);
+                updateTabIntentState({ aiCompletionState, hasAiSuggestion, nepState });
+                if (
+                    hasAiSuggestion
+                    && canHandleTabIntent(TAB_INTENT_OWNER.AI_COMPLETION, {
+                        aiCompletionState,
+                        hasAiSuggestion,
+                        nepState,
+                    })
+                ) {
                     e.preventDefault();
                     applyAiCompletionText(cached.suggestion);
                     return;
@@ -3428,7 +3457,7 @@ const EditorPanel = ({
         };
         window.addEventListener('keydown', handleKeyDown, { capture: true });
         return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile, aiCompletionState, applyAiCompletionText, diffMode]);
+    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile, aiCompletionState, applyAiCompletionText, diffMode, nepState]);
 
     // Ensure disabling auto AI clears any pending/computed suggestions
     useEffect(() => {
@@ -4692,22 +4721,49 @@ const EditorPanel = ({
         </>);
     }
 
+    const showReopenBar = !showTerminal && !dockingMode;
     return (
         <ResizablePanel defaultSize={76} minSize={20}>
-            <ResizablePanelGroup direction="vertical" className="h-full">
-                <ResizablePanel defaultSize={70} minSize={20}>
-                    {editorUI}
-                </ResizablePanel>
+            <div
+                className="h-full grid"
+                style={{ gridTemplateRows: showReopenBar ? 'minmax(0, 1fr) auto' : 'minmax(0, 1fr)' }}
+            >
+                <ResizablePanelGroup direction="vertical" className="h-full min-h-0">
+                    <ResizablePanel defaultSize={70} minSize={20}>
+                        {editorUI}
+                    </ResizablePanel>
 
-                {showTerminal && (
-                    <>
-                        <ResizableHandle className="h-px" style={{ background: 'var(--border-subtle)' }} />
-                        <ResizablePanel defaultSize={30} minSize={15}>
-                            <TerminalManagerDyn visible={true} onCloseAll={onToggleTerminal} workspaceSlug={slug} />
-                        </ResizablePanel>
-                    </>
+                    {showTerminal && (
+                        <>
+                            <ResizableHandle className="h-px" style={{ background: 'var(--border-subtle)' }} />
+                            <ResizablePanel defaultSize={30} minSize={15}>
+                                <TerminalManagerDyn visible={true} onCloseAll={onToggleTerminal} workspaceSlug={slug} />
+                            </ResizablePanel>
+                        </>
+                    )}
+                </ResizablePanelGroup>
+
+                {showReopenBar && (
+                    <div
+                        className="h-7 flex items-center justify-end px-2 border-t select-none"
+                        style={{
+                            borderColor: 'var(--border-subtle)',
+                            background: 'var(--bg-sidebar)',
+                        }}
+                    >
+                        <button
+                            className="h-6 flex items-center gap-1.5 px-2 rounded text-xs font-medium th-btn-ghost transition-colors"
+                            onClick={onToggleTerminal}
+                            title="Open Terminal"
+                            style={{ color: 'var(--text-secondary)' }}
+                        >
+                            <TerminalSquare className="w-3.5 h-3.5" strokeWidth={2} />
+                            <span>Terminal</span>
+                            <Plus className="w-3.5 h-3.5 ml-0.5" strokeWidth={2} />
+                        </button>
+                    </div>
                 )}
-            </ResizablePanelGroup>
+            </div>
             {pendingClose && (
                 <UnsavedChangesDialog
                     fileName={pendingClose.name}

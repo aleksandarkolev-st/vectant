@@ -162,6 +162,30 @@ export class ApiClient {
         }
     }
 
+    async getWorkspacePrepStatus(slug) {
+        const res = await fetch(`${COLLAB_SERVER_URL}/api/workspace/${encodeURIComponent(slug)}/prepare`, {
+            headers: await this._headers(),
+        });
+        if (!res.ok) {
+            const errText = await res.text().catch(() => 'Unknown error');
+            throw new SynthiException(`Failed to load workspace prep status (status ${res.status})`, parseErrorText(errText));
+        }
+        return res.json();
+    }
+
+    async prepareWorkspace(slug, { force = false } = {}) {
+        const suffix = force ? '?force=true' : '';
+        const res = await fetch(`${COLLAB_SERVER_URL}/api/workspace/${encodeURIComponent(slug)}/prepare${suffix}`, {
+            method: 'POST',
+            headers: await this._headers(),
+        });
+        if (!res.ok) {
+            const errText = await res.text().catch(() => 'Unknown error');
+            throw new SynthiException(`Failed to trigger workspace prep (status ${res.status})`, parseErrorText(errText));
+        }
+        return res.json();
+    }
+
     async searchIndex(slug, query, options = {}) {
         const q = String(query || '');
 
@@ -281,6 +305,60 @@ export class ApiClient {
             throw new SynthiException(`Failed to delete item (status ${res.status})`, parseErrorText(errText));
         }
         return res.json();
+    }
+
+    async execTerminalCommand(slug, command, { timeout = 300000 } = {}) {
+        const trimmed = String(command || '').trim();
+        if (!trimmed) {
+            throw new SynthiException('Missing command', 'No workspace command was provided.');
+        }
+
+        const headers = await this._headers({ 'Content-Type': 'application/json' });
+        const body = JSON.stringify({ command: trimmed, timeout });
+        const signal =
+            typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+                ? AbortSignal.timeout(timeout + 5000)
+                : undefined;
+
+        let res;
+        let usedTerminal = false;
+
+        try {
+            res = await fetch(`${COLLAB_SERVER_URL}/exec-terminal/${encodeURIComponent(slug)}`, {
+                method: 'POST',
+                headers,
+                body,
+                signal,
+            });
+            usedTerminal = res.ok;
+        } catch (_) {
+            res = null;
+        }
+
+        if (!usedTerminal) {
+            res = await fetch(`${COLLAB_SERVER_URL}/exec/${encodeURIComponent(slug)}`, {
+                method: 'POST',
+                headers,
+                body,
+                signal,
+            });
+        }
+
+        if (!res.ok) {
+            const errText = await res.text().catch(() => 'Unknown error');
+            throw new SynthiException(`Failed to execute workspace command (status ${res.status})`, parseErrorText(errText));
+        }
+
+        const data = await res.json();
+        return {
+            command: trimmed,
+            exitCode: data.exitCode ?? null,
+            output: usedTerminal
+                ? (data.output || '')
+                : `${data.stdout || ''}${data.stderr ? `\n[stderr]\n${data.stderr}` : ''}`,
+            sessionId: data.sessionId || null,
+            timedOut: Boolean(data.timedOut),
+        };
     }
 }
 

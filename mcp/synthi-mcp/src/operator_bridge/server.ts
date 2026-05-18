@@ -36,6 +36,8 @@ export interface OperatorBridgeOptions {
 }
 
 const SSE_HEARTBEAT_MS = 15_000;
+const SSE_IDLE_TTL_MS = Number(process.env["SYNTHI_OPERATOR_SSE_IDLE_TTL_MS"] ?? 30 * 60_000);
+const SSE_SWEEP_MS = 60_000;
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -99,14 +101,42 @@ export function startOperatorBridge(opts: OperatorBridgeOptions): {
   const host = opts.host ?? "127.0.0.1";
   const sseClients = new Set<http.ServerResponse>();
   const heartbeatTimers = new Map<http.ServerResponse, NodeJS.Timeout>();
+  const sseLastActive = new Map<http.ServerResponse, number>();
+
+  const cleanupSseClient = (res: http.ServerResponse, end: boolean = false): void => {
+    const hb = heartbeatTimers.get(res);
+    if (hb) clearInterval(hb);
+    heartbeatTimers.delete(res);
+    sseLastActive.delete(res);
+    sseClients.delete(res);
+    if (end && !res.destroyed && !res.writableEnded) {
+      try {
+        res.end();
+      } catch {
+        // ignored
+      }
+    }
+  };
+
+  const sweepSseClients = setInterval(() => {
+    const cutoff = Date.now() - SSE_IDLE_TTL_MS;
+    for (const res of sseClients) {
+      const lastActive = sseLastActive.get(res) ?? 0;
+      if (lastActive < cutoff) {
+        cleanupSseClient(res, true);
+      }
+    }
+  }, SSE_SWEEP_MS);
+  if (sweepSseClients.unref) sweepSseClients.unref();
 
   const pushToSse = (event: string, data: unknown): void => {
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const res of sseClients) {
       try {
         res.write(payload);
+        sseLastActive.set(res, Date.now());
       } catch {
-        // Broken pipe — cleanup on the `close` handler.
+        cleanupSseClient(res, true);
       }
     }
   };
@@ -220,19 +250,20 @@ export function startOperatorBridge(opts: OperatorBridgeOptions): {
       const snapshot = escapeHatchQueue.list().map(redactScreenshot);
       res.write(`event: snapshot\ndata: ${JSON.stringify({ entries: snapshot })}\n\n`);
       sseClients.add(res);
+      sseLastActive.set(res, Date.now());
       const hb = setInterval(() => {
         try {
           res.write(`: heartbeat ${Date.now()}\n\n`);
+          sseLastActive.set(res, Date.now());
         } catch {
-          // drop
+          cleanupSseClient(res, true);
         }
       }, SSE_HEARTBEAT_MS);
       heartbeatTimers.set(res, hb);
       req.on("close", () => {
-        clearInterval(hb);
-        heartbeatTimers.delete(res);
-        sseClients.delete(res);
+        cleanupSseClient(res);
       });
+      res.on("error", () => cleanupSseClient(res, true));
       return;
     }
 
@@ -247,6 +278,7 @@ export function startOperatorBridge(opts: OperatorBridgeOptions): {
 
   const close = async (): Promise<void> => {
     queueUnsub();
+    clearInterval(sweepSseClients);
     for (const [res, timer] of heartbeatTimers) {
       clearInterval(timer);
       try {
@@ -256,6 +288,7 @@ export function startOperatorBridge(opts: OperatorBridgeOptions): {
       }
     }
     heartbeatTimers.clear();
+    sseLastActive.clear();
     sseClients.clear();
     await new Promise<void>((resolve) => {
       server.close(() => resolve());

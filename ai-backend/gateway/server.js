@@ -36,6 +36,12 @@ const { fetch } = require("undici");
 const gatewayPort = parseInt(process.env.GATEWAY_PORT || "7070", 10);
 const websocketPath = process.env.GATEWAY_WS_PATH || "/ws";
 const backendUrl = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+const backendRequestTimeoutMs = parseInt(process.env.BACKEND_REQUEST_TIMEOUT_MS || "30000", 10);
+const gatewayAuthToken = process.env.AI_BACKEND_AUTH_TOKEN || process.env.GATEWAY_AUTH_TOKEN || "";
+const gatewayJwtSecret = process.env.GATEWAY_JWT_SECRET || process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET || "";
+const gatewayAuthDisabled =
+  String(process.env.GATEWAY_AUTH_DISABLED || "false").toLowerCase() === "true" &&
+  process.env.NODE_ENV !== "production";
 const backendStaticAnalyzeUrl = new URL("/analyze/static", backendUrl).toString();
 const backendAiAnalyzeUrl = new URL("/analyze/ai", backendUrl).toString();
 const backendProactiveAnalyzeUrl = new URL("/analyze/proactive", backendUrl).toString();
@@ -78,6 +84,135 @@ const backendAIPolicyUnsuppressUrl = new URL("/heal/ai/policy/unsuppress", backe
 const backendAIPolicyListUrl = new URL("/heal/ai/policy", backendUrl).toString();
 const backendHealRuleTranslateUrl = new URL("/heal/rule/translate", backendUrl).toString();
 
+function combineSignals(signal, timeoutMs) {
+  const timeoutSignal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null;
+  if (signal && timeoutSignal) {
+    if (signal.aborted) return signal;
+    if (timeoutSignal.aborted) return timeoutSignal;
+    if (typeof AbortSignal.any === "function") {
+      return AbortSignal.any([signal, timeoutSignal]);
+    }
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal.addEventListener("abort", abort, { once: true });
+    timeoutSignal.addEventListener("abort", abort, { once: true });
+    return controller.signal;
+  }
+  return signal || timeoutSignal || undefined;
+}
+
+function fetchWithTimeout(url, options = {}, timeoutMs = backendRequestTimeoutMs) {
+  const { headers: optionHeaders, signal, ...restOptions } = options;
+  const headers = {
+    ...(optionHeaders || {}),
+  };
+  if (gatewayAuthToken) {
+    headers["x-synthi-internal-token"] = gatewayAuthToken;
+  }
+  const fetchOptions = {
+    ...restOptions,
+    headers,
+  };
+  const combinedSignal = combineSignals(signal, timeoutMs);
+  if (combinedSignal) {
+    fetchOptions.signal = combinedSignal;
+  }
+  return fetch(url, fetchOptions);
+}
+
+function parseCookies(header = "") {
+  return Object.fromEntries(
+    header
+      .split(";")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const idx = part.indexOf("=");
+        if (idx === -1) return [part, ""];
+        try {
+          return [part.slice(0, idx), decodeURIComponent(part.slice(idx + 1))];
+        } catch (_) {
+          return [part.slice(0, idx), part.slice(idx + 1)];
+        }
+      })
+  );
+}
+
+function extractGatewayToken(request) {
+  const auth = request.headers.authorization || "";
+  const bearer = auth.match(/^Bearer\s+(.+)$/i);
+  if (bearer) return bearer[1].trim();
+  if (request.headers["x-synthi-internal-token"]) {
+    return String(request.headers["x-synthi-internal-token"]).trim();
+  }
+  try {
+    const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+    const queryToken = url.searchParams.get("token") || url.searchParams.get("authToken");
+    if (queryToken) return queryToken;
+  } catch (_) {
+    // Ignore malformed request URLs.
+  }
+  const cookies = parseCookies(request.headers.cookie || "");
+  return cookies.synthi_gateway_token || cookies.ai_backend_auth || "";
+}
+
+function safeEqual(value, expectedValue) {
+  const expected = Buffer.from(expectedValue);
+  const actual = Buffer.from(value);
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
+function parseJwtSegment(segment) {
+  return JSON.parse(Buffer.from(segment, "base64url").toString("utf8"));
+}
+
+function verifyGatewayJwt(candidate) {
+  if (!gatewayJwtSecret) return false;
+
+  const parts = String(candidate || "").split(".");
+  if (parts.length !== 3) return false;
+
+  try {
+    const [headerPart, payloadPart, signaturePart] = parts;
+    const header = parseJwtSegment(headerPart);
+    if (header?.alg !== "HS256") return false;
+
+    const signedPayload = `${headerPart}.${payloadPart}`;
+    const expectedSignature = crypto
+      .createHmac("sha256", gatewayJwtSecret)
+      .update(signedPayload)
+      .digest();
+    const actualSignature = Buffer.from(signaturePart, "base64url");
+    if (actualSignature.length !== expectedSignature.length) return false;
+    if (!crypto.timingSafeEqual(actualSignature, expectedSignature)) return false;
+
+    const payload = parseJwtSegment(payloadPart);
+    const now = Math.floor(Date.now() / 1000);
+    if (typeof payload.exp === "number" && now >= payload.exp) return false;
+    if (typeof payload.nbf === "number" && now < payload.nbf) return false;
+    const audience = payload.aud;
+    const hasGatewayAudience = Array.isArray(audience)
+      ? audience.includes("synthi-gateway")
+      : audience === "synthi-gateway";
+    if (!hasGatewayAudience) return false;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function isAuthorizedGatewayRequest(request) {
+  if (gatewayAuthDisabled) return true;
+
+  const candidate = extractGatewayToken(request);
+  if (!candidate) return false;
+
+  if (gatewayAuthToken && safeEqual(candidate, gatewayAuthToken)) {
+    return true;
+  }
+  return verifyGatewayJwt(candidate);
+}
+
 // Agentic self-healing endpoints
 const backendAgenticDiagnoseUrl = new URL("/heal/agentic/diagnose", backendUrl).toString();
 const backendAgenticEpisodeCreateUrl = new URL("/heal/agentic/episode/create", backendUrl).toString();
@@ -107,6 +242,12 @@ const wss = new WebSocketServer({
 });
 
 wss.on("connection", (socket, request) => {
+  if (!isAuthorizedGatewayRequest(request)) {
+    console.warn("Rejected unauthenticated WS connection", { ip: request.socket.remoteAddress });
+    socket.close(1008, "Authentication required");
+    return;
+  }
+
   const clientId = crypto.randomUUID();
   console.info("WS connected", { clientId, ip: request.socket.remoteAddress });
 
@@ -145,7 +286,7 @@ wss.on("connection", (socket, request) => {
     handleClientMessage(socket, raw)
       .catch((err) => {
         console.error("Handler error", err);
-        sendError(socket, "Internal gateway error", { detail: err.message });
+        sendError(socket, "Internal gateway error", { detail: "Internal error detail withheld; reference requestId" });
       })
       .finally(() => { inFlightCount--; });
   });
@@ -461,7 +602,7 @@ async function forwardAnalyzeRequest(socket, data, requestId, useAi = false) {
       forwardBody.focus = data.focus.trim();
     }
 
-    backendResponse = await fetch(useAi ? backendAiAnalyzeUrl : backendStaticAnalyzeUrl, {
+    backendResponse = await fetchWithTimeout(useAi ? backendAiAnalyzeUrl : backendStaticAnalyzeUrl, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -472,7 +613,7 @@ async function forwardAnalyzeRequest(socket, data, requestId, useAi = false) {
     console.error("Backend request failed", err);
     sendError(socket, "Failed to reach analysis backend", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -494,7 +635,7 @@ async function forwardAnalyzeRequest(socket, data, requestId, useAi = false) {
   } catch (err) {
     sendError(socket, "Backend response was not valid JSON", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -618,7 +759,7 @@ async function forwardProactiveAnalysis(socket, data, requestId) {
 
   let backendResponse;
   try {
-    backendResponse = await fetch(backendProactiveAnalyzeUrl, {
+    backendResponse = await fetchWithTimeout(backendProactiveAnalyzeUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(forwardBody),
@@ -627,7 +768,7 @@ async function forwardProactiveAnalysis(socket, data, requestId) {
     console.error("[Gateway] Proactive analysis backend request failed", err);
     sendError(socket, "Failed to reach proactive analysis backend", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -666,7 +807,7 @@ async function forwardProactiveAnalysis(socket, data, requestId) {
   } catch (err) {
     sendError(socket, "Proactive analysis response was not valid JSON", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -772,7 +913,7 @@ async function forwardContainerAnalysis(socket, data, requestId) {
 
   let backendResponse;
   try {
-    backendResponse = await fetch(backendContainerAnalyzeUrl, {
+    backendResponse = await fetchWithTimeout(backendContainerAnalyzeUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(forwardBody),
@@ -781,7 +922,7 @@ async function forwardContainerAnalysis(socket, data, requestId) {
     console.error("[Gateway] Container analysis backend request failed", err);
     sendError(socket, "Failed to reach container analysis backend", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -805,7 +946,7 @@ async function forwardContainerAnalysis(socket, data, requestId) {
   } catch (err) {
     sendError(socket, "Container analysis response was not valid JSON", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -937,7 +1078,7 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
 
   let backendResponse;
   try {
-    backendResponse = await fetch(backendUnifiedAnalyzeUrl, {
+    backendResponse = await fetchWithTimeout(backendUnifiedAnalyzeUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(forwardBody),
@@ -952,7 +1093,7 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
     // console.error("[Gateway] Unified analysis backend request failed", err);
     sendError(socket, "Failed to reach unified analysis backend", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -977,7 +1118,7 @@ async function forwardUnifiedAnalysis(socket, data, requestId) {
   } catch (err) {
     sendError(socket, "Unified analysis response was not valid JSON", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -1036,7 +1177,7 @@ async function forwardProactiveQuickAnalysis(socket, data, requestId) {
 
   let backendResponse;
   try {
-    backendResponse = await fetch(backendProactiveQuickUrl, {
+    backendResponse = await fetchWithTimeout(backendProactiveQuickUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(forwardBody),
@@ -1045,7 +1186,7 @@ async function forwardProactiveQuickAnalysis(socket, data, requestId) {
     console.error("Quick proactive analysis backend request failed", err);
     sendError(socket, "Failed to reach quick analysis backend", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -1067,7 +1208,7 @@ async function forwardProactiveQuickAnalysis(socket, data, requestId) {
   } catch (err) {
     sendError(socket, "Quick analysis response was not valid JSON", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -1188,7 +1329,7 @@ async function forwardWorkspaceAnalysis(socket, data, requestId) {
 
   let backendResponse;
   try {
-    backendResponse = await fetch(backendWorkspaceAnalyzeUrl, {
+    backendResponse = await fetchWithTimeout(backendWorkspaceAnalyzeUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(forwardBody),
@@ -1197,7 +1338,7 @@ async function forwardWorkspaceAnalysis(socket, data, requestId) {
     console.error("Workspace analysis backend request failed", err);
     sendError(socket, "Failed to reach workspace analysis backend", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -1219,7 +1360,7 @@ async function forwardWorkspaceAnalysis(socket, data, requestId) {
   } catch (err) {
     sendError(socket, "Workspace analysis response was not valid JSON", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -1316,7 +1457,7 @@ async function forwardWorkspaceIncrementalAnalysis(socket, data, requestId) {
 
   let backendResponse;
   try {
-    backendResponse = await fetch(backendWorkspaceIncrementalUrl, {
+    backendResponse = await fetchWithTimeout(backendWorkspaceIncrementalUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(forwardBody),
@@ -1325,7 +1466,7 @@ async function forwardWorkspaceIncrementalAnalysis(socket, data, requestId) {
     console.error("Incremental workspace analysis backend request failed", err);
     sendError(socket, "Failed to reach incremental analysis backend", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -1347,7 +1488,7 @@ async function forwardWorkspaceIncrementalAnalysis(socket, data, requestId) {
   } catch (err) {
     sendError(socket, "Incremental analysis response was not valid JSON", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
     return;
   }
@@ -1374,7 +1515,7 @@ async function forwardHealAnalyze(socket, data, requestId) {
   }
 
   try {
-    const backendResponse = await fetch(backendHealAnalyzeUrl, {
+    const backendResponse = await fetchWithTimeout(backendHealAnalyzeUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1400,7 +1541,7 @@ async function forwardHealAnalyze(socket, data, requestId) {
     try {
       responseJson = JSON.parse(responseText);
     } catch (err) {
-      sendError(socket, "Healing response was not valid JSON", { requestId, detail: err.message });
+      sendError(socket, "Healing response was not valid JSON", { requestId, detail: "Internal error detail withheld; reference requestId" });
       return;
     }
 
@@ -1412,7 +1553,7 @@ async function forwardHealAnalyze(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[Heal] analyze forward error:", err);
-    sendError(socket, "Healing analysis request failed", { requestId, detail: err.message });
+    sendError(socket, "Healing analysis request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -1426,7 +1567,7 @@ async function forwardHealApply(socket, data, requestId) {
   }
 
   try {
-    const backendResponse = await fetch(backendHealApplyUrl, {
+    const backendResponse = await fetchWithTimeout(backendHealApplyUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1452,7 +1593,7 @@ async function forwardHealApply(socket, data, requestId) {
     try {
       responseJson = JSON.parse(responseText);
     } catch (err) {
-      sendError(socket, "Healing apply response was not valid JSON", { requestId, detail: err.message });
+      sendError(socket, "Healing apply response was not valid JSON", { requestId, detail: "Internal error detail withheld; reference requestId" });
       return;
     }
 
@@ -1464,7 +1605,7 @@ async function forwardHealApply(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[Heal] apply forward error:", err);
-    sendError(socket, "Healing apply request failed", { requestId, detail: err.message });
+    sendError(socket, "Healing apply request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -1479,7 +1620,7 @@ async function forwardHealContainer(socket, data, requestId) {
   }
 
   try {
-    const backendResponse = await fetch(backendHealContainerUrl, {
+    const backendResponse = await fetchWithTimeout(backendHealContainerUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1504,7 +1645,7 @@ async function forwardHealContainer(socket, data, requestId) {
     try {
       responseJson = JSON.parse(responseText);
     } catch (err) {
-      sendError(socket, "Container healing response was not valid JSON", { requestId, detail: err.message });
+      sendError(socket, "Container healing response was not valid JSON", { requestId, detail: "Internal error detail withheld; reference requestId" });
       return;
     }
 
@@ -1516,7 +1657,7 @@ async function forwardHealContainer(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[Heal] container forward error:", err);
-    sendError(socket, "Container healing request failed", { requestId, detail: err.message });
+    sendError(socket, "Container healing request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -1529,7 +1670,7 @@ async function forwardHealConfig(socket, data, requestId) {
       fetchOpts.body = JSON.stringify(data);
     }
 
-    const backendResponse = await fetch(backendHealConfigUrl, fetchOpts);
+    const backendResponse = await fetchWithTimeout(backendHealConfigUrl, fetchOpts);
     const responseText = await backendResponse.text();
 
     if (!backendResponse.ok) {
@@ -1546,13 +1687,13 @@ async function forwardHealConfig(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[Heal] config forward error:", err);
-    sendError(socket, "Healing config request failed", { requestId, detail: err.message });
+    sendError(socket, "Healing config request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 async function forwardHealStats(socket, requestId) {
   try {
-    const backendResponse = await fetch(backendHealStatsUrl, { method: "GET" });
+    const backendResponse = await fetchWithTimeout(backendHealStatsUrl, { method: "GET" });
     const responseText = await backendResponse.text();
 
     if (!backendResponse.ok) {
@@ -1569,13 +1710,13 @@ async function forwardHealStats(socket, requestId) {
     });
   } catch (err) {
     console.error("[Heal] stats forward error:", err);
-    sendError(socket, "Healing stats request failed", { requestId, detail: err.message });
+    sendError(socket, "Healing stats request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 async function forwardHealRules(socket, requestId) {
   try {
-    const backendResponse = await fetch(backendHealRulesUrl, { method: "GET" });
+    const backendResponse = await fetchWithTimeout(backendHealRulesUrl, { method: "GET" });
     const responseText = await backendResponse.text();
 
     if (!backendResponse.ok) {
@@ -1592,13 +1733,13 @@ async function forwardHealRules(socket, requestId) {
     });
   } catch (err) {
     console.error("[Heal] rules forward error:", err);
-    sendError(socket, "Healing rules request failed", { requestId, detail: err.message });
+    sendError(socket, "Healing rules request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 async function forwardHealBatch(socket, data, requestId) {
   try {
-    const backendResponse = await fetch(backendHealBatchUrl, {
+    const backendResponse = await fetchWithTimeout(backendHealBatchUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -1619,13 +1760,13 @@ async function forwardHealBatch(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[Heal] batch forward error:", err);
-    sendError(socket, "Healing batch request failed", { requestId, detail: err.message });
+    sendError(socket, "Healing batch request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 async function forwardHealCacheStats(socket, requestId) {
   try {
-    const backendResponse = await fetch(backendHealCacheStatsUrl, { method: "GET" });
+    const backendResponse = await fetchWithTimeout(backendHealCacheStatsUrl, { method: "GET" });
     const responseText = await backendResponse.text();
 
     if (!backendResponse.ok) {
@@ -1642,13 +1783,13 @@ async function forwardHealCacheStats(socket, requestId) {
     });
   } catch (err) {
     console.error("[Heal] cache stats forward error:", err);
-    sendError(socket, "Healing cache stats request failed", { requestId, detail: err.message });
+    sendError(socket, "Healing cache stats request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 async function forwardHealPresets(socket, requestId) {
   try {
-    const backendResponse = await fetch(backendHealPresetsUrl, { method: "GET" });
+    const backendResponse = await fetchWithTimeout(backendHealPresetsUrl, { method: "GET" });
     const responseText = await backendResponse.text();
 
     if (!backendResponse.ok) {
@@ -1665,13 +1806,13 @@ async function forwardHealPresets(socket, requestId) {
     });
   } catch (err) {
     console.error("[Heal] presets forward error:", err);
-    sendError(socket, "Healing presets request failed", { requestId, detail: err.message });
+    sendError(socket, "Healing presets request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 async function forwardHealPresetApply(socket, data, requestId) {
   try {
-    const backendResponse = await fetch(backendHealPresetApplyUrl, {
+    const backendResponse = await fetchWithTimeout(backendHealPresetApplyUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ preset: data.preset }),
@@ -1692,13 +1833,13 @@ async function forwardHealPresetApply(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[Heal] preset apply forward error:", err);
-    sendError(socket, "Healing preset apply request failed", { requestId, detail: err.message });
+    sendError(socket, "Healing preset apply request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 async function forwardHealMetrics(socket, requestId) {
   try {
-    const backendResponse = await fetch(backendHealMetricsUrl, { method: "GET" });
+    const backendResponse = await fetchWithTimeout(backendHealMetricsUrl, { method: "GET" });
     const responseText = await backendResponse.text();
 
     if (!backendResponse.ok) {
@@ -1714,7 +1855,7 @@ async function forwardHealMetrics(socket, requestId) {
     });
   } catch (err) {
     console.error("[Heal] metrics forward error:", err);
-    sendError(socket, "Healing metrics request failed", { requestId, detail: err.message });
+    sendError(socket, "Healing metrics request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -1732,7 +1873,7 @@ async function forwardAIAnalyze(socket, data, requestId) {
   }
 
   try {
-    const backendResponse = await fetch(backendAIAnalyzeUrl, {
+    const backendResponse = await fetchWithTimeout(backendAIAnalyzeUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1763,7 +1904,7 @@ async function forwardAIAnalyze(socket, data, requestId) {
     try {
       responseJson = JSON.parse(responseText);
     } catch (err) {
-      sendError(socket, "AI analysis response was not valid JSON", { requestId, detail: err.message });
+      sendError(socket, "AI analysis response was not valid JSON", { requestId, detail: "Internal error detail withheld; reference requestId" });
       return;
     }
 
@@ -1775,7 +1916,7 @@ async function forwardAIAnalyze(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] analyze forward error:", err);
-    sendError(socket, "AI analysis request failed", { requestId, detail: err.message });
+    sendError(socket, "AI analysis request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -1811,7 +1952,7 @@ async function forwardHealRuleTranslate(socket, data, requestId) {
   socket._ruleTranslateWindow.push(now);
 
   try {
-    const backendResponse = await fetch(backendHealRuleTranslateUrl, {
+    const backendResponse = await fetchWithTimeout(backendHealRuleTranslateUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1839,7 +1980,7 @@ async function forwardHealRuleTranslate(socket, data, requestId) {
     } catch (err) {
       sendError(socket, "Rule translation response was not valid JSON", {
         requestId,
-        detail: err.message,
+        detail: "Internal error detail withheld; reference requestId",
       });
       return;
     }
@@ -1854,7 +1995,7 @@ async function forwardHealRuleTranslate(socket, data, requestId) {
     console.error("[RuleTranslate] forward error:", err);
     sendError(socket, "Rule translation request failed", {
       requestId,
-      detail: err.message,
+      detail: "Internal error detail withheld; reference requestId",
     });
   }
 }
@@ -1874,7 +2015,7 @@ async function forwardAIRuntime(socket, data, requestId) {
   }
 
   try {
-    const backendResponse = await fetch(backendAIRuntimeUrl, {
+    const backendResponse = await fetchWithTimeout(backendAIRuntimeUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1903,7 +2044,7 @@ async function forwardAIRuntime(socket, data, requestId) {
     try {
       responseJson = JSON.parse(responseText);
     } catch (err) {
-      sendError(socket, "Runtime error healing response was not valid JSON", { requestId, detail: err.message });
+      sendError(socket, "Runtime error healing response was not valid JSON", { requestId, detail: "Internal error detail withheld; reference requestId" });
       return;
     }
 
@@ -1915,7 +2056,7 @@ async function forwardAIRuntime(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[Runtime Healing] forward error:", err);
-    sendError(socket, "Runtime error healing request failed", { requestId, detail: err.message });
+    sendError(socket, "Runtime error healing request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -1928,7 +2069,7 @@ async function forwardAIBatch(socket, data, requestId) {
   }
 
   try {
-    const backendResponse = await fetch(backendAIBatchUrl, {
+    const backendResponse = await fetchWithTimeout(backendAIBatchUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -1953,7 +2094,7 @@ async function forwardAIBatch(socket, data, requestId) {
     try {
       responseJson = JSON.parse(responseText);
     } catch (err) {
-      sendError(socket, "AI batch response was not valid JSON", { requestId, detail: err.message });
+      sendError(socket, "AI batch response was not valid JSON", { requestId, detail: "Internal error detail withheld; reference requestId" });
       return;
     }
 
@@ -1965,7 +2106,7 @@ async function forwardAIBatch(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] batch forward error:", err);
-    sendError(socket, "AI batch analysis request failed", { requestId, detail: err.message });
+    sendError(socket, "AI batch analysis request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -1979,7 +2120,7 @@ async function forwardAIHybrid(socket, data, requestId) {
   }
 
   try {
-    const backendResponse = await fetch(backendAIHybridUrl, {
+    const backendResponse = await fetchWithTimeout(backendAIHybridUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2006,7 +2147,7 @@ async function forwardAIHybrid(socket, data, requestId) {
     try {
       responseJson = JSON.parse(responseText);
     } catch (err) {
-      sendError(socket, "Hybrid analysis response was not valid JSON", { requestId, detail: err.message });
+      sendError(socket, "Hybrid analysis response was not valid JSON", { requestId, detail: "Internal error detail withheld; reference requestId" });
       return;
     }
 
@@ -2018,13 +2159,13 @@ async function forwardAIHybrid(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] hybrid forward error:", err);
-    sendError(socket, "Hybrid analysis request failed", { requestId, detail: err.message });
+    sendError(socket, "Hybrid analysis request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 async function forwardAIStats(socket, requestId) {
   try {
-    const backendResponse = await fetch(backendAIStatsUrl, { method: "GET" });
+    const backendResponse = await fetchWithTimeout(backendAIStatsUrl, { method: "GET" });
     const responseText = await backendResponse.text();
 
     if (!backendResponse.ok) {
@@ -2036,7 +2177,7 @@ async function forwardAIStats(socket, requestId) {
     try {
       responseJson = JSON.parse(responseText);
     } catch (err) {
-      sendError(socket, "AI stats response was not valid JSON", { requestId, detail: err.message });
+      sendError(socket, "AI stats response was not valid JSON", { requestId, detail: "Internal error detail withheld; reference requestId" });
       return;
     }
 
@@ -2048,7 +2189,7 @@ async function forwardAIStats(socket, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] stats forward error:", err);
-    sendError(socket, "AI stats request failed", { requestId, detail: err.message });
+    sendError(socket, "AI stats request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -2063,7 +2204,7 @@ async function forwardAIFeedback(socket, data, requestId) {
   }
 
   try {
-    const backendResponse = await fetch(backendAIFeedbackUrl, {
+    const backendResponse = await fetchWithTimeout(backendAIFeedbackUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2087,7 +2228,7 @@ async function forwardAIFeedback(socket, data, requestId) {
     try {
       responseJson = JSON.parse(responseText);
     } catch (err) {
-      sendError(socket, "AI feedback response was not valid JSON", { requestId, detail: err.message });
+      sendError(socket, "AI feedback response was not valid JSON", { requestId, detail: "Internal error detail withheld; reference requestId" });
       return;
     }
 
@@ -2099,14 +2240,14 @@ async function forwardAIFeedback(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] feedback forward error:", err);
-    sendError(socket, "AI feedback request failed", { requestId, detail: err.message });
+    sendError(socket, "AI feedback request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 // ── AI Agent: memory summary ────────────────────────────────────────
 async function forwardAIMemory(socket, requestId) {
   try {
-    const backendResponse = await fetch(backendAIMemoryUrl, { method: "GET" });
+    const backendResponse = await fetchWithTimeout(backendAIMemoryUrl, { method: "GET" });
     const responseText = await backendResponse.text();
 
     if (!backendResponse.ok) {
@@ -2118,7 +2259,7 @@ async function forwardAIMemory(socket, requestId) {
     try {
       responseJson = JSON.parse(responseText);
     } catch (err) {
-      sendError(socket, "AI memory response was not valid JSON", { requestId, detail: err.message });
+      sendError(socket, "AI memory response was not valid JSON", { requestId, detail: "Internal error detail withheld; reference requestId" });
       return;
     }
 
@@ -2130,14 +2271,14 @@ async function forwardAIMemory(socket, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] memory forward error:", err);
-    sendError(socket, "AI memory request failed", { requestId, detail: err.message });
+    sendError(socket, "AI memory request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 // ── AI Agent: clear memory ──────────────────────────────────────────
 async function forwardAIMemoryClear(socket, requestId) {
   try {
-    const backendResponse = await fetch(backendAIMemoryUrl, { method: "DELETE" });
+    const backendResponse = await fetchWithTimeout(backendAIMemoryUrl, { method: "DELETE" });
     const responseText = await backendResponse.text();
 
     if (!backendResponse.ok) {
@@ -2149,7 +2290,7 @@ async function forwardAIMemoryClear(socket, requestId) {
     try {
       responseJson = JSON.parse(responseText);
     } catch (err) {
-      sendError(socket, "AI memory clear response was not valid JSON", { requestId, detail: err.message });
+      sendError(socket, "AI memory clear response was not valid JSON", { requestId, detail: "Internal error detail withheld; reference requestId" });
       return;
     }
 
@@ -2161,7 +2302,7 @@ async function forwardAIMemoryClear(socket, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] memory clear forward error:", err);
-    sendError(socket, "AI memory clear request failed", { requestId, detail: err.message });
+    sendError(socket, "AI memory clear request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -2192,11 +2333,11 @@ async function forwardAIStream(socket, data, requestId) {
     };
     if (data?.minConfidence != null) body.min_confidence = data.minConfidence;
 
-    const backendResponse = await fetch(backendAIStreamUrl, {
+    const backendResponse = await fetchWithTimeout(backendAIStreamUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
+    }, 0);
 
     if (!backendResponse.ok) {
       const errText = await backendResponse.text();
@@ -2278,7 +2419,7 @@ async function forwardAIStream(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] stream forward error:", err);
-    sendError(socket, "AI stream request failed", { requestId, detail: err.message });
+    sendError(socket, "AI stream request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -2303,11 +2444,11 @@ async function forwardAIProject(socket, data, requestId) {
     if (data?.relatedFiles) body.related_files = data.relatedFiles;
     if (data?.minConfidence != null) body.min_confidence = data.minConfidence;
 
-    const backendResponse = await fetch(backendAIProjectUrl, {
+    const backendResponse = await fetchWithTimeout(backendAIProjectUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
+    }, 0);
     const responseText = await backendResponse.text();
 
     if (!backendResponse.ok) {
@@ -2319,7 +2460,7 @@ async function forwardAIProject(socket, data, requestId) {
     try {
       responseJson = JSON.parse(responseText);
     } catch (err) {
-      sendError(socket, "AI project response was not valid JSON", { requestId, detail: err.message });
+      sendError(socket, "AI project response was not valid JSON", { requestId, detail: "Internal error detail withheld; reference requestId" });
       return;
     }
 
@@ -2331,13 +2472,13 @@ async function forwardAIProject(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] project forward error:", err);
-    sendError(socket, "AI project analysis request failed", { requestId, detail: err.message });
+    sendError(socket, "AI project analysis request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 async function forwardAIConfig(socket, data, requestId) {
   try {
-    const backendResponse = await fetch(backendAIConfigUrl, { method: "GET" });
+    const backendResponse = await fetchWithTimeout(backendAIConfigUrl, { method: "GET" });
     const responseText = await backendResponse.text();
     if (!backendResponse.ok) {
       sendError(socket, "AI config backend error", { requestId, detail: responseText });
@@ -2351,7 +2492,7 @@ async function forwardAIConfig(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] config forward error:", err);
-    sendError(socket, "AI config request failed", { requestId, detail: err.message });
+    sendError(socket, "AI config request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -2365,11 +2506,11 @@ async function forwardAIConfigUpdate(socket, data, requestId) {
     if (data?.maxFixesPerFile != null) body.max_fixes_per_file = data.maxFixesPerFile;
     if (data?.llmTimeout != null) body.llm_timeout = data.llmTimeout;
 
-    const backendResponse = await fetch(backendAIConfigUrl, {
+    const backendResponse = await fetchWithTimeout(backendAIConfigUrl, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-    });
+    }, 0);
     const responseText = await backendResponse.text();
     if (!backendResponse.ok) {
       sendError(socket, "AI config update backend error", { requestId, detail: responseText });
@@ -2383,13 +2524,13 @@ async function forwardAIConfigUpdate(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] config update forward error:", err);
-    sendError(socket, "AI config update failed", { requestId, detail: err.message });
+    sendError(socket, "AI config update failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 async function forwardAIHealth(socket, requestId) {
   try {
-    const backendResponse = await fetch(backendAIHealthUrl, { method: "GET" });
+    const backendResponse = await fetchWithTimeout(backendAIHealthUrl, { method: "GET" });
     const responseText = await backendResponse.text();
     if (!backendResponse.ok) {
       sendError(socket, "AI health backend error", { requestId, detail: responseText });
@@ -2403,13 +2544,13 @@ async function forwardAIHealth(socket, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] health forward error:", err);
-    sendError(socket, "AI health request failed", { requestId, detail: err.message });
+    sendError(socket, "AI health request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 async function forwardAICacheClear(socket, requestId) {
   try {
-    const backendResponse = await fetch(backendAICacheClearUrl, {
+    const backendResponse = await fetchWithTimeout(backendAICacheClearUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
@@ -2427,7 +2568,7 @@ async function forwardAICacheClear(socket, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] cache clear forward error:", err);
-    sendError(socket, "AI cache clear request failed", { requestId, detail: err.message });
+    sendError(socket, "AI cache clear request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -2439,7 +2580,7 @@ async function forwardAIPreview(socket, data, requestId) {
     return;
   }
   try {
-    const backendResponse = await fetch(backendAIPreviewUrl, {
+    const backendResponse = await fetchWithTimeout(backendAIPreviewUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2461,7 +2602,7 @@ async function forwardAIPreview(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Agent] preview forward error:", err);
-    sendError(socket, "AI preview request failed", { requestId, detail: err.message });
+    sendError(socket, "AI preview request failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -2473,7 +2614,7 @@ async function forwardAIPolicySuppress(socket, data, requestId) {
     return;
   }
   try {
-    const resp = await fetch(backendAIPolicySuppressUrl, {
+    const resp = await fetchWithTimeout(backendAIPolicySuppressUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2499,7 +2640,7 @@ async function forwardAIPolicySuppress(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Policy] suppress forward error:", err);
-    sendError(socket, "AI policy suppress failed", { requestId, detail: err.message });
+    sendError(socket, "AI policy suppress failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -2511,7 +2652,7 @@ async function forwardAIPolicyUnsuppress(socket, data, requestId) {
     return;
   }
   try {
-    const resp = await fetch(backendAIPolicyUnsuppressUrl, {
+    const resp = await fetchWithTimeout(backendAIPolicyUnsuppressUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2534,7 +2675,7 @@ async function forwardAIPolicyUnsuppress(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Policy] unsuppress forward error:", err);
-    sendError(socket, "AI policy unsuppress failed", { requestId, detail: err.message });
+    sendError(socket, "AI policy unsuppress failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -2544,7 +2685,7 @@ async function forwardAIPolicyList(socket, data, requestId) {
     const env = data?.env || "development";
     const workspaceId = data?.workspaceId || "default";
     const url = `${backendAIPolicyListUrl}?env=${encodeURIComponent(env)}&workspaceId=${encodeURIComponent(workspaceId)}`;
-    const resp = await fetch(url, { method: "GET" });
+    const resp = await fetchWithTimeout(url, { method: "GET" });
     const text = await resp.text();
     if (!resp.ok) {
       sendError(socket, "AI policy list backend error", { requestId, detail: text });
@@ -2558,7 +2699,7 @@ async function forwardAIPolicyList(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Policy] list forward error:", err);
-    sendError(socket, "AI policy list failed", { requestId, detail: err.message });
+    sendError(socket, "AI policy list failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -2568,7 +2709,7 @@ async function forwardAIPolicyClear(socket, data, requestId) {
     const env = data?.env || "development";
     const workspaceId = data?.workspaceId || "default";
     const url = `${backendAIPolicyListUrl}?env=${encodeURIComponent(env)}&workspaceId=${encodeURIComponent(workspaceId)}`;
-    const resp = await fetch(url, { method: "DELETE" });
+    const resp = await fetchWithTimeout(url, { method: "DELETE" });
     const text = await resp.text();
     if (!resp.ok) {
       sendError(socket, "AI policy clear backend error", { requestId, detail: text });
@@ -2582,7 +2723,7 @@ async function forwardAIPolicyClear(socket, data, requestId) {
     });
   } catch (err) {
     console.error("[AI Policy] clear forward error:", err);
-    sendError(socket, "AI policy clear failed", { requestId, detail: err.message });
+    sendError(socket, "AI policy clear failed", { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
@@ -2593,7 +2734,7 @@ async function forwardAIPolicyClear(socket, data, requestId) {
 /** Generic POST forwarder for agentic endpoints. */
 async function agenticPost(socket, action, url, data, requestId) {
   try {
-    const resp = await fetch(url, {
+    const resp = await fetchWithTimeout(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(data || {}),
@@ -2606,14 +2747,14 @@ async function agenticPost(socket, action, url, data, requestId) {
     safeSend(socket, { type: "response", action, requestId, data: JSON.parse(text) });
   } catch (err) {
     console.error(`[Agentic] ${action} forward error:`, err);
-    sendError(socket, `Agentic ${action} request failed`, { requestId, detail: err.message });
+    sendError(socket, `Agentic ${action} request failed`, { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 
 /** Generic GET forwarder for agentic endpoints. */
 async function agenticGet(socket, action, url, requestId) {
   try {
-    const resp = await fetch(url, { method: "GET" });
+    const resp = await fetchWithTimeout(url, { method: "GET" });
     const text = await resp.text();
     if (!resp.ok) {
       sendError(socket, `Agentic ${action} backend error`, { requestId, detail: text, status: resp.status });
@@ -2622,7 +2763,7 @@ async function agenticGet(socket, action, url, requestId) {
     safeSend(socket, { type: "response", action, requestId, data: JSON.parse(text) });
   } catch (err) {
     console.error(`[Agentic] ${action} forward error:`, err);
-    sendError(socket, `Agentic ${action} request failed`, { requestId, detail: err.message });
+    sendError(socket, `Agentic ${action} request failed`, { requestId, detail: "Internal error detail withheld; reference requestId" });
   }
 }
 

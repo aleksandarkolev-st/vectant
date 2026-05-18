@@ -104,6 +104,8 @@ export const pushNepEdit = (buffer, entry) => {
     // appliedEdit for the impact endpoint without re-parsing the snippet.
     // Optional — falls through to undefined for callers that don't pass it.
     insertedText: typeof entry.insertedText === 'string' ? entry.insertedText : undefined,
+    searchText: typeof entry.searchText === 'string' ? entry.searchText : undefined,
+    replaceText: typeof entry.replaceText === 'string' ? entry.replaceText : undefined,
   });
 
   // Evict from the FRONT (oldest) until the byte budget fits. The newest

@@ -1,8 +1,6 @@
 import { Storage } from '@google-cloud/storage';
 import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { requireWorkspaceAccess } from '@/lib/workspaceAccess';
 
 const storage = new Storage({
     projectId: process.env.GCP_PROJECT_ID,
@@ -78,18 +76,23 @@ export async function GET(request, { params }) {
         return NextResponse.json({ error: 'Workspace ID is required.' }, { status: 400 });
     }
 
+    let access;
     try {
-        const workspace = await prisma.workspace.findUnique({
-            where: { slug: workspaceId }
-        });
-
-        if (!workspace) {
-            return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
-        }
+        access = await requireWorkspaceAccess(workspaceId);
     } catch (error) {
-        console.error('Database Error:', error);
+        console.error('Workspace access check failed:', error);
         return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
     }
+
+    if (!access.ok) {
+        return NextResponse.json({ error: access.error }, { status: access.status });
+    }
+
+    const workspaceMeta = {
+        id: access.workspace?.id,
+        slug: access.workspace?.slug || workspaceId,
+        name: access.workspace?.name || workspaceId,
+    };
 
     const storagePathPrefix = `workspaces/${workspaceId}/`;
 
@@ -135,7 +138,7 @@ export async function GET(request, { params }) {
                             autoPaginate: true, 
                         });
                         const fileTree = buildFileTree(refreshedFiles, storagePathPrefix.length);
-                        return NextResponse.json({ files: fileTree }, { status: 200 });
+                        return NextResponse.json({ files: fileTree, workspace: workspaceMeta }, { status: 200 });
                      }
                  }
              } catch (e) {
@@ -146,7 +149,7 @@ export async function GET(request, { params }) {
         const prefixLength = storagePathPrefix.length;
         const fileTree = buildFileTree(files, prefixLength);
 
-        return NextResponse.json({ files: fileTree }, { status: 200 });
+        return NextResponse.json({ files: fileTree, workspace: workspaceMeta }, { status: 200 });
 
     } catch (error) {
         console.error('GCS Listing Error:', error);

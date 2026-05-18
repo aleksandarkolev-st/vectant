@@ -30,6 +30,7 @@ const PORT = Number(process.env.COLLAB_PORT) || 1234;
 
 /** Base URL of the code-intelligence / AI-engine backend. */
 const CODE_INTEL_URL = (process.env.CODE_INTEL_URL || 'http://localhost:8000').replace(/\/$/, '');
+const AI_BACKEND_AUTH_TOKEN = process.env.AI_BACKEND_AUTH_TOKEN || process.env.AI_ENGINE_AUTH_TOKEN || '';
 
 /** Allowed CORS origin for the HTTP API. */
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:3000';
@@ -101,6 +102,17 @@ const REPO_CACHE_MAX = Number(process.env.REPO_CACHE_MAX) || 50;
  */
 const REPO_CACHE_TTL_MS = Number(process.env.REPO_CACHE_TTL_MS) || 5 * 60 * 1000; // 5 min
 
+// ── Workspace preparation ──────────────────────────────────────────────────
+const WORKSPACE_PREP_STATE_DIR = path.resolve(
+    process.env.WORKSPACE_PREP_STATE_DIR || path.join(path.dirname(REPO_CACHE_DIR), '.synthi-workspace-prep')
+);
+
+const WORKSPACE_PREP_MAX_PARALLEL = Number(process.env.WORKSPACE_PREP_MAX_PARALLEL) || 1;
+const WORKSPACE_PREP_JOB_TIMEOUT_MS = Number(process.env.WORKSPACE_PREP_JOB_TIMEOUT_MS) || 30 * 60 * 1000;
+const WORKSPACE_PREP_LOCAL_VOLUME = process.env.WORKSPACE_PREP_LOCAL_VOLUME || 'synthi-ide_collab-data';
+const WORKSPACE_PREP_MOUNT_PATH = process.env.WORKSPACE_PREP_MOUNT_PATH || '/data';
+const WORKSPACE_PREP_PVC_NAME = process.env.WORKSPACE_PREP_PVC_NAME || 'collab-data-pvc';
+
 module.exports = {
     REPOS_DIR,
     LEVELDB_DIR,
@@ -108,6 +120,7 @@ module.exports = {
     YSWEET_AUTH_KEY,
     PORT,
     CODE_INTEL_URL,
+    AI_BACKEND_AUTH_TOKEN,
     CORS_ORIGIN,
     GCS_PROJECT_ID,
     GCS_BUCKET_NAME,
@@ -124,4 +137,10 @@ module.exports = {
     REPO_CACHE_DIR,
     REPO_CACHE_MAX,
     REPO_CACHE_TTL_MS,
+    WORKSPACE_PREP_STATE_DIR,
+    WORKSPACE_PREP_MAX_PARALLEL,
+    WORKSPACE_PREP_JOB_TIMEOUT_MS,
+    WORKSPACE_PREP_LOCAL_VOLUME,
+    WORKSPACE_PREP_MOUNT_PATH,
+    WORKSPACE_PREP_PVC_NAME,
 };

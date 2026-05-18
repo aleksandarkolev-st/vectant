@@ -35,6 +35,7 @@ import { PanelLeftClose, PanelRightClose, FolderOpen } from "lucide-react";
 import { getFileIcon, FolderIcon } from "@/utils/fileIcons";
 import FileItem from "./FileItem";
 import { useVirtualizedTree } from "@/hooks/useVirtualizedTree";
+import { useNewProjectPicker } from "@/components/NewProjectPicker";
 
 const FileTreeView = ({ onToggleOrientation }) => {
   const dispatch = useAppDispatch();
@@ -44,6 +45,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
   const activeFile = useAppSelector(selectActiveFile);
   const uiActionState = useAppSelector(selectUiActionState);
   const isRightSide = useAppSelector(selectTreeOnRight);
+  const { openPicker } = useNewProjectPicker();
 
   // inputRef retained ONLY for root-level creation (target: null)
   const inputRef = useRef(null);
@@ -99,6 +101,18 @@ const FileTreeView = ({ onToggleOrientation }) => {
 
   // Dispatcher for context menu items
   const handleTreeAction = useCallback(async (action, item = null) => {
+    // When the workspace is empty and the user is creating a *file* at the
+    // root, surface the project/file-type picker instead of the inline
+    // rename input. Folder creation always uses the inline path so users
+    // can still scaffold a folder structure manually before any file
+    // exists. See [NewProjectPicker.jsx](../../../components/NewProjectPicker.jsx).
+    if (
+      (action === "new-file" || action === "new-file-root") &&
+      (!files || files.length === 0)
+    ) {
+      openPicker();
+      return;
+    }
     if (action === "new-file" || action === "new-folder") {
       dispatch(
         startCreate({
@@ -121,7 +135,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
         toast.error(`Delete failed: ${res.error?.message || "Unknown error"}`);
       }
     }
-  }, [dispatch]);
+  }, [dispatch, files, openPicker]);
 
   // Action handlers passed down to FileItem
   const handleKeyDown = useCallback(async (e) => {

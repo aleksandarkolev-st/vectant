@@ -15,7 +15,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/part-of: synthi-ide
 spec:
-  replicas: 0
+  replicas: 2
   selector:
     matchLabels:
       app: ai-gateway
@@ -43,7 +43,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: gateway
-          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-ai-gateway:latest
+          image: europe-west10-docker.pkg.dev/overview-synti/synthi/synthi-ai-gateway:build-tag-required
           ports:
             - containerPort: 7070
               name: ws
@@ -60,6 +60,16 @@ spec:
             # Disable internal clustering — k8s handles horizontal scaling.
             - name: GATEWAY_CLUSTER
               value: "false"
+            - name: AI_BACKEND_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: AI_BACKEND_AUTH_TOKEN
+            - name: GATEWAY_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: synthi-secrets
+                  key: AUTH_SECRET
           resources:
             requests:
               cpu: 100m

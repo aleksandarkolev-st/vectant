@@ -811,6 +811,8 @@ export class CompilerClient {
                 if (this.ws === ws) {
                     this.ws = null;
 
+                    const keepPeerConnection = this.pc && (this.pc.connectionState === 'connected' || this.pc.connectionState === 'connecting');
+
                     // If the WebRTC PeerConnection is still connected, DON'T
                     // tear everything down.  The signaling WS is only needed
                     // for SDP exchange and ICE candidates — once the PC is
@@ -818,7 +820,7 @@ export class CompilerClient {
                     // work independently.  Tearing down a healthy PC would
                     // kill the LSP, vscode-server, etc. for no reason and trigger
                     // an unnecessary reconnect cycle.
-                    if (this.pc && (this.pc.connectionState === 'connected' || this.pc.connectionState === 'connecting')) {
+                    if (keepPeerConnection) {
                         console.log('[CompilerClient] Signaling WS closed but WebRTC PC still alive (' + this.pc.connectionState + '), keeping channels');
                         return;
                     }
@@ -1799,6 +1801,22 @@ export class CompilerClient {
                 };
                 this.logHandlers.add(handleLog);
 
+                const compileManifest = (() => {
+                    for (const file of files || []) {
+                        const name = String(file?.name || file?.path || '')
+                            .replace(/\\/g, '/')
+                            .replace(/^\/+/, '')
+                            .replace(/^\.\//, '');
+                        if (name !== '.synthi/build_manifest.json' && name !== 'synthi/build_manifest.json') continue;
+                        try {
+                            return JSON.parse(file.content);
+                        } catch (_) {
+                            return null;
+                        }
+                    }
+                    return null;
+                })();
+
                 this.compileChannel.send(JSON.stringify({
                     language: lang,
                     filename: filename || `main.${lang}`,
@@ -1814,6 +1832,7 @@ export class CompilerClient {
                     user_requested_deterministic: userRequestedDeterministic,
                     prefer_gpu_pipeline: preferGpuPipeline !== false,
                     gpu_mode: preferGpuPipeline === false ? 'disabled' : 'auto',
+                    compile_manifest: compileManifest,
                     target: effectiveTarget,
                     project_root: projectRoot,
                     slug: slug || this.slug

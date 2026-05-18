@@ -62,8 +62,14 @@ export function DraggableVideoWidget({
 
     // GUI Interaction Logic
     useEffect(() => {
-        const el = videoRef.current;
-        if (!el || !guiConfig) return;
+        const targetEl = videoRef.current;
+        if (!targetEl || !guiConfig) return;
+        const abortController = typeof AbortController !== 'undefined'
+            ? new AbortController()
+            : null;
+        const listenerOptions = abortController
+            ? { signal: abortController.signal }
+            : undefined;
 
         // Calculate coordinates relative to the Xvfb display resolution (guiConfig.width/height)
         // This must account for:
@@ -71,7 +77,7 @@ export function DraggableVideoWidget({
         // 2. object-contain letterboxing (video may be smaller than container)
         // 3. Scaling from displayed size to actual Xvfb resolution
         const toDisplayCoords = (clientX, clientY) => {
-            const rect = el.getBoundingClientRect();
+            const rect = targetEl.getBoundingClientRect();
             
             // The target resolution is the Xvfb display size
             const targetWidth = guiConfig.width || 640;
@@ -124,7 +130,7 @@ export function DraggableVideoWidget({
             const button = ev.button === 0 ? 1 : (ev.button === 1 ? 2 : 3);
             const { x, y } = toDisplayCoords(ev.clientX, ev.clientY);
             sendGuiEvent({ type: 'mouse', action: 'down', x, y, button });
-            try { el.focus(); } catch (e) {}
+            try { targetEl.focus(); } catch (e) {}
             ev.preventDefault();
         };
         const handleMouseUp = (ev) => {
@@ -147,20 +153,21 @@ export function DraggableVideoWidget({
             sendGuiEvent({ type: 'key', action: 'up', key: ev.key });
         };
 
-        el.addEventListener('mousemove', handleMouseMove);
-        el.addEventListener('mousedown', handleMouseDown);
-        window.addEventListener('mouseup', handleMouseUp);
-        el.addEventListener('wheel', handleWheel, { passive: false });
-        el.addEventListener('keydown', handleKeyDown);
-        el.addEventListener('keyup', handleKeyUp);
+        targetEl.addEventListener('mousemove', handleMouseMove, listenerOptions);
+        targetEl.addEventListener('mousedown', handleMouseDown, listenerOptions);
+        window.addEventListener('mouseup', handleMouseUp, listenerOptions);
+        targetEl.addEventListener('wheel', handleWheel, { passive: false, ...(listenerOptions || {}) });
+        targetEl.addEventListener('keydown', handleKeyDown, listenerOptions);
+        targetEl.addEventListener('keyup', handleKeyUp, listenerOptions);
 
         return () => {
-            el.removeEventListener('mousemove', handleMouseMove);
-            el.removeEventListener('mousedown', handleMouseDown);
+            abortController?.abort();
+            targetEl.removeEventListener('mousemove', handleMouseMove);
+            targetEl.removeEventListener('mousedown', handleMouseDown);
             window.removeEventListener('mouseup', handleMouseUp);
-            el.removeEventListener('wheel', handleWheel);
-            el.removeEventListener('keydown', handleKeyDown);
-            el.removeEventListener('keyup', handleKeyUp);
+            targetEl.removeEventListener('wheel', handleWheel);
+            targetEl.removeEventListener('keydown', handleKeyDown);
+            targetEl.removeEventListener('keyup', handleKeyUp);
         };
     }, [guiConfig, sendGuiEvent]);
 

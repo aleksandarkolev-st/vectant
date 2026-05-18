@@ -9,11 +9,7 @@ import { setShowTerminal } from '@/redux/uiSlice';
 import { useContextWindow } from './useContextWindow';
 import { useAgentPipeline, PIPELINE_MODES } from './useAgentPipeline';
 
-// AI Engine base URL for intent classification
-const AI_ENGINE_BASE = process.env.NEXT_PUBLIC_AI_ENGINE_URL
-    || (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
-        ? window.location.origin
-        : 'http://localhost:8000');
+const INTENT_CLASSIFY_URL = '/api/classify/intent';
 
 /**
  * Classify user query intent using the AI backend's LLM-based classifier.
@@ -26,7 +22,7 @@ const AI_ENGINE_BASE = process.env.NEXT_PUBLIC_AI_ENGINE_URL
 const classifyQueryIntent = async (query, context = null) => {
     let result = null;
     try {
-        const response = await fetch(`${AI_ENGINE_BASE}/classify/intent`, {
+        const response = await fetch(INTENT_CLASSIFY_URL, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ query, context }),
@@ -997,18 +993,24 @@ export const useAISuggestions = ({
                     // as a manual-review suggestion instead of a hard error
                     const replaceOnly = extractReplaceContent(block.searchReplaceText);
                     if (replaceOnly && replaceOnly.trim()) {
+                        // If the existing file is empty (or only whitespace), the SEARCH
+                        // block could never have matched anything meaningful — treat the
+                        // REPLACE content as the intended initial contents instead of
+                        // surfacing a confusing "did not match" error.
+                        const fileIsEmpty = !currentContent || !currentContent.trim();
+                        const writeReplace = baseIsMissing || fileIsEmpty;
                         console.warn('[SEARCH/REPLACE] Fuzzy match failed for', block.path, '— falling back to REPLACE content');
                         hydrated.push({
                             path: block.path,
                             resolvedPath,
                             diffText: null,
                             originalContent: currentContent,
-                            updatedContent: baseIsMissing ? replaceOnly : currentContent,
+                            updatedContent: writeReplace ? replaceOnly : currentContent,
                             isNewFile: baseIsMissing,
                             isFolder: false,
-                            chunks: baseIsMissing ? computeDiffChunks('', replaceOnly) : [],
-                            status: baseIsMissing ? 'pending' : 'error',
-                            error: baseIsMissing ? undefined : 'SEARCH block did not match current file. The intended replacement is shown below — review carefully before applying.',
+                            chunks: writeReplace ? computeDiffChunks(currentContent || '', replaceOnly) : [],
+                            status: writeReplace ? 'pending' : 'error',
+                            error: writeReplace ? undefined : 'SEARCH block did not match current file. The intended replacement is shown below — review carefully before applying.',
                             intendedContent: replaceOnly,
                         });
                     } else {
@@ -1498,6 +1500,11 @@ export const useAISuggestions = ({
             onLog,
             onCommandPending,
             includeActiveFile: includeActiveFileOpt,
+            // forceAgents: when true, run the agent pipeline regardless of
+            // currentMode/heuristics. Used by the AI Jumpstart auto-send so
+            // first-mount scaffolding goes through the thinking pipeline
+            // instead of a single-shot LLM call.
+            forceAgents = false,
         } = streamHandlers || {};
         const includeActiveFile = includeActiveFileOpt !== false; // default true for backwards compat
 
@@ -1559,6 +1566,7 @@ export const useAISuggestions = ({
         let buffered = '';
         let firstToken = true;
         let toolCreatedFiles = null; // Track files created by create_file tool to skip wrong FILE: suggestions
+        let streamErrorMessage = ''; // Captured from `{error: ...}` SSE events so we can surface it after stream ends
         const abortController = controller || new AbortController();
         let timeoutId = null;
 
@@ -1602,8 +1610,11 @@ export const useAISuggestions = ({
             // Keep agents for run+task (e.g., "check git status and revert file")
             let agentContext = '';
             let agentResults = [];
-            const useAgents = !isRunOnly && shouldUseAgents(userPrompt);
-            
+            // forceAgents lets specific callers (e.g. AI Jumpstart) bypass
+            // the DIRECT-mode short-circuit inside shouldUseAgents so the
+            // full thinking pipeline runs even when the chat is in DIRECT.
+            const useAgents = !isRunOnly && (forceAgents || shouldUseAgents(userPrompt));
+
             if (useAgents) {
                 appendProgressLog('Running agent pipeline...');
                 onLog?.('Dispatching sub-agents');
@@ -2033,6 +2044,23 @@ If image attachments are present, read/ocr the images and extract any text or co
                         console.warn('[AI Chat] Validation:', parsed.validationError || 'format issue');
                         continue;
                     }
+                    // ── Surface backend stream errors ─────────────────────
+                    // route.js emits `{error: msg}` when the Gemini tool
+                    // loop throws (rate limit, safety filter block, network
+                    // hiccup, missing API key, etc). Without this branch the
+                    // frontend silently swallowed those events and showed an
+                    // unhelpful "No response received" placeholder. Record
+                    // the error on the progress log so the user can see what
+                    // actually went wrong, and stash it for the final fallback
+                    // message below.
+                    if (typeof parsed?.error === 'string' && parsed.error.trim()) {
+                        const msg = parsed.error.trim();
+                        console.warn('[AI Chat] Stream error event:', msg);
+                        appendProgressLog(`Error: ${msg}`);
+                        onLog?.(`Error: ${msg}`);
+                        if (!streamErrorMessage) streamErrorMessage = msg;
+                        continue;
+                    }
                     // ── Handle structured file blocks (from intercepted create_file) ──
                     // These arrive as a reliable structured event, independent of
                     // the text delta stream that may fail to parse FILE: markers.
@@ -2320,9 +2348,17 @@ If image attachments are present, read/ocr the images and extract any text or co
             const hasStructuredFileSuggestions = existingFileSuggestions.length > 0 && !hasMultiFileSuggestions;
 
             let codeOnly = null;
+            // Empty-stream fallback. Surface the actual stream error when we
+            // captured one — "No response received" alone is useless and was
+            // the long-standing complaint with Jumpstart-with-AI flows where
+            // the Gemini call silently 4xx'd (rate limit / safety filter / no
+            // API key / network) and the user had no clue what went wrong.
+            const emptyFallback = streamErrorMessage
+                ? `Vectant AI could not complete this request: ${streamErrorMessage}`
+                : 'No response received from Vectant AI. The model may have hit a rate limit or safety filter. Try rephrasing or sending again.';
             let displayedContent = suggestion || (hasStructuredFileSuggestions
                 ? `AI suggested changes for ${existingFileSuggestions.length} file${existingFileSuggestions.length > 1 ? 's' : ''}. Review them below.`
-                : 'No response received');
+                : emptyFallback);
             const isPlaceholderText = (text = '') => {
                 const normalized = text.toLowerCase();
                 return (
@@ -2401,7 +2437,7 @@ If image attachments are present, read/ocr the images and extract any text or co
                     // Explain mode: just use the full response as display content
                     // Don't try to extract code or create diffs
                     codeOnly = null;
-                    displayedContent = suggestion || 'No response received';
+                    displayedContent = suggestion || emptyFallback;
                 }
             }
 
@@ -2485,12 +2521,16 @@ If image attachments are present, read/ocr the images and extract any text or co
                 }
             } else {
                 onError?.();
-                onLog?.(`Generation failed: ${error?.message || 'unknown error'}`);
-                appendProgressLog(`Generation failed: ${error?.message || 'unknown error'}`);
+                const errMsg = error?.message || 'unknown error';
+                onLog?.(`Generation failed: ${errMsg}`);
+                appendProgressLog(`Generation failed: ${errMsg}`);
+                // Surface the actual cause so users can act on it (missing
+                // API key, rate limit, 5xx, etc) instead of a generic
+                // "Try again" that gives them nothing to debug.
                 const errorMessage = {
                     id: Date.now() + 1,
                     role: 'assistant',
-                    content: 'Generation failed. Try again.',
+                    content: `Generation failed: ${errMsg}. Try again.`,
                     timestamp: new Date(),
                 };
                 if (activeSession) appendMessagesToSession(activeSession.id, [errorMessage]);

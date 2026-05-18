@@ -8,8 +8,10 @@
 //   - 'accepted'     — user accepted via Tab / inline-suggest commit
 //   - 'cancelled'    — request superseded or explicitly cancelled
 //   - 'rejected'     — request returned but produced nothing useful
+//   - 'dismissed'    — visible suggestion was cleared without accept
+//   - 'accept_blocked' / 'accept_adjusted' — user tried Tab on an unstable multiline suggestion
 //
-// Per-event optional payload fields: { reason, latency_ms, language, source }.
+// Per-event optional payload fields: { reason, request_id, latency_ms, language, source }.
 // Stored in localStorage so dashboards survive reloads. No server upload by
 // default — the data is for the dashboard / replay harness to consume on
 // demand. Wire an upload here if/when ops needs it (mirror flushEventsToServer
@@ -30,6 +32,9 @@ const DEFAULT_STATE = () => ({
   accepted: 0,
   cancelled: 0,
   rejected: 0,
+  dismissed: 0,
+  accept_blocked: 0,
+  accept_adjusted: 0,
   events: [], // { ts, kind, ...payload }
 });
 
@@ -99,7 +104,17 @@ export const recordAiCompletionEvent = (kind, payload = {}) => {
 export const aiCompletionRollingStats = () => {
   const s = state();
   const cutoff = Date.now() - WINDOW_MS;
-  const counts = { fire: 0, cache_hit: 0, visible: 0, accepted: 0, cancelled: 0, rejected: 0 };
+  const counts = {
+    fire: 0,
+    cache_hit: 0,
+    visible: 0,
+    accepted: 0,
+    cancelled: 0,
+    rejected: 0,
+    dismissed: 0,
+    accept_blocked: 0,
+    accept_adjusted: 0,
+  };
   let multiline_visible = 0;
   let multiline_accepted = 0;
   for (const e of s.events) {
@@ -130,6 +145,9 @@ export const aiCompletionSnapshot = () => {
     accepted: s.accepted,
     cancelled: s.cancelled,
     rejected: s.rejected,
+    dismissed: s.dismissed,
+    accept_blocked: s.accept_blocked,
+    accept_adjusted: s.accept_adjusted,
     rolling: aiCompletionRollingStats(),
   };
 };

@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
 
 /**
  * Synthi Genome — POST /api/shadow/[jobId]/apply
@@ -32,7 +33,7 @@ export async function POST(request, { params }) {
             `${AI_ENGINE_BASE}/shadow/${encodeURIComponent(jobId)}/apply`,
             {
                 method: 'POST',
-                headers: { 'content-type': 'application/json' },
+                headers: withInternalAiAuth({ 'content-type': 'application/json' }),
                 body: JSON.stringify({ universeId: body.universeId }),
             }
         );

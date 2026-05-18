@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, startTransition, use
 import { use } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import { useAppDispatch, useAppSelector, useAppStore } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, markFileSavedRemotely } from '@/redux/workspaceSlice';
 import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
@@ -70,6 +71,7 @@ import { useRetryCompile } from '@/hooks/useRetryCompile';
 import { HMRStatusIndicator } from '@/components/HMRStatusIndicator';
 import { RuntimeHealingIndicator } from '@/components/healing/RuntimeHealingIndicator';
 import { installPreviewBridge } from '@/lib/preview-store-bridge';
+import { getWorkspaceDependencyInstallPlan } from '@/lib/workspaceInstallPlan';
 import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import { GitSummaryPanel } from '@/components/git/GitSummaryPanel';
@@ -94,10 +96,26 @@ import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 
 // ─── New Docking Window Manager ────────────────────────
 import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
+import { useActivityBarDocking } from '@/components/docking-wm/hooks/use-activity-bar-docking';
 
 // ─── Responsive: viewport observer + breakpoint-driven CSS ─────────────
 import { useViewport } from '@/hooks/useViewport';
 import '../responsive.css';
+
+const ADAPTED_COMPILE_FILES = [
+    'shared.h',
+    'core.cpp',
+    'gui.cpp',
+    'host_runner.cpp',
+    'device.cu',
+    'device.hip',
+    '.synthi/build_manifest.json',
+];
+
+const normalizeWorkspacePath = (path = '') => String(path)
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/^\.\//, '');
 
 // Feature flag: set to true to enable the new docking layout.
 // When false, the existing rigid ResizablePanelGroup layout is used.
@@ -447,6 +465,27 @@ export default function EditorPage({ params }) {
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
+    const [buildLogsCollapsed, setBuildLogsCollapsed] = useState(false);
+
+    // Friendly project name (from the DB) used as the terminal prompt label
+    // and anywhere else a human-readable workspace identifier is wanted.
+    // Falls back to the slug until the fetch resolves so the prompt never
+    // flashes empty. The route param `slug` is what /api/workspace/[slug]
+    // keys by (see app/api/workspace/[workspaceId]/route.js).
+    const [workspaceName, setWorkspaceName] = useState(slug);
+    useEffect(() => {
+        if (!slug) return undefined;
+        let cancelled = false;
+        fetch(`/api/workspace/${encodeURIComponent(slug)}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+                if (cancelled || !data) return;
+                const name = data?.workspace?.name || data?.name;
+                if (name && typeof name === 'string') setWorkspaceName(name);
+            })
+            .catch(() => { /* keep slug fallback */ });
+        return () => { cancelled = true; };
+    }, [slug]);
     const [hmrEnabled, setHmrEnabled] = useState(true);
     const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const [emulatorSessionId, setEmulatorSessionId] = useState(null);
@@ -699,6 +738,8 @@ export default function EditorPage({ params }) {
     const [workspaceMissingMessage, setWorkspaceMissingMessage] = useState('');
     const [activeSessionId, setActiveSessionId] = useState(collabSessionService?.isActive ? collabSessionService.sessionId : null);
     const [collabHostId, setCollabHostId] = useState(collabSessionService?.hostId || null);
+    const workspacePrepToastIdRef = useRef(null);
+    const workspacePrepStateRef = useRef(null);
 
     useEffect(() => {
         return collabSessionService.onChange(() => {
@@ -727,14 +768,44 @@ export default function EditorPage({ params }) {
     }, []);
 
     // ── AI Jumpstart: consume pending prompt from dashboard ──────────
+    // If the payload carries a projectType, prepend its systemPromptHint
+    // to the user prompt so the AI receives the project-context directive
+    // before the user's free-text request.
     useEffect(() => {
         const payload = consumeJumpstartPayload();
         if (!payload) return;
         setChatVisible(true);
         setSidebarView(null);
         setTimeout(() => sidebarPanelRef.current?.collapse(), 50); // Collapse sidebar initially
-        setJumpstartPrompt(payload.prompt || null);
+        const pt = payload.projectType;
+        let prompt = payload.prompt || null;
+        if (prompt && pt?.systemPromptHint) {
+            prompt = `[PROJECT TYPE: ${pt.label}]\n${pt.systemPromptHint}\n\n${prompt}`;
+        }
+        setJumpstartPrompt(prompt);
         setJumpstartAttachments(payload.attachments?.length ? payload.attachments : null);
+    }, []);
+
+    // ── In-workspace "Other" → AI: listen for picker-dispatched event ─
+    // The NewProjectPicker's "Other → Describe" flow fires a
+    // `synthi:jumpstart-trigger` event with `{prompt, attachments}`. We
+    // route it through the same jumpstart state used for the dashboard
+    // flow so the AI chat picks it up via its updated re-armable ref.
+    useEffect(() => {
+        const handler = (e) => {
+            const detail = e?.detail || {};
+            if (typeof detail.prompt !== 'string' || !detail.prompt.trim()) return;
+            setChatVisible(true);
+            setSidebarView(null);
+            setTimeout(() => sidebarPanelRef.current?.collapse(), 50);
+            setJumpstartPrompt(detail.prompt);
+            setJumpstartAttachments(detail.attachments?.length ? detail.attachments : null);
+        };
+        if (typeof window !== 'undefined') {
+            window.addEventListener('synthi:jumpstart-trigger', handler);
+            return () => window.removeEventListener('synthi:jumpstart-trigger', handler);
+        }
+        return undefined;
     }, []);
 
     useEffect(() => {
@@ -828,6 +899,69 @@ export default function EditorPage({ params }) {
             init();
         }
     }, [slug, dispatch]);
+
+    useEffect(() => {
+        if (!slug || workspaceMissing || authStatus === 'loading') return undefined;
+
+        let cancelled = false;
+        let timer = null;
+        const toastId = `workspace-prep-${slug}`;
+        workspacePrepToastIdRef.current = toastId;
+
+        const poll = async () => {
+            try {
+                const status = await api.getWorkspacePrepStatus(slug);
+                if (cancelled) return;
+
+                const nextState = String(status?.state || 'idle');
+                const previousState = workspacePrepStateRef.current;
+                const tasks = Array.isArray(status?.tasks) ? status.tasks : [];
+                const taskCount = tasks.length;
+                const failureMessage = status?.error || tasks.find((task) => task.status === 'failed' || task.status === 'blocked')?.message || 'Workspace preparation failed.';
+
+                if (nextState === 'queued' || nextState === 'running') {
+                    toast.loading(
+                        taskCount > 0
+                            ? `Preparing ${taskCount} workspace environment${taskCount === 1 ? '' : 's'}`
+                            : 'Preparing workspace environment',
+                        { id: toastId, duration: Infinity }
+                    );
+                } else if (nextState === 'ready' && (previousState === 'queued' || previousState === 'running')) {
+                    toast.success('Workspace environment is ready.', { id: toastId, duration: 4000 });
+                } else if (nextState === 'blocked' && previousState !== 'blocked') {
+                    toast.error('Workspace preparation is blocked.', {
+                        id: toastId,
+                        description: failureMessage,
+                        duration: 6000,
+                    });
+                } else if (nextState === 'failed' && previousState !== 'failed') {
+                    toast.error('Workspace preparation failed.', {
+                        id: toastId,
+                        description: failureMessage,
+                        duration: 6000,
+                    });
+                }
+
+                workspacePrepStateRef.current = nextState;
+
+                const nextPollMs = nextState === 'queued' || nextState === 'running' ? 3000 : 15000;
+                timer = window.setTimeout(poll, nextPollMs);
+            } catch (_) {
+                if (cancelled) return;
+                timer = window.setTimeout(poll, 15000);
+            }
+        };
+
+        poll();
+
+        return () => {
+            cancelled = true;
+            if (timer) window.clearTimeout(timer);
+            if (workspacePrepToastIdRef.current) toast.dismiss(workspacePrepToastIdRef.current);
+            workspacePrepToastIdRef.current = null;
+            workspacePrepStateRef.current = null;
+        };
+    }, [slug, workspaceMissing, authStatus]);
 
     // Subscribe to server-side file-tree-changed notifications so
     // all connected clients stay in sync when any teammate mutates the tree.
@@ -1920,6 +2054,32 @@ export default function EditorPage({ params }) {
 
                     await dispatch(fetchFilesThunk(slug));
 
+                    const installPlan = getWorkspaceDependencyInstallPlan(files);
+                    if (installPlan) {
+                        try {
+                            const installResult = await api.execTerminalCommand(slug, installPlan.command, { timeout: 300000 });
+                            if (installResult.exitCode !== null && installResult.exitCode !== 0) {
+                                throw new Error(installResult.output || `${installPlan.label} failed with exit code ${installResult.exitCode}`);
+                            }
+                            if (installResult.sessionId && typeof window !== 'undefined') {
+                                window.dispatchEvent(new CustomEvent('terminal-session-open', {
+                                    detail: {
+                                        sessionId: installResult.sessionId,
+                                        command: installResult.command || installPlan.command,
+                                        label: `Install: ${installPlan.label}`,
+                                        isAi: false,
+                                    },
+                                }));
+                                appendBuildLog(`[sync] Started ${installPlan.label} in Terminal.`);
+                            } else {
+                                appendBuildLog(`[sync] Completed ${installPlan.label}.`);
+                            }
+                        } catch (installErr) {
+                            console.warn('Workspace dependency install did not start', installErr);
+                            appendBuildLog(`[sync] Could not start ${installPlan.label}: ${installErr?.message || String(installErr)}`);
+                        }
+                    }
+
                     const writtenCount = Array.isArray(result?.written) ? result.written.length : 0;
                     const skippedCount = Array.isArray(result?.skipped) ? result.skipped.length : 0;
                     const errorCount = Array.isArray(result?.errors) ? result.errors.length : 0;
@@ -2005,6 +2165,48 @@ export default function EditorPage({ params }) {
         }
     }, [rawFiles, slug]);
 
+    const augmentAdaptedCompileFiles = useCallback(async (existingFiles, filename, getContentForDependency) => {
+        const byPath = new Map();
+        for (const file of existingFiles || []) {
+            const name = normalizeWorkspacePath(file?.name || file?.path || '');
+            if (name && typeof file?.content === 'string') {
+                byPath.set(name, { name, content: file.content });
+            }
+        }
+
+        const activePath = normalizeWorkspacePath(filename);
+        const activeExt = (activePath.split('.').pop() || '').toLowerCase();
+        const canBeAdaptedCompile = ['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'cu', 'cuh', 'hip'].includes(activeExt);
+        if (!canBeAdaptedCompile) return Array.from(byPath.values());
+
+        for (const path of ADAPTED_COMPILE_FILES) {
+            const canonicalPath = normalizeWorkspacePath(path);
+            if (canonicalPath === activePath || byPath.has(canonicalPath)) continue;
+            const candidates = canonicalPath.startsWith('.synthi/')
+                ? [canonicalPath, canonicalPath.slice(1)]
+                : [canonicalPath];
+            try {
+                let content = '';
+                for (const candidate of candidates) {
+                    try {
+                        content = await getContentForDependency(candidate);
+                        if (typeof content === 'string' && content.length > 0) break;
+                    } catch (_) {
+                        // Try the next canonicalization form.
+                    }
+                }
+                if (typeof content === 'string' && content.length > 0) {
+                    byPath.set(canonicalPath, { name: canonicalPath, content });
+                }
+            } catch (_) {
+                // Most projects are not adapted split projects. Missing optional
+                // files should not block normal compiles.
+            }
+        }
+
+        return Array.from(byPath.values());
+    }, []);
+
     const handleRun = useCallback(async (options = {}) => {
         const isEvent = options && typeof options.preventDefault === 'function';
         const skipCancel = isEvent ? false : (options.skipCancel || false);
@@ -2058,6 +2260,7 @@ export default function EditorPage({ params }) {
         let additionalFiles = [];
         try {
             additionalFiles = await resolveDependencies(activeFile, rawFiles, getContentForDependency);
+            additionalFiles = await augmentAdaptedCompileFiles(additionalFiles, filename, getContentForDependency);
         } catch (e) {
             console.error("Dependency resolution failed", e);
             appendBuildLog(`Warning: Dependency resolution failed: ${e.message}`);
@@ -2157,7 +2360,7 @@ export default function EditorPage({ params }) {
                 setEmulatorForcedError(msg);
             }
         }
-    }, [activeFile, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob, getLatestCurrentContent, preferGpuPipeline]);
+    }, [activeFile, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob, getLatestCurrentContent, preferGpuPipeline, augmentAdaptedCompileFiles]);
 
     const handleStop = useCallback(async () => {
         const activeSessionId = client?.getActiveSessionId?.();
@@ -2182,6 +2385,12 @@ export default function EditorPage({ params }) {
         if (!emulatorSessionId) {
             appendBuildLog('Stopped by user.');
         }
+        // Clear the GUI-running flag synchronously. The worker normally
+        // emits `synthi:gui-end` on runner shutdown, but the hard
+        // `client.reconnect()` below tears down the data channel that
+        // event rides on — so without this explicit clear the TopNav
+        // would still show Stop/Reload (via isRunning) after a stop.
+        setIsGuiRunning(false);
         if (client?.reconnect) {
             await client.reconnect();
         }
@@ -2201,6 +2410,10 @@ export default function EditorPage({ params }) {
                 return;
             }
         }
+        // Same rationale as handleStop: clear before the hard reconnect
+        // so isRunning reflects reality during the gap before handleRun
+        // sets it back via the new session's gui-start event.
+        setIsGuiRunning(false);
         if (client?.reconnect) {
             await client.reconnect();
         }
@@ -2296,6 +2509,7 @@ export default function EditorPage({ params }) {
         let additionalFiles = [];
         try {
             additionalFiles = await resolveDependencies(activeFile, rawFiles, getContentForDependency);
+            additionalFiles = await augmentAdaptedCompileFiles(additionalFiles, filename, getContentForDependency);
         } catch (e) {
             console.error("Dependency resolution failed during save", e);
         }
@@ -2361,7 +2575,7 @@ export default function EditorPage({ params }) {
                 }
             }
         } catch (_) { /* never let healing break save */ }
-    }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent, preferGpuPipeline]);
+    }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent, preferGpuPipeline, augmentAdaptedCompileFiles]);
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
@@ -2400,11 +2614,20 @@ export default function EditorPage({ params }) {
     const handleMoveLineDown = useCallback(() => editor?.getAction('editor.action.moveLinesDownAction')?.run(), [editor]);
     const handleDuplicateSelection = useCallback(() => editor?.getAction('editor.action.duplicateSelection')?.run(), [editor]);
 
+    const activityBarHandlers = useActivityBarDocking();
+    const onToggleTerminalCb = useCallback(() => {
+        if (USE_DOCKING_WM) {
+            activityBarHandlers.terminal();
+        } else {
+            dispatch(toggleTerminal());
+        }
+    }, [dispatch, activityBarHandlers]);
+
     const EditorPanelComponent = (
         <EditorPanel
             onRun={handleRun}
             onSave={handleSave}
-            onToggleTerminal={() => dispatch(toggleTerminal())}
+            onToggleTerminal={onToggleTerminalCb}
             onEditorMount={handleEditorMount}
             analysisResult={lastResult}
             diagnostics={mergedDiagnostics}
@@ -2534,7 +2757,6 @@ export default function EditorPage({ params }) {
     const onBusyCb = useCallback((b) => setAiBusy(Boolean(b)), []);
     const onCloseProblemsCb = useCallback(() => setShowProblemsPanel(false), []);
     const onOpenScmCb = useCallback(() => setSidebarView('scm'), []);
-    const onToggleTerminalCb = useCallback(() => dispatch(toggleTerminal()), [dispatch]);
     const onProblemsClickCb = useCallback(() => setShowProblemsPanel(prev => !prev), []);
 
     // ── Floating emulator window (renders outside the panel layout)
@@ -2618,12 +2840,15 @@ export default function EditorPage({ params }) {
         editorProps: memoEditorProps,
         // AI healing surface so docked panels (HealingSettingsPanel) can consume it
         aiHealing,
+        // Friendly project name surfaced to the terminal panel for the
+        // prompt label (~/<workspaceName> $).
+        workspaceName,
     }), [
         editor, activeFile, mergedDiagnostics, diagnosticSummary,
         showAnalyzingSpinner, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
         getLatestCurrentContent, completionClearSignal, jumpstartPrompt, jumpstartAttachments,
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
-        aiHealing,
+        aiHealing, workspaceName,
     ]);
 
     if (workspaceMissing) {
@@ -2660,7 +2885,7 @@ export default function EditorPage({ params }) {
                         setGpuModeEnabled={setGpuModeEnabled}
                         onStop={handleStop}
                         onReload={handleRestart}
-                        isRunning={isCompiling}
+                        isRunning={isCompiling || isGuiRunning}
                         onToggleTerminal={onToggleTerminalCb}
                         onUndo={handleUndo}
                         onRedo={handleRedo}
@@ -2677,12 +2902,35 @@ export default function EditorPage({ params }) {
                     <GuestBanner />
 
                     {buildLogs.length > 0 && (
-                        <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
-                            {buildLogs.map((line, idx) => (
-                                <div key={idx} className="leading-5 whitespace-pre-wrap">
-                                    {line}
+                        <div className="border-b border-[#1a1a1e] bg-[#09090b]">
+                            <div className="flex items-center justify-between px-3 py-1 text-[10px] uppercase tracking-wide text-[#7d7d85]">
+                                <button
+                                    type="button"
+                                    onClick={() => setBuildLogsCollapsed((v) => !v)}
+                                    className="flex items-center gap-1 hover:text-[#D7DAE0]"
+                                    title={buildLogsCollapsed ? 'Show build logs' : 'Hide build logs'}
+                                >
+                                    <span aria-hidden="true">{buildLogsCollapsed ? '▸' : '▾'}</span>
+                                    <span>Build logs</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setBuildLogs([])}
+                                    className="hover:text-[#D7DAE0]"
+                                    title="Clear build logs"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                            {!buildLogsCollapsed && (
+                                <div className="px-3 pb-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
+                                    {buildLogs.map((line, idx) => (
+                                        <div key={idx} className="leading-5 whitespace-pre-wrap">
+                                            {line}
+                                        </div>
+                                    ))}
                                 </div>
-                            ))}
+                            )}
                         </div>
                     )}
 
