@@ -51,6 +51,7 @@ These contracts are required before broker input cutover.
 ```json
 {
   "type": "frame",
+  "event_id": 900120,
   "session_id": "s_123",
   "frame_seq": 10482,
   "frame_ts_ms": 1716031112345,
@@ -65,6 +66,7 @@ These contracts are required before broker input cutover.
 ```json
 {
   "type": "lifecycle",
+  "event_id": 900121,
   "session_id": "s_123",
   "state": "running",
   "state_ts_ms": 1716031112380,
@@ -101,7 +103,7 @@ These contracts are required before broker input cutover.
   "lease_id": "l_99",
   "based_on_frame_seq": 10482,
   "action": {"tool": "synthi_mouse", "kind": "click", "x": 812, "y": 643},
-  "postcondition": {"type": "element_visible", "selector": "counter=3"}
+  "postcondition": {"type": "dom_visible", "selector": "[data-testid='counter']", "text": "3"}
 }
 ```
 
@@ -179,6 +181,7 @@ All broker-mediated tools must emit normalized, grouped error codes.
 
 - `CURSOR_TOO_OLD`
 - `SUBSCRIPTION_NOT_FOUND`
+- `IDEMPOTENCY_CONFLICT`
 
 ### Producer
 
@@ -227,7 +230,7 @@ Rules:
 
 | Failure mode | Detection signal | Expected behavior | Client-visible error/state | Recovery target |
 |---|---|---|---|---|
-| Broker restart | broker heartbeat loss | Enter recovering; reject state-changing actions; resume from replay cursor | `BROKER_RECOVERING` | RTO ≤ 30s |
+| Broker restart | broker heartbeat loss | Enter recovering; invalidate active leases; reject state-changing actions; require lease reacquire after resume | `BROKER_RECOVERING` | RTO ≤ 30s |
 | Upstream WebRTC disconnect | no frames + peer disconnected | Freeze input, keep observation state flagged stale | `UPSTREAM_NO_FRAMES` | reconnect ≤ 15s |
 | Subscriber reconnect | subscriber socket drop | Resume via resume token + event cursor | transient degraded health | resume ≤ 5s |
 | Slow subscriber lag | lag_ms / queue depth threshold | Drop-old-frame policy per subscriber; protect upstream | `SUBSCRIBER_LAGGING` | no upstream impact |
@@ -251,9 +254,14 @@ Rules:
 | `locate` before input | 500 ms |
 | `click`/`type`/`drag` | must include fresh `based_on_frame_seq` + valid lease |
 
-Additional rule for input:
+Additional rule for input (default invalidation policy; configurable):
 
-- If current frame materially differs from `based_on_frame_seq` (seq delta beyond threshold or ROI diff above threshold), input is rejected and re-location is required.
+- frame age > 500ms, or
+- viewport size or DPR changed, or
+- `frame_seq` gap > 1 since locate frame, or
+- ROI perceptual diff above configured threshold.
+
+If any condition triggers, input is rejected and re-location is required.
 
 ---
 
@@ -404,6 +412,7 @@ Do not spend model budget where deterministic image-diff primitives are sufficie
 
 - **A exit:** normalized errors emitted; ack chain complete; freshness gates enforced for all relevant tools.
 - **B0 exit:** broker read-only parity with direct path in canary dual-read checks.
+- **B0.5 exit:** replay cursor, correlation IDs, frame_seq/lease_id logging, ack timestamps, resume test, and failed-action timeline reconstruction pass.
 - **D0 exit:** zero state-changing actions accepted without valid lease.
 - **B1 exit:** broker input cutover passes conflict/human-interrupt/stale-frame tests.
 - **B2 exit:** restart + replay tests meet RTO/SLO targets.
@@ -433,6 +442,7 @@ This document is intended to be implementation-grade, not just directional.
 
 - **Control stream (ordered, replayable):** lifecycle, input/ack, lease, health transitions, security/audit markers.
 - **Frame stream (high-throughput, lossy):** frame metadata + payload references.
+- Frame metadata may carry both `event_id` and `frame_seq`; dedupe prefers `session_id+event_id` when present, otherwise `session_id+frame_seq`.
 
 ### 18.2 Ordering guarantees
 
@@ -463,11 +473,18 @@ All mutating requests require the common envelope fields:
 
 Examples below include these fields explicitly.
 
+
+
+Idempotency policy:
+
+- Scope: `auth_principal + endpoint + session_id`.
+- Payload mismatch with same key returns `IDEMPOTENCY_CONFLICT`.
+- Retention: idempotency records kept for 15 minutes (configurable).
 ### 19.1 subscribe
 
 Request: `{protocol_version, request_id, idempotency_key, session_id, topics:[...], cursor?}`
 Response: `{subscription_id, accepted_topics, replay_start_event_id}`
-Errors: `SESSION_DISCONNECTED`, `BROKER_RECOVERING`, `UNAUTHORIZED`.
+Errors: `SESSION_DISCONNECTED`, `BROKER_RECOVERING`, `UNAUTHORIZED`, `FORBIDDEN`, `CURSOR_TOO_OLD`.
 Idempotency: same `idempotency_key` returns same `subscription_id` if still active.
 
 ### 19.2 unsubscribe
@@ -511,7 +528,7 @@ Errors: `FORBIDDEN` for non-admin.
 ### 19.8 replay
 
 Request: `{protocol_version, request_id, idempotency_key, session_id, from_event_id, to_event_id?, limit}`
-Response: `{events:[...], next_event_id?}`
+Response: `{events:[...], next_event_id?}` (max `limit=500` per call; redacted fields omitted per role policy).
 Errors: `CURSOR_TOO_OLD`, `FORBIDDEN`, `BROKER_RECOVERING`.
 
 ### 19.9 health pull + push
@@ -527,6 +544,12 @@ Errors: `CURSOR_TOO_OLD`, `FORBIDDEN`, `BROKER_RECOVERING`.
 Request: `{protocol_version, request_id, idempotency_key, session_id, mode, reason}` where `mode ∈ {broker_read_only_fallback, direct_attach_single_agent_only, input_disabled_fallback, full_direct_attach}`.
 Response: `{applied_mode, producer_epoch, safety_checks_passed}`.
 `full_direct_attach` is rejected unless broker producer teardown confirmation is true.
+
+### 19.11 dispatch_input
+
+Request: `{protocol_version, request_id, idempotency_key, session_id, lease_id, based_on_frame_seq, action, postcondition?, timeout_ms?}`
+Response: `{transport_ack, browser_ack?, effect_verified?, unverified?, ack_chain, final_frame_seq?}`
+Errors: `LEASE_REQUIRED`, `LEASE_EXPIRED`, `LEASE_PREEMPTED`, `FRAME_STALE`, `INPUT_ACK_TIMEOUT`, `EFFECT_NOT_VERIFIED`, `UNSUPPORTED_POSTCONDITION_TYPE`, `BROKER_RECOVERING`, `UNAUTHORIZED`, `FORBIDDEN`.
 
 ---
 
@@ -585,7 +608,7 @@ Rules:
 | Acquire lease | no | yes | yes |
 | Renew/release own lease | no | yes | yes |
 | Force release lease | no | no | yes |
-| Invoke state-changing input | no | yes (with valid lease) | yes |
+| Invoke state-changing input | no | yes (with valid lease) | yes (with valid lease or audited force-acquire) |
 | Replay persisted logs | no | limited (own session scope) | yes |
 | Toggle fallback mode | no | no | yes |
 
