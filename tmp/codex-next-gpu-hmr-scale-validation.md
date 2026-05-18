@@ -211,6 +211,42 @@ There are two different flows:
 The user is asking about flow 2. Make sure it works visually and not just in
 logs.
 
+## AI Split Output Must Render
+
+Be aware that the AI split output is supposed to become the running/rendered
+program. The GPU split response is not just a compile artifact and not just a
+set of files to inspect manually.
+
+For a successful first compile:
+
+- The ordinary user files are sent to the worker.
+- The worker asks ai-engine to generate Synthi split files and a manifest.
+- The worker compiles those generated split files.
+- The runtime/runner loads the generated core/gui/device artifacts.
+- The user-visible preview renders frames produced by that generated split.
+
+That means the validation must prove the generated output is actually used by
+the preview session. Do not accept a pass where `/refactor/split/gpu` returns
+files but the runner still displays a blank screen, old program, stale cached
+artifact, or nothing at all.
+
+When debugging, explicitly record:
+
+- The generated manifest path and role mappings.
+- Which generated `core`, `gui`, `runner`, `shared`, and `device` files were
+  compiled.
+- Which runner path was used for the GPU manifest.
+- Whether generated files were only in worker temp storage or were also
+  materialized back into the workspace for later HMR edits.
+- The screenshot taken after the generated split was loaded.
+
+The important distinction is:
+
+- It is okay if generated split files are internal build products during first
+  compile, as long as the runtime actually renders them.
+- It is not okay if the user has to manually open, copy, or pre-seed generated
+  split files before the first render works.
+
 Latest seed-only workspace that was created:
 
 ```text
