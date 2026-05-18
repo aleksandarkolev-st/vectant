@@ -40,6 +40,7 @@ import {
   resetNepBuffer,
   renderRecentEditsBlock,
 } from '@/utils/nepRecentEdits';
+import { buildNepContextPacket } from '@/utils/aiContextBroker';
 import { classifyEdit } from '@/lib/editKindClassifier';
 import { recordNepEvent, isNepKilled, checkServerKill } from '@/lib/nepTelemetry';
 import { recordAiReplaySample } from '@/lib/aiReplayHarness';
@@ -1120,18 +1121,11 @@ export const useNextEditPrediction = ({
 
     const cacheEntries = typeof getFileCacheEntries === 'function'
       ? getFileCacheEntries() : [];
-    const files = {};
-    if (activePath && typeof liveActiveContent === 'string') {
-      files[activePath] = liveActiveContent;
-    }
-    if (cacheEntries) {
-      const iter = Array.isArray(cacheEntries) ? cacheEntries : Array.from(cacheEntries);
-      for (const [p, content] of iter) {
-        if (!p || typeof content !== 'string') continue;
-        if (p === activePath) continue;
-        files[p] = content;
-      }
-    }
+    const { files } = buildNepContextPacket({
+      activePath,
+      activeContent: liveActiveContent,
+      cacheEntries,
+    });
 
     if (typeof console !== 'undefined' && console.info) {
       console.info(`[NEP] fire — workspace=${workspaceSlug || '?'} active=${activePath} files=${Object.keys(files).length} recentEdits=${recentEditsRef.current.length}`);

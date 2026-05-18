@@ -8,21 +8,10 @@ import {
     countSuggestionLines,
     lastCompletePrefix,
 } from '@/lib/completion';
-import {
-    buildCompletionReferences,
-    pushRecentEdit,
-} from '@/utils/completionContext';
+import { pushRecentEdit } from '@/utils/completionContext';
+import { buildAutocompleteContextPacket } from '@/utils/aiContextBroker';
 import { recordAiCompletionEvent } from '@/lib/aiCompletionTelemetry';
 import { recordAiReplaySample } from '@/lib/aiReplayHarness';
-import {
-    trimCompletionContext,
-    takeLastChars,
-    takeFirstChars,
-    buildEdgePreview,
-    clampSelection,
-    CONTEXT_SIDE_CHARS,
-    MAX_EDGE_LINES
-} from './utils.js';
 
 export const useAiCompletion = ({
     activeFile,
@@ -371,7 +360,19 @@ export const useAiCompletion = ({
         const rawContext = typeof manualContext === 'string'
             ? manualContext
             : (editorInstance?.getValue?.() ?? code ?? '');
-        const context = trimCompletionContext(rawContext, cursorPosition);
+        const contextPacket = buildAutocompleteContextPacket({
+            activeFile,
+            activeLanguage,
+            breadcrumb,
+            rawContext,
+            fallbackCode: code,
+            editorInstance,
+            cursorPosition,
+            workspaceSlug,
+            getFileCacheEntries,
+            recentEdits: recentEditsRef.current,
+        });
+        const { context, beforeCursor, afterCursor, references } = contextPacket;
         if (!context.trim()) return;
         
         if (isAutoTrigger && cursorPosition) {
@@ -447,59 +448,11 @@ export const useAiCompletion = ({
             source: isAutoTrigger ? 'auto' : 'manual',
         });
 
-        const model = editorInstance.getModel();
-        const fullDocument = typeof manualContext === 'string' ? manualContext : (model?.getValue?.() ?? rawContext);
-        let cursorOffset = fullDocument.length;
-        if (model && cursorPosition) {
-            try {
-                cursorOffset = model.getOffsetAt(cursorPosition);
-            } catch (e) {
-                cursorOffset = fullDocument.length;
-            }
-        }
-        const beforeCursor = takeLastChars(fullDocument.slice(0, cursorOffset));
-        const afterCursor = takeFirstChars(fullDocument.slice(cursorOffset));
-        const selectionRange = editorInstance.getSelection ? editorInstance.getSelection() : null;
-        let selectedText = '';
-        try {
-            if (selectionRange && !selectionRange.isEmpty() && model) {
-                selectedText = clampSelection(model.getValueInRange(selectionRange));
-            }
-        } catch (e) {
-            selectedText = '';
-        }
-        let fileHeader = '';
-        let fileTail = '';
-        try {
-            if (model?.getLinesContent) {
-                const lines = model.getLinesContent();
-                const edges = buildEdgePreview(lines, MAX_EDGE_LINES);
-                fileHeader = takeFirstChars(edges.head, CONTEXT_SIDE_CHARS);
-                fileTail = takeLastChars(edges.tail, CONTEXT_SIDE_CHARS);
-            }
-        } catch (e) {
-            // ignore preview errors
-        }
-
         const payload = {
             requestId,
-            code: context,
-            language: activeLanguage,
-            // Workspace identifier so the API route can hit the RAG
-            // fast-context endpoint for this workspace's index.
-            workspaceSlug: workspaceSlug || null,
-            cursor: cursorPosition ? { line: cursorPosition.lineNumber, column: cursorPosition.column } : null,
-            contextBlocks: {
-                beforeCursor,
-                afterCursor,
-                selection: selectedText || null,
-                filePath: activeFile?.path || activeFile?.name || null,
-                breadcrumbs: breadcrumb || null,
-                languageHint: activeLanguage,
-                fileHeader: fileHeader || null,
-                fileTail: fileTail || null,
-            },
+            ...contextPacket.payload,
         };
+        if (references.length) payload.references = references;
 
         if (activeFile?.name || activeFile?.path) {
             const metadata = [
@@ -507,28 +460,6 @@ export const useAiCompletion = ({
                 activeFile?.path ? `Path: ${activeFile.path}` : null,
             ].filter(Boolean).join('\n');
             if (metadata) payload.prompt = metadata;
-        }
-
-        // Local symbol-aware references: extract identifiers near the cursor
-        // and grep the workspace's file cache for their declarations. We send
-        // ONLY targeted snippets (≤ ~1.2 KB total) — never whole files. This
-        // is the difference between "shove three files in" (echo-prone noise)
-        // and "here's the type signature of the symbol the user just typed".
-        try {
-            const cacheEntries = typeof getFileCacheEntries === 'function'
-                ? getFileCacheEntries()
-                : [];
-            const refs = buildCompletionReferences({
-                prefix: beforeCursor,
-                language: activeLanguage,
-                activePath: activeFile?.path || activeFile?.name || null,
-                cacheEntries,
-                recentEdits: recentEditsRef.current,
-            });
-            if (refs.length) payload.references = refs;
-        } catch (e) {
-            // Reference assembly is best-effort — never block a completion on it.
-            console.debug('[AICompletion] reference assembly failed:', e?.message);
         }
 
         recordAiReplaySample({
