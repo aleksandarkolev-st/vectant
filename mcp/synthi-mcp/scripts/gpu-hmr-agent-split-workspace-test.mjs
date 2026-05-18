@@ -185,6 +185,19 @@ async function stageAndCommit({ slug, message }) {
 }
 
 async function readWorkerLogTail(maxBytes = 8 * 1024 * 1024, opts = {}) {
+  if (opts.since) {
+    return new Promise((resolve) => {
+      execFile(
+        'docker',
+        ['logs', '--since', opts.since, CFG.workerContainer],
+        { maxBuffer: 128 * 1024 * 1024 },
+        (err, stdout, stderr) => {
+          if (err) return resolve('');
+          resolve(`${stdout ?? ''}${stderr ?? ''}`);
+        },
+      );
+    });
+  }
   try {
     const st = await stat(CFG.workerLogPath);
     const fd = await import('node:fs').then((m) => m.promises.open(CFG.workerLogPath, 'r'));
@@ -195,9 +208,7 @@ async function readWorkerLogTail(maxBytes = 8 * 1024 * 1024, opts = {}) {
     return buf.toString('utf8');
   } catch {
     return new Promise((resolve) => {
-      const args = ['logs'];
-      if (opts.since) args.push('--since', opts.since);
-      else args.push('--tail', '6000');
+      const args = ['logs', '--tail', '6000'];
       args.push(CFG.workerContainer);
       execFile('docker', args, { maxBuffer: 128 * 1024 * 1024 }, (err, stdout, stderr) => {
         if (err) return resolve('');
