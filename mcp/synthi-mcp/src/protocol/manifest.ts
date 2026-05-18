@@ -103,6 +103,13 @@ export interface CapabilityManifest {
     normalized_errors: boolean;
     replay_cursor: boolean;
     failed_action_timeline: boolean;
+    stream_semantics: {
+      control_stream_ordered: boolean;
+      control_delivery: "at_least_once";
+      frame_delivery: "drop_old_best_effort";
+      dedupe_keys: string[];
+      gap_detection: boolean;
+    };
     replay_retention: {
       short_horizon_ms: number;
       long_horizon_ms: number;
@@ -270,6 +277,13 @@ export function buildManifest(
       normalized_errors: true,
       replay_cursor: true,
       failed_action_timeline: true,
+      stream_semantics: {
+        control_stream_ordered: true,
+        control_delivery: "at_least_once",
+        frame_delivery: "drop_old_best_effort",
+        dedupe_keys: ["session_id+event_id", "session_id+frame_seq"],
+        gap_detection: true,
+      },
       replay_retention: {
         short_horizon_ms: replayRetention.short_horizon_ms,
         long_horizon_ms: replayRetention.long_horizon_ms,

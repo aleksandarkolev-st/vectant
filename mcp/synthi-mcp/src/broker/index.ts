@@ -166,3 +166,10 @@ export {
   type BrokerRolloutState,
   type BrokerRoutedOperation,
 } from "./rollout.js";
+export {
+  BrokerStreamOrderTracker,
+  brokerDedupeKey,
+  brokerStreamOrderTracker,
+  type BrokerOrderingDecision,
+  type BrokerOrderingState,
+} from "./ordering.js";
