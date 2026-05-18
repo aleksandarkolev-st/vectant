@@ -272,6 +272,7 @@ const EditorPanel = ({
     const [diffModeEverActive, setDiffModeEverActive] = useState(false);
     const diffEditorRef = useRef(null);
     const latestCodeRef = useRef(code);
+    const activeDiffCheckRef = useRef(() => false);
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
     // P0: Debounced Redux sync — only flush content to Redux after 300ms pause
@@ -2728,7 +2729,10 @@ const EditorPanel = ({
         // each request so it always sees the latest workspace contents.
         getFileCacheEntries: () => fileCacheEntriesRef.current || [],
         workspaceSlug: slug,
-        hasActiveDiff: () => false,
+        hasActiveDiff: () => {
+            try { return !!activeDiffCheckRef.current?.(); }
+            catch (_) { return false; }
+        },
     });
 
     // --- Next-Edit Prediction (NEP) — Phase 1, feature-flagged off by default ---
@@ -2831,6 +2835,7 @@ const EditorPanel = ({
         activeFileIdentity
     });
     const activeDiffCheck = hasActiveDiffFromDiffManager;
+    activeDiffCheckRef.current = activeDiffCheck || (() => false);
 
     // --- Monaco Providers ---
     useEditorProviders({
@@ -2976,7 +2981,6 @@ const EditorPanel = ({
         editorInstance,
         monacoInstance,
         cancelActiveCompletion,
-        requestAiCompletion,
         hasActiveDiff: activeDiffCheck,
         aiAutoEnabled,
         rawFiles,
@@ -3090,7 +3094,15 @@ const EditorPanel = ({
         // edits causes unnecessary visual disruption.
         if (selfEditFlagRef?.current) return;
 
-        cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
+        if (activeDiffCheck()) {
+            cancelActiveCompletion({ resetSuggestion: true, reason: 'diff-active' });
+            return;
+        }
+
+        // Keep the visible cache while the user types along the suggestion.
+        // providers.js re-slices ghost text against the live cursor; this
+        // path just aborts stale streams before scheduling a fresh request.
+        cancelActiveCompletion({ resetSuggestion: false, reason: 'edit' });
 
         // Debounce AI Auto-Complete. The previous 900ms wait was the dominant
         // contributor to perceived completion latency: with a typical 500-800ms
