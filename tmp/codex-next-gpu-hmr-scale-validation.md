@@ -390,6 +390,75 @@ The scale test should use MCP to prove the public path. A passing compiler log,
 generated manifest, or manually inspected browser is not enough if the user
 still sees a black preview or if MCP cannot reproduce the visible state.
 
+## How To Use `synthi_wait_hmr`
+
+`synthi_compile` is fire-and-forget. It dispatches a compile request over the
+worker's `compile` data channel, but the final result arrives later on the
+preview build/HMR event stream. Always call `synthi_wait_hmr` immediately after
+`synthi_compile` or after an edit that should trigger HMR.
+
+`synthi_wait_hmr` blocks until the preview HMR pipeline reaches a terminal
+status or until the timeout expires. Terminal statuses include:
+
+```text
+applied
+rejected
+compile-error
+full-reload-required
+discarded
+```
+
+The tool returns structured data like:
+
+```json
+{
+  "status": "applied",
+  "elapsedMs": 1234,
+  "source": "build-log"
+}
+```
+
+Interpretation rules:
+
+- `applied`: expected success for normal HMR and device-only GPU reload.
+- `compile-error`: compile failed; inspect diagnostics and worker logs.
+- `rejected`: HMR rejected the candidate; inspect the rejection reason and
+  whether the fallback path is expected.
+- `full-reload-required`: not a device-only HMR success; treat as a failure for
+  the GPU HMR fast-path proof unless the test intentionally changed ABI.
+- `discarded`: candidate was superseded or dropped; rerun with cleaner timing
+  and inspect candidate/history logs.
+- timeout/no result: not proof of success. Check whether the MCP was attached,
+  whether compile was dispatched, and whether the worker emitted a terminal
+  build/HMR event.
+
+Use longer timeouts for AI split first compiles because model generation plus
+compile can take minutes:
+
+```text
+first AI split compile: 180000-240000 ms
+device-only HMR edit: 15000-30000 ms
+```
+
+Only take the screenshot after `synthi_wait_hmr` returns a terminal result. For
+`applied`, the MCP session also waits for the next frame gate, so a following
+`synthi_screenshot` is much more likely to reflect the newly compiled code.
+
+A correct automated validation loop should look like:
+
+```text
+synthi_attach
+synthi_compile
+synthi_wait_hmr
+synthi_screenshot
+analyze screenshot visibility
+edit device source
+synthi_compile
+synthi_wait_hmr
+synthi_screenshot
+compare before/after screenshot metrics
+```
+
 For screenshots, collect before/after evidence:
 
 - Screenshot after first compile.
