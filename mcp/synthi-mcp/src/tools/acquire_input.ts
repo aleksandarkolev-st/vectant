@@ -37,6 +37,7 @@ interface RawArgs {
   takeover?: unknown;
   scope?: unknown;
   preemptible?: unknown;
+  priority?: unknown;
   reason?: unknown;
 }
 
@@ -71,6 +72,10 @@ export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
   const owner = resolveLeaseOwner();
   const takeover = a.takeover === true;
   const preemptible = typeof a.preemptible === "boolean" ? a.preemptible : true;
+  if (a.priority !== undefined && a.priority !== "normal" && a.priority !== "urgent_human_override") {
+    return errorResponse("invalid_args", { field: "priority", expected: "normal|urgent_human_override" });
+  }
+  const priority = a.priority === "urgent_human_override" ? "urgent_human_override" : "normal";
   const reason = typeof a.reason === "string" && a.reason.length > 0 ? a.reason : null;
 
   const mode = resolveLeaseMode();
@@ -82,6 +87,7 @@ export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
     takeover,
     ...(scope !== undefined ? { scope } : {}),
     preemptible,
+    priority,
     reason,
   });
   if (!result.ok) {
@@ -89,6 +95,7 @@ export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
       current_lease_id: result.current.lease_id,
       current_lease_owner: result.current.owner,
       current_lease_expires_at: result.current.expires_at,
+      ...(result.queued ? { queued_request_id: result.queued.request_id } : {}),
     });
   }
   session.touch();
@@ -105,6 +112,7 @@ export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
     reason: result.lease.reason,
     continuous_owner_since: result.lease.continuous_owner_since,
     enforcement,
+    reentrant: result.reentrant === true,
     ...(result.evicted ? { evicted_lease_id: result.evicted.lease_id } : {}),
   });
 }

@@ -121,4 +121,98 @@ describe("leaseRegistry", () => {
       else process.env["SYNTHI_BROKER_INPUT_MODE"] = prev;
     }
   });
+
+  it("supports D1 reentrant acquisition for the same owner", () => {
+    const prev = process.env["SYNTHI_BROKER_INPUT_MODE"];
+    process.env["SYNTHI_BROKER_INPUT_MODE"] = "enforce";
+    try {
+      const first = leaseRegistry.acquireWithPolicy(5_000, "agent_a", { scope: ["mouse"] });
+      expect(first.ok).toBe(true);
+      if (!first.ok) throw new Error("unexpected first rejection");
+      const second = leaseRegistry.acquireWithPolicy(5_000, "agent_a", { scope: ["keyboard"] });
+      expect(second.ok).toBe(true);
+      if (!second.ok) throw new Error("unexpected reentrant rejection");
+      expect(second.lease.lease_id).toBe(first.lease.lease_id);
+      expect(second.reentrant).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env["SYNTHI_BROKER_INPUT_MODE"];
+      else process.env["SYNTHI_BROKER_INPUT_MODE"] = prev;
+    }
+  });
+
+  it("queues normal contenders and grants the next request after release", () => {
+    const prev = process.env["SYNTHI_BROKER_INPUT_MODE"];
+    process.env["SYNTHI_BROKER_INPUT_MODE"] = "enforce";
+    try {
+      const first = leaseRegistry.acquireWithPolicy(5_000, "agent_a", { scope: ["mouse"] });
+      expect(first.ok).toBe(true);
+      const second = leaseRegistry.acquireWithPolicy(5_000, "agent_b", { scope: ["keyboard"], reason: "waiting" });
+      expect(second.ok).toBe(false);
+      if (second.ok) throw new Error("unexpected contender success");
+      expect(second.queued?.owner).toBe("agent_b");
+      expect(leaseRegistry.queueSnapshot()).toHaveLength(1);
+      if (!first.ok) throw new Error("unexpected first rejection");
+      leaseRegistry.release(first.lease.lease_id);
+      expect(leaseRegistry.currentLease()?.owner).toBe("agent_b");
+      expect(leaseRegistry.queueSnapshot()).toHaveLength(0);
+    } finally {
+      if (prev === undefined) delete process.env["SYNTHI_BROKER_INPUT_MODE"];
+      else process.env["SYNTHI_BROKER_INPUT_MODE"] = prev;
+    }
+  });
+
+  it("lets urgent human override preempt preemptible leases and notifies lease loss", () => {
+    const prev = process.env["SYNTHI_BROKER_INPUT_MODE"];
+    process.env["SYNTHI_BROKER_INPUT_MODE"] = "enforce";
+    try {
+      const first = leaseRegistry.acquireWithPolicy(5_000, "agent_a", { scope: ["mouse"], preemptible: true });
+      expect(first.ok).toBe(true);
+      if (!first.ok) throw new Error("unexpected first rejection");
+      const override = leaseRegistry.acquireWithPolicy(5_000, "human", {
+        scope: ["mouse"],
+        priority: "urgent_human_override",
+        reason: "operator_takeover",
+      });
+      expect(override.ok).toBe(true);
+      if (!override.ok) throw new Error("unexpected override rejection");
+      expect(override.evicted?.lease_id).toBe(first.lease.lease_id);
+      const blocked = leaseRegistry.validateForBrokerInput(first.lease.lease_id, "mouse");
+      expect(blocked.allowed).toBe(false);
+      if (blocked.allowed) throw new Error("unexpected validation success");
+      expect(blocked.error).toBe("LEASE_PREEMPTED");
+      expect(eventLog.query({ kind: "input" }).some((event) => event.action === "lease_loss")).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env["SYNTHI_BROKER_INPUT_MODE"];
+      else process.env["SYNTHI_BROKER_INPUT_MODE"] = prev;
+    }
+  });
+
+  it("force release is auditable and preempts the old holder", () => {
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "agent_a", { scope: ["keyboard"] });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected acquire rejection");
+    const released = leaseRegistry.forceRelease(lease.lease.lease_id, "admin", "stuck_agent");
+    expect(released.ok).toBe(true);
+    const blocked = leaseRegistry.validateForBrokerInput(lease.lease.lease_id, "keyboard");
+    expect(blocked.allowed).toBe(false);
+    if (blocked.allowed) throw new Error("unexpected validation success");
+    expect(blocked.error).toBe("LEASE_PREEMPTED");
+    const leaseEvents = eventLog.query({ kind: "lease" });
+    expect(leaseEvents.some((event) => event.action === "force_released")).toBe(true);
+  });
+
+  it("creates action batches only under a matching live lease", () => {
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "agent_a", { scope: ["mouse"] });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected acquire rejection");
+    const batch = leaseRegistry.createActionBatch({
+      lease_id: lease.lease.lease_id,
+      scope: "mouse",
+      actions: [{ action: "move" }, { action: "click" }],
+    });
+    expect(batch.ok).toBe(true);
+    if (!batch.ok) throw new Error("unexpected batch rejection");
+    expect(batch.batch.action_count).toBe(2);
+    expect(batch.batch.lease_id).toBe(lease.lease.lease_id);
+  });
 });

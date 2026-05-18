@@ -122,6 +122,15 @@ export interface CapabilityManifest {
       max_lease_ms: number;
       max_continuous_ownership_ms: number;
     };
+    lease_d1: {
+      priority_classes: string[];
+      fairness_queue: boolean;
+      starvation_bound_ms: number;
+      reentrant_per_owner: boolean;
+      force_release_tool: string;
+      lease_loss_events: boolean;
+      action_batching: boolean;
+    };
   };
 }
 
@@ -264,6 +273,15 @@ export function buildManifest(
         default_lease_ms: 15_000,
         max_lease_ms: 15_000,
         max_continuous_ownership_ms: 60_000,
+      },
+      lease_d1: {
+        priority_classes: ["normal", "urgent_human_override"],
+        fairness_queue: true,
+        starvation_bound_ms: 30_000,
+        reentrant_per_owner: true,
+        force_release_tool: "synthi_force_release_input",
+        lease_loss_events: true,
+        action_batching: true,
       },
     },
   };

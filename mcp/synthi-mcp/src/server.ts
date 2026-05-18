@@ -45,6 +45,7 @@ import { describeTool } from "./tools/describe.js";
 import { acquireInputTool } from "./tools/acquire_input.js";
 import { renewInputTool } from "./tools/renew_input.js";
 import { releaseInputTool } from "./tools/release_input.js";
+import { forceReleaseInputTool } from "./tools/force_release_input.js";
 import { requestHumanTool } from "./tools/request_human.js";
 import { annotateAndAskTool } from "./tools/annotate_and_ask.js";
 import { recentHumanActionsTool } from "./tools/recent_human_actions.js";
@@ -642,12 +643,31 @@ const TOOLS = [
           type: "boolean",
           description: "Whether the lease may be preempted by policy. Default true.",
         },
+        priority: {
+          type: "string",
+          enum: ["normal", "urgent_human_override"],
+          description: "D1 arbitration priority. urgent_human_override can preempt a preemptible active lease.",
+        },
         reason: {
           type: "string",
           description: "Short audit reason for acquiring input control.",
         },
       },
       required: [],
+    },
+  },
+  {
+    name: "synthi_force_release_input",
+    description:
+      "Force-release an active input lease with an auditable reason. Intended for admin/human-override workflows; emits lease-loss events for subscribers.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        lease_id: { type: "string", description: "Lease id returned by synthi_acquire_input." },
+        reason: { type: "string", description: "Audit reason for the forced release." },
+        forced_by: { type: "string", description: "Optional operator id; defaults to server-derived agent subject." },
+      },
+      required: ["lease_id"],
     },
   },
   {
@@ -1144,6 +1164,8 @@ export function createSynthiServer(options: SynthiServerOptions): Server {
         return (await describeTool(args, signal ? { signal } : undefined)) as CallToolResult;
       case "synthi_acquire_input":
         return (await acquireInputTool(args)) as CallToolResult;
+      case "synthi_force_release_input":
+        return (await forceReleaseInputTool(args)) as CallToolResult;
       case "synthi_renew_input":
         return (await renewInputTool(args)) as CallToolResult;
       case "synthi_release_input":
