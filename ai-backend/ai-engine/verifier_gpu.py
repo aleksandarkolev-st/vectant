@@ -133,6 +133,10 @@ _GPU_INIT_KERNEL_LAUNCH_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _GUI_HOST_MIRROR_INDEX_RE = re.compile(r"(?:->|\.)\s*(?P<name>h_[A-Za-z_][A-Za-z0-9_]*)\s*\[")
+_DEVICE_DESCRIPTOR_INIT_RE = re.compile(
+    r"\bDeviceDescriptor\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*\{(?P<body>.*?)\}\s*;",
+    re.DOTALL,
+)
 
 _NEW_FILE_OPS = {"create", "new", "add_file"}
 
@@ -623,6 +627,24 @@ def verify_split_output(
                     ),
                     offending_module=core_path,
                     offending_symbol=symbol,
+                )
+            )
+    for match in _DEVICE_DESCRIPTOR_INIT_RE.finditer(core_source):
+        args = _split_top_level_args(match.group("body"))
+        first_arg = args[0].strip() if args else ""
+        if len(args) != 6 or re.match(r"^\d", first_arg):
+            violations.append(
+                Violation(
+                    rule="invalid_device_descriptor_initializer",
+                    message=(
+                        "DeviceDescriptor must use the runtime header field order "
+                        "{ vendor, arches, kernels, num_arches, num_kernels, "
+                        "constant_layout_bytes }. The vendor field is const char* "
+                        "(for example SYNTHI_GPU_VENDOR or \"rocm\"), not an integer; "
+                        "provide static arch/kernel string arrays and the two counts."
+                    ),
+                    offending_module=core_path,
+                    offending_symbol="DeviceDescriptor",
                 )
             )
     if re.search(

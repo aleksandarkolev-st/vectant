@@ -481,6 +481,24 @@ def test_split_rejects_uninitialized_gui_render_surface():
     assert any(v.rule == "gui_render_surface_not_initialized" for v in r.violations)
 
 
+def test_split_rejects_invalid_device_descriptor_initializer():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { static DeviceDescriptor d = {1, "core"}; return &d; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.cu": 'extern "C" __global__ void step(int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert any(v.rule == "invalid_device_descriptor_initializer" for v in r.violations)
+
+
 def test_split_allows_device_init_kernel_before_update():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* d_particles; int n; };',

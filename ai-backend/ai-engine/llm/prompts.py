@@ -4092,6 +4092,14 @@ file is for kernels/device helpers only:
 //    DeviceDescriptor is already declared by synthi_gpu_runtime.h.
 extern "C" const DeviceDescriptor* device_descriptor();
 
+//    Required DeviceDescriptor field order from synthi_gpu_runtime.h:
+//    { vendor, arches, kernels, num_arches, num_kernels, constant_layout_bytes }
+//    The first field is const char*, not an integer. Use the runtime vendor
+//    macro and static arch/kernel string arrays:
+//    static const char* arches[] = { "gfx1201" };  // use the target arch
+//    static const char* kernels[] = { "update_particles" };
+//    static DeviceDescriptor d = { SYNTHI_GPU_VENDOR, arches, kernels, 1, 1, 0 };
+
 // 2. device_on_load — natively patch deserialisation across an ABI edit.
 //    `prev_blob`/`len` is the bytes produced by the OLD module's
 //    device_save_write. The implementation MUST update its own
