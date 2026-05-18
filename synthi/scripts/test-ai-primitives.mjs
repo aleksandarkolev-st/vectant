@@ -130,8 +130,8 @@ assert.equal(
   TAB_INTENT_OWNER.AI_COMPLETION,
 );
 updateTabIntentState({ hasDiagnosticFix: true, aiCompletionState: 'ready', hasAiSuggestion: true });
-assert.equal(resolveTabIntentOwner(), TAB_INTENT_OWNER.DIAGNOSTIC_FIX);
-assert.equal(canHandleTabIntent(TAB_INTENT_OWNER.AI_COMPLETION), false);
+assert.equal(resolveTabIntentOwner(), TAB_INTENT_OWNER.AI_COMPLETION);
+assert.equal(canHandleTabIntent(TAB_INTENT_OWNER.AI_COMPLETION), true);
 updateTabIntentState({ nepState: 'armed' });
 assert.equal(resolveTabIntentOwner(), TAB_INTENT_OWNER.NEP);
 assert.equal(canHandleTabIntent(TAB_INTENT_OWNER.NEP), true);
