@@ -26,16 +26,13 @@ export default function VectantLogoCollapsed({
   pendingCount = 0,
   onActivate,
 }) {
-  const handleEnter = useCallback(() => onActivate?.('hover'), [onActivate]);
-  const handleClick = useCallback(() => onActivate?.('click'), [onActivate]);
+  const handleClick = useCallback(() => onActivate?.(), [onActivate]);
 
   // is-spreading drives the bracket translate-outward in CSS. Active
   // during expanding (forward) and reverses naturally in collapsing
   // (when the class drops, the transition runs in reverse).
   const isSpreading = phase === 'expanding';
-  // is-v-fading drives the V fade-out. Active during expanding and
-  // also during the early frames of collapsing (we want the V to fade
-  // back in as the brackets return, not at the very last frame).
+  // is-v-fading drives the V fade-out. Active during expanding only.
   const isVFading = phase === 'expanding';
 
   return (
@@ -43,8 +40,6 @@ export default function VectantLogoCollapsed({
       type="button"
       aria-label={phase === 'logo' ? 'Open status island' : 'Vectant'}
       onClick={phase === 'logo' ? handleClick : undefined}
-      onMouseEnter={phase === 'logo' ? handleEnter : undefined}
-      onFocus={phase === 'logo' ? handleEnter : undefined}
       tabIndex={phase === 'logo' ? 0 : -1}
       className={[
         'vectant-logo-button th-focus-ring',

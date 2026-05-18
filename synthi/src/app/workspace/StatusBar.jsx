@@ -29,10 +29,9 @@ const STATUS_ISLAND_COMPACT_KEY = 'synthi:status-island-compact';
 const DRAG_THRESHOLD_PX = 5;
 
 // How long after entrance to keep the island expanded before auto-collapsing
-// to the logo for the FIRST mount. After that the default state is logo.
+// to the logo for the FIRST mount. After that the default state is logo
+// and the user opens / closes it explicitly via clicks.
 const FIRST_MOUNT_LINGER_MS = 3000;
-// How long after mouse leaves the expanded island before it auto-collapses.
-const AUTO_COLLAPSE_MS = 2500;
 // Expand animation duration — matches the existing status-island-shell
 // keyframes (720ms) plus a small buffer for the content fade tail.
 const EXPAND_ANIM_MS = 760;
@@ -41,8 +40,6 @@ const EXPAND_ANIM_MS = 760;
 //   160-460ms: shell scales down to seed
 //   340-540ms: logo fades in from opacity 0
 const COLLAPSE_ANIM_MS = 560;
-// Hover-to-expand delay: prevents fly-over flicker.
-const HOVER_EXPAND_DELAY_MS = 120;
 
 /**
  * StatusBar Component - Synthi styled bottom status bar
@@ -210,8 +207,6 @@ function StatusBarInner({
   // unchanged from what the user already loves.
   const [hasCollapsedOnce, setHasCollapsedOnce] = useState(false);
   const phaseTimerRef = useRef(null);
-  const hoverDelayRef = useRef(null);
-  const isMouseInsideRef = useRef(false);
 
   // Clear any pending phase transition timer.
   const clearPhaseTimer = useCallback(() => {
@@ -222,12 +217,12 @@ function StatusBarInner({
   }, []);
 
   // First-mount linger: after the entrance + linger window, auto-collapse
-  // to the logo (unless the user is already hovering the island).
+  // to the logo so the user discovers the logo state without having to
+  // hunt for the close button.
   useEffect(() => {
     // Drop the isEntering class right after the existing keyframes end.
     const t1 = window.setTimeout(() => setIsEntering(false), STATUS_ISLAND_ENTRANCE_MS);
     const t2 = window.setTimeout(() => {
-      if (isMouseInsideRef.current) return;
       setPhase('collapsing');
       phaseTimerRef.current = window.setTimeout(() => {
         setPhase('logo');
@@ -243,34 +238,25 @@ function StatusBarInner({
   // Cleanup pending timers on unmount.
   useEffect(() => () => {
     clearPhaseTimer();
-    if (hoverDelayRef.current) window.clearTimeout(hoverDelayRef.current);
   }, [clearPhaseTimer]);
 
-  // Trigger an expand. Source 'hover' uses a small delay to avoid
-  // flicker; 'click' fires immediately. We re-arm isEntering so the
-  // existing status-island-shell keyframes (which we DO NOT touch) play
-  // again — identical seed → pill morph as on first mount.
-  const triggerExpand = useCallback((source) => {
+  // Trigger an expand. Click-only — no hover delay. We re-arm
+  // isEntering so the existing status-island-shell keyframes (which we
+  // DO NOT touch) play again — identical seed → pill morph as on first
+  // mount.
+  const triggerExpand = useCallback(() => {
     if (phase === 'expanded' || phase === 'expanding') return;
-    const start = () => {
-      clearPhaseTimer();
-      setPhase('expanding');
-      setIsEntering(true);
-      phaseTimerRef.current = window.setTimeout(() => {
-        setPhase('expanded');
-        setIsEntering(false);
-      }, EXPAND_ANIM_MS);
-    };
-    if (source === 'hover') {
-      if (hoverDelayRef.current) window.clearTimeout(hoverDelayRef.current);
-      hoverDelayRef.current = window.setTimeout(start, HOVER_EXPAND_DELAY_MS);
-    } else {
-      start();
-    }
+    clearPhaseTimer();
+    setPhase('expanding');
+    setIsEntering(true);
+    phaseTimerRef.current = window.setTimeout(() => {
+      setPhase('expanded');
+      setIsEntering(false);
+    }, EXPAND_ANIM_MS);
   }, [phase, clearPhaseTimer]);
 
-  // Trigger a collapse. Triggered by the close (X) button, or by
-  // mouse-leave + AUTO_COLLAPSE_MS countdown.
+  // Trigger a collapse. Click-only — triggered exclusively by the
+  // close (X) button. No mouse-leave timer.
   const triggerCollapse = useCallback(() => {
     if (phase === 'logo' || phase === 'collapsing') return;
     clearPhaseTimer();
@@ -280,27 +266,6 @@ function StatusBarInner({
       setHasCollapsedOnce(true);
     }, COLLAPSE_ANIM_MS);
   }, [phase, clearPhaseTimer]);
-
-  // Mouse-enter on the whole wrapper: cancel any pending auto-collapse.
-  const handleWrapperEnter = useCallback(() => {
-    isMouseInsideRef.current = true;
-    clearPhaseTimer();
-  }, [clearPhaseTimer]);
-
-  // Mouse-leave: start the 2.5s auto-collapse countdown (only if expanded).
-  const handleWrapperLeave = useCallback(() => {
-    isMouseInsideRef.current = false;
-    if (hoverDelayRef.current) {
-      window.clearTimeout(hoverDelayRef.current);
-      hoverDelayRef.current = null;
-    }
-    if (phase !== 'expanded') return;
-    clearPhaseTimer();
-    phaseTimerRef.current = window.setTimeout(
-      triggerCollapse,
-      AUTO_COLLAPSE_MS
-    );
-  }, [phase, clearPhaseTimer, triggerCollapse]);
 
   // ── Compact mode (persisted) ────────────────────────────────────────
   // Hides all text labels in the expanded island. Icons / dots /
@@ -471,8 +436,6 @@ function StatusBarInner({
       <div
         className={`status-island-positioner pointer-events-auto ${phaseClass}`}
         style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }}
-        onMouseEnter={handleWrapperEnter}
-        onMouseLeave={handleWrapperLeave}
       >
         {/* Logo — rendered for all transition phases so the V fade-out
             and bracket-slide animations are visible. Unmounted only

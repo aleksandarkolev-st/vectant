@@ -2153,9 +2153,17 @@
 }
 
 /* Hide the pill entirely in 'logo' phase so it never intercepts clicks
-   beneath the logo. */
+   beneath the logo. opacity:0 is the safety net for the brief frame at
+   the collapsing→logo transition where the content's CSS animation
+   class drops (animation end-state was opacity 0 via fill:both, but
+   the moment the class drops the opacity reverts to its computed
+   default of 1 — and if the visibility:hidden hasn't applied yet in
+   the same frame, the icons flash visible). opacity:0 ensures the
+   content can never repaint visible during the logo phase regardless
+   of paint-order races. */
 .status-island-phase--logo .status-island-pill-wrapper {
   visibility: hidden;
+  opacity: 0;
   pointer-events: none;
 }
 .status-island-phase--logo .status-island-pill-wrapper * {
