@@ -7,7 +7,7 @@
 'use client';
 
 import React, { useCallback, useMemo, memo } from 'react';
-import { X } from 'lucide-react';
+import { X, Pin, PinOff } from 'lucide-react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   closeTabAction,
@@ -24,6 +24,10 @@ import { IDE_PANEL } from '../panels/panel-types';
 import { TabBar } from './TabBar';
 import { PanelContentArea } from './PanelContainer';
 import { DropOverlay } from './DropOverlay';
+import {
+  selectSidebarAutoCollapseEnabled,
+  toggleSidebarPanelPin,
+} from '@/redux/uiSlice';
 
 const SIDEBAR_PANEL_TYPES = new Set([
   IDE_PANEL.EXPLORER,
@@ -118,18 +122,37 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
   // the group collapses to a thin rail. Hovering re-expands. Width is
   // CSS-driven; the layout slice is left alone so docked widths are
   // restored on hover-back.
-  const { isCollapsed, isSidebar, bind: collapseBind } = useSidebarAutoCollapse({
+  const { isCollapsed, isSidebar, isPinned, bind: collapseBind } = useSidebarAutoCollapse({
     tabs,
     isFocused,
     activeTabId: node?.activeTabId,
     sidebarEdge,
   });
 
+  const autoCollapseEnabled = useSelector(selectSidebarAutoCollapseEnabled);
+
   const showSoloPaneClose =
     isSidebar &&
     tabs.length === 1 &&
     activeTab &&
     (sidebarEdge === 'left' || sidebarEdge === 'right');
+
+  // The pin lives on sidebar groups docked to the left or right rail and
+  // toggles whether the active panel's panelType is held open against the
+  // hover auto-collapse. Hidden when auto-collapse is globally disabled —
+  // the affordance would be a no-op there.
+  const showPinToggle =
+    isSidebar &&
+    autoCollapseEnabled &&
+    activeTab &&
+    (sidebarEdge === 'left' || sidebarEdge === 'right');
+
+  const handleTogglePin = useCallback((event) => {
+    event.stopPropagation();
+    event.preventDefault();
+    if (!activeTab?.panelType) return;
+    dispatch(toggleSidebarPanelPin(activeTab.panelType));
+  }, [activeTab, dispatch]);
 
   const handleCloseSoloPane = useCallback((event) => {
     event.stopPropagation();
@@ -180,6 +203,31 @@ export const TabGroup = memo(function TabGroup({ nodeId }) {
           title={`Close ${activeTab.title || activeTab.panelType}`}
         >
           <X className="w-3 h-3" strokeWidth={2} />
+        </button>
+      )}
+
+      {showPinToggle && (
+        <button
+          type="button"
+          className={[
+            'dock-tab-group__pin',
+            isPinned ? 'dock-tab-group__pin--active' : '',
+            showSoloPaneClose ? 'dock-tab-group__pin--with-close' : '',
+            // When a multi-tab tab bar is rendered, the bar already
+            // occupies the top edge with its own action buttons — drop
+            // the pin below it so the affordances don't collide.
+            tabs.length > 1 && !isEditorSurface ? 'dock-tab-group__pin--below-tabbar' : '',
+          ].filter(Boolean).join(' ')}
+          onClick={handleTogglePin}
+          aria-label={isPinned ? `Unpin ${activeTab.title || activeTab.panelType}` : `Pin ${activeTab.title || activeTab.panelType} open`}
+          title={isPinned ? 'Allow this panel to auto-collapse' : 'Keep this panel open while others auto-collapse'}
+          aria-pressed={isPinned}
+        >
+          {isPinned ? (
+            <Pin className="w-3 h-3" strokeWidth={2.25} />
+          ) : (
+            <PinOff className="w-3 h-3" strokeWidth={2} />
+          )}
         </button>
       )}
 

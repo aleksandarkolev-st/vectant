@@ -14,10 +14,12 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   --dock-panel-bg: var(--bg-editor, #0c0d12);
-  --dock-tab-bar-bg: var(--bg-surface, var(--bg-panel, #08090d));
+  --dock-tab-bar-bg: color-mix(in srgb, var(--bg-surface, var(--bg-panel, #08090d)) 88%, var(--bg-editor, #0c0d12) 12%);
   --dock-tab-fg: var(--text-muted, #7a8099);
   --dock-tab-active-fg: var(--text-primary, #e8eaf0);
-  --dock-tab-active-bg: var(--bg-editor, #0c0d12);
+  --dock-tab-active-bg: color-mix(in srgb, var(--bg-elevated, var(--bg-editor, #0c0d12)) 96%, var(--accent-primary, #3a8574) 4%);
+  --dock-tab-hover-bg: color-mix(in srgb, var(--bg-elevated, #14161d) 92%, var(--accent-primary, #3a8574) 8%);
+  --dock-tab-active-border: color-mix(in srgb, var(--accent-primary, #3a8574) 18%, var(--border-subtle, #1a1b24));
   --dock-border: var(--border-subtle, #1a1b24);
   --dock-accent: var(--accent-primary, #3a8574);
   --dock-focus-border: color-mix(in srgb, var(--accent-primary, #3a8574) 40%, transparent);
@@ -36,32 +38,29 @@
 
 .dock-tab-bar {
   background-color: var(--dock-tab-bar-bg) !important;
-  border-bottom: 1px solid var(--dock-border) !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--dock-border) 86%, transparent) !important;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+  box-sizing: border-box;
+  padding: 0 6px;
   position: relative;
   user-select: none;
 }
 
 .dock-tab-bar--focused {
-  border-bottom-color: var(--dock-accent) !important;
-}
-
-/* Subtle left accent on focused group's tab bar */
-.dock-tab-bar--focused::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 2px;
-  background: var(--dock-accent);
+  background-color: color-mix(in srgb, var(--dock-tab-bar-bg) 92%, var(--accent-primary, #3a8574) 8%) !important;
 }
 
 .dock-tab-bar__scroll::-webkit-scrollbar {
   display: none;
 }
 
+.dock-tab-bar__scroll {
+  gap: 0;
+  align-items: stretch !important;
+}
+
 .dock-tab-bar__action:hover {
-  background-color: rgba(255, 255, 255, 0.08) !important;
+  background-color: var(--dock-tab-hover-bg) !important;
   opacity: 1 !important;
 }
 
@@ -70,12 +69,13 @@
 .dock-tab {
   cursor: grab !important;
   position: relative;
-  transition: background-color 0.1s, color 0.1s;
+  transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 
 .dock-tab:hover {
   color: var(--dock-tab-active-fg, #e8eaf0) !important;
-  background-color: rgba(255, 255, 255, 0.04) !important;
+  background-color: var(--dock-tab-hover-bg) !important;
+  border-color: color-mix(in srgb, var(--dock-border) 78%, var(--accent-primary, #3a8574) 22%) !important;
 }
 
 .dock-tab:hover .dock-tab__close {
@@ -89,6 +89,9 @@
 
 .dock-tab--active {
   font-weight: 500;
+  color: var(--dock-tab-active-fg, #e8eaf0) !important;
+  background-color: var(--dock-tab-active-bg) !important;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
 }
 
 .dock-tab--active:hover {
@@ -102,17 +105,21 @@
 
 /* Drag grip indicator (subtle dots on left of tab) */
 .dock-tab::before {
-  content: '⠿';
-  font-size: 8px;
+  content: '';
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 -5px 0 currentColor, 0 5px 0 currentColor;
   opacity: 0;
-  margin-right: 2px;
+  margin-right: 3px;
   color: var(--dock-tab-fg);
   transition: opacity 0.15s;
   flex-shrink: 0;
 }
 
 .dock-tab:hover::before {
-  opacity: 0.5;
+  opacity: 0.32;
 }
 
 /* ─── Splitter — visible resize handles ──────────────── */
@@ -169,7 +176,9 @@
   transition:
     border-color 160ms,
     outline-color 160ms,
-    opacity 220ms ease-out;
+    opacity 220ms ease-out,
+    min-width 320ms cubic-bezier(0.4, 0, 0.2, 1),
+    min-height 320ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .dock-tab-group--focused {
@@ -188,34 +197,40 @@
    The sizing lives on the split child wrapper so sibling panels can
    reclaim the freed space instead of leaving a dead gutter behind. */
 .dock-split__child {
-  width: auto;
-  height: auto;
+  /* Symmetric easing on both directions — the previous strong ease-out
+     (cubic-bezier(0.22, 1, 0.36, 1)) reached its endpoint inside the
+     first 80ms so the collapse read as a snap while the expansion's
+     ease-out felt comfortable. Using an ease-in-out keeps both sides
+     readable and emphasises that the panel is moving rather than
+     blinking out. flex-shrink is included so the snap from 1→0 on
+     close (which previously fired instantly) interpolates too. */
   transition:
-    flex-grow 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    flex-basis 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    width 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    height 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    max-width 260ms cubic-bezier(0.22, 1, 0.36, 1),
-    max-height 260ms cubic-bezier(0.22, 1, 0.36, 1);
+    flex-grow 320ms cubic-bezier(0.4, 0, 0.2, 1),
+    flex-shrink 320ms cubic-bezier(0.4, 0, 0.2, 1),
+    flex-basis 320ms cubic-bezier(0.4, 0, 0.2, 1),
+    min-width 320ms cubic-bezier(0.4, 0, 0.2, 1),
+    min-height 320ms cubic-bezier(0.4, 0, 0.2, 1);
+  will-change: flex-grow, flex-basis;
 }
 
 /* Collapsed: keep an 8px hover rail so the cursor has somewhere to land
    to wake the panel back up. The content fades to 0 opacity so the
-   collapsed state reads as "tucked away" rather than "still here". */
+   collapsed state reads as "tucked away" rather than "still here". We
+   intentionally drop the now-redundant width/max-width declarations —
+   width:auto→8px is non-animatable and previously caused a hard cut
+   on close while the expand side relied on flex-grow alone.  */
 .dock-split--row > .dock-split__child:has(> [data-sidebar-collapsed="true"]) {
   flex-grow: 0 !important;
   flex-shrink: 0 !important;
   flex-basis: 8px !important;
-  width: 8px;
-  max-width: 8px;
+  min-width: 0;
 }
 
 .dock-split--column > .dock-split__child:has(> [data-sidebar-collapsed="true"]) {
   flex-grow: 0 !important;
   flex-shrink: 0 !important;
   flex-basis: 8px !important;
-  height: 8px;
-  max-height: 8px;
+  min-height: 0;
 }
 
 .dock-tab-group--collapsed {
@@ -225,8 +240,8 @@
 
 .dock-tab-group > * {
   transition:
-    opacity 300ms ease-out,
-    transform 360ms cubic-bezier(0.22, 1, 0.36, 1);
+    opacity 260ms cubic-bezier(0.4, 0, 0.2, 1),
+    transform 320ms cubic-bezier(0.4, 0, 0.2, 1);
   will-change: opacity, transform;
 }
 
@@ -306,6 +321,67 @@
 }
 
 .dock-tab-group--collapsed .dock-tab-group__solo-close {
+  opacity: 0 !important;
+  pointer-events: none;
+}
+
+.dock-tab-group__pin {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 90%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-app) 92%, transparent);
+  color: var(--text-muted, #7a8099);
+  opacity: 0.45;
+  transition: opacity 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out, transform 120ms ease-out;
+}
+
+/* When the solo-close affordance is also shown, slot the pin to the left
+   of it so the two pills sit side-by-side instead of overlapping. */
+.dock-tab-group__pin--with-close {
+  right: 34px;
+}
+
+/* Multi-tab groups already have a maximize button in their tab bar's
+   action slot, so drop the pin below the bar to avoid sitting on top of
+   it. The 32px offset clears the standard 30px tab-bar height plus the
+   2px focused border accent. */
+.dock-tab-group__pin--below-tabbar {
+  top: 38px;
+}
+
+.dock-tab-group:hover .dock-tab-group__pin,
+.dock-tab-group--focused .dock-tab-group__pin,
+.dock-tab-group__pin--active {
+  opacity: 1;
+}
+
+.dock-tab-group__pin:hover {
+  color: var(--text-primary, #e8eaf0);
+  border-color: color-mix(in srgb, var(--accent-primary) 35%, var(--border-subtle));
+  background: color-mix(in srgb, var(--bg-app) 86%, var(--accent-primary) 10%);
+  transform: scale(1.04);
+}
+
+.dock-tab-group__pin--active {
+  color: var(--accent-primary, #3a8574);
+  border-color: color-mix(in srgb, var(--accent-primary) 55%, transparent);
+  background: color-mix(in srgb, var(--bg-app) 80%, var(--accent-primary) 16%);
+}
+
+.dock-tab-group__pin--active:hover {
+  color: var(--accent-primary, #3a8574);
+  border-color: color-mix(in srgb, var(--accent-primary) 75%, transparent);
+}
+
+.dock-tab-group--collapsed .dock-tab-group__pin {
   opacity: 0 !important;
   pointer-events: none;
 }

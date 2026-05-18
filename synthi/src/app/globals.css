@@ -1551,3 +1551,177 @@
   }
 }
 
+/* ─── Status Island entrance animation ───────────────────────────────
+   First-load reveal for the floating status pill. The stage element
+   (which wraps the halo + the gradient-bordered pill) scales horizontally
+   from a small circular silhouette into the full pill width.
+
+   Why scale rather than clip-path: the gradient border lives on the
+   actual pill element via the padding-box/border-box trick. If we clip
+   the silhouette with clip-path, the gradient stays at the FULL pill's
+   edges — which sit outside the visible clip region, so the rounded
+   ends of the clipped shape read as a hard dark cut-off. Scaling the
+   whole stage keeps the gradient anchored to the silhouette's true
+   edges, so the brand colour curls around the rounded ends at every
+   frame of the morph.
+*/
+.status-island-entrance-shell {
+  animation: status-island-shell 640ms cubic-bezier(0.2, 1, 0.3, 1) both;
+  transform-origin: center center;
+  will-change: transform, opacity;
+  contain: paint;
+  isolation: isolate;
+  /* GPU compositor path so the gradient + box-shadow stay smooth under
+     heavy horizontal compression at the seed phase. */
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* Halo opacity pulse. The halo lives inside the stage and therefore
+   already inherits the stage's scaleX — adding a transform here would
+   stack and over-shrink, so we only animate opacity + blur. */
+.status-island-entrance-halo {
+  animation: status-island-halo 300ms 640ms cubic-bezier(0.2, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+
+.status-island-entrance-shadow {
+  animation: status-island-shadow 300ms 640ms cubic-bezier(0.2, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+}
+
+/* Content fades in only after the shell has finished expanding so the
+   indicators don't visibly scale with the island. */
+.status-island-entrance-content {
+  animation: status-island-content 180ms 690ms cubic-bezier(0.2, 1, 0.3, 1) both;
+}
+
+@keyframes status-island-shell {
+  0% {
+    transform: scale3d(0.055, 0.88, 1);
+    opacity: 0.08;
+  }
+  26% {
+    transform: scale3d(0.055, 0.88, 1);
+    opacity: 1;
+  }
+  62% {
+    transform: scale3d(0.42, 0.96, 1);
+    opacity: 1;
+  }
+  82% {
+    transform: scale3d(1.01, 1.006, 1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale3d(1, 1, 1);
+    opacity: 1;
+  }
+}
+
+@keyframes status-island-halo {
+  0% {
+    transform: scale3d(0.92, 0.94, 1);
+    opacity: 0;
+  }
+  58% {
+    transform: scale3d(1.08, 1.1, 1);
+    opacity: 0.24;
+  }
+  100% {
+    transform: scale3d(1.006, 1.006, 1);
+    opacity: 0.14;
+  }
+}
+
+@keyframes status-island-shadow {
+  0% {
+    transform: scale3d(0.94, 0.96, 1);
+    opacity: 0;
+  }
+  56% {
+    transform: scale3d(1.04, 1.05, 1);
+    opacity: 0.95;
+  }
+  100% {
+    transform: scale3d(1, 1, 1);
+    opacity: 1;
+  }
+}
+
+@keyframes status-island-content {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ─── Status Island drag handle ──────────────────────────────────────
+   A small grip affordance on the left rail of the pill. Subtle by
+   default; pops to full opacity on hover. Combined with a 5px drag
+   threshold this makes accidental drags effectively impossible — you
+   have to land on a 14-px target AND move ≥5 px before the island
+   responds. We avoid a "drag from anywhere on the pill" model because
+   the pill is dense with click targets (branch, problems, collab, …)
+   and hijacking the whole surface would feel grabby. */
+.status-island-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 18px;
+  margin-left: -6px;
+  margin-right: 2px;
+  border-radius: 4px;
+  color: var(--text-muted, #7a8099);
+  opacity: 0.35;
+  cursor: grab;
+  transition: opacity 140ms ease, color 140ms ease, background-color 140ms ease, transform 140ms ease;
+  flex-shrink: 0;
+  user-select: none;
+  touch-action: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.status-island-drag-handle:hover {
+  opacity: 0.95;
+  color: var(--text-primary, #e8eaf0);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
+.status-island-drag-handle:active,
+.status-island-drag-handle.is-dragging {
+  cursor: grabbing;
+  opacity: 1;
+  transform: scale(0.96);
+}
+
+.status-island-drag-handle--moved {
+  /* Slight brand tint once the user has moved the island — signals
+     that the position is overridden, and that double-click resets it. */
+  color: var(--brand-stop-2, #b06bff);
+  opacity: 0.7;
+}
+
+.status-island-positioner {
+  /* Wraps the wrapper so the user-applied translate sits on its own
+     transform stack and doesn't fight the entrance scaleX. */
+  transition: none;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-island-entrance-shell,
+  .status-island-entrance-shadow,
+  .status-island-entrance-halo,
+  .status-island-entrance-content {
+    animation: none !important;
+  }
+}
+

@@ -138,9 +138,10 @@ export const Tab = memo(function Tab({
       style={{
         display: "flex",
         alignItems: "center",
-        gap: "5px",
-        height: "100%",
-        padding: "0 9px",
+        gap: "6px",
+        height: "calc(100% - 4px)",
+        margin: "4px 0 0",
+        padding: "0 12px",
         fontSize: "12px",
         color: isActive
           ? "var(--dock-tab-active-fg, #fff)"
@@ -148,11 +149,14 @@ export const Tab = memo(function Tab({
         backgroundColor: isActive
           ? "var(--dock-tab-active-bg, #1e1e1e)"
           : "transparent",
-        borderBottom:
-          isActive && isFocusedGroup
-            ? "1px solid var(--dock-accent, #007acc)"
-            : "1px solid transparent",
-        cursor: "pointer",
+        border: isActive
+          ? "1px solid var(--dock-tab-active-border, rgba(58, 133, 116, 0.24))"
+          : "1px solid transparent",
+        borderRadius: 0,
+        boxShadow: isActive
+          ? "inset 0 1px 0 color-mix(in srgb, white 6%, transparent)"
+          : "none",
+        cursor: isFixed ? "pointer" : isDragging ? "grabbing" : "grab",
         userSelect: "none",
         opacity: isDragging ? 0.5 : 1,
         whiteSpace: "nowrap",
@@ -211,11 +215,11 @@ export const Tab = memo(function Tab({
             backgroundColor: "transparent",
             color: "inherit",
             cursor: "pointer",
-            opacity: isActive ? 0.7 : 0,
+            opacity: isActive ? 0.72 : 0,
             flexShrink: 0,
             marginLeft: "2px",
             marginRight: "-4px",
-            transition: "opacity 0.1s",
+            transition: "opacity 0.16s ease",
           }}
         >
           <svg width="10" height="10" viewBox="0 0 10 10">

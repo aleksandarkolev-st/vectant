@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useDeferredValue } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { BranchSelector } from '@/components/git/BranchSelector';
 import { selectCursorPosition } from '@/redux/uiSlice';
@@ -11,9 +11,15 @@ import { useCollabStatus } from '@/hooks/useCollabStatus';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
 import { getCurrentUser } from '@/services/userIdentity';
-import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw, GripVertical } from 'lucide-react';
 import { HealingIndicator } from '@/components/healing/HealingIndicator';
 import OperatorStatusBarButton from './OperatorStatusBarButton';
+
+const STATUS_ISLAND_OFFSET_KEY = 'synthi:status-island-offset';
+// Mouse must travel ≥5px from the mousedown point before we promote a
+// press-and-hold into a drag — small enough that intentional drags feel
+// responsive, large enough that a sloppy click never moves the island.
+const DRAG_THRESHOLD_PX = 5;
 
 /**
  * StatusBar Component - Synthi styled bottom status bar
@@ -42,6 +48,12 @@ const StatusBarCursorInfo = memo(function StatusBarCursorInfo() {
   );
 });
 
+// Total duration of the first-mount entrance animation (shape morph +
+// content stagger + tail). Keep this aligned with the CSS timing so the
+// entrance classes are removed right after the motion settles instead of
+// hanging around and making the pill feel jittery.
+const STATUS_ISLAND_ENTRANCE_MS = 980;
+
 function StatusBarInner({
   slug,
   compilerStatus = 'disconnected',
@@ -57,6 +69,105 @@ function StatusBarInner({
   onStop,
   onReload,
 }) {
+  // Entrance animation gate. The island enters as a small circular seed
+  // in the centre, then unfurls horizontally into the pill. We only
+  // animate on first mount — once the timer elapses we drop the
+  // entrance class so React re-renders don't replay the keyframes when
+  // unrelated state (cursor position, build status, …) changes.
+  const [isEntering, setIsEntering] = useState(true);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setIsEntering(false), STATUS_ISLAND_ENTRANCE_MS);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  // ── Draggable island position ────────────────────────────────────
+  // The pill sits centred at the bottom of the workspace by default,
+  // but the user can drag it via the grip handle to reposition. The
+  // offset is persisted to localStorage so the position survives
+  // reloads. A 5-px drag threshold (DRAG_THRESHOLD_PX) prevents a
+  // missed click on the handle from accidentally moving the island.
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const offsetRef = useRef(offset);
+  offsetRef.current = offset;
+  const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const saved = window.localStorage?.getItem(STATUS_ISLAND_OFFSET_KEY);
+      if (!saved) return;
+      const parsed = JSON.parse(saved);
+      if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') {
+        setOffset({ x: parsed.x, y: parsed.y });
+      }
+    } catch {
+      // Ignore malformed JSON or storage access failures.
+    }
+  }, []);
+
+  const persistOffset = useCallback((next) => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage?.setItem(STATUS_ISLAND_OFFSET_KEY, JSON.stringify(next));
+    } catch {
+      // Storage is best-effort; the in-memory offset still works.
+    }
+  }, []);
+
+  const handleDragMouseDown = useCallback((event) => {
+    if (event.button !== 0) return; // left button only
+    event.preventDefault();
+    event.stopPropagation();
+
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startOffset = offsetRef.current;
+    let promoted = false;
+    let pendingOffset = startOffset;
+
+    const handleMouseMove = (moveEvent) => {
+      const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
+      if (!promoted) {
+        if (Math.abs(dx) < DRAG_THRESHOLD_PX && Math.abs(dy) < DRAG_THRESHOLD_PX) {
+          return;
+        }
+        promoted = true;
+        setIsDragging(true);
+        document.body.style.cursor = 'grabbing';
+      }
+      pendingOffset = { x: startOffset.x + dx, y: startOffset.y + dy };
+      setOffset(pendingOffset);
+    };
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      if (promoted) {
+        setIsDragging(false);
+        persistOffset(pendingOffset);
+      }
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [persistOffset]);
+
+  const handleDragDoubleClick = useCallback((event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setOffset({ x: 0, y: 0 });
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage?.removeItem(STATUS_ISLAND_OFFSET_KEY);
+      } catch {
+        // Ignore — the in-memory reset already happened.
+      }
+    }
+  }, []);
+
+  const hasOffset = offset.x !== 0 || offset.y !== 0;
   // PERF: Defer all Redux reads so StatusBar never blocks the editor
   const currentBranchRaw = useSelector(state => state.git?.currentBranch);
   const currentBranch = useDeferredValue(currentBranchRaw);
@@ -143,77 +254,126 @@ function StatusBarInner({
   // The outer .status-bar-root keeps reserved vertical space in the
   // workspace flex column; the inner .status-island is the visible
   // floating surface.
+  // The stage sizes to its content (the pill) so the halo's inset-[-1px]
+  // hugs the actual gradient ring instead of stretching across the
+  // wrapper's reserved min-w. The wrapper still reserves layout width
+  // via min-w-[640px] outside the stage.
+  const stageClassName = 'relative inline-block';
+
+  const dragHandle = (
+    <button
+      type="button"
+      className={[
+        'status-island-drag-handle',
+        isDragging ? 'is-dragging' : '',
+        hasOffset ? 'status-island-drag-handle--moved' : '',
+      ].filter(Boolean).join(' ')}
+      onMouseDown={handleDragMouseDown}
+      onDoubleClick={handleDragDoubleClick}
+      title={hasOffset ? 'Drag to move • double-click to reset' : 'Drag to move'}
+      aria-label="Drag to reposition the status island"
+    >
+      <GripVertical className="w-3 h-3" strokeWidth={2} />
+    </button>
+  );
+
   return (
     <div className="status-bar-root pointer-events-none absolute inset-x-0 bottom-3 z-30 px-3 flex items-end justify-center" style={{ background: 'transparent' }}>
-      <div className="relative w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))] pointer-events-auto">
-        {/* Build-controls island — hugs the right edge of the status island
-            wrapper, vertically centered. Floats just outside the status pill
-            so the status pill remains exactly centered on the page. Hidden
-            on mobile (the inline TopNav stop/restart handles that case). */}
-        {isRunning && (
-          <div className="absolute left-full ml-2 top-1/2 -translate-y-1/2 hidden sm:block z-20">
+      <div
+        className="status-island-positioner pointer-events-auto"
+        style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }}
+      >
+        <div className="relative w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))]">
+          {/* Build-controls island — hugs the right edge of the status island
+              wrapper, vertically centered. Floats just outside the status pill
+              so the status pill remains exactly centered on the page. Hidden
+              on mobile (the inline TopNav stop/restart handles that case). */}
+          {isRunning && (
+            <div className="absolute left-full ml-2 top-1/2 -translate-y-1/2 hidden sm:block z-20">
+              <div
+                className="flex items-center gap-1 h-7 px-1.5 rounded-full"
+                style={{
+                  background: 'var(--bg-elevated)',
+                  border: '1px solid color-mix(in srgb, var(--attention-purple) 38%, transparent)',
+                  boxShadow:
+                    '0 16px 40px -8px rgba(0,0,0,0.85), ' +
+                    '0 0 18px -4px color-mix(in srgb, var(--attention-purple) 30%, transparent), ' +
+                    'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent)',
+                  backdropFilter: 'blur(14px) saturate(160%)',
+                  WebkitBackdropFilter: 'blur(14px) saturate(160%)',
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={onStop}
+                  title="Stop"
+                  className="h-5 w-5 rounded-md flex items-center justify-center transition-all hover:scale-110 cursor-pointer"
+                  style={{ color: '#ff5757' }}
+                >
+                  <Square className="w-3 h-3 fill-current" strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  onClick={onReload}
+                  title="Restart"
+                  className="h-5 w-5 rounded-md flex items-center justify-center transition-all hover:scale-110 cursor-pointer"
+                  style={{ color: '#3d6dff' }}
+                >
+                  <RotateCw className="w-3 h-3" strokeWidth={2.25} />
+                </button>
+              </div>
+            </div>
+          )}
+          {/* Stage — owns the entrance scaleX. Wraps halo + pill so they
+              morph together and the gradient on the pill scales with its
+              silhouette (so the rounded ends carry brand colour at every
+              frame, instead of being cut off by a clip-path). */}
+          <div className={stageClassName}>
             <div
-              className="flex items-center gap-1 h-7 px-1.5 rounded-full"
+              aria-hidden="true"
+              className={`pointer-events-none absolute inset-[-1px] rounded-full ${isEntering ? 'status-island-entrance-halo' : ''}`}
               style={{
-                background: 'var(--bg-elevated)',
-                border: '1px solid color-mix(in srgb, var(--attention-purple) 38%, transparent)',
+                background: 'var(--brand-gradient-horizontal)',
+                filter: 'blur(5px)',
+                opacity: isEntering ? 0 : 0.16,
+                transform: isEntering ? 'translateZ(0) scale(0.92)' : 'translateZ(0) scale(1.006)',
+              }}
+            />
+            {isEntering && (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 rounded-full status-island-entrance-shadow"
+                style={{
+                  boxShadow: '0 16px 40px -8px rgba(0,0,0,0.85)',
+                }}
+              />
+            )}
+            <div
+              className={`status-island relative z-10 h-7 rounded-full text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap ${isEntering ? 'status-island-entrance-shell' : ''}`}
+              style={{
+                background:
+                  'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, var(--brand-gradient-horizontal) border-box',
+                border: '1px solid transparent',
                 boxShadow:
-                  '0 16px 40px -8px rgba(0,0,0,0.85), ' +
-                  '0 0 18px -4px color-mix(in srgb, var(--attention-purple) 30%, transparent), ' +
-                  'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent)',
+                  (isEntering
+                    ? 'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent), ' +
+                      'inset 0 -1px 0 0 color-mix(in srgb, black 30%, transparent)'
+                    : '0 16px 40px -8px rgba(0,0,0,0.85), ' +
+                      'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent), ' +
+                      'inset 0 -1px 0 0 color-mix(in srgb, black 30%, transparent)'),
                 backdropFilter: 'blur(14px) saturate(160%)',
                 WebkitBackdropFilter: 'blur(14px) saturate(160%)',
               }}
             >
-              <button
-                type="button"
-                onClick={onStop}
-                title="Stop"
-                className="h-5 w-5 rounded-md flex items-center justify-center transition-all hover:scale-110 cursor-pointer"
-                style={{ color: '#ff5757' }}
-              >
-                <Square className="w-3 h-3 fill-current" strokeWidth={2} />
-              </button>
-              <button
-                type="button"
-                onClick={onReload}
-                title="Restart"
-                className="h-5 w-5 rounded-md flex items-center justify-center transition-all hover:scale-110 cursor-pointer"
-                style={{ color: '#3d6dff' }}
-              >
-                <RotateCw className="w-3 h-3" strokeWidth={2.25} />
-              </button>
-            </div>
-          </div>
-        )}
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-[-1px] rounded-full"
-          style={{
-            background: 'var(--brand-gradient-horizontal)',
-            filter: 'blur(5px)',
-            opacity: 0.16,
-            transform: 'translateZ(0) scale(1.006)',
-          }}
-        />
-        <div
-          className="status-island relative z-10 flex items-center gap-x-3 h-7 px-4 rounded-full text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap"
-          style={{
-            background:
-              'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, var(--brand-gradient-horizontal) border-box',
-            border: '1px solid transparent',
-            boxShadow:
-              '0 16px 40px -8px rgba(0,0,0,0.85), ' +
-              'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent), ' +
-              'inset 0 -1px 0 0 color-mix(in srgb, black 30%, transparent)',
-            backdropFilter: 'blur(14px) saturate(160%)',
-            WebkitBackdropFilter: 'blur(14px) saturate(160%)',
-          }}
-        >
-      {/* ── LEFT ZONE — file/build state. flex-shrink-0 so a long
+              <div className={`flex h-full items-center gap-x-3 px-4 ${isEntering ? 'status-island-entrance-content' : ''}`}>
+              {/* ── LEFT ZONE — file/build state. flex-shrink-0 so a long
             language name in the right zone can't squeeze branch / problems
             into truncation. */}
       <div className="flex shrink-0 items-center gap-1">
+        {/* Drag handle — the ONLY surface that initiates a drag. The
+            5-px threshold inside handleDragMouseDown means a sloppy
+            click can never accidentally reposition the island. */}
+        {dragHandle}
         {/* Branch */}
         <div className="flex items-center rounded-md px-1">
           <BranchSelector slug={slug} />
@@ -372,10 +532,12 @@ function StatusBarInner({
             <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
           </div>
         )}
+            </div>
       </div>
+            </div>
+          </div>
         </div>
       </div>
-
     </div>
   );
 }

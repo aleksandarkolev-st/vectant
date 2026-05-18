@@ -357,6 +357,55 @@ const layoutSlice = createSlice({
       return splitNode(next, firstGroup.id, tab.id, DROP_ZONE.RIGHT, 0.75);
     },
 
+    /**
+     * Split the editor into two side-by-side panes.
+     * If a second editor pane already exists, just focus it instead of
+     * creating a third one.
+     */
+    splitEditorPanel(state) {
+      const editorGroups = [];
+      for (const [nid, node] of Object.entries(state.nodes)) {
+        if (node.type !== "tabgroup") continue;
+        if ((node.tabs || []).some((tid) => state.tabs[tid]?.panelType === "editor")) {
+          editorGroups.push({ id: nid, node });
+        }
+      }
+
+      if (editorGroups.length >= 2) {
+        const focusedEditor = editorGroups.find((group) => group.id === state.focusedTabGroupId);
+        const fallback = editorGroups.find((group) => group.id !== focusedEditor?.id) || editorGroups[1];
+        return {
+          ...state,
+          focusedTabGroupId: fallback?.id ?? state.focusedTabGroupId,
+        };
+      }
+
+      const targetGroupId =
+        editorGroups.find((group) => group.id === state.focusedTabGroupId)?.id ||
+        editorGroups[0]?.id ||
+        getAllTabGroups(state)[0]?.id;
+
+      if (!targetGroupId) {
+        return state;
+      }
+
+      const tab = createTab({
+        panelType: "editor",
+        title: "",
+        closable: false,
+      });
+
+      const next = {
+        ...state,
+        tabs: {
+          ...state.tabs,
+          [tab.id]: tab,
+        },
+      };
+
+      return splitNode(next, targetGroupId, tab.id, DROP_ZONE.RIGHT, 0.5);
+    },
+
     // ── Batch cleanup ──────────────────────────────────
 
     /**
@@ -391,6 +440,7 @@ export const {
   handleDropAction,
   setFocusedTabGroup,
   restoreEditorPanel,
+  splitEditorPanel,
   cleanupLayout,
 } = layoutSlice.actions;
 

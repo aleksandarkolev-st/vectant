@@ -478,23 +478,25 @@ module.exports = { activate, deactivate };
   const onDragLeave = useCallback(() => { setDragOver(false); }, []);
 
   return (
-    <div className="h-full flex flex-col" style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}>
-      {/* Header strip with gradient accent */}
-      <div className="flex-shrink-0">
-        <div className="h-[2px]" style={{ background: 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), transparent)' }} />
-        <div className="flex items-center gap-2 px-3 py-2">
-          <Puzzle size={14} className="flex-shrink-0" style={{ color: 'var(--accent-secondary)' }} />
-          <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Extensions</span>
-          <div className="ml-auto flex items-center gap-0.5">
-            <button
-              onClick={() => setShowInstall(!showInstall)}
-              className="p-1.5 rounded-lg transition-all"
-              style={{ color: 'var(--text-muted)' }}
-              title="Install from code"
-            >
-              <Plus className="w-3.5 h-3.5" strokeWidth={1.5} />
-            </button>
-          </div>
+    <div className="h-full flex flex-col" style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}>
+      <div
+        className="flex shrink-0 items-center gap-2 border-b px-3 py-2"
+        style={{
+          borderColor: 'var(--border-subtle)',
+          background: 'color-mix(in srgb, var(--bg-sidebar) 72%, var(--bg-editor) 28%)',
+        }}
+      >
+        <Puzzle size={14} className="flex-shrink-0" style={{ color: 'var(--accent-secondary)' }} />
+        <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Extensions</span>
+        <div className="ml-auto flex items-center gap-0.5">
+          <button
+            onClick={() => setShowInstall(!showInstall)}
+            className="p-1.5 rounded-lg transition-all"
+            style={{ color: 'var(--text-muted)' }}
+            title="Install from code"
+          >
+            <Plus className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </button>
         </div>
       </div>
       <div className="px-3 pb-2 border-b" style={{ borderColor: 'var(--border-subtle)' }}>

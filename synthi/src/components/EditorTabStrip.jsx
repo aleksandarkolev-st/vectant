@@ -35,6 +35,13 @@ function EditorTabStripImpl() {
   const activeTabRef = useRef(null);
   const scrollTimeoutRef = useRef(null);
   const tabRefs = useRef({});
+  // Once the user manually scrolls, we stop auto-centering on resize/layout
+  // ticks so their chosen position (e.g. scrolled to the end) is respected.
+  // The flag is reset whenever the active tab changes — that's an explicit
+  // user intent to look at a specific tab, so re-centering is welcome.
+  const userScrolledRef = useRef(false);
+  const programmaticScrollRef = useRef(false);
+  const programmaticClearTimerRef = useRef(null);
   const [hoveredTabPath, setHoveredTabPath] = useState(null);
   const [isStripHovered, setStripHovered] = useState(false);
   const [isScrollbarActive, setScrollbarActive] = useState(false);
@@ -46,7 +53,25 @@ function EditorTabStripImpl() {
     isHovered: false,
   });
 
-  const centerActiveTab = useCallback(() => {
+  const setScrollLeftProgrammatic = useCallback((container, scrollLeft, smooth = false) => {
+    if (!container) return;
+    // Mark a wider programmatic window for smooth scrolls — their scroll
+    // events fire across the entire animation, so a single rAF tick isn't
+    // enough to keep us from misclassifying them as user input.
+    programmaticScrollRef.current = true;
+    if (smooth) {
+      container.scrollTo({ left: scrollLeft, behavior: 'smooth' });
+    } else {
+      container.scrollLeft = scrollLeft;
+    }
+    window.clearTimeout(programmaticClearTimerRef.current);
+    programmaticClearTimerRef.current = window.setTimeout(() => {
+      programmaticScrollRef.current = false;
+    }, smooth ? 500 : 80);
+  }, []);
+
+  const centerActiveTab = useCallback((options = {}) => {
+    const { force = false } = options;
     const container = tabsContainerRef.current;
     if (!container) return;
 
@@ -57,14 +82,21 @@ function EditorTabStripImpl() {
     const maxScrollLeft = Math.max(container.scrollWidth - container.clientWidth, 0);
     if (maxScrollLeft <= 0) {
       if (container.scrollLeft !== 0) {
-        container.scrollLeft = 0;
+        setScrollLeftProgrammatic(container, 0);
       }
+      return;
+    }
+
+    // Respect the user's manual scroll position once they've intentionally
+    // moved the strip away from the auto-centred default. Only the explicit
+    // `force` path (active-file change) can override this.
+    if (!force && userScrolledRef.current) {
       return;
     }
 
     if (maxScrollLeft <= container.clientWidth * 0.4) {
       if (!firstTab || !lastTab) {
-        container.scrollLeft = maxScrollLeft / 2;
+        setScrollLeftProgrammatic(container, maxScrollLeft / 2);
         return;
       }
 
@@ -75,21 +107,30 @@ function EditorTabStripImpl() {
         Math.max(contentCenter - container.clientWidth / 2, 0),
         maxScrollLeft,
       );
-      container.scrollLeft = desiredScrollLeft;
+      setScrollLeftProgrammatic(container, desiredScrollLeft);
       return;
     }
 
     const activeTab = activeTabRef.current;
     if (!activeTab) return;
 
+    // If the active tab is already fully visible, don't fight the user's
+    // chosen scroll position with a re-centre.
+    if (!force) {
+      const activeLeft = activeTab.offsetLeft;
+      const activeRight = activeLeft + activeTab.offsetWidth;
+      const visibleLeft = container.scrollLeft;
+      const visibleRight = visibleLeft + container.clientWidth;
+      if (activeLeft >= visibleLeft && activeRight <= visibleRight) {
+        return;
+      }
+    }
+
     const desiredScrollLeft = activeTab.offsetLeft + activeTab.offsetWidth / 2 - container.clientWidth / 2;
     const nextScrollLeft = Math.min(Math.max(desiredScrollLeft, 0), maxScrollLeft);
 
-    container.scrollTo({
-      left: nextScrollLeft,
-      behavior: 'smooth',
-    });
-  }, []);
+    setScrollLeftProgrammatic(container, nextScrollLeft, true);
+  }, [setScrollLeftProgrammatic]);
 
   const handleSelect = useCallback((file) => {
     if (!file || file.path === activeFile?.path) return;
@@ -164,6 +205,12 @@ function EditorTabStripImpl() {
   }, []);
 
   const handleScroll = useCallback(() => {
+    // Scroll events fired from our own scrollTo / scrollLeft assignments
+    // shouldn't be interpreted as "the user took control" — only mark the
+    // manual flag when this scroll did NOT originate from us.
+    if (!programmaticScrollRef.current) {
+      userScrolledRef.current = true;
+    }
     updateIndicator();
     updateScrollbar();
     pulseScrollbar();
@@ -175,6 +222,10 @@ function EditorTabStripImpl() {
     const container = tabsContainerRef.current;
     const thumb = scrollbarThumbRef.current;
     if (!container || !thumb) return;
+
+    // Dragging the thumb is an explicit manual scroll — treat it as such
+    // so we don't yank the position back on the next layout tick.
+    userScrolledRef.current = true;
 
     const startX = event.clientX;
     const startScrollLeft = container.scrollLeft;
@@ -200,9 +251,11 @@ function EditorTabStripImpl() {
   }, []);
 
   // Keep the active tab centered in the smart strip whenever the active
-  // editor changes or the strip has to reflow.
+  // editor changes. Active-tab changes are explicit user intent, so we
+  // force a re-centre even if the user previously scrolled away.
   useEffect(() => {
-    centerActiveTab();
+    userScrolledRef.current = false;
+    centerActiveTab({ force: true });
   }, [activeFile?.path, openFiles.length, centerActiveTab]);
 
   useLayoutEffect(() => {
@@ -233,6 +286,9 @@ function EditorTabStripImpl() {
   useEffect(() => () => {
     if (scrollTimeoutRef.current) {
       clearTimeout(scrollTimeoutRef.current);
+    }
+    if (programmaticClearTimerRef.current) {
+      clearTimeout(programmaticClearTimerRef.current);
     }
   }, []);
 

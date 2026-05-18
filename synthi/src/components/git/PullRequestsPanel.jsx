@@ -309,17 +309,16 @@ export function PullRequestsPanel({ slug }) {
 
   // ── List view ────────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-full min-h-0" style={{ color: 'var(--text-primary)' }}>
-      {/* Gradient accent line */}
-      <div className="h-[2px] flex-shrink-0" style={{ background: 'linear-gradient(90deg, #6366f1, #8b5cf6, #a78bfa, transparent)' }} />
-
-      {/* Header */}
+    <div className="flex flex-col h-full min-h-0" style={{ color: 'var(--text-primary)', background: 'var(--bg-sidebar)' }}>
       <div
         className="flex items-center gap-2 px-3 py-2 border-b flex-shrink-0"
-        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)' }}
+        style={{
+          borderColor: 'var(--border-subtle)',
+          background: 'color-mix(in srgb, var(--bg-sidebar) 72%, var(--bg-editor) 28%)',
+        }}
       >
         <GitPullRequest className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--accent-primary)' }} strokeWidth={1.5} />
-        <span className="text-xs font-semibold flex-1">Pull Requests</span>
+        <span className="text-sm font-semibold flex-1">Pull Requests</span>
 
         {githubInfo && isGitHub && (
           <ProviderBadge provider={provider} owner={owner} repo={repo} htmlUrl={githubInfo.htmlUrl} />

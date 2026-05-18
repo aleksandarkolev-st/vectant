@@ -17,7 +17,8 @@ import {
     selectTreeOnRight,
     toggleTerminal,
     setTreeOrientation,
-    setEmulatorPreviewVisible
+    setEmulatorPreviewVisible,
+    setSidebarPanelPinned,
 } from '@/redux/uiSlice';
 import TopNav from '../TopNav.jsx';
 import {
@@ -2803,6 +2804,11 @@ export default function EditorPage({ params }) {
                 zone: DROP_ZONE.RIGHT,
                 ratio: 0.34,
             }));
+            // When chat lands on the right rail it becomes the user's primary
+            // surface — pin it open by default so the auto-collapse hover
+            // behaviour does not eat it on every cursor excursion. The user
+            // can still toggle the pin off via the panel chrome.
+            dispatch(setSidebarPanelPinned({ panelType: IDE_PANEL.CHAT, pinned: true }));
             layout = store.getState()?.layout;
             chatPanel = findDockPanel(layout, IDE_PANEL.CHAT) || chatPanel;
 

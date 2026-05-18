@@ -327,44 +327,42 @@ const FileTreeView = ({ onToggleOrientation }) => {
           onMouseEnter={() => setIsTreeHovered(true)}
           onMouseLeave={() => setIsTreeHovered(false)}
         >
-          {/* Header strip with gradient accent */}
-          <div className="flex-shrink-0">
-            <div
-              className="h-[2px]"
-              style={{
-                background:
-                  "linear-gradient(90deg, #3b82f6, #60a5fa, #93c5fd, transparent)",
-              }}
+          <div
+            className={`flex shrink-0 items-center gap-2 border-b px-3 py-2 ${isRightSide ? "flex-row-reverse" : ""}`}
+            style={{
+              borderColor: "var(--border-subtle)",
+              background: "color-mix(in srgb, var(--bg-sidebar) 72%, var(--bg-editor) 28%)",
+            }}
+          >
+            <FolderOpen
+              size={14}
+              className="flex-shrink-0"
+              style={{ color: "var(--accent-secondary)" }}
             />
-            <div
-              className={`flex items-center gap-2 px-3 py-2 ${isRightSide ? "flex-row-reverse" : ""}`}
+            <span
+              className="text-sm font-semibold"
+              style={{ color: "var(--text-primary)" }}
             >
-              <FolderOpen size={14} className="text-blue-400 flex-shrink-0" />
-              <span
-                className="text-sm font-semibold"
-                style={{ color: "var(--text-primary)" }}
+              Explorer
+            </span>
+            <div
+              className={`${isRightSide ? "mr-auto" : "ml-auto"} flex items-center gap-0.5`}
+            >
+              <button
+                onClick={onToggleOrientation}
+                title={isRightSide ? "Move to left" : "Move to right"}
+                className="p-1.5 rounded-lg transition-all hover:bg-white/[0.06]"
+                style={{ color: "var(--text-muted)" }}
               >
-                Explorer
-              </span>
-              <div
-                className={`${isRightSide ? "mr-auto" : "ml-auto"} flex items-center gap-0.5`}
-              >
-                <button
-                  onClick={onToggleOrientation}
-                  title={isRightSide ? "Move to left" : "Move to right"}
-                  className="p-1.5 rounded-lg transition-all hover:bg-white/[0.06]"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  {isRightSide ? (
-                    <PanelLeftClose className="w-3.5 h-3.5" strokeWidth={1.5} />
-                  ) : (
-                    <PanelRightClose
-                      className="w-3.5 h-3.5"
-                      strokeWidth={1.5}
-                    />
-                  )}
-                </button>
-              </div>
+                {isRightSide ? (
+                  <PanelLeftClose className="w-3.5 h-3.5" strokeWidth={1.5} />
+                ) : (
+                  <PanelRightClose
+                    className="w-3.5 h-3.5"
+                    strokeWidth={1.5}
+                  />
+                )}
+              </button>
             </div>
           </div>
 
