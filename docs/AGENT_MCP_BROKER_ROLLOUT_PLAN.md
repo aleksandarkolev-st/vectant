@@ -23,7 +23,9 @@ Shared visual inference follows after broker fanout is stable.
 3. Input based on stale visual state is rejected.
 4. Every state-changing action is traceable to `session_id`, `agent_id`, `frame_seq`, `lease_id`, and ack chain.
 5. Slow subscribers must never degrade upstream ingest health.
-6. Broker must expose explicit recovering state; clients must fail closed while recovering.
+6. Diff/vision evaluation must run in isolated worker pools and must not block broker ingest/fanout loops.
+7. Broker must expose explicit recovering state; clients must fail closed while recovering.
+
 
 ---
 
@@ -237,7 +239,7 @@ Rules:
 | Worker crash | lifecycle crash event / disconnect | Require disruption ack before new input | lifecycle `crashed` + gated input | explicit operator/agent ack |
 | Duplicate upstream attach | fencing conflict | reject stale/second producer; emit audit event | `DUPLICATE_PRODUCER_REJECTED` | immediate |
 | Frame sequence gaps | non-monotonic or gap above threshold | Mark stale; require re-observe/re-locate for input | `FRAME_STALE` | next fresh sequence |
-| Clock skew | ts sanity checks fail | rely on monotonic frame_seq; downgrade ts reliance | health warning | bounded by seq checks |
+| Clock skew | ts sanity checks fail | staleness decisions rely on monotonic `frame_seq` as source-of-truth; timestamps are advisory/diagnostic only | health warning | bounded by seq checks |
 | Human takeover mid-action | human input event + preemption policy | preempt/expire agent lease as configured | `LEASE_PREEMPTED` | immediate |
 | Inference outage | backend error budget exceeded | fallback to cheap diff path or unverified locate mode | `EFFECT_NOT_VERIFIED`/backend error | fallback < 2s |
 | Bad model coordinates | postcondition fails repeatedly | quarantine result; force re-locate or human assist path | `EFFECT_NOT_VERIFIED` | bounded retries |
@@ -256,6 +258,8 @@ Rules:
 
 Additional rule for input (default invalidation policy; configurable):
 
+- Cross-host staleness authority is `frame_seq` (not wall-clock) for distributed comparisons.
+
 - frame age > 500ms, or
 - viewport size or DPR changed, or
 - `frame_seq` gap > 1 since locate frame, or
@@ -273,6 +277,8 @@ If any condition triggers, input is rejected and re-location is required.
 - `owner` is server-derived from authenticated principal; client-provided owner identity is rejected.
 - Max lease duration: 15s default, renewable up to 60s total continuous ownership.
 - Renewal must occur before expiry; otherwise lease auto-released.
+- Client guidance: renew proactively at <=50% of lease TTL remaining (or at least 2s before expiry for short leases).
+- Server policy for in-flight edge: requests received with lease-expiry delta <=100ms MAY be accepted via a bounded grace window **only if** request ingestion timestamp is before expiry; otherwise return `LEASE_EXPIRED`.
 - State-changing calls without active matching-scope lease are rejected.
 
 ### 9.2 D1 advanced lease behavior (post-cutover hardening)
@@ -355,7 +361,7 @@ Every state-changing call must record:
 
 ## 14) Shared inference sequencing (cost-aware)
 
-Phase C starts with cheap mechanisms first:
+Phase C starts with cheap mechanisms first, and all diff/vision work runs off the broker main event loop via a bounded worker pool to protect fanout latency SLOs:
 
 1. Frame sequence/timestamp checks.
 2. Perceptual hash / pixel-diff.
@@ -549,6 +555,7 @@ Response: `{applied_mode, producer_epoch, safety_checks_passed}`.
 
 Request: `{protocol_version, request_id, idempotency_key, session_id, lease_id, based_on_frame_seq, action, postcondition?, timeout_ms?}`
 Response: `{transport_ack, browser_ack?, effect_verified?, unverified?, ack_chain, final_frame_seq?}`
+Execution rule: postcondition verification is asynchronous; broker ingress/fanout/event-loop threads must not block on verifier execution.
 Errors: `LEASE_REQUIRED`, `LEASE_EXPIRED`, `LEASE_PREEMPTED`, `FRAME_STALE`, `INPUT_ACK_TIMEOUT`, `EFFECT_NOT_VERIFIED`, `UNSUPPORTED_POSTCONDITION_TYPE`, `BROKER_RECOVERING`, `UNAUTHORIZED`, `FORBIDDEN`.
 
 ---
