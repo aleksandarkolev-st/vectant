@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { canHandleTabIntent, TAB_INTENT_OWNER, updateTabIntentState } from './tabIntentRouter';
 
 export const useEditorProviders = ({
     editorInstance,
@@ -99,6 +100,7 @@ export const useEditorProviders = ({
 
         // Clear pending fix state
         pendingFixRef.current = null;
+        updateTabIntentState({ hasDiagnosticFix: false });
         isPreviewingRef.current = false;
         hideFixPreview();
     };
@@ -559,6 +561,7 @@ export const useEditorProviders = ({
                 
                 if (!hits.length) {
                     pendingFixRef.current = null;
+                    updateTabIntentState({ hasDiagnosticFix: false });
                     return null;
                 }
 
@@ -639,11 +642,15 @@ export const useEditorProviders = ({
 
                     // Store pending fix so Tab + Ctrl+. shortcuts can act on it.
                     pendingFixRef.current = { fix, range: firstFixRange, diagnostic: firstFixDiagnostic };
+                    updateTabIntentState({ hasDiagnosticFix: true });
 
                     const fixTitle = fix.description || 'Quick fix available';
                     contents.push({
                         value: `\n\n**💡 ${fixTitle}**\n\nPress \`Tab\` to apply, or \`Ctrl+Shift+.\` to preview.`,
                     });
+                } else {
+                    pendingFixRef.current = null;
+                    updateTabIntentState({ hasDiagnosticFix: false });
                 }
 
                 const range = new monacoInstance.Range(
@@ -662,6 +669,9 @@ export const useEditorProviders = ({
             
             // Tab = Apply fix immediately
             if (e.code === 'Tab') {
+                updateTabIntentState({ hasDiagnosticFix: true });
+                if (!canHandleTabIntent(TAB_INTENT_OWNER.DIAGNOSTIC_FIX)) return;
+
                 e.preventDefault();
                 e.stopPropagation();
                 
@@ -679,6 +689,7 @@ export const useEditorProviders = ({
                 
                 // Clear pending fix state
                 pendingFixRef.current = null;
+                updateTabIntentState({ hasDiagnosticFix: false });
                 isPreviewingRef.current = false;
                 hideFixPreview();
                 
@@ -713,6 +724,7 @@ export const useEditorProviders = ({
             // Clear preview when cursor moves to a different line
             if (e.position.lineNumber !== pending.range.startLineNumber) {
                 pendingFixRef.current = null;
+                updateTabIntentState({ hasDiagnosticFix: false });
                 hideFixPreview();
                 isPreviewingRef.current = false;
             }
@@ -721,6 +733,7 @@ export const useEditorProviders = ({
         // Clear pending fix when typing (content changes)
         const contentListener = editorInstance.onDidChangeModelContent(() => {
             pendingFixRef.current = null;
+            updateTabIntentState({ hasDiagnosticFix: false });
             hideFixPreview();
             isPreviewingRef.current = false;
         });
@@ -748,6 +761,7 @@ export const useEditorProviders = ({
             cursorListener?.dispose();
             contentListener?.dispose();
             editorDomNode?.removeEventListener('mouseleave', handleMouseLeave);
+            updateTabIntentState({ hasDiagnosticFix: false });
         };
     }, [monacoInstance, editorInstance, activeLanguage]);
 
@@ -863,12 +877,14 @@ export const useEditorProviders = ({
         const previewCommandDisposable = editorInstance.addCommand(0, (ctx, fixInfo) => {
             if (fixInfo?.fix && fixInfo?.range) {
                 pendingFixRef.current = fixInfo;
+                updateTabIntentState({ hasDiagnosticFix: true });
                 showFixPreview(fixInfo.fix, fixInfo.range);
             }
         }, 'synthi.showFixPreview');
         
         return () => {
             codeActionProviderRef.current?.dispose();
+            updateTabIntentState({ hasDiagnosticFix: false });
         };
     }, [monacoInstance, editorInstance, activeLanguage, removeDiagnosticByLocation]);
 

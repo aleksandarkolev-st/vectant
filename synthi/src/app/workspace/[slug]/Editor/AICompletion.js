@@ -8,20 +8,10 @@ import {
     countSuggestionLines,
     lastCompletePrefix,
 } from '@/lib/completion';
-import {
-    buildCompletionReferences,
-    pushRecentEdit,
-} from '@/utils/completionContext';
+import { pushRecentEdit } from '@/utils/completionContext';
+import { buildAutocompleteContextPacket } from '@/utils/aiContextBroker';
 import { recordAiCompletionEvent } from '@/lib/aiCompletionTelemetry';
-import {
-    trimCompletionContext,
-    takeLastChars,
-    takeFirstChars,
-    buildEdgePreview,
-    clampSelection,
-    CONTEXT_SIDE_CHARS,
-    MAX_EDGE_LINES
-} from './utils.js';
+import { recordAiReplaySample } from '@/lib/aiReplayHarness';
 
 export const useAiCompletion = ({
     activeFile,
@@ -90,6 +80,8 @@ export const useAiCompletion = ({
         } catch (_) { /* SSR / event constructor unavailable */ }
     };
     const aiCompletionAbortControllerRef = useRef(null);
+    const aiCompletionRequestSeqRef = useRef(0);
+    const aiCompletionActiveRequestIdRef = useRef(null);
     const aiLastRequestRef = useRef({ context: '', time: 0 });
     const aiLastAutoRef = useRef(0);
     const aiDebounceTimerRef = useRef(null);
@@ -197,6 +189,11 @@ export const useAiCompletion = ({
 
     const cancelActiveCompletion = useCallback(({ resetSuggestion = true, reason = 'user-cancelled' } = {}) => {
         let changed = false;
+        const cancelledRequestId = aiCompletionActiveRequestIdRef.current;
+        aiCompletionActiveRequestIdRef.current = null;
+        const visibleSuggestion = aiCompletionCacheRef.current?.suggestion
+            ? aiCompletionCacheRef.current
+            : null;
 
         if (aiCompletionAbortControllerRef.current) {
             try {
@@ -206,11 +203,20 @@ export const useAiCompletion = ({
             }
             aiCompletionAbortControllerRef.current = null;
             changed = true;
-            recordAiCompletionEvent('cancelled', { reason });
+            recordAiCompletionEvent('cancelled', { reason, request_id: cancelledRequestId });
         }
 
         if (resetSuggestion) {
             if (aiCompletionCacheRef.current?.suggestion || aiCompletionCursorRef.current) {
+                if (visibleSuggestion?.suggestion) {
+                    recordAiCompletionEvent('dismissed', {
+                        reason,
+                        request_id: visibleSuggestion.requestId || cancelledRequestId,
+                        age_ms: visibleSuggestion.createdAt ? Date.now() - visibleSuggestion.createdAt : null,
+                        lines: countSuggestionLines(visibleSuggestion.suggestion),
+                        stable: visibleSuggestion.stable !== false,
+                    });
+                }
                 aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
                 aiCompletionCursorRef.current = null;
                 changed = true;
@@ -256,11 +262,37 @@ export const useAiCompletion = ({
         if (text.includes('\n') && cached.stable === false) {
             const safe = lastCompletePrefix(text);
             if (!safe) {
-                recordAiCompletionEvent('cancelled', { reason: 'accept_blocked_unstable' });
+                recordAiCompletionEvent('accept_blocked', {
+                    reason: 'unstable_multiline',
+                    request_id: cached.requestId || null,
+                    lines: countSuggestionLines(text),
+                    age_ms: cached.createdAt ? Date.now() - cached.createdAt : null,
+                });
+                recordAiCompletionEvent('cancelled', {
+                    reason: 'accept_blocked_unstable',
+                    request_id: cached.requestId || null,
+                });
+                recordAiReplaySample({
+                    feature: 'autocomplete',
+                    phase: 'accept_blocked',
+                    requestId: cached.requestId || null,
+                    payload: {
+                        reason: 'unstable_multiline',
+                        suggestion: text,
+                    },
+                });
                 return;
             }
+            recordAiCompletionEvent('accept_adjusted', {
+                reason: 'truncated_to_stable_prefix',
+                request_id: cached.requestId || null,
+                accepted_lines: countSuggestionLines(safe),
+                suggested_lines: countSuggestionLines(text),
+                age_ms: cached.createdAt ? Date.now() - cached.createdAt : null,
+            });
             recordAiCompletionEvent('cancelled', {
                 reason: 'accept_truncated_to_stable_prefix',
+                request_id: cached.requestId || null,
                 accepted_lines: countSuggestionLines(safe),
                 suggested_lines: countSuggestionLines(text),
             });
@@ -322,8 +354,31 @@ export const useAiCompletion = ({
         aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
         notifyCompletionCacheChange();
         setAiCompletionState('applied');
-        recordAiCompletionEvent('accepted', { lines: acceptedLines });
-    }, [editorInstance, monacoInstance, hasActiveDiff]); // Added dependency
+        recordAiCompletionEvent('accepted', {
+            lines: acceptedLines,
+            request_id: cached.requestId || null,
+            age_ms: cached.createdAt ? Date.now() - cached.createdAt : null,
+            stable: cached.stable !== false,
+        });
+        recordAiReplaySample({
+            feature: 'autocomplete',
+            phase: 'accepted',
+            requestId: cached.requestId || null,
+            payload: {
+                language: cached.language || activeLanguage,
+                lines: acceptedLines,
+                text,
+                range: rangeToReplace
+                    ? {
+                        startLineNumber: rangeToReplace.startLineNumber,
+                        startColumn: rangeToReplace.startColumn,
+                        endLineNumber: rangeToReplace.endLineNumber,
+                        endColumn: rangeToReplace.endColumn,
+                    }
+                    : null,
+            },
+        });
+    }, [editorInstance, monacoInstance, hasActiveDiff, activeLanguage]); // Added dependency
 
     const requestAiCompletion = useCallback((isAutoTrigger = false, manualContext = null, meta = {}) => {
         if (!activeFile || !editorInstance) return;
@@ -335,7 +390,20 @@ export const useAiCompletion = ({
         const rawContext = typeof manualContext === 'string'
             ? manualContext
             : (editorInstance?.getValue?.() ?? code ?? '');
-        const context = trimCompletionContext(rawContext, cursorPosition);
+        const contextPacket = buildAutocompleteContextPacket({
+            activeFile,
+            activeLanguage,
+            breadcrumb,
+            rawContext,
+            fallbackCode: code,
+            editorInstance,
+            monacoInstance,
+            cursorPosition,
+            workspaceSlug,
+            getFileCacheEntries,
+            recentEdits: recentEditsRef.current,
+        });
+        const { context, beforeCursor, afterCursor, references } = contextPacket;
         if (!context.trim()) return;
         
         if (isAutoTrigger && cursorPosition) {
@@ -360,7 +428,11 @@ export const useAiCompletion = ({
         // the inline-suggest UI without round-tripping the model.
         const lruHit = lruLookup(context, activeLanguage);
         if (lruHit) {
-            recordAiCompletionEvent('cache_hit', { language: activeLanguage });
+            cancelActiveCompletion({ resetSuggestion: false, reason: 'cache-hit' });
+            recordAiCompletionEvent('cache_hit', {
+                language: activeLanguage,
+                request_id: lruHit.requestId || null,
+            });
             aiCompletionCursorRef.current = cursorPosition ? { ...cursorPosition } : null;
             aiCompletionCacheRef.current = lruHit;
             notifyCompletionCacheChange();
@@ -393,64 +465,25 @@ export const useAiCompletion = ({
         cancelActiveCompletion({ resetSuggestion: true, reason: 'superseded' });
         aiCompletionCursorRef.current = cursorPosition ? { ...cursorPosition } : null;
 
+        const requestId = ++aiCompletionRequestSeqRef.current;
+        aiCompletionActiveRequestIdRef.current = requestId;
         const controller = new AbortController();
         aiCompletionAbortControllerRef.current = controller;
+        const isCurrentRequest = () =>
+            aiCompletionActiveRequestIdRef.current === requestId && !controller.signal.aborted;
         setAiCompletionState('loading');
         const fireStartedAt = Date.now();
-        recordAiCompletionEvent('fire', { language: activeLanguage, source: isAutoTrigger ? 'auto' : 'manual' });
-
-        const model = editorInstance.getModel();
-        const fullDocument = typeof manualContext === 'string' ? manualContext : (model?.getValue?.() ?? rawContext);
-        let cursorOffset = fullDocument.length;
-        if (model && cursorPosition) {
-            try {
-                cursorOffset = model.getOffsetAt(cursorPosition);
-            } catch (e) {
-                cursorOffset = fullDocument.length;
-            }
-        }
-        const beforeCursor = takeLastChars(fullDocument.slice(0, cursorOffset));
-        const afterCursor = takeFirstChars(fullDocument.slice(cursorOffset));
-        const selectionRange = editorInstance.getSelection ? editorInstance.getSelection() : null;
-        let selectedText = '';
-        try {
-            if (selectionRange && !selectionRange.isEmpty() && model) {
-                selectedText = clampSelection(model.getValueInRange(selectionRange));
-            }
-        } catch (e) {
-            selectedText = '';
-        }
-        let fileHeader = '';
-        let fileTail = '';
-        try {
-            if (model?.getLinesContent) {
-                const lines = model.getLinesContent();
-                const edges = buildEdgePreview(lines, MAX_EDGE_LINES);
-                fileHeader = takeFirstChars(edges.head, CONTEXT_SIDE_CHARS);
-                fileTail = takeLastChars(edges.tail, CONTEXT_SIDE_CHARS);
-            }
-        } catch (e) {
-            // ignore preview errors
-        }
+        recordAiCompletionEvent('fire', {
+            language: activeLanguage,
+            request_id: requestId,
+            source: isAutoTrigger ? 'auto' : 'manual',
+        });
 
         const payload = {
-            code: context,
-            language: activeLanguage,
-            // Workspace identifier so the API route can hit the RAG
-            // fast-context endpoint for this workspace's index.
-            workspaceSlug: workspaceSlug || null,
-            cursor: cursorPosition ? { line: cursorPosition.lineNumber, column: cursorPosition.column } : null,
-            contextBlocks: {
-                beforeCursor,
-                afterCursor,
-                selection: selectedText || null,
-                filePath: activeFile?.path || activeFile?.name || null,
-                breadcrumbs: breadcrumb || null,
-                languageHint: activeLanguage,
-                fileHeader: fileHeader || null,
-                fileTail: fileTail || null,
-            },
+            requestId,
+            ...contextPacket.payload,
         };
+        if (references.length) payload.references = references;
 
         if (activeFile?.name || activeFile?.path) {
             const metadata = [
@@ -460,28 +493,20 @@ export const useAiCompletion = ({
             if (metadata) payload.prompt = metadata;
         }
 
-        // Local symbol-aware references: extract identifiers near the cursor
-        // and grep the workspace's file cache for their declarations. We send
-        // ONLY targeted snippets (≤ ~1.2 KB total) — never whole files. This
-        // is the difference between "shove three files in" (echo-prone noise)
-        // and "here's the type signature of the symbol the user just typed".
-        try {
-            const cacheEntries = typeof getFileCacheEntries === 'function'
-                ? getFileCacheEntries()
-                : [];
-            const refs = buildCompletionReferences({
-                prefix: beforeCursor,
+        recordAiReplaySample({
+            feature: 'autocomplete',
+            phase: 'request',
+            requestId,
+            payload: {
                 language: activeLanguage,
+                source: isAutoTrigger ? 'auto' : 'manual',
                 activePath: activeFile?.path || activeFile?.name || null,
-                cacheEntries,
-                recentEdits: recentEditsRef.current,
-            });
-            if (refs.length) payload.references = refs;
-        } catch (e) {
-            // Reference assembly is best-effort — never block a completion on it.
-            console.debug('[AICompletion] reference assembly failed:', e?.message);
-        }
-
+                cursor: payload.cursor,
+                contextBlocks: payload.contextBlocks,
+                code: context,
+                references: payload.references || [],
+            },
+        });
         // Stream the completion: render partial ghost text as Gemini emits it,
         // Cursor / Copilot style. The /api/completion route returns a chunked
         // text/plain stream of raw model text; we keep a buffer of accumulated
@@ -489,6 +514,7 @@ export const useAiCompletion = ({
         // sanitized, echo-checked) on every chunk before pushing into the
         // inline-completion cache.
         const pushSuggestion = (visible, { stable = false } = {}) => {
+            if (!isCurrentRequest()) return;
             let suggestionRange = null;
             try {
                 const cursor = aiCompletionCursorRef.current;
@@ -512,6 +538,8 @@ export const useAiCompletion = ({
             const newEntry = {
                 context,
                 language: activeLanguage,
+                requestId,
+                createdAt: prev?.requestId === requestId ? (prev.createdAt || Date.now()) : Date.now(),
                 suggestion: visible,
                 suggestionRange,
                 stable: stickyStable,
@@ -524,8 +552,21 @@ export const useAiCompletion = ({
             if (isFirstVisible) {
                 recordAiCompletionEvent('visible', {
                     language: activeLanguage,
+                    request_id: requestId,
                     latency_ms: Date.now() - fireStartedAt,
                     lines: countSuggestionLines(visible),
+                });
+                recordAiReplaySample({
+                    feature: 'autocomplete',
+                    phase: 'visible',
+                    requestId,
+                    payload: {
+                        language: activeLanguage,
+                        latency_ms: Date.now() - fireStartedAt,
+                        lines: countSuggestionLines(visible),
+                        stable: stickyStable,
+                        suggestion: visible,
+                    },
                 });
             }
 
@@ -550,12 +591,12 @@ export const useAiCompletion = ({
                     body: JSON.stringify(payload),
                 });
             } catch (e) {
-                if (!controller.signal.aborted) setAiCompletionState('idle');
+                if (isCurrentRequest()) setAiCompletionState('idle');
                 return;
             }
 
             if (!res.ok) {
-                if (!controller.signal.aborted) setAiCompletionState('idle');
+                if (isCurrentRequest()) setAiCompletionState('idle');
                 return;
             }
 
@@ -588,8 +629,9 @@ export const useAiCompletion = ({
                 // No streaming support — fall back to reading the whole body.
                 try {
                     const body = await res.text();
-                    if (controller.signal.aborted || hasActiveDiff()) {
-                        setAiCompletionState('idle');
+                    if (!isCurrentRequest()) return;
+                    if (hasActiveDiff()) {
+                        if (isCurrentRequest()) setAiCompletionState('idle');
                         return;
                     }
                     const { text: visible } = renderVisible(body);
@@ -601,11 +643,22 @@ export const useAiCompletion = ({
                         setAiCompletionState('idle');
                         recordAiCompletionEvent('rejected', {
                             reason: !body.trim() ? 'empty_response' : 'echo_or_unsanitized',
+                            request_id: requestId,
                             latency_ms: Date.now() - fireStartedAt,
+                        });
+                        recordAiReplaySample({
+                            feature: 'autocomplete',
+                            phase: 'rejected',
+                            requestId,
+                            payload: {
+                                reason: !body.trim() ? 'empty_response' : 'echo_or_unsanitized',
+                                latency_ms: Date.now() - fireStartedAt,
+                                raw: body,
+                            },
                         });
                     }
                 } catch (_) {
-                    if (!controller.signal.aborted) setAiCompletionState('idle');
+                    if (isCurrentRequest()) setAiCompletionState('idle');
                 }
                 return;
             }
@@ -617,7 +670,7 @@ export const useAiCompletion = ({
             try {
                 while (true) {
                     const { done, value } = await reader.read();
-                    if (controller.signal.aborted) {
+                    if (!isCurrentRequest()) {
                         try { reader.cancel(); } catch (_) { /* ignore */ }
                         return;
                     }
@@ -626,7 +679,7 @@ export const useAiCompletion = ({
 
                     if (hasActiveDiff()) {
                         try { reader.cancel(); } catch (_) { /* ignore */ }
-                        setAiCompletionState('idle');
+                        if (isCurrentRequest()) setAiCompletionState('idle');
                         return;
                     }
 
@@ -641,6 +694,7 @@ export const useAiCompletion = ({
                 // so anything still in flight is now stable — re-push to
                 // upgrade the cache flag even if the visible text didn't
                 // change in this final pass.
+                if (!isCurrentRequest()) return;
                 raw += decoder.decode();
                 const { text: visible } = renderVisible(raw);
                 if (visible && !isCompletionEcho(visible, beforeCursor, afterCursor)) {
@@ -649,14 +703,36 @@ export const useAiCompletion = ({
                     setAiCompletionState('idle');
                     recordAiCompletionEvent('rejected', {
                         reason: !raw.trim() ? 'empty_response' : 'echo_or_unsanitized',
+                        request_id: requestId,
                         latency_ms: Date.now() - fireStartedAt,
+                    });
+                    recordAiReplaySample({
+                        feature: 'autocomplete',
+                        phase: 'rejected',
+                        requestId,
+                        payload: {
+                            reason: !raw.trim() ? 'empty_response' : 'echo_or_unsanitized',
+                            latency_ms: Date.now() - fireStartedAt,
+                            raw,
+                        },
                     });
                 }
             } catch (e) {
-                if (!controller.signal.aborted) setAiCompletionState('idle');
+                if (isCurrentRequest()) setAiCompletionState('idle');
             }
-        })();
-    }, [activeFile, activeLanguage, breadcrumb, cancelActiveCompletion, code, editorInstance, hasActiveDiff]);
+        })()
+            .catch(() => {
+                if (isCurrentRequest()) setAiCompletionState('idle');
+            })
+            .finally(() => {
+                if (aiCompletionAbortControllerRef.current === controller) {
+                    aiCompletionAbortControllerRef.current = null;
+                }
+                if (aiCompletionActiveRequestIdRef.current === requestId) {
+                    aiCompletionActiveRequestIdRef.current = null;
+                }
+            });
+    }, [activeFile, activeLanguage, breadcrumb, cancelActiveCompletion, code, editorInstance, hasActiveDiff, monacoInstance]);
 
     return {
         aiCompletionState,
