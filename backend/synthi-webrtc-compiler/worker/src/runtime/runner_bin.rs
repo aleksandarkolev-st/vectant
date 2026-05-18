@@ -1602,18 +1602,13 @@ fn main() {
                         if let Some(lib_path) = loaded_paths.get("gui") {
                             set_current_lib_path(lib_path);
                         }
-                        let state_ptr_wrapper = SendVoidPtr(render_state as usize);
                         let func_ptr = *f;
-                        let result = execute_with_protection("gui_render", move || {
-                            let sp = state_ptr_wrapper.0 as *mut std::ffi::c_void;
-                            func_ptr(sp);
-                        });
-                        if let Err(crash_info) = result {
-                            eprintln!("{}", generate_crash_report(&crash_info));
-                            let status = HmrCrashStatus::from_crash(&crash_info, true);
-                            debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
-                            eprintln!("[Runner] on_render crash in module 'gui' — continuing");
-                        }
+                        // SDL and most native render backends require render calls
+                        // on the thread that owns the window/renderer. The generic
+                        // crash guard runs plugin code on a helper thread, which can
+                        // leave split GUI modules producing black frames without a
+                        // crash. Keep GUI rendering on the runner loop thread.
+                        func_ptr(render_state);
                     }
                     #[cfg(not(unix))]
                     {
