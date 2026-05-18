@@ -70,7 +70,7 @@ use crate::hmr::gpu_module_manager::{GpuModuleManager, ModuleManagerError};
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
-use crate::hmr::gpu_stream_drain::{drain_context, DrainOutcome};
+use crate::hmr::gpu_stream_drain::{drain_context, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
     clear_launch_dispatcher, install_launch_dispatcher, managed_buffers_snapshot,
     GpuLaunchDispatcher, GpuLaunchRequest,
@@ -700,7 +700,17 @@ impl Adapter for GpuModuleAdapter {
             }
         };
 
-        let drain = drain_context(&symbols, self.config.drain_timeout_ms);
+        let first_device_load =
+            self.active_module_handle.is_none() && self.module_manager.primary().is_none();
+        let drain = if first_device_load {
+            DrainOutcome::Synced {
+                scope: DrainScope::Context,
+                elapsed_ms: 0,
+                budget_ms: self.config.drain_timeout_ms,
+            }
+        } else {
+            drain_context(&symbols, self.config.drain_timeout_ms)
+        };
         if !drain.is_synced() {
             let timed_out = matches!(drain, DrainOutcome::TimedOut { .. });
             self.emit_report(GpuSwapInputs {
@@ -1430,11 +1440,17 @@ mod tests {
 
     #[test]
     fn phase3_drain_error_faults_adapter_without_swapping() {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        file.write_all(b"fake-cubin").unwrap();
-        let path = file.path().to_string_lossy().to_string();
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-a").unwrap();
+        second.write_all(b"fake-cubin-b").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
         let mut a = adapter_with_symbols(drain_error_symbols());
-        let r = a.reload(&request_with_artifact(&path, vec!["device.cu".into()]));
+        let initial = a.reload(&request_with_artifact(&first_path, vec!["device.cu".into()]));
+        assert!(matches!(initial, AdapterReloadResult::Success { .. }));
+
+        let r = a.reload(&request_with_artifact(&second_path, vec!["device.cu".into()]));
         match r {
             AdapterReloadResult::Failed {
                 ref error,
@@ -1445,7 +1461,7 @@ mod tests {
             }
             other => panic!("expected Failed, got {:?}", other),
         }
-        assert_eq!(a.module_manager.swap_count(), 0);
+        assert_eq!(a.module_manager.swap_count(), 1);
         assert_eq!(a.healthcheck(), AdapterHealth::Faulted);
     }
 
