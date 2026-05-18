@@ -38,3 +38,8 @@ export {
   type BrokerReplayOk,
   type BrokerReplayRequest,
 } from "./replay.js";
+export {
+  currentBrokerHealthStatus,
+  currentBrokerLifecycleEvent,
+  recordBrokerFrameObservation,
+} from "./read_only.js";

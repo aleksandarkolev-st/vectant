@@ -335,6 +335,16 @@ export class FrameSink {
     return { width: this.latest.width, height: this.latest.height };
   }
 
+  latestInfo(): { width: number; height: number; seq: number; ts: number } | null {
+    if (!this.latest) return null;
+    return {
+      width: this.latest.width,
+      height: this.latest.height,
+      seq: this.latest.seq,
+      ts: this.latest.ts,
+    };
+  }
+
   /** Return the most recent frame as PNG. Throws if no frame has arrived yet. */
   async getFrame(): Promise<FrameSnapshot> {
     const latest = this.latest;

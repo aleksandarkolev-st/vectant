@@ -34,6 +34,20 @@ export interface InputEvent extends BaseEventFields {
   payload: Record<string, unknown>;
 }
 
+export interface FrameEvent extends BaseEventFields {
+  kind: "frame";
+  session_id: string;
+  frame_seq: number;
+  frame_ts_ms: number;
+  ingest_ts_ms: number;
+  viewport: {
+    w: number;
+    h: number;
+    dpr: number;
+  };
+  is_keyframe: boolean;
+}
+
 export interface LocatorResolutionEvent extends BaseEventFields {
   kind: "locator_resolution";
   handle_id: string;
@@ -92,6 +106,7 @@ export type EventLogEntry =
   | LifecycleEvent
   | HmrEvent
   | InputEvent
+  | FrameEvent
   | LocatorResolutionEvent
   | ConsoleEvent
   | ErrorEvent

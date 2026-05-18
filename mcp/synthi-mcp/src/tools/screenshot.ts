@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import { session } from "../session.js";
 import { eventLog } from "../events/index.js";
+import { recordBrokerFrameObservation } from "../broker/index.js";
 import {
   errorFromException,
   errorResponse,
@@ -137,6 +138,10 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
     }
 
     const base64 = png.toString("base64");
+    const brokerFrame = recordBrokerFrameObservation({
+      session_id: attached.sessionId,
+      frame,
+    });
     eventLog.push({
       kind: "usage",
       metric: "screenshot",
@@ -155,6 +160,7 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       seq: frame.seq,
       original_w: frame.width,
       original_h: frame.height,
+      broker_frame: brokerFrame,
       ...(resultMeta.crop !== undefined ? { region: resultMeta.crop } : {}),
       ...(resultMeta.scaled === true ? { scaled: true } : {}),
       mimeType: "image/png",

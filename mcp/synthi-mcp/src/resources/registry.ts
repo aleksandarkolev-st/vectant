@@ -211,6 +211,9 @@ export function resourceUrisForEvent(entry: EventLogEntry): string[] {
     case "security":
       uris.push(RESOURCE_URIS.state);
       break;
+    case "frame":
+      uris.push(RESOURCE_URIS.screenshot);
+      break;
   }
   return uris;
 }
