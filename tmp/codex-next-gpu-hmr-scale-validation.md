@@ -51,6 +51,9 @@ The proof must include:
   and after device-only HMR.
 - Worker/ai-engine evidence that the GPU split endpoint saw the relevant
   project files, not just the active editor file.
+- Library-agnostic evidence: at least one non-SDL rendering/windowing backend
+  validation, or a clear written limitation saying this is not yet proven. If
+  only SDL2 fixtures pass, do not claim the renderer path is library-agnostic.
 - Device-only GPU HMR evidence, not a full rebuild/full restart disguised as
   HMR.
 - Separate commits for every patch and every meaningful test/harness addition.
@@ -738,6 +741,15 @@ with the next model.
 
 Do not introduce SDL2-only generation. SDL2 can be one fixture backend, not the
 product contract.
+
+To prove this, run at least one non-SDL fixture if the current stack has the
+needed dependencies, for example GLFW, raw OpenGL with a different windowing
+path, Vulkan, or another backend already supported by the project. The exact
+backend is less important than the proof that the splitter preserves the user's
+chosen backend instead of translating everything to SDL2.
+
+If a non-SDL validation cannot be completed in the session, say that plainly in
+the final report and do not claim full renderer/library agnosticism.
 
 Allowed stable contract:
 
