@@ -24,7 +24,7 @@ export default function OperatorStatusBarButton({ sessionId }) {
           style={{ color: 'var(--text-secondary)' }}
           strokeWidth={2}
         />
-        <span className="hidden 2xl:inline font-medium" style={{ color: 'var(--text-secondary)' }}>
+        <span className="status-island-label hidden 2xl:inline font-medium" style={{ color: 'var(--text-secondary)' }}>
           Operator
         </span>
       </button>

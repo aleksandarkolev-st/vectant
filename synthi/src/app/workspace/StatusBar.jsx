@@ -11,15 +11,38 @@ import { useCollabStatus } from '@/hooks/useCollabStatus';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
 import { getCurrentUser } from '@/services/userIdentity';
-import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw, GripVertical } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw, GripVertical, X, Minimize2, Maximize2 } from 'lucide-react';
 import { HealingIndicator } from '@/components/healing/HealingIndicator';
 import OperatorStatusBarButton from './OperatorStatusBarButton';
+import VectantLogoCollapsed from './VectantLogoCollapsed';
+import {
+  selectHealingStatus,
+  selectAppliedFixCount,
+  selectPendingFixCount,
+} from '@/redux/healingSelectors';
 
 const STATUS_ISLAND_OFFSET_KEY = 'synthi:status-island-offset';
+const STATUS_ISLAND_COMPACT_KEY = 'synthi:status-island-compact';
 // Mouse must travel ≥5px from the mousedown point before we promote a
 // press-and-hold into a drag — small enough that intentional drags feel
 // responsive, large enough that a sloppy click never moves the island.
 const DRAG_THRESHOLD_PX = 5;
+
+// How long after entrance to keep the island expanded before auto-collapsing
+// to the logo for the FIRST mount. After that the default state is logo.
+const FIRST_MOUNT_LINGER_MS = 3000;
+// How long after mouse leaves the expanded island before it auto-collapses.
+const AUTO_COLLAPSE_MS = 2500;
+// Expand animation duration — matches the existing status-island-shell
+// keyframes (720ms) plus a small buffer for the content fade tail.
+const EXPAND_ANIM_MS = 760;
+// Collapse animation duration — staggered timeline:
+//   0-160ms  : content + ambient glow fade out
+//   160-460ms: shell scales down to seed
+//   340-540ms: logo fades in from opacity 0
+const COLLAPSE_ANIM_MS = 560;
+// Hover-to-expand delay: prevents fly-over flicker.
+const HOVER_EXPAND_DELAY_MS = 120;
 
 /**
  * StatusBar Component - Synthi styled bottom status bar
@@ -35,7 +58,7 @@ const StatusBarCursorInfo = memo(function StatusBarCursorInfo() {
   const positionRaw = useSelector(selectCursorPosition);
   const position = useDeferredValue(positionRaw);
   return (
-    <div className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer transition-colors" title={`Line ${position.lineNumber}, Column ${position.column}`}>
+    <div className="status-island-cursor flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer transition-colors" title={`Line ${position.lineNumber}, Column ${position.column}`}>
       {/* Wide form: "Ln 6 : Col 29" — only when the island can spare the room */}
       <span className="hidden 2xl:inline font-medium" style={{ color: 'var(--text-secondary)' }}>Ln {position.lineNumber}</span>
       <span className="hidden 2xl:inline" style={{ color: 'var(--text-dim)' }}>:</span>
@@ -49,10 +72,11 @@ const StatusBarCursorInfo = memo(function StatusBarCursorInfo() {
 });
 
 // Total duration of the first-mount entrance animation (shape morph +
-// content stagger + tail). Keep this aligned with the CSS timing so the
-// entrance classes are removed right after the motion settles instead of
-// hanging around and making the pill feel jittery.
-const STATUS_ISLAND_ENTRANCE_MS = 980;
+// content stagger + halo tail). Aligned with the CSS keyframes so the
+// entrance class drops the frame after motion settles. Backdrop-filter
+// is suppressed for this window via `.status-island-entering` and then
+// transitions back in once the class is removed.
+const STATUS_ISLAND_ENTRANCE_MS = 1000;
 
 function StatusBarInner({
   slug,
@@ -69,16 +93,12 @@ function StatusBarInner({
   onStop,
   onReload,
 }) {
-  // Entrance animation gate. The island enters as a small circular seed
-  // in the centre, then unfurls horizontally into the pill. We only
-  // animate on first mount — once the timer elapses we drop the
-  // entrance class so React re-renders don't replay the keyframes when
-  // unrelated state (cursor position, build status, …) changes.
+  // Entrance animation gate. The pill enters as a small circular seed
+  // and unfurls horizontally — same keyframes whether this is the first
+  // mount or a re-expansion from the collapsed logo state. We expose
+  // isEntering as a derived value from the phase machine below so the
+  // CSS classes stay coordinated with the phase transitions.
   const [isEntering, setIsEntering] = useState(true);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setIsEntering(false), STATUS_ISLAND_ENTRANCE_MS);
-    return () => window.clearTimeout(timer);
-  }, []);
 
   // ── Draggable island position ────────────────────────────────────
   // The pill sits centred at the bottom of the workspace by default,
@@ -168,6 +188,145 @@ function StatusBarInner({
   }, []);
 
   const hasOffset = offset.x !== 0 || offset.y !== 0;
+
+  // ── Logo / expanded phase machine ───────────────────────────────────
+  // phase: 'logo'       → Vectant logo visible, pill hidden
+  //        'expanding'  → V fading, brackets sliding out, pill unfurling
+  //        'expanded'   → pill visible (steady state)
+  //        'collapsing' → reverse of expanding
+  //
+  // Lifecycle:
+  //   First mount → 'expanded' (so the user sees the existing entrance
+  //                 animation). After FIRST_MOUNT_LINGER_MS the island
+  //                 auto-collapses to 'logo'.
+  //   Hover (with HOVER_EXPAND_DELAY_MS debounce) or click on logo →
+  //                 'expanding' → 'expanded'.
+  //   Mouse-leave while 'expanded' → AUTO_COLLAPSE_MS countdown →
+  //                 'collapsing' → 'logo'. Re-enter cancels the timer.
+  //   Close (X) button → immediate 'collapsing' → 'logo'.
+  const [phase, setPhase] = useState('expanded');
+  // hasCollapsedOnce gates the rendering of the logo brackets — they
+  // only appear after the first collapse, so the initial entrance is
+  // unchanged from what the user already loves.
+  const [hasCollapsedOnce, setHasCollapsedOnce] = useState(false);
+  const phaseTimerRef = useRef(null);
+  const hoverDelayRef = useRef(null);
+  const isMouseInsideRef = useRef(false);
+
+  // Clear any pending phase transition timer.
+  const clearPhaseTimer = useCallback(() => {
+    if (phaseTimerRef.current) {
+      window.clearTimeout(phaseTimerRef.current);
+      phaseTimerRef.current = null;
+    }
+  }, []);
+
+  // First-mount linger: after the entrance + linger window, auto-collapse
+  // to the logo (unless the user is already hovering the island).
+  useEffect(() => {
+    // Drop the isEntering class right after the existing keyframes end.
+    const t1 = window.setTimeout(() => setIsEntering(false), STATUS_ISLAND_ENTRANCE_MS);
+    const t2 = window.setTimeout(() => {
+      if (isMouseInsideRef.current) return;
+      setPhase('collapsing');
+      phaseTimerRef.current = window.setTimeout(() => {
+        setPhase('logo');
+        setHasCollapsedOnce(true);
+      }, COLLAPSE_ANIM_MS);
+    }, STATUS_ISLAND_ENTRANCE_MS + FIRST_MOUNT_LINGER_MS);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
+  }, []);
+
+  // Cleanup pending timers on unmount.
+  useEffect(() => () => {
+    clearPhaseTimer();
+    if (hoverDelayRef.current) window.clearTimeout(hoverDelayRef.current);
+  }, [clearPhaseTimer]);
+
+  // Trigger an expand. Source 'hover' uses a small delay to avoid
+  // flicker; 'click' fires immediately. We re-arm isEntering so the
+  // existing status-island-shell keyframes (which we DO NOT touch) play
+  // again — identical seed → pill morph as on first mount.
+  const triggerExpand = useCallback((source) => {
+    if (phase === 'expanded' || phase === 'expanding') return;
+    const start = () => {
+      clearPhaseTimer();
+      setPhase('expanding');
+      setIsEntering(true);
+      phaseTimerRef.current = window.setTimeout(() => {
+        setPhase('expanded');
+        setIsEntering(false);
+      }, EXPAND_ANIM_MS);
+    };
+    if (source === 'hover') {
+      if (hoverDelayRef.current) window.clearTimeout(hoverDelayRef.current);
+      hoverDelayRef.current = window.setTimeout(start, HOVER_EXPAND_DELAY_MS);
+    } else {
+      start();
+    }
+  }, [phase, clearPhaseTimer]);
+
+  // Trigger a collapse. Triggered by the close (X) button, or by
+  // mouse-leave + AUTO_COLLAPSE_MS countdown.
+  const triggerCollapse = useCallback(() => {
+    if (phase === 'logo' || phase === 'collapsing') return;
+    clearPhaseTimer();
+    setPhase('collapsing');
+    phaseTimerRef.current = window.setTimeout(() => {
+      setPhase('logo');
+      setHasCollapsedOnce(true);
+    }, COLLAPSE_ANIM_MS);
+  }, [phase, clearPhaseTimer]);
+
+  // Mouse-enter on the whole wrapper: cancel any pending auto-collapse.
+  const handleWrapperEnter = useCallback(() => {
+    isMouseInsideRef.current = true;
+    clearPhaseTimer();
+  }, [clearPhaseTimer]);
+
+  // Mouse-leave: start the 2.5s auto-collapse countdown (only if expanded).
+  const handleWrapperLeave = useCallback(() => {
+    isMouseInsideRef.current = false;
+    if (hoverDelayRef.current) {
+      window.clearTimeout(hoverDelayRef.current);
+      hoverDelayRef.current = null;
+    }
+    if (phase !== 'expanded') return;
+    clearPhaseTimer();
+    phaseTimerRef.current = window.setTimeout(
+      triggerCollapse,
+      AUTO_COLLAPSE_MS
+    );
+  }, [phase, clearPhaseTimer, triggerCollapse]);
+
+  // ── Compact mode (persisted) ────────────────────────────────────────
+  // Hides all text labels in the expanded island. Icons / dots /
+  // counts / branch name / cursor info stay visible.
+  const [isCompact, setIsCompact] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const saved = window.localStorage?.getItem(STATUS_ISLAND_COMPACT_KEY);
+      if (saved === '1') setIsCompact(true);
+    } catch {
+      // Ignore
+    }
+  }, []);
+  const toggleCompact = useCallback(() => {
+    setIsCompact((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage?.setItem(STATUS_ISLAND_COMPACT_KEY, next ? '1' : '0');
+      } catch {
+        // Ignore
+      }
+      return next;
+    });
+  }, []);
+
   // PERF: Defer all Redux reads so StatusBar never blocks the editor
   const currentBranchRaw = useSelector(state => state.git?.currentBranch);
   const currentBranch = useDeferredValue(currentBranchRaw);
@@ -236,18 +395,44 @@ function StatusBarInner({
   const getCollabStyle = () => {
     switch (collabStatus) {
       case 'connected':
-        return { dot: 'bg-[#4ade80]', text: 'Synced', textColor: 'text-[#4ade80]', Icon: Wifi };
+        return { dotStyle: { background: 'var(--accent-success)' }, text: 'Synced', textStyle: { color: 'var(--accent-success)' }, Icon: Wifi };
       case 'connecting':
-        return { dot: 'bg-[#fbbf24] animate-pulse', text: 'Syncing…', textColor: 'text-[#fbbf24]', Icon: Wifi };
+        return { dotStyle: { background: 'var(--accent-warning)' }, dotPulse: true, text: 'Syncing…', textStyle: { color: 'var(--accent-warning)' }, Icon: Wifi };
       case 'disconnected':
       default:
-        return { dot: 'bg-[#ff5757]', text: 'Offline', textColor: 'text-[#ff5757]', Icon: WifiOff };
+        return { dotStyle: { background: 'var(--accent-danger)' }, text: 'Offline', textStyle: { color: 'var(--accent-danger)' }, Icon: WifiOff };
     }
   };
   const collabStyle = getCollabStyle();
   
   // Determine if there are problems to show (use deferred values)
   const hasProblems = deferredSummary.errors > 0 || deferredSummary.warnings > 0;
+
+  // ── Logo status reflection ──────────────────────────────────────────
+  // While in 'logo' phase, the V tints red on hard errors and plays a
+  // brand-glow pulse during/just after a healing fix. We derive it here
+  // so the same source-of-truth drives the collapsed visual.
+  const healingStatus = useSelector(selectHealingStatus);
+  const healingApplied = useSelector(selectAppliedFixCount);
+  const healingPending = useSelector(selectPendingFixCount);
+  const prevHealingAppliedRef = useRef(healingApplied);
+  const [logoHealingPulse, setLogoHealingPulse] = useState(false);
+  useEffect(() => {
+    if (healingApplied > prevHealingAppliedRef.current) {
+      setLogoHealingPulse(true);
+      const t = window.setTimeout(() => setLogoHealingPulse(false), 1600);
+      prevHealingAppliedRef.current = healingApplied;
+      return () => window.clearTimeout(t);
+    }
+    prevHealingAppliedRef.current = healingApplied;
+  }, [healingApplied]);
+  const logoState = (
+    deferredSummary.errors > 0 || compilerStatus === 'error'
+      ? 'error'
+      : (healingStatus === 'applying' || logoHealingPulse)
+        ? 'healing'
+        : 'normal'
+  );
 
   // Floating "island" status bar — three zones inside a single
   // rounded frosted-glass pill that hovers above the editor.
@@ -277,13 +462,33 @@ function StatusBarInner({
     </button>
   );
 
+  // CSS-friendly phase class so the wrapper can drive visibility of the
+  // logo vs the pill without prop drilling.
+  const phaseClass = `status-island-phase status-island-phase--${phase}`;
+
   return (
     <div className="status-bar-root pointer-events-none absolute inset-x-0 bottom-3 z-30 px-3 flex items-end justify-center" style={{ background: 'transparent' }}>
       <div
-        className="status-island-positioner pointer-events-auto"
+        className={`status-island-positioner pointer-events-auto ${phaseClass}`}
         style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }}
+        onMouseEnter={handleWrapperEnter}
+        onMouseLeave={handleWrapperLeave}
       >
-        <div className="relative w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))]">
+        {/* Logo — rendered for all transition phases so the V fade-out
+            and bracket-slide animations are visible. Unmounted only
+            during the steady 'expanded' state. The wrapper is absolute-
+            centered over the pill so the morph happens in-place. */}
+        {hasCollapsedOnce && phase !== 'expanded' && (
+          <div className="vectant-logo-wrapper" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 25 }}>
+            <VectantLogoCollapsed
+              state={logoState}
+              phase={phase}
+              pendingCount={healingPending}
+              onActivate={triggerExpand}
+            />
+          </div>
+        )}
+        <div className="status-island-pill-wrapper relative w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))]">
           {/* Build-controls island — hugs the right edge of the status island
               wrapper, vertically centered. Floats just outside the status pill
               so the status pill remains exactly centered on the page. Hidden
@@ -293,8 +498,12 @@ function StatusBarInner({
               <div
                 className="flex items-center gap-1 h-7 px-1.5 rounded-full"
                 style={{
-                  background: 'var(--bg-elevated)',
-                  border: '1px solid color-mix(in srgb, var(--attention-purple) 38%, transparent)',
+                  /* Match the main status island: gradient-border via the
+                     padding-box/border-box trick. One ring, no double seam. */
+                  background:
+                    'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, ' +
+                    'linear-gradient(135deg, color-mix(in srgb, var(--attention-purple) 60%, transparent), color-mix(in srgb, var(--brand-stop-4) 50%, transparent)) border-box',
+                  border: '1px solid transparent',
                   boxShadow:
                     '0 16px 40px -8px rgba(0,0,0,0.85), ' +
                     '0 0 18px -4px color-mix(in srgb, var(--attention-purple) 30%, transparent), ' +
@@ -307,8 +516,8 @@ function StatusBarInner({
                   type="button"
                   onClick={onStop}
                   title="Stop"
-                  className="h-5 w-5 rounded-md flex items-center justify-center transition-all hover:scale-110 cursor-pointer"
-                  style={{ color: '#ff5757' }}
+                  className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer"
+                  style={{ color: 'var(--accent-danger)', '--hover-bg': 'color-mix(in srgb, var(--accent-danger) 14%, transparent)' }}
                 >
                   <Square className="w-3 h-3 fill-current" strokeWidth={2} />
                 </button>
@@ -316,8 +525,8 @@ function StatusBarInner({
                   type="button"
                   onClick={onReload}
                   title="Restart"
-                  className="h-5 w-5 rounded-md flex items-center justify-center transition-all hover:scale-110 cursor-pointer"
-                  style={{ color: '#3d6dff' }}
+                  className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer"
+                  style={{ color: 'var(--brand-stop-4)', '--hover-bg': 'color-mix(in srgb, var(--brand-stop-4) 14%, transparent)' }}
                 >
                   <RotateCw className="w-3 h-3" strokeWidth={2.25} />
                 </button>
@@ -329,54 +538,105 @@ function StatusBarInner({
               silhouette (so the rounded ends carry brand colour at every
               frame, instead of being cut off by a clip-path). */}
           <div className={stageClassName}>
+            {/* Combined glow ring — opacity-only animated via
+                .status-island-entrance-halo. We let CSS own the entrance
+                opacity here; the post-entrance steady-state value also
+                lives in the keyframes' 100% (fill-mode: both). */}
             <div
               aria-hidden="true"
-              className={`pointer-events-none absolute inset-[-1px] rounded-full ${isEntering ? 'status-island-entrance-halo' : ''}`}
+              className={`pointer-events-none absolute inset-[-1px] ${isEntering ? 'status-island-entrance-halo' : ''}`}
               style={{
                 background: 'var(--brand-gradient-horizontal)',
                 filter: 'blur(5px)',
-                opacity: isEntering ? 0 : 0.16,
-                transform: isEntering ? 'translateZ(0) scale(0.92)' : 'translateZ(0) scale(1.006)',
+                opacity: isEntering ? undefined : 0.16,
+                transform: 'translateZ(0) scale(1.006)',
+                /* Halo morphs in lockstep with the pill silhouette so
+                   it never reads as round-behind-rectangle. */
+                borderRadius: phase === 'expanded' ? '12px' : '999px',
+                transition: 'border-radius 440ms cubic-bezier(0.32, 0.72, 0, 1)',
               }}
             />
-            {isEntering && (
-              <div
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-0 rounded-full status-island-entrance-shadow"
-                style={{
-                  boxShadow: '0 16px 40px -8px rgba(0,0,0,0.85)',
-                }}
-              />
-            )}
             <div
-              className={`status-island relative z-10 h-7 rounded-full text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap ${isEntering ? 'status-island-entrance-shell' : ''}`}
+              className={`status-island relative z-10 h-7 text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap ${isEntering ? 'status-island-entrance-shell status-island-entering' : ''} ${phase === 'collapsing' ? 'status-island-collapsing-shell' : ''} ${isCompact ? 'is-compact' : ''}`}
               style={{
                 background:
                   'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, var(--brand-gradient-horizontal) border-box',
                 border: '1px solid transparent',
+                /* Border-radius morphs from 999px (round) when collapsed
+                   or entering, to 10px (rounded rectangle) when fully
+                   expanded. The transition runs in parallel to the
+                   transform scale so the shape eases as the island
+                   unfurls — without touching the existing keyframes. */
+                borderRadius: phase === 'expanded' ? '10px' : '999px',
+                /* Drop shadow stays through the morph — paint-only and cheap.
+                   Insets give the raised feel. */
                 boxShadow:
-                  (isEntering
-                    ? 'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent), ' +
-                      'inset 0 -1px 0 0 color-mix(in srgb, black 30%, transparent)'
-                    : '0 16px 40px -8px rgba(0,0,0,0.85), ' +
-                      'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent), ' +
-                      'inset 0 -1px 0 0 color-mix(in srgb, black 30%, transparent)'),
+                  '0 16px 40px -8px rgba(0,0,0,0.85), ' +
+                  'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent), ' +
+                  'inset 0 -1px 0 0 color-mix(in srgb, black 30%, transparent)',
+                /* Backdrop-filter is the dominant compositor cost when
+                   scaling a translucent surface. We start at blur(0px) so
+                   the property exists (and can transition), then ramp up
+                   to the steady blur once the entrance class drops. */
                 backdropFilter: 'blur(14px) saturate(160%)',
                 WebkitBackdropFilter: 'blur(14px) saturate(160%)',
+                transition:
+                  'backdrop-filter 240ms ease-out, ' +
+                  '-webkit-backdrop-filter 240ms ease-out, ' +
+                  'border-radius 440ms cubic-bezier(0.32, 0.72, 0, 1)',
               }}
             >
-              <div className={`flex h-full items-center gap-x-3 px-4 ${isEntering ? 'status-island-entrance-content' : ''}`}>
+              {/* Permanent bracket caps — left + right of the pill, with
+                  a tiny gap. They scale with the pill (children of the
+                  scaled element) so they ride the entrance/collapse
+                  morph naturally. Hidden during the 'logo' phase because
+                  the VectantLogoCollapsed component renders its own pair
+                  inside the V button at that point. */}
+              {hasCollapsedOnce && (
+                <>
+                  <img
+                    src="/vectant/left_bracket_full.png"
+                    alt=""
+                    aria-hidden="true"
+                    className="status-island-cap-bracket status-island-cap-bracket--left"
+                    draggable={false}
+                  />
+                  <img
+                    src="/vectant/right_bracket_full.png"
+                    alt=""
+                    aria-hidden="true"
+                    className="status-island-cap-bracket status-island-cap-bracket--right"
+                    draggable={false}
+                  />
+                </>
+              )}
+              <div className={`status-island-row flex h-full items-center px-4 ${isEntering ? 'status-island-entrance-content' : ''} ${phase === 'collapsing' ? 'status-island-collapse-content' : ''}`}>
               {/* ── LEFT ZONE — file/build state. flex-shrink-0 so a long
             language name in the right zone can't squeeze branch / problems
             into truncation. */}
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="status-island-zone flex shrink-0 items-center gap-1">
+        {/* Close (X) — collapses the island back to the Vectant logo.
+            Only meaningful once hasCollapsedOnce is true; before then,
+            there's no logo state to fall back to so we hide it. */}
+        {hasCollapsedOnce && (
+          <button
+            type="button"
+            onClick={triggerCollapse}
+            className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer th-focus-ring"
+            style={{ color: 'var(--text-muted)', '--hover-bg': 'color-mix(in srgb, var(--accent-danger) 18%, transparent)' }}
+            title="Collapse to logo"
+            aria-label="Collapse status island"
+          >
+            <X className="w-3 h-3" strokeWidth={2.25} />
+          </button>
+        )}
         {/* Drag handle — the ONLY surface that initiates a drag. The
             5-px threshold inside handleDragMouseDown means a sloppy
             click can never accidentally reposition the island. */}
         {dragHandle}
         {/* Branch */}
         <div className="flex items-center rounded-md px-1">
-          <BranchSelector slug={slug} />
+          <BranchSelector slug={slug} compact={isCompact} />
         </div>
 
         {/* Problems */}
@@ -393,11 +653,11 @@ function StatusBarInner({
           ) : (
             <>
               <AlertCircle className="w-3.5 h-3.5" style={{ color: deferredSummary.errors > 0 ? 'var(--accent-danger)' : 'var(--text-muted)' }} strokeWidth={2} />
-              <span style={deferredSummary.errors > 0 ? { color: 'var(--accent-danger)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
+              <span className="status-island-number" style={{ fontVariantNumeric: 'tabular-nums', ...(deferredSummary.errors > 0 ? { color: 'var(--accent-danger)', fontWeight: 600 } : { color: 'var(--text-secondary)' }) }}>
                 {deferredSummary.errors}
               </span>
               <AlertTriangle className="w-3.5 h-3.5 ml-0.5" style={{ color: deferredSummary.warnings > 0 ? 'var(--accent-warning)' : 'var(--text-muted)' }} strokeWidth={2} />
-              <span style={deferredSummary.warnings > 0 ? { color: 'var(--accent-warning)', fontWeight: 600 } : { color: 'var(--text-secondary)' }}>
+              <span className="status-island-number" style={{ fontVariantNumeric: 'tabular-nums', ...(deferredSummary.warnings > 0 ? { color: 'var(--accent-warning)', fontWeight: 600 } : { color: 'var(--text-secondary)' }) }}>
                 {deferredSummary.warnings}
               </span>
             </>
@@ -417,16 +677,16 @@ function StatusBarInner({
             side zones. Dead-centre would require absolute positioning,
             but the resulting overlap was strictly worse than a slight
             visual offset when side widths differ. */}
-      <div className="flex-1 flex items-center justify-center gap-1 min-w-0">
+      <div className="status-island-zone flex-1 flex items-center justify-center gap-1 min-w-0">
         {/* Collab status — label hides below xl */}
         <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md transition-all cursor-default" title={`Collaboration: ${collabStyle.text}`}>
-          <collabStyle.Icon className={`w-3.5 h-3.5 ${collabStyle.textColor}`} strokeWidth={2} />
-          <div className={`w-1.5 h-1.5 rounded-full ${collabStyle.dot}`} />
-          <span className={`${collabStyle.textColor} hidden 2xl:inline font-semibold`}>{collabStyle.text}</span>
+          <collabStyle.Icon className="w-3.5 h-3.5" style={collabStyle.textStyle} strokeWidth={2} />
+          <div className={`w-1.5 h-1.5 rounded-full ${collabStyle.dotPulse ? 'animate-pulse' : ''}`} style={collabStyle.dotStyle} />
+          <span className="status-island-label hidden 2xl:inline font-semibold" style={collabStyle.textStyle}>{collabStyle.text}</span>
           {otherUserCount > 0 && (
             <span className="flex items-center gap-1 ml-1" title={`${otherUserCount} other user${otherUserCount > 1 ? 's' : ''} online`}>
               <Users className="w-3 h-3" style={{ color: 'var(--text-muted)' }} strokeWidth={2} />
-              <span className="font-semibold" style={{ color: 'var(--text-secondary)' }}>{otherUserCount}</span>
+              <span className="status-island-number font-semibold" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>{otherUserCount}</span>
             </span>
           )}
         </div>
@@ -448,13 +708,13 @@ function StatusBarInner({
           >
             <Radio className="w-3.5 h-3.5" style={{ color: 'var(--brand-stop-2)' }} strokeWidth={2} />
             <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--brand-stop-2)' }} />
-            <span className="font-semibold" style={{ color: 'var(--brand-stop-2)' }}>LIVE</span>
+            <span className="status-island-label font-semibold" style={{ color: 'var(--brand-stop-2)' }}>LIVE</span>
           </div>
         )}
         {isGuest && (
           <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default ml-1" title={`Connected to ${session?.hostName || 'Host'}'s session`}>
             <Users className="w-3.5 h-3.5" style={{ color: 'var(--accent-warning)' }} strokeWidth={2} />
-            <span className="hidden 2xl:inline font-semibold" style={{ color: 'var(--accent-warning)' }}>Guest</span>
+            <span className="status-island-label hidden 2xl:inline font-semibold" style={{ color: 'var(--accent-warning)' }}>Guest</span>
           </div>
         )}
       </div>
@@ -462,7 +722,7 @@ function StatusBarInner({
       {/* ── RIGHT ZONE — healing / extensions / cursor / language.
             shrink-0 so the language/framework labels stay readable in
             full instead of being truncated to "J…". */}
-      <div className="flex shrink-0 items-center gap-1 mr-1">
+      <div className="status-island-zone flex shrink-0 items-center gap-1 mr-1">
         {/* Healing */}
         <HealingIndicator />
 
@@ -473,7 +733,7 @@ function StatusBarInner({
             className="flex items-center gap-1 px-2 py-0.5 rounded-md cursor-default transition-colors"
             title={item.tooltip || item.text}
           >
-            <span className="font-medium text-[11px]" style={{ color: 'var(--text-secondary)' }}>{item.text}</span>
+            <span className="status-island-label font-medium text-[11px]" style={{ color: 'var(--text-secondary)' }}>{item.text}</span>
           </div>
         ))}
 
@@ -498,7 +758,7 @@ function StatusBarInner({
               }}
             />
             <span
-              className="hidden 2xl:inline font-medium"
+              className="status-island-label hidden 2xl:inline font-medium"
               style={{
                 color: vscodeServerState === 'running' ? 'var(--accent-success)'
                   : vscodeServerState === 'connecting' ? 'var(--accent-warning)'
@@ -519,7 +779,7 @@ function StatusBarInner({
             our signature mark for the detected language. */}
         <div className="flex shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]" title={language}>
           <Zap className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
-          <span className="font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
+          <span className="status-island-label font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
         </div>
 
         {/* AI-detected framework pill — also at the tail; full readout */}
@@ -529,9 +789,23 @@ function StatusBarInner({
             title={`Framework: ${languageAndFramework}`}
           >
             <Cpu className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
-            <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
+            <span className="status-island-label font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
           </div>
         )}
+
+        {/* Compact-mode toggle — minimize/maximize the island down to
+            icons-only. State persists to localStorage. */}
+        <button
+          type="button"
+          onClick={toggleCompact}
+          className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer th-focus-ring ml-0.5"
+          style={{ color: 'var(--text-muted)', '--hover-bg': 'color-mix(in srgb, var(--text-primary) 8%, transparent)' }}
+          title={isCompact ? 'Expand labels' : 'Compact (icons only)'}
+          aria-label={isCompact ? 'Show labels' : 'Hide labels'}
+          aria-pressed={isCompact}
+        >
+          {isCompact ? <Maximize2 className="w-3 h-3" strokeWidth={2} /> : <Minimize2 className="w-3 h-3" strokeWidth={2} />}
+        </button>
             </div>
       </div>
             </div>

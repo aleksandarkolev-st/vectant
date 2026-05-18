@@ -12,18 +12,19 @@ import {
 } from '@/components/ui/dropdown-menu';
 
 /**
- * Shell icons mapped by shell key.
- * Uses distinct colors per shell type for visual differentiation.
+ * Shell icons mapped by shell key. Colors read from CSS variables
+ * (--shell-*) defined in globals.css, so theme overrides can rebalance
+ * contrast without touching JSX.
  */
 const SHELL_META = {
-  powershell: { icon: '⚡', color: '#5391FE', label: 'PowerShell' },
-  pwsh:       { icon: '⚡', color: '#5391FE', label: 'PowerShell 7' },
-  cmd:        { icon: '▪',  color: '#cccccc', label: 'Command Prompt' },
-  bash:       { icon: '$',  color: '#4EAA25', label: 'Bash' },
-  gitbash:    { icon: '$',  color: '#F05032', label: 'Git Bash' },
-  zsh:        { icon: '%',  color: '#c678dd', label: 'Zsh' },
-  fish:       { icon: '><>', color: '#E44D26', label: 'Fish' },
-  sh:         { icon: '#',  color: '#888888', label: 'sh' },
+  powershell: { icon: '⚡',  color: 'var(--shell-powershell)', label: 'PowerShell' },
+  pwsh:       { icon: '⚡',  color: 'var(--shell-powershell)', label: 'PowerShell 7' },
+  cmd:        { icon: '▪',  color: 'var(--shell-cmd)',        label: 'Command Prompt' },
+  bash:       { icon: '$',  color: 'var(--shell-bash)',       label: 'Bash' },
+  gitbash:    { icon: '$',  color: 'var(--shell-gitbash)',    label: 'Git Bash' },
+  zsh:        { icon: '%',  color: 'var(--shell-zsh)',        label: 'Zsh' },
+  fish:       { icon: '><>', color: 'var(--shell-fish)',      label: 'Fish' },
+  sh:         { icon: '#',  color: 'var(--shell-sh)',         label: 'sh' },
 };
 
 /**
@@ -110,7 +111,7 @@ export default function ShellSelector({ onSelect, onSetDefault, currentDefault, 
           </div>
         ) : (
           shells.map((shell) => {
-            const meta = SHELL_META[shell.key] || { icon: '>', color: '#888', label: shell.label };
+            const meta = SHELL_META[shell.key] || { icon: '>', color: 'var(--shell-default)', label: shell.label };
             const isDefault = shell.key === defaultShell;
             const isUserDefault = shell.key === currentDefault;
             return (
@@ -120,10 +121,11 @@ export default function ShellSelector({ onSelect, onSetDefault, currentDefault, 
                 style={{ color: 'var(--text-primary)' }}
                 onSelect={() => handleSelect(shell.key)}
               >
-                {/* Shell icon */}
+                {/* Shell icon — color-mix gives a soft tinted background
+                    from the same brand token as the foreground glyph. */}
                 <span
                   className="w-4 h-4 flex items-center justify-center rounded text-[9px] font-bold flex-shrink-0"
-                  style={{ background: `${meta.color}20`, color: meta.color }}
+                  style={{ background: `color-mix(in srgb, ${meta.color} 14%, transparent)`, color: meta.color }}
                 >
                   {meta.icon}
                 </span>
@@ -161,5 +163,5 @@ export default function ShellSelector({ onSelect, onSetDefault, currentDefault, 
  * Get the display metadata for a shell key.
  */
 export function getShellMeta(shellKey) {
-  return SHELL_META[shellKey] || { icon: '>', color: '#888', label: shellKey || 'Terminal' };
+  return SHELL_META[shellKey] || { icon: '>', color: 'var(--shell-default)', label: shellKey || 'Terminal' };
 }

@@ -97,7 +97,7 @@ function CheckoutConflictDialog({ slug, branch, create, onClose }) {
     );
 }
 
-export function BranchSelector({ slug }) {
+export function BranchSelector({ slug, compact = false }) {
     const dispatch = useDispatch();
     const { branches, currentBranch, loading, checkoutConflict } = useSelector(state => state.git);
 
@@ -135,7 +135,10 @@ export function BranchSelector({ slug }) {
     return (
         <>
             <Select value={currentBranch || ''} onValueChange={handleValueChange} disabled={loading}>
-                <SelectTrigger className="h-5 w-auto gap-1.5 border-none bg-transparent px-1.5 text-[11px] rounded-full focus:ring-0 focus:ring-offset-0 data-[size=default]:h-5 data-[size=default]:px-1.5 data-[size=default]:py-0 [&>svg:last-child]:w-3 [&>svg:last-child]:h-3 [&>svg:last-child]:opacity-50 duration-300 hover:-translate-y-0.5 transition-all cursor-pointer" style={{ color: 'var(--text-primary)' }}>
+                <SelectTrigger
+                    className={`h-5 w-auto border-none bg-transparent text-[11px] rounded-full focus:ring-0 focus:ring-offset-0 data-[size=default]:h-5 data-[size=default]:py-0 duration-300 hover:-translate-y-0.5 transition-all cursor-pointer ${compact ? 'gap-0 px-0 [&>svg:last-child]:hidden [&>span]:hidden' : 'gap-1.5 px-1.5 [&>svg:last-child]:w-3 [&>svg:last-child]:h-3 [&>svg:last-child]:opacity-50'}`}
+                    style={{ color: 'var(--text-primary)' }}
+                >
                     <GitBranch className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={1.5} />
                     <SelectValue placeholder="Select branch" />
                 </SelectTrigger>

@@ -436,10 +436,16 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       {/* Session: View-only terminal overlay for guests without canTerminal */}
       {isGuest && !canTerminal && state === 'connected' && (
-        <div className="absolute bottom-0 left-0 right-0 flex items-center justify-center px-4 py-1.5 bg-[#fbbf2415] border-t border-[#fbbf2430] z-10">
+        <div
+          className="absolute bottom-0 left-0 right-0 flex items-center justify-center px-4 py-1.5 z-10"
+          style={{
+            background: 'color-mix(in srgb, var(--accent-warning) 8%, transparent)',
+            borderTop: '1px solid color-mix(in srgb, var(--accent-warning) 24%, transparent)',
+          }}
+        >
           <div className="flex items-center gap-2">
-            <EyeOff className="w-3.5 h-3.5 text-[#fbbf24]" />
-            <span className="text-xs text-[#fbbf24] font-medium">
+            <EyeOff className="w-3.5 h-3.5" style={{ color: 'var(--accent-warning)' }} />
+            <span className="text-xs font-medium" style={{ color: 'var(--accent-warning)' }}>
               Terminal is view-only — Ask the host for terminal access
             </span>
           </div>
