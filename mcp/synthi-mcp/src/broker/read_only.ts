@@ -11,6 +11,7 @@ import {
   type BrokerState,
   type BrokerViewport,
 } from "./contracts.js";
+import { brokerRuntime } from "./runtime.js";
 
 type FrameSourceWithInfo = {
   hasFrame: () => boolean;
@@ -70,12 +71,12 @@ export function currentBrokerHealthStatus(now: number = Date.now()): BrokerHealt
   }
 
   const wireState = session.getWireState();
-  let brokerState: BrokerState = "ready";
-  if (wireState === "migrating" || wireState === "crashed") {
+  let brokerState: BrokerState = brokerRuntime.brokerState();
+  if (brokerState === "ready" && (wireState === "migrating" || wireState === "crashed")) {
     brokerState = "recovering";
-  } else if (wireState === "terminated") {
+  } else if (brokerState === "ready" && wireState === "terminated") {
     brokerState = "disconnected";
-  } else if (attached.peer.pc.connectionState !== "connected") {
+  } else if (brokerState === "ready" && attached.peer.pc.connectionState !== "connected") {
     brokerState = "degraded";
   }
 

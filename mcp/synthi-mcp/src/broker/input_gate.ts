@@ -3,6 +3,7 @@ import { leaseRegistry, type LeaseScope } from "../arbitration/lease.js";
 import type { BrokerErrorCode } from "./errors.js";
 import { brokerError } from "./errors.js";
 import type { BrokerViewport } from "./contracts.js";
+import { brokerRuntime } from "./runtime.js";
 
 export type BrokerInputMode = "shadow" | "enforce";
 
@@ -39,6 +40,11 @@ export async function checkBrokerInputGate(input: {
   if (!brokerInputEnforced()) return null;
 
   const now = input.now ?? Date.now();
+  if (brokerRuntime.brokerState() === "recovering") {
+    return buildGateError("BROKER_RECOVERING", input.action, {
+      reason: "broker_recovering",
+    });
+  }
   const leaseId = typeof input.lease_id === "string" && input.lease_id.length > 0
     ? input.lease_id
     : undefined;

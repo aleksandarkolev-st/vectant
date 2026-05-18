@@ -72,3 +72,17 @@ export {
   type BrokerTopic,
 } from "./subscriptions.js";
 export { BrokerControlPlane } from "./control_api.js";
+export { brokerRuntime, type BrokerRecoveryIncident } from "./runtime.js";
+export {
+  ProducerFenceRegistry,
+  producerFenceRegistry,
+  type ProducerAttachResult,
+  type ProducerGrant,
+} from "./producer.js";
+export {
+  BrokerFallbackController,
+  brokerFallbackController,
+  type BrokerFallbackMode,
+  type BrokerFallbackResult,
+  type BrokerFallbackState,
+} from "./fallback.js";
