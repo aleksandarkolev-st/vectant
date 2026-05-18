@@ -51,6 +51,7 @@ import { selectFileThunk } from '@/redux/workspaceSlice';
 
 const NEP_DEBOUNCE_MS = 400;
 const NEP_MIN_INTERVAL_MS = 800; // floor between auto-fires (rate limit)
+const NEP_MAX_REFINEMENT_PASSES = 1;
 // Per-session cap on NEP fires. Heavy refactor sessions could otherwise blow
 // API budget. Plan-grade gap "cost ceiling / rate limit per session is
 // absent" — addressed by this cap. Resets on workspace switch.
@@ -1030,7 +1031,7 @@ export const useNextEditPrediction = ({
   }, [enabled, editorInstance, activeFile, nepState, cancelInflight, resetToIdle]);
 
   // ── fire NEP ────────────────────────────────────────────────────────────
-  const fireNep = useCallback(async () => {
+  const fireNep = useCallback(async (refinement = null) => {
     if (!enabled) return;
     if (!editorInstance || !activeFile) return;
     // Refresh server-kill cache (60s TTL — cheap on hit). Awaited so the
@@ -1051,7 +1052,9 @@ export const useNextEditPrediction = ({
     }
 
     const now = Date.now();
-    if (now - lastFireRef.current < NEP_MIN_INTERVAL_MS) return;
+    const isRefinement = Boolean(refinement?.feedback?.length);
+    const refinementPass = Number(refinement?.pass || 0);
+    if (!isRefinement && now - lastFireRef.current < NEP_MIN_INTERVAL_MS) return;
     lastFireRef.current = now;
     sessionFireCountRef.current += 1;
 
@@ -1172,6 +1175,7 @@ export const useNextEditPrediction = ({
       recentEdits: recentEditsRef.current.map((e) => ({ path: e.path, snippet: e.snippet })),
       files,
       codeIntel,
+      validationFeedback: isRefinement ? refinement.feedback : [],
       // Phase 2: send the last applied edit so the route can pull impact
       // candidates from the symbol graph and inject them into the prompt.
       // Falls back to a synthetic edit derived from the user's last
@@ -1184,6 +1188,7 @@ export const useNextEditPrediction = ({
       has_applied_edit: Boolean(lastAppliedEditRef.current),
       has_synthetic_edit: Boolean(appliedEdit) && !lastAppliedEditRef.current,
       request_id: requestId,
+      refinement_pass: isRefinement ? refinementPass : 0,
     });
     recordAiReplaySample({
       feature: 'nep',
@@ -1199,6 +1204,8 @@ export const useNextEditPrediction = ({
         files,
         codeIntel,
         appliedEdit,
+        validationFeedback: isRefinement ? refinement.feedback : [],
+        refinementPass: isRefinement ? refinementPass : 0,
       },
     });
 
@@ -1222,6 +1229,7 @@ export const useNextEditPrediction = ({
     const parser = createStreamParser();
     const decoder = new TextDecoder();
     let armedYet = false;
+    const validationFeedback = [];
 
     // Cross-file unblock (NEP plan §6, Phase 2): the validator must be able
     // to read any workspace file, not just ones the user has open. Falls
@@ -1278,6 +1286,11 @@ export const useNextEditPrediction = ({
               raw: result.raw,
             },
           });
+          validationFeedback.push({
+            reason: result.reason || REJECT_REASONS.PARSE_ERROR,
+            detail: result.detail,
+            raw: result.raw,
+          });
           if (typeof console !== 'undefined' && console.info) {
             console.info(`[NEP] block parse-rejected: reason=${result.reason} detail=${result.detail || ''}`);
           }
@@ -1304,6 +1317,12 @@ export const useNextEditPrediction = ({
               phase: 'validate_rejected',
               requestId,
               payload: { reason: v.reason, path: v.path || block.path, block },
+            });
+            validationFeedback.push({
+              reason: v.reason,
+              path: v.path || block.path,
+              search: block.search,
+              replace: block.replace,
             });
             if (typeof console !== 'undefined' && console.info) {
               console.info(`[NEP] block validate-rejected: path=${block.path} reason=${v.reason} cross_file=${block.path !== activePath}`);
@@ -1333,6 +1352,12 @@ export const useNextEditPrediction = ({
               phase: 'validate_rejected',
               requestId,
               payload: { reason: v.reason, path: v.path || block.path, block },
+            });
+            validationFeedback.push({
+              reason: v.reason,
+              path: v.path || block.path,
+              search: block.search,
+              replace: block.replace,
             });
             continue;
           }
@@ -1411,7 +1436,26 @@ export const useNextEditPrediction = ({
       // Stream tore mid-block — anything we already armed is still valid.
     }
 
-    if (!armedYet) setNepState(STATE.IDLE);
+    if (!armedYet) {
+      setNepState(STATE.IDLE);
+      if (!isRefinement && validationFeedback.length && refinementPass < NEP_MAX_REFINEMENT_PASSES) {
+        const feedback = validationFeedback.slice(0, 6);
+        recordAiReplaySample({
+          feature: 'nep',
+          phase: 'refinement_scheduled',
+          requestId,
+          payload: {
+            reason: 'validation_repair',
+            feedback,
+          },
+        });
+        setTimeout(() => {
+          try {
+            fireNepRef.current?.({ feedback, pass: refinementPass + 1 });
+          } catch (_) { /* best-effort repair */ }
+        }, 0);
+      }
+    }
   }, [
     enabled, editorInstance, activeFile, activeLanguage, workspaceSlug,
     getFileCacheEntries, getLiveFileContent, cancelInflight, renderJumpHint,
