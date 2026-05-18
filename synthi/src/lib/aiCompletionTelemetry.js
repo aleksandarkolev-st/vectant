@@ -9,7 +9,7 @@
 //   - 'cancelled'    — request superseded or explicitly cancelled
 //   - 'rejected'     — request returned but produced nothing useful
 //
-// Per-event optional payload fields: { reason, latency_ms, language, source }.
+// Per-event optional payload fields: { reason, request_id, latency_ms, language, source }.
 // Stored in localStorage so dashboards survive reloads. No server upload by
 // default — the data is for the dashboard / replay harness to consume on
 // demand. Wire an upload here if/when ops needs it (mirror flushEventsToServer

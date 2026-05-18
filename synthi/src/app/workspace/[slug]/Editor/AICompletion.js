@@ -90,6 +90,8 @@ export const useAiCompletion = ({
         } catch (_) { /* SSR / event constructor unavailable */ }
     };
     const aiCompletionAbortControllerRef = useRef(null);
+    const aiCompletionRequestSeqRef = useRef(0);
+    const aiCompletionActiveRequestIdRef = useRef(null);
     const aiLastRequestRef = useRef({ context: '', time: 0 });
     const aiLastAutoRef = useRef(0);
     const aiDebounceTimerRef = useRef(null);
@@ -197,6 +199,8 @@ export const useAiCompletion = ({
 
     const cancelActiveCompletion = useCallback(({ resetSuggestion = true, reason = 'user-cancelled' } = {}) => {
         let changed = false;
+        const cancelledRequestId = aiCompletionActiveRequestIdRef.current;
+        aiCompletionActiveRequestIdRef.current = null;
 
         if (aiCompletionAbortControllerRef.current) {
             try {
@@ -206,7 +210,7 @@ export const useAiCompletion = ({
             }
             aiCompletionAbortControllerRef.current = null;
             changed = true;
-            recordAiCompletionEvent('cancelled', { reason });
+            recordAiCompletionEvent('cancelled', { reason, request_id: cancelledRequestId });
         }
 
         if (resetSuggestion) {
@@ -256,11 +260,15 @@ export const useAiCompletion = ({
         if (text.includes('\n') && cached.stable === false) {
             const safe = lastCompletePrefix(text);
             if (!safe) {
-                recordAiCompletionEvent('cancelled', { reason: 'accept_blocked_unstable' });
+                recordAiCompletionEvent('cancelled', {
+                    reason: 'accept_blocked_unstable',
+                    request_id: cached.requestId || null,
+                });
                 return;
             }
             recordAiCompletionEvent('cancelled', {
                 reason: 'accept_truncated_to_stable_prefix',
+                request_id: cached.requestId || null,
                 accepted_lines: countSuggestionLines(safe),
                 suggested_lines: countSuggestionLines(text),
             });
@@ -322,7 +330,7 @@ export const useAiCompletion = ({
         aiCompletionCacheRef.current = { context: '', language: '', suggestion: '' };
         notifyCompletionCacheChange();
         setAiCompletionState('applied');
-        recordAiCompletionEvent('accepted', { lines: acceptedLines });
+        recordAiCompletionEvent('accepted', { lines: acceptedLines, request_id: cached.requestId || null });
     }, [editorInstance, monacoInstance, hasActiveDiff]); // Added dependency
 
     const requestAiCompletion = useCallback((isAutoTrigger = false, manualContext = null, meta = {}) => {
@@ -360,7 +368,11 @@ export const useAiCompletion = ({
         // the inline-suggest UI without round-tripping the model.
         const lruHit = lruLookup(context, activeLanguage);
         if (lruHit) {
-            recordAiCompletionEvent('cache_hit', { language: activeLanguage });
+            cancelActiveCompletion({ resetSuggestion: false, reason: 'cache-hit' });
+            recordAiCompletionEvent('cache_hit', {
+                language: activeLanguage,
+                request_id: lruHit.requestId || null,
+            });
             aiCompletionCursorRef.current = cursorPosition ? { ...cursorPosition } : null;
             aiCompletionCacheRef.current = lruHit;
             notifyCompletionCacheChange();
@@ -393,11 +405,19 @@ export const useAiCompletion = ({
         cancelActiveCompletion({ resetSuggestion: true, reason: 'superseded' });
         aiCompletionCursorRef.current = cursorPosition ? { ...cursorPosition } : null;
 
+        const requestId = ++aiCompletionRequestSeqRef.current;
+        aiCompletionActiveRequestIdRef.current = requestId;
         const controller = new AbortController();
         aiCompletionAbortControllerRef.current = controller;
+        const isCurrentRequest = () =>
+            aiCompletionActiveRequestIdRef.current === requestId && !controller.signal.aborted;
         setAiCompletionState('loading');
         const fireStartedAt = Date.now();
-        recordAiCompletionEvent('fire', { language: activeLanguage, source: isAutoTrigger ? 'auto' : 'manual' });
+        recordAiCompletionEvent('fire', {
+            language: activeLanguage,
+            request_id: requestId,
+            source: isAutoTrigger ? 'auto' : 'manual',
+        });
 
         const model = editorInstance.getModel();
         const fullDocument = typeof manualContext === 'string' ? manualContext : (model?.getValue?.() ?? rawContext);
@@ -434,6 +454,7 @@ export const useAiCompletion = ({
         }
 
         const payload = {
+            requestId,
             code: context,
             language: activeLanguage,
             // Workspace identifier so the API route can hit the RAG
@@ -489,6 +510,7 @@ export const useAiCompletion = ({
         // sanitized, echo-checked) on every chunk before pushing into the
         // inline-completion cache.
         const pushSuggestion = (visible, { stable = false } = {}) => {
+            if (!isCurrentRequest()) return;
             let suggestionRange = null;
             try {
                 const cursor = aiCompletionCursorRef.current;
@@ -512,6 +534,7 @@ export const useAiCompletion = ({
             const newEntry = {
                 context,
                 language: activeLanguage,
+                requestId,
                 suggestion: visible,
                 suggestionRange,
                 stable: stickyStable,
@@ -524,6 +547,7 @@ export const useAiCompletion = ({
             if (isFirstVisible) {
                 recordAiCompletionEvent('visible', {
                     language: activeLanguage,
+                    request_id: requestId,
                     latency_ms: Date.now() - fireStartedAt,
                     lines: countSuggestionLines(visible),
                 });
@@ -550,12 +574,12 @@ export const useAiCompletion = ({
                     body: JSON.stringify(payload),
                 });
             } catch (e) {
-                if (!controller.signal.aborted) setAiCompletionState('idle');
+                if (isCurrentRequest()) setAiCompletionState('idle');
                 return;
             }
 
             if (!res.ok) {
-                if (!controller.signal.aborted) setAiCompletionState('idle');
+                if (isCurrentRequest()) setAiCompletionState('idle');
                 return;
             }
 
@@ -588,8 +612,9 @@ export const useAiCompletion = ({
                 // No streaming support — fall back to reading the whole body.
                 try {
                     const body = await res.text();
-                    if (controller.signal.aborted || hasActiveDiff()) {
-                        setAiCompletionState('idle');
+                    if (!isCurrentRequest()) return;
+                    if (hasActiveDiff()) {
+                        if (isCurrentRequest()) setAiCompletionState('idle');
                         return;
                     }
                     const { text: visible } = renderVisible(body);
@@ -601,11 +626,12 @@ export const useAiCompletion = ({
                         setAiCompletionState('idle');
                         recordAiCompletionEvent('rejected', {
                             reason: !body.trim() ? 'empty_response' : 'echo_or_unsanitized',
+                            request_id: requestId,
                             latency_ms: Date.now() - fireStartedAt,
                         });
                     }
                 } catch (_) {
-                    if (!controller.signal.aborted) setAiCompletionState('idle');
+                    if (isCurrentRequest()) setAiCompletionState('idle');
                 }
                 return;
             }
@@ -617,7 +643,7 @@ export const useAiCompletion = ({
             try {
                 while (true) {
                     const { done, value } = await reader.read();
-                    if (controller.signal.aborted) {
+                    if (!isCurrentRequest()) {
                         try { reader.cancel(); } catch (_) { /* ignore */ }
                         return;
                     }
@@ -626,7 +652,7 @@ export const useAiCompletion = ({
 
                     if (hasActiveDiff()) {
                         try { reader.cancel(); } catch (_) { /* ignore */ }
-                        setAiCompletionState('idle');
+                        if (isCurrentRequest()) setAiCompletionState('idle');
                         return;
                     }
 
@@ -641,6 +667,7 @@ export const useAiCompletion = ({
                 // so anything still in flight is now stable — re-push to
                 // upgrade the cache flag even if the visible text didn't
                 // change in this final pass.
+                if (!isCurrentRequest()) return;
                 raw += decoder.decode();
                 const { text: visible } = renderVisible(raw);
                 if (visible && !isCompletionEcho(visible, beforeCursor, afterCursor)) {
@@ -649,13 +676,25 @@ export const useAiCompletion = ({
                     setAiCompletionState('idle');
                     recordAiCompletionEvent('rejected', {
                         reason: !raw.trim() ? 'empty_response' : 'echo_or_unsanitized',
+                        request_id: requestId,
                         latency_ms: Date.now() - fireStartedAt,
                     });
                 }
             } catch (e) {
-                if (!controller.signal.aborted) setAiCompletionState('idle');
+                if (isCurrentRequest()) setAiCompletionState('idle');
             }
-        })();
+        })()
+            .catch(() => {
+                if (isCurrentRequest()) setAiCompletionState('idle');
+            })
+            .finally(() => {
+                if (aiCompletionAbortControllerRef.current === controller) {
+                    aiCompletionAbortControllerRef.current = null;
+                }
+                if (aiCompletionActiveRequestIdRef.current === requestId) {
+                    aiCompletionActiveRequestIdRef.current = null;
+                }
+            });
     }, [activeFile, activeLanguage, breadcrumb, cancelActiveCompletion, code, editorInstance, hasActiveDiff]);
 
     return {
