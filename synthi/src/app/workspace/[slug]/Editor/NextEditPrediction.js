@@ -44,6 +44,7 @@ import { buildNepContextPacket } from '@/utils/aiContextBroker';
 import { classifyEdit } from '@/lib/editKindClassifier';
 import { recordNepEvent, isNepKilled, checkServerKill } from '@/lib/nepTelemetry';
 import { recordAiReplaySample } from '@/lib/aiReplayHarness';
+import { canHandleTabIntent, TAB_INTENT_OWNER, updateTabIntentState } from './tabIntentRouter';
 import { gitClient } from '@/services/gitClient';
 import { fileCache } from '@/services/fileCache';
 import { loadScheduler } from '@/services/loadScheduler';
@@ -883,6 +884,14 @@ export const useNextEditPrediction = ({
     setNepState(STATE.IDLE);
   }, [cancelInflight, clearDecorations, clearEditPreview]);
 
+  useEffect(() => {
+    updateTabIntentState({ nepState: enabled ? nepState : STATE.IDLE });
+  }, [enabled, nepState]);
+
+  useEffect(() => () => {
+    updateTabIntentState({ nepState: STATE.IDLE });
+  }, []);
+
   // Cross-file jump completion. After Tab dispatches selectFileThunk for a
   // prediction in a non-active file, Editor.jsx remounts the editor with
   // the new model on the next render. We watch activeFile and, once it
@@ -1664,6 +1673,12 @@ export const useNextEditPrediction = ({
       const idx = queueIndexRef.current;
       const entry = queueRef.current[idx];
       if (!entry) return;
+      if (
+        e.code === 'Tab'
+        && !canHandleTabIntent(TAB_INTENT_OWNER.NEP, { nepState })
+      ) {
+        return;
+      }
 
       const advanceQueue = () => {
         queueIndexRef.current += 1;

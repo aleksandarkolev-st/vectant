@@ -50,6 +50,7 @@ import { EDITOR_OPTIONS, getResponsiveEditorOverrides } from './options';
 import { useViewport } from '@/hooks/useViewport';
 import { useAiCompletion } from './AICompletion';
 import { useNextEditPrediction } from './NextEditPrediction';
+import { canHandleTabIntent, TAB_INTENT_OWNER, updateTabIntentState } from './tabIntentRouter';
 import { useDiffManager } from './diffManager';
 import { useGitGutter } from './gitGutterService';
 import { useEditorProviders } from './providers';
@@ -2742,6 +2743,7 @@ const EditorPanel = ({
     // having to hoist the whole save pipeline above the hook chain.
     const persistNepApplyRef = useRef(null);
     const {
+        nepState,
         predictedPaths: nepPredictedPaths,
         fireCapReached: nepFireCapReached,
         fireCap: nepFireCap,
@@ -3377,10 +3379,27 @@ const EditorPanel = ({
 
     // Key bindings (Ctrl+S, Alt+F)
     useEffect(() => {
+        updateTabIntentState({
+            nepState,
+            aiCompletionState,
+            hasAiSuggestion: Boolean(aiCompletionCacheRef.current?.suggestion),
+        });
+    }, [aiCompletionState, aiCompletionCacheRef, nepState]);
+
+    useEffect(() => {
         const handleKeyDown = (e) => {
             if (e.key === 'Tab') {
                 const cached = aiCompletionCacheRef.current;
-                if (aiCompletionState === 'ready' && cached?.suggestion) {
+                const hasAiSuggestion = Boolean(cached?.suggestion);
+                updateTabIntentState({ aiCompletionState, hasAiSuggestion, nepState });
+                if (
+                    hasAiSuggestion
+                    && canHandleTabIntent(TAB_INTENT_OWNER.AI_COMPLETION, {
+                        aiCompletionState,
+                        hasAiSuggestion,
+                        nepState,
+                    })
+                ) {
                     e.preventDefault();
                     applyAiCompletionText(cached.suggestion);
                     return;
@@ -3438,7 +3457,7 @@ const EditorPanel = ({
         };
         window.addEventListener('keydown', handleKeyDown, { capture: true });
         return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile, aiCompletionState, applyAiCompletionText, diffMode]);
+    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile, aiCompletionState, applyAiCompletionText, diffMode, nepState]);
 
     // Ensure disabling auto AI clears any pending/computed suggestions
     useEffect(() => {

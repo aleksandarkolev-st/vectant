@@ -30,6 +30,13 @@ import {
   aiReplaySnapshot,
   clearAiReplaySamples,
 } from '../src/lib/aiReplayHarness.js';
+import {
+  canHandleTabIntent,
+  resetTabIntentState,
+  resolveTabIntentOwner,
+  TAB_INTENT_OWNER,
+  updateTabIntentState,
+} from '../src/app/workspace/[slug]/Editor/tabIntentRouter.js';
 
 assert.equal(
   extractCompletion('<|completion|>return value;<|/completion|>'),
@@ -116,12 +123,25 @@ assert.equal(replay.length, 1);
 assert.equal(replay[0].feature, 'autocomplete');
 assert.equal(replay[0].phase, 'request');
 assert.equal(replay[0].requestId, 'req-1');
+
+resetTabIntentState();
+assert.equal(
+  resolveTabIntentOwner({ aiCompletionState: 'ready', hasAiSuggestion: true }),
+  TAB_INTENT_OWNER.AI_COMPLETION,
+);
+updateTabIntentState({ hasDiagnosticFix: true, aiCompletionState: 'ready', hasAiSuggestion: true });
+assert.equal(resolveTabIntentOwner(), TAB_INTENT_OWNER.DIAGNOSTIC_FIX);
+assert.equal(canHandleTabIntent(TAB_INTENT_OWNER.AI_COMPLETION), false);
+updateTabIntentState({ nepState: 'armed' });
+assert.equal(resolveTabIntentOwner(), TAB_INTENT_OWNER.NEP);
+assert.equal(canHandleTabIntent(TAB_INTENT_OWNER.NEP), true);
 `;
 
 try {
   await writeFile(path.join(tempDir, 'package.json'), '{"type":"module"}\n');
   await mkdir(path.join(tempDir, 'src', 'lib'), { recursive: true });
   await mkdir(path.join(tempDir, 'src', 'utils'), { recursive: true });
+  await mkdir(path.join(tempDir, 'src', 'app', 'workspace', '[slug]', 'Editor'), { recursive: true });
   await mkdir(path.join(tempDir, 'scripts'), { recursive: true });
 
   for (const rel of [
@@ -129,6 +149,7 @@ try {
     'src/lib/nextEdit.js',
     'src/lib/aiReplayHarness.js',
     'src/utils/nepRecentEdits.js',
+    'src/app/workspace/[slug]/Editor/tabIntentRouter.js',
   ]) {
     await writeFile(
       path.join(tempDir, rel),
