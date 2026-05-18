@@ -43,12 +43,14 @@ const CFG = {
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
   fixture: (process.env.SYNTHI_GPU_AGENT_FIXTURE ?? 'flow').toLowerCase(),
+  mode: (process.env.SYNTHI_GPU_AGENT_MODE ?? 'validate').toLowerCase(),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
 };
 
 const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
-const RESULTS_JSON = path.join(LOG_DIR, 'agent-split-results.json');
-const RESULTS_TXT = path.join(LOG_DIR, 'agent-split-results.txt');
+const RESULTS_BASENAME = CFG.mode === 'seed-only' ? 'agent-split-seed-results' : 'agent-split-results';
+const RESULTS_JSON = path.join(LOG_DIR, `${RESULTS_BASENAME}.json`);
+const RESULTS_TXT = path.join(LOG_DIR, `${RESULTS_BASENAME}.txt`);
 
 const results = [];
 function record(name, status, detail = '') {
@@ -977,6 +979,13 @@ async function run() {
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-agent-split-test: seed monolithic source' })
     .then(() => record('workspace commit seed', 'pass'))
     .catch((e) => record('workspace commit seed', 'warn', e.message.slice(0, 200)));
+
+  if (CFG.mode === 'seed-only') {
+    record('seed-only workspace ready', 'pass', 'open the URL and click Run to trigger AI split');
+    await writeResults();
+    console.log(`url: ${CFG.frontendUrl}/workspace/${CFG.slug}`);
+    return;
+  }
 
   const firstStart = await workerCheckpoint();
   await compileViaMcp({
