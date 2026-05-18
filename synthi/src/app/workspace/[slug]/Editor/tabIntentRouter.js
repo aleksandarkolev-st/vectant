@@ -63,10 +63,10 @@ export const resolveTabIntentOwner = (override = {}) => {
     };
 
     if (isNepTabState(state.nepState)) return TAB_INTENT_OWNER.NEP;
-    if (state.hasDiagnosticFix) return TAB_INTENT_OWNER.DIAGNOSTIC_FIX;
     if (state.aiCompletionState === 'ready' && state.hasAiSuggestion) {
         return TAB_INTENT_OWNER.AI_COMPLETION;
     }
+    if (state.hasDiagnosticFix) return TAB_INTENT_OWNER.DIAGNOSTIC_FIX;
     return TAB_INTENT_OWNER.EDITOR;
 };
 
