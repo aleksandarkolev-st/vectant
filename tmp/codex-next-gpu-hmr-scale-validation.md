@@ -5,16 +5,58 @@ Date: 2026-05-19
 ## Operating Instructions
 
 Work autonomously. Do not stop to ask for confirmation unless the repo or
-machine is genuinely blocked. Make focused commits as you go, especially after
-each independent fix or validation harness improvement. Only report back when
-the end-to-end investigation is fully done, with clear evidence for what passed,
-what failed, and what remains risky.
+machine is genuinely blocked. The expected behavior is to inspect the repo,
+reproduce the issue, patch the smallest responsible area, verify that patch, and
+commit it before moving to the next area. Only report back when the end-to-end
+investigation is fully done, with clear evidence for what passed, what failed,
+and what remains risky.
 
 The immediate goal is not another small demo. The next session must prove the
 current GPU HMR split pipeline on a realistic project layout with many files,
 including hundreds of ordinary project files and separate `.cpp`, `.hpp`,
 `.hip`, and/or `.cu` sources. A single monolithic `main.cpp` is useful as a
 smoke test, but it is not enough.
+
+## Commit Discipline - Hard Requirement
+
+Every patch must be a separate commit. Do not batch unrelated fixes into one
+commit, and do not keep a long dirty worktree while continuing to experiment.
+
+Use this loop:
+
+```text
+1. Inspect the current state.
+2. Make one narrowly scoped patch.
+3. Run the smallest meaningful verification for that patch.
+4. Commit that patch immediately.
+5. Push when a useful milestone is reached, and always before final report.
+```
+
+Examples of separate commits:
+
+- Worker payload fix that sends all project files to `/refactor/split/gpu`.
+- AI prompt or verifier change.
+- MCP harness change for large multi-file seed projects.
+- Frontend compile-payload change.
+- Seed-only preview visibility fix.
+- Test artifact or documentation update.
+
+Do not combine these just because they were discovered during the same
+debugging session. The user explicitly wants each patch separately committed.
+
+Useful commit workflow:
+
+```powershell
+git status --short
+git diff -- <files you changed>
+git add <exact files for this one patch>
+git commit -m "<type>(gpu-hmr): <specific result>"
+git status --short
+```
+
+If a patch needs a follow-up because validation exposed a second issue, make
+the follow-up its own commit. If a test-only patch is added to prove a bug, keep
+that as a separate `test(gpu-hmr): ...` commit from the production fix.
 
 ## Current State
 
@@ -73,6 +115,25 @@ Reproduce the problem through the browser and through MCP screenshots:
 - Check whether the screenshot has visible non-black pixels.
 - Inspect worker logs and generated files only after the visible symptom is
   understood.
+
+Expected investigation depth:
+
+- Check whether the compile request actually reaches the worker.
+- Check whether the AI split route runs.
+- Check whether generated files are produced only in worker temp storage or are
+  also surfaced to the workspace in a way the UI understands.
+- Check whether the runner is alive after compile.
+- Check whether the renderer produced frames but the browser/MCP preview did
+  not display them.
+- Check whether the generated `gui.cpp` rendered black because it got the wrong
+  render surface, wrong coordinate range, wrong clear/draw order, or no frame
+  loop.
+- Check whether stale cached split output is being reused after prompt/verifier
+  changes.
+
+Do not accept "compile succeeded" as proof. The visible user symptom is that the
+preview is blank, so a fix is not done until MCP screenshot and browser preview
+evidence show actual rendered pixels.
 
 ## Why The Previous Demo Was Not Enough
 
@@ -150,6 +211,23 @@ files: []
 That is not adequate for a scale test. Create or extend a harness that sends a
 large project file set through MCP.
 
+The concrete question to answer in code is:
+
+```text
+When the browser or MCP sends many user files, does every relevant file reach
+the GPU splitter prompt, or does the model only see req.source?
+```
+
+Prove the answer, do not infer it from intent. Add logging or test assertions
+that count and name the files delivered to the worker and to ai-engine. Keep
+those assertions if they are useful regression protection; remove noisy debug
+logs before final unless they are intentionally operator-facing.
+
+If the current payload shape is wrong, the fix should preserve both cases:
+
+- Single-file `main.cpp` smoke tests.
+- Multi-file real projects where the active editor file is not the device file.
+
 ## Required Scale Test
 
 Create a GPU HMR validation project with hundreds of files. It should include:
@@ -162,6 +240,18 @@ Create a GPU HMR validation project with hundreds of files. It should include:
 - Decoy files that should not affect compile.
 - Nonstandard filenames and directories.
 - No user-authored Synthi ABI exports.
+
+For this handoff, "hundreds of files" means at least 200 workspace files. They
+do not all need to participate in compilation, but the project must include a
+realistic mix:
+
+- 10-30 relevant source/header/device files that the splitter must understand.
+- 100+ irrelevant but realistic project files, such as docs, shader drafts,
+  config files, examples, generated headers, markdown notes, JSON data, and old
+  experiments.
+- Nested paths deep enough to prove path handling is not hardcoded to repo root.
+- File names that do not include `core`, `gui`, `host_runner`, `device`, or
+  `shared`, so the model cannot succeed by matching our generated role names.
 
 Minimum expected shape:
 
@@ -182,6 +272,31 @@ The model should receive enough context to split this into the generated Synthi
 runtime roles. The generated roles may still be the current C++ GPU HMR
 contract, but the user project itself must not be forced into those filenames.
 
+The scale fixture should look like something a kernel engineer might actually
+write:
+
+- Host code owns app setup, timing, and render loop intent.
+- GPU code owns kernels and constants.
+- Headers describe particle buffers, launch parameters, and render data.
+- Device code has at least one branch or boundary reset path that can be lost by
+  a bad splitter and should be asserted after HMR.
+- The HMR edit should modify device behavior only, such as flow direction,
+  color index math, bounds reset, or force calculation, without changing the
+  host ABI.
+
+Add explicit checks that user files do not contain Synthi ABI names before the
+first compile:
+
+```text
+core_on_load
+core_on_update
+gui_on_load
+gui_on_render
+device_on_load
+device_descriptor
+device_kernel_sig_hash
+```
+
 ## What To Prove
 
 Do not mark the work done until all of these are true:
@@ -200,6 +315,10 @@ Do not mark the work done until all of these are true:
   GPU sidecar reload.
 - The test can be rerun after a worker restart and does not rely on stale split
   cache.
+
+Collect concrete evidence for every item. The final report should name the
+workspace slug, the commands run, the model used, the worker log markers, the
+HMR result, screenshot artifact paths, and the commits created.
 
 Useful log markers:
 
@@ -235,6 +354,38 @@ mcp/synthi-mcp/scripts/gpu-hmr-test.mjs
 
 The scale test should use MCP to prove the public path. A passing compiler log
 or a generated manifest is not enough if the user still sees a black preview.
+
+For screenshots, collect before/after evidence:
+
+- Screenshot after first compile.
+- Screenshot after device-only HMR edit.
+- Simple image analysis result: dimensions, visible pixel count, mean luma, and
+  whether the two frames differ.
+
+If the screenshot is black, save it as an artifact and keep debugging. A black
+screenshot is useful evidence, not a reason to skip the visual check.
+
+## Recommended Investigation Order
+
+Follow this order unless a hard blocker forces a detour:
+
+1. Start from a clean tree and current containers.
+2. Run the existing seed-only demo exactly as a user would.
+3. Trigger compile through the UI or MCP and capture a screenshot.
+4. If the preview is black, fix that first and commit the fix separately.
+5. Inspect and, if necessary, fix full-file-set delivery to `/refactor/split/gpu`.
+6. Commit the file-delivery fix separately.
+7. Add or extend a scale harness that creates a hundreds-file workspace.
+8. Commit the harness separately.
+9. Run the scale harness through MCP first compile, screenshot, device edit,
+   `synthi_wait_hmr`, and second screenshot.
+10. Commit validation artifacts or docs separately.
+11. Restart worker/ai-engine and rerun the most important flow to prove it does
+    not depend on stale in-memory state.
+12. Push all commits and only then write the final report.
+
+If a step reveals another bug, stop the sequence, fix that bug, commit it, then
+resume from the last verification point.
 
 ## Build And Start Stack
 
