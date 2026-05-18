@@ -124,6 +124,14 @@ export interface CapabilityManifest {
         max_queue: number;
       };
     };
+    rollout_controls: {
+      per_session_feature_flag: boolean;
+      shadow_mode: boolean;
+      dual_read_screenshot_comparison: boolean;
+      canary_stages: string[];
+      kill_switch: boolean;
+      compatibility_matrix: boolean;
+    };
     lease_d0: {
       default_lease_ms: number;
       max_lease_ms: number;
@@ -282,6 +290,14 @@ export function buildManifest(
           max_concurrency: resolveBrokerWorkerPoolSize(),
           max_queue: resolveBrokerWorkerQueueSize(),
         },
+      },
+      rollout_controls: {
+        per_session_feature_flag: true,
+        shadow_mode: true,
+        dual_read_screenshot_comparison: true,
+        canary_stages: ["internal", "selected_external", "general"],
+        kill_switch: true,
+        compatibility_matrix: true,
       },
       lease_d0: {
         default_lease_ms: 15_000,

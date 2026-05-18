@@ -156,3 +156,13 @@ export {
   type BrokerProviderPolicy,
   type BrokerRedactionOptions,
 } from "./security.js";
+export {
+  BrokerRolloutController,
+  brokerRolloutController,
+  type BrokerCanaryStage,
+  type BrokerCompatibilityEntry,
+  type BrokerDualReadComparison,
+  type BrokerRolloutMode,
+  type BrokerRolloutState,
+  type BrokerRoutedOperation,
+} from "./rollout.js";
