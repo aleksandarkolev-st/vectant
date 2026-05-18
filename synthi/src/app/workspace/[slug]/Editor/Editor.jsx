@@ -187,6 +187,8 @@ const TerminalManagerDyn = dynamic(() => import('../../TerminalManager.jsx'), {
     ssr: false
 });
 
+const DOCK_LAYOUT_RESIZE_EVENT = 'synthi:dock-layout-resize';
+
 let servicesInitialized = false;
 let servicesInitPromise = null; // serialize concurrent init attempts
 
@@ -287,6 +289,7 @@ const EditorPanel = ({
     const [pendingClose, setPendingClose] = useState(null);
     const [lspStatus, setLspStatus] = useState('Idle');
     const [servicesReady, setServicesReady] = useState(false);
+    const editorViewportRef = useRef(null);
     const slug = useAppSelector(state => state.workspace.slug);
 
     // Refs for file cache data — used during async service init to pre-populate
@@ -391,6 +394,85 @@ const EditorPanel = ({
     const lspOpenedUrisRef = useRef(new Map()); // Map<clientKey, { uri, languageId }>
     // Track textDocumentSync capability reported by each language server
     const lspSyncCapRef = useRef(new Map()); // Map<clientKey, number> (1=Full, 2=Incremental)
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return undefined;
+
+        let animationFrameId = null;
+        let settleTimerId = null;
+
+        const relayoutEditors = () => {
+            try { editorInstance?.layout?.(); } catch (_) { /* ignored */ }
+            try { diffEditorRef.current?.layout?.(); } catch (_) { /* ignored */ }
+        };
+
+        const handleDockLayoutResize = () => {
+            relayoutEditors();
+            if (animationFrameId != null) {
+                window.cancelAnimationFrame(animationFrameId);
+            }
+            if (settleTimerId != null) {
+                window.clearTimeout(settleTimerId);
+            }
+            animationFrameId = window.requestAnimationFrame(relayoutEditors);
+            settleTimerId = window.setTimeout(relayoutEditors, 280);
+        };
+
+        window.addEventListener(DOCK_LAYOUT_RESIZE_EVENT, handleDockLayoutResize);
+        return () => {
+            window.removeEventListener(DOCK_LAYOUT_RESIZE_EVENT, handleDockLayoutResize);
+            if (animationFrameId != null) {
+                window.cancelAnimationFrame(animationFrameId);
+            }
+            if (settleTimerId != null) {
+                window.clearTimeout(settleTimerId);
+            }
+        };
+    }, [editorInstance]);
+
+    useEffect(() => {
+        const viewport = editorViewportRef.current;
+        if (!viewport) return undefined;
+
+        let animationFrameId = null;
+        let settleTimerId = null;
+        let previousWidth = 0;
+        let previousHeight = 0;
+
+        const relayoutEditors = () => {
+            try { editorInstance?.layout?.(); } catch (_) { /* ignored */ }
+            try { diffEditorRef.current?.layout?.(); } catch (_) { /* ignored */ }
+        };
+
+        const observer = new ResizeObserver(([entry]) => {
+            const width = entry?.contentRect?.width ?? 0;
+            const height = entry?.contentRect?.height ?? 0;
+            if (width === previousWidth && height === previousHeight) return;
+            previousWidth = width;
+            previousHeight = height;
+
+            relayoutEditors();
+            if (animationFrameId != null) {
+                window.cancelAnimationFrame(animationFrameId);
+            }
+            if (settleTimerId != null) {
+                window.clearTimeout(settleTimerId);
+            }
+            animationFrameId = window.requestAnimationFrame(relayoutEditors);
+            settleTimerId = window.setTimeout(relayoutEditors, 280);
+        });
+
+        observer.observe(viewport);
+        return () => {
+            observer.disconnect();
+            if (animationFrameId != null) {
+                window.cancelAnimationFrame(animationFrameId);
+            }
+            if (settleTimerId != null) {
+                window.clearTimeout(settleTimerId);
+            }
+        };
+    }, [editorInstance, diffMode]);
 
     // Initialize Monaco Services ONCE — uses a module-level promise so that
     // concurrent callers (StrictMode double-fire, fast remounts) all wait for
@@ -3949,10 +4031,19 @@ const EditorPanel = ({
     const editorUI = (
                     <div className="h-full flex flex-col rounded-tl-lg rounded-tr-lg overflow-hidden" style={{ background: 'var(--bg-editor)' }}>
                         {/* Minimal Sleek Header - Synthi Brand Theme */}
-                        <div className="h-10 border-b-2 flex justify-between select-none shadow-sm" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)' }}>
+                        {/* Editor toolbar — the file-tab strip has been lifted
+                            into the TopNav (smart strip); this row now holds
+                            only the editor-level actions (collab avatars, Solo
+                            pill, save). The tabs DOM stays mounted (hidden) so
+                            scroll-into-view + middle-click + drag handlers
+                            remain wired for any code that still references them. */}
+                        <div className="hidden h-8 border-b justify-between select-none shadow-sm" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)' }}>
 
-                            {/* Breadcrumbs */}
-                                <div className="h-full flex min-w-0 relative group tabs-container-wrapper">
+                            {/* Breadcrumbs — visually hidden, the tab strip
+                                was lifted into the TopNav. We keep the DOM
+                                mounted because refs & handlers are still
+                                wired throughout the editor. */}
+                                <div className="hidden h-full flex min-w-0 relative group tabs-container-wrapper">
                                     {/* Tabs bar (sleek) */}
                                     <div
                                         ref={tabsContainerRef}
@@ -4393,7 +4484,7 @@ const EditorPanel = ({
                         )}
 
                         {/* Editor Container */}
-                        <div className="flex-1 overflow-hidden relative group">
+                        <div ref={editorViewportRef} className="flex-1 overflow-hidden relative group">
                             <ContextMenu>
                                 <ContextMenuTrigger asChild>
                                     <div className="h-full w-full">

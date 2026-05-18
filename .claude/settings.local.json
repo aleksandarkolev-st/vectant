@@ -86,7 +86,8 @@
       "PowerShell(cd \"c:\\\\Users\\\\HP\\\\source\\\\repos\\\\synthi-ide\\\\synthi\"; $env:NEXT_PUBLIC_DISABLE_TELEMETRY = \"1\"; Start-Process -FilePath \"npm.cmd\" -ArgumentList \"run\",\"dev\" -RedirectStandardOutput \"c:\\\\Users\\\\HP\\\\source\\\\repos\\\\synthi-ide\\\\.scratch-playwright\\\\dev-server.log\" -RedirectStandardError \"c:\\\\Users\\\\HP\\\\source\\\\repos\\\\synthi-ide\\\\.scratch-playwright\\\\dev-server.err\" -NoNewWindow -PassThru | Select-Object Id, ProcessName)",
       "Bash(node observe-workspace.mjs)",
       "Bash(curl -s \"http://localhost:3001/_next/static/chunks/_app-pages-browser_src_app_globals_css.css\")",
-      "Bash(grep -n \"displayName\\\\|tab.title\\\\|panel.title\\\\|tab\\\\\\\\.label\" \"/c/Users/HP/source/repos/synthi-ide/synthi/src/components/docking-wm/components/Tab.jsx\")"
+      "Bash(grep -n \"displayName\\\\|tab.title\\\\|panel.title\\\\|tab\\\\\\\\.label\" \"/c/Users/HP/source/repos/synthi-ide/synthi/src/components/docking-wm/components/Tab.jsx\")",
+      "Bash(node observe-mobile.mjs)"
     ]
   }
 }

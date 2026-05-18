@@ -1,10 +1,1 @@
- ⚠ Port 3000 is in use by process 11408, using available port 3001 instead.
-Error: Route "/collab/[sessionId]" used `params.sessionId`. `params` should be awaited before using its properties. Learn more: https://nextjs.org/docs/messages/sync-dynamic-apis
-    at CollabJoinContent (src\app\collab\[sessionId]\page.jsx:23:21)
-  21 |   const searchParams = useSearchParams();
-  22 |   const token = searchParams.get('token');
-> 23 |   const sessionId = params?.sessionId;
-     |                     ^
-  24 |
-  25 |   const { data: authSession, status: authStatus } = useSession();
-  26 |   const [state, setState] = useState('validating'); // validating | valid | knocking | admitted | denied | error
+ ⚠ Port 3000 is in use by process 15428, using available port 3001 instead.

@@ -11,6 +11,7 @@ import { getFileIcon } from '@/utils/fileIcons';
 import { toast } from 'sonner';
 import CollabToolbar from '@/components/collaboration/CollabToolbar';
 import { useTheme } from '@/components/ThemeProvider';
+import { EditorTabStrip } from '@/components/EditorTabStrip';
 
 function TopNav({ 
   title, 
@@ -86,11 +87,11 @@ function TopNav({
   const idlePlaceholder = activeFile?.name || 'Search files, symbols…';
 
   return (
-    <div className="topnav-root vt-ambient-bottom relative flex items-center h-8 px-2 border-b space-x-3 font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
-      {/* Centered Vectant wordmark — absolutely positioned so it stays
-          dead-center regardless of how the side clusters expand. Dark
-          theme is +2px because its strokes are visibly thinner. */}
-      <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2 flex items-center justify-center select-none">
+    <div className="topnav-root vt-ambient-bottom relative flex items-center h-10 px-2 border-b space-x-2 font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
+      {/* Vectant wordmark — left-anchored so the centered slot can host
+          the lifted file-tab strip without collision. Dark theme is +2px
+          because its strokes are visibly thinner than the light variant. */}
+      <div className="flex items-center justify-center h-full flex-shrink-0 pl-1 pr-2 select-none">
         <img
           src={isLightTheme ? '/vectant-light-theme.png' : '/vectant-dark-theme.png'}
           alt="Vectant"
@@ -133,7 +134,15 @@ function TopNav({
           </div>
         )}
       </div>
-      <div className="flex-1" />
+
+      {/* Smart strip — open file tabs lifted into the TopNav row.
+          Click-only, edge-fades into the surrounding chrome at both ends,
+          horizontally scrollable when there are more tabs than fit. */}
+      <div className="topnav-tabs flex-1 min-w-0 h-full flex items-center justify-center px-2 lg:px-3">
+        <div className="w-full max-w-[760px] xl:max-w-[860px] h-full flex items-center min-w-0">
+          <EditorTabStrip />
+        </div>
+      </div>
 
         {/* Collaboration — avatars, inbox, history, session share, knocks.
             Hidden on narrow widths to keep the run controls reachable. */}

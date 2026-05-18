@@ -166,7 +166,10 @@
 
 .dock-tab-group {
   border: 1px solid transparent;
-  transition: border-color 0.15s, outline-color 0.15s;
+  transition:
+    border-color 160ms,
+    outline-color 160ms,
+    opacity 220ms ease-out;
 }
 
 .dock-tab-group--focused {
@@ -177,6 +180,121 @@
 .dock-tab-group--drag-over {
   outline: 2px solid rgba(58, 133, 116, 0.6) !important;
   outline-offset: -2px;
+}
+
+/* ─── Sidebar auto-collapse ──────────────────────────────────────────
+   When the cursor leaves a sidebar group for the configured delay, we
+   apply `--collapsed` and slide the group down to a narrow hover rail.
+   The sizing lives on the split child wrapper so sibling panels can
+   reclaim the freed space instead of leaving a dead gutter behind. */
+.dock-split__child {
+  width: auto;
+  height: auto;
+  transition:
+    flex-grow 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    flex-basis 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    max-width 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    max-height 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Collapsed: keep an 8px hover rail so the cursor has somewhere to land
+   to wake the panel back up. The content fades to 0 opacity so the
+   collapsed state reads as "tucked away" rather than "still here". */
+.dock-split--row > .dock-split__child:has(> [data-sidebar-collapsed="true"]) {
+  flex-grow: 0 !important;
+  flex-shrink: 0 !important;
+  flex-basis: 8px !important;
+  width: 8px;
+  max-width: 8px;
+}
+
+.dock-split--column > .dock-split__child:has(> [data-sidebar-collapsed="true"]) {
+  flex-grow: 0 !important;
+  flex-shrink: 0 !important;
+  flex-basis: 8px !important;
+  height: 8px;
+  max-height: 8px;
+}
+
+.dock-tab-group--collapsed {
+  min-width: 0 !important;
+  min-height: 0 !important;
+}
+
+.dock-tab-group--collapsed > * {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease-out;
+}
+
+/* The splitter next to a collapsed group also slides out of the way so
+   the user can't accidentally grab a 0-width handle. */
+.dock-split__child:has(> [data-sidebar-collapsed="true"]) + .dock-splitter,
+.dock-splitter:has(+ .dock-split__child:has(> [data-sidebar-collapsed="true"])) {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms ease-out;
+}
+
+.dock-split:has(.dock-splitter--active) > .dock-split__child {
+  transition: none !important;
+}
+
+.dock-activitybar__hover-hint {
+  position: absolute;
+  right: -8px;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  color: var(--text-muted, #7a8099);
+  opacity: 0.72;
+  pointer-events: none;
+  animation: dock-sidebar-hover-hint 900ms ease-in-out infinite alternate;
+}
+
+.dock-tab-group__solo-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 90%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-app) 92%, transparent);
+  color: var(--text-muted, #7a8099);
+  opacity: 0.62;
+  transition: opacity 120ms ease-out, color 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out;
+}
+
+.dock-tab-group__solo-close:hover {
+  opacity: 1;
+  color: var(--text-primary, #e8eaf0);
+  border-color: color-mix(in srgb, var(--accent-primary) 35%, var(--border-subtle));
+  background: color-mix(in srgb, var(--bg-app) 86%, var(--accent-primary) 8%);
+}
+
+.dock-tab-group--collapsed .dock-tab-group__solo-close {
+  opacity: 0 !important;
+  pointer-events: none;
+}
+
+@keyframes dock-sidebar-hover-hint {
+  from {
+    transform: translateY(-50%) translateX(0);
+  }
+  to {
+    transform: translateY(-50%) translateX(4px);
+  }
 }
 
 /* ─── Floating Window ────────────────────────────────── */
@@ -454,7 +572,8 @@
   .dock-floating-window--entering,
   .dock-maximize-enter,
   .dock-drop-overlay__zone--active,
-  .dock-split-container > * {
+  .dock-split-container > *,
+  .dock-split__child {
     animation: none !important;
     transition: none !important;
   }

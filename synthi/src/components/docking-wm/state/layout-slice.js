@@ -142,8 +142,8 @@ const layoutSlice = createSlice({
      * Payload: { tabId, removeDefinition? }
      */
     closeTabAction(state, action) {
-      const { tabId, removeDefinition = true } = action.payload;
-      return closeTab(state, tabId, removeDefinition);
+      const { tabId, removeDefinition = true, forceClose = false } = action.payload;
+      return closeTab(state, tabId, removeDefinition, forceClose);
     },
 
     /**

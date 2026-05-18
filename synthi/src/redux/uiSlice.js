@@ -26,6 +26,13 @@ export const initialUiState = {
     presenceGranularity: 'line', // options: 'line' | 'file' | 'workspace'
     // Cursor position for status bar
     cursorPosition: { lineNumber: 1, column: 1 },
+    // ── Sidebar auto-collapse ────────────────────────────────────────
+    // When the cursor leaves a sidebar tab group for `delay` ms, the
+    // group collapses to a 0-width slot. Hover re-expands. This is a
+    // pure UI affordance — the underlying docking-wm layout is not
+    // mutated, so the group's size is restored when the user returns.
+    sidebarAutoCollapseEnabled: true,
+    sidebarAutoCollapseDelay: 2500,
 };
 
 const uiSlice = createSlice({
@@ -82,6 +89,15 @@ const uiSlice = createSlice({
         setCursorPosition: (state, action) => {
             state.cursorPosition = action.payload;
         },
+        toggleSidebarAutoCollapse: (state) => {
+            state.sidebarAutoCollapseEnabled = !state.sidebarAutoCollapseEnabled;
+        },
+        setSidebarAutoCollapseDelay: (state, action) => {
+            const v = Number(action.payload);
+            if (Number.isFinite(v) && v >= 500 && v <= 10000) {
+                state.sidebarAutoCollapseDelay = v;
+            }
+        },
         
         // UI Action State Machine Reducers
         startCreate: (state, action) => {
@@ -128,6 +144,8 @@ export const {
     hydrateUi,
     toggleFolderExpansion,
     setExpandedFolders,
+    toggleSidebarAutoCollapse,
+    setSidebarAutoCollapseDelay,
 } = uiSlice.actions;
 
 // Selectors
@@ -142,5 +160,7 @@ export const selectExpandedFolders = (state) => state.ui.expandedFolders || [];
 export const selectShowAnonymousPresence = (state) => state.ui.showAnonymousPresence;
 export const selectPresenceGranularity = (state) => state.ui.presenceGranularity;
 export const selectCursorPosition = (state) => state.ui.cursorPosition;
+export const selectSidebarAutoCollapseEnabled = (state) => state.ui.sidebarAutoCollapseEnabled ?? true;
+export const selectSidebarAutoCollapseDelay = (state) => state.ui.sidebarAutoCollapseDelay ?? 2500;
 
 export default uiSlice.reducer;

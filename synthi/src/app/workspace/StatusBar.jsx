@@ -145,7 +145,7 @@ function StatusBarInner({
   // floating surface.
   return (
     <div className="status-bar-root pointer-events-none absolute inset-x-0 bottom-3 z-30 px-3 flex items-end justify-center" style={{ background: 'transparent' }}>
-      <div className="relative w-1/2 min-w-[640px] pointer-events-auto">
+      <div className="relative w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))] pointer-events-auto">
         {/* Build-controls island — hugs the right edge of the status island
             wrapper, vertically centered. Floats just outside the status pill
             so the status pill remains exactly centered on the page. Hidden
@@ -197,7 +197,7 @@ function StatusBarInner({
           }}
         />
         <div
-          className="status-island relative z-10 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-3 h-7 px-4 rounded-full text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap overflow-hidden"
+          className="status-island relative z-10 flex items-center gap-x-3 h-7 px-4 rounded-full text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap"
           style={{
             background:
               'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, var(--brand-gradient-horizontal) border-box',
@@ -210,8 +210,10 @@ function StatusBarInner({
             WebkitBackdropFilter: 'blur(14px) saturate(160%)',
           }}
         >
-      {/* ── LEFT ZONE — file/build state ─────────────────────────── */}
-      <div className="flex min-w-0 items-center gap-1 justify-self-start">
+      {/* ── LEFT ZONE — file/build state. flex-shrink-0 so a long
+            language name in the right zone can't squeeze branch / problems
+            into truncation. */}
+      <div className="flex shrink-0 items-center gap-1">
         {/* Branch */}
         <div className="flex items-center rounded-md px-1">
           <BranchSelector slug={slug} />
@@ -249,8 +251,13 @@ function StatusBarInner({
         </div>
       </div>
 
-      {/* ── CENTER ZONE — session / collaboration ────────────────── */}
-      <div className="flex items-center gap-1 justify-self-center">
+      {/* ── CENTER ZONE — session / collaboration.
+            Lives in the flex flow with flex-1 + justify-center so it sits
+            in the available middle space without ever overlapping the
+            side zones. Dead-centre would require absolute positioning,
+            but the resulting overlap was strictly worse than a slight
+            visual offset when side widths differ. */}
+      <div className="flex-1 flex items-center justify-center gap-1 min-w-0">
         {/* Collab status — label hides below xl */}
         <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md transition-all cursor-default" title={`Collaboration: ${collabStyle.text}`}>
           <collabStyle.Icon className={`w-3.5 h-3.5 ${collabStyle.textColor}`} strokeWidth={2} />
@@ -292,8 +299,10 @@ function StatusBarInner({
         )}
       </div>
 
-      {/* ── RIGHT ZONE — healing / extensions / cursor / language ── */}
-      <div className="flex min-w-0 max-w-full items-center gap-1 justify-self-end mr-1">
+      {/* ── RIGHT ZONE — healing / extensions / cursor / language.
+            shrink-0 so the language/framework labels stay readable in
+            full instead of being truncated to "J…". */}
+      <div className="flex shrink-0 items-center gap-1 mr-1">
         {/* Healing */}
         <HealingIndicator />
 
@@ -345,20 +354,22 @@ function StatusBarInner({
         {/* Cursor position */}
         <StatusBarCursorInfo />
 
-        {/* Language — label hides below xl */}
-        <div className="flex min-w-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]" title={language}>
+        {/* Language — at the end of the right zone, always displays in
+            full (no truncate, no shrinking). The lightning-bolt icon is
+            our signature mark for the detected language. */}
+        <div className="flex shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-pointer transition-all hover:bg-[color-mix(in_srgb,var(--text-primary)_4%,transparent)]" title={language}>
           <Zap className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
-          <span className="hidden max-w-[10ch] truncate 2xl:inline font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
+          <span className="font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
         </div>
 
-        {/* AI-detected framework pill — most likely to be cramped, hides earliest */}
+        {/* AI-detected framework pill — also at the tail; full readout */}
         {languageAndFramework && (
           <div
-            className="flex min-w-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-all"
+            className="flex shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-all"
             title={`Framework: ${languageAndFramework}`}
           >
             <Cpu className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
-            <span className="hidden max-w-[14ch] truncate 2xl:inline font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
+            <span className="font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
           </div>
         )}
       </div>

@@ -1,3 +1,37 @@
+# Workspace Sidebar Collapse Polish 2026-05-18
+
+## Scope
+- Make sidebar auto-collapse work for docked sidebar groups even when multiple sidebar panels are open.
+- Animate the collapse as a real 200-300ms width resize so the editor fills the reclaimed space smoothly.
+- Constrain the top smart strip so it sits in a narrower lane instead of stretching across the whole top bar.
+
+## Checklist
+- [x] Fix sidebar-group classification so all sidebar panel variants can auto-collapse.
+- [x] Move collapse sizing to the split child wrapper so sibling panels reflow cleanly.
+- [x] Tune the collapse animation timing and splitter hiding for smoother motion.
+- [x] Narrow the top smart strip lane.
+- [x] Re-layout Monaco from the real editor viewport so collapsed sidebars reclaim space without leaving a stale right gutter.
+- [x] Rebuild and restart the frontend container after the UI fixes.
+- [x] Validate the touched frontend files.
+
+## Review
+- Sidebar auto-collapse now keys off the canonical panel constants, which fixes the previously-mismatched pull-request sidebar type and keeps multi-tab sidebar groups eligible to collapse.
+- The collapse animation now happens on the split child wrapper, so the editor and sibling panels reclaim the freed width instead of leaving a dead gutter while only the inner content fades.
+- Splitters next to collapsed sidebars now hide based on the split child wrapper state, and the collapse timing is tuned to a 260ms resize animation.
+- The top smart strip now sits inside a capped center lane instead of stretching edge to edge across the available top-nav space.
+- Validation: `get_errors` returned clean diagnostics for the touched frontend files. Browser-side visual verification was limited because the local `http://localhost:3000/` session lands on the sign-in screen in the shared browser context.
+- Live browser validation later confirmed the remaining dead-right-strip bug was the row split math itself: the collapsed sidebar was 8px wide, but the surviving sibling kept only `0.8` flex-grow and left the last 20% of the row empty. Scaling the split grow weights fixed the live layout, and the shared workspace now measures the editor column at the full remaining width.
+
+## Follow-up
+- Left sidebar hover now coordinates with the activity bar: hovering the activity bar clears collapse timers, re-expands the sidebar, and keeps it open while the cursor stays there.
+- First-use onboarding now starts with the left sidebar collapsed and shows a bouncing arrow on the Explorer activity-bar button until the user opens the sidebar with the cursor.
+- Single-tab side panes now render a compact close affordance when their tab bar is intentionally hidden; the close action force-hides singleton side panes, including default panels like Explorer.
+- The leftover editor header row under the navbar is now hidden so the old Solo/save chrome no longer leaves a second strip below the top nav.
+- The smart strip now restores the old custom tab-scrollbar pattern in a dedicated 3px lane below the navbar tabs, and its moving underline now defaults to gray with the same hover timing as the docked terminal tabs.
+- Monaco now observes the actual editor viewport with `ResizeObserver`, so sidebar collapse drives a real editor relayout instead of shifting the stale pre-collapse surface and leaving empty space on the right.
+- Split children now use scaled flex-grow weights, so collapsing a `0.2` sidebar no longer leaves the remaining `0.8` pane stranded at 80% width with a dead strip on the right.
+- Validation now also includes a successful `docker compose build frontend` and `docker compose up -d frontend` restart.
+
 # Workspace Chrome Tweaks 2026-05-17
 
 ## Scope
