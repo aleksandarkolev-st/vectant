@@ -484,10 +484,10 @@ fn main() {
     // `(window, renderer)` tuple so the existing SDL-specific
     // downstream code (sdl_window_id lookup, xdotool input
     // injection, etc.) keeps working. For non-SDL2 backends the
-    // `window`/`renderer` tuple stays null — the runner operates
-    // through the trait surface only, and SDL-specific downstream
-    // code is gated on the null check (Phase 10g.4 — sdl_window_id
-    // and the deleted _sdl_texture block).
+    // `window`/`renderer` tuple stays null, but `host_surface`
+    // carries the backend render surface passed to generated
+    // modules. GLFW/OpenGL, for example, needs the GLFWwindow*
+    // there even though the SDL-specific tuple must remain null.
     //
     // When the selector returns None (no sidecar — BYOR or smoke
     // test path) we fall back to the legacy init_sdl() path with
@@ -497,8 +497,8 @@ fn main() {
     #[cfg(target_os = "linux")]
     let mut runtime_handle: Option<worker::runtime::window_backend::WindowHandle> = None;
     #[cfg(target_os = "linux")]
-    let (window, renderer) = {
-        use worker::runtime::window_backend::{WindowBackend, WindowFlags};
+    let (window, renderer, host_surface) = {
+        use worker::runtime::window_backend::WindowFlags;
         if let Some(selected) = selected_runtime_backend.as_mut() {
             let backend_name = selected.backend.name().to_string();
             match selected.backend.init() {
@@ -510,26 +510,33 @@ fn main() {
                         WindowFlags::default(),
                     ) {
                         Ok(handle) => {
+                            let surface = if handle.renderer_ptr.is_null() {
+                                handle.raw_ptr
+                            } else {
+                                handle.renderer_ptr
+                            };
                             eprintln!(
                                 "[Phase 10g.4] WindowBackend trait created {} window \
-                                 (win={:p}, renderer={:p}, x11_id={:?})",
+                                 (win={:p}, renderer={:p}, surface={:p}, x11_id={:?})",
                                 backend_name,
                                 handle.raw_ptr,
                                 handle.renderer_ptr,
+                                surface,
                                 handle.x11_window_id,
                             );
                             // For SDL2, extract raw pointers for the
                             // legacy downstream call sites; for non-SDL
                             // backends the SDL-specific pointers stay
-                            // null and downstream code branches on
-                            // sdl_window_id / runtime_handle accordingly.
+                            // null. `surface` is still passed to modules
+                            // through AppState so they can use their own
+                            // backend pointer.
                             let (win, ren) = if backend_name == "SDL2" {
                                 (handle.raw_ptr as *mut SDL_Window, handle.renderer_ptr)
                             } else {
                                 (ptr::null_mut(), ptr::null_mut())
                             };
                             runtime_handle = Some(handle);
-                            (win, ren)
+                            (win, ren, surface)
                         }
                         Err(e) => {
                             eprintln!(
@@ -537,7 +544,8 @@ fn main() {
                                  falling back to legacy init_sdl (only safe for SDL2 projects)",
                                 backend_name, e
                             );
-                            unsafe { init_sdl() }
+                            let (win, ren) = unsafe { init_sdl() };
+                            (win, ren, ren)
                         }
                     }
                 }
@@ -547,7 +555,8 @@ fn main() {
                          falling back to legacy init_sdl (only safe for SDL2 projects)",
                         backend_name, e
                     );
-                    unsafe { init_sdl() }
+                    let (win, ren) = unsafe { init_sdl() };
+                    (win, ren, ren)
                 }
             }
         } else {
@@ -560,7 +569,8 @@ fn main() {
                 "[Phase 10g.4] No selector decision (no sidecar) — \
                  defaulting to legacy init_sdl path"
             );
-            unsafe { init_sdl() }
+            let (win, ren) = unsafe { init_sdl() };
+            (win, ren, ren)
         }
     };
 
@@ -776,10 +786,14 @@ fn main() {
     debug_log!("[Runner] HmrOrchestrator initialized (binary_state=ENABLED)");
 
     #[cfg(not(target_os = "linux"))]
-    let (window, renderer) = (ptr::null_mut(), ptr::null_mut());
+    let (_window, _renderer, host_surface) = (
+        ptr::null_mut::<c_void>(),
+        ptr::null_mut::<c_void>(),
+        ptr::null_mut::<c_void>(),
+    );
     let mut app_state = AppState {
         raw: std::ptr::null_mut(),
-        renderer,
+        renderer: host_surface,
     };
     let mut last_frame = Instant::now();
     let mut last_log = Instant::now();
@@ -894,7 +908,6 @@ fn main() {
                 Vec::new();
             let mut legacy_drained: Vec<SDL_Event> = Vec::new();
             let used_trait = {
-                use worker::runtime::window_backend::WindowBackend;
                 if let (Some(_handle), Some(selected)) =
                     (runtime_handle.as_ref(), selected_runtime_backend.as_mut())
                 {
@@ -1472,7 +1485,6 @@ fn main() {
                     // behavior for BYOR / sidecar-less runs.
                     #[cfg(target_os = "linux")]
                     {
-                        use worker::runtime::window_backend::WindowBackend;
                         let handled_via_trait = if let (Some(handle), Some(selected)) =
                             (runtime_handle.take(), selected_runtime_backend.as_mut())
                         {
@@ -1779,7 +1791,6 @@ fn main() {
         // path or non-SDL2 selector decision).
         #[cfg(target_os = "linux")]
         {
-            use worker::runtime::window_backend::WindowBackend;
             let mut presented_via_trait = false;
             if let (Some(handle), Some(selected)) =
                 (runtime_handle.as_ref(), selected_runtime_backend.as_mut())
