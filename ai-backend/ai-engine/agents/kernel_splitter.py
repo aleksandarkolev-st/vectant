@@ -109,6 +109,8 @@ _ROLE_FILENAMES = {
     "host_runner": "host_runner.cpp",
     "device": "device.cu",
 }
+_SOURCE_GLOBAL_KERNEL_RE = re.compile(r"\b__global__\s+(?:void\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_SOURCE_DEVICE_IDENTIFIER_RE = re.compile(r"\bk[A-Z][A-Za-z0-9_]*\b")
 
 
 def _looks_like_source_file(name: str) -> bool:
@@ -212,6 +214,44 @@ def _source_file_map(files: Optional[Sequence[Mapping[str, Any]]]) -> Dict[str, 
         if isinstance(content, str) and content.strip():
             out[str(name).strip().replace("\\", "/")] = content
     return out
+
+
+def _source_device_preservation_contract(source_files: Mapping[str, str]) -> str:
+    device_sources = {
+        path: source
+        for path, source in source_files.items()
+        if path.lower().endswith((".cu", ".hip")) and ("__global__" in source or "__device__" in source)
+    }
+    if not device_sources:
+        return ""
+    kernels = sorted(
+        {
+            match.group(1)
+            for source in device_sources.values()
+            for match in _SOURCE_GLOBAL_KERNEL_RE.finditer(source)
+        }
+    )
+    identifiers = sorted(
+        {
+            ident
+            for source in device_sources.values()
+            for ident in _SOURCE_DEVICE_IDENTIFIER_RE.findall(source)
+        }
+    )
+    sections = [
+        "# SOURCE DEVICE PRESERVATION CONTRACT",
+        "The generated device role must copy/adapt the user GPU source below, not summarize it.",
+        "Preserve original __global__ kernel names, non-empty kernel bodies, device helpers, constants, branches, boundary/reset logic, and output writes.",
+        "Do not emit dangling constant declarations, empty kernels, renamed kernels, or simplified substitute kernels.",
+    ]
+    if kernels:
+        sections.append(f"Required original kernels: {', '.join(kernels)}.")
+    if identifiers:
+        sections.append(f"Required device identifiers/constants: {', '.join(identifiers)}.")
+    for path, source in sorted(device_sources.items()):
+        body = source if len(source) <= 12000 else source[:12000] + "\n/* ... truncated ... */"
+        sections.append(f"```cpp\n// FILE: {path}\n{body}\n```")
+    return "\n".join(sections)
 
 
 def _extract_block(pattern: re.Pattern, text: str) -> str:
@@ -367,7 +407,14 @@ async def run_kernel_splitter(
     callers decide whether to retry the prompt with the violations
     appended to `extra_instructions`.
     """
-    prompt = build_prompt(user_code, detection=detection, extra_instructions=extra_instructions)
+    source_map = _source_file_map(files)
+    prompt = build_prompt(
+        user_code,
+        detection=detection,
+        extra_instructions="\n\n".join(
+            part for part in [extra_instructions, _source_device_preservation_contract(source_map)] if part
+        ),
+    )
 
     raw = await provider.ask_llm(
         user_code,
@@ -393,7 +440,7 @@ async def run_kernel_splitter(
         files=parsed["files"],
         manifest_arch=arch_list,
         manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
-        source_files=_source_file_map(files),
+        source_files=source_map,
     )
 
     return KernelSplitResult(
