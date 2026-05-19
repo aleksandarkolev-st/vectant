@@ -144,7 +144,10 @@ _SYNTHI_LAUNCH_RESULT_CHECK_RE = re.compile(
     r"(?:\bif\s*\(\s*synthi_gpu_launch\s*\(|\b(?:const\s+)?(?:bool|auto)(?:\s+const)?\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*synthi_gpu_launch\s*\()",
     re.DOTALL,
 )
-_GUI_HOST_MIRROR_INDEX_RE = re.compile(r"(?:->|\.)\s*(?P<name>h_[A-Za-z_][A-Za-z0-9_]*)\s*\[")
+_GUI_RENDER_MIRROR_INDEX_RE = re.compile(
+    r"(?:->|\.)\s*(?P<name>(?!(?:d_|device))[A-Za-z_][A-Za-z0-9_]*)"
+    r"\s*\[[^\]]+\]\s*(?:(?:->|\.)\s*(?P<field>[A-Za-z_][A-Za-z0-9_]*))?"
+)
 _DEVICE_DESCRIPTOR_INIT_RE = re.compile(
     r"\bDeviceDescriptor\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*\{(?P<body>.*?)\}\s*;",
     re.DOTALL,
@@ -426,6 +429,39 @@ def _function_body(source: str, name: str) -> str:
     if depth != 0:
         return ""
     return source[match.end(): i - 1]
+
+
+def _mirror_allocated_in_load(core_load_body: str, mirror: str) -> bool:
+    field = re.escape(mirror)
+    return bool(
+        re.search(
+            rf"(?:->|\.)\s*{field}\s*=\s*[^;]*(?:\bnew\b|\b(?:std::)?(?:malloc|calloc)\s*\()",
+            core_load_body,
+        )
+    )
+
+
+def _mirror_initialized_in_load(core_load_body: str, mirror: str, fields: Set[str]) -> bool:
+    field = re.escape(mirror)
+    indexed_access = rf"(?:->|\.)\s*{field}\s*\[[^\]]+\]"
+    aggregate_assignment = re.search(rf"{indexed_access}\s*=", core_load_body)
+    copy_assignment = re.search(
+        rf"\b(?:memcpy|std::copy(?:_n)?)\s*\([^;]*(?:->|\.)\s*{field}\b",
+        core_load_body,
+    )
+    if aggregate_assignment or copy_assignment:
+        return True
+    if not fields:
+        return bool(
+            re.search(
+                rf"{indexed_access}\s*(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_]*\s*=",
+                core_load_body,
+            )
+        )
+    return all(
+        re.search(rf"{indexed_access}\s*(?:->|\.)\s*{re.escape(member)}\s*=", core_load_body)
+        for member in fields
+    )
 
 
 def _manifest_role_path(manifest: Optional[Mapping[str, object]], role: str) -> Optional[str]:
@@ -964,9 +1000,16 @@ def verify_split_output(
                 offending_symbol=device_deref.group("name"),
             )
         )
-    rendered_host_mirrors = {
-        match.group("name") for match in _GUI_HOST_MIRROR_INDEX_RE.finditer(gui_source)
-    }
+    rendered_host_mirrors: dict[str, Set[str]] = {}
+    for match in _GUI_RENDER_MIRROR_INDEX_RE.finditer(gui_source):
+        mirror = match.group("name")
+        if not mirror:
+            continue
+        rendered_host_mirrors.setdefault(mirror, set())
+        member = match.group("field")
+        if member:
+            rendered_host_mirrors[mirror].add(member)
+    zeroed_render_mirrors: Set[str] = set()
     for mirror in sorted(rendered_host_mirrors):
         zeroed_mirror = re.search(
             rf"\bmemset\s*\(\s*(?:[A-Za-z_][A-Za-z0-9_]*\s*(?:->|\.)\s*)?"
@@ -975,8 +1018,12 @@ def verify_split_output(
         ) or re.search(
             rf"\bstd::fill(?:_n)?\s*\([^;]*\b{re.escape(mirror)}\b[^;]*,\s*(?:0|0\.0f?)\s*\)",
             core_source,
+        ) or re.search(
+            rf"(?:->|\.)\s*{re.escape(mirror)}\s*=\s*[^;]*\bcalloc\s*\(",
+            core_source,
         )
         if zeroed_mirror:
+            zeroed_render_mirrors.add(mirror)
             violations.append(
                 Violation(
                     rule="host_visible_mirror_zeroed_for_render",
@@ -989,6 +1036,29 @@ def verify_split_output(
                         "on-screen initial values from the user's setup logic, or "
                         "launch a real init kernel and copy those values back before "
                         "the first render."
+                    ),
+                    offending_module=core_path,
+                    offending_symbol=mirror,
+                )
+            )
+    for mirror, fields in sorted(rendered_host_mirrors.items()):
+        if mirror in zeroed_render_mirrors:
+            continue
+        if _mirror_allocated_in_load(core_load_body, mirror) and not _mirror_initialized_in_load(
+            core_load_body, mirror, fields
+        ):
+            field_list = ", ".join(sorted(fields))
+            field_suffix = f" fields ({field_list})" if field_list else ""
+            violations.append(
+                Violation(
+                    rule="host_visible_mirror_not_initialized_for_render",
+                    message=(
+                        f"The gui role renders from {mirror}{field_suffix}, but "
+                        "core_on_load allocates that host-visible mirror without "
+                        "populating first-frame values. Allocate host mirrors and "
+                        "immediately fill every rendered coordinate/color/pixel "
+                        "with varied, on-screen data copied from the user's setup "
+                        "logic before returning from core_on_load."
                     ),
                     offending_module=core_path,
                     offending_symbol=mirror,

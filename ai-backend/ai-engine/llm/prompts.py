@@ -4024,6 +4024,23 @@ returns true; only then run the update kernel and copy device outputs back. The
 first frame must have on-screen, non-overlapping data from the host mirrors,
 not uninitialized zeros or offscreen values.
 
+A valid first-frame host mirror setup is:
+
+    state->particles = new Particle[state->num_particles];
+    for (int i = 0; i < state->num_particles; ++i) {
+        state->particles[i] = Particle{
+            float((i % 32) * 20 + 12),
+            float((i / 32) * 16 + 12),
+            initial_vx,
+            initial_vy
+        };
+    }
+
+Do this immediately after allocating displayed mirrors such as `particles`,
+`points`, `positions`, `vertices`, `colors`, `rgba`, or `pixels`. Do not leave
+them for an init kernel to populate later; `gui_on_render` must have meaningful
+host data before the sidecar dispatcher is available.
+
 A valid update shape is:
 
     if (!state->device_initialized) {
@@ -4363,8 +4380,11 @@ ROCm/HIP must not. A ROCm `device_flags` list should usually be
   buffers, those mirrors must contain varied, on-screen values before the
   first render. Do not `memset` rendered positions/pixels to all zeroes or
   update every particle/pixel with the same constant so primitives overlap.
-  Inline the user's constructor/setup math from the provided project files,
-  or use an init kernel and copy the initialized data back before rendering.
+  After allocating displayed mirrors such as `particles`, `points`,
+  `positions`, `vertices`, `colors`, `rgba`, or `pixels`, immediately fill
+  every rendered x/y/color/pixel field from the user's constructor/setup math.
+  Do not rely on a device init kernel to populate the host mirror before the
+  first render.
 - Preserve the user's intent: kernel logic, buffer sizes, launch
   shapes, frame timing — all unchanged.
 - Preserve device-source semantics exactly. Every original kernel branch,

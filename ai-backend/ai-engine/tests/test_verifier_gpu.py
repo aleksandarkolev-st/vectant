@@ -491,6 +491,94 @@ def test_split_rejects_zeroed_host_mirror_used_for_render():
     assert any(v.rule == "host_visible_mirror_zeroed_for_render" for v in r.violations)
 
 
+def test_split_rejects_uninitialized_render_mirror_used_for_first_frame():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "struct Particle { float x, y, vx, vy; };\n"
+            "struct AppState { void* renderer; Particle* particles; Particle* d_particles; int num_particles; bool device_initialized; };"
+        ),
+        "core.cpp": (
+            '#include "shared.h"\n#include <hip/hip_runtime.h>\n'
+            "static AppState g_state{};\n"
+            'extern "C" void* core_on_load(void*, void* renderer) { '
+            "g_state.renderer = renderer; g_state.num_particles = 1024; "
+            "g_state.particles = new Particle[g_state.num_particles]; "
+            "hipMalloc(&g_state.d_particles, sizeof(Particle) * g_state.num_particles); "
+            'synthi_register(g_state.d_particles, sizeof(Particle) * g_state.num_particles, "persistent"); '
+            "g_state.device_initialized = false; return &g_state; }\n"
+            'extern "C" void core_on_update(void*, double) { '
+            'bool ok = synthi_gpu_launch(nullptr, "init_particles", 1, 256, 0, nullptr, { &g_state.d_particles, &g_state.num_particles }); '
+            "if (ok) g_state.device_initialized = true; }\n"
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n#include <SDL2/SDL.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void* core) { return core; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "auto* s = (AppState*)state_ptr; auto* renderer = (SDL_Renderer*)s->renderer; "
+            "SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255); "
+            "for (int i = 0; i < s->num_particles; ++i) { "
+            "SDL_Rect r{(int)s->particles[i].x, (int)s->particles[i].y, 2, 2}; "
+            "SDL_RenderFillRect(renderer, &r); } }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void init_particles(void*, int*) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(
+        v.rule == "host_visible_mirror_not_initialized_for_render"
+        and v.offending_symbol == "particles"
+        for v in r.violations
+    )
+
+
+def test_split_accepts_initialized_render_mirror_used_for_first_frame():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "struct Particle { float x, y, vx, vy; };\n"
+            "struct AppState { void* renderer; Particle* particles; Particle* d_particles; int num_particles; bool device_initialized; };"
+        ),
+        "core.cpp": (
+            '#include "shared.h"\n#include <hip/hip_runtime.h>\n'
+            "static AppState g_state{};\n"
+            'extern "C" void* core_on_load(void*, void* renderer) { '
+            "g_state.renderer = renderer; g_state.num_particles = 1024; "
+            "g_state.particles = new Particle[g_state.num_particles]; "
+            "for (int i = 0; i < g_state.num_particles; ++i) { "
+            "g_state.particles[i].x = (float)((i % 32) * 20 + 12); "
+            "g_state.particles[i].y = (float)((i / 32) * 16 + 12); "
+            "g_state.particles[i].vx = 0.1f; g_state.particles[i].vy = 0.2f; } "
+            "hipMalloc(&g_state.d_particles, sizeof(Particle) * g_state.num_particles); "
+            'synthi_register(g_state.d_particles, sizeof(Particle) * g_state.num_particles, "persistent"); '
+            "g_state.device_initialized = false; return &g_state; }\n"
+            'extern "C" void core_on_update(void*, double) { '
+            'bool ok = synthi_gpu_launch(nullptr, "init_particles", 1, 256, 0, nullptr, { &g_state.d_particles, &g_state.num_particles }); '
+            "if (ok) g_state.device_initialized = true; }\n"
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n#include <SDL2/SDL.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void* core) { return core; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "auto* s = (AppState*)state_ptr; auto* renderer = (SDL_Renderer*)s->renderer; "
+            "SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255); "
+            "for (int i = 0; i < s->num_particles; ++i) { "
+            "SDL_Rect r{(int)s->particles[i].x, (int)s->particles[i].y, 2, 2}; "
+            "SDL_RenderFillRect(renderer, &r); } }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void init_particles(void*, int*) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert not any(v.rule == "host_visible_mirror_not_initialized_for_render" for v in r.violations)
+
+
 def test_split_rejects_uninitialized_gui_render_surface():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* h_x; float* h_y; int n; void* renderer; };',
