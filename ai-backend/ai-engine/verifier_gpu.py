@@ -438,6 +438,98 @@ def _function_body(source: str, name: str) -> str:
     return source[match.end(): i - 1]
 
 
+def _device_kernel_params(source: str, name: str) -> List[str]:
+    match = re.search(
+        rf"\b__global__\s+(?:void\s+)?{re.escape(name)}\s*\((?P<params>[^)]*)\)",
+        source,
+        re.DOTALL,
+    )
+    if not match:
+        return []
+    return _split_top_level_args(match.group("params"))
+
+
+def _device_kernel_pointer_param_indexes(source: str, name: str) -> List[int]:
+    return [i for i, param in enumerate(_device_kernel_params(source, name)) if "*" in param]
+
+
+def _device_kernel_pointer_param_names(source: str, name: str) -> List[str]:
+    names: List[str] = []
+    for param in _device_kernel_params(source, name):
+        if "*" not in param:
+            continue
+        tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", param)
+        if tokens:
+            names.append(tokens[-1])
+    return names
+
+
+def _launch_kernel_name(arg: str) -> Optional[str]:
+    match = re.match(r'\s*["\'](?P<name>[A-Za-z_][A-Za-z0-9_]*)["\']\s*$', arg)
+    return match.group("name") if match else None
+
+
+def _launch_initializer_args(arg: str) -> List[str]:
+    arg = arg.strip()
+    if not (arg.startswith("{") and arg.endswith("}")):
+        return []
+    return _split_top_level_args(arg[1:-1])
+
+
+def _normalize_launch_buffer_arg(arg: str) -> str:
+    arg = arg.strip()
+    arg = re.sub(r"^\s*&\s*", "", arg)
+    return re.sub(r"\s+", "", arg)
+
+
+def _init_kernel_writes_pointer_params(device_source: str, kernel_name: str) -> bool:
+    body = _function_body(device_source, kernel_name)
+    if not body.strip():
+        return False
+    pointer_names = _device_kernel_pointer_param_names(device_source, kernel_name)
+    for name in pointer_names:
+        escaped = re.escape(name)
+        if not re.search(rf"\b{escaped}\s*\[[^\]]+\]\s*(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s*=", body):
+            return False
+    return True
+
+
+def _missing_init_launch_buffers(core_source: str, device_source: str) -> Set[str]:
+    required: Set[str] = set()
+    initialized: Set[str] = set()
+    init_kernel_seen = False
+    init_kernel_writes = False
+    for body in _iter_call_bodies(core_source, "synthi_gpu_launch"):
+        args = _split_top_level_args(body)
+        if len(args) != 7:
+            continue
+        kernel_name = _launch_kernel_name(args[1])
+        if not kernel_name:
+            continue
+        launch_args = _launch_initializer_args(args[-1])
+        if not launch_args:
+            continue
+        pointer_indexes = _device_kernel_pointer_param_indexes(device_source, kernel_name)
+        pointer_buffers = {
+            _normalize_launch_buffer_arg(launch_args[i])
+            for i in pointer_indexes
+            if i < len(launch_args)
+        }
+        if re.search(r"(?:init|seed|setup|reset)", kernel_name, re.IGNORECASE):
+            init_kernel_seen = True
+            initialized.update(pointer_buffers)
+            init_kernel_writes = init_kernel_writes or _init_kernel_writes_pointer_params(
+                device_source, kernel_name
+            )
+        else:
+            required.update(pointer_buffers)
+    if not required:
+        return set()
+    if init_kernel_seen and not init_kernel_writes:
+        return required
+    return {buf for buf in required if buf not in initialized}
+
+
 def _mirror_allocated_in_load(core_load_body: str, mirror: str) -> bool:
     field = re.escape(mirror)
     return bool(
@@ -975,6 +1067,26 @@ def verify_split_output(
                     "constructor/setup math used for the first-frame host mirror."
                 ),
                 offending_module=core_path,
+            )
+        )
+    missing_init_buffers = (
+        _missing_init_launch_buffers(core_source, device_source)
+        if _GPU_MEM_ALLOC_RE.search(core_source)
+        else set()
+    )
+    if missing_init_buffers:
+        buffer_list = ", ".join(sorted(missing_init_buffers))
+        violations.append(
+            Violation(
+                rule="device_init_kernel_incomplete",
+                message=(
+                    "The generated init/seed kernel launch does not initialize "
+                    "every device buffer used by the update kernels. Include "
+                    f"these buffers in the init launch and write them in the "
+                    f"init kernel body before the first update: {buffer_list}."
+                ),
+                offending_module=core_path,
+                offending_symbol=buffer_list,
             )
         )
     if re.search(r"\bvoid\s*\*\s+args\s*\[[^\]]*\][^;]*;", core_source) and re.search(

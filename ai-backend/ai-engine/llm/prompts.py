@@ -4032,6 +4032,8 @@ math used by the user's constructor/setup code. For struct buffers, it must fill
 every displayed field. Include the init kernel in `device_descriptor`, launch it
 from `core_on_update` while `!device_initialized`, and do not mark
 `device_initialized = true` unless that launch returns true.
+The init launch argument list must include every device buffer passed to update
+kernels, and the init kernel body must write every pointer parameter it receives.
 
 A valid first-frame host mirror setup is:
 
