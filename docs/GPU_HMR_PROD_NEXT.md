@@ -228,8 +228,10 @@ artifact, and runtime verifiers decide whether the output is accepted.
 ```text
 resolve build target
   -> collect build metadata
+  -> resolve toolchain capability profile
   -> select deterministic source context
   -> agentic split/verify loop
+  -> arbiter accepts or rejects ranked execution option
   -> compile generated roles
   -> runtime verification
   -> persist sidecar only if verified
@@ -252,6 +254,7 @@ changed user files
   -> direct deterministic patch if provably safe
   -> warm deterministic rebuild/relink if proof is safe but patch is not local
   -> otherwise agentic delta/verify loop
+  -> arbiter ranks safe options and applies consent policy
   -> compile
   -> verifier gates
   -> reload
@@ -358,16 +361,25 @@ Proposal and repair actors:
   generated role manifest, user delta, user-to-generated mappings, current
   generated role contents, compile manifest, reload plan, and verifier/build
   feedback to choose the affected generated module or modules.
+- Template Triage Agent: reads compiler-derived template evidence, mappings,
+  include graph, generated roles, compiler errors, prior verifier failures, and
+  architecture summary. It may propose `warm_rebuild`, `ai_delta`,
+  `full_resplit`, or `unsupported`. It cannot certify `device_only` safety,
+  ABI safety, layout safety, or complete instantiation coverage.
 
 Deterministic pipeline components:
 
 - Build Metadata Reader: consumes `compile_commands.json` and CMake File API
   replies
 - Context Planner: selects source files and records inclusion/omission reasons
+- Template Evidence Collector: collects compiler-derived template impact
+  evidence for device-reachable code outside the hot edit path
 - Verifier Orchestrator: runs schema, mapping, ABI, compile, artifact, and
   runtime/frame verifiers
 - Reload Planner: chooses `device_only`, `host_only`, `warm_rebuild`, `mixed`,
   `abi_breaking`, `full_resplit`, or `unsupported`
+- Arbiter / Policy Engine: ranks verified options and chooses auto-run, skip,
+  fallback, or ask-developer
 - Artifact Inspector: checks generated files, symbols, reports, screenshots,
   and runner state
 
@@ -383,11 +395,13 @@ The agent may:
 - propose mappings
 - repair generated-role compile failures
 - produce AI delta patches
+- propose template edit routing based on compiler-derived evidence
 - explain verifier failures
 
 The agent may not:
 
 - certify ABI safety
+- certify template impact or complete instantiation coverage
 - bypass parser failures
 - bypass compile failures
 - write generated roles into the user workspace
@@ -426,6 +440,86 @@ before:
 - marking validation as passed
 
 This is critical. Otherwise the agent can hallucinate a valid split.
+
+### Arbiter And Policy Engine
+
+The Arbiter sits after AI proposals, local classifiers, reload planning, and
+deterministic verifier output. It answers a different question from the
+verifiers:
+
+```text
+Verifiers decide: is this option safe and valid?
+Arbiter decides: is this safe option worth running now?
+```
+
+The Arbiter is deterministic and cost-aware. It may use prior run history and
+toolchain capability profiles, but it must not be an LLM-only judgment.
+
+Inputs:
+
+- ranked reload options from the Reload Planner
+- deterministic verifier verdicts and reason codes
+- toolchain capability profile
+- expected and observed latency by tier
+- device-link and RDC requirements
+- runner state preservation or loss
+- launch indirection and stale-pointer checks
+- warm path budget result
+- memory arena and VRAM refresh state
+- GPU driver/device taint state
+- prior success/failure for the same project/toolchain
+
+Outputs:
+
+```json
+{
+  "arbiterDecision": "auto_run",
+  "selectedPlan": "device_only",
+  "reasonCodes": [
+    "arbiter.safe",
+    "arbiter.under_latency_budget",
+    "arbiter.no_state_loss"
+  ],
+  "rankedOptions": [
+    {
+      "plan": "device_only",
+      "safety": "pass",
+      "estimatedMs": 850,
+      "stateLoss": false,
+      "requiresConsent": false
+    }
+  ]
+}
+```
+
+Allowed decisions:
+
+- `auto_run`
+- `ask_developer`
+- `skip`
+- `fallback`
+- `unsupported`
+
+Developer consent is required for:
+
+- cold runner restart
+- full AI re-split
+- AI delta touching multiple generated roles
+- linker-bound or over-budget warm path
+- state migration or state loss
+- unsafe/debug mode
+- experimental toolchain capability
+- GPU device/session tainted by driver fault
+
+Auto-run is allowed only when:
+
+- deterministic verifiers pass
+- estimated latency is within tier budget
+- no runner state is lost
+- no stale launch-pointer risk exists
+- no developer consent rule is triggered
+
+The Arbiter never overrides a verifier failure.
 
 ### Build Metadata Dependency
 
@@ -504,6 +598,8 @@ Milestone 1 should require only:
 
 - `schemaVersion`
 - target identity
+- selected compile command identity and effective flags hash
+- toolchain capability profile
 - source baseline hashes
 - generated role paths
 - user-to-generated device mappings
@@ -524,9 +620,12 @@ These fields should be allowed but not required for Milestone 1:
 - device-link graph
 - global device symbol table hash
 - header dependency graph hash
+- template evidence store hash
 - template instantiation evidence
+- template artifact fingerprints
 - launch indirection table version
 - reload generation count
+- arbiter decision history
 - full source context report
 - runner isolation metadata
 - runtime memory arena statistics
@@ -561,6 +660,38 @@ Minimum agentic summary:
   }
 }
 ```
+
+### Toolchain Capability Profile
+
+Every reload decision must be backed by a selected toolchain capability
+profile. The profile is derived from compile metadata, vendor/toolchain probes,
+and measured history for the selected target/configuration.
+
+Minimum profile:
+
+```json
+{
+  "toolchainCapabilities": {
+    "compilerId": "hipcc",
+    "compilerVersion": "...",
+    "gpuVendor": "rocm",
+    "gpuArch": "gfx1201",
+    "requiresRdc": false,
+    "supportsDeviceOnlyReload": true,
+    "supportsIncrementalDeviceLink": false,
+    "supportsSymbolInspection": true,
+    "supportsSafeModuleUnload": true,
+    "supportsGpuTimeoutDetection": "partial",
+    "deviceLinkAverageMs": null,
+    "deviceLinkP95Ms": null,
+    "lastProbeRunId": "..."
+  }
+}
+```
+
+If the capability profile is missing or stale, the Arbiter must not select
+`device_only` or `warm_rebuild`; it must choose fallback or ask the developer
+with a reason code.
 
 ### Minimum Shape
 
@@ -820,6 +951,13 @@ template metaprogramming needs explicit instantiation evidence. The AI may help
 explain or repair generated artifacts, but it may not guess which template
 instantiations are ABI-relevant.
 
+Template edits are not Tier 0 by default. If a template body, constexpr used by
+a template, template parameter, specialization, concept, trait, or vendor
+template wrapper is touched, reject `device_only` unless the system can prove
+the edit is equivalent to an already-mapped non-template body change. The normal
+candidate is `warm_rebuild` only when the Template Evidence Collector has fresh,
+bounded evidence for all affected instantiations and generated roles.
+
 ### Fast Path Separation
 
 Direct device path:
@@ -1048,7 +1186,155 @@ Large repositories need a context engine.
 - template-heavy edits are either backed by instantiation evidence or rejected
   from the direct fast path
 
-## 12. Multi Device Translation Unit Support
+## 12. Template Evidence Collector
+
+This is a hard subsystem, not a note under warm rebuild.
+
+Purpose:
+
+```text
+compiler-derived template impact evidence for device-reachable code
+```
+
+The collector exists because AI cannot safely infer Thrust, CUTLASS, or
+project-local template blast radius from an architecture overview. It should
+run outside the hot edit path:
+
+- background indexing
+- first split
+- warm cache refresh
+- explicit rebuild
+
+It must not perform unbounded template analysis during the edit loop.
+
+Inputs:
+
+- selected compile command
+- effective flags hash
+- include graph
+- device source graph
+- generated role mappings
+- Clang/LibTooling AST evidence
+- vendor compiler depfiles
+- vendor compiler artifacts
+- symbol inspection
+- device-link metadata
+
+Outputs:
+
+- affected template instantiations
+- affected generated roles
+- source-level fingerprints
+- artifact-level fingerprints
+- ABI/layout fingerprints
+- invalidation reasons
+
+Authority:
+
+- may bound template impact when compiler-derived evidence is fresh
+- may reject stale or missing evidence
+- may not be replaced by RAG or LLM judgment
+- may not certify runtime reload safety by itself
+
+Minimum evidence shape:
+
+```json
+{
+  "templateEvidence": {
+    "schemaVersion": "template-evidence-v1",
+    "producer": "clang-libtooling+vendor-artifacts",
+    "compileCommandHash": "...",
+    "effectiveFlagsHash": "...",
+    "gpuArch": "gfx1201",
+    "entries": [
+      {
+        "templateName": "BlockReduce<T, BLOCK_SIZE>",
+        "templateArgs": ["float", "256"],
+        "owningTU": "src/gpu/reduce.cu",
+        "instantiationSite": "src/gpu/reduce.cuh:88",
+        "reachableFromKernel": "reduce_kernel(float*, float*)",
+        "changedInputs": ["BLOCK_SIZE"],
+        "sourceHeaders": ["src/gpu/reduce.cuh"],
+        "generatedRole": "device.reduce",
+        "abiFingerprint": "...",
+        "layoutFingerprint": "...",
+        "artifactFingerprint": "..."
+      }
+    ]
+  }
+}
+```
+
+### Template Triage Agent
+
+The Template Triage Agent is useful for routing and explanation, not proof.
+
+Reads:
+
+- template evidence
+- mappings
+- include graph
+- generated roles
+- compiler errors
+- prior verifier failures
+- architecture summary
+
+Proposes:
+
+- `warm_rebuild`
+- `ai_delta`
+- `full_resplit`
+- `unsupported`
+
+Cannot certify:
+
+- `device_only` safety
+- ABI safety
+- layout safety
+- complete instantiation coverage
+
+### Template Edit Policy
+
+Use this classification:
+
+```text
+mapped kernel body edit
+  -> Tier 0 device_only
+  -> no AI
+
+project-local non-template helper body edit
+  -> Tier 0 or Tier 1
+
+project-local template body edit
+  -> Tier 1 warm_rebuild only if affected instantiations are known
+
+constexpr/template parameter edit
+  -> reject device_only
+  -> Tier 1 only if all affected instantiations and ABI/layout effects are bounded
+
+Thrust/CUTLASS vendor header edit
+  -> unsupported for HMR
+  -> normal build or full re-split, with consent
+
+CUTLASS/Thrust wrapper parameter edit
+  -> warm_rebuild if affected generated roles and artifacts are bounded
+  -> otherwise AI delta or full re-split
+
+unbounded template ripple
+  -> template_instantiation_unbounded
+  -> no fake HMR
+```
+
+### Collector Acceptance Criteria
+
+- project-local `.cuh` fixture records two explicit instantiations
+- arithmetic-only constexpr can use bounded `warm_rebuild`
+- layout-controlling constexpr is rejected as ABI/layout affecting
+- stale template evidence blocks `warm_rebuild`
+- vendor template header edits are rejected with vendor boundary reason codes
+- Template Triage Agent can propose a candidate path but cannot mark it safe
+
+## 13. Multi Device Translation Unit Support
 
 The current one-device-role model will become brittle.
 
@@ -1118,7 +1404,7 @@ Do not let the repair agent guess cross-TU ownership.
 - device-link failures include missing symbol, owner TU, and fallback reason
 - unsupported device-link cases fall back clearly
 
-## 13. ABI And State Verifier
+## 14. ABI And State Verifier
 
 The verifier is the safety core.
 
@@ -1199,7 +1485,7 @@ mode.
 - state layout change causes cold reload or state migration
 - runner state is preserved only when verifier allows it
 
-## 14. Failure UX
+## 15. Failure UX
 
 Engineers need immediate cause, not raw logs.
 
@@ -1217,11 +1503,29 @@ Engineers need immediate cause, not raw logs.
 - `abi_changed`
 - `constant_layout_changed`
 - `header_dependency_unbounded`
+- `template_instantiation_bounded`
 - `template_instantiation_unbounded`
+- `template_evidence_missing`
+- `template_evidence_stale`
+- `template_artifact_fingerprint_changed`
+- `constexpr_affects_layout`
+- `constexpr_affects_launch_abi`
+- `vendor_template_boundary`
+- `template_vendor_boundary_crossed`
+- `vendor_template_edit_unsupported`
 - `warm_rebuild_budget_exceeded`
+- `toolchain_capability_missing`
+- `toolchain_capability_stale`
+- `arbiter_user_consent_required`
+- `arbiter_path_not_worth_running`
+- `state_loss_requires_consent`
+- `multi_role_ai_delta_requires_consent`
+- `experimental_path_requires_consent`
 - `device_compile_failed`
 - `device_link_failed`
 - `device_link_symbol_unresolved`
+- `device_linker_bound`
+- `incremental_device_link_unsupported`
 - `vram_fragmented`
 - `vram_session_refresh_required`
 - `reload_failed`
@@ -1258,7 +1562,7 @@ Bad error:
 Build failed.
 ```
 
-## 15. Generated Artifact Lifecycle
+## 16. Generated Artifact Lifecycle
 
 ### Internal Artifacts
 
@@ -1283,9 +1587,13 @@ Build failed.
 - split schema version
 - prompt schema version
 - accepted agentic attempt id
+- selected toolchain capability profile hash
+- arbiter decision and ranked options
+- template evidence hash and invalidation reasons
 - verifier results
 - launch indirection table version
 - warm path budget result
+- device-link budget result
 - reload generation and memory arena summary
 - GPU driver fault markers
 - generated timestamp
@@ -1306,7 +1614,7 @@ Provide a read-only internal viewer:
 
 Do not expose generated roles as normal editable workspace files.
 
-## 16. Performance And Caching
+## 17. Performance And Caching
 
 ### Cache Keys
 
@@ -1352,6 +1660,41 @@ Mapping failure or major structural edit:
 
 - agentic full re-split
 
+### HMR Tiers
+
+Use explicit tiers so latency ownership is clear.
+
+Tier 0: `device_only`
+
+- no AI
+- no host rebuild
+- local generated-device patch or known device sidecar compile
+- target: under 1 second where toolchain allows
+
+Tier 1: `warm_rebuild`
+
+- no AI
+- cached dependency graph only
+- bounded role rebuild/relink
+- target: 1-5 seconds
+
+Tier 2: `ai_delta`
+
+- architecture-aware generated-role patching
+- deterministic verifiers decide acceptance
+- occasional fallback, not normal edit loop
+
+Tier 3: `full_resplit`
+
+- heavy fallback
+- not a hot path
+- requires Arbiter justification and developer consent unless explicitly
+  configured otherwise
+
+Agentic HMR does not mean AI on every edit. AI is available for split, repair,
+explanation, and hard deltas; the Arbiter keeps the hot path deterministic and
+cheap.
+
 ### Warm Path Performance Budget
 
 The warm path only helps if dependency impact is already available from cached
@@ -1366,10 +1709,9 @@ Default budgets:
 - warm path soft cap: 5 seconds
 
 Inputs should come from persisted compile metadata, depfiles, include graphs,
-source mappings, generated-role manifests, global device symbol tables, and
-prior template instantiation evidence. The warm path may validate cache
-freshness, but it should not perform unbounded project-wide analysis during an
-edit loop.
+source mappings, generated-role manifests, global device symbol tables, and the
+Template Evidence Collector. The warm path may validate cache freshness, but it
+should not perform unbounded project-wide analysis during an edit loop.
 
 If the predicted or observed warm path exceeds the budget, report:
 
@@ -1381,6 +1723,31 @@ Then choose a clear fallback: standard incremental build, AI delta/verify, full
 re-split, or cold restart. Do not present a 5-10 second dependency search as
 instant HMR.
 
+### Device-Link Cost Control
+
+RDC warm paths can be linker-bound. A global device symbol table helps explain
+dependencies and repair generated artifacts, but it does not make `nvlink` or
+HIP device-link fast.
+
+The toolchain capability profile must track:
+
+- whether RDC is required
+- whether incremental device linking is supported
+- device-link average and p95 latency
+- affected bundle size
+- cached object reuse rate
+- last device-link elapsed time
+
+If device-link is required and the expected linker time exceeds the warm path
+budget, the Arbiter must report:
+
+```text
+device_linker_bound
+```
+
+Then it must ask the developer, choose standard incremental build, or fall back
+according to policy. Do not market linker-bound RDC rebuilds as HMR.
+
 ### Required Logs
 
 - cache hit/miss
@@ -1388,8 +1755,11 @@ instant HMR.
 - compile invalidation reason
 - header dependency invalidation reason
 - template instantiation invalidation reason
+- template evidence cache hit/miss/stale reason
 - warm path estimate and actual elapsed time
 - warm path budget result
+- device-link estimate and actual elapsed time
+- device-link budget result
 - AI call reason
 - agentic mode and attempt count
 - verifier failure reason codes
@@ -1398,7 +1768,7 @@ instant HMR.
 - time per phase
 - first-frame time
 
-## 17. Safety And Isolation
+## 18. Safety And Isolation
 
 The runner executes arbitrary native code. Treat it as hostile.
 
@@ -1492,7 +1862,7 @@ should be conservative:
 - surface driver/device fault clearly
 - avoid claiming guaranteed per-kernel kill across vendors
 
-## 18. Observability
+## 19. Observability
 
 Every run should emit one structured report.
 
@@ -1512,19 +1882,35 @@ Every run should emit one structured report.
 - model
 - splitSchemaVersion
 - promptSchemaVersion
+- toolchainCapabilityProfileHash
+- toolchainCapabilityProfile
 - splitCacheKey
 - splitCacheHit
 - patchTier
 - reloadPlan
+- arbiterDecision
+- rankedReloadOptions
+- consentRequired
+- consentReason
 - generatedRoles
 - compileCommands
 - deviceLinkCommands
 - deviceSymbolTableHash
 - affectedHeaderGraph
 - affectedTemplateInstantiations
+- templateEvidenceHash
+- templateEvidenceStatus
+- templateEvidenceInvalidationReasons
+- templateArtifactFingerprintChanges
+- templateTriageAgentDecision
 - warmPathEstimateMs
 - warmPathActualMs
 - warmPathBudgetResult
+- deviceLinkRequired
+- deviceLinkEstimateMs
+- deviceLinkActualMs
+- deviceLinkBudgetResult
+- deviceLinkerBound
 - launchIndirectionTableVersion
 - staleLaunchPointerChecks
 - verifierRules
@@ -1582,7 +1968,7 @@ Time:
   classify 12 ms, compile 840 ms, reload 4 ms, frame 120 ms
 ```
 
-## 19. Validation Matrix
+## 20. Validation Matrix
 
 ### Must-Pass Matrix
 
@@ -1615,6 +2001,24 @@ fallback or unsupported error, not a near-term HMR claim.
 - cache report produced
 - failure card produced for forced bad edit
 
+### Failure-Mode Assertions
+
+- stale launch pointer is rejected before reload
+- warm path budget exceeded produces Arbiter fallback or consent request
+- RDC project reports device-link required and linker-bound when over budget
+- AI delta output can be rejected by deterministic verifier
+- multi-role AI delta requires developer consent
+- cold restart or state-loss fallback requires developer consent
+- missing/stale toolchain capability profile blocks unsafe fast paths
+- missing/stale template evidence blocks template warm rebuild
+- project-local template constexpr arithmetic edit can use bounded warm rebuild
+- layout-affecting constexpr edit is rejected with `constexpr_affects_layout`
+- vendor template header edit is rejected with vendor boundary reason code
+- Template Triage Agent proposal cannot bypass verifier rejection
+- GPU driver TDR/device-taint prevents screenshot from being accepted as proof
+- planned VRAM refresh is reported before predictable hard OOM
+- unsupported incremental device-link reports vendor/toolchain reason
+
 ### Validation Artifact Bundle
 
 - run report
@@ -1628,7 +2032,7 @@ fallback or unsupported error, not a near-term HMR claim.
 - cache report
 - runner survival marker
 
-## 20. Backward Compatibility
+## 21. Backward Compatibility
 
 Backward compatibility is required.
 
@@ -1643,7 +2047,7 @@ Implementation rules:
 
 This avoids breaking current ROCm/GLFW validation and existing cached splits.
 
-## 21. Revised Roadmap
+## 22. Revised Roadmap
 
 ### Milestone 0: Contracts And Instrumentation
 
@@ -1653,6 +2057,8 @@ Tasks:
 
 - formalize `.synthi_split_meta.json`
 - formalize reload plan schema
+- formalize toolchain capability profile schema
+- formalize Arbiter decision schema
 - add reason-coded verifier output
 - add run report
 - show reload plan in UI/logs
@@ -1663,6 +2069,25 @@ Tasks:
 Done when:
 
 - an engineer can explain every run without reading raw container logs
+
+### Milestone 0.25: Arbiter And Capability Profile
+
+Tasks:
+
+- resolve selected compile command and effective flags for the target
+- derive minimal toolchain capability profile before reload planning
+- rank reload options by safety, latency, state loss, and capability support
+- auto-run only safe, bounded, non-state-losing paths
+- ask developer for cold restart, full re-split, multi-role AI delta,
+  over-budget linker path, state loss, or unsafe/debug mode
+- record Arbiter decision, ranked options, consent reason, and selected path in
+  the run report
+
+Done when:
+
+- verifiers decide safety, Arbiter decides whether the safe path is worth
+  running, and developer consent is requested only for costly or disruptive
+  paths
 
 ### Milestone 0.5: Agentic Split/Verify Loop
 
@@ -1713,6 +2138,8 @@ Initial scope:
 
 - single device TU
 - single generated device role
+- selected compile command and effective flags available
+- minimal toolchain capability profile available
 - no macro-generated kernels
 - no signature/layout edits
 - no host launch edits
@@ -1726,6 +2153,8 @@ Done when:
   post-HMR frame
 - header/template edits without bounded dependency proof are rejected from
   direct `device_only` with reason codes
+- `device_only` is never accepted without selected-target flags and toolchain
+  capability profile
 
 ### Milestone 1.25: Runtime Reload ABI
 
@@ -1748,17 +2177,31 @@ Done when:
 Tasks:
 
 - add affected header/device dependency report
-- add template instantiation evidence where available
+- add Template Evidence Collector
+- collect template instantiations reachable from mapped kernels
+- distinguish project-local templates from vendor templates
+- record constexpr/template parameters that influence layout, launch ABI,
+  shared memory, constant memory, and generated code shape
+- map each instantiation to owning TU, source headers, generated role, and
+  kernel consumers
+- persist source-level, ABI/layout, and artifact fingerprints in the sidecar
+- invalidate fingerprints on compile flag, GPU arch, include graph, or source
+  hash changes
+- add Template Triage Agent for routing and explanation only
 - add global device symbol table for generated device roles
 - add warm path performance budget and timeout reporting
 - rebuild affected generated roles without AI when impact is bounded
 - relink affected sidecars or host/device bundles without full re-split
+- reject direct `device_only` when template evidence is missing or stale
+- allow `warm_rebuild` only when affected instantiations and roles are bounded
 - reject unbounded dependency ripples with actionable reason codes
 
 Done when:
 
 - safe header/helper edits can use a deterministic warm path instead of full AI
   re-split
+- bounded project-local template edits can use warm rebuild only with fresh
+  compiler-derived evidence
 - warm impact analysis uses cached metadata and stays within budget
 - unsafe or unbounded header/template edits are rejected predictably
   without pretending to be instant HMR
@@ -1809,6 +2252,24 @@ Done when:
 
 - projects with multiple `.cu` / `.hip` files use HMR without forced
   flattening
+
+### Milestone 4.5: Incremental Device Linking And RDC Cost Control
+
+Tasks:
+
+- capability-probe vendor incremental device-link behavior
+- record device-link average and p95 latency per target/toolchain
+- reuse cached objects where vendor tooling allows
+- detect linker-bound warm paths before execution
+- add AI-assisted diagnosis for device-link failures using symbol table,
+  source mappings, generated role manifest, and linker output
+- require Arbiter consent for over-budget RDC link paths
+- surface project suggestions for isolating hot kernels when RDC blocks HMR
+
+Done when:
+
+- RDC correctness is supported separately from RDC performance claims
+- linker-bound paths are reported as cost-bound fallbacks, not hot HMR
 
 ### Milestone 5: Failure UX And Artifact Viewer
 
@@ -1864,32 +2325,48 @@ Done when:
 - GPU driver/device faults are surfaced as tainted-session recovery, not
   ordinary HMR failures
 
-## 22. Updated Definition Of Production Ready
+## 23. Updated Definition Of Production Ready
 
 GPU HMR is production-grade only when all are true:
 
 1. Runs start from real build targets, not guessed files.
 2. Target compile flags and link flags are preserved.
-3. Large repos use deterministic source graph selection.
-4. AI split, AI delta, and AI repair paths are verifier-gated.
-5. User `.cu` / `.hip` body edits use direct device-only HMR.
-6. Header/template edits use warm deterministic rebuild or explicit fallback.
-7. ABI-breaking edits are blocked before unsafe reload.
-8. Vendor compiler artifacts confirm ABI/layout safety where required.
-9. Runtime reload uses a verified launch indirection table.
-10. Warm rebuild has measured budget limits and clear fallback.
-11. Multi-device-TU projects are supported or clearly rejected.
-12. Generated roles remain internal and inspectable.
-13. Every run shows which fast path was used.
-14. CUDA and ROCm pass the supported framework matrix.
-15. Failures are categorized and actionable.
-16. Native runner crashes are isolated on supported platforms.
-17. GPU driver faults are treated as tainted-session recovery events.
-18. Validation reports are reproducible and current.
+3. Toolchain capability profile exists before reload planning.
+4. Arbiter ranks safe options and applies consent policy.
+5. Large repos use deterministic source graph selection.
+6. AI split, AI delta, and AI repair paths are verifier-gated.
+7. User `.cu` / `.hip` body edits use direct device-only HMR.
+8. Header/template edits use warm deterministic rebuild or explicit fallback.
+9. Template impact is bounded by compiler-derived evidence, not RAG or LLM
+   judgment.
+10. ABI-breaking edits are blocked before unsafe reload.
+11. Vendor compiler artifacts confirm ABI/layout safety where required.
+12. Runtime reload uses a verified launch indirection table.
+13. Warm rebuild has measured budget limits and clear fallback.
+14. RDC/device-link cost is measured and reported separately from safety.
+15. Multi-device-TU projects are supported or clearly rejected.
+16. Generated roles remain internal and inspectable.
+17. Every run shows which fast path was used.
+18. CUDA and ROCm pass the supported framework matrix.
+19. Failures are categorized and actionable.
+20. Native runner crashes are isolated on supported platforms.
+21. GPU driver faults are treated as tainted-session recovery events.
+22. Validation reports are reproducible and current.
 
-## 23. Recommended Immediate Task
+## 24. Recommended Immediate Task
 
-Implement the next work in two steps.
+Implement the next work in five steps.
+
+Step 0: add the Arbiter and toolchain capability contract:
+
+```text
+selected target
+  -> resolve compile command and effective flags
+  -> derive toolchain capability profile
+  -> rank candidate reload options
+  -> auto-run safe, bounded, non-state-losing paths
+  -> ask developer for costly, state-losing, or experimental paths
+```
 
 Step 1: add the Milestone 0.5 shell around the existing full split path:
 
@@ -1933,6 +2410,7 @@ header/template dependency edits:
 ```text
 user edits device-reachable .cuh/.hpp helper
   -> compute affected header/device dependency graph
+  -> consult Template Evidence Collector for template impact
   -> enumerate affected mappings and template instantiations where possible
   -> rebuild/relink affected generated roles without AI
   -> verify vendor compiler artifacts
@@ -1948,3 +2426,7 @@ ripple is bounded and verified.
 Runtime reload should not be considered safe until launch indirection is in
 place. Long tuning sessions should report VRAM fragmentation and planned refresh
 state before users hit a surprise driver or allocation failure.
+
+RDC/device-link performance should not be implied by correctness. If vendor
+linking is required and over budget, report it as linker-bound and let the
+Arbiter request consent or choose a clearer fallback.
