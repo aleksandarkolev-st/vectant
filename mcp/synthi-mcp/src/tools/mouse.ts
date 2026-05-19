@@ -159,6 +159,18 @@ export async function mouseTool(args: unknown): Promise<ToolResponse> {
     });
   }
 
+  if (a.handle !== undefined) {
+    const brokerGate = await checkBrokerInputGate({
+      attached,
+      action: `mouse:${action}`,
+      scope: "mouse",
+      lease_id: a.lease_id,
+      based_on_frame_seq: a.based_on_frame_seq,
+      based_on_viewport: a.based_on_viewport,
+    });
+    if (brokerGate) return errorResponse(brokerGate.error, brokerGate);
+  }
+
   // B2 measurement: count inputs dispatched while a compile is in
   // progress. No-op outside the compile window.
   const button = typeof a.button === "string" ? (a.button as MouseButtonName) : "left";

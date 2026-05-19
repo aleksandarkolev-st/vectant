@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { leaseRegistry } from "../../src/arbitration/lease.js";
 import { eventLog } from "../../src/events/index.js";
+import { locateEngine } from "../../src/locate/index.js";
 import { session } from "../../src/session.js";
 import { mouseTool } from "../../src/tools/mouse.js";
 import { keyboardTool } from "../../src/tools/keyboard.js";
@@ -126,6 +127,24 @@ describe("broker-enforced input gate", () => {
     expect((res.structuredContent as { error: string; reason?: string }).error).toBe("FRAME_STALE");
     expect((res.structuredContent as { reason?: string }).reason).toBe("viewport_changed");
     expect(sent).toHaveLength(0);
+  }));
+
+  it("gates handle-based mouse actions before locator resolution", async () => withBrokerInputEnforced(async () => {
+    const { sent } = installFakeAttached({ seq: 10, ts: Date.now() });
+    const resolveSpy = vi.spyOn(locateEngine, "resolve");
+    try {
+      const res = await mouseTool({
+        action: "click",
+        handle: { handle_id: "h_1" },
+        based_on_frame_seq: 10,
+      });
+      expect(res.isError).toBe(true);
+      expect((res.structuredContent as { error: string }).error).toBe("LEASE_REQUIRED");
+      expect(resolveSpy).not.toHaveBeenCalled();
+      expect(sent).toHaveLength(0);
+    } finally {
+      resolveSpy.mockRestore();
+    }
   }));
 
   it("rejects keyboard input when the lease lacks keyboard scope", async () => withBrokerInputEnforced(async () => {
