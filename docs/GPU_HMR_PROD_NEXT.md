@@ -207,21 +207,31 @@ Every dropped file needs a reason:
 
 Critical files must not be silently dropped.
 
+### Invariant 5: Agentic Output Is Never Trusted Directly
+
+Every AI split, AI delta, or AI repair must pass deterministic verification
+before:
+
+- writing sidecar state
+- enabling `device_only`
+- reloading the runner
+- marking validation as passed
+
+The agent may propose or repair generated artifacts. Parser, ABI, compile,
+artifact, and runtime verifiers decide whether the output is accepted.
+
 ## 5. Target Architecture
 
 ### First Run
 
 ```text
-user Run file
-  -> resolve build target
-  -> collect compile/build metadata
-  -> select source context
-  -> full AI split
-  -> verify generated roles
-  -> compile internal roles
-  -> launch isolated runner
-  -> capture first visible frame
-  -> persist sidecar metadata
+resolve build target
+  -> collect build metadata
+  -> select deterministic source context
+  -> agentic split/verify loop
+  -> compile generated roles
+  -> runtime verification
+  -> persist sidecar only if verified
 ```
 
 ### Repeat Run Without Edits
@@ -237,11 +247,22 @@ same target and same source hashes
 
 ```text
 changed user files
-  -> classify edit
-  -> choose reload plan
-  -> local deterministic patch when safe
-  -> AI delta patch when local patch cannot prove safety
-  -> full re-split only when necessary
+  -> local classifier
+  -> direct deterministic patch if provably safe
+  -> otherwise agentic delta/verify loop
+  -> compile
+  -> verifier gates
+  -> reload
+```
+
+### Full Re-Split Fallback
+
+```text
+mapping failed or structural edit
+  -> agentic full re-split
+  -> verifier loop
+  -> compile
+  -> runtime proof
 ```
 
 ### Device-Body Edit
@@ -258,7 +279,163 @@ changed .cu/.hip file
   -> screenshot
 ```
 
-## 6. Required Sidecar Schema
+Direct `device_only` remains non-agentic for the fast path. It uses local
+mapping and deterministic verification. AI only enters when local proof fails.
+
+## 6. Agentic Split/Verify Orchestrator
+
+The AI split is not a one-shot generation step. It is a bounded
+propose-verify-repair loop over internal generated artifacts.
+
+This is not a separate product feature. It sits inside the existing pipeline
+and owns every AI-generated transformation path:
+
+- first full split
+- full re-split fallback
+- AI delta patch
+- generated-role compile repair
+- generated mapping proposal
+
+The direct device-body fast path is outside the agentic path when local proof
+succeeds.
+
+### Canonical Loop
+
+1. Planner reads target metadata and source context.
+2. Splitter proposes generated roles.
+3. Static verifier checks schema, mappings, ABI metadata, and role boundaries.
+4. Build verifier compiles host/device artifacts.
+5. Runtime verifier launches the runner and captures a frame.
+6. Repair agent patches generated roles if a verifier fails.
+7. Bounded retry.
+8. Persist only after all required gates pass.
+
+The agent may propose. Deterministic verifiers decide.
+
+### Actors And Authority
+
+Proposal and repair actors:
+
+- Split Agent: produces `shared`, `core`, `gui`, `host_runner`, and device roles
+- Mapping Agent: proposes user-to-generated symbol/span mappings
+- Compile Repair Agent: fixes generated-role compile failures only
+- Delta Patch Agent: patches generated roles after user edits when local
+  patching cannot prove safety
+
+Deterministic pipeline components:
+
+- Build Metadata Reader: consumes `compile_commands.json` and CMake File API
+  replies
+- Context Planner: selects source files and records inclusion/omission reasons
+- Verifier Orchestrator: runs schema, mapping, ABI, compile, artifact, and
+  runtime/frame verifiers
+- Reload Planner: chooses `device_only`, `host_only`, `mixed`, `abi_breaking`,
+  `full_resplit`, or `unsupported`
+- Artifact Inspector: checks generated files, symbols, reports, screenshots,
+  and runner state
+
+Do not use "Verifier Agent" as an authority name. The verifier is an
+orchestrator for deterministic checks. The LLM can explain or repair failures;
+it cannot certify safety.
+
+### Agent Permissions
+
+The agent may:
+
+- propose generated roles
+- propose mappings
+- repair generated-role compile failures
+- produce AI delta patches
+- explain verifier failures
+
+The agent may not:
+
+- certify ABI safety
+- bypass parser failures
+- bypass compile failures
+- write generated roles into the user workspace
+- silently fall back to full re-split
+- mutate user source
+
+### Agentic Output Is Never Trusted Directly
+
+Every AI split, AI delta, or AI repair must pass deterministic verification
+before:
+
+- writing sidecar state
+- enabling `device_only`
+- reloading the runner
+- marking validation as passed
+
+This is critical. Otherwise the agent can hallucinate a valid split.
+
+### Build Metadata Dependency
+
+The agentic splitter must consume real target metadata before it sees source.
+Do not let it infer flags from code.
+
+`compile_commands.json` can contain multiple command objects for the same file
+under different configurations, so the selected target/config must be
+explicit. The `arguments` form is safer than shell-parsed `command`.
+
+For CMake, use File API replies for semantic target/build-system data instead
+of scraping `CMakeLists.txt`. CMake documents the File API as the interface for
+clients to get semantic build-system information.
+
+### Device Compilation Dependency
+
+The verifier must know when generated device roles require device linking.
+
+CUDA separate compilation/device linking is a real compilation mode, not a
+cosmetic flag. NVIDIA documents separate compilation as the ability to link
+device code and symbols from different compilation units.
+
+HIP has the same issue. In RDC mode, HIP compilation units contribute
+relocatable device code and require a later device-link step into GPU images.
+
+The agentic splitter must emit:
+
+- device role list
+- per-role compiler command
+- RDC/device-link requirement
+- affected device-link bundle
+- reload granularity
+
+If it cannot model that, it must return:
+
+```text
+unsupported.device_link_topology_unmodeled
+```
+
+### CPU HMR Boundary
+
+This layer changes the AI split and AI delta contract for GPU HMR: AI output
+becomes proposal/repair output that must pass deterministic verification.
+
+If CPU HMR shares the same split/delta engine, the shared orchestration
+contract should be updated once and reused. CPU HMR does not need GPU-specific
+ABI, constant memory, device-link, or GPU frame gates. It should get the same
+general invariant:
+
+```text
+AI proposes generated artifacts or deltas
+  -> deterministic CPU/build/runtime verifiers decide
+  -> accepted output is persisted or reloaded
+```
+
+So updating GPU HMR does not require a full CPU HMR rewrite, but shared
+split/delta abstractions should not keep accepting one-shot AI output without
+verifier gates.
+
+### Hard Limits
+
+- max full split attempts: 2 or 3
+- max repair attempts per failure class: 1 or 2
+- no infinite repair loops
+- no repair of user source without explicit user action
+- no generated artifact accepted after failed verifier
+
+## 7. Required Sidecar Schema
 
 The current `.synthi_split_meta.json` should become a formal contract, not an
 incidental cache file.
@@ -289,6 +466,36 @@ These fields should be allowed but not required for Milestone 1:
 - device-link graph
 - full source context report
 - runner isolation metadata
+
+### Milestone 0.5 Agentic Fields
+
+The sidecar should record the accepted agentic loop result without storing raw
+production prompts by default. Store prompt hashes, model, schema version,
+source file list, and verifier results. Raw prompt capture should be
+debug-only because it may contain proprietary source.
+
+Minimum agentic summary:
+
+```json
+{
+  "agentic": {
+    "splitAttemptCount": 2,
+    "repairAttemptCount": 1,
+    "lastAgenticMode": "full_split",
+    "verifierResults": [
+      {
+        "rule": "generated.no_user_tree_pollution",
+        "status": "pass"
+      },
+      {
+        "rule": "compile.device_role",
+        "status": "pass"
+      }
+    ],
+    "finalAcceptedAttempt": "attempt-002"
+  }
+}
+```
 
 ### Minimum Shape
 
@@ -362,11 +569,27 @@ These fields should be allowed but not required for Milestone 1:
     "localPatch": "...",
     "deviceCompile": "..."
   },
+  "agentic": {
+    "splitAttemptCount": 2,
+    "repairAttemptCount": 1,
+    "lastAgenticMode": "full_split",
+    "verifierResults": [
+      {
+        "rule": "generated.no_user_tree_pollution",
+        "status": "pass"
+      },
+      {
+        "rule": "compile.device_role",
+        "status": "pass"
+      }
+    ],
+    "finalAcceptedAttempt": "attempt-002"
+  },
   "lastReloadPlan": null
 }
 ```
 
-## 7. Reload Plan Classification
+## 8. Reload Plan Classification
 
 Use explicit classes.
 
@@ -442,7 +665,7 @@ Use for:
 
 Do not hide unsupported cases behind vague compile errors.
 
-## 8. Direct User Device Edit Path
+## 9. Direct User Device Edit Path
 
 This is the recommended next implementation slice.
 
@@ -578,7 +801,7 @@ Old sidecar:
 - existing flow still works
 - `device_only` disabled unless required fields exist
 
-## 9. Build-System Integration
+## 10. Build-System Integration
 
 This must graduate from "infer manifest from context" to "derive manifest from
 target."
@@ -654,7 +877,7 @@ The split manifest must preserve:
 - generated headers are available before split/compile
 - Unity build projects are handled explicitly or rejected with reason
 
-## 10. Scalable Source Graph Selection
+## 11. Scalable Source Graph Selection
 
 Large repositories need a context engine.
 
@@ -697,7 +920,7 @@ Large repositories need a context engine.
 - same repo state produces same context
 - prompt budget overflow produces a structured error or safe summarization
 
-## 11. Multi Device Translation Unit Support
+## 12. Multi Device Translation Unit Support
 
 The current one-device-role model will become brittle.
 
@@ -746,7 +969,7 @@ Unsupported:
 - RDC projects have explicit device-link behavior
 - unsupported device-link cases fall back clearly
 
-## 12. ABI And State Verifier
+## 13. ABI And State Verifier
 
 The verifier is the safety core.
 
@@ -806,7 +1029,7 @@ mode.
 - state layout change causes cold reload or state migration
 - runner state is preserved only when verifier allows it
 
-## 13. Failure UX
+## 14. Failure UX
 
 Engineers need immediate cause, not raw logs.
 
@@ -855,7 +1078,7 @@ Bad error:
 Build failed.
 ```
 
-## 14. Generated Artifact Lifecycle
+## 15. Generated Artifact Lifecycle
 
 ### Internal Artifacts
 
@@ -879,6 +1102,8 @@ Build failed.
 - model name
 - split schema version
 - prompt schema version
+- accepted agentic attempt id
+- verifier results
 - generated timestamp
 - parent run id
 - cache key
@@ -897,7 +1122,7 @@ Provide a read-only internal viewer:
 
 Do not expose generated roles as normal editable workspace files.
 
-## 15. Performance And Caching
+## 16. Performance And Caching
 
 ### Cache Keys
 
@@ -933,11 +1158,11 @@ Body-only kernel edit:
 
 Unsafe mapped edit:
 
-- AI delta patch
+- agentic AI delta/verify loop
 
 Mapping failure or major structural edit:
 
-- full re-split
+- agentic full re-split
 
 ### Required Logs
 
@@ -945,12 +1170,14 @@ Mapping failure or major structural edit:
 - miss reason
 - compile invalidation reason
 - AI call reason
+- agentic mode and attempt count
+- verifier failure reason codes
 - patch tier used
 - reload plan
 - time per phase
 - first-frame time
 
-## 16. Safety And Isolation
+## 17. Safety And Isolation
 
 The runner executes arbitrary native code. Treat it as hostile.
 
@@ -978,7 +1205,7 @@ should be conservative:
 - surface driver/device fault clearly
 - avoid claiming guaranteed per-kernel kill across vendors
 
-## 17. Observability
+## 18. Observability
 
 Every run should emit one structured report.
 
@@ -1012,6 +1239,27 @@ Every run should emit one structured report.
 - runnerExitStatus
 - crashMarkers
 - artifactPaths
+- agenticMode
+- agenticAttemptCount
+- agenticAcceptedAttempt
+- agenticVerifierFailures
+
+### Agentic Loop Trace Fields
+
+Every agentic loop should log:
+
+- `agenticMode`: `full_split` / `ai_delta` / `repair`
+- attemptNumber
+- input source context hash
+- model
+- prompt schema version
+- output artifact hash
+- verifier failures
+- repair diff summary
+- compile result
+- runtime result
+- accepted/rejected
+- fallback chosen
 
 ### UI Summary
 
@@ -1032,7 +1280,7 @@ Time:
   classify 12 ms, compile 840 ms, reload 4 ms, frame 120 ms
 ```
 
-## 18. Validation Matrix
+## 19. Validation Matrix
 
 ### Must-Pass Matrix
 
@@ -1078,7 +1326,7 @@ fallback or unsupported error, not a near-term HMR claim.
 - cache report
 - runner survival marker
 
-## 19. Backward Compatibility
+## 20. Backward Compatibility
 
 Backward compatibility is required.
 
@@ -1093,7 +1341,7 @@ Implementation rules:
 
 This avoids breaking current ROCm/GLFW validation and existing cached splits.
 
-## 20. Revised Roadmap
+## 21. Revised Roadmap
 
 ### Milestone 0: Contracts And Instrumentation
 
@@ -1113,6 +1361,33 @@ Tasks:
 Done when:
 
 - an engineer can explain every run without reading raw container logs
+
+### Milestone 0.5: Agentic Split/Verify Loop
+
+Tasks:
+
+- wrap full split in a bounded agentic loop
+- add generated-role schema verifier
+- add compile verifier
+- add mapping verifier
+- add no-user-tree-pollution verifier
+- add runtime/screenshot verifier
+- add repair loop for generated files only
+- record every attempt in the run report
+
+Done when:
+
+- first split is not a single AI response
+- first split is propose -> verify -> repair -> verify
+- failed verification produces reason codes
+- generated roles are persisted only after passing verification
+
+Important distinction:
+
+- Milestone 0.5: agentic full split and generated-artifact repair
+- Milestone 1: deterministic direct device-only patch with no AI on
+  successful body-only kernel edits
+- Milestone 1 fallback: AI delta/verify loop
 
 ### Milestone 1: Direct User Device-Body Edit Path
 
@@ -1236,26 +1511,40 @@ Done when:
 
 - a crashing or hostile runner cannot corrupt the supervisor
 
-## 21. Updated Definition Of Production Ready
+## 22. Updated Definition Of Production Ready
 
 GPU HMR is production-grade only when all are true:
 
 1. Runs start from real build targets, not guessed files.
 2. Target compile flags and link flags are preserved.
 3. Large repos use deterministic source graph selection.
-4. User `.cu` / `.hip` body edits use direct device-only HMR.
-5. ABI-breaking edits are blocked before unsafe reload.
-6. Multi-device-TU projects are supported or clearly rejected.
-7. Generated roles remain internal and inspectable.
-8. Every run shows which fast path was used.
-9. CUDA and ROCm pass the supported framework matrix.
-10. Failures are categorized and actionable.
-11. Native runner crashes are isolated.
-12. Validation reports are reproducible and current.
+4. AI split, AI delta, and AI repair paths are verifier-gated.
+5. User `.cu` / `.hip` body edits use direct device-only HMR.
+6. ABI-breaking edits are blocked before unsafe reload.
+7. Multi-device-TU projects are supported or clearly rejected.
+8. Generated roles remain internal and inspectable.
+9. Every run shows which fast path was used.
+10. CUDA and ROCm pass the supported framework matrix.
+11. Failures are categorized and actionable.
+12. Native runner crashes are isolated.
+13. Validation reports are reproducible and current.
 
-## 22. Recommended Immediate Task
+## 23. Recommended Immediate Task
 
-Implement this vertical slice:
+Implement the next work in two steps.
+
+Step 1: add the Milestone 0.5 shell around the existing full split path:
+
+```text
+full split request
+  -> agent proposes generated roles and mappings
+  -> deterministic schema/mapping/compile/runtime verifiers run
+  -> repair generated roles if a verifier fails
+  -> bounded retry
+  -> persist sidecar only after verification passes
+```
+
+Step 2: implement the Milestone 1 direct device edit vertical slice:
 
 ```text
 user edits src/gpu/*.hip or src/gpu/*.cu
@@ -1271,4 +1560,4 @@ user edits src/gpu/*.hip or src/gpu/*.cu
 
 Do not start with multi-TU or full CMake generality. Start with one target and
 one device TU, but build the metadata and verifier as if multi-TU will arrive
-next. That avoids a rewrite later.
+next. Direct body-only edits should stay non-agentic when local proof succeeds.
