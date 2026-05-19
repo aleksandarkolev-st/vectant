@@ -153,6 +153,12 @@ _DEVICE_DESCRIPTOR_INIT_RE = re.compile(
     re.DOTALL,
 )
 _SOURCE_DEVICE_IDENTIFIER_RE = re.compile(r"\bk[A-Z][A-Za-z0-9_]*\b")
+_SOURCE_DEVICE_CONST_DECL_RE = re.compile(
+    r"\b(?:constexpr\s+|const\s+)?"
+    r"(?P<type>(?:std::)?uint32_t|unsigned\s+int|int|float|double)\s+"
+    r"(?P<name>k[A-Z][A-Za-z0-9_]*)\s*=",
+    re.MULTILINE,
+)
 
 _NEW_FILE_OPS = {"create", "new", "add_file"}
 
@@ -484,6 +490,20 @@ def _source_device_identifiers(source_device_sources: Mapping[str, str]) -> Set[
     return identifiers
 
 
+def _source_device_constant_declarations(source_device_sources: Mapping[str, str]) -> Mapping[str, str]:
+    declarations: dict[str, str] = {}
+    for source in source_device_sources.values():
+        for match in _SOURCE_DEVICE_CONST_DECL_RE.finditer(source):
+            declarations[match.group("name")] = re.sub(r"\s+", " ", match.group("type").strip())
+    return declarations
+
+
+def _source_body_effectively_empty(body: str) -> bool:
+    without_block_comments = re.sub(r"/\*.*?\*/", "", body, flags=re.DOTALL)
+    without_line_comments = re.sub(r"//.*", "", without_block_comments)
+    return not without_line_comments.strip()
+
+
 def _manifest_role_path(manifest: Optional[Mapping[str, object]], role: str) -> Optional[str]:
     if not isinstance(manifest, dict):
         return None
@@ -649,8 +669,11 @@ def verify_split_output(
 
     declared_kernels = set(_collect_kernel_signatures(device_source).keys())
     source_kernel_names: Set[str] = set()
+    source_kernel_bodies: dict[str, str] = {}
     for source in source_device_sources.values():
-        source_kernel_names.update(_collect_kernel_signatures(source).keys())
+        for kernel in _collect_kernel_signatures(source).keys():
+            source_kernel_names.add(kernel)
+            source_kernel_bodies.setdefault(kernel, _function_body(source, kernel))
     for kernel in sorted(source_kernel_names):
         if kernel not in declared_kernels:
             violations.append(
@@ -661,6 +684,23 @@ def verify_split_output(
                         "GPU splits must preserve user-authored kernel names and "
                         "semantics so device-only HMR can patch the existing kernel "
                         "instead of replacing it with a simplified substitute."
+                    ),
+                    offending_module=device_path,
+                    offending_symbol=kernel,
+                )
+            )
+        elif (
+            not _source_body_effectively_empty(source_kernel_bodies.get(kernel, ""))
+            and _source_body_effectively_empty(_function_body(device_source, kernel))
+        ):
+            violations.append(
+                Violation(
+                    rule="source_device_kernel_body_not_preserved",
+                    message=(
+                        f"The generated device role keeps original kernel {kernel!r} "
+                        "by name but emits an empty body. Preserve the user's kernel "
+                        "branches, math, memory writes, and constants inside the "
+                        "generated kernel instead of stubbing it."
                     ),
                     offending_module=device_path,
                     offending_symbol=kernel,
@@ -683,6 +723,28 @@ def verify_split_output(
             )
 
     shared_source = files.get(shared_path) or ""
+    source_const_declarations = _source_device_constant_declarations(source_device_sources)
+    for identifier, source_type in sorted(source_const_declarations.items()):
+        type_pattern = re.escape(source_type).replace(r"\ ", r"\s+")
+        if not re.search(
+            rf"\b(?:constexpr\s+|const\s+|__constant__\s+)*{type_pattern}\s+"
+            rf"{re.escape(identifier)}\s*=",
+            device_source,
+        ):
+            violations.append(
+                Violation(
+                    rule="source_device_constant_declaration_not_preserved",
+                    message=(
+                        f"The generated device role does not preserve original "
+                        f"constant declaration {source_type} {identifier} = ... . "
+                        "Keep the same constant name, scalar type, and initializer "
+                        "in the device role so device-only HMR can edit the original "
+                        "tokenized value."
+                    ),
+                    offending_module=device_path,
+                    offending_symbol=identifier,
+                )
+            )
     for identifier in sorted(_source_device_identifiers(source_device_sources)):
         if identifier not in device_source:
             violations.append(
@@ -694,6 +756,21 @@ def verify_split_output(
                         "the user's GPU source in the device role instead of folding "
                         "or replacing them; device-only HMR must be able to edit the "
                         "same device semantics."
+                    ),
+                    offending_module=device_path,
+                    offending_symbol=identifier,
+                )
+            )
+        elif len(re.findall(rf"\b{re.escape(identifier)}\b", device_source)) < 2:
+            violations.append(
+                Violation(
+                    rule="source_device_identifier_not_used",
+                    message=(
+                        f"The generated device role declares or mentions {identifier!r} "
+                        "without using it in generated device semantics. Preserve "
+                        "device constants where the user's kernels actually read "
+                        "them; dangling declarations do not make device-only HMR "
+                        "observable."
                     ),
                     offending_module=device_path,
                     offending_symbol=identifier,

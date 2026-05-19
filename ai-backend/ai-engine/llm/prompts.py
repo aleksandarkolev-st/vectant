@@ -4204,7 +4204,10 @@ extern "C" unsigned long long device_kernel_sig_hash(const char* name);
     `kResetPadding`, color constants, bounds constants, and helper functions.
     Do not fold them into unrelated literals or rename them, because
     device-only HMR needs the generated device file to expose the same
-    editable semantics as the user source.
+    editable semantics as the user source. Declaring unused `__constant__`
+    variables or empty kernels does not satisfy this: the generated kernel body
+    must contain the original math, branches, reset logic, color writes, and
+    reads of those constants.
   - **No `cuMalloc`/`hipMalloc` outside the Synthi allocation registry**
     in host_runner.cpp. The registry records `(ptr, size, owner_module,
     semantic_name, lifetime_hint, dirty)` for every live Synthi-managed
