@@ -1,0 +1,12 @@
+PASS gpu vendor - rocm
+PASS create workspace - id=cmp9upp950001o2010extdi04 slug=gpu-dynamic-validation-20260517170910
+PASS write randomized files - 8 files tag=dyn_mp9upp6r_54ujz
+PASS stage + commit workspace
+PASS mcp tools/list - count=42
+PASS mcp attach - attached
+PASS inward compile via MCP - gpu/dyn_mp9upp6r_54ujz_particle_kernel.hip
+PASS dynamic device filename observed by worker - compile-device] source resolved from workspace file=gpu/dyn_mp9upp6r_54ujz_particle_kernel.hip
+PASS inward GPU launch observed - Device sidecar reload vendor=rocm artifact=/tmp/.tmpjLx4ju/build/device_1779026953.hsaco kernels=particle_flow result=Success
+PASS outward compile via MCP - gpu/dyn_mp9upp6r_54ujz_particle_kernel.hip
+PASS outward edit hot-swapped - [gpu-reload] plan=device_only
+PASS render loop reports outward flow - [gpu-flow-dynamic] frame=120 avg_radius=224.33 trend=outward

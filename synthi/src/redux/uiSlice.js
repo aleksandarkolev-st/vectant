@@ -7,6 +7,12 @@ const initialUiActionState = {
     name: '', // current name in the input
 };
 
+const GPU_TARGETS = new Set(['auto', 'cuda', 'rocm']);
+const normalizeGpuTarget = (value) => {
+    const v = String(value || '').toLowerCase();
+    return GPU_TARGETS.has(v) ? v : 'auto';
+};
+
 export const initialUiState = {
     showTerminal: false,
     showEmulatorPreview: false,
@@ -14,6 +20,7 @@ export const initialUiState = {
     autoSaveEnabled: true,
     autoCompletionEnabled: true,
     gpuModeEnabled: true,
+    gpuTarget: 'auto',
     // ULTRAPLAN Phase 8: Bring Your Own Runner mode. When true, the
     // next AI split preserves any existing host_runner.cpp on disk
     // that starts with the `// SYNTHI_USER_RUNNER` sentinel instead
@@ -61,6 +68,9 @@ const uiSlice = createSlice({
         toggleGpuMode: (state) => {
             state.gpuModeEnabled = !state.gpuModeEnabled;
         },
+        setGpuTarget: (state, action) => {
+            state.gpuTarget = normalizeGpuTarget(action.payload);
+        },
         // ULTRAPLAN Phase 8
         toggleBringYourOwnRunner: (state) => {
             state.bringYourOwnRunnerEnabled = !state.bringYourOwnRunnerEnabled;
@@ -78,7 +88,9 @@ const uiSlice = createSlice({
             state.expandedFolders = action.payload;
         },
         hydrateUi: (state, action) => {
-            return { ...state, ...action.payload };
+            const next = { ...state, ...action.payload };
+            next.gpuTarget = normalizeGpuTarget(next.gpuTarget);
+            return next;
         },
         toggleShowAnonymousPresence: (state) => {
             state.showAnonymousPresence = !state.showAnonymousPresence;
@@ -126,6 +138,7 @@ export const {
     toggleAutoCompletion,
     setGpuModeEnabled,
     toggleGpuMode,
+    setGpuTarget,
     toggleBringYourOwnRunner,
     startCreate,
     startRename,
@@ -146,6 +159,7 @@ export const selectTreeOnRight = (state) => state.ui.treeOnRight;
 export const selectAutoSaveEnabled = (state) => state.ui.autoSaveEnabled;
 export const selectAutoCompletionEnabled = (state) => state.ui.autoCompletionEnabled;
 export const selectGpuModeEnabled = (state) => state.ui.gpuModeEnabled !== false;
+export const selectGpuTarget = (state) => normalizeGpuTarget(state.ui.gpuTarget);
 export const selectBringYourOwnRunnerEnabled = (state) => state.ui.bringYourOwnRunnerEnabled;
 export const selectUiActionState = (state) => state.ui.uiActionState;
 export const selectExpandedFolders = (state) => state.ui.expandedFolders || [];

@@ -1,0 +1,124 @@
+# Synthi IDE - WebRTC Compiler Worker (CUDA/NVIDIA)
+#
+# This image is the CUDA sibling of Dockerfile. The default worker image stays
+# ROCm/WSL-focused for RX 9070 XT; use this file with docker-compose.nvidia.yml
+# on NVIDIA hosts that expose GPUs through the NVIDIA Container Toolkit.
+
+FROM rust:1.88-bookworm AS builder
+
+WORKDIR /build
+
+ARG WORKER_CARGO_FEATURES=""
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    libx11-dev libxcb1-dev \
+    libsdl2-dev \
+    clang libclang-dev llvm-dev \
+    protobuf-compiler libprotobuf-dev \
+    pkg-config \
+    cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock ./
+COPY build.rs ./
+COPY proto/ proto/
+COPY .cargo/ .cargo/
+COPY vendored/ vendored/
+RUN mkdir -p src/runtime src/compiler src/hmr src/infra src/safety src/android src/bin && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "fn main() {}" > src/runtime/runner_bin.rs && \
+    echo "" > src/lib.rs && \
+    if [ -n "$WORKER_CARGO_FEATURES" ]; then \
+      cargo build --release --features "$WORKER_CARGO_FEATURES" 2>/dev/null || true; \
+    else \
+      cargo build --release 2>/dev/null || true; \
+    fi
+
+COPY src/ src/
+COPY cpp_src/ cpp_src/
+
+RUN touch src/main.rs src/lib.rs && \
+    if [ -n "$WORKER_CARGO_FEATURES" ]; then \
+      cargo build --release --features "$WORKER_CARGO_FEATURES"; \
+    else \
+      cargo build --release; \
+    fi
+
+FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ARG NODE_VERSION=20.20.2
+
+RUN set -eux; \
+    apt-get update; \
+    if apt-cache show g++-14 >/dev/null 2>&1; then GCC_VERSION=14; else GCC_VERSION=13; fi; \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
+    "gcc-${GCC_VERSION}" "g++-${GCC_VERSION}" clang make cmake pkg-config \
+    openjdk-17-jdk-headless \
+    python3 python3-pip \
+    libsdl2-2.0-0 libsdl2-dev \
+    curl xz-utils gnupg libxml2 \
+    gstreamer1.0-tools \
+    gstreamer1.0-plugins-base \
+    gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad \
+    gstreamer1.0-plugins-ugly \
+    gstreamer1.0-libav \
+    libgstreamer1.0-0 \
+    libgstreamer-plugins-base1.0-0 \
+    xvfb \
+    matchbox-window-manager \
+    x11-utils \
+    xdotool \
+    libx11-6 libxcb1 \
+    clangd; \
+    update-alternatives --install /usr/bin/gcc gcc "/usr/bin/gcc-${GCC_VERSION}" 100; \
+    update-alternatives --install /usr/bin/g++ g++ "/usr/bin/g++-${GCC_VERSION}" 100; \
+    update-alternatives --install /usr/bin/cc cc "/usr/bin/gcc-${GCC_VERSION}" 100; \
+    update-alternatives --install /usr/bin/c++ c++ "/usr/bin/g++-${GCC_VERSION}" 100; \
+    rm -rf /var/lib/apt/lists/*
+
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH="${CUDA_HOME}/bin:/root/.cargo/bin:${PATH}"
+# LIBRARY_PATH is for link-time resolution of -lcuda against CUDA stubs.
+# LD_LIBRARY_PATH deliberately omits the stubs path so runtime resolution uses
+# the real driver library mounted by the NVIDIA container runtime.
+ENV LIBRARY_PATH="${CUDA_HOME}/lib64:${CUDA_HOME}/lib64/stubs"
+ENV LD_LIBRARY_PATH="${CUDA_HOME}/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,video
+
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+        amd64) node_arch='x64' ;; \
+        arm64) node_arch='arm64' ;; \
+        *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" -o /tmp/node.tar.xz; \
+    tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner; \
+    rm /tmp/node.tar.xz; \
+    npm install -g typescript typescript-language-server; \
+    npm cache clean --force
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain stable --profile minimal
+RUN rustup component add rust-analyzer
+
+COPY --from=builder /build/target/release/worker /usr/local/bin/worker
+COPY --from=builder /build/target/release/runner /usr/local/bin/runner
+COPY vscode-server-manager.js /usr/local/bin/vscode-server-manager.js
+COPY ext-host-preload.js /usr/local/bin/ext-host-preload.js
+COPY esm-vscode-hook.mjs /usr/local/bin/esm-vscode-hook.mjs
+
+RUN userdel -r ubuntu 2>/dev/null || true && \
+    useradd -m -s /bin/bash -u 1000 runner && \
+    mkdir -p /tmp/synthi /home/runner/.cache && \
+    chown -R runner:runner /home/runner /tmp/synthi
+
+WORKDIR /home/runner
+
+ENTRYPOINT ["worker"]

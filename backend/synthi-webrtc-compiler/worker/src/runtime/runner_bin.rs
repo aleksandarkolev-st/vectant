@@ -84,7 +84,7 @@ use state_manager::StateManager;
 use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
 #[cfg(feature = "gpu-hmr")]
-use worker::hmr::adapter_trait::{Adapter, AdapterReloadRequest};
+use worker::hmr::adapter_trait::{Adapter, AdapterReloadRequest, AdapterReloadResult};
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
 #[cfg(feature = "gpu-hmr")]
@@ -98,6 +98,15 @@ use worker::hmr::gpu_module_adapter::{GpuModuleAdapter, GpuModuleAdapterConfig, 
 // };
 use worker::debug_log;
 use worker::runtime::legacy_module_state::{AppState, ModuleState};
+
+#[cfg(feature = "gpu-hmr")]
+struct GpuReloadCompletion {
+    language: String,
+    artifact_path: String,
+    kernels: String,
+    adapter: GpuModuleAdapter,
+    result: AdapterReloadResult,
+}
 
 // ============================================================
 // INDEPENDENT SWAP DOMAINS: Separate state for each module
@@ -475,10 +484,10 @@ fn main() {
     // `(window, renderer)` tuple so the existing SDL-specific
     // downstream code (sdl_window_id lookup, xdotool input
     // injection, etc.) keeps working. For non-SDL2 backends the
-    // `window`/`renderer` tuple stays null — the runner operates
-    // through the trait surface only, and SDL-specific downstream
-    // code is gated on the null check (Phase 10g.4 — sdl_window_id
-    // and the deleted _sdl_texture block).
+    // `window`/`renderer` tuple stays null, but `host_surface`
+    // carries the backend render surface passed to generated
+    // modules. GLFW/OpenGL, for example, needs the GLFWwindow*
+    // there even though the SDL-specific tuple must remain null.
     //
     // When the selector returns None (no sidecar — BYOR or smoke
     // test path) we fall back to the legacy init_sdl() path with
@@ -488,8 +497,8 @@ fn main() {
     #[cfg(target_os = "linux")]
     let mut runtime_handle: Option<worker::runtime::window_backend::WindowHandle> = None;
     #[cfg(target_os = "linux")]
-    let (window, renderer) = {
-        use worker::runtime::window_backend::{WindowBackend, WindowFlags};
+    let (window, renderer, host_surface) = {
+        use worker::runtime::window_backend::WindowFlags;
         if let Some(selected) = selected_runtime_backend.as_mut() {
             let backend_name = selected.backend.name().to_string();
             match selected.backend.init() {
@@ -501,26 +510,33 @@ fn main() {
                         WindowFlags::default(),
                     ) {
                         Ok(handle) => {
+                            let surface = if handle.renderer_ptr.is_null() {
+                                handle.raw_ptr
+                            } else {
+                                handle.renderer_ptr
+                            };
                             eprintln!(
                                 "[Phase 10g.4] WindowBackend trait created {} window \
-                                 (win={:p}, renderer={:p}, x11_id={:?})",
+                                 (win={:p}, renderer={:p}, surface={:p}, x11_id={:?})",
                                 backend_name,
                                 handle.raw_ptr,
                                 handle.renderer_ptr,
+                                surface,
                                 handle.x11_window_id,
                             );
                             // For SDL2, extract raw pointers for the
                             // legacy downstream call sites; for non-SDL
                             // backends the SDL-specific pointers stay
-                            // null and downstream code branches on
-                            // sdl_window_id / runtime_handle accordingly.
+                            // null. `surface` is still passed to modules
+                            // through AppState so they can use their own
+                            // backend pointer.
                             let (win, ren) = if backend_name == "SDL2" {
                                 (handle.raw_ptr as *mut SDL_Window, handle.renderer_ptr)
                             } else {
                                 (ptr::null_mut(), ptr::null_mut())
                             };
                             runtime_handle = Some(handle);
-                            (win, ren)
+                            (win, ren, surface)
                         }
                         Err(e) => {
                             eprintln!(
@@ -528,7 +544,8 @@ fn main() {
                                  falling back to legacy init_sdl (only safe for SDL2 projects)",
                                 backend_name, e
                             );
-                            unsafe { init_sdl() }
+                            let (win, ren) = unsafe { init_sdl() };
+                            (win, ren, ren)
                         }
                     }
                 }
@@ -538,7 +555,8 @@ fn main() {
                          falling back to legacy init_sdl (only safe for SDL2 projects)",
                         backend_name, e
                     );
-                    unsafe { init_sdl() }
+                    let (win, ren) = unsafe { init_sdl() };
+                    (win, ren, ren)
                 }
             }
         } else {
@@ -551,7 +569,8 @@ fn main() {
                 "[Phase 10g.4] No selector decision (no sidecar) — \
                  defaulting to legacy init_sdl path"
             );
-            unsafe { init_sdl() }
+            let (win, ren) = unsafe { init_sdl() };
+            (win, ren, ren)
         }
     };
 
@@ -767,10 +786,14 @@ fn main() {
     debug_log!("[Runner] HmrOrchestrator initialized (binary_state=ENABLED)");
 
     #[cfg(not(target_os = "linux"))]
-    let (window, renderer) = (ptr::null_mut(), ptr::null_mut());
+    let (_window, _renderer, host_surface) = (
+        ptr::null_mut::<c_void>(),
+        ptr::null_mut::<c_void>(),
+        ptr::null_mut::<c_void>(),
+    );
     let mut app_state = AppState {
         raw: std::ptr::null_mut(),
-        renderer,
+        renderer: host_surface,
     };
     let mut last_frame = Instant::now();
     let mut last_log = Instant::now();
@@ -798,6 +821,10 @@ fn main() {
     let kv_api = create_kv_api();
     #[cfg(feature = "gpu-hmr")]
     let mut gpu_adapters: HashMap<String, GpuModuleAdapter> = HashMap::new();
+    #[cfg(feature = "gpu-hmr")]
+    let (gpu_reload_tx, gpu_reload_rx) = mpsc::channel::<GpuReloadCompletion>();
+    #[cfg(feature = "gpu-hmr")]
+    let mut gpu_reload_inflight: HashMap<String, Instant> = HashMap::new();
 
     #[cfg(target_os = "linux")]
     debug_log!("[Runner] Frame capture enabled (Linux build)");
@@ -819,6 +846,39 @@ fn main() {
     }
 
     loop {
+        #[cfg(feature = "gpu-hmr")]
+        while let Ok(completion) = gpu_reload_rx.try_recv() {
+            eprintln!(
+                "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact={} kernels={} result={:?}",
+                completion.language,
+                completion.artifact_path,
+                completion.kernels,
+                completion.result
+            );
+            let status = match &completion.result {
+                AdapterReloadResult::Success {
+                    state_preserved, ..
+                } => HmrStatus::Applied {
+                    module: "device".into(),
+                    capability: "GPU sidecar HMR".into(),
+                    state_preserved: *state_preserved,
+                },
+                AdapterReloadResult::Failed { error, .. } => HmrStatus::rejected_with_fallback(
+                    "device",
+                    error,
+                    "Keep previous GPU sidecar loaded",
+                ),
+                AdapterReloadResult::Unsupported { reason } => HmrStatus::rejected_with_fallback(
+                    "device",
+                    reason,
+                    "Full GPU sidecar reload required",
+                ),
+            };
+            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+            gpu_reload_inflight.remove(&completion.language);
+            gpu_adapters.insert(completion.language, completion.adapter);
+        }
+
         // Poll SDL2 events and pass them to loaded modules.
         //
         // ULTRAPLAN Lightning Phase 10g.3b — route through the
@@ -848,7 +908,6 @@ fn main() {
                 Vec::new();
             let mut legacy_drained: Vec<SDL_Event> = Vec::new();
             let used_trait = {
-                use worker::runtime::window_backend::WindowBackend;
                 if let (Some(_handle), Some(selected)) =
                     (runtime_handle.as_ref(), selected_runtime_backend.as_mut())
                 {
@@ -1281,20 +1340,6 @@ fn main() {
                             }
                         };
 
-                        if !gpu_adapters.contains_key(language) {
-                            let mut adapter = GpuModuleAdapter::new(GpuModuleAdapterConfig {
-                                vendor,
-                                ..Default::default()
-                            });
-                            if let Err(e) = adapter.initialize() {
-                                eprintln!(
-                                    "[Runner] [GPU HMR] Device adapter init failed vendor={}: {}",
-                                    language, e
-                                );
-                            }
-                            gpu_adapters.insert(language.to_string(), adapter);
-                        }
-
                         let artifact_hash = std::fs::metadata(artifact_path)
                             .map(|m| m.len().to_string())
                             .unwrap_or_else(|_| "unknown".to_string());
@@ -1329,16 +1374,61 @@ fn main() {
                             timeout_ms: 5000,
                         };
 
-                        if let Some(adapter) = gpu_adapters.get_mut(language) {
-                            let result = adapter.reload(&req);
+                        if gpu_reload_inflight.contains_key(language) {
                             eprintln!(
-                                "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact={} kernels={} result={:?}",
+                                "[Runner] [GPU HMR] Device sidecar reload skipped vendor={} artifact={} kernels={} reason=reload-in-flight",
                                 language,
                                 artifact_path,
-                                kernels.join(","),
-                                result
+                                kernels.join(",")
                             );
+                            let status = HmrStatus::rejected_with_fallback(
+                                "device",
+                                "GPU sidecar reload already in flight",
+                                "Wait for active GPU sidecar reload or restart runner",
+                            );
+                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+                            continue;
                         }
+
+                        let mut adapter =
+                            gpu_adapters
+                                .remove(language)
+                                .unwrap_or_else(|| {
+                                    let mut adapter =
+                                        GpuModuleAdapter::new(GpuModuleAdapterConfig {
+                                            vendor,
+                                            ..Default::default()
+                                        });
+                                    if let Err(e) = adapter.initialize() {
+                                        eprintln!(
+                                            "[Runner] [GPU HMR] Device adapter init failed vendor={}: {}",
+                                            language, e
+                                        );
+                                    }
+                                    adapter
+                                });
+
+                        let completion_tx = gpu_reload_tx.clone();
+                        let language_owned = language.to_string();
+                        let artifact_path_owned = artifact_path.to_string();
+                        let kernels_log = kernels.join(",");
+                        gpu_reload_inflight.insert(language_owned.clone(), Instant::now());
+                        eprintln!(
+                            "[Runner] [GPU HMR] Device sidecar reload started vendor={} artifact={} kernels={}",
+                            language_owned,
+                            artifact_path_owned,
+                            kernels_log
+                        );
+                        thread::spawn(move || {
+                            let result = adapter.reload(&req);
+                            let _ = completion_tx.send(GpuReloadCompletion {
+                                language: language_owned,
+                                artifact_path: artifact_path_owned,
+                                kernels: kernels_log,
+                                adapter,
+                                result,
+                            });
+                        });
                     }
 
                     #[cfg(not(feature = "gpu-hmr"))]
@@ -1395,7 +1485,6 @@ fn main() {
                     // behavior for BYOR / sidecar-less runs.
                     #[cfg(target_os = "linux")]
                     {
-                        use worker::runtime::window_backend::WindowBackend;
                         let handled_via_trait = if let (Some(handle), Some(selected)) =
                             (runtime_handle.take(), selected_runtime_backend.as_mut())
                         {
@@ -1602,18 +1691,13 @@ fn main() {
                         if let Some(lib_path) = loaded_paths.get("gui") {
                             set_current_lib_path(lib_path);
                         }
-                        let state_ptr_wrapper = SendVoidPtr(render_state as usize);
                         let func_ptr = *f;
-                        let result = execute_with_protection("gui_render", move || {
-                            let sp = state_ptr_wrapper.0 as *mut std::ffi::c_void;
-                            func_ptr(sp);
-                        });
-                        if let Err(crash_info) = result {
-                            eprintln!("{}", generate_crash_report(&crash_info));
-                            let status = HmrCrashStatus::from_crash(&crash_info, true);
-                            debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
-                            eprintln!("[Runner] on_render crash in module 'gui' — continuing");
-                        }
+                        // SDL and most native render backends require render calls
+                        // on the thread that owns the window/renderer. The generic
+                        // crash guard runs plugin code on a helper thread, which can
+                        // leave split GUI modules producing black frames without a
+                        // crash. Keep GUI rendering on the runner loop thread.
+                        func_ptr(render_state);
                     }
                     #[cfg(not(unix))]
                     {
@@ -1707,7 +1791,6 @@ fn main() {
         // path or non-SDL2 selector decision).
         #[cfg(target_os = "linux")]
         {
-            use worker::runtime::window_backend::WindowBackend;
             let mut presented_via_trait = false;
             if let (Some(handle), Some(selected)) =
                 (runtime_handle.as_ref(), selected_runtime_backend.as_mut())

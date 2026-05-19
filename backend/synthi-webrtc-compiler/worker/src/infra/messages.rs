@@ -75,6 +75,9 @@ pub struct CompileRequest {
     /// Human-readable GPU mode from the UI: "auto" or "disabled".
     #[serde(default)]
     pub gpu_mode: Option<String>,
+    /// Optional target GPU architecture (for example "gfx1201" or "sm_80").
+    #[serde(default)]
+    pub gpu_arch: Option<String>,
     /// Optional compile recipe supplied directly by deterministic callers.
     /// Same JSON shape as `.synthi_split_meta.json::compile_manifest`.
     #[serde(default, alias = "manifest")]

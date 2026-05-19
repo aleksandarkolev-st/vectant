@@ -174,7 +174,8 @@ services:
       - collab-data:/data
     environment:
       SYNTHI_AI_MODEL: "gemini-3-flash-preview-preview"
-      AI_ENGINE_AUTH_DISABLED: "true"
+      SYNTHI_GEMINI_MODEL: "${SYNTHI_GEMINI_MODEL:-}"
+      OPENAI_API_KEY: "dummy"
       # Tell resolve_workspace_path() where to find slug-rooted repos.
       # The collab-data named volume is shared with collab-server (which
       # writes); we don't need depends_on because the volume is created
@@ -258,6 +259,7 @@ services:
       SIGNALING_URL: "ws://signaling-server:9000"
       COLLAB_SERVER_URL: "http://collab-server:1234"
       AI_BACKEND_URL: "http://ai-engine:8000"
+      SYNTHI_GEMINI_MODEL: "${SYNTHI_GEMINI_MODEL:-}"
       # GStreamer
       GST_DEBUG: "2"
       DISPLAY: ":99"

@@ -46,6 +46,7 @@ interface RawArgs {
   user_requested_deterministic?: unknown;
   prefer_gpu_pipeline?: unknown;
   gpu_mode?: unknown;
+  gpu_arch?: unknown;
   compile_manifest?: unknown;
   manifest?: unknown;
   target?: unknown;
@@ -114,6 +115,7 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
     payload["prefer_gpu_pipeline"] = a.prefer_gpu_pipeline;
   }
   if (typeof a.gpu_mode === "string") payload["gpu_mode"] = a.gpu_mode;
+  if (typeof a.gpu_arch === "string") payload["gpu_arch"] = a.gpu_arch;
   const compileManifest = a.compile_manifest ?? a.manifest;
   if (compileManifest !== undefined) {
     if (!compileManifest || typeof compileManifest !== "object" || Array.isArray(compileManifest)) {
@@ -154,6 +156,7 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       prefer_gpu_pipeline:
         typeof a.prefer_gpu_pipeline === "boolean" ? a.prefer_gpu_pipeline : undefined,
       ...(typeof a.gpu_mode === "string" ? { gpu_mode: a.gpu_mode } : {}),
+      ...(typeof a.gpu_arch === "string" ? { gpu_arch: a.gpu_arch } : {}),
       ...(compileManifest !== undefined ? { compile_manifest: true } : {}),
       ...(typeof a.target === "string" ? { target: a.target } : {}),
     },
