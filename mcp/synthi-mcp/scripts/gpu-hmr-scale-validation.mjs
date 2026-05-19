@@ -34,6 +34,8 @@ const CFG = {
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_SCALE_FIRST_TIMEOUT_MS ?? 240000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_SCALE_HMR_TIMEOUT_MS ?? 30000),
+  screenshotAttempts: Number(process.env.SYNTHI_SCALE_SCREENSHOT_ATTEMPTS ?? 6),
+  screenshotRetryDelayMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_RETRY_MS ?? 1000),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
 };
@@ -822,31 +824,49 @@ function collectWorkerMarkers(text) {
 
 async function captureScreenshot(label, compareTo = null) {
   const state = await ensureMcpAttached();
-  const shot = await state.client.toolCallRaw('synthi_screenshot', { freshness_max_ms: 15000 }, 30000);
-  const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
-  if (!image?.data) throw new Error(`synthi_screenshot returned no image for ${label}`);
-  const input = Buffer.from(image.data, 'base64');
   const safe = label.replace(/[^a-z0-9_-]+/gi, '-').toLowerCase();
-  const outPath = path.join(ARTIFACT_DIR, `${CFG.slug}-${safe}.png`);
-  await writeFile(outPath, input);
-  const analysis = await analyzeImage(input);
-  const row = {
-    path: outPath,
-    width: analysis.width,
-    height: analysis.height,
-    visible_pixels: analysis.visible_pixels,
-    mean_luma: analysis.mean_luma,
-    captured_after_phase: label,
-    seq: Number(shot.json?.seq || 0),
-  };
-  if (compareTo) {
-    row.differs_from_first = await screenshotsDiffer(compareTo.path, outPath);
+  let lastRow = null;
+  const attempts = Math.max(1, CFG.screenshotAttempts);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const shot = await state.client.toolCallRaw('synthi_screenshot', { freshness_max_ms: 15000 }, 30000);
+    const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
+    if (!image?.data) throw new Error(`synthi_screenshot returned no image for ${label}`);
+    const input = Buffer.from(image.data, 'base64');
+    const suffix = attempt === 1 ? '' : `-attempt-${attempt}`;
+    const outPath = path.join(ARTIFACT_DIR, `${CFG.slug}-${safe}${suffix}.png`);
+    await writeFile(outPath, input);
+    const analysis = await analyzeImage(input);
+    const row = {
+      path: outPath,
+      width: analysis.width,
+      height: analysis.height,
+      visible_pixels: analysis.visible_pixels,
+      mean_luma: analysis.mean_luma,
+      captured_after_phase: label,
+      attempt,
+      seq: Number(shot.json?.seq || 0),
+    };
+    if (compareTo) {
+      row.differs_from_first = await screenshotsDiffer(compareTo.path, outPath);
+    }
+    report.screenshots.push(row);
+    const ok = row.width >= 320 && row.height >= 240 && row.visible_pixels > 500;
+    const detail = `${row.width}x${row.height} visible=${row.visible_pixels} luma=${row.mean_luma.toFixed(1)} path=${outPath}`;
+    if (ok) {
+      record(`screenshot ${label}`, 'pass', attempt === 1 ? detail : `${detail} attempt=${attempt}`);
+      return row;
+    }
+    lastRow = row;
+    if (attempt < attempts) {
+      record(`screenshot ${label} retry`, 'warn', `${detail} attempt=${attempt}/${attempts}`);
+      await sleep(CFG.screenshotRetryDelayMs);
+    }
   }
-  report.screenshots.push(row);
-  const ok = row.width >= 320 && row.height >= 240 && row.visible_pixels > 500;
-  record(`screenshot ${label}`, ok ? 'pass' : 'fail', `${row.width}x${row.height} visible=${row.visible_pixels} luma=${row.mean_luma.toFixed(1)} path=${outPath}`);
-  if (!ok) throw new Error(`screenshot ${label} was not visibly non-black`);
-  return row;
+  const detail = lastRow
+    ? `${lastRow.width}x${lastRow.height} visible=${lastRow.visible_pixels} luma=${lastRow.mean_luma.toFixed(1)} path=${lastRow.path}`
+    : 'no screenshot captured';
+  record(`screenshot ${label}`, 'fail', detail);
+  throw new Error(`screenshot ${label} was not visibly non-black`);
 }
 
 async function analyzeImage(input) {
