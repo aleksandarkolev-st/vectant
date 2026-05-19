@@ -18,12 +18,16 @@ export interface BrokerInputGateError {
 interface RawViewport {
   w?: unknown;
   h?: unknown;
+  dpr?: unknown;
 }
 
 interface InputViewport {
   w: number;
   h: number;
+  dpr: number;
 }
+
+const DPR_EPSILON = 1e-6;
 
 export function resolveBrokerInputMode(): BrokerInputMode {
   return process.env["SYNTHI_BROKER_INPUT_MODE"] === "enforce" ? "enforce" : "shadow";
@@ -122,13 +126,23 @@ export async function checkBrokerInputGate(input: {
       lease_id: leaseId,
     });
   }
-  if (viewport && (viewport.w !== frame.width || viewport.h !== frame.height)) {
-    return buildGateError("FRAME_STALE", input.action, {
-      reason: "viewport_changed",
-      frame_viewport: { w: frame.width, h: frame.height },
-      based_on_viewport: viewport,
-      lease_id: leaseId,
-    });
+  if (viewport) {
+    if (!validDpr(frame.dpr)) {
+      return buildGateError("FRAME_STALE", input.action, {
+        reason: "producer_dpr_unavailable",
+        frame_viewport: { w: frame.width, h: frame.height },
+        based_on_viewport: viewport,
+        lease_id: leaseId,
+      });
+    }
+    if (viewport.w !== frame.width || viewport.h !== frame.height || Math.abs(viewport.dpr - frame.dpr) > DPR_EPSILON) {
+      return buildGateError("FRAME_STALE", input.action, {
+        reason: "viewport_changed",
+        frame_viewport: { w: frame.width, h: frame.height, dpr: frame.dpr },
+        based_on_viewport: viewport,
+        lease_id: leaseId,
+      });
+    }
   }
 
   return null;
@@ -141,12 +155,21 @@ function parseViewport(raw: unknown): InputViewport | "invalid" | null {
   if (
     typeof v.w !== "number" ||
     typeof v.h !== "number" ||
+    typeof v.dpr !== "number" ||
+    !Number.isFinite(v.w) ||
+    !Number.isFinite(v.h) ||
+    !Number.isFinite(v.dpr) ||
     v.w <= 0 ||
-    v.h <= 0
+    v.h <= 0 ||
+    v.dpr <= 0
   ) {
     return "invalid";
   }
-  return { w: v.w, h: v.h };
+  return { w: v.w, h: v.h, dpr: v.dpr };
+}
+
+function validDpr(dpr: unknown): dpr is number {
+  return typeof dpr === "number" && Number.isFinite(dpr) && dpr > 0;
 }
 
 function buildGateError(

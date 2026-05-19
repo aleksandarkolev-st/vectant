@@ -20,17 +20,18 @@ function withBrokerInputEnforced<T>(fn: () => Promise<T>): Promise<T> {
   });
 }
 
-function installFakeAttached(frame: { seq: number; ts: number } = { seq: 10, ts: Date.now() }): { sent: string[] } {
+function installFakeAttached(frame: { seq: number; ts: number; dpr?: number | null } = { seq: 10, ts: Date.now(), dpr: 1 }): { sent: string[] } {
+  const dpr = frame.dpr === null ? undefined : frame.dpr ?? 1;
   const sent: string[] = [];
   (session as unknown as { state: string }).state = "attached";
   (session as unknown as { attached: unknown }).attached = {
     sessionId: "fake",
     signalingUrl: "ws://localhost:9000",
-    resolution: { width: 800, height: 600 },
+    resolution: { width: 800, height: 600, ...(dpr === undefined ? {} : { dpr }) },
     frames: {
-      getFrame: async () => ({ data: Buffer.alloc(0), width: 800, height: 600, ts: frame.ts, seq: frame.seq }),
+      getFrame: async () => ({ data: Buffer.alloc(0), width: 800, height: 600, ...(dpr === undefined ? {} : { dpr }), ts: frame.ts, seq: frame.seq }),
       hasFrame: () => true,
-      dimensions: () => ({ width: 800, height: 600 }),
+      dimensions: () => ({ width: 800, height: 600, ...(dpr === undefined ? {} : { dpr }) }),
     },
     channels: {
       sendInput: async (frames: string[]) => {
@@ -69,7 +70,7 @@ describe("broker-enforced input gate", () => {
       y: 10,
       lease_id: lease.lease.lease_id,
       based_on_frame_seq: 10,
-      based_on_viewport: { w: 800, h: 600 },
+      based_on_viewport: { w: 800, h: 600, dpr: 1 },
     });
     expect(res.isError).toBeUndefined();
     expect(sent).toHaveLength(2);
@@ -121,11 +122,50 @@ describe("broker-enforced input gate", () => {
       y: 10,
       lease_id: lease.lease.lease_id,
       based_on_frame_seq: 10,
-      based_on_viewport: { w: 1024, h: 600 },
+      based_on_viewport: { w: 1024, h: 600, dpr: 1 },
     });
     expect(res.isError).toBe(true);
     expect((res.structuredContent as { error: string; reason?: string }).error).toBe("FRAME_STALE");
     expect((res.structuredContent as { reason?: string }).reason).toBe("viewport_changed");
+    expect(sent).toHaveLength(0);
+  }));
+
+  it("rejects input when producer DPR changed", async () => withBrokerInputEnforced(async () => {
+    const { sent } = installFakeAttached({ seq: 10, ts: Date.now(), dpr: 2 });
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "agent", { scope: ["mouse"] });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected acquire rejection");
+    const res = await mouseTool({
+      action: "click",
+      x: 10,
+      y: 10,
+      lease_id: lease.lease.lease_id,
+      based_on_frame_seq: 10,
+      based_on_viewport: { w: 800, h: 600, dpr: 1 },
+    });
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { error: string; reason?: string }).error).toBe("FRAME_STALE");
+    expect((res.structuredContent as { reason?: string }).reason).toBe("viewport_changed");
+    expect((res.structuredContent as { frame_viewport?: { dpr?: number } }).frame_viewport?.dpr).toBe(2);
+    expect(sent).toHaveLength(0);
+  }));
+
+  it("rejects viewport freshness when producer DPR is unavailable", async () => withBrokerInputEnforced(async () => {
+    const { sent } = installFakeAttached({ seq: 10, ts: Date.now(), dpr: null });
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "agent", { scope: ["mouse"] });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected acquire rejection");
+    const res = await mouseTool({
+      action: "click",
+      x: 10,
+      y: 10,
+      lease_id: lease.lease.lease_id,
+      based_on_frame_seq: 10,
+      based_on_viewport: { w: 800, h: 600, dpr: 1 },
+    });
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { error: string; reason?: string }).error).toBe("FRAME_STALE");
+    expect((res.structuredContent as { reason?: string }).reason).toBe("producer_dpr_unavailable");
     expect(sent).toHaveLength(0);
   }));
 

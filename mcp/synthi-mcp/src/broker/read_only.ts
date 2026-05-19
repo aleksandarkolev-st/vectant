@@ -16,8 +16,15 @@ import { sharedFrameCache } from "./frame_cache.js";
 
 type FrameSourceWithInfo = {
   hasFrame: () => boolean;
-  latestInfo?: () => { width: number; height: number; seq: number; ts: number } | null;
+  latestInfo?: () => { width: number; height: number; dpr?: number; seq: number; ts: number } | null;
 };
+
+function requireProducerDpr(dpr: unknown): number {
+  if (typeof dpr !== "number" || !Number.isFinite(dpr) || dpr <= 0) {
+    throw new Error("producer_dpr_unavailable");
+  }
+  return dpr;
+}
 
 export function recordBrokerFrameObservation(input: {
   session_id: string;
@@ -26,10 +33,11 @@ export function recordBrokerFrameObservation(input: {
   is_keyframe?: boolean;
 }): BrokerFrameEvent {
   const ingestTs = Date.now();
+  const dpr = requireProducerDpr(input.dpr ?? input.frame.dpr);
   const viewport: BrokerViewport = {
     w: input.frame.width,
     h: input.frame.height,
-    dpr: input.dpr ?? 1,
+    dpr,
   };
   const entry = eventLog.push({
     kind: "frame",

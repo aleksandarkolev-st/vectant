@@ -165,6 +165,8 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       seq: frame.seq,
       original_w: frame.width,
       original_h: frame.height,
+      dpr: frame.dpr,
+      viewport: { w: frame.width, h: frame.height, dpr: frame.dpr },
       broker_frame: brokerFrame,
       ...(resultMeta.crop !== undefined ? { region: resultMeta.crop } : {}),
       ...(resultMeta.scaled === true ? { scaled: true } : {}),

@@ -7,7 +7,7 @@ import { healthTool } from "../../src/tools/health.js";
 import { screenshotTool } from "../../src/tools/screenshot.js";
 
 function installFakeAttached(frameTs: number = Date.now()): void {
-  const frame = { data: Buffer.from("not-a-real-png"), width: 800, height: 600, ts: frameTs, seq: 7 };
+  const frame = { data: Buffer.from("not-a-real-png"), width: 800, height: 600, dpr: 1, ts: frameTs, seq: 7 };
   (session as unknown as { state: string }).state = "attached";
   (session as unknown as { attached: unknown }).attached = {
     sessionId: "fake-session",
@@ -16,8 +16,8 @@ function installFakeAttached(frameTs: number = Date.now()): void {
     frames: {
       getFrame: async () => frame,
       hasFrame: () => true,
-      dimensions: () => ({ width: 800, height: 600 }),
-      latestInfo: () => ({ width: 800, height: 600, ts: frame.ts, seq: frame.seq }),
+      dimensions: () => ({ width: 800, height: 600, dpr: 1 }),
+      latestInfo: () => ({ width: 800, height: 600, dpr: 1, ts: frame.ts, seq: frame.seq }),
     },
     buildLogDC: { readyState: "open" },
     terminalDC: { readyState: "open" },
@@ -33,7 +33,7 @@ describe("broker read-only observation", () => {
   it("records broker frame metadata into the event log", () => {
     const ev = recordBrokerFrameObservation({
       session_id: "s_1",
-      frame: { data: Buffer.alloc(0), width: 320, height: 240, ts: 1000, seq: 3 },
+      frame: { data: Buffer.alloc(0), width: 320, height: 240, dpr: 1, ts: 1000, seq: 3 },
     });
     expect(ev).toMatchObject({
       type: "frame",
@@ -99,10 +99,10 @@ describe("synthi_screenshot broker frame metadata", () => {
       sessionId: "fake-session",
       signalingUrl: "ws://localhost:9000",
       frames: {
-        getFrame: async () => ({ data: png, width: 8, height: 8, ts: 1000, seq: 5 }),
+        getFrame: async () => ({ data: png, width: 8, height: 8, dpr: 1, ts: 1000, seq: 5 }),
         hasFrame: () => true,
         waitForFirstFrame: async () => {},
-        dimensions: () => ({ width: 8, height: 8 }),
+        dimensions: () => ({ width: 8, height: 8, dpr: 1 }),
       },
     };
     const res = await screenshotTool({});

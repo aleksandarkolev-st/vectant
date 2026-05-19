@@ -47,7 +47,7 @@ export interface AttachedSession {
   readonly buildLogDC: RTCDataChannel;
   readonly terminalDC: RTCDataChannel;
   readonly compileDC: RTCDataChannel;
-  readonly resolution: { width: number; height: number } | null;
+  readonly resolution: { width: number; height: number; dpr?: number } | null;
 }
 
 /**
@@ -97,6 +97,34 @@ export interface FrameTimingSnapshot {
   };
   pipeline_budget_estimate_ms: number;
   observed_at: number;
+}
+
+interface ProducerViewport {
+  width: number;
+  height: number;
+  dpr: number;
+}
+
+function finitePositiveNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function parseProducerViewport(msg: Record<string, unknown>): ProducerViewport | null {
+  const viewport = msg["viewport"];
+  if (viewport && typeof viewport === "object") {
+    const v = viewport as Record<string, unknown>;
+    if (finitePositiveNumber(v["w"]) && finitePositiveNumber(v["h"]) && finitePositiveNumber(v["dpr"])) {
+      return { width: v["w"], height: v["h"], dpr: v["dpr"] };
+    }
+  }
+  if (
+    finitePositiveNumber(msg["width"]) &&
+    finitePositiveNumber(msg["height"]) &&
+    finitePositiveNumber(msg["dpr"])
+  ) {
+    return { width: msg["width"], height: msg["height"], dpr: msg["dpr"] };
+  }
+  return null;
 }
 
 class SessionManager {
@@ -243,8 +271,8 @@ class SessionManager {
   // ---------------------------------------------------------------------
   // Frame-advance gate (§4.4)
   //
-  // Worker emits `{type:"frame-advance", frame_seq, ts_ms}` on build-log
-  // alongside every RTP write. Tracking the most recent one lets
+  // Worker emits `{type:"frame-advance", frame_seq, ts_ms, viewport}` on
+  // build-log alongside RTP writes. Tracking the most recent one lets
   // `wait({condition:"hmr"})` stall the final resolution until a post-reload
   // frame has actually been sent, so the next screenshot is guaranteed to
   // reflect the applied change. Until a frame-advance is observed, the
@@ -478,11 +506,19 @@ class SessionManager {
       const msgType = typeof msg["type"] === "string" ? (msg["type"] as string) : undefined;
       const label = status ?? evType ?? msgType ?? "unknown";
 
-      // Frame advance: `{type:"frame-advance", frame_seq, ts_ms}`. Worker
+      if (msgType === "run-gui-start") {
+        const viewport = parseProducerViewport(msg);
+        if (viewport) frames.setProducerViewport(viewport);
+        return;
+      }
+
+      // Frame advance: `{type:"frame-advance", frame_seq, ts_ms, viewport}`. Worker
       // emits one alongside every RTP write; we keep only the latest for
       // the gate in `wait({condition:"hmr"})`. Never pushed to the event
       // log — one per frame would drown everything else in the ring.
       if (msgType === "frame-advance") {
+        const viewport = parseProducerViewport(msg);
+        if (viewport) frames.setProducerViewport(viewport);
         const fs = typeof msg["frame_seq"] === "number" ? (msg["frame_seq"] as number) : undefined;
         const tsMs = typeof msg["ts_ms"] === "number" ? (msg["ts_ms"] as number) : undefined;
         if (fs !== undefined && tsMs !== undefined) {
