@@ -4,6 +4,7 @@ import { eventLog } from "../../src/events/index.js";
 import { session } from "../../src/session.js";
 import { mouseTool } from "../../src/tools/mouse.js";
 import { keyboardTool } from "../../src/tools/keyboard.js";
+import { releaseInputTool } from "../../src/tools/release_input.js";
 import {
   brokerFallbackController,
   brokerRolloutController,
@@ -135,5 +136,16 @@ describe("broker-enforced input gate", () => {
     });
     expect(res.isError).toBe(true);
     expect((res.structuredContent as { error: string }).error).toBe("FRAME_STALE");
+  }));
+
+  it("rejects release-all in broker-enforced mode", async () => withBrokerInputEnforced(async () => {
+    installFakeAttached();
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "agent", { scope: ["mouse"] });
+    expect(lease.ok).toBe(true);
+    const res = await releaseInputTool({});
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { error: string; detail?: { reason?: string } }).error).toBe("FORBIDDEN");
+    expect((res.structuredContent as { detail?: { reason?: string } }).detail?.reason).toBe("release_all_disabled_in_enforce_mode");
+    expect(leaseRegistry.snapshot()).toHaveLength(1);
   }));
 });

@@ -1,5 +1,6 @@
 import { session } from "../session.js";
 import { leaseRegistry } from "../arbitration/lease.js";
+import { brokerError, brokerInputEnforced } from "../broker/index.js";
 import {
   errorResponse,
   jsonResponse,
@@ -31,6 +32,12 @@ export async function releaseInputTool(args: unknown): Promise<ToolResponse> {
       return errorResponse("invalid_args", { field: "lease_id", expected: "non-empty string" });
     }
     leaseId = a.lease_id;
+  }
+
+  if (leaseId === undefined && brokerInputEnforced()) {
+    return errorResponse("FORBIDDEN", brokerError("FORBIDDEN", {
+      reason: "release_all_disabled_in_enforce_mode",
+    }) as unknown as Record<string, unknown>);
   }
 
   const result = leaseRegistry.release(leaseId);
