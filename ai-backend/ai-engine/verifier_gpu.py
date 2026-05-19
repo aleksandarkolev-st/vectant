@@ -607,6 +607,8 @@ def _source_device_identifiers(source_device_sources: Mapping[str, str]) -> Set[
 def _source_device_constant_declarations(source_device_sources: Mapping[str, str]) -> Mapping[str, str]:
     declarations: dict[str, str] = {}
     for source in source_device_sources.values():
+        if "__global__" not in source and "__device__" not in source:
+            continue
         for match in _SOURCE_DEVICE_CONST_DECL_RE.finditer(source):
             declarations[match.group("name")] = re.sub(r"\s+", " ", match.group("type").strip())
     return declarations
