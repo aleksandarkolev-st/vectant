@@ -70,7 +70,7 @@ use crate::hmr::gpu_module_manager::{GpuModuleManager, ModuleManagerError};
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
-use crate::hmr::gpu_stream_drain::{drain_context, DrainOutcome};
+use crate::hmr::gpu_stream_drain::{drain_context, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
     clear_launch_dispatcher, install_launch_dispatcher, managed_buffers_snapshot,
     GpuLaunchDispatcher, GpuLaunchRequest,
@@ -125,7 +125,7 @@ impl GpuVendor {
     pub fn module_load_symbol(&self) -> &'static str {
         match self {
             Self::Cuda => "cuModuleLoadData",
-            Self::Rocm => "hipModuleLoadData",
+            Self::Rocm => "hipModuleLoad",
         }
     }
 
@@ -700,7 +700,28 @@ impl Adapter for GpuModuleAdapter {
             }
         };
 
-        let drain = drain_context(&symbols, self.config.drain_timeout_ms);
+        let first_device_load =
+            self.active_module_handle.is_none() && self.module_manager.primary().is_none();
+        if first_device_load {
+            let init_code = unsafe { (symbols.cu_init)(0) };
+            if init_code != 0 {
+                self.health = AdapterHealth::Degraded;
+                self.phase = GpuPhase::Ready;
+                return AdapterReloadResult::Failed {
+                    error: format!("GPU driver init failed before first sidecar load: {init_code}"),
+                    recoverable: true,
+                };
+            }
+        }
+        let drain = if first_device_load {
+            DrainOutcome::Synced {
+                scope: DrainScope::Context,
+                elapsed_ms: 0,
+                budget_ms: self.config.drain_timeout_ms,
+            }
+        } else {
+            drain_context(&symbols, self.config.drain_timeout_ms)
+        };
         if !drain.is_synced() {
             let timed_out = matches!(drain, DrainOutcome::TimedOut { .. });
             self.emit_report(GpuSwapInputs {
@@ -723,9 +744,15 @@ impl Adapter for GpuModuleAdapter {
         }
 
         let load_result = (|| -> Result<(), String> {
-            self.module_manager
-                .load_standby(&symbols, &blob)
-                .map_err(Self::module_manager_error)?;
+            if self.config.vendor == GpuVendor::Rocm {
+                self.module_manager
+                    .load_standby_from_file(&symbols, artifact, blob.len())
+                    .map_err(Self::module_manager_error)?;
+            } else {
+                self.module_manager
+                    .load_standby(&symbols, &blob)
+                    .map_err(Self::module_manager_error)?;
+            }
             self.module_manager
                 .resolve_kernels(&symbols, &req.build_manifest.exported_symbols)
                 .map_err(Self::module_manager_error)?;
@@ -887,6 +914,10 @@ mod tests {
         0
     }
 
+    unsafe extern "C" fn ok_module_load(module: *mut CuModule, _path: *const u8) -> CuResult {
+        ok_module_load_data(module, std::ptr::null())
+    }
+
     unsafe extern "C" fn ok_module_unload(_module: CuModule) -> CuResult {
         0
     }
@@ -959,6 +990,7 @@ mod tests {
             cu_device_get: ok_device_get,
             cu_ctx_get_current: ok_ctx_get_current,
             cu_module_load_data: ok_module_load_data,
+            cu_module_load: ok_module_load,
             cu_module_unload: ok_module_unload,
             cu_module_get_function: ok_module_get_function,
             cu_launch_kernel: ok_launch_kernel,
@@ -1430,11 +1462,23 @@ mod tests {
 
     #[test]
     fn phase3_drain_error_faults_adapter_without_swapping() {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        file.write_all(b"fake-cubin").unwrap();
-        let path = file.path().to_string_lossy().to_string();
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-a").unwrap();
+        second.write_all(b"fake-cubin-b").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
         let mut a = adapter_with_symbols(drain_error_symbols());
-        let r = a.reload(&request_with_artifact(&path, vec!["device.cu".into()]));
+        let initial = a.reload(&request_with_artifact(
+            &first_path,
+            vec!["device.cu".into()],
+        ));
+        assert!(matches!(initial, AdapterReloadResult::Success { .. }));
+
+        let r = a.reload(&request_with_artifact(
+            &second_path,
+            vec!["device.cu".into()],
+        ));
         match r {
             AdapterReloadResult::Failed {
                 ref error,
@@ -1445,7 +1489,7 @@ mod tests {
             }
             other => panic!("expected Failed, got {:?}", other),
         }
-        assert_eq!(a.module_manager.swap_count(), 0);
+        assert_eq!(a.module_manager.swap_count(), 1);
         assert_eq!(a.healthcheck(), AdapterHealth::Faulted);
     }
 

@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn dispatch_by_link_flags_returns_none_for_unknown() {
-        let flags = vec!["-lraylib".to_string()];
+        let flags = vec!["-lsokol".to_string()];
         let result = dispatch_by_link_flags(&flags);
         assert!(result.is_none());
     }

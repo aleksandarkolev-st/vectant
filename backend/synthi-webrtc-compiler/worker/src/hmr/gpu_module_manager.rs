@@ -35,6 +35,7 @@
 
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::path::Path;
 
 use crate::hmr::gpu_driver_loader::{
     CuFunction, CuKernelParams, CuModule, CuResult, CuStream, GpuDriverSymbolTable,
@@ -151,6 +152,8 @@ pub enum ModuleManagerError {
     UnknownKernel(String),
     /// Kernel name failed CString conversion (interior NUL).
     InvalidKernelName(String),
+    /// Artifact path failed CString conversion (interior NUL).
+    InvalidArtifactPath(String),
     /// Empty cubin/hsaco — refuse the load up-front.
     EmptyBlob,
 }
@@ -165,6 +168,7 @@ impl ModuleManagerError {
             Self::NoTarget => "no_target",
             Self::UnknownKernel(_) => "unknown_kernel",
             Self::InvalidKernelName(_) => "invalid_kernel_name",
+            Self::InvalidArtifactPath(_) => "invalid_artifact_path",
             Self::EmptyBlob => "empty_blob",
         }
     }
@@ -180,6 +184,7 @@ impl std::fmt::Display for ModuleManagerError {
             Self::NoTarget => write!(f, "no module loaded — call load_standby first"),
             Self::UnknownKernel(s) => write!(f, "kernel {s:?} has not been resolved"),
             Self::InvalidKernelName(s) => write!(f, "kernel name {s:?} contains NUL"),
+            Self::InvalidArtifactPath(s) => write!(f, "artifact path {s:?} contains NUL"),
             Self::EmptyBlob => write!(f, "empty cubin / hsaco blob"),
         }
     }
@@ -272,6 +277,55 @@ impl GpuModuleManager {
         let slot = ModuleSlot {
             handle: module as u64,
             blob_bytes: blob.len(),
+        };
+        self.standby = Some(slot);
+        Ok(slot)
+    }
+
+    /// Loads a cubin/hsaco artifact from a filesystem path into the standby
+    /// slot. ROCm's `hipcc --genco` output is a code object file and the HIP
+    /// module API reliably accepts it through `hipModuleLoad`; using
+    /// `hipModuleLoadData` on that same hsaco can hang on ROCDXG-backed WSL
+    /// systems.
+    pub fn load_standby_from_file(
+        &mut self,
+        symbols: &GpuDriverSymbolTable,
+        artifact_path: impl AsRef<Path>,
+        blob_bytes: usize,
+    ) -> Result<ModuleSlot, ModuleManagerError> {
+        if self.standby.is_some() {
+            let err = ModuleManagerError::StandbyOccupied;
+            self.last_error = Some(err.clone());
+            return Err(err);
+        }
+        if blob_bytes == 0 {
+            let err = ModuleManagerError::EmptyBlob;
+            self.last_error = Some(err.clone());
+            return Err(err);
+        }
+
+        let path_text = artifact_path.as_ref().to_string_lossy();
+        let c_path = CString::new(path_text.as_ref())
+            .map_err(|_| ModuleManagerError::InvalidArtifactPath(path_text.into_owned()))?;
+        let mut module: CuModule = std::ptr::null_mut();
+        // SAFETY: `cuModuleLoad` / `hipModuleLoad` expect a NUL-terminated
+        // path to a cubin/hsaco artifact. `c_path` lives until the call
+        // returns, and the driver owns the loaded module handle on success.
+        let code = unsafe {
+            (symbols.cu_module_load)(&mut module as *mut CuModule, c_path.as_ptr() as *const u8)
+        };
+        if code != 0 {
+            let err = ModuleManagerError::DriverError {
+                op: "cuModuleLoad",
+                code,
+            };
+            self.last_error = Some(err.clone());
+            return Err(err);
+        }
+
+        let slot = ModuleSlot {
+            handle: module as u64,
+            blob_bytes,
         };
         self.standby = Some(slot);
         Ok(slot)
@@ -506,6 +560,9 @@ mod tests {
             r
         })
     }
+    unsafe extern "C" fn stub_load_file(module: *mut CuModule, _path: *const u8) -> CuResult {
+        stub_load_data(module, std::ptr::null())
+    }
     unsafe extern "C" fn stub_unload(_module: CuModule) -> CuResult {
         with_state_mut(|s| {
             s.unload_calls += 1;
@@ -583,6 +640,7 @@ mod tests {
             cu_device_get: stub_device_get,
             cu_ctx_get_current: stub_ctx_get,
             cu_module_load_data: stub_load_data,
+            cu_module_load: stub_load_file,
             cu_module_unload: stub_unload,
             cu_module_get_function: stub_get_function,
             cu_launch_kernel: stub_launch_kernel,

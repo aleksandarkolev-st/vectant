@@ -22,6 +22,7 @@ __pycache__/
 
 # ── Build artifacts ─────────────────────────────────────────────────────────
 *.log
+docker-compose.gpu-*.generated.yml
 mcp/synthi-mcp/.gpu-hmr-test-logs/
 mcp/synthi-mcp/.gpu-hmr-test-artifacts/
 

@@ -7,7 +7,13 @@ import { subscribeCandidateTracker, getCurrentCandidate, installCandidateListene
 import { subscribeHealthPanel, getHealthPanel, updateAdapterHealth, setLifecycleState, setAiActive, pushError } from '@/lib/adapter-health-panel';
 import { subscribeGpuHmrStatus, getGpuHmrStatus, installGpuHmrStatusListener } from '@/lib/gpu-hmr-status';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
-import { selectGpuModeEnabled, setGpuModeEnabled, toggleGpuMode } from '@/redux/uiSlice';
+import {
+    selectGpuModeEnabled,
+    selectGpuTarget,
+    setGpuModeEnabled,
+    setGpuTarget,
+    toggleGpuMode,
+} from '@/redux/uiSlice';
 
 /**
  * Enhanced HMR Hook
@@ -28,6 +34,7 @@ const MAX_HMR_HISTORY_SIZE = 50;
 export function useGpuMode() {
     const dispatch = useAppDispatch();
     const gpuModeEnabled = useAppSelector(selectGpuModeEnabled);
+    const gpuTarget = useAppSelector(selectGpuTarget);
 
     const setEnabled = useCallback((enabled) => {
         dispatch(setGpuModeEnabled(!!enabled));
@@ -37,9 +44,15 @@ export function useGpuMode() {
         dispatch(toggleGpuMode());
     }, [dispatch]);
 
+    const setTarget = useCallback((target) => {
+        dispatch(setGpuTarget(target));
+    }, [dispatch]);
+
     return {
         gpuModeEnabled,
+        gpuTarget,
         setGpuModeEnabled: setEnabled,
+        setGpuTarget: setTarget,
         toggleGpuMode: toggle,
         preferGpuPipeline: gpuModeEnabled,
     };

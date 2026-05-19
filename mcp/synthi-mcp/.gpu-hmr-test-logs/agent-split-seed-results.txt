@@ -1,0 +1,7 @@
+PASS gpu vendor - rocm arch=gfx1201
+PASS fixture - flow
+PASS monolithic source has no Synthi ABI
+PASS create workspace - id=cmpbng4yz0006o801fnujbyre slug=gpu-user-ai-split-demo-20260518232120
+PASS seed monolithic user source - main.cpp
+PASS workspace commit seed
+PASS seed-only workspace ready - open the URL and click Run to trigger AI split

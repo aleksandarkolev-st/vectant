@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hmr::candidate::{Candidate, CandidateState};
 use crate::hmr::health_check::HealthCheckResult;
+use crate::hmr::planner_decision::ReloadDecision;
 
 /// Promotion policy verdict.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +65,9 @@ pub fn evaluate_promotion(
     policy: &PromotionPolicy,
     total_reload_ms: u64,
 ) -> PromotionVerdict {
+    let enforce_warm_latency_budget = policy.enforce_latency_budget
+        && matches!(candidate.decision, ReloadDecision::WarmReload);
+
     // Must be in Validated state
     if candidate.state != CandidateState::Validated {
         return PromotionVerdict::Reject {
@@ -85,7 +89,7 @@ pub fn evaluate_promotion(
                 };
             }
             Some(HealthCheckResult::Healthy { latency_ms }) => {
-                if *latency_ms > policy.max_health_latency_ms {
+                if enforce_warm_latency_budget && *latency_ms > policy.max_health_latency_ms {
                     return PromotionVerdict::Reject {
                         reason: format!(
                             "health check latency {}ms exceeds max {}ms",
@@ -124,8 +128,10 @@ pub fn evaluate_promotion(
         };
     }
 
-    // Latency budget enforcement
-    if policy.enforce_latency_budget && total_reload_ms > policy.max_total_reload_ms {
+    // Warm reload latency budget enforcement. Cold reloads and first compiles
+    // may legitimately take longer because they include process startup,
+    // runner load, AI split generation, or full module initialization.
+    if enforce_warm_latency_budget && total_reload_ms > policy.max_total_reload_ms {
         return PromotionVerdict::Reject {
             reason: format!(
                 "total reload time {}ms exceeds budget {}ms",
@@ -145,7 +151,7 @@ mod tests {
     };
     use crate::hmr::planner_decision::{ReloadDecision, StateStrategy};
 
-    fn validated_candidate() -> Candidate {
+    fn validated_candidate_with(decision: ReloadDecision, latency_ms: u64) -> Candidate {
         let manifest = BuildManifest {
             preview_id: "p1".into(),
             language: "rust".into(),
@@ -174,16 +180,15 @@ mod tests {
             boundary_map_version: None,
             provenance_id: None,
         };
-        let mut c = Candidate::new(
-            manifest,
-            1,
-            ReloadDecision::WarmReload,
-            StateStrategy::Preserve,
-        );
+        let mut c = Candidate::new(manifest, 1, decision, StateStrategy::Preserve);
         c.begin_load();
         c.begin_health_check();
-        c.record_health(HealthCheckResult::Healthy { latency_ms: 50 });
+        c.record_health(HealthCheckResult::Healthy { latency_ms });
         c
+    }
+
+    fn validated_candidate() -> Candidate {
+        validated_candidate_with(ReloadDecision::WarmReload, 50)
     }
 
     #[test]
@@ -206,6 +211,16 @@ mod tests {
             }
             other => panic!("Expected Reject, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn promote_cold_reload_over_warm_latency_budget() {
+        let c = validated_candidate_with(ReloadDecision::ColdReload, 5000);
+        let policy = PromotionPolicy::default();
+        assert_eq!(
+            evaluate_promotion(&c, &policy, 5000),
+            PromotionVerdict::Promote
+        );
     }
 
     #[test]

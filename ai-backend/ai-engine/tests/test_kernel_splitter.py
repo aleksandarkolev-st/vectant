@@ -10,6 +10,7 @@ import pytest
 from agents.gpu_detect import GpuDetectionResult, GpuDetectionEvidence
 from agents.kernel_splitter import (
     KernelSplitterError,
+    _project_source_context,
     build_prompt,
     parse_kernel_split_response,
 )
@@ -43,6 +44,7 @@ This project is a CUDA vector-add demo.
   "gui_link_flags": ["-lSDL2"],
   "shared_link_flags": [],
   "runner_link_flags": ["-lSDL2","-ldl","-lcudart","-lcuda"],
+  "files": ["shared.h","core.cpp","gui.cpp","host_runner.cpp","device.cu"],
   "system_packages": [],
   "hot_reload_mode": "swap",
   "confidence": { "overall": "high", "runner_synthesis": "high",
@@ -66,6 +68,7 @@ def test_parses_clean_response():
     assert "device.cu" in parsed["files"]
     assert "vec_add" in parsed["files"]["device.cu"]
     assert parsed["manifest"]["gpu"]["vendor"] == "cuda"
+    assert parsed["manifest"]["files"][-1] == "device.cu"
     assert parsed["kernel_hashes"] == {"vec_add": "0x1234abcd5678ef01"}
     assert isinstance(parsed["launch_graph"], list)
     assert parsed["launch_graph"][0]["kernel"] == "vec_add"
@@ -102,6 +105,52 @@ def test_missing_optional_blocks_are_empty():
     assert parsed["architecture_md"] == ""
 
 
+def test_normalizes_nested_file_objects():
+    raw = '''
+<JSON>{
+  "core": { "core.cpp": "extern \\"C\\" void* core_on_load(void*, void*) { return 0; }\\nextern \\"C\\" void core_on_update(void*, double) {}" },
+  "gui.cpp": { "file_content": "extern \\"C\\" void* gui_on_load(void*, void*, void*) { return 0; }\\nextern \\"C\\" void gui_on_render(void*) {}" },
+  "shared": { "filename": "shared.h", "content": "#include \\"synthi_gpu_runtime.h\\"" },
+  "host_runner.cpp": "int main(){return 0;}",
+  "device": { "filename": "device.hip", "content": "__global__ void particle_flow(float* x) {}" }
+}</JSON>
+'''
+    parsed = parse_kernel_split_response(raw)
+    assert parsed["files"]["core.cpp"].startswith('extern "C"')
+    assert parsed["files"]["gui.cpp"].startswith('extern "C"')
+    assert parsed["files"]["shared.h"] == '#include "synthi_gpu_runtime.h"'
+    assert parsed["files"]["device.hip"].startswith("__global__")
+
+
+def test_normalizes_json_string_file_content_object():
+    raw = '''
+<JSON>{
+  "shared.h": "#include \\"synthi_gpu_runtime.h\\"",
+  "core.cpp": "extern \\"C\\" void* core_on_load(void*, void*) { return 0; }\\nextern \\"C\\" void core_on_update(void*, double) {}",
+  "gui.cpp": "{\\"file_content\\":\\"extern \\\\\\"C\\\\\\" void* gui_on_load(void*, void*, void*) { return 0; }\\\\nextern \\\\\\"C\\\\\\" void gui_on_render(void*) {}\\"}",
+  "host_runner.cpp": "int main(){return 0;}",
+  "device.hip": "__global__ void particle_flow(float* x) {}"
+}</JSON>
+'''
+    parsed = parse_kernel_split_response(raw)
+    assert parsed["files"]["gui.cpp"].startswith('extern "C"')
+
+
+def test_normalizes_json_like_file_content_with_literal_newlines():
+    raw = '''
+<JSON>{
+  "shared.h": "#include \\"synthi_gpu_runtime.h\\"",
+  "core.cpp": "{\\n\\"file_content\\": \\"#include \\\\\\"shared.h\\\\\\"\\nextern \\\\\\"C\\\\\\" void* core_on_load(void*, void*) { return 0; }\\nextern \\\\\\"C\\\\\\" void core_on_update(void*, double) {}\\"\\n}",
+  "gui.cpp": "extern \\"C\\" void* gui_on_load(void*, void*, void*) { return 0; }\\nextern \\"C\\" void gui_on_render(void*) {}",
+  "host_runner.cpp": "int main(){return 0;}",
+  "device.hip": "__global__ void particle_flow(float* x) {}"
+}</JSON>
+'''
+    parsed = parse_kernel_split_response(raw)
+    assert parsed["files"]["core.cpp"].startswith('#include "shared.h"')
+    assert 'extern "C" void core_on_update' in parsed["files"]["core.cpp"]
+
+
 def test_build_prompt_substitutes_user_code():
     code = "__global__ void k(){}"
     p = build_prompt(code)
@@ -121,7 +170,37 @@ def test_build_prompt_attaches_detection_hint():
     assert "cuda" in p
 
 
+def test_build_prompt_attaches_runtime_target_hint(monkeypatch):
+    monkeypatch.setenv("SYNTHI_GPU_VENDOR_HINT", "rocm")
+    monkeypatch.setenv("SYNTHI_GPU_ARCH_HINT", "gfx1201")
+    p = build_prompt("__global__ void k(){}")
+    assert "RUNTIME GPU TARGET" in p
+    assert "vendor=rocm" in p
+    assert "arch=gfx1201" in p
+
+
 def test_build_prompt_attaches_extra_instructions():
     p = build_prompt("x", extra_instructions="don't change kernel names")
     assert "EXTRA INSTRUCTIONS" in p
     assert "don't change kernel names" in p
+
+
+def test_project_source_context_includes_multi_file_sources():
+    context = _project_source_context(
+        {
+            "src/app/main.cpp": "int main(){return 0;}",
+            "src/gpu/particle_kernels.hip": "__global__ void advance_particle_field(float* x){}",
+            "src/field/flow_profile_00.hpp": "#pragma once\nconstexpr float kPull = 0.2f;",
+            "src/field/flow_table_00.h": "#pragma once\nstatic const int kBand = 1;",
+            "src/field/flow_module_00.cpp": "float force(float x){return x;}",
+            "docs/notes/field-note-000.md": "# not source context",
+        },
+        focus="src/app/main.cpp",
+    )
+    assert "FULL ORDINARY PROJECT SOURCE CONTEXT" in context
+    assert "// FILE: src/app/main.cpp" in context
+    assert "// FILE: src/gpu/particle_kernels.hip" in context
+    assert "// FILE: src/field/flow_profile_00.hpp" in context
+    assert "// FILE: src/field/flow_table_00.h" in context
+    assert "// FILE: src/field/flow_module_00.cpp" in context
+    assert "docs/notes/field-note-000.md" not in context

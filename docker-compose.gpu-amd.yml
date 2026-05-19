@@ -1,0 +1,33 @@
+# AMD/ROCm override for the universal GPU worker image.
+#
+# Use this when you want the worker image to ship with both CUDA and ROCm
+# toolchains while exposing AMD/ROCm devices to the container. On this RX 9070 XT
+# Windows/WSL setup, /dev/dxg + librocdxg are the required hardware bridge.
+
+services:
+  ai-engine:
+    environment:
+      SYNTHI_GPU_VENDOR_HINT: "rocm"
+      SYNTHI_GPU_ARCH_HINT: "${SYNTHI_GPU_ARCH:-}"
+
+  worker:
+    image: ${SYNTHI_WORKER_GPU_IMAGE:-vectant-ade-worker-gpu:local}
+    build:
+      context: ./backend/synthi-webrtc-compiler/worker
+      dockerfile: Dockerfile.gpu
+      args:
+        WORKER_CARGO_FEATURES: "gpu-hmr"
+    environment:
+      SYNTHI_GPU_HMR: "1"
+      SYNTHI_GPU_VENDOR: "auto"
+      SYNTHI_GPU_ARCH: "${SYNTHI_GPU_ARCH:-}"
+      SYNTHI_GPU_ARCH_HINT: "${SYNTHI_GPU_ARCH:-}"
+      CUDA_HOME: "/usr/local/cuda"
+      ROCM_PATH: "/opt/rocm"
+      LIBRARY_PATH: "/usr/local/cuda/lib64:/usr/local/cuda/lib64/stubs:/opt/rocm/lib:/opt/rocm/lib64"
+      LD_LIBRARY_PATH: "/usr/local/cuda/lib64:/opt/rocm/lib:/opt/rocm/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64"
+      HSA_ENABLE_DXG_DETECTION: "1"
+    devices:
+      - "/dev/dxg:/dev/dxg"
+    volumes:
+      - /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so:ro
