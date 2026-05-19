@@ -17,6 +17,11 @@ export interface BrokerPostconditionResult {
   evidence?: Record<string, unknown>;
 }
 
+type PostconditionSample =
+  | { verified: true; evidence: Record<string, unknown> }
+  | null
+  | Promise<{ verified: true; evidence: Record<string, unknown> } | null>;
+
 export async function verifyBrokerPostcondition(
   raw: unknown,
   timeoutMs: number = 2_000
@@ -33,19 +38,18 @@ export async function verifyBrokerPostcondition(
   const deadline = Date.now() + Math.max(0, timeoutMs);
   switch (parsed.type) {
     case "pixel_match": {
-      const result = await verify({
-        kind: "pixel",
-        x: parsed.x,
-        y: parsed.y,
-        expected_rgb: parsed.expected_rgb,
-        tolerance: parsed.tolerance ?? 0,
+      return pollUntil(deadline, parsed.type, async () => {
+        const result = await verify({
+          kind: "pixel",
+          x: parsed.x,
+          y: parsed.y,
+          expected_rgb: parsed.expected_rgb,
+          tolerance: parsed.tolerance ?? 0,
+        });
+        return result.matched === true
+          ? { verified: true, evidence: result.evidence }
+          : null;
       });
-      return {
-        supported: true,
-        verified: result.matched === true,
-        type: parsed.type,
-        evidence: result.evidence,
-      };
     }
     case "lifecycle_event":
       return pollUntil(deadline, parsed.type, () => {
@@ -146,10 +150,10 @@ function parsePostcondition(raw: unknown): BrokerPostcondition | null {
 async function pollUntil(
   deadline: number,
   type: string,
-  sample: () => { verified: true; evidence: Record<string, unknown> } | null
+  sample: () => PostconditionSample
 ): Promise<BrokerPostconditionResult> {
   for (;;) {
-    const result = sample();
+    const result = await sample();
     if (result) {
       return { supported: true, verified: true, type, evidence: result.evidence };
     }

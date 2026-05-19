@@ -10,22 +10,40 @@ interface FakeSendOptions {
   onFrameSent?: (frame: string) => void;
 }
 
-async function installFakeAttached(opts: { interFrameDelayMs?: number } = {}): Promise<void> {
-  const png = await sharp({
+interface FakeFrameColor {
+  r: number;
+  g: number;
+  b: number;
+}
+
+async function pngForColor(color: FakeFrameColor): Promise<Buffer> {
+  return sharp({
     create: {
       width: 4,
       height: 4,
       channels: 3,
-      background: { r: 9, g: 8, b: 7 },
+      background: color,
     },
   }).png().toBuffer();
+}
+
+async function installFakeAttached(opts: { interFrameDelayMs?: number; frameColors?: FakeFrameColor[] } = {}): Promise<void> {
+  const colors = opts.frameColors && opts.frameColors.length > 0
+    ? opts.frameColors
+    : [{ r: 9, g: 8, b: 7 }];
+  const pngs = await Promise.all(colors.map((color) => pngForColor(color)));
+  let frameReads = 0;
   (session as unknown as { state: string }).state = "attached";
   (session as unknown as { attached: unknown }).attached = {
     sessionId: "s_1",
     signalingUrl: "ws://localhost:9000",
     resolution: { width: 4, height: 4 },
     frames: {
-      getFrame: async () => ({ data: png, width: 4, height: 4, ts: Date.now(), seq: 3 }),
+      getFrame: async () => {
+        const data = pngs[Math.min(frameReads, pngs.length - 1)]!;
+        frameReads += 1;
+        return { data, width: 4, height: 4, ts: Date.now(), seq: 3 };
+      },
       hasFrame: () => true,
       dimensions: () => ({ width: 4, height: 4 }),
     },
@@ -113,6 +131,29 @@ describe("synthi_dispatch_input", () => {
       based_on_frame_seq: 3,
       action: { tool: "synthi_keyboard", kind: "key", key: "Enter" },
       postcondition: { type: "pixel_match", x: 0, y: 0, expected_rgb: [9, 8, 7] },
+    });
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as { effect_verified: { verified: boolean } };
+    expect(body.effect_verified.verified).toBe(true);
+  }));
+
+  it("waits up to the timeout for pixel postconditions", async () => withBrokerInputEnforced(async () => {
+    await installFakeAttached({
+      frameColors: [
+        { r: 9, g: 8, b: 7 },
+        { r: 1, g: 1, b: 1 },
+        { r: 9, g: 8, b: 7 },
+      ],
+    });
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "agent", { scope: ["keyboard"] });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected lease failure");
+    const res = await dispatchInputTool({
+      lease_id: lease.lease.lease_id,
+      based_on_frame_seq: 3,
+      action: { tool: "synthi_keyboard", kind: "key", key: "Enter" },
+      postcondition: { type: "pixel_match", x: 0, y: 0, expected_rgb: [9, 8, 7] },
+      timeout_ms: 100,
     });
     expect(res.isError).toBeUndefined();
     const body = res.structuredContent as { effect_verified: { verified: boolean } };
