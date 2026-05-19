@@ -2,6 +2,7 @@ import sharp from "sharp";
 import { session } from "../session.js";
 import { eventLog } from "../events/index.js";
 import { requestRegistry } from "../util/request_registry.js";
+import { assertBrokerProviderAllowed } from "../broker/security.js";
 import {
   errorFromException,
   errorResponse,
@@ -37,6 +38,8 @@ export interface WorkerEntity {
 
 const VALID_MODES = ["agent_side", "server_side"] as const;
 type DescribeMode = (typeof VALID_MODES)[number];
+const SERVER_SIDE_BACKENDS = ["claude_api", "gemini_api"] as const;
+type ServerSideVisionBackend = (typeof SERVER_SIDE_BACKENDS)[number];
 
 interface RawArgs {
   mode?: unknown;
@@ -57,24 +60,38 @@ function collectWorkerEntities(): WorkerEntity[] {
   return [];
 }
 
+function parsePreferredVisionBackend(raw: unknown): ServerSideVisionBackend | "invalid" | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string") return "invalid";
+  const normalized = raw.toLowerCase();
+  return (SERVER_SIDE_BACKENDS as readonly string[]).includes(normalized)
+    ? normalized as ServerSideVisionBackend
+    : "invalid";
+}
+
+function configuredVisionBackend(): string {
+  return (process.env["SYNTHI_VISION_BACKEND"] ?? "agent_side").toLowerCase();
+}
+
+function resolveConfiguredServerSideBackend(): ServerSideVisionBackend | null {
+  const configured = configuredVisionBackend();
+  return (SERVER_SIDE_BACKENDS as readonly string[]).includes(configured)
+    ? configured as ServerSideVisionBackend
+    : null;
+}
+
 async function resolveServerSideDescription(
   frame: Buffer,
   focus: string,
+  backend: ServerSideVisionBackend,
   signal?: AbortSignal
 ): Promise<{ summary: string; entities: WorkerEntity[]; backend: string; model?: string; cost_usd?: number }> {
-  const configured = (process.env["SYNTHI_VISION_BACKEND"] ?? "agent_side").toLowerCase();
-  if (configured !== "claude_api" && configured !== "gemini_api") {
-    throw new Error(
-      `capability_not_available: server_side describe needs SYNTHI_VISION_BACKEND=claude_api|gemini_api; got '${configured}'`
-    );
-  }
-
   // Re-use the same lazy SDK imports as the locate backends. We keep the
   // wiring shallow here — this is a phase-1 seam, not a polished product
   // surface. Agents preferring richer descriptions should use agent_side
   // (their own LLM) today.
   const base64 = frame.toString("base64");
-  if (configured === "claude_api") {
+  if (backend === "claude_api") {
     const anthropicMod = (await import("@anthropic-ai/sdk")) as unknown as {
       default: new (opts: { apiKey: string }) => unknown;
     };
@@ -181,6 +198,37 @@ export async function describeTool(args: unknown, extra?: DescribeToolExtra): Pr
   const attached = session.get();
   if (!attached) return errorResponse("not_attached");
 
+  let serverSideBackend: ServerSideVisionBackend | null = null;
+  if (mode === "server_side") {
+    const preferred = parsePreferredVisionBackend(a.preferred_vision_backend);
+    if (preferred === "invalid") {
+      return errorResponse("invalid_args", {
+        field: "preferred_vision_backend",
+        expected: "claude_api|gemini_api",
+      });
+    }
+    serverSideBackend = preferred ?? resolveConfiguredServerSideBackend();
+    if (!serverSideBackend) {
+      const configured = configuredVisionBackend();
+      return errorResponse("capability_not_available", {
+        message: `capability_not_available: server_side describe needs SYNTHI_VISION_BACKEND=claude_api|gemini_api; got '${configured}'`,
+        available_capabilities: [],
+        hint: "set SYNTHI_VISION_BACKEND=claude_api|gemini_api, or call synthi_describe({mode:'agent_side'}).",
+      });
+    }
+    const policy = assertBrokerProviderAllowed({
+      provider: serverSideBackend,
+      sends_screenshot: true,
+      session_id: attached.sessionId,
+    });
+    if (!policy.ok) {
+      return errorResponse(policy.error.error, {
+        ...policy.error.detail,
+        broker_error: policy.error,
+      });
+    }
+  }
+
   let frame;
   try {
     if (!attached.frames.hasFrame()) {
@@ -224,7 +272,7 @@ export async function describeTool(args: unknown, extra?: DescribeToolExtra): Pr
   const handle = requestRegistry.register("synthi_describe", extra?.signal);
   try {
     const png = await sharp(frame.data).png({ compressionLevel: 6 }).toBuffer();
-    const result = await resolveServerSideDescription(png, focus, handle.signal);
+    const result = await resolveServerSideDescription(png, focus, serverSideBackend!, handle.signal);
     eventLog.push({
       kind: "usage",
       metric: "vision_inference",

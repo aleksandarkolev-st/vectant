@@ -9,6 +9,8 @@ import {
 } from "../../src/broker/index.js";
 import type { BrokerPrincipal } from "../../src/broker/auth.js";
 import { EventLog } from "../../src/events/log.js";
+import { session } from "../../src/session.js";
+import { describeTool } from "../../src/tools/describe.js";
 
 const inputPrincipal: BrokerPrincipal = {
   subject: "agent",
@@ -22,9 +24,26 @@ const readOnlyPrincipal: BrokerPrincipal = {
   role: "read_only",
 };
 
+function installFakeAttached(): void {
+  (session as unknown as { state: string }).state = "attached";
+  (session as unknown as { attached: unknown }).attached = {
+    sessionId: "s1",
+    signalingUrl: "ws://localhost:9000",
+    resolution: { width: 4, height: 4 },
+    frames: {
+      getFrame: async () => ({ data: Buffer.alloc(0), width: 4, height: 4, ts: Date.now(), seq: 1 }),
+      hasFrame: () => true,
+      waitForFirstFrame: async () => {},
+      dimensions: () => ({ width: 4, height: 4 }),
+    },
+    channels: {},
+  };
+}
+
 describe("broker security hardening", () => {
   beforeEach(() => {
     brokerAuditLog._resetForTests();
+    session._resetForTests();
   });
 
   it("redacts secret keys and bearer-like values recursively", () => {
@@ -88,6 +107,26 @@ describe("broker security hardening", () => {
     } finally {
       if (prev === undefined) delete process.env["SYNTHI_ALLOW_THIRD_PARTY_INFERENCE"];
       else process.env["SYNTHI_ALLOW_THIRD_PARTY_INFERENCE"] = prev;
+    }
+  });
+
+  it("enforces third-party inference policy for server-side describe", async () => {
+    const prevAllow = process.env["SYNTHI_ALLOW_THIRD_PARTY_INFERENCE"];
+    const prevBackend = process.env["SYNTHI_VISION_BACKEND"];
+    delete process.env["SYNTHI_ALLOW_THIRD_PARTY_INFERENCE"];
+    process.env["SYNTHI_VISION_BACKEND"] = "claude_api";
+    try {
+      installFakeAttached();
+      const response = await describeTool({ mode: "server_side" });
+      expect(response.isError).toBe(true);
+      expect((response.structuredContent as { error: string }).error).toBe("FORBIDDEN");
+      expect((response.structuredContent as { reason?: string }).reason).toBe("third_party_inference_disabled");
+      expect(brokerAuditLog.snapshot()[0]?.action).toBe("provider_route_denied");
+    } finally {
+      if (prevAllow === undefined) delete process.env["SYNTHI_ALLOW_THIRD_PARTY_INFERENCE"];
+      else process.env["SYNTHI_ALLOW_THIRD_PARTY_INFERENCE"] = prevAllow;
+      if (prevBackend === undefined) delete process.env["SYNTHI_VISION_BACKEND"];
+      else process.env["SYNTHI_VISION_BACKEND"] = prevBackend;
     }
   });
 
