@@ -289,6 +289,33 @@ but broader than a local generated-span patch. Use it when the edit is safe
 only after rebuilding an affected host/device role, relinking a sidecar, or
 restarting a narrow part of the runner without performing a full AI re-split.
 
+### Runtime Reload ABI
+
+Reloading a sidecar without restarting the host runner requires a deterministic
+runtime ABI. It cannot rely on stale function pointers or ad hoc
+`dlsym`/`GetProcAddress` calls spread across generated host code.
+
+Required model:
+
+- all generated launch sites call through a Global Launch Indirection Table
+- the table is keyed by stable kernel/launch symbol ids
+- only the loader owns `dlsym`, `GetProcAddress`, or vendor module lookup
+- reload swaps table entries atomically after compile and verifier gates pass
+- old artifacts stay alive until no in-flight launch can reference them
+- every launch wrapper records artifact generation/version
+- mapping verifier rejects launch sites that bypass the indirection table
+
+If any generated role caches a direct launch-wrapper pointer, the runner can
+enter a split-brain state where old and new kernels run together. That must be
+treated as:
+
+```text
+reload_failed.stale_launch_pointer
+```
+
+The AI may patch generated source roles to use the dispatch table. It must not
+patch compiled binaries or certify that runtime pointer redirection is safe.
+
 ## 6. Agentic Split/Verify Orchestrator
 
 The AI split is not a one-shot generation step. It is a bounded
@@ -498,9 +525,12 @@ These fields should be allowed but not required for Milestone 1:
 - global device symbol table hash
 - header dependency graph hash
 - template instantiation evidence
+- launch indirection table version
+- reload generation count
 - full source context report
 - runner isolation metadata
 - runtime memory arena statistics
+- GPU driver fault markers
 
 ### Milestone 0.5 Agentic Fields
 
@@ -1188,12 +1218,17 @@ Engineers need immediate cause, not raw logs.
 - `constant_layout_changed`
 - `header_dependency_unbounded`
 - `template_instantiation_unbounded`
+- `warm_rebuild_budget_exceeded`
 - `device_compile_failed`
 - `device_link_failed`
 - `device_link_symbol_unresolved`
 - `vram_fragmented`
+- `vram_session_refresh_required`
 - `reload_failed`
+- `stale_launch_pointer_detected`
 - `runner_crashed`
+- `gpu_driver_tdr`
+- `gpu_device_tainted`
 - `screenshot_not_ready`
 - `platform_isolation_unsupported`
 - `unsupported_project_shape`
@@ -1249,6 +1284,10 @@ Build failed.
 - prompt schema version
 - accepted agentic attempt id
 - verifier results
+- launch indirection table version
+- warm path budget result
+- reload generation and memory arena summary
+- GPU driver fault markers
 - generated timestamp
 - parent run id
 - cache key
@@ -1313,6 +1352,35 @@ Mapping failure or major structural edit:
 
 - agentic full re-split
 
+### Warm Path Performance Budget
+
+The warm path only helps if dependency impact is already available from cached
+metadata. It must not rediscover template instantiations by reparsing half the
+project on the critical path.
+
+Default budgets:
+
+- impact analysis target: under 250 ms
+- impact analysis hard cap: 1,000 ms
+- single affected role rebuild/relink target: under 2 seconds
+- warm path soft cap: 5 seconds
+
+Inputs should come from persisted compile metadata, depfiles, include graphs,
+source mappings, generated-role manifests, global device symbol tables, and
+prior template instantiation evidence. The warm path may validate cache
+freshness, but it should not perform unbounded project-wide analysis during an
+edit loop.
+
+If the predicted or observed warm path exceeds the budget, report:
+
+```text
+warm_rebuild_budget_exceeded
+```
+
+Then choose a clear fallback: standard incremental build, AI delta/verify, full
+re-split, or cold restart. Do not present a 5-10 second dependency search as
+instant HMR.
+
 ### Required Logs
 
 - cache hit/miss
@@ -1320,6 +1388,8 @@ Mapping failure or major structural edit:
 - compile invalidation reason
 - header dependency invalidation reason
 - template instantiation invalidation reason
+- warm path estimate and actual elapsed time
+- warm path budget result
 - AI call reason
 - agentic mode and attempt count
 - verifier failure reason codes
@@ -1381,6 +1451,38 @@ provable. Otherwise reject the reload and choose a safe fallback such as warm
 restart or cold runner restart. Do not promise arbitrary VRAM defragmentation
 across vendor drivers.
 
+Long tuning sessions need planned memory maintenance. Track reload generation
+count, fragmentation ratio, largest free block, and recent allocation failure
+reasons. By default:
+
+- warn when reload generation exceeds 50 or fragmentation ratio exceeds 0.35
+- recommend planned session refresh when generation exceeds 100 or
+  fragmentation ratio exceeds 0.50
+- force safe fallback before a known-large allocation would fail
+- distinguish true memory pressure from fragmentation
+- record whether refresh was planned, user-triggered, or forced by OOM risk
+
+The product should prefer a predictable planned refresh over surprising
+`CUDA_ERROR_OUT_OF_MEMORY`, HIP out-of-memory, or black-screen failure in the
+middle of a tuning loop.
+
+### GPU Driver Fault Domain And TDR Reality
+
+Process isolation cannot fully sandbox a bad GPU instruction or runaway kernel.
+On Windows, Timeout Detection and Recovery can reset the display driver. On
+Linux, a bad kernel can hang a GPU queue or driver ring. In either case, the
+supervisor may survive while the GPU device or preview session is no longer
+trustworthy.
+
+Product behavior should be:
+
+- detect vendor timeout, reset, and device-lost errors where possible
+- mark the runner/session/device as tainted after a suspected driver fault
+- stop accepting screenshots as validation proof after a taint marker
+- require cold runner restart or session/device reset before continuing
+- surface the fault as a GPU driver/device event, not a normal compile error
+- avoid claiming guaranteed sandboxing of arbitrary GPU kernels
+
 GPU runaway handling is harder than CPU process killing. Product behavior
 should be conservative:
 
@@ -1420,10 +1522,20 @@ Every run should emit one structured report.
 - deviceSymbolTableHash
 - affectedHeaderGraph
 - affectedTemplateInstantiations
+- warmPathEstimateMs
+- warmPathActualMs
+- warmPathBudgetResult
+- launchIndirectionTableVersion
+- staleLaunchPointerChecks
 - verifierRules
 - reloadTimings
 - screenshotTimings
 - memoryArenaStats
+- reloadGeneration
+- vramFragmentationRatio
+- largestFreeBlockBytes
+- plannedMemoryRefresh
+- gpuDriverFaultMarkers
 - isolationBackend
 - runnerPid
 - runnerExitStatus
@@ -1588,6 +1700,8 @@ Tasks:
 - patch generated device role locally
 - verify kernel signatures
 - verify constants/device globals
+- require launch indirection for reloadable kernel entrypoints
+- reject stale direct launch-wrapper pointers
 - reject unbounded header/template dependency edits from the direct fast path
 - confirm ABI/layout with selected vendor compiler artifacts where possible
 - compile device sidecar only
@@ -1613,6 +1727,22 @@ Done when:
 - header/template edits without bounded dependency proof are rejected from
   direct `device_only` with reason codes
 
+### Milestone 1.25: Runtime Reload ABI
+
+Tasks:
+
+- add Global Launch Indirection Table for generated kernel launch wrappers
+- route every generated launch site through stable symbol-id table entries
+- restrict direct `dlsym` / `GetProcAddress` usage to the loader
+- atomically swap table targets only after verifier gates pass
+- keep old sidecar artifacts alive until no in-flight launch can reference them
+- add stale launch-pointer verifier and reload report fields
+
+Done when:
+
+- sidecar reload cannot leave the host runner calling a stale launch wrapper
+- generated roles that bypass the indirection table are rejected before reload
+
 ### Milestone 1.5: Warm Deterministic Rebuild/Relink Path
 
 Tasks:
@@ -1620,6 +1750,7 @@ Tasks:
 - add affected header/device dependency report
 - add template instantiation evidence where available
 - add global device symbol table for generated device roles
+- add warm path performance budget and timeout reporting
 - rebuild affected generated roles without AI when impact is bounded
 - relink affected sidecars or host/device bundles without full re-split
 - reject unbounded dependency ripples with actionable reason codes
@@ -1628,6 +1759,7 @@ Done when:
 
 - safe header/helper edits can use a deterministic warm path instead of full AI
   re-split
+- warm impact analysis uses cached metadata and stays within budget
 - unsafe or unbounded header/template edits are rejected predictably
   without pretending to be instant HMR
 
@@ -1720,6 +1852,8 @@ Tasks:
 - add Windows Job Object / restricted-process isolation plan
 - add runtime allocator/shadow-arena reporting
 - add bounded VRAM defragmentation or safe fallback behavior
+- add long-session VRAM refresh policy
+- add GPU driver TDR/device-taint detection and recovery UX
 - add crash cleanup
 - separate unsafe debug mode
 
@@ -1727,6 +1861,8 @@ Done when:
 
 - a crashing or hostile runner cannot corrupt the supervisor on supported
   platforms
+- GPU driver/device faults are surfaced as tainted-session recovery, not
+  ordinary HMR failures
 
 ## 22. Updated Definition Of Production Ready
 
@@ -1740,13 +1876,16 @@ GPU HMR is production-grade only when all are true:
 6. Header/template edits use warm deterministic rebuild or explicit fallback.
 7. ABI-breaking edits are blocked before unsafe reload.
 8. Vendor compiler artifacts confirm ABI/layout safety where required.
-9. Multi-device-TU projects are supported or clearly rejected.
-10. Generated roles remain internal and inspectable.
-11. Every run shows which fast path was used.
-12. CUDA and ROCm pass the supported framework matrix.
-13. Failures are categorized and actionable.
-14. Native runner crashes are isolated on supported platforms.
-15. Validation reports are reproducible and current.
+9. Runtime reload uses a verified launch indirection table.
+10. Warm rebuild has measured budget limits and clear fallback.
+11. Multi-device-TU projects are supported or clearly rejected.
+12. Generated roles remain internal and inspectable.
+13. Every run shows which fast path was used.
+14. CUDA and ROCm pass the supported framework matrix.
+15. Failures are categorized and actionable.
+16. Native runner crashes are isolated on supported platforms.
+17. GPU driver faults are treated as tainted-session recovery events.
+18. Validation reports are reproducible and current.
 
 ## 23. Recommended Immediate Task
 
@@ -1777,7 +1916,18 @@ user edits src/gpu/*.hip or src/gpu/*.cu
   -> emit reload report
 ```
 
-Step 3: add the warm deterministic rebuild/relink path for bounded
+Step 3: add the runtime reload ABI:
+
+```text
+generated launch site
+  -> call stable launch indirection table entry
+  -> compile/reload produces new sidecar artifact
+  -> verifier confirms all launch sites use indirection
+  -> loader atomically swaps table targets
+  -> old artifact remains alive until in-flight launches complete
+```
+
+Step 4: add the warm deterministic rebuild/relink path for bounded
 header/template dependency edits:
 
 ```text
@@ -1794,3 +1944,7 @@ one device TU, but build the metadata and verifier as if multi-TU will arrive
 next. Direct body-only edits should stay non-agentic when local proof succeeds.
 Header/template edits should not be sold as instant HMR unless their dependency
 ripple is bounded and verified.
+
+Runtime reload should not be considered safe until launch indirection is in
+place. Long tuning sessions should report VRAM fragmentation and planned refresh
+state before users hit a surprise driver or allocation failure.
