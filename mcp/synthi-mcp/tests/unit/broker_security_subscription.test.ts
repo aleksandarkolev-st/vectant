@@ -8,6 +8,7 @@ import {
   type BrokerPrincipal,
 } from "../../src/broker/index.js";
 import { EventLog } from "../../src/events/log.js";
+import { session } from "../../src/session.js";
 
 const secret = "broker-secret";
 
@@ -182,6 +183,10 @@ describe("broker subscriptions", () => {
 });
 
 describe("broker control plane", () => {
+  beforeEach(() => {
+    session._resetForTests();
+  });
+
   it("applies idempotency to subscribe and replays the same subscription", () => {
     const log = new EventLog();
     const control = new BrokerControlPlane(log);
@@ -248,6 +253,9 @@ describe("broker control plane", () => {
     });
     expect(health.ok).toBe(true);
     if (!health.ok) throw new Error("unexpected health failure");
+    expect(health.health.session_id).toBe("s_1");
+    expect(health.health.broker_state).toBe("disconnected");
+    expect(health.health.upstream.connected).toBe(false);
     expect(health.subscribers.map((sub) => sub.subscription_id)).toEqual([ownSub.subscription_id]);
 
     const filtered = control.health({

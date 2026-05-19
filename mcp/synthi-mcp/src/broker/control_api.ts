@@ -21,11 +21,11 @@ import { IdempotencyStore } from "./idempotency.js";
 import { brokerError, type BrokerErrorPayload } from "./errors.js";
 import { queryBrokerReplay, type BrokerReplayOk } from "./replay.js";
 import {
-  makeBrokerHealthStatus,
   type BrokerHealthStatus,
 } from "./contracts.js";
 import { auditBrokerEvent, redactBrokerEvent } from "./security.js";
 import { brokerFallbackController, type BrokerFallbackMode, type BrokerFallbackResult } from "./fallback.js";
+import { currentBrokerHealthStatus } from "./read_only.js";
 
 type AcquireLeaseResponse = { ok: true; lease_id: string; expires_at_ms: number } | { ok: false; error: BrokerErrorPayload };
 
@@ -308,16 +308,29 @@ export class BrokerControlPlane {
         });
     const aggregateDrops = subscribers.reduce((sum, sub) => sum + sub.dropped_frames, 0);
     const aggregateQueue = subscribers.reduce((sum, sub) => sum + sub.queue_depth, 0);
+    const baseHealth = currentBrokerHealthStatus();
+    const sessionHealth: BrokerHealthStatus = baseHealth.session_id === input.session_id || baseHealth.session_id === "unattached"
+      ? { ...baseHealth, session_id: input.session_id }
+      : {
+          ...baseHealth,
+          session_id: input.session_id,
+          broker_state: "disconnected",
+          upstream: {
+            connected: false,
+            last_frame_age_ms: null,
+            rtt_ms: null,
+          },
+        };
     return {
       ok: true,
-      health: makeBrokerHealthStatus({
-        session_id: input.session_id,
-        broker_state: "ready",
-        upstream_connected: true,
-        lag_ms: Math.max(0, ...subscribers.map((s) => s.lag_ms)),
-        queue_depth: aggregateQueue,
-        dropped_frames: aggregateDrops,
-      }),
+      health: {
+        ...sessionHealth,
+        subscriber: {
+          lag_ms: Math.max(0, ...subscribers.map((s) => s.lag_ms)),
+          queue_depth: aggregateQueue,
+          dropped_frames: aggregateDrops,
+        },
+      },
       subscribers,
     };
   }
