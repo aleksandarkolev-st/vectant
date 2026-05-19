@@ -27,12 +27,13 @@ async function pngForColor(color: FakeFrameColor): Promise<Buffer> {
   }).png().toBuffer();
 }
 
-async function installFakeAttached(opts: { interFrameDelayMs?: number; frameColors?: FakeFrameColor[] } = {}): Promise<void> {
+async function installFakeAttached(opts: { interFrameDelayMs?: number; frameColors?: FakeFrameColor[] } = {}): Promise<{ sent: string[] }> {
   const colors = opts.frameColors && opts.frameColors.length > 0
     ? opts.frameColors
     : [{ r: 9, g: 8, b: 7 }];
   const pngs = await Promise.all(colors.map((color) => pngForColor(color)));
   let frameReads = 0;
+  const sent: string[] = [];
   (session as unknown as { state: string }).state = "attached";
   (session as unknown as { attached: unknown }).attached = {
     sessionId: "s_1",
@@ -49,6 +50,7 @@ async function installFakeAttached(opts: { interFrameDelayMs?: number; frameColo
     },
     channels: {
       sendInput: async (frames: string[], sendOpts?: FakeSendOptions) => {
+        sent.push(...frames);
         for (let i = 0; i < frames.length; i++) {
           const frame = frames[i]!;
           sendOpts?.onFrameSent?.(frame);
@@ -63,6 +65,7 @@ async function installFakeAttached(opts: { interFrameDelayMs?: number; frameColo
       },
     },
   };
+  return { sent };
 }
 
 async function withBrokerInputEnforced<T>(fn: () => Promise<T>): Promise<T> {
@@ -119,6 +122,24 @@ describe("synthi_dispatch_input", () => {
     });
     expect(res.isError).toBe(true);
     expect((res.structuredContent as { error: string }).error).toBe("UNSUPPORTED_POSTCONDITION_TYPE");
+  }));
+
+  it("reuses the session disruption gate before sending input", async () => withBrokerInputEnforced(async () => {
+    const { sent } = await installFakeAttached();
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "agent", { scope: ["mouse"] });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected lease failure");
+    session.setWireState("migrating");
+
+    const res = await dispatchInputTool({
+      lease_id: lease.lease.lease_id,
+      based_on_frame_seq: 3,
+      action: { tool: "synthi_mouse", kind: "click", x: 1, y: 1 },
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { error: string }).error).toBe("session_migrating");
+    expect(sent).toHaveLength(0);
   }));
 
   it("verifies supported pixel postconditions", async () => withBrokerInputEnforced(async () => {

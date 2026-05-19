@@ -3,6 +3,7 @@ import { buttonNameToCode, encodeKey, encodeMouseButton, encodeMouseMove, encode
 import { dispatchAckRegistry, type PendingDispatch } from "../util/dispatch_ack_registry.js";
 import { checkBrokerInputGate } from "../broker/input_gate.js";
 import { brokerError, normalizeToolCallId, recordBrokerInputTrace, verifyBrokerPostcondition } from "../broker/index.js";
+import { checkInputGate } from "../correctness/index.js";
 import { errorResponse, jsonResponse, type ToolResponse } from "./shared.js";
 
 interface RawArgs {
@@ -33,6 +34,8 @@ export async function dispatchInputTool(args: unknown): Promise<ToolResponse> {
   if (!action) return errorResponse("invalid_args", { field: "action" });
   const scope = action.tool === "synthi_mouse" ? "mouse" : "keyboard";
   const actionName = `${scope}:${action.kind}`;
+  const correctnessGate = checkInputGate();
+  if (correctnessGate) return errorResponse(correctnessGate.error, correctnessGate);
   const gate = await checkBrokerInputGate({
     attached,
     action: actionName,
