@@ -121,6 +121,52 @@ describe("broker subscriptions", () => {
     expect(health.dropped_frames).toBe(1);
   });
 
+  it("preserves queued control events when dropping frame backlog", () => {
+    const sub = registry.subscribe({
+      principal: principal("read_only"),
+      session_id: "s_1",
+      topics: ["frames", "events"],
+      cursor: 0,
+    });
+    expect(sub.ok).toBe(true);
+    if (!sub.ok) throw new Error("unexpected subscribe failure");
+
+    registry.publish({
+      kind: "lifecycle",
+      seq: 1,
+      ts: 1,
+      state: "running",
+    });
+    registry.publish({
+      kind: "frame",
+      seq: 2,
+      ts: 2,
+      session_id: "s_1",
+      frame_seq: 1,
+      frame_ts_ms: 2,
+      ingest_ts_ms: 2,
+      viewport: { w: 10, h: 10, dpr: 1 },
+      is_keyframe: false,
+    });
+    registry.publish({
+      kind: "frame",
+      seq: 3,
+      ts: 3,
+      session_id: "s_1",
+      frame_seq: 2,
+      frame_ts_ms: 3,
+      ingest_ts_ms: 3,
+      viewport: { w: 10, h: 10, dpr: 1 },
+      is_keyframe: false,
+    });
+
+    const drained = registry.drain(sub.subscription_id);
+    expect(Array.isArray(drained)).toBe(true);
+    if (!Array.isArray(drained)) throw new Error("unexpected drain error");
+    expect(drained.map((event) => event.kind)).toEqual(["lifecycle", "frame"]);
+    expect(drained[1]).toMatchObject({ kind: "frame", frame_seq: 2 });
+  });
+
   it("returns CURSOR_TOO_OLD for stale subscribe cursor", () => {
     const res = registry.subscribe({
       principal: principal("read_only"),

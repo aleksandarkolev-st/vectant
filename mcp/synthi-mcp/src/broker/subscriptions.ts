@@ -134,11 +134,20 @@ export class BrokerSubscriptionRegistry {
       if (!eventMatchesTopics(event, sub.topics)) continue;
       const maxQueue = event.kind === "frame" ? MAX_FRAME_QUEUE : MAX_CONTROL_QUEUE;
       let droppedFrames = 0;
-      while (sub.queue.length >= maxQueue) {
-        const dropped = sub.queue.shift();
-        if (dropped?.kind === "frame" || event.kind === "frame") {
-          sub.dropped_frames += 1;
-          droppedFrames += 1;
+      if (event.kind === "frame") {
+        while (countQueuedFrames(sub.queue) >= maxQueue) {
+          if (dropOldestFrame(sub.queue)) {
+            sub.dropped_frames += 1;
+            droppedFrames += 1;
+          }
+        }
+      } else {
+        while (sub.queue.length >= maxQueue) {
+          const dropped = sub.queue.shift();
+          if (dropped?.kind === "frame") {
+            sub.dropped_frames += 1;
+            droppedFrames += 1;
+          }
         }
       }
       let fanoutEvent: EventLogEntry;
@@ -229,6 +238,17 @@ function eventMatchesTopics(event: EventLogEntry, topics: BrokerTopic[]): boolea
   if (event.kind === "console") return topics.includes("logs") || topics.includes("events");
   if (event.kind === "lifecycle") return topics.includes("health_updates") || topics.includes("events");
   return topics.includes("events");
+}
+
+function countQueuedFrames(queue: EventLogEntry[]): number {
+  return queue.reduce((count, event) => count + (event.kind === "frame" ? 1 : 0), 0);
+}
+
+function dropOldestFrame(queue: EventLogEntry[]): boolean {
+  const index = queue.findIndex((event) => event.kind === "frame");
+  if (index < 0) return false;
+  queue.splice(index, 1);
+  return true;
 }
 
 function eventSessionId(event: EventLogEntry, fallback: string): string {
