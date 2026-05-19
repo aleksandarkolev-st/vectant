@@ -10,6 +10,7 @@ import pytest
 from agents.gpu_detect import GpuDetectionResult, GpuDetectionEvidence
 from agents.kernel_splitter import (
     KernelSplitterError,
+    _project_source_context,
     build_prompt,
     parse_kernel_split_response,
 )
@@ -182,3 +183,24 @@ def test_build_prompt_attaches_extra_instructions():
     p = build_prompt("x", extra_instructions="don't change kernel names")
     assert "EXTRA INSTRUCTIONS" in p
     assert "don't change kernel names" in p
+
+
+def test_project_source_context_includes_multi_file_sources():
+    context = _project_source_context(
+        {
+            "src/app/main.cpp": "int main(){return 0;}",
+            "src/gpu/particle_kernels.hip": "__global__ void advance_particle_field(float* x){}",
+            "src/field/flow_profile_00.hpp": "#pragma once\nconstexpr float kPull = 0.2f;",
+            "src/field/flow_table_00.h": "#pragma once\nstatic const int kBand = 1;",
+            "src/field/flow_module_00.cpp": "float force(float x){return x;}",
+            "docs/notes/field-note-000.md": "# not source context",
+        },
+        focus="src/app/main.cpp",
+    )
+    assert "FULL ORDINARY PROJECT SOURCE CONTEXT" in context
+    assert "// FILE: src/app/main.cpp" in context
+    assert "// FILE: src/gpu/particle_kernels.hip" in context
+    assert "// FILE: src/field/flow_profile_00.hpp" in context
+    assert "// FILE: src/field/flow_table_00.h" in context
+    assert "// FILE: src/field/flow_module_00.cpp" in context
+    assert "docs/notes/field-note-000.md" not in context

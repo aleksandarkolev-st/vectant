@@ -111,6 +111,8 @@ _ROLE_FILENAMES = {
 }
 _SOURCE_GLOBAL_KERNEL_RE = re.compile(r"\b__global__\s+(?:void\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _SOURCE_DEVICE_IDENTIFIER_RE = re.compile(r"\bk[A-Z][A-Za-z0-9_]*\b")
+_PROJECT_CONTEXT_MAX_CHARS = 70000
+_PROJECT_CONTEXT_PER_FILE_MAX_CHARS = 3000
 
 
 def _looks_like_source_file(name: str) -> bool:
@@ -252,6 +254,83 @@ def _source_device_preservation_contract(source_files: Mapping[str, str]) -> str
         body = source if len(source) <= 12000 else source[:12000] + "\n/* ... truncated ... */"
         sections.append(f"```cpp\n// FILE: {path}\n{body}\n```")
     return "\n".join(sections)
+
+
+def _include_in_project_context(path: str, source: str) -> bool:
+    normalized = path.replace("\\", "/")
+    base = normalized.rsplit("/", 1)[-1]
+    if base in {"CMakeLists.txt", "README.md"}:
+        return True
+    if normalized.startswith("src/") and _looks_like_source_file(normalized):
+        return bool(source.strip())
+    return False
+
+
+def _project_context_sort_key(item: tuple[str, str], focus: Optional[str]) -> tuple[int, str]:
+    path = item[0].replace("\\", "/")
+    focus_path = (focus or "").replace("\\", "/")
+    if focus_path and path == focus_path:
+        return (0, path)
+    if path == "CMakeLists.txt":
+        return (1, path)
+    if path.startswith("src/gpu/") or path.startswith("src/kernels/"):
+        return (2, path)
+    if path.startswith("src/app/"):
+        return (3, path)
+    if path.startswith("src/render/"):
+        return (4, path)
+    if path.startswith("src/config/") or path.startswith("src/math/"):
+        return (5, path)
+    if path.startswith("src/"):
+        return (6, path)
+    return (7, path)
+
+
+def _project_source_context(source_files: Mapping[str, str], focus: Optional[str] = None) -> str:
+    """Compact ordinary-project file context for the GPU split prompt.
+
+    The worker already sends the full workspace payload. This helper makes the
+    relevant source/config subset explicit inside the split prompt so the model
+    does not only see the active editor file.
+    """
+
+    candidates = [
+        (path.replace("\\", "/"), source)
+        for path, source in source_files.items()
+        if _include_in_project_context(path, source)
+    ]
+    if not candidates:
+        return ""
+
+    candidates.sort(key=lambda item: _project_context_sort_key(item, focus))
+    sections = [
+        "# FULL ORDINARY PROJECT SOURCE CONTEXT",
+        (
+            f"The worker delivered {len(source_files)} user file(s). "
+            f"Use the {len(candidates)} source/config file(s) below as the "
+            "ordinary user project context. They are not Synthi-generated role "
+            "files; adapt their behavior into the generated HMR roles."
+        ),
+        "Do not assume the active editor file is the whole project.",
+    ]
+    used = sum(len(part) for part in sections)
+    included = 0
+    omitted = 0
+    for path, source in candidates:
+        body = source.strip()
+        if len(body) > _PROJECT_CONTEXT_PER_FILE_MAX_CHARS:
+            body = body[:_PROJECT_CONTEXT_PER_FILE_MAX_CHARS] + "\n/* ... file truncated for prompt budget ... */"
+        block = f"```cpp\n// FILE: {path}\n{body}\n```"
+        if used + len(block) + 2 > _PROJECT_CONTEXT_MAX_CHARS:
+            omitted += 1
+            continue
+        sections.append(block)
+        used += len(block) + 2
+        included += 1
+    if omitted:
+        sections.append(f"Prompt budget omitted {omitted} lower-priority source/config file(s).")
+    sections.append(f"Included source/config files in prompt: {included}.")
+    return "\n\n".join(sections)
 
 
 def _extract_block(pattern: re.Pattern, text: str) -> str:
@@ -408,11 +487,19 @@ async def run_kernel_splitter(
     appended to `extra_instructions`.
     """
     source_map = _source_file_map(files)
+    if focus and user_code:
+        source_map.setdefault(str(focus).strip().replace("\\", "/"), user_code)
     prompt = build_prompt(
         user_code,
         detection=detection,
         extra_instructions="\n\n".join(
-            part for part in [extra_instructions, _source_device_preservation_contract(source_map)] if part
+            part
+            for part in [
+                extra_instructions,
+                _project_source_context(source_map, focus=focus),
+                _source_device_preservation_contract(source_map),
+            ]
+            if part
         ),
     )
 
