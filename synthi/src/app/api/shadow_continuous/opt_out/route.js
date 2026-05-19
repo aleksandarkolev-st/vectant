@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,7 +23,7 @@ export async function POST(request) {
     try {
         const res = await fetch(`${AI_ENGINE_BASE}/shadow_continuous/opt_out`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: withInternalAiAuth({ 'content-type': 'application/json' }),
             body: JSON.stringify(body),
         });
         const json = await res.json().catch(() => ({}));

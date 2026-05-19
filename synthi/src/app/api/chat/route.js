@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/auth';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
 import { TOOL_DECLARATIONS, executeTool, isComplexTask } from './toolDefinitions.js';
 
 const encoder = new TextEncoder();
@@ -159,7 +160,7 @@ async function fireShadowRun({ workspacePath, userId, userRequest, files, intent
         const effectivePath = userId ? `${workspacePath}/${userId}` : workspacePath;
         const res = await fetch(`${CODE_INTEL_BASE}/shadow/run`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: withInternalAiAuth({ 'content-type': 'application/json' }),
             signal: AbortSignal.timeout(8000),
             body: JSON.stringify({
                 workspace_path: effectivePath,
@@ -238,7 +239,7 @@ async function classifyIntent(query, context = null) {
     try {
         const response = await fetch(`${CODE_INTEL_BASE}/classify/intent`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: withInternalAiAuth({ 'content-type': 'application/json' }),
             body: JSON.stringify({ query, context }),
             signal: AbortSignal.timeout(3000), // Fast timeout - intent classification should be quick
         });
@@ -459,7 +460,7 @@ async function fetchCodeIntelContext({ workspacePath, query, maxTokens = 30000, 
         const effectivePath = userId ? `${workspacePath}/${userId}` : workspacePath;
         const response = await fetch(`${CODE_INTEL_BASE}/code-intel/context`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: withInternalAiAuth({ 'content-type': 'application/json' }),
             body: JSON.stringify({
                 workspace_path: effectivePath,
                 query: query,

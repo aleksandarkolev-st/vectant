@@ -5,6 +5,8 @@ import {
   COMPLETION_OPEN,
   COMPLETION_CLOSE,
 } from '@/lib/completion';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
+import { renderCodeIntelHints } from '@/utils/aiContextBroker';
 import { GoogleGenAI } from "@google/genai";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -33,21 +35,48 @@ const RAG_FETCH_TIMEOUT_MS = 350;
 // the backend pays this cost; every subsequent keystroke within ~30s reuses
 // the cached embedding. 0 disables inline embedding entirely.
 const RAG_EMBED_TIMEOUT_MS = 120;
-const RAG_CACHE_TTL_MS = 30_000;
-const RAG_CACHE_MAX_ENTRIES = 256;
+const RAG_CACHE_TTL_MS = Number(process.env.RAG_CACHE_TTL_MS || 10 * 60_000);
+const RAG_CACHE_MAX_ENTRIES = Number(process.env.RAG_CACHE_MAX_ENTRIES || 256);
+const RAG_CACHE_MAX_BYTES = Number(process.env.RAG_CACHE_MAX_BYTES || 2 * 1024 * 1024);
 
 // Tiny LRU keyed by workspace + a fingerprint of the query. Cursor / Copilot
 // hide their per-keystroke retrieval cost behind exactly this kind of cache —
-// pay the latency tax once per ~30s window, then it's free for every
+// pay the latency tax once per TTL window, then it's free for every
 // subsequent completion that hits a similar query.
 const ragCache = new Map();
 const ragInflight = new Map(); // dedup concurrent requests for the same key
+let ragCacheBytes = 0;
+
+const cacheByteEncoder = new TextEncoder();
+
+const estimateCacheBytes = (value) => {
+  try {
+    return cacheByteEncoder.encode(JSON.stringify(value) || '').byteLength;
+  } catch (_) {
+    return cacheByteEncoder.encode(String(value ?? '')).byteLength;
+  }
+};
+
+const ragCacheDelete = (key) => {
+  const entry = ragCache.get(key);
+  if (!entry) return false;
+  ragCacheBytes = Math.max(0, ragCacheBytes - (entry.bytes || 0));
+  return ragCache.delete(key);
+};
+
+const ragCachePruneExpired = (now = Date.now()) => {
+  for (const [key, entry] of ragCache) {
+    if (now - entry.ts > RAG_CACHE_TTL_MS) {
+      ragCacheDelete(key);
+    }
+  }
+};
 
 const ragCacheGet = (key) => {
   const entry = ragCache.get(key);
   if (!entry) return null;
   if (Date.now() - entry.ts > RAG_CACHE_TTL_MS) {
-    ragCache.delete(key);
+    ragCacheDelete(key);
     return null;
   }
   // Refresh LRU position.
@@ -57,11 +86,25 @@ const ragCacheGet = (key) => {
 };
 
 const ragCacheSet = (key, value) => {
-  ragCache.set(key, { value, ts: Date.now() });
-  while (ragCache.size > RAG_CACHE_MAX_ENTRIES) {
+  const now = Date.now();
+  ragCachePruneExpired(now);
+
+  const bytes = estimateCacheBytes(value);
+  if (RAG_CACHE_MAX_BYTES > 0 && bytes > RAG_CACHE_MAX_BYTES) {
+    return;
+  }
+
+  ragCacheDelete(key);
+  ragCache.set(key, { value, ts: now, bytes });
+  ragCacheBytes += bytes;
+
+  while (
+    ragCache.size > RAG_CACHE_MAX_ENTRIES
+    || (RAG_CACHE_MAX_BYTES > 0 && ragCacheBytes > RAG_CACHE_MAX_BYTES)
+  ) {
     const oldest = ragCache.keys().next().value;
     if (oldest === undefined) break;
-    ragCache.delete(oldest);
+    ragCacheDelete(oldest);
   }
 };
 
@@ -127,10 +170,10 @@ const fetchRagReferences = async ({ workspaceSlug, query, suffix, language }) =>
       const res = await fetch(`${CODE_INTEL_URL}/code-intel/context/fast`, {
         method: 'POST',
         signal: ctrl.signal,
-        headers: {
+        headers: withInternalAiAuth({
           'content-type': 'application/json',
           ...(CODE_INTEL_API_KEY ? { 'x-code-intel-key': CODE_INTEL_API_KEY } : {}),
-        },
+        }),
         body: JSON.stringify({
           workspace_path: workspaceSlug,
           query,
@@ -144,7 +187,13 @@ const fetchRagReferences = async ({ workspaceSlug, query, suffix, language }) =>
           embed_timeout_ms: RAG_EMBED_TIMEOUT_MS,
         }),
       });
-      if (!res.ok) return [];
+      if (!res.ok) {
+        console.warn('RAG context prefetch returned non-OK response', {
+          workspaceSlug,
+          status: res.status,
+        });
+        return [];
+      }
       const data = await res.json();
       const refs = Array.isArray(data?.chunks)
         ? data.chunks.map((c) => ({
@@ -157,9 +206,14 @@ const fetchRagReferences = async ({ workspaceSlug, query, suffix, language }) =>
         : [];
       ragCacheSet(key, refs);
       return refs;
-    } catch (_) {
-      // Timeout, network, or upstream failure — silent. The local refs the
-      // client already attached are sufficient.
+    } catch (err) {
+      console.warn('RAG context prefetch failed', {
+        workspaceSlug,
+        language: language || null,
+        error: err?.message || String(err),
+      });
+      // Timeout, network, or upstream failure. Local refs are sufficient,
+      // but logging keeps backend flakiness visible.
       return [];
     } finally {
       clearTimeout(timer);
@@ -289,8 +343,9 @@ const formatReferences = (refs) => {
   return sections.join('\n\n');
 };
 
-const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
+const buildPrompt = ({ prefix, suffix, language, filePath, references, codeIntel }) => {
   const refBlock = formatReferences(references);
+  const codeIntelBlock = renderCodeIntelHints(codeIntel);
   // Fill-in-the-middle framing for an instruction-tuned model. Flash-Lite
   // has no FIM tokens (`<|fim_prefix|>` etc.), so we approximate the task
   // through natural-language BEFORE/AFTER labels and rely on the model's
@@ -324,10 +379,13 @@ const buildPrompt = ({ prefix, suffix, language, filePath, references }) => {
     '- If you cannot identify a clear gap to fill, output empty.',
     '- No explanations, no fences, no commentary, no leading or trailing blank lines.',
     `- Wrap the entire output in ${COMPLETION_OPEN}...${COMPLETION_CLOSE} and emit nothing else.`,
-    refBlock
-      ? '- CONTEXT below = related symbols (for types) + recent edits (lines starting `+ ` show what was just typed and signal user intent).'
+    (refBlock || codeIntelBlock)
+      ? '- CONTEXT below = deterministic IDE signals, related symbols, and recent edits (lines starting `+ ` show what was just typed and signal user intent).'
       : null,
     '',
+    codeIntelBlock ? 'IDE SIGNALS (read-only):' : null,
+    codeIntelBlock || null,
+    codeIntelBlock ? '' : null,
     refBlock ? 'CONTEXT (read-only, from other files):' : null,
     refBlock || null,
     refBlock ? '' : null,
@@ -389,6 +447,7 @@ export async function POST(request) {
     language,
     filePath: body?.contextBlocks?.filePath || null,
     references,
+    codeIntel: body?.contextBlocks?.codeIntel || null,
   });
 
   // Streaming response: pipe each Gemini chunk straight to the client. The

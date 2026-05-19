@@ -39,6 +39,16 @@ export default function CodeServerPanel({
     return `${PROXY_PREFIX}/${query ? '?' + query : ''}`;
   }, [workspacePath, sidebarOnly, focusViewId]);
 
+  const getIframeOrigin = useCallback(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const origin = new URL(getIframeSrc(), window.location.href).origin;
+      return origin === 'null' ? null : origin;
+    } catch (_) {
+      return null;
+    }
+  }, [getIframeSrc]);
+
   // Initialize: ensure SW is registered and proxy is attached
   useEffect(() => {
     if (!tunnelService) {
@@ -99,17 +109,26 @@ export default function CodeServerPanel({
   useEffect(() => {
     const proxy = tunnelService?.proxy;
     if (!proxy || (state !== 'ready' && state !== 'loading')) return;
+    const iframeOrigin = getIframeOrigin();
+    if (!iframeOrigin) return;
 
     // Track active WS tunnel subscriptions so we can clean up
     const unsubs = [];
 
+    function postToIframe(message) {
+      const iframe = iframeRef.current;
+      if (!iframe?.contentWindow) return;
+      iframe.contentWindow.postMessage(message, iframeOrigin);
+    }
+
     function onMessage(evt) {
+      const iframe = iframeRef.current;
+      if (!iframe?.contentWindow || evt.source !== iframe.contentWindow) return;
+      if (evt.origin !== iframeOrigin) return;
+
       const msg = evt.data;
       if (!msg || typeof msg.type !== 'string') return;
       if (!msg.type.startsWith('synthi-ws-')) return;
-
-      const iframe = iframeRef.current;
-      if (!iframe?.contentWindow) return;
 
       if (msg.type === 'synthi-ws-connect') {
         console.log('[CodeServerPanel] WS connect request:', msg.path);
@@ -119,53 +138,53 @@ export default function CodeServerPanel({
             console.log('[CodeServerPanel] WS tunnel opened:', tunnelId);
 
             // Send connected message to iframe
-            iframe.contentWindow.postMessage({
+            postToIframe({
               type: 'synthi-ws-connected',
               tunnelId,
               path: msg.path,
-            }, '*');
+            });
 
             // Forward ws:data events to iframe
             const unData = proxy.on('ws:data', (tid, data, encoding) => {
               if (tid !== tunnelId) return;
-              iframe.contentWindow?.postMessage({
+              postToIframe({
                 type: 'synthi-ws-data',
                 tunnelId,
                 data,
                 binary: encoding === 'binary',
-              }, '*');
+              });
             });
             unsubs.push(unData);
 
             // Forward ws:close events to iframe
             const unClose = proxy.on('ws:close', (tid, code) => {
               if (tid !== tunnelId) return;
-              iframe.contentWindow?.postMessage({
+              postToIframe({
                 type: 'synthi-ws-close',
                 tunnelId,
                 code,
-              }, '*');
+              });
             });
             unsubs.push(unClose);
 
             // Forward ws:error events to iframe
             const unError = proxy.on('ws:error', (tid, message) => {
               if (tid !== tunnelId) return;
-              iframe.contentWindow?.postMessage({
+              postToIframe({
                 type: 'synthi-ws-error',
                 tunnelId,
                 message,
-              }, '*');
+              });
             });
             unsubs.push(unError);
           })
           .catch(err => {
             console.error('[CodeServerPanel] WS connect failed:', err);
-            iframe.contentWindow.postMessage({
+            postToIframe({
               type: 'synthi-ws-error',
               tunnelId: -1,
               message: err.message,
-            }, '*');
+            });
           });
         return;
       }
@@ -188,7 +207,7 @@ export default function CodeServerPanel({
       window.removeEventListener('message', onMessage);
       for (const unsub of unsubs) { try { unsub(); } catch (_) {} }
     };
-  }, [tunnelService, state]);
+  }, [tunnelService, state, getIframeOrigin]);
 
   // Handle iframe events
   const handleLoad = useCallback(() => {

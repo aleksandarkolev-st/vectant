@@ -164,7 +164,7 @@ class RuntimeErrorInterceptor {
   _handleCompileError(event) {
     const detail = event.detail || {};
     const diagnostics = Array.isArray(detail.diagnostics) ? detail.diagnostics : [];
-    const module = detail.module || null;
+    const moduleName = detail.module || null;
     
     // Only heal on actual errors (not warnings)
     const errorDiags = diagnostics.filter(
@@ -173,11 +173,11 @@ class RuntimeErrorInterceptor {
     if (errorDiags.length === 0) return;
     
     console.log(
-      `[RuntimeHealing] Compile error: ${errorDiags.length} errors in ${module || 'unknown'}`
+      `[RuntimeHealing] Compile error: ${errorDiags.length} errors in ${moduleName || 'unknown'}`
     );
     
     if (this._autoHeal) {
-      this._scheduleAutoHeal(module, errorDiags);
+      this._scheduleAutoHeal(moduleName, errorDiags);
     }
   }
 
@@ -187,13 +187,13 @@ class RuntimeErrorInterceptor {
   _handleRequestAIFix(event) {
     const detail = event.detail || {};
     const diagnostic = detail.diagnostic;
-    const module = detail.module;
+    const moduleName = detail.module;
     const allDiagnostics = detail.allDiagnostics || (diagnostic ? [diagnostic] : []);
     
-    console.log('[RuntimeHealing] Manual AI fix requested for:', module);
+    console.log('[RuntimeHealing] Manual AI fix requested for:', moduleName);
     
     // Manual request — skip debounce, heal immediately
-    this._doHeal(module, allDiagnostics, { manual: true });
+    this._doHeal(moduleName, allDiagnostics, { manual: true });
   }
 
   /**

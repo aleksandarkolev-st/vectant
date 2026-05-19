@@ -387,11 +387,11 @@ export class ExtensionHostMain {
        
       const factory = new Function('return ' + wrappedCode)();
       const exports = {};
-      const module = { exports };
+      const moduleRecord = { exports };
 
-      const result = factory(vscode, exports, module);
+      const result = factory(vscode, exports, moduleRecord);
       
-      return result || module.exports;
+      return result || moduleRecord.exports;
     } catch (err) {
       console.error(`[ExtensionHost] Failed to evaluate ${extensionId}:`, err);
       throw err;

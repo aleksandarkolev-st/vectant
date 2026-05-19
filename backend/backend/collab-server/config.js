@@ -30,6 +30,7 @@ const PORT = Number(process.env.COLLAB_PORT) || 1234;
 
 /** Base URL of the code-intelligence / AI-engine backend. */
 const CODE_INTEL_URL = (process.env.CODE_INTEL_URL || 'http://localhost:8000').replace(/\/$/, '');
+const AI_BACKEND_AUTH_TOKEN = process.env.AI_BACKEND_AUTH_TOKEN || process.env.AI_ENGINE_AUTH_TOKEN || '';
 
 /** Allowed CORS origin for the HTTP API. */
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:3000';
@@ -92,6 +93,7 @@ module.exports = {
     YSWEET_AUTH_KEY,
     PORT,
     CODE_INTEL_URL,
+    AI_BACKEND_AUTH_TOKEN,
     CORS_ORIGIN,
     GCS_PROJECT_ID,
     GCS_BUCKET_NAME,

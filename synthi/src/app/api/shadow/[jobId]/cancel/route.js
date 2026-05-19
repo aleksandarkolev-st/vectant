@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
 
 /**
  * Synthi Genome — POST /api/shadow/[jobId]/cancel
@@ -15,7 +16,7 @@ export async function POST(_request, { params }) {
     try {
         const res = await fetch(
             `${AI_ENGINE_BASE}/shadow/${encodeURIComponent(jobId)}/cancel`,
-            { method: 'POST' }
+            { method: 'POST', headers: withInternalAiAuth() }
         );
         const json = await res.json().catch(() => ({}));
         return NextResponse.json(json, { status: res.status });

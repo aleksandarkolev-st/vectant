@@ -61,6 +61,7 @@ import { restoreTool } from "./tools/restore.js";
 import { listSnapshotsTool } from "./tools/list_snapshots.js";
 import { answerEscapeHatchTool } from "./tools/answer_escape_hatch.js";
 import type { ToolContext } from "./tools/shared.js";
+import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
 
 export interface SynthiServerOptions {
   defaultSessionId?: string;
@@ -785,7 +786,11 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        snapshot_id: { type: "string", description: "Snapshot id returned by synthi_snapshot." },
+        snapshot_id: {
+          type: "string",
+          pattern: `^${SNAPSHOT_ID_PATTERN_SOURCE}$`,
+          description: "Snapshot id returned by synthi_snapshot.",
+        },
         recompile_source: { type: "boolean" },
         include_frame: { type: "boolean" },
         compile: {

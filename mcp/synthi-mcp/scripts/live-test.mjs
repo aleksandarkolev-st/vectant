@@ -59,7 +59,7 @@ const CFG = {
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
   signalingUrl: process.env.SIGNALING_URL ?? 'ws://localhost:9000',
   prometheusPort: Number(process.env.PROMETHEUS_PORT ?? 9464),
-  googleApiKey: 'AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ',
+  googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
   slug: process.env.SLUG ?? `mcp-counter-${Date.now()}`,
   workspaceName: process.env.WORKSPACE_NAME ?? 'Synthi MCP Live Test',
@@ -429,7 +429,7 @@ async function main() {
   console.log(`  mcp entry    ${CFG.mcpEntry}`);
   console.log('');
 
-  if (!CFG.googleApiKey) fail('GOOGLE_API_KEY not set. Export it and re-run.');
+  if (!CFG.googleApiKey) fail('GOOGLE_API_KEY or GEMINI_API_KEY not set. Export one and re-run.');
   if (!existsSync(CFG.mcpEntry)) fail(`MCP entry not found: ${CFG.mcpEntry}\n  → run: pnpm build`);
   if (!existsSync(CFG.fixturePath)) fail(`Fixture not found: ${CFG.fixturePath}`);
 

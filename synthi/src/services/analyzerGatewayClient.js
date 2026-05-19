@@ -31,6 +31,15 @@ const createRequestId = () => {
   return `req_${Math.random().toString(36).slice(2, 10)}`;
 };
 
+const urlHasGatewayToken = (url) => {
+  try {
+    const parsed = new URL(url, window.location.href);
+    return parsed.searchParams.has('token') || parsed.searchParams.has('authToken');
+  } catch (_) {
+    return false;
+  }
+};
+
 export class AnalyzerGatewayClient {
   constructor({
     url = DEFAULT_WS_URL,
@@ -52,6 +61,7 @@ export class AnalyzerGatewayClient {
     this.eventListeners = new Set();
     this.reconnectAttempts = 0;
     this.reconnectTimer = null;
+    this.connectPromise = null;
     this.isDisposed = false;
   }
 
@@ -65,9 +75,10 @@ export class AnalyzerGatewayClient {
     }
 
     if (
-      this.socket &&
-      (this.readyState === READY_STATES.OPEN ||
-        this.readyState === READY_STATES.CONNECTING)
+      this.connectPromise ||
+      (this.socket &&
+        (this.readyState === READY_STATES.OPEN ||
+          this.readyState === READY_STATES.CONNECTING))
     ) {
       return;
     }
@@ -77,8 +88,23 @@ export class AnalyzerGatewayClient {
       this.reconnectTimer = null;
     }
 
+    this._setStatus(STATUS.CONNECTING);
+    this.connectPromise = this._connectSocket().finally(() => {
+      this.connectPromise = null;
+    });
+  }
+
+  async _connectSocket() {
+    let socketUrl = this.url;
     try {
-      this.socket = new WebSocket(this.url);
+      const token = await this._fetchGatewayAuthToken();
+      if (this.isDisposed) {
+        return;
+      }
+      if (token) {
+        socketUrl = this._withGatewayToken(this.url, token);
+      }
+      this.socket = new WebSocket(socketUrl);
     } catch (err) {
       this._setStatus(STATUS.ERROR);
       this._emitEvent({ type: 'error', error: err });
@@ -86,12 +112,46 @@ export class AnalyzerGatewayClient {
       return;
     }
 
-    this._setStatus(STATUS.CONNECTING);
-
     this.socket.addEventListener('open', this._handleOpen);
     this.socket.addEventListener('message', this._handleMessage);
     this.socket.addEventListener('error', this._handleSocketError);
     this.socket.addEventListener('close', this._handleClose);
+  }
+
+  async _fetchGatewayAuthToken() {
+    if (urlHasGatewayToken(this.url)) {
+      return null;
+    }
+
+    try {
+      const response = await fetch('/api/auth/token', {
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+      if (!response.ok) {
+        if (this.debug) {
+          console.warn('Gateway auth token request failed', response.status);
+        }
+        return null;
+      }
+      const data = await response.json();
+      return typeof data?.token === 'string' && data.token ? data.token : null;
+    } catch (err) {
+      if (this.debug) {
+        console.warn('Gateway auth token request errored', err);
+      }
+      return null;
+    }
+  }
+
+  _withGatewayToken(url, token) {
+    try {
+      const parsed = new URL(url, window.location.href);
+      parsed.searchParams.set('token', token);
+      return parsed.toString();
+    } catch (_) {
+      return url;
+    }
   }
 
   dispose() {
@@ -750,56 +810,28 @@ export class AnalyzerGatewayClient {
    * @returns {Promise<void>} resolves when stream ends
    */
   aiStream(payload, callbacks = {}) {
-    return new Promise((resolve, reject) => {
-      const requestId = this._sendRequest('heal/ai/stream', {
-        code: payload.code,
-        lang: payload.lang || 'plaintext',
-        filePath: payload.filePath,
-        workspaceRoot: payload.workspaceRoot,
-        validateFixes: payload.validateFixes ?? true,
-        minConfidence: payload.minConfidence,
-      });
-
-      // Listen for stream messages matching this requestId
-      const handler = (event) => {
-        const msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-        if (!msg || msg.requestId !== requestId) return;
-
-        if (msg.type === 'stream') {
-          const ev = msg.event || msg.data?.event;
-          if (ev === 'progress' && callbacks.onProgress) {
-            callbacks.onProgress(msg.data);
-          } else if (ev === 'partial_fix' && callbacks.onPartialFix) {
-            callbacks.onPartialFix(msg.data);
-          } else if (ev === 'complete' && callbacks.onComplete) {
-            callbacks.onComplete(msg.data);
-          } else if (ev === 'error' && callbacks.onError) {
-            callbacks.onError(msg.data);
-          }
+    return this._sendRequest('heal/ai/stream', {
+      code: payload.code,
+      lang: payload.lang || 'plaintext',
+      filePath: payload.filePath,
+      workspaceRoot: payload.workspaceRoot,
+      validateFixes: payload.validateFixes ?? true,
+      minConfidence: payload.minConfidence,
+    }, {
+      onStream: (data) => {
+        const ev = data?.event || data?.type;
+        if (ev === 'progress' && callbacks.onProgress) {
+          callbacks.onProgress(data);
+        } else if (ev === 'partial_fix' && callbacks.onPartialFix) {
+          callbacks.onPartialFix(data);
+        } else if (ev === 'complete' && callbacks.onComplete) {
+          callbacks.onComplete(data);
+        } else if (ev === 'error' && callbacks.onError) {
+          callbacks.onError(data);
         }
+      },
+    }).then(() => undefined);
 
-        if (msg.type === 'stream_end') {
-          cleanup();
-          resolve();
-        }
-      };
-
-      const cleanup = () => {
-        if (this._ws) {
-          this._ws.removeEventListener('message', handler);
-        }
-      };
-
-      if (this._ws) {
-        this._ws.addEventListener('message', handler);
-      }
-
-      // Safety timeout — 60 s
-      setTimeout(() => {
-        cleanup();
-        resolve();
-      }, 60_000);
-    });
   }
 
   /**
@@ -942,10 +974,24 @@ export class AnalyzerGatewayClient {
 
     if (payload?.requestId && this.pending.has(payload.requestId)) {
       const pending = this.pending.get(payload.requestId);
+
+      if (payload.type === 'stream') {
+        try {
+          pending.onStream?.(payload.data ?? payload);
+        } catch (err) {
+          if (this.debug) {
+            console.warn('Gateway stream callback error', err);
+          }
+        }
+        return;
+      }
+
       this.pending.delete(payload.requestId);
       clearTimeout(pending.timeoutId);
 
-      if (payload.type === 'error') {
+      if (payload.type === 'stream_end') {
+        pending.resolve(payload);
+      } else if (payload.type === 'error') {
         // Build a more informative Error including backend details
         const msgPart =
           typeof payload.message === 'string'
@@ -1063,12 +1109,13 @@ export class AnalyzerGatewayClient {
   }
 
   _emitEvent(event) {
-    // If the gateway emitted a streaming payload with a `streamId`, forward
+    // If the gateway emitted a streaming payload with a request id, forward
     // it to any pending request that registered an `onStream` callback.
     try {
       const payload = event?.payload;
-      if (payload && payload.streamId && this.pending.has(payload.streamId)) {
-        const pending = this.pending.get(payload.streamId);
+      const streamKey = payload?.requestId || payload?.streamId;
+      if (streamKey && this.pending.has(streamKey)) {
+        const pending = this.pending.get(streamKey);
         try {
           if (pending?.onStream) pending.onStream(payload?.data ?? payload);
         } catch (e) {

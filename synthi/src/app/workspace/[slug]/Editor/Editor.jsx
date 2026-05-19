@@ -50,6 +50,7 @@ import { EDITOR_OPTIONS, getResponsiveEditorOverrides } from './options';
 import { useViewport } from '@/hooks/useViewport';
 import { useAiCompletion } from './AICompletion';
 import { useNextEditPrediction } from './NextEditPrediction';
+import { canHandleTabIntent, TAB_INTENT_OWNER, updateTabIntentState } from './tabIntentRouter';
 import { useDiffManager } from './diffManager';
 import { useGitGutter } from './gitGutterService';
 import { useEditorProviders } from './providers';
@@ -272,6 +273,7 @@ const EditorPanel = ({
     const [diffModeEverActive, setDiffModeEverActive] = useState(false);
     const diffEditorRef = useRef(null);
     const latestCodeRef = useRef(code);
+    const activeDiffCheckRef = useRef(() => false);
     const pendingContentFrameRef = useRef(null);
     const pendingPositionFrameRef = useRef(null);
     // P0: Debounced Redux sync — only flush content to Redux after 300ms pause
@@ -2714,8 +2716,7 @@ const EditorPanel = ({
         cancelActiveCompletion,
         aiCompletionCacheRef,
         aiCompletionCursorRef,
-        aiDebounceTimerRef,
-        inlineAcceptCommandIdRef
+        aiDebounceTimerRef
     } = useAiCompletion({
         activeFile,
         activeLanguage,
@@ -2728,7 +2729,10 @@ const EditorPanel = ({
         // each request so it always sees the latest workspace contents.
         getFileCacheEntries: () => fileCacheEntriesRef.current || [],
         workspaceSlug: slug,
-        hasActiveDiff: () => false,
+        hasActiveDiff: () => {
+            try { return !!activeDiffCheckRef.current?.(); }
+            catch (_) { return false; }
+        },
     });
 
     // --- Next-Edit Prediction (NEP) — Phase 1, feature-flagged off by default ---
@@ -2739,6 +2743,7 @@ const EditorPanel = ({
     // having to hoist the whole save pipeline above the hook chain.
     const persistNepApplyRef = useRef(null);
     const {
+        nepState,
         predictedPaths: nepPredictedPaths,
         fireCapReached: nepFireCapReached,
         fireCap: nepFireCap,
@@ -2831,6 +2836,7 @@ const EditorPanel = ({
         activeFileIdentity
     });
     const activeDiffCheck = hasActiveDiffFromDiffManager;
+    activeDiffCheckRef.current = activeDiffCheck || (() => false);
 
     // --- Monaco Providers ---
     useEditorProviders({
@@ -2840,8 +2846,6 @@ const EditorPanel = ({
         aiCompletionState,
         aiCompletionCacheRef,
         aiCompletionCursorRef,
-        inlineAcceptCommandIdRef,
-        applyAiCompletionText,
         rawFiles,
         fileCacheEntries,
         activeFile,
@@ -2976,7 +2980,6 @@ const EditorPanel = ({
         editorInstance,
         monacoInstance,
         cancelActiveCompletion,
-        requestAiCompletion,
         hasActiveDiff: activeDiffCheck,
         aiAutoEnabled,
         rawFiles,
@@ -3090,7 +3093,15 @@ const EditorPanel = ({
         // edits causes unnecessary visual disruption.
         if (selfEditFlagRef?.current) return;
 
-        cancelActiveCompletion({ resetSuggestion: true, reason: 'edit' });
+        if (activeDiffCheck()) {
+            cancelActiveCompletion({ resetSuggestion: true, reason: 'diff-active' });
+            return;
+        }
+
+        // Keep the visible cache while the user types along the suggestion.
+        // providers.js re-slices ghost text against the live cursor; this
+        // path just aborts stale streams before scheduling a fresh request.
+        cancelActiveCompletion({ resetSuggestion: false, reason: 'edit' });
 
         // Debounce AI Auto-Complete. The previous 900ms wait was the dominant
         // contributor to perceived completion latency: with a typical 500-800ms
@@ -3368,10 +3379,27 @@ const EditorPanel = ({
 
     // Key bindings (Ctrl+S, Alt+F)
     useEffect(() => {
+        updateTabIntentState({
+            nepState,
+            aiCompletionState,
+            hasAiSuggestion: Boolean(aiCompletionCacheRef.current?.suggestion),
+        });
+    }, [aiCompletionState, aiCompletionCacheRef, nepState]);
+
+    useEffect(() => {
         const handleKeyDown = (e) => {
             if (e.key === 'Tab') {
                 const cached = aiCompletionCacheRef.current;
-                if (aiCompletionState === 'ready' && cached?.suggestion) {
+                const hasAiSuggestion = Boolean(cached?.suggestion);
+                updateTabIntentState({ aiCompletionState, hasAiSuggestion, nepState });
+                if (
+                    hasAiSuggestion
+                    && canHandleTabIntent(TAB_INTENT_OWNER.AI_COMPLETION, {
+                        aiCompletionState,
+                        hasAiSuggestion,
+                        nepState,
+                    })
+                ) {
                     e.preventDefault();
                     applyAiCompletionText(cached.suggestion);
                     return;
@@ -3429,7 +3457,7 @@ const EditorPanel = ({
         };
         window.addEventListener('keydown', handleKeyDown, { capture: true });
         return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
-    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile, aiCompletionState, applyAiCompletionText, diffMode]);
+    }, [handleSave, editorInstance, requestAiCompletion, cancelActiveCompletion, dispatch, activeFile, aiCompletionState, applyAiCompletionText, diffMode, nepState]);
 
     // Ensure disabling auto AI clears any pending/computed suggestions
     useEffect(() => {

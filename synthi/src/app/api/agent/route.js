@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
 
 /**
  * Agent API Route — executes a single agent step on the backend.
@@ -100,7 +101,7 @@ async function toolGrepSearch({ workspacePath, query, signal }) {
     try {
         const response = await fetch(`${CODE_INTEL_BASE}/code-intel/context`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: withInternalAiAuth({ 'content-type': 'application/json' }),
             signal: AbortSignal.timeout(5000),
             body: JSON.stringify({
                 workspace_path: workspacePath,
@@ -130,7 +131,7 @@ async function toolGetDiagnostics({ workspacePath, filePath, fileContent, signal
     try {
         const response = await fetch(`${CODE_INTEL_BASE}/analyze/static`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: withInternalAiAuth({ 'content-type': 'application/json' }),
             signal: AbortSignal.timeout(5000),
             body: JSON.stringify({
                 code: fileContent || '',

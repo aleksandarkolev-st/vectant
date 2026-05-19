@@ -2,6 +2,7 @@ dist/
 node_modules/
 *.log
 .vitest-cache/
+.gpu-hmr-test-logs/
 .live-test-logs/
 .live-test-artifacts/
 .live-test-phase3/

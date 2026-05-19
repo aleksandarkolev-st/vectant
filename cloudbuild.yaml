@@ -51,14 +51,29 @@ tags:
   - main-deploy
 
 steps:
+  - id: reject-mutable-images
+    waitFor: ['-']
+    name: gcr.io/cloud-builders/gcloud:latest@sha256:46e6289806bc317cb06c2476ee53631d3e0046edb6743ef4486fd38f13f5ff93
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        if grep -RInE '(^[[:space:]]*(FROM|image:|name:)|--destination=).*:latest([^@]|$)' \
+          --include='Dockerfile' --include='*.yaml' --include='*.yml' \
+          --exclude='*.backup' --exclude='cloudbuild_backup.yaml' .; then
+          echo "Mutable :latest image references must be pinned by digest or replaced with an immutable build tag." >&2
+          exit 1
+        fi
+
   # ───────────────────────────────────────────────────────────────────────────
   # BUILD — All 6 services in parallel via Kaniko (layer-cached)
   # ───────────────────────────────────────────────────────────────────────────
 
   # ── 0. Prepare Next.js environment ───────────────────────────────────────
   - id: prepare-frontend-env
-    waitFor: ['-']
-    name: 'ubuntu'
+    waitFor: ['reject-mutable-images']
+    name: 'ubuntu:25.10@sha256:4a9232cc47bf99defcc8860ef6222c99773330367fcecbf21ba2edb0b810a31e'
     entrypoint: 'bash'
     env:
       - 'NEXT_PUBLIC_COLLAB_SERVER_URL=${_NEXT_PUBLIC_COLLAB_SERVER_URL}'
@@ -84,85 +99,78 @@ steps:
   # ── 1. Frontend (Next.js) ────────────────────────────────────────────────
   - id: build-frontend
     waitFor: ['prepare-frontend-env']
-    name: gcr.io/kaniko-project/executor:latest
+    name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=synthi/Dockerfile
       - --context=dir:///workspace/synthi
       - --destination=${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}
-      - --destination=${_REGISTRY}/synthi-frontend:latest
       - --cache=true
       - --cache-ttl=168h
 
   # ── 2. Collab Server (Node.js) ──────────────────────────────────────────
   - id: build-collab-server
-    waitFor: ['-']
-    name: gcr.io/kaniko-project/executor:latest
+    waitFor: ['reject-mutable-images']
+    name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=backend/collab-server/Dockerfile
       - --context=dir:///workspace/backend/collab-server
       - --destination=${_REGISTRY}/synthi-collab-server:${_IMAGE_TAG}
-      - --destination=${_REGISTRY}/synthi-collab-server:latest
       - --cache=true
       - --cache-ttl=168h
 
   # ── 3. AI Engine (Python FastAPI) ───────────────────────────────────────
   - id: build-ai-engine
-    waitFor: ['-']
-    name: gcr.io/kaniko-project/executor:latest
+    waitFor: ['reject-mutable-images']
+    name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=ai-backend/ai-engine/Dockerfile
       - --context=dir:///workspace/ai-backend/ai-engine
       - --destination=${_REGISTRY}/synthi-ai-engine:${_IMAGE_TAG}
-      - --destination=${_REGISTRY}/synthi-ai-engine:latest
       - --cache=true
       - --cache-ttl=168h
 
   # ── 4. AI Gateway (Node.js WS proxy) ───────────────────────────────────
   - id: build-ai-gateway
-    waitFor: ['-']
-    name: gcr.io/kaniko-project/executor:latest
+    waitFor: ['reject-mutable-images']
+    name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=ai-backend/gateway/Dockerfile
       - --context=dir:///workspace/ai-backend/gateway
       - --destination=${_REGISTRY}/synthi-ai-gateway:${_IMAGE_TAG}
-      - --destination=${_REGISTRY}/synthi-ai-gateway:latest
       - --cache=true
       - --cache-ttl=168h
 
   # ── 5. Signaling Server (Rust) ─────────────────────────────────────────
   - id: build-signaling
     waitFor: ['build-frontend']
-    name: gcr.io/kaniko-project/executor:latest
+    name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=backend/synthi-webrtc-compiler/signaling-server/Dockerfile
       - --context=dir:///workspace/backend/synthi-webrtc-compiler/signaling-server
       - --destination=${_REGISTRY}/synthi-signaling-server:${_IMAGE_TAG}
-      - --destination=${_REGISTRY}/synthi-signaling-server:latest
       - --cache=true
       - --cache-ttl=168h
 
   # ── 6. Worker (Rust + GStreamer — large image, extended timeout) ────────
   - id: build-worker
     waitFor: ['build-signaling']
-    name: gcr.io/kaniko-project/executor:latest
+    name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=backend/synthi-webrtc-compiler/worker/Dockerfile
       - --context=dir:///workspace/backend/synthi-webrtc-compiler/worker
       - --destination=${_REGISTRY}/synthi-worker:${_IMAGE_TAG}
-      - --destination=${_REGISTRY}/synthi-worker:latest
       - --cache=true
       - --cache-ttl=168h
     timeout: 1800s
 
   # ── 7. Prisma Migration Image (lightweight, for K8s Job) ────────────────
   - id: build-prisma-migrate
-    waitFor: ['-']
-    name: gcr.io/kaniko-project/executor:latest
+    waitFor: ['reject-mutable-images']
+    name: gcr.io/kaniko-project/executor:latest@sha256:4e7a52dd1f14872430652bb3b027405b8dfd17c4538751c620ac005741ef9698
     args:
       - --dockerfile=synthi/Dockerfile.migrate
       - --context=dir:///workspace/synthi
       - --destination=${_REGISTRY}/synthi-prisma-migrate:${_IMAGE_TAG}
-      - --destination=${_REGISTRY}/synthi-prisma-migrate:latest
       - --cache=true
       - --cache-ttl=168h
 
@@ -171,52 +179,66 @@ steps:
   # ═══════════════════════════════════════════════════════════════════════════
 
   - id: vulnerability-scan
-    name: gcr.io/cloud-builders/gcloud
+    name: gcr.io/cloud-builders/gcloud:latest@sha256:46e6289806bc317cb06c2476ee53631d3e0046edb6743ef4486fd38f13f5ff93
     entrypoint: bash
     args:
       - -c
       - |
         set -euo pipefail
         echo "=== Vulnerability Scan ==="
+        SCAN_FAILED=0
 
         for IMAGE in \
           "${_REGISTRY}/synthi-frontend:${_IMAGE_TAG}" \
           "${_REGISTRY}/synthi-collab-server:${_IMAGE_TAG}" \
-          "${_REGISTRY}/synthi-ai-engine:${_IMAGE_TAG}"
+          "${_REGISTRY}/synthi-ai-engine:${_IMAGE_TAG}" \
+          "${_REGISTRY}/synthi-ai-gateway:${_IMAGE_TAG}" \
+          "${_REGISTRY}/synthi-signaling-server:${_IMAGE_TAG}" \
+          "${_REGISTRY}/synthi-worker:${_IMAGE_TAG}" \
+          "${_REGISTRY}/synthi-prisma-migrate:${_IMAGE_TAG}"
         do
           echo ""
           echo "Scanning: $${IMAGE}"
           SCAN_ID=$$(gcloud artifacts docker images scan "$${IMAGE}" \
             --format='value(response.scan)' \
-            --project=${PROJECT_ID} 2>/dev/null) || { echo "  Scan unavailable, skipping"; continue; }
+            --project=${PROJECT_ID})
 
           echo "  Scan ID: $${SCAN_ID}"
           CRITICAL=$$(gcloud artifacts docker images list-vulnerabilities "$${SCAN_ID}" \
             --format='value(vulnerability.effectiveSeverity)' \
-            --project=${PROJECT_ID} 2>/dev/null | grep -c CRITICAL || true)
+            --project=${PROJECT_ID} | grep -c CRITICAL || true)
 
           echo "  Critical vulnerabilities: $${CRITICAL}"
           if [ "$${CRITICAL}" -gt 0 ]; then
-            echo "  WARNING: Critical vulnerabilities found in $${IMAGE}"
+            echo "  ERROR: Critical vulnerabilities found in $${IMAGE}"
             gcloud artifacts docker images list-vulnerabilities "$${SCAN_ID}" \
               --format='table(vulnerability.effectiveSeverity, vulnerability.shortDescription)' \
-              --project=${PROJECT_ID} 2>/dev/null | head -20
+              --project=${PROJECT_ID} | head -20
+            SCAN_FAILED=1
           fi
         done
 
         echo ""
-        echo "=== Scan complete (informational — does not block deploy) ==="
+        if [ "$${SCAN_FAILED}" -ne 0 ]; then
+          echo "=== Scan failed: critical vulnerabilities found ==="
+          exit 1
+        fi
+        echo "=== Scan complete: no critical vulnerabilities found ==="
     waitFor:
       - build-frontend
       - build-collab-server
       - build-ai-engine
+      - build-ai-gateway
+      - build-signaling
+      - build-worker
+      - build-prisma-migrate
 
   # ═══════════════════════════════════════════════════════════════════════════
   # DEPLOY — Rolling update on GKE
   # ═══════════════════════════════════════════════════════════════════════════
 
   - id: get-gke-credentials
-    name: gcr.io/cloud-builders/gcloud
+    name: gcr.io/cloud-builders/gcloud:latest@sha256:46e6289806bc317cb06c2476ee53631d3e0046edb6743ef4486fd38f13f5ff93
     entrypoint: bash
     args:
       - -c
@@ -233,7 +255,7 @@ steps:
       - build-worker
 
   - id: deploy-to-gke
-    name: gcr.io/cloud-builders/kubectl
+    name: gcr.io/cloud-builders/kubectl:latest@sha256:0001d965b1fd2d41ef80cb94cc7dfb39d65adbb8ab3855370524b424d897c078
     entrypoint: bash
     args:
       - -c
@@ -248,6 +270,16 @@ steps:
         # Apply manifest changes first so Services, Ingress, ConfigMaps,
         # BackendConfigs, and Deployment specs stay in sync with the images.
         kubectl apply -k k8s/
+
+        echo "=== Running Prisma migrations ==="
+        kubectl delete job prisma-migrate -n $${NS} --ignore-not-found
+        sed "s|synthi-prisma-migrate:build-tag-required|synthi-prisma-migrate:$${TAG}|g" \
+          k8s/prisma-migrate-job.yaml | kubectl apply -f -
+        if ! kubectl wait --for=condition=complete job/prisma-migrate -n $${NS} --timeout=300s; then
+          kubectl logs job/prisma-migrate -n $${NS} -c migrate || true
+          exit 1
+        fi
+        kubectl logs job/prisma-migrate -n $${NS} -c migrate --tail=100 || true
 
         # Update the worker image in ConfigMap before restarting collab-server.
         # The dynamic spawner reads WORKER_IMAGE from its process env, so the

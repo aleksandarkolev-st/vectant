@@ -1,10 +1,20 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { snapshotStore, MemorySnapshotPersistor, type SnapshotRecord } from "../../src/snapshot/index.js";
+import {
+  SNAPSHOT_ID_PATTERN,
+  snapshotStore,
+  MemorySnapshotPersistor,
+  FileSnapshotPersistor,
+  type SnapshotRecord,
+} from "../../src/snapshot/index.js";
 import { snapshotTool } from "../../src/tools/snapshot.js";
 import { restoreTool } from "../../src/tools/restore.js";
 import { listSnapshotsTool } from "../../src/tools/list_snapshots.js";
 import { eventLog } from "../../src/events/index.js";
 import { session } from "../../src/session.js";
+
+const SNAPSHOT_ID_A = "snap_00000000-0000-0000-0000-000000000001";
+const SNAPSHOT_ID_B = "snap_00000000-0000-0000-0000-000000000002";
+const SNAPSHOT_ID_MISSING = "snap_00000000-0000-0000-0000-000000000099";
 
 function installFakeAttached(sessionId: string = "fake-session"): void {
   (session as unknown as { state: string }).state = "attached";
@@ -28,7 +38,7 @@ describe("snapshot store", () => {
   it("memory persistor round-trips records", async () => {
     const p = new MemorySnapshotPersistor();
     const rec: SnapshotRecord = {
-      snapshot_id: "snap_test_1",
+      snapshot_id: SNAPSHOT_ID_A,
       session_id: "s",
       captured_at: 100,
       event_log_seq_at_capture: 5,
@@ -42,16 +52,16 @@ describe("snapshot store", () => {
       frame: {},
     };
     await p.save(rec);
-    const back = await p.load("snap_test_1");
-    expect(back?.snapshot_id).toBe("snap_test_1");
+    const back = await p.load(SNAPSHOT_ID_A);
+    expect(back?.snapshot_id).toBe(SNAPSHOT_ID_A);
     expect((await p.list()).length).toBe(1);
-    expect(await p.remove("snap_test_1")).toBe(true);
-    expect(await p.load("snap_test_1")).toBeUndefined();
+    expect(await p.remove(SNAPSHOT_ID_A)).toBe(true);
+    expect(await p.load(SNAPSHOT_ID_A)).toBeUndefined();
   });
 
   it("computes a stable digest over key fields", () => {
     const rec: SnapshotRecord = {
-      snapshot_id: "snap_a",
+      snapshot_id: SNAPSHOT_ID_B,
       session_id: "s",
       captured_at: 1,
       event_log_seq_at_capture: 1,
@@ -69,6 +79,12 @@ describe("snapshot store", () => {
     expect(d1).toBe(d2);
     const d3 = snapshotStore.digest({ ...rec, source_state: { ...rec.source_state, content_hash: "hash2" } });
     expect(d3).not.toBe(d1);
+  });
+
+  it("file persistor rejects non-canonical snapshot ids", async () => {
+    const p = new FileSnapshotPersistor(".tmp-snapshots");
+    await expect(p.load("../secret")).rejects.toThrow("invalid_snapshot_id");
+    await expect(p.remove("snap_../../secret")).rejects.toThrow("invalid_snapshot_id");
   });
 });
 
@@ -101,7 +117,7 @@ describe("synthi_snapshot tool", () => {
       wire_state: string;
       digest: string;
     };
-    expect(body.snapshot_id).toMatch(/^snap_/);
+    expect(body.snapshot_id).toMatch(SNAPSHOT_ID_PATTERN);
     expect(body.label).toBe("checkpoint-A");
     expect(body.source_state.last_changed_files).toEqual(["main.cpp"]);
     expect(body.source_state.content_hash).toBe("deadbeef");
@@ -126,7 +142,7 @@ describe("synthi_restore tool", () => {
 
   it("returns snapshot_not_found for unknown ids", async () => {
     installFakeAttached();
-    const res = await restoreTool({ snapshot_id: "snap_nope" });
+    const res = await restoreTool({ snapshot_id: SNAPSHOT_ID_MISSING });
     expect(res.isError).toBe(true);
     const body = res.structuredContent as { error: string; required_tool_call: { name: string } };
     expect(body.error).toBe("snapshot_not_found");
