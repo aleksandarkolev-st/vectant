@@ -109,4 +109,22 @@ describe("synthi_dispatch_input", () => {
     const body = res.structuredContent as { effect_verified: { verified: boolean } };
     expect(body.effect_verified.verified).toBe(true);
   }));
+
+  it("returns a normalized error for invalid regex postconditions", async () => withBrokerInputEnforced(async () => {
+    await installFakeAttached();
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "agent", { scope: ["keyboard"] });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected lease failure");
+    const res = await dispatchInputTool({
+      lease_id: lease.lease.lease_id,
+      based_on_frame_seq: 3,
+      action: { tool: "synthi_keyboard", kind: "key", key: "Enter" },
+      postcondition: { type: "event_log", pattern: "(" },
+      timeout_ms: 10,
+    });
+    expect(res.isError).toBe(true);
+    const body = res.structuredContent as { error: string; detail?: { evidence?: { reason?: string } } };
+    expect(body.error).toBe("UNSUPPORTED_POSTCONDITION_TYPE");
+    expect(body.detail?.evidence?.reason).toBe("invalid_regex");
+  }));
 });

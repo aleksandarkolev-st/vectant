@@ -55,8 +55,21 @@ export async function verifyBrokerPostcondition(
       });
     case "custom_app_signal":
     case "event_log":
+      let re: RegExp;
+      try {
+        re = new RegExp(parsed.pattern);
+      } catch (err) {
+        return {
+          supported: false,
+          verified: false,
+          type: parsed.type,
+          evidence: {
+            reason: "invalid_regex",
+            message: err instanceof Error ? err.message : String(err),
+          },
+        };
+      }
       return pollUntil(deadline, parsed.type, () => {
-        const re = new RegExp(parsed.pattern);
         const match = eventLog.query({ since_seq: parsed.since_event_id ?? 0 })
           .find((entry) => re.test(JSON.stringify(entry)));
         return match ? { verified: true, evidence: { event_id: match.seq, pattern: parsed.pattern } } : null;
