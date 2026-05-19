@@ -374,6 +374,50 @@ def test_split_rejects_sdl_present_and_sparse_point_render():
     assert "gui_render_too_sparse" in rules
 
 
+def test_split_rejects_glfw_opengl_render_that_drops_projection():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "struct AppState { float x[512]; float y[512]; unsigned int rgba[512]; };"
+        ),
+        "core.cpp": (
+            "extern \"C\" void* core_on_load(void*, void*) { return 0; }\n"
+            "extern \"C\" void core_on_update(void*, double) { "
+            "synthi_gpu_launch(nullptr, \"step\", 1, 256, 0, nullptr, { &x, &n }); }\n"
+            "extern \"C\" const DeviceDescriptor* device_descriptor() { return 0; }\n"
+            "extern \"C\" void device_on_load(const unsigned char*, size_t) {}\n"
+            "extern \"C\" unsigned long long device_kernel_sig_hash(const char*) { return 1; }"
+        ),
+        "gui.cpp": (
+            "#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n"
+            "extern \"C\" void* gui_on_load(void*, void*, void*) { return 0; }\n"
+            "extern \"C\" void gui_on_render(void* state_ptr) { "
+            "auto* s = (AppState*)state_ptr; "
+            "glClear(GL_COLOR_BUFFER_BIT); glBegin(GL_QUADS); "
+            "for (int i = 0; i < 512; ++i) { "
+            "glVertex2f(s->x[i] - 4, s->y[i] - 4); "
+            "glVertex2f(s->x[i] + 4, s->y[i] - 4); "
+            "glVertex2f(s->x[i] + 4, s->y[i] + 4); "
+            "glVertex2f(s->x[i] - 4, s->y[i] + 4); } glEnd(); }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.cu": 'extern "C" __global__ void step(float*) {}',
+    }
+    source_files = {
+        "src/render/glfw_canvas.cpp": (
+            "#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n"
+            "void draw() { glMatrixMode(GL_PROJECTION); glLoadIdentity(); "
+            "glOrtho(0.0, 800.0, 600.0, 0.0, -1.0, 1.0); glBegin(GL_QUADS); }"
+        )
+    }
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "opengl_projection_not_preserved" for v in r.violations)
+
+
 def test_split_rejects_gui_device_pointer_dereference():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct Particle { float x; float y; }; struct AppState { Particle* d_particles; int n; };',

@@ -3996,6 +3996,14 @@ current OpenGL context with calls such as `glViewport`, `glClearColor`,
 `glClear`, `glBegin`/`glEnd` quads or vertex-buffer drawing, and let the runner
 swap buffers. Do not call `glfwCreateWindow`, `glfwGetCurrentContext`, or
 `glfwSwapBuffers` in `gui.cpp`.
+Preserve the source coordinate system. If the user source draws in pixel/window
+coordinates, `gui_on_render` must establish the same OpenGL transform before
+drawing, for example `glViewport(...)`, `glMatrixMode(GL_PROJECTION)`,
+`glLoadIdentity()`, `glOrtho(0, width, height, 0, -1, 1)`, then
+`glMatrixMode(GL_MODELVIEW)` / `glLoadIdentity()`. Do not pass pixel-space
+positions such as `state->x[i]` and `state->y[i]` directly to `glVertex*`
+under OpenGL's default -1..1 clip-space projection; that compiles but renders
+only the clear color.
 
 If the GPU state is not directly drawable, maintain or copy enough
 host-visible render data, or draw a faithful visible representation from the

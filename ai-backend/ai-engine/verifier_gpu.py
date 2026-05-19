@@ -138,6 +138,12 @@ _SDL_RENDER_API_RE = re.compile(r"\bSDL_Render[A-Za-z0-9_]*\s*\(")
 _SDL_SUBSTANTIAL_DRAW_RE = re.compile(
     r"\bSDL_Render(?:FillRect|DrawRect|DrawLine|DrawLines|DrawPoints|Copy|CopyEx|Geometry)\s*\("
 )
+_OPENGL_RENDER_API_RE = re.compile(
+    r"\b(?:glBegin|glDrawArrays|glDrawElements|glDrawPixels|glVertex[234][a-zA-Z]*)\s*\("
+)
+_OPENGL_PROJECTION_RE = re.compile(
+    r"\b(?:glOrtho|gluOrtho2D|glFrustum|glMatrixMode\s*\(\s*GL_PROJECTION|glm::ortho)\b"
+)
 _RENDER_BACKEND_MARKERS = {
     "sdl": re.compile(r"(?:\bSDL_[A-Za-z0-9_]*\b|SDL2?/SDL\.h|SDL2/SDL\.h)"),
     "glfw": re.compile(r"(?:\bGLFWwindow\b|\bglfw[A-Za-z0-9_]*\b|GLFW/glfw3\.h)"),
@@ -742,6 +748,7 @@ def verify_split_output(
     device_path = role_paths.get("device") or "device"
     device_source = files.get(device_path) or ""
     source_device_sources = _source_device_files(source_files)
+    source_blob = "\n".join(source_files.values()) if source_files else ""
     source_render_backends = _render_backends_in_sources(
         source_files.values() if source_files else []
     )
@@ -1277,6 +1284,29 @@ def verify_split_output(
                     "backend-specific representation from preserved state."
                 ),
                 offending_module=gui_path,
+            )
+        )
+    if (
+        "glfw" in source_render_backends
+        and _OPENGL_PROJECTION_RE.search(source_blob)
+        and _OPENGL_RENDER_API_RE.search(gui_source)
+        and not _OPENGL_PROJECTION_RE.search(gui_source)
+    ):
+        violations.append(
+            Violation(
+                rule="opengl_projection_not_preserved",
+                message=(
+                    "The source GLFW/OpenGL project establishes an explicit "
+                    "projection/coordinate transform, but the generated GUI "
+                    "draws OpenGL geometry without preserving that transform. "
+                    "Pixel-space vertices sent under OpenGL's default -1..1 "
+                    "clip-space projection compile but render only the clear "
+                    "color. Preserve the source projection, for example with "
+                    "glViewport + GL_PROJECTION + glOrtho, or convert all "
+                    "vertices to normalized device coordinates."
+                ),
+                offending_module=gui_path,
+                offending_symbol="GL_PROJECTION",
             )
         )
     if (
