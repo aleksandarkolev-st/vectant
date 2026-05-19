@@ -133,6 +133,14 @@ function normalizeScope(scope: readonly LeaseScope[] | undefined): LeaseScope[] 
   return out.length > 0 ? out : ["mouse", "keyboard"];
 }
 
+function mergeScopes(current: readonly LeaseScope[], requested: readonly LeaseScope[]): LeaseScope[] {
+  const out = [...current];
+  for (const item of normalizeScope(requested)) {
+    if (!out.includes(item)) out.push(item);
+  }
+  return out;
+}
+
 class LeaseRegistry {
   private active = new Map<string, InputLease>();
   private readonly preempted = new Set<string>();
@@ -168,7 +176,7 @@ class LeaseRegistry {
       process.env["SYNTHI_BROKER_INPUT_MODE"] === "enforce";
     if (singleHolderRequired && current && !opts.takeover) {
       if (current.owner === owner) {
-        const renewed = this.renew(current.lease_id, lease_ms);
+        const renewed = this.renewLease(current.lease_id, lease_ms, Date.now(), opts.scope);
         if (renewed.ok) return { ok: true, lease: renewed.lease, reentrant: true };
       }
       if (opts.priority === "urgent_human_override" && current.preemptible) {
@@ -262,6 +270,15 @@ class LeaseRegistry {
     extend_ms: number,
     now: number = Date.now()
   ): { ok: true; lease: InputLease } | { ok: false; error: "LEASE_EXPIRED" | "LEASE_PREEMPTED"; detail: Record<string, unknown> } {
+    return this.renewLease(lease_id, extend_ms, now);
+  }
+
+  private renewLease(
+    lease_id: string,
+    extend_ms: number,
+    now: number = Date.now(),
+    requestedScope?: readonly LeaseScope[]
+  ): { ok: true; lease: InputLease } | { ok: false; error: "LEASE_EXPIRED" | "LEASE_PREEMPTED"; detail: Record<string, unknown> } {
     this.evictExpired(now);
     if (this.preempted.has(lease_id)) {
       return { ok: false, error: "LEASE_PREEMPTED", detail: { lease_id, received_at: now } };
@@ -281,6 +298,7 @@ class LeaseRegistry {
       ...lease,
       expires_at: nextExpiresAt,
       lease_ms: Math.max(0, nextExpiresAt - now),
+      scope: requestedScope ? mergeScopes(lease.scope, requestedScope) : lease.scope,
     };
     this.active.set(lease_id, renewed);
     this.emitLeaseEvent("renewed", renewed, { expires_at: renewed.expires_at });

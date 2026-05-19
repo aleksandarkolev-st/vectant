@@ -134,6 +134,8 @@ describe("leaseRegistry", () => {
       if (!second.ok) throw new Error("unexpected reentrant rejection");
       expect(second.lease.lease_id).toBe(first.lease.lease_id);
       expect(second.reentrant).toBe(true);
+      expect(second.lease.scope).toEqual(["mouse", "keyboard"]);
+      expect(leaseRegistry.validateForBrokerInput(second.lease.lease_id, "keyboard").allowed).toBe(true);
     } finally {
       if (prev === undefined) delete process.env["SYNTHI_BROKER_INPUT_MODE"];
       else process.env["SYNTHI_BROKER_INPUT_MODE"] = prev;
