@@ -419,12 +419,31 @@ def normalize_gpu_split_manifest(
         manifest[field] = values
 
     source_blob = "\n".join(str(v) for v in split_files.values())
-    if "SDL2/" in source_blob or "SDL_" in source_blob:
+
+    def add_host_link_flags(flags: List[str]) -> None:
         for field in ("gui_link_flags", "runner_link_flags"):
             values = list(manifest.get(field) or [])
-            if "-lSDL2" not in values:
-                values.append("-lSDL2")
+            for flag in flags:
+                if flag not in values:
+                    values.append(flag)
             manifest[field] = values
+
+    hinted_flags = _extract_source_link_hints(source_blob)
+    if hinted_flags:
+        add_host_link_flags(hinted_flags)
+
+    if "SDL2/" in source_blob or "SDL_" in source_blob:
+        add_host_link_flags(["-lSDL2"])
+    if "GLFW/" in source_blob or "GLFWwindow" in source_blob or "glfw" in source_blob:
+        add_host_link_flags(["-lglfw"])
+    if (
+        "GL/" in source_blob
+        or "glClear" in source_blob
+        or "glBegin" in source_blob
+        or "glDraw" in source_blob
+        or "glVertex" in source_blob
+    ):
+        add_host_link_flags(["-lGL"])
 
     runner_flags = list(manifest.get("runner_link_flags") or [])
     for flag in ("-ldl", "-pthread", "-rdynamic"):
@@ -445,6 +464,38 @@ def normalize_gpu_split_manifest(
     gpu["fatbin_strategy"] = "sidecar_module"
     manifest["gpu"] = gpu
     return manifest
+
+
+def _extract_source_link_hints(source: str) -> List[str]:
+    """Extract explicit linker hints embedded in generated split sources.
+
+    The AI sometimes preserves user-side `// LINK: -lfoo -lbar` comments or
+    emits MSVC-style `#pragma comment(lib, "foo")` hints. Linux linkers do not
+    consume either form directly, so normalize them into manifest link flags.
+    """
+
+    flags: List[str] = []
+    seen: Set[str] = set()
+
+    def add(flag: str) -> None:
+        flag = flag.strip()
+        if not flag:
+            return
+        if not flag.startswith("-l") and re.match(r"^[A-Za-z0-9_.+-]+$", flag):
+            flag = f"-l{flag}"
+        if flag.startswith("-l") and flag not in seen:
+            flags.append(flag)
+            seen.add(flag)
+
+    for match in re.finditer(r"(?im)^\s*//\s*LINK:\s*(.+)$", source):
+        for token in match.group(1).split():
+            add(token)
+    for match in re.finditer(r'#\s*pragma\s+comment\s*\(\s*lib\s*,\s*"([^"]+)"\s*\)', source):
+        lib = match.group(1).strip()
+        if lib.lower().endswith(".lib"):
+            lib = lib[:-4]
+        add(lib)
+    return flags
 
 
 def _normalize_gpu_device_flags(raw_flags: Any, vendor: str) -> List[str]:

@@ -198,6 +198,43 @@ def test_normalizes_ai_gpu_manifest_defaults_for_rocm():
     assert "-lineinfo" in parsed.gpu.device_flags
 
 
+def test_normalizes_glfw_opengl_gpu_manifest_link_flags():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm"}, "gui_link_flags": [], "runner_link_flags": []},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": """
+                #include <GLFW/glfw3.h>
+                #include <GL/gl.h>
+                void render(GLFWwindow* window) {
+                    glClear(GL_COLOR_BUFFER_BIT);
+                    glBegin(GL_POINTS);
+                    glVertex2f(0.0f, 0.0f);
+                    glEnd();
+                }
+            """,
+            "host_runner.cpp": """
+                #include <GLFW/glfw3.h>
+                #pragma comment(lib, "glfw")
+                int main() {
+                    glfwInit();
+                    return 0;
+                }
+            """,
+            "device.hip": "",
+        },
+        vendor_hint="rocm",
+        arch_hint="gfx1201",
+    )
+    parsed = parse_manifest(normalized)
+    validate_manifest_v1(parsed)
+    assert "-lglfw" in parsed.gui_link_flags
+    assert "-lglfw" in parsed.runner_link_flags
+    assert "-lGL" in parsed.gui_link_flags
+    assert "-lGL" in parsed.runner_link_flags
+
+
 def test_normalizes_ai_gpu_manifest_defaults_for_cuda_dynamic_paths():
     normalized = normalize_gpu_split_manifest(
         {"gpu": {"vendor": "cuda"}},
