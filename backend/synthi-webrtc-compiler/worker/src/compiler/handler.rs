@@ -2653,6 +2653,11 @@ pub async fn handle_compile_request(
         .unwrap_or(false)
         && runtime_host_runner_bin_path.is_some();
 
+    let device_sidecar_only_reload = !modules_to_load.is_empty()
+        && modules_to_load
+            .iter()
+            .all(|(name, _)| name.starts_with("__gpu_device:"));
+
     let runtime_reload_start = std::time::Instant::now();
     let runner_result = if use_supervisor {
         use crate::runtime::path_c::supervisor::spawn_supervised;
@@ -2753,15 +2758,23 @@ pub async fn handle_compile_request(
 
     match runner_result {
         Ok(()) => {
-            let candidate_messages = {
-                let mut orchestrator = ctx.hmr_orchestrator.lock().await;
-                orchestrator
-                    .pipeline(&session_id)
-                    .validate_active_candidate(runtime_reload_start.elapsed().as_millis() as u64)
-                    .messages
-            };
-            for msg in candidate_messages {
-                let _ = ctx.log_dc.send_text(msg).await;
+            if device_sidecar_only_reload {
+                debug_log!(
+                    "[HMR] Device-only runner reload dispatched; waiting for runner GPU sidecar status"
+                );
+            } else {
+                let candidate_messages = {
+                    let mut orchestrator = ctx.hmr_orchestrator.lock().await;
+                    orchestrator
+                        .pipeline(&session_id)
+                        .validate_active_candidate(
+                            runtime_reload_start.elapsed().as_millis() as u64,
+                        )
+                        .messages
+                };
+                for msg in candidate_messages {
+                    let _ = ctx.log_dc.send_text(msg).await;
+                }
             }
         }
         Err(error) => {

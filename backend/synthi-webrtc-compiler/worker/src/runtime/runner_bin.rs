@@ -841,6 +841,26 @@ fn main() {
                 completion.kernels,
                 completion.result
             );
+            let status = match &completion.result {
+                AdapterReloadResult::Success {
+                    state_preserved, ..
+                } => HmrStatus::Applied {
+                    module: "device".into(),
+                    capability: "GPU sidecar HMR".into(),
+                    state_preserved: *state_preserved,
+                },
+                AdapterReloadResult::Failed { error, .. } => HmrStatus::rejected_with_fallback(
+                    "device",
+                    error,
+                    "Keep previous GPU sidecar loaded",
+                ),
+                AdapterReloadResult::Unsupported { reason } => HmrStatus::rejected_with_fallback(
+                    "device",
+                    reason,
+                    "Full GPU sidecar reload required",
+                ),
+            };
+            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
             gpu_reload_inflight.remove(&completion.language);
             gpu_adapters.insert(completion.language, completion.adapter);
         }
@@ -1348,6 +1368,12 @@ fn main() {
                                 artifact_path,
                                 kernels.join(",")
                             );
+                            let status = HmrStatus::rejected_with_fallback(
+                                "device",
+                                "GPU sidecar reload already in flight",
+                                "Wait for active GPU sidecar reload or restart runner",
+                            );
+                            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                             continue;
                         }
 
