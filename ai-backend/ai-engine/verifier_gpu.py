@@ -482,23 +482,9 @@ def _normalize_launch_buffer_arg(arg: str) -> str:
     return re.sub(r"\s+", "", arg)
 
 
-def _init_kernel_writes_pointer_params(device_source: str, kernel_name: str) -> bool:
-    body = _function_body(device_source, kernel_name)
-    if not body.strip():
-        return False
-    pointer_names = _device_kernel_pointer_param_names(device_source, kernel_name)
-    for name in pointer_names:
-        escaped = re.escape(name)
-        if not re.search(rf"\b{escaped}\s*\[[^\]]+\]\s*(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s*=", body):
-            return False
-    return True
-
-
 def _missing_init_launch_buffers(core_source: str, device_source: str) -> Set[str]:
     required: Set[str] = set()
     initialized: Set[str] = set()
-    init_kernel_seen = False
-    init_kernel_writes = False
     for body in _iter_call_bodies(core_source, "synthi_gpu_launch"):
         args = _split_top_level_args(body)
         if len(args) != 7:
@@ -516,17 +502,11 @@ def _missing_init_launch_buffers(core_source: str, device_source: str) -> Set[st
             if i < len(launch_args)
         }
         if re.search(r"(?:init|seed|setup|reset)", kernel_name, re.IGNORECASE):
-            init_kernel_seen = True
             initialized.update(pointer_buffers)
-            init_kernel_writes = init_kernel_writes or _init_kernel_writes_pointer_params(
-                device_source, kernel_name
-            )
         else:
             required.update(pointer_buffers)
     if not required:
         return set()
-    if init_kernel_seen and not init_kernel_writes:
-        return required
     return {buf for buf in required if buf not in initialized}
 
 
