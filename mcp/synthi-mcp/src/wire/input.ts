@@ -161,6 +161,8 @@ export interface SendOptions {
    * so a default 2ms gap keeps us well inside the budget.
    */
   interFrameDelayMs?: number;
+  /** Called after each frame is accepted by the data channel send path. */
+  onFrameSent?: (frame: string) => void;
 }
 
 /**
@@ -180,6 +182,7 @@ export async function sendFrames(
     const frame = frames[i];
     if (frame !== undefined) {
       dc.send(frame);
+      opts.onFrameSent?.(frame);
     }
     if (i < frames.length - 1 && gap > 0) {
       await new Promise((resolve) => setTimeout(resolve, gap));

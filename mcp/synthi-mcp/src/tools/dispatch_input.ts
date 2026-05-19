@@ -48,15 +48,22 @@ export async function dispatchInputTool(args: unknown): Promise<ToolResponse> {
     ? Math.floor(a.timeout_ms)
     : DEFAULT_TIMEOUT_MS;
   const pending: PendingDispatch[] = [];
+  const pendingById = new Map<string, PendingDispatch>();
   const nextId = (): string => {
-    const p = dispatchAckRegistry.register(timeoutMs);
+    const p = dispatchAckRegistry.register(timeoutMs, undefined, { deferTimeout: true });
     pending.push(p);
+    pendingById.set(p.id, p);
     return p.id;
   };
   const frames = encodeAction(attached.sessionId, action, nextId);
   const transportAck = { ack_id: `ack_${toolCallId}`, ts: Date.now() };
   try {
-    await attached.channels.sendInput(frames);
+    await attached.channels.sendInput(frames, {
+      onFrameSent: (frame) => {
+        const dispatchId = dispatchIdFromFrame(frame);
+        if (dispatchId) pendingById.get(dispatchId)?.startTimer();
+      },
+    });
   } catch (err) {
     for (const p of pending) p.cancel();
     recordBrokerInputTrace({
@@ -197,6 +204,15 @@ export async function dispatchInputTool(args: unknown): Promise<ToolResponse> {
     effect_verified: ackChain.effect_verified,
     ack_chain: ackChain,
   });
+}
+
+function dispatchIdFromFrame(frame: string): string | null {
+  try {
+    const parsed = JSON.parse(frame) as { dispatch_id?: unknown };
+    return typeof parsed.dispatch_id === "string" ? parsed.dispatch_id : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseAction(raw: unknown): DispatchAction | null {

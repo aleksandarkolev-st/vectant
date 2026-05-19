@@ -6,7 +6,11 @@ import { eventLog } from "../../src/events/index.js";
 import { session } from "../../src/session.js";
 import { dispatchInputTool } from "../../src/tools/dispatch_input.js";
 
-async function installFakeAttached(): Promise<void> {
+interface FakeSendOptions {
+  onFrameSent?: (frame: string) => void;
+}
+
+async function installFakeAttached(opts: { interFrameDelayMs?: number } = {}): Promise<void> {
   const png = await sharp({
     create: {
       width: 4,
@@ -26,11 +30,16 @@ async function installFakeAttached(): Promise<void> {
       dimensions: () => ({ width: 4, height: 4 }),
     },
     channels: {
-      sendInput: async (frames: string[]) => {
-        for (const frame of frames) {
+      sendInput: async (frames: string[], sendOpts?: FakeSendOptions) => {
+        for (let i = 0; i < frames.length; i++) {
+          const frame = frames[i]!;
+          sendOpts?.onFrameSent?.(frame);
           const parsed = JSON.parse(frame) as { dispatch_id?: string };
           if (parsed.dispatch_id) {
             dispatchAckRegistry.resolveAck({ dispatch_id: parsed.dispatch_id, accepted: true });
+          }
+          if (opts.interFrameDelayMs && i < frames.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, opts.interFrameDelayMs));
           }
         }
       },
@@ -108,6 +117,22 @@ describe("synthi_dispatch_input", () => {
     expect(res.isError).toBeUndefined();
     const body = res.structuredContent as { effect_verified: { verified: boolean } };
     expect(body.effect_verified.verified).toBe(true);
+  }));
+
+  it("starts ack timers when each queued typing frame is sent", async () => withBrokerInputEnforced(async () => {
+    await installFakeAttached({ interFrameDelayMs: 15 });
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "agent", { scope: ["keyboard"] });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected lease failure");
+    const res = await dispatchInputTool({
+      lease_id: lease.lease.lease_id,
+      based_on_frame_seq: 3,
+      action: { tool: "synthi_keyboard", kind: "type", text: "ab" },
+      timeout_ms: 5,
+    });
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as { unverified?: boolean };
+    expect(body.unverified).toBe(true);
   }));
 
   it("returns a normalized error for invalid regex postconditions", async () => withBrokerInputEnforced(async () => {
