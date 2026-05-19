@@ -22,6 +22,7 @@ const CFG = {
   slug: process.env.SLUG ?? `gpu-scale-validation-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`,
   hostId: process.env.HOST_ID ?? 'gpu-hmr-scale-validation',
   vendor: (process.env.SYNTHI_GPU_VENDOR ?? 'auto').toLowerCase(),
+  renderBackend: (process.env.SYNTHI_SCALE_RENDER_BACKEND ?? 'sdl2').toLowerCase().replace(/^sdl$/, 'sdl2'),
   gpuArch: process.env.SYNTHI_GPU_ARCH,
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.1-flash-lite-preview',
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
@@ -36,6 +37,7 @@ const CFG = {
   hotSwapTimeoutMs: Number(process.env.SYNTHI_SCALE_HMR_TIMEOUT_MS ?? 30000),
   screenshotAttempts: Number(process.env.SYNTHI_SCALE_SCREENSHOT_ATTEMPTS ?? 6),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_RETRY_MS ?? 1000),
+  screenshotFreshnessMaxMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_FRESHNESS_MS ?? 5000),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
 };
@@ -44,6 +46,8 @@ const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
 const ARTIFACT_DIR = path.resolve(__dirname, '../.gpu-hmr-test-artifacts');
 const RESULTS_JSON = path.join(LOG_DIR, 'scale-validation-results.json');
 const RESULTS_TXT = path.join(LOG_DIR, 'scale-validation-results.txt');
+const BACKEND_RESULTS_JSON = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-results.json`);
+const BACKEND_RESULTS_TXT = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-results.txt`);
 
 const FORBIDDEN_ABI = [
   'core_on_load',
@@ -62,6 +66,7 @@ const report = {
   model: CFG.geminiModel,
   vendor: '',
   arch: '',
+  render_backend: CFG.renderBackend,
   workspace_file_count: 0,
   relevant_file_count: 0,
   started_at: new Date().toISOString(),
@@ -398,17 +403,22 @@ function addFile(files, pathName, content, relevant = false) {
   files.push({ path: pathName, content: content.trimStart().replace(/\r\n/g, '\n'), relevant });
 }
 
-function buildScaleProject(vendor, arch) {
+function buildScaleProject(vendor, arch, renderBackend) {
   const isRocm = vendor === 'rocm';
   const deviceExt = isRocm ? 'hip' : 'cu';
   const runtimeInclude = isRocm ? '#include <hip/hip_runtime.h>' : '#include <cuda_runtime.h>';
   const launchComment = isRocm ? 'hipLaunchKernelGGL' : 'cudaLaunchKernel';
+  const renderSource = renderBackend === 'glfw' ? 'src/render/glfw_canvas.cpp' : 'src/render/sdl_canvas.cpp';
+  const renderLink = renderBackend === 'glfw'
+    ? 'target_link_libraries(particle_field PRIVATE glfw GL)'
+    : 'target_link_libraries(particle_field PRIVATE SDL2)';
   const files = [];
 
   addFile(files, 'README.md', `
 # Particle Field Validation Fixture
 
 Ordinary multi-file GPU project used by the scale validation harness.
+Render backend: ${renderBackend === 'glfw' ? 'GLFW + OpenGL' : 'SDL2'}.
 `, true);
 
   addFile(files, 'CMakeLists.txt', `
@@ -418,9 +428,10 @@ set(CMAKE_CXX_STANDARD 20)
 add_executable(particle_field
   src/app/main.cpp
   src/app/simulation.cpp
-  src/render/sdl_canvas.cpp
+  ${renderSource}
   src/gpu/particle_kernels.${deviceExt}
 )
+${renderLink}
 `, true);
 
   addFile(files, 'src/config/particle_config.hpp', `
@@ -619,7 +630,8 @@ ParticleSnapshot Simulation::snapshot() const {
 }
 `, true);
 
-  addFile(files, 'src/render/sdl_canvas.hpp', `
+  if (renderBackend === 'sdl2') {
+    addFile(files, 'src/render/sdl_canvas.hpp', `
 #pragma once
 #include "../app/simulation.hpp"
 struct SDL_Window;
@@ -641,10 +653,11 @@ class SdlCanvas {
 }
 `, true);
 
-  addFile(files, 'src/render/sdl_canvas.cpp', `
+    addFile(files, 'src/render/sdl_canvas.cpp', `
 #include "sdl_canvas.hpp"
 #include <SDL2/SDL.h>
 #include <cstddef>
+// LINK: -lSDL2
 namespace scale {
 SdlCanvas::SdlCanvas(int width, int height)
     : width_(width), height_(height), window_(nullptr), renderer_(nullptr), open_(true) {
@@ -703,7 +716,7 @@ void SdlCanvas::draw(const ParticleSnapshot& snapshot) {
 }
 `, true);
 
-  addFile(files, 'src/app/main.cpp', `
+    addFile(files, 'src/app/main.cpp', `
 #include "simulation.hpp"
 #include "../render/sdl_canvas.hpp"
 #include "../config/particle_config.hpp"
@@ -718,6 +731,124 @@ int main() {
   return 0;
 }
 `, true);
+  } else {
+    addFile(files, 'src/render/glfw_canvas.hpp', `
+#pragma once
+#include "../app/simulation.hpp"
+struct GLFWwindow;
+namespace scale {
+class GlfwCanvas {
+ public:
+  GlfwCanvas(int width, int height);
+  ~GlfwCanvas();
+  bool pump();
+  void draw(const ParticleSnapshot& snapshot);
+ private:
+  int width_;
+  int height_;
+  GLFWwindow* window_;
+  bool open_;
+};
+}
+`, true);
+
+    addFile(files, 'src/render/glfw_canvas.cpp', `
+#include "glfw_canvas.hpp"
+#include <GLFW/glfw3.h>
+#include <GL/gl.h>
+#include <cstddef>
+// LINK: -lglfw -lGL
+namespace scale {
+GlfwCanvas::GlfwCanvas(int width, int height)
+    : width_(width), height_(height), window_(nullptr), open_(true) {
+  if (!glfwInit()) {
+    open_ = false;
+    return;
+  }
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
+  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+  window_ = glfwCreateWindow(width_, height_, "Scale Particle Field", nullptr, nullptr);
+  if (!window_) {
+    open_ = false;
+    glfwTerminate();
+    return;
+  }
+  glfwMakeContextCurrent(window_);
+  glfwSwapInterval(1);
+}
+
+GlfwCanvas::~GlfwCanvas() {
+  if (window_) glfwDestroyWindow(window_);
+  glfwTerminate();
+}
+
+bool GlfwCanvas::pump() {
+  if (!window_ || !open_) return false;
+  glfwPollEvents();
+  open_ = !glfwWindowShouldClose(window_);
+  return open_;
+}
+
+void GlfwCanvas::draw(const ParticleSnapshot& snapshot) {
+  if (!window_) return;
+  glfwMakeContextCurrent(window_);
+  int fbw = width_;
+  int fbh = height_;
+  glfwGetFramebufferSize(window_, &fbw, &fbh);
+  glViewport(0, 0, fbw, fbh);
+  glMatrixMode(GL_PROJECTION);
+  glLoadIdentity();
+  glOrtho(0.0, double(width_), double(height_), 0.0, -1.0, 1.0);
+  glMatrixMode(GL_MODELVIEW);
+  glLoadIdentity();
+
+  glClearColor(0.024f, 0.039f, 0.071f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+
+  for (std::size_t i = 0; i < snapshot.positions.size(); ++i) {
+    const Vec2& p = snapshot.positions[i];
+    const Rgba& c = snapshot.colors[i % snapshot.colors.size()];
+    const float r = c.r / 255.0f;
+    const float g = c.g / 255.0f;
+    const float b = c.b / 255.0f;
+    glColor4f(r, g, b, 1.0f);
+    glBegin(GL_QUADS);
+    glVertex2f(p.x - 4.0f, p.y - 4.0f);
+    glVertex2f(p.x + 4.0f, p.y - 4.0f);
+    glVertex2f(p.x + 4.0f, p.y + 4.0f);
+    glVertex2f(p.x - 4.0f, p.y + 4.0f);
+    glEnd();
+  }
+
+  glColor4f(1.0f, 1.0f, 1.0f, 0.25f);
+  glBegin(GL_LINES);
+  glVertex2f(width_ / 2.0f - 24.0f, height_ / 2.0f);
+  glVertex2f(width_ / 2.0f + 24.0f, height_ / 2.0f);
+  glVertex2f(width_ / 2.0f, height_ / 2.0f - 24.0f);
+  glVertex2f(width_ / 2.0f, height_ / 2.0f + 24.0f);
+  glEnd();
+
+  glfwSwapBuffers(window_);
+}
+}
+`, true);
+
+    addFile(files, 'src/app/main.cpp', `
+#include "simulation.hpp"
+#include "../render/glfw_canvas.hpp"
+#include "../config/particle_config.hpp"
+
+int main() {
+  scale::Simulation simulation;
+  scale::GlfwCanvas canvas(scale::kCanvasWidth, scale::kCanvasHeight);
+  for (int frame = 0; frame < 240 && canvas.pump(); ++frame) {
+    simulation.step(1.0f / 60.0f);
+    canvas.draw(simulation.snapshot());
+  }
+  return 0;
+}
+`, true);
+  }
 
   for (let i = 0; i < 120; i += 1) {
     addFile(files, `docs/notes/field-note-${String(i).padStart(3, '0')}.md`, `
@@ -792,9 +923,11 @@ async function compileViaMcp(args, waitTimeoutMs, phaseName, checkpoint) {
     wait_hmr_started_at: waitStartedAt,
     wait_hmr_finished_at: waitFinishedAt,
     wait_hmr_elapsed_ms: wait?.elapsedMs ?? null,
+    wait_hmr_terminal_elapsed_ms: wait?.hmrElapsedMs ?? null,
     wait_hmr_status: wait?.status ?? 'unknown',
     wait_hmr_source: wait?.source ?? null,
     wait_hmr_detail: wait?.detail ?? null,
+    frame_gate: wait?.frame_gate ?? null,
     wall_elapsed_ms: wallElapsed,
     worker_log_markers: collectWorkerMarkers(workerTail),
   };
@@ -829,7 +962,11 @@ async function captureScreenshot(label, compareTo = null) {
   let lastRow = null;
   const attempts = Math.max(1, CFG.screenshotAttempts);
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const shot = await state.client.toolCallRaw('synthi_screenshot', { freshness_max_ms: 15000 }, 30000);
+    const shot = await state.client.toolCallRaw(
+      'synthi_screenshot',
+      { freshness_max_ms: CFG.screenshotFreshnessMaxMs },
+      30000,
+    );
     const image = shot.content.find((b) => b?.type === 'image' && typeof b.data === 'string');
     if (!image?.data) throw new Error(`synthi_screenshot returned no image for ${label}`);
     const input = Buffer.from(image.data, 'base64');
@@ -933,7 +1070,7 @@ async function readGeneratedSplit(vendor, checkpoint) {
   return { workspacePath, sidecarRaw, sidecar, manifest, roles, files };
 }
 
-function validateGeneratedSplit(split) {
+function validateGeneratedSplit(split, renderBackend) {
   const core = split.files[split.roles.core] || '';
   const gui = split.files[split.roles.gui] || '';
   const host = split.files[split.roles.host_runner] || '';
@@ -944,6 +1081,21 @@ function validateGeneratedSplit(split) {
   if (!host.includes('main(')) missing.push('host_runner main');
   if (!device.includes('__global__')) missing.push('__global__ device kernel');
   if (missing.length) throw new Error(`generated split missing expected generated pieces: ${missing.join(', ')}`);
+  const generatedText = `${core}\n${gui}\n${host}\n${device}\n${split.sidecarRaw}\n${JSON.stringify(split.manifest)}`;
+  if (renderBackend === 'glfw') {
+    if (!/\b(?:GLFW|glfw|-lglfw|GL\/gl\.h|glClear|glBegin|glDraw)/.test(generatedText)) {
+      throw new Error('generated GLFW split does not preserve GLFW/OpenGL markers or link flags');
+    }
+    if (/\bSDL_|SDL2\/SDL\.h|-lSDL2/.test(generatedText)) {
+      throw new Error('generated GLFW split introduced SDL markers');
+    }
+    record('generated split preserved GLFW/OpenGL backend', 'pass', 'no SDL markers in generated roles');
+  } else if (renderBackend === 'sdl2') {
+    if (!/\bSDL_|SDL2\/SDL\.h|-lSDL2/.test(generatedText)) {
+      throw new Error('generated SDL2 split does not preserve SDL2 markers or link flags');
+    }
+    record('generated split preserved SDL2 backend', 'pass', 'SDL2 markers present');
+  }
   record('generated split contains HMR ABI', 'pass', Object.values(split.roles).join(', '));
 }
 
@@ -1010,13 +1162,16 @@ async function writeReport() {
   report.finished_at = new Date().toISOString();
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
-  await writeFile(RESULTS_JSON, JSON.stringify(report, null, 2) + '\n');
+  const json = JSON.stringify(report, null, 2) + '\n';
+  await writeFile(RESULTS_JSON, json);
+  await writeFile(BACKEND_RESULTS_JSON, json);
   const lines = [
     `slug: ${report.slug}`,
     `repo_commit: ${report.repo_commit}`,
     `model: ${report.model}`,
     `vendor: ${report.vendor}`,
     `arch: ${report.arch}`,
+    `render_backend: ${report.render_backend}`,
     `workspace_file_count: ${report.workspace_file_count}`,
     `relevant_file_count: ${report.relevant_file_count}`,
     `generated_roles: ${JSON.stringify(report.generated_roles)}`,
@@ -1025,18 +1180,25 @@ async function writeReport() {
     '',
     ...report.phases.map((p) => {
       const detail = p.wait_hmr_detail ? ` detail=${JSON.stringify(p.wait_hmr_detail).slice(0, 500)}` : '';
-      return `PHASE ${p.name} wait=${p.wait_hmr_status} source=${p.wait_hmr_source ?? ''} wait_ms=${p.wait_hmr_elapsed_ms} wall_ms=${p.wall_elapsed_ms}${detail}`;
+      const frameGate = p.frame_gate ? ` frame_gate=${JSON.stringify(p.frame_gate).slice(0, 300)}` : '';
+      return `PHASE ${p.name} wait=${p.wait_hmr_status} source=${p.wait_hmr_source ?? ''} wait_ms=${p.wait_hmr_elapsed_ms} terminal_wait_ms=${p.wait_hmr_terminal_elapsed_ms ?? ''} wall_ms=${p.wall_elapsed_ms}${detail}${frameGate}`;
     }),
     '',
     ...report.screenshots.map((s) => `SCREENSHOT ${s.captured_after_phase} ${s.width}x${s.height} visible=${s.visible_pixels} luma=${s.mean_luma.toFixed(1)} path=${s.path} differs=${s.differs_from_first ?? ''}`),
   ];
-  await writeFile(RESULTS_TXT, lines.join('\n') + '\n');
+  const text = lines.join('\n') + '\n';
+  await writeFile(RESULTS_TXT, text);
+  await writeFile(BACKEND_RESULTS_TXT, text);
   console.log(`results: ${RESULTS_TXT}`);
+  console.log(`backend_results: ${BACKEND_RESULTS_TXT}`);
 }
 
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
+  if (!['sdl2', 'glfw'].includes(CFG.renderBackend)) {
+    fail(`unsupported SYNTHI_SCALE_RENDER_BACKEND=${CFG.renderBackend}; expected sdl2 or glfw`);
+  }
   await resolveDockerContainers();
   report.repo_commit = await execText('git', ['rev-parse', 'HEAD'], 10000, true);
   const vendor = await detectVendor();
@@ -1048,6 +1210,7 @@ async function run() {
     SYNTHI_GEMINI_MODEL: CFG.geminiModel,
     SYNTHI_GPU_VENDOR: process.env.SYNTHI_GPU_VENDOR ?? '',
     SYNTHI_GPU_ARCH: arch,
+    SYNTHI_SCALE_RENDER_BACKEND: CFG.renderBackend,
     SYNTHI_SYNC_TO_GCS: process.env.SYNTHI_SYNC_TO_GCS ?? '',
   };
   report.containers = {
@@ -1055,15 +1218,15 @@ async function run() {
     ai_engine: await containerSnapshot(CFG.aiEngineContainer),
     mcp: await containerSnapshot(CFG.mcpContainer),
   };
-  record('gpu target', 'pass', `${vendor} arch=${arch}`);
+  record('gpu target', 'pass', `${vendor} arch=${arch} render_backend=${CFG.renderBackend}`);
 
-  const project = buildScaleProject(vendor, arch);
+  const project = buildScaleProject(vendor, arch, CFG.renderBackend);
   report.workspace_file_count = project.files.length;
   report.relevant_file_count = project.relevantFiles.length;
   if (project.files.length < 200) fail(`scale fixture only has ${project.files.length} files`);
   assertOrdinaryUserProject(project.files);
 
-  const workspace = await createWorkspace({ name: `Synthi GPU Scale Validation (${vendor})`, slug: CFG.slug });
+  const workspace = await createWorkspace({ name: `Synthi GPU Scale Validation (${vendor}/${CFG.renderBackend})`, slug: CFG.slug });
   record('create workspace', 'pass', `id=${workspace.id ?? 'n/a'} slug=${CFG.slug}`);
   await writeFilesBatch({ slug: CFG.slug, files: project.files });
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: seed ordinary project' });
@@ -1115,7 +1278,7 @@ async function run() {
 
   const firstShot = await captureScreenshot('first-compile');
   const split = await readGeneratedSplit(vendor, firstCheckpoint);
-  validateGeneratedSplit(split);
+  validateGeneratedSplit(split, CFG.renderBackend);
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
   await persistGeneratedSplitToWorkspace(split);
 
