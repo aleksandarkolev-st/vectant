@@ -170,4 +170,47 @@ describe("broker control plane", () => {
     if (blocked.ok) throw new Error("unexpected replay success");
     expect(blocked.error.error).toBe("FORBIDDEN");
   });
+
+  it("scopes non-admin health responses to the caller and requested session", () => {
+    const log = new EventLog();
+    const control = new BrokerControlPlane(log);
+    const ownPrincipal = principal("read_only");
+    const otherPrincipal: BrokerPrincipal = {
+      ...ownPrincipal,
+      subject: "agent_b",
+      session_ids: ["s_2"],
+    };
+    const ownSub = control.subscribe({
+      principal: ownPrincipal,
+      session_id: "s_1",
+      topics: ["events"],
+      idempotency_key: "own",
+    });
+    const otherSub = control.subscribe({
+      principal: otherPrincipal,
+      session_id: "s_2",
+      topics: ["events"],
+      idempotency_key: "other",
+    });
+    expect(ownSub.ok).toBe(true);
+    expect(otherSub.ok).toBe(true);
+    if (!ownSub.ok || !otherSub.ok) throw new Error("unexpected subscribe failure");
+
+    const health = control.health({
+      principal: ownPrincipal,
+      session_id: "s_1",
+    });
+    expect(health.ok).toBe(true);
+    if (!health.ok) throw new Error("unexpected health failure");
+    expect(health.subscribers.map((sub) => sub.subscription_id)).toEqual([ownSub.subscription_id]);
+
+    const filtered = control.health({
+      principal: ownPrincipal,
+      session_id: "s_1",
+      subscriber_id: otherSub.subscription_id,
+    });
+    expect(filtered.ok).toBe(true);
+    if (!filtered.ok) throw new Error("unexpected filtered health failure");
+    expect(filtered.subscribers).toHaveLength(0);
+  });
 });

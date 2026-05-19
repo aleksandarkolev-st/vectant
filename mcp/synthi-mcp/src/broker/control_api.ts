@@ -298,9 +298,13 @@ export class BrokerControlPlane {
   }): { ok: true; health: BrokerHealthStatus; subscribers: ReturnType<BrokerSubscriptionRegistry["health"]> } | { ok: false; error: BrokerErrorPayload } {
     const auth = authorizeBrokerCapability(input.principal, "subscribe_frames", input.session_id);
     if (auth) return auth;
-    const subscribers = this.subscriptions.health(
-      input.principal.role === "admin" ? input.subscriber_id : undefined
-    );
+    const subscribers = input.principal.role === "admin"
+      ? this.subscriptions.health(input.subscriber_id)
+      : this.subscriptions.healthForPrincipal({
+          principal: input.principal,
+          session_id: input.session_id,
+          subscription_id: input.subscriber_id,
+        });
     const aggregateDrops = subscribers.reduce((sum, sub) => sum + sub.dropped_frames, 0);
     const aggregateQueue = subscribers.reduce((sum, sub) => sum + sub.queue_depth, 0);
     return {

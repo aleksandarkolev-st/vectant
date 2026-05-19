@@ -167,6 +167,27 @@ export class BrokerSubscriptionRegistry {
     const subs = subscriptionId
       ? [...this.subscriptions.values()].filter((s) => s.subscription_id === subscriptionId)
       : [...this.subscriptions.values()];
+    return this.healthForSubscriptions(subs, now);
+  }
+
+  healthForPrincipal(input: {
+    principal: BrokerPrincipal;
+    session_id: string;
+    subscription_id?: string;
+    now?: number;
+  }): BrokerSubscriberHealth[] {
+    const subs = [...this.subscriptions.values()].filter((sub) => {
+      if (input.subscription_id && sub.subscription_id !== input.subscription_id) return false;
+      return (
+        sub.session_id === input.session_id &&
+        sub.principal.tenant_id === input.principal.tenant_id &&
+        sub.principal.subject === input.principal.subject
+      );
+    });
+    return this.healthForSubscriptions(subs, input.now ?? Date.now());
+  }
+
+  private healthForSubscriptions(subs: BrokerSubscription[], now: number): BrokerSubscriberHealth[] {
     return subs.map((sub) => ({
       subscription_id: sub.subscription_id,
       lag_ms: Math.max(0, now - sub.last_emit_at),
