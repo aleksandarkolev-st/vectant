@@ -266,12 +266,13 @@ export function removeTabFromCurrentGroup(state, tabId) {
  * @param {import('../types').LayoutState} state
  * @param {string} tabId
  * @param {boolean} [removeDefinition] - also remove from tabs map
+ * @param {boolean} [forceClose] - ignore tab.closable for UI affordances that hide singleton side panes
  * @returns {import('../types').LayoutState}
  */
-export function closeTab(state, tabId, removeDefinition = true) {
+export function closeTab(state, tabId, removeDefinition = true, forceClose = false) {
   // Guard: never close a non-closable tab (e.g. editor)
   const tab = state.tabs[tabId];
-  if (tab && tab.closable === false) return state;
+  if (tab && tab.closable === false && !forceClose) return state;
 
   let next = removeTabFromCurrentGroup(state, tabId);
 

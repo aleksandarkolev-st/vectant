@@ -9,8 +9,11 @@ import { selectTreeOnRight } from "@/redux/uiSlice";
 import { perfMeasureToConsole } from "@/services/perfMarkers";
 import { Virtuoso } from 'react-virtuoso';
 
+// Flat layout — results sit directly against the sidebar background
+// instead of being trapped inside a card. A single hairline divider
+// between sections keeps visual grouping.
 const Section = ({ children, className = "" }) => (
-  <div className={`mx-2 mb-2 rounded-lg border ${className}`} style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+  <div className={className}>
     {children}
   </div>
 );
@@ -41,6 +44,7 @@ export default function SearchView({ slug, onToggleOrientation }) {
   const isRightSide = useAppSelector(selectTreeOnRight);
 
   const [query, setQuery] = useState("");
+  const [isSearchActive, setIsSearchActive] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [results, setResults] = useState([]);
   const [expanded, setExpanded] = useState(() => new Set());
@@ -129,110 +133,146 @@ export default function SearchView({ slug, onToggleOrientation }) {
   };
 
   return (
-    <div className="flex flex-col h-full w-full overflow-hidden select-none">
-      {/* Header strip with gradient accent */}
-      <div className="flex-shrink-0">
-        <div className="h-[2px]" style={{ background: 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), transparent)' }} />
-        <div className={`flex items-center gap-2 px-3 py-2 ${isRightSide ? "flex-row-reverse" : ""}`}>
-          <Search size={14} className="flex-shrink-0" style={{ color: 'var(--accent-secondary)' }} />
-          <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Search</span>
-          <div className="ml-auto flex items-center gap-0.5">
-            <IconBtn
-              onClick={onToggleOrientation}
-              title={isRightSide ? "Move to left" : "Move to right"}
-              className="transition-colors"
-              style={{ color: 'var(--text-muted)' }}
-            >
-              {isRightSide ? (
-                <PanelLeftClose className="w-3.5 h-3.5" strokeWidth={1.5} />
-              ) : (
-                <PanelRightClose className="w-3.5 h-3.5" strokeWidth={1.5} />
-              )}
-            </IconBtn>
-          </div>
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden select-none">
+      <div
+        className={`flex shrink-0 items-center gap-2 border-b px-3 py-2 ${isRightSide ? "flex-row-reverse" : ""}`}
+        style={{
+          borderColor: 'var(--border-subtle)',
+          background: 'color-mix(in srgb, var(--bg-sidebar) 72%, var(--bg-editor) 28%)',
+        }}
+      >
+        <Search size={14} className="flex-shrink-0" style={{ color: 'var(--accent-secondary)' }} />
+        <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Search</span>
+        <div className="ml-auto flex items-center gap-0.5">
+          <IconBtn
+            onClick={onToggleOrientation}
+            title={isRightSide ? "Move to left" : "Move to right"}
+            className="transition-colors"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            {isRightSide ? (
+              <PanelLeftClose className="w-3.5 h-3.5" strokeWidth={1.5} />
+            ) : (
+              <PanelRightClose className="w-3.5 h-3.5" strokeWidth={1.5} />
+            )}
+          </IconBtn>
         </div>
       </div>
 
-      {/* Scrollable content */}
-      <div className="flex-1 overflow-y-auto py-1">
-        <Section>
-          <div className="px-3 py-2">
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} />
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex-shrink-0 px-3 py-2.5">
+          <div className="relative overflow-visible">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute -inset-[2px] rounded-[14px] transition-[opacity,transform,filter] duration-250 ease-out"
+              style={{
+                background:
+                  'radial-gradient(circle at 12% 50%, color-mix(in srgb, var(--attention-purple) 26%, transparent), transparent 58%), radial-gradient(circle at 88% 50%, color-mix(in srgb, var(--accent-secondary) 18%, transparent), transparent 55%)',
+                opacity: isSearchActive ? 1 : 0,
+                filter: isSearchActive ? 'blur(10px)' : 'blur(16px)',
+                transform: isSearchActive ? 'scale(1)' : 'scale(0.96)',
+              }}
+            />
+            <div
+              className="relative rounded-xl border transition-[border-color,box-shadow,transform,background-color] duration-250 ease-out"
+              style={{
+                background: isSearchActive
+                  ? 'color-mix(in srgb, var(--bg-elevated) 96%, var(--attention-purple) 4%)'
+                  : 'var(--bg-elevated)',
+                borderColor: isSearchActive
+                  ? 'color-mix(in srgb, var(--attention-purple) 40%, var(--border-medium))'
+                  : 'var(--border-medium)',
+                boxShadow: isSearchActive
+                  ? '0 14px 24px -24px color-mix(in srgb, var(--attention-purple) 62%, transparent), inset 0 1px 0 color-mix(in srgb, white 7%, transparent)'
+                  : 'inset 0 1px 0 color-mix(in srgb, white 4%, transparent)',
+                transform: isSearchActive ? 'translateY(-1px)' : 'translateY(0)',
+              }}
+            >
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 transition-colors duration-250"
+                style={{ color: isSearchActive ? 'var(--attention-purple)' : 'var(--text-muted)' }}
+              />
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
+                onFocus={() => setIsSearchActive(true)}
+                onBlur={() => setIsSearchActive(false)}
                 placeholder="Search in files"
-                className="w-full h-8 rounded-lg border pl-8 pr-2 text-[12px] outline-none transition-colors"
-                style={{ color: 'var(--text-primary)', background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)', '--tw-placeholder-color': 'var(--text-dim)' }}
+                className="h-9 w-full rounded-xl bg-transparent pl-9 pr-3 text-[12px] outline-none placeholder:opacity-100"
+                style={{
+                  color: 'var(--text-primary)',
+                  caretColor: 'var(--attention-purple)',
+                }}
               />
             </div>
             <div className="mt-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>
               {isSearching ? "Searching..." : query.trim() ? `${results.length} file(s) with matches` : ""}
             </div>
           </div>
-        </Section>
+        </div>
 
         {query.trim() && !isSearching && results.length === 0 && (
-          <Section>
+          <Section className="flex-shrink-0">
             <div className="px-3 py-2 text-[11px]" style={{ color: 'var(--text-muted)' }}>No results.</div>
           </Section>
         )}
 
         {results.length > 0 && (
-          <Section className="pb-1">
+          <Section className="flex min-h-0 flex-1 flex-col overflow-hidden pb-1">
             <SectionHead label="Results" count={results.length} />
             {/* PERF: Virtualized result list — only renders visible file rows,
                 keeping DOM node count proportional to the viewport. */}
-            <Virtuoso
-              style={{ height: 'calc(100% - 40px)', minHeight: 120 }}
-              data={results}
-              overscan={100}
-              itemContent={(index, r) => {
-                const filePath = r.file.path;
-                const isOpen = expanded.has(filePath);
+            <div className="min-h-0 flex-1">
+              <Virtuoso
+                style={{ height: '100%' }}
+                data={results}
+                overscan={100}
+                itemContent={(index, r) => {
+                  const filePath = r.file.path;
+                  const isOpen = expanded.has(filePath);
 
-                return (
-                  <div key={filePath} className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
-                    <button
-                      type="button"
-                      onClick={() => toggleExpanded(filePath)}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors"
-                      title={filePath}
-                    >
-                      {isOpen ? (
-                        <ChevronDown className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
-                      ) : (
-                        <ChevronRight className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+                  return (
+                    <div key={filePath} className="border-t" style={{ borderColor: 'var(--border-subtle)' }}>
+                      <button
+                        type="button"
+                        onClick={() => toggleExpanded(filePath)}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors"
+                        title={filePath}
+                      >
+                        {isOpen ? (
+                          <ChevronDown className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+                        ) : (
+                          <ChevronRight className="w-4 h-4" style={{ color: 'var(--text-muted)' }} />
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[12px] truncate" style={{ color: 'var(--text-primary)' }}>{r.file.name}</div>
+                          <div className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{filePath}</div>
+                        </div>
+                        <div className="text-[10px] rounded-full px-2 py-0.5" style={{ color: 'var(--text-secondary)', background: 'color-mix(in srgb, var(--text-primary) 8%, transparent)' }}>{r.matchCount}</div>
+                      </button>
+
+                      {isOpen && (
+                        <div className="pb-2">
+                          {r.matches.map((m) => (
+                            <button
+                              key={`${filePath}:${m.lineNumber}`}
+                              type="button"
+                              className="w-full px-8 py-1.5 text-left text-[11px] transition-colors hover:opacity-80"
+                              style={{ color: 'var(--text-primary)' }}
+                              onClick={() => openFile(r.file)}
+                              title={`Line ${m.lineNumber}`}
+                            >
+                              <span className="inline-block w-14" style={{ color: 'var(--text-muted)' }}>{m.lineNumber}</span>
+                              <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{renderHighlightedPreview(m.preview, query)}</span>
+                            </button>
+                          ))}
+                        </div>
                       )}
-                      <div className="flex-1 min-w-0">
-                        <div className="text-[12px] truncate" style={{ color: 'var(--text-primary)' }}>{r.file.name}</div>
-                        <div className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{filePath}</div>
-                      </div>
-                      <div className="text-[10px] rounded-full px-2 py-0.5" style={{ color: 'var(--text-secondary)', background: 'color-mix(in srgb, var(--text-primary) 8%, transparent)' }}>{r.matchCount}</div>
-                    </button>
-
-                    {isOpen && (
-                      <div className="pb-2">
-                        {r.matches.map((m) => (
-                          <button
-                            key={`${filePath}:${m.lineNumber}`}
-                            type="button"
-                            className="w-full px-8 py-1.5 text-left text-[11px] transition-colors hover:opacity-80"
-                            style={{ color: 'var(--text-primary)' }}
-                            onClick={() => openFile(r.file)}
-                            title={`Line ${m.lineNumber}`}
-                          >
-                            <span className="inline-block w-14" style={{ color: 'var(--text-muted)' }}>{m.lineNumber}</span>
-                            <span className="font-mono" style={{ color: 'var(--text-primary)' }}>{renderHighlightedPreview(m.preview, query)}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              }}
-            />
+                    </div>
+                  );
+                }}
+              />
+            </div>
           </Section>
         )}
       </div>

@@ -8,6 +8,53 @@ from typing import Dict, List, Set
 from analyzer.baseAnalyzer import BaseAnalyzer
 from analyzer.utils import make_diag, CodeFix
 
+# The terminators healing rule already knows how to detect missing
+# semicolons across all C-style languages. We surface its fixes as
+# diagnostics here so the frontend healing pipeline (which expects fixes
+# attached to diagnostics) can pick them up. Without this wiring the
+# rule fires inside the healing engine but never reaches the frontend
+# because language-specific static analyzers like JavaAnalyzer don't
+# include semicolon checking themselves.
+from analyzer.proactive.healing.rules.terminators import (
+    detect_missing_terminators,
+)
+
+
+def _terminator_diags(code: str, language: str, file_path: str = "") -> List[dict]:
+    """Convert HealingFix objects from the terminators rule into
+    diagnostic dicts with an attached CodeFix so the frontend healing
+    pipeline can apply them."""
+    out: List[dict] = []
+    try:
+        fixes = detect_missing_terminators(code, language, file_path)
+    except Exception:
+        # Defensive: a broken rule must never crash an analyzer pass.
+        return out
+    for f in fixes or []:
+        out.append(
+            make_diag(
+                msg=f.description,
+                severity="error" if f.severity.value == "critical" else "warning",
+                line=f.line,
+                column=f.column,
+                end_line=f.end_line,
+                end_column=f.end_column,
+                code=f.rule_id or "TERM001",
+                fixes=[
+                    CodeFix(
+                        description=f.description,
+                        replacement_text=f.replacement_text,
+                        line=f.line,
+                        column=f.column,
+                        end_line=f.end_line,
+                        end_column=f.end_column,
+                        is_preferred=True,
+                    )
+                ],
+            )
+        )
+    return out
+
 _STRICT_EQUALITY = re.compile(r"(?<![=!])==(?!=)")
 _ANY_TYPE = re.compile(r":\s*any\b")
 _DECLARATION = re.compile(r"^(?:export\s+)?(?:const|let)\s+.+$")
@@ -499,6 +546,9 @@ class CAnalyzer(BaseAnalyzer):
         if not stripped:
             return diagnostics
 
+        # Missing semicolons: shared with all C-style langs.
+        diagnostics.extend(_terminator_diags(code, self.language))
+
         if _C_PRINTF.search(code) and _C_STDIO not in code:
             diagnostics.append(
                 make_diag(
@@ -541,6 +591,8 @@ class JavaAnalyzer(BaseAnalyzer):
 
     def analyze(self, code: str):
         diagnostics: List[dict] = []
+        # Missing semicolons / brackets: shared with all C-style langs.
+        diagnostics.extend(_terminator_diags(code, self.language))
         lines = code.splitlines()
         for i, line in enumerate(lines):
             if "System.out.println" in line and "//" not in line:

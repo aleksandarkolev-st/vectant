@@ -74,7 +74,7 @@ export function createClassicLayout() {
     layout,
     createTab({
       panelType: IDE_PANEL.EDITOR,
-      title: "Editor",
+      title: "",
       closable: false,
     }),
   );
@@ -160,7 +160,7 @@ export function createFocusLayout() {
     layout,
     createTab({
       panelType: IDE_PANEL.EDITOR,
-      title: "Editor",
+      title: "",
       closable: false,
     }),
   );
@@ -317,7 +317,7 @@ export function createAIAssistedLayout() {
     layout,
     createTab({
       panelType: IDE_PANEL.EDITOR,
-      title: "Editor",
+      title: "",
       closable: false,
     }),
   );
@@ -433,7 +433,7 @@ export function createThreeColumnLayout() {
     layout,
     createTab({
       panelType: IDE_PANEL.EDITOR,
-      title: "Editor",
+      title: "",
       closable: false,
     }),
   );

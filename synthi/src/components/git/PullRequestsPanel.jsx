@@ -309,17 +309,16 @@ export function PullRequestsPanel({ slug }) {
 
   // ── List view ────────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-full min-h-0" style={{ color: 'var(--text-primary)' }}>
-      {/* Gradient accent line */}
-      <div className="h-[2px] flex-shrink-0" style={{ background: 'linear-gradient(90deg, #6366f1, #8b5cf6, #a78bfa, transparent)' }} />
-
-      {/* Header */}
+    <div className="flex flex-col h-full min-h-0" style={{ color: 'var(--text-primary)', background: 'var(--bg-sidebar)' }}>
       <div
         className="flex items-center gap-2 px-3 py-2 border-b flex-shrink-0"
-        style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-panel)' }}
+        style={{
+          borderColor: 'var(--border-subtle)',
+          background: 'color-mix(in srgb, var(--bg-sidebar) 72%, var(--bg-editor) 28%)',
+        }}
       >
         <GitPullRequest className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--accent-primary)' }} strokeWidth={1.5} />
-        <span className="text-xs font-semibold flex-1">Pull Requests</span>
+        <span className="text-sm font-semibold flex-1">Pull Requests</span>
 
         {githubInfo && isGitHub && (
           <ProviderBadge provider={provider} owner={owner} repo={repo} htmlUrl={githubInfo.htmlUrl} />
@@ -457,20 +456,46 @@ export function PullRequestsPanel({ slug }) {
                 <AlertCircle className="w-3.5 h-3.5 inline mr-1" />{prListError}
               </div>
             ) : filteredPRs.length === 0 ? (
-              <div className="flex flex-col items-center justify-center flex-1 py-10 text-center px-4">
-                <GitPullRequest className="w-8 h-8 mb-3" style={{ color: 'var(--text-muted)', opacity: 0.3 }} />
-                <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-primary)' }}>
+              <div className="relative flex flex-col items-center justify-center flex-1 py-10 text-center px-4">
+                {/* Soft ambient brand halo — same signature treatment as Extensions */}
+                <div
+                  aria-hidden="true"
+                  className="absolute pointer-events-none"
+                  style={{
+                    width: 180,
+                    height: 180,
+                    borderRadius: '50%',
+                    background: 'radial-gradient(circle, color-mix(in srgb, var(--brand-stop-3) 14%, transparent) 0%, transparent 70%)',
+                    filter: 'blur(8px)',
+                    top: 'calc(50% - 130px)',
+                  }}
+                />
+                <div
+                  className="relative w-11 h-11 mb-3 rounded-xl flex items-center justify-center"
+                  style={{
+                    background: 'color-mix(in srgb, var(--brand-stop-3) 8%, var(--bg-elevated))',
+                    border: '1px solid color-mix(in srgb, var(--brand-stop-3) 22%, transparent)',
+                    boxShadow: '0 0 22px -4px color-mix(in srgb, var(--brand-stop-3) 28%, transparent)',
+                  }}
+                >
+                  <GitPullRequest className="w-5 h-5" style={{ color: 'var(--accent-secondary)' }} />
+                </div>
+                <p className="relative text-[13px] font-medium mb-1" style={{ color: 'var(--text-primary)' }}>
                   {searchQuery ? 'No matching pull requests' : `No ${prListState === 'all' ? '' : prListState} pull requests`}
                 </p>
                 {!searchQuery && prListState === 'open' && (
                   <>
-                    <p className="text-[10px] mb-3 max-w-[200px]" style={{ color: 'var(--text-muted)' }}>
+                    <p className="relative text-[11px] mb-4 max-w-[220px]" style={{ color: 'var(--text-muted)' }}>
                       Create a pull request to propose changes from one branch to another.
                     </p>
                     <button
                       onClick={() => setView('create')}
-                      className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition"
-                      style={{ background: 'var(--accent-primary)', color: '#fff' }}
+                      className="relative flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-[11px] font-semibold transition-all hover:-translate-y-px"
+                      style={{
+                        background: 'var(--brand-gradient-horizontal)',
+                        color: '#ffffff',
+                        boxShadow: '0 4px 16px -4px color-mix(in srgb, var(--brand-stop-3) 40%, transparent)',
+                      }}
                     >
                       <Plus className="w-3.5 h-3.5" />
                       New Pull Request
@@ -478,7 +503,7 @@ export function PullRequestsPanel({ slug }) {
                   </>
                 )}
                 {!searchQuery && prListState === 'closed' && (
-                  <p className="text-[10px] max-w-[200px]" style={{ color: 'var(--text-muted)' }}>
+                  <p className="relative text-[11px] max-w-[220px]" style={{ color: 'var(--text-muted)' }}>
                     No closed pull requests found. Try switching to "Open" or "All".
                   </p>
                 )}

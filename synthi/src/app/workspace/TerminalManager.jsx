@@ -184,37 +184,47 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
   };
 
   const header = (
-    <div className="h-10 flex items-center justify-between px-2 border-b select-none" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }} ref={dragRef}>
+    <div className="h-9 flex items-center justify-between px-2 border-b select-none" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }} ref={dragRef}>
       {/* Tabs */}
-      <div className="flex items-center gap-1 overflow-x-auto">
+      <div className="flex items-center gap-0.5 overflow-x-auto">
         {terminals.map(t => {
           const shellMeta = t.shellType ? getShellMeta(t.shellType) : null;
           return (
           <div 
             key={t.id} 
-            className={`group flex items-center gap-2 h-8 px-3 cursor-pointer transition-all duration-150 ${
-              t.id === activeId 
-                ? 'th-bg-panel' 
-                : ''
-            }`}
+            className="group relative flex items-center gap-1.5 h-7 px-2.5 cursor-pointer border-r transition-[background-color,color,opacity] duration-200"
             style={t.id === activeId 
-              ? { color: 'var(--text-primary)', borderTop: '2px solid var(--accent-primary)' }
-              : { color: 'var(--text-secondary)' }} 
+              ? {
+                  color: 'var(--text-primary)',
+                  background: 'color-mix(in srgb, var(--bg-elevated) 84%, transparent)',
+                  borderRightColor: 'var(--border-subtle)',
+                }
+              : {
+                  color: 'var(--text-secondary)',
+                  background: 'transparent',
+                  borderRightColor: 'var(--border-subtle)',
+                  opacity: 0.82,
+                }} 
             onClick={() => setActiveId(t.id)}
             onDoubleClick={() => startRenaming(t.id, t.label)}
           >
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute bottom-0 left-2.5 right-2.5 h-px origin-left transition-transform duration-200 ease-out scale-x-0 opacity-0 group-hover:scale-x-100 group-hover:opacity-100"
+              style={{ background: 'var(--brand-gradient-horizontal)' }}
+            />
             {t.isAi ? (
-              <Bot className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
+              <Bot className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
             ) : shellMeta ? (
               <span
-                className="w-4 h-4 flex items-center justify-center rounded text-[9px] font-bold flex-shrink-0"
+                className="w-3.5 h-3.5 flex items-center justify-center rounded text-[8px] font-bold flex-shrink-0"
                 style={{ background: `${shellMeta.color}20`, color: shellMeta.color }}
                 title={shellMeta.label}
               >
                 {shellMeta.icon}
               </span>
             ) : (
-              <TerminalSquare className="w-3.5 h-3.5" strokeWidth={2} />
+              <TerminalSquare className="w-3 h-3 flex-shrink-0" strokeWidth={2} />
             )}
             {editingTabId === t.id ? (
               <input
@@ -232,15 +242,15 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
                 maxLength={30}
               />
             ) : (
-              <span className="text-xs font-medium">{t.label}</span>
+              <span className="text-[11px] font-medium leading-none">{t.label}</span>
             )}
             {/* Close button - appears on hover, safe position */}
             <button 
-              className="w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/20 hover:text-[#ef4444] transition-all ml-1"
+              className="ml-0.5 w-4 h-4 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 hover:bg-[#ef4444]/18 hover:text-[#ef4444] transition-all"
               onClick={(e) => { e.stopPropagation(); closeById(t.id); }}
               title="Close Terminal"
             >
-              <X className="w-3 h-3" strokeWidth={2} />
+              <X className="w-2.5 h-2.5" strokeWidth={2} />
             </button>
           </div>
           );
@@ -259,11 +269,11 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
           </span>
         )}
         <button 
-          className="w-8 h-8 flex items-center justify-center rounded th-btn-ghost transition-colors" 
+          className="w-7 h-7 flex items-center justify-center rounded th-btn-ghost transition-colors" 
           onClick={() => addTerminal()} 
           title="New Terminal (Ctrl+Shift+`)"
         >
-          <Plus className="w-4 h-4" strokeWidth={2} />
+          <Plus className="w-3.5 h-3.5" strokeWidth={2} />
         </button>
         <ShellSelector
           onSelect={(shellKey) => addTerminal(shellKey)}
@@ -271,19 +281,19 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
           onSetDefault={(shellKey) => { setDefaultShellPref(shellKey); setStoredDefaultShell(shellKey); }}
         />
         <button 
-          className="w-8 h-8 flex items-center justify-center rounded th-btn-ghost transition-colors" 
+          className="w-7 h-7 flex items-center justify-center rounded th-btn-ghost transition-colors" 
           onClick={toggleSplit} 
           title="Split Terminal"
         >
-          <SplitSquareHorizontal className="w-4 h-4" strokeWidth={2} />
+          <SplitSquareHorizontal className="w-3.5 h-3.5" strokeWidth={2} />
         </button>
         <div className="w-px h-5 mx-1" style={{ background: 'var(--border-subtle)' }}></div>
         <button 
-          className="w-8 h-8 flex items-center justify-center rounded th-btn-ghost hover:bg-[#ef4444]/20 hover:text-[#ef4444] transition-colors" 
+          className="w-7 h-7 flex items-center justify-center rounded th-btn-ghost hover:bg-[#ef4444]/20 hover:text-[#ef4444] transition-colors" 
           onClick={handleCloseAll} 
           title="Close Terminal Panel"
         >
-          <X className="w-4 h-4" strokeWidth={2} />
+          <X className="w-3.5 h-3.5" strokeWidth={2} />
         </button>
       </div>
     </div>
