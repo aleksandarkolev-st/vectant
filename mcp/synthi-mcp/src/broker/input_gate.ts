@@ -3,6 +3,8 @@ import { leaseRegistry, type LeaseScope } from "../arbitration/lease.js";
 import type { BrokerErrorCode } from "./errors.js";
 import { brokerError } from "./errors.js";
 import type { BrokerViewport } from "./contracts.js";
+import { brokerFallbackController } from "./fallback.js";
+import { brokerRolloutController } from "./rollout.js";
 import { brokerRuntime } from "./runtime.js";
 
 export type BrokerInputMode = "shadow" | "enforce";
@@ -37,6 +39,16 @@ export async function checkBrokerInputGate(input: {
   based_on_viewport?: unknown;
   now?: number;
 }): Promise<BrokerInputGateError | null> {
+  const fallback = brokerFallbackController.current(input.attached.sessionId);
+  const route = brokerRolloutController.shouldRoute(input.attached.sessionId, "input");
+  if (fallback?.mode === "input_disabled_fallback" || route.mode === "input_disabled") {
+    return buildGateError("FORBIDDEN", input.action, {
+      reason: "input_disabled",
+      fallback_mode: fallback?.mode ?? null,
+      rollout_mode: route.mode,
+    });
+  }
+
   if (!brokerInputEnforced()) return null;
 
   const now = input.now ?? Date.now();

@@ -4,6 +4,10 @@ import { eventLog } from "../../src/events/index.js";
 import { session } from "../../src/session.js";
 import { mouseTool } from "../../src/tools/mouse.js";
 import { keyboardTool } from "../../src/tools/keyboard.js";
+import {
+  brokerFallbackController,
+  brokerRolloutController,
+} from "../../src/broker/index.js";
 
 function withBrokerInputEnforced<T>(fn: () => Promise<T>): Promise<T> {
   const prev = process.env["SYNTHI_BROKER_INPUT_MODE"];
@@ -40,6 +44,8 @@ describe("broker-enforced input gate", () => {
     session._resetForTests();
     eventLog._resetForTests();
     leaseRegistry._resetForTests();
+    brokerFallbackController.clear();
+    brokerRolloutController.clear();
   });
 
   it("requires a lease before mouse dispatch", async () => withBrokerInputEnforced(async () => {
@@ -65,6 +71,24 @@ describe("broker-enforced input gate", () => {
     expect(res.isError).toBeUndefined();
     expect(sent).toHaveLength(2);
   }));
+
+  it("blocks dispatch when input-disabled fallback is active", async () => {
+    const { sent } = installFakeAttached();
+    const fallback = brokerFallbackController.apply({
+      session_id: "fake",
+      mode: "input_disabled_fallback",
+      reason: "canary rollback",
+      operator_id: "admin",
+    });
+    expect(fallback.ok).toBe(true);
+
+    const res = await mouseTool({ action: "click", x: 10, y: 10, based_on_frame_seq: 10 });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { error: string; reason?: string }).error).toBe("FORBIDDEN");
+    expect((res.structuredContent as { reason?: string }).reason).toBe("input_disabled");
+    expect(sent).toHaveLength(0);
+  });
 
   it("rejects input based on a stale frame seq", async () => withBrokerInputEnforced(async () => {
     const { sent } = installFakeAttached({ seq: 10, ts: Date.now() });
