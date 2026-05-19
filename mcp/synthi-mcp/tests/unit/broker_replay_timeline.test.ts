@@ -92,6 +92,36 @@ describe("broker failed-action timeline replay", () => {
     expect(timeline.entries[0]?.events.map((event) => event.kind)).toEqual(["input", "error"]);
   });
 
+  it("includes transport-stage input failures", () => {
+    const log = new EventLog();
+    log.push({
+      kind: "input",
+      action: "keyboard:type",
+      ts: 1_000,
+      payload: {
+        tool_call_id: "tc_transport",
+        session_id: "s1",
+        received_at: 990,
+        dispatched_at: 995,
+        ack_chain: {
+          transport_ack: { ack_id: "ack_tc_transport", ts: 995 },
+        },
+        detail: {
+          error_code: "INPUT_ACK_TIMEOUT",
+          reason: "data channel closed",
+        },
+      },
+    });
+
+    const timeline = queryFailedActionTimeline(log, { tool_call_id: "tc_transport", now: 2_000 });
+    expect(timeline.entries).toHaveLength(1);
+    expect(timeline.entries[0]).toMatchObject({
+      tool_call_id: "tc_transport",
+      failure_code: "INPUT_ACK_TIMEOUT",
+      failure_stage: "transport_ack",
+    });
+  });
+
   it("excludes unverified-but-successful actions and respects horizon filtering", () => {
     const log = new EventLog();
     log.push({

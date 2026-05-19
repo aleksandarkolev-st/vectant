@@ -198,6 +198,10 @@ function classifyInputFailure(
     return { code: "INPUT_ACK_TIMEOUT", stage: "browser_ack" };
   }
   const detail = isRecord(payload["detail"]) ? payload["detail"] : null;
+  const detailErrorCode = detail ? stringOrNull(detail["error_code"]) : null;
+  if (detailErrorCode && ackChain && isRecord(ackChain["transport_ack"]) && !browserAck) {
+    return { code: detailErrorCode, stage: "transport_ack" };
+  }
   const postcondition = detail && isRecord(detail["postcondition"]) ? detail["postcondition"] : null;
   if (postcondition?.["supported"] === false) {
     return { code: "UNSUPPORTED_POSTCONDITION_TYPE", stage: "postcondition" };
