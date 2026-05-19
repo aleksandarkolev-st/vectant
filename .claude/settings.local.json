@@ -87,7 +87,17 @@
       "Bash(node observe-workspace.mjs)",
       "Bash(curl -s \"http://localhost:3001/_next/static/chunks/_app-pages-browser_src_app_globals_css.css\")",
       "Bash(grep -n \"displayName\\\\|tab.title\\\\|panel.title\\\\|tab\\\\\\\\.label\" \"/c/Users/HP/source/repos/synthi-ide/synthi/src/components/docking-wm/components/Tab.jsx\")",
-      "Bash(node observe-mobile.mjs)"
+      "Bash(node observe-mobile.mjs)",
+      "Bash(claude plugin *)",
+      "WebFetch(domain:github.com)",
+      "Bash(npx *)",
+      "Bash(findstr /r \"h-[0-9]\" app\\\\workspace\\\\*.jsx)",
+      "Bash(git commit *)",
+      "Bash(git log *)",
+      "Bash(docker version *)",
+      "Bash(tasklist)",
+      "Bash(tasklist *)",
+      "PowerShell(Get-Process *)"
     ]
   }
 }

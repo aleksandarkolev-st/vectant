@@ -2931,12 +2931,6 @@ export default function EditorPage({ params }) {
         }
     }, [ensureDockedChatRight]);
 
-    const onToggleTerminalCb = useCallback(() => {
-        dispatch(toggleTerminal());
-        if (USE_DOCKING_WM && dockingHandlers?.terminal) {
-            dockingHandlers.terminal();
-        }
-    }, [dispatch, dockingHandlers]);
     const onProblemsClickCb = useCallback(() => setShowProblemsPanel(prev => !prev), []);
 
     // ── Floating emulator window (renders outside the panel layout)

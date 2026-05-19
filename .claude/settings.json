@@ -3,7 +3,12 @@
     "allow": [
       "Bash(cat /c/Users/HP/AppData/Local/Temp/claude/c--Users-HP-source-repos-synthi-ide/921ed67d-5053-49ea-bfec-96d41965a1b1/tasks/bq6w01e9e.output 2>&1 | tail -20; echo \"----\"; ls /c/Users/HP/AppData/Local/ms-playwright 2>&1 | head -5)",
       "Read(//c/Users/HP/AppData/Local/Temp/claude/c--Users-HP-source-repos-synthi-ide/921ed67d-5053-49ea-bfec-96d41965a1b1/tasks/**)",
-      "Bash(node observe.mjs)"
+      "Bash(node observe.mjs)",
+      "Bash(docker info *)",
+      "Bash(awk 'NR>=320 && NR<=330' \"synthi/src/app/workspace/TopNav.jsx\")",
+      "Bash(awk 'NR>=85 && NR<=160')",
+      "Bash(awk 'NR>=89 && NR<=323' \"synthi/src/app/workspace/TopNav.jsx\")",
+      "Bash(awk 'NR>=89 && NR<=325' \"synthi/src/app/workspace/TopNav.jsx\")"
     ]
   }
 }

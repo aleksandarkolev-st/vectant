@@ -248,14 +248,14 @@ services:
     build:
       context: ./backend/synthi-webrtc-compiler/worker
       dockerfile: Dockerfile
+      args:
+        WORKER_CARGO_FEATURES: "gpu-hmr"
     # If the worker process dies (e.g. an unhandled panic, or an X11 IO
     # handler trip during reset tear-down) we want the container to come
     # back up automatically, the same way every other service in this
     # compose file does. Without this the worker stays dead and every
     # subsequent compile silently hangs.
     restart: unless-stopped
-      args:
-        WORKER_CARGO_FEATURES: "gpu-hmr"
     environment:
       # No SESSION_ID → worker registers as "__legacy__" in signaling server,
       # which lets it accept ANY browser session (local-dev single-worker mode).
