@@ -958,9 +958,12 @@ async function persistGeneratedSplitToWorkspace(split) {
 
 function editGeneratedDevice(source) {
   const replacements = [
+    [/__constant__\s+int\s+kHmrScaleColorBias\s*=\s*0\s*;/, '__constant__ int kHmrScaleColorBias = 3;'],
+    [/__constant__\s+float\s+kHmrScaleColorBias\s*=\s*0(?:\.0f?)?\s*;/, '__constant__ float kHmrScaleColorBias = 3.0f;'],
     [/constexpr\s+int\s+kHmrScaleColorBias\s*=\s*0\s*;/, 'constexpr int kHmrScaleColorBias = 3;'],
     [/const\s+int\s+kHmrScaleColorBias\s*=\s*0\s*;/, 'const int kHmrScaleColorBias = 3;'],
     [/kHmrScaleColorBias\s*=\s*0/g, 'kHmrScaleColorBias = 3'],
+    [/__constant__\s+float\s+kHmrScaleDirection\s*=\s*1\.0f\s*;/, '__constant__ float kHmrScaleDirection = -1.0f;'],
     [/constexpr\s+float\s+kHmrScaleDirection\s*=\s*1\.0f\s*;/, 'constexpr float kHmrScaleDirection = -1.0f;'],
     [/const\s+float\s+kHmrScaleDirection\s*=\s*1\.0f\s*;/, 'const float kHmrScaleDirection = -1.0f;'],
     [/float\s+direction\s*=\s*1\.0f\s*;/, 'float direction = -1.0f;'],
