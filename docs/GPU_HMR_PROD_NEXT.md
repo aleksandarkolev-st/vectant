@@ -144,6 +144,7 @@ Not allowed:
 
 If any gate fails, fall back to:
 
+- warm deterministic rebuild/relink
 - mixed reload
 - cold runner restart
 - AI delta patch
@@ -165,7 +166,7 @@ Every run should produce a machine-readable reload plan:
     "abi.constant_layout_unchanged",
     "build.device_sidecar_only"
   ],
-  "fallbacksAvailable": ["ai_delta", "full_resplit", "cold_restart"],
+  "fallbacksAvailable": ["warm_rebuild", "ai_delta", "full_resplit", "cold_restart"],
   "affectedUserFiles": ["src/gpu/raster.hip"],
   "affectedGeneratedRoles": ["device.hip"],
   "timingsMs": {
@@ -249,6 +250,7 @@ same target and same source hashes
 changed user files
   -> local classifier
   -> direct deterministic patch if provably safe
+  -> warm deterministic rebuild/relink if proof is safe but patch is not local
   -> otherwise agentic delta/verify loop
   -> compile
   -> verifier gates
@@ -281,6 +283,11 @@ changed .cu/.hip file
 
 Direct `device_only` remains non-agentic for the fast path. It uses local
 mapping and deterministic verification. AI only enters when local proof fails.
+
+Warm rebuild/relink is the middle path. It is deterministic and non-agentic,
+but broader than a local generated-span patch. Use it when the edit is safe
+only after rebuilding an affected host/device role, relinking a sidecar, or
+restarting a narrow part of the runner without performing a full AI re-split.
 
 ## 6. Agentic Split/Verify Orchestrator
 
@@ -320,7 +327,10 @@ Proposal and repair actors:
 - Mapping Agent: proposes user-to-generated symbol/span mappings
 - Compile Repair Agent: fixes generated-role compile failures only
 - Delta Patch Agent: patches generated roles after user edits when local
-  patching cannot prove safety
+  patching cannot prove safety. It must use the split architecture overview,
+  generated role manifest, user delta, user-to-generated mappings, current
+  generated role contents, compile manifest, reload plan, and verifier/build
+  feedback to choose the affected generated module or modules.
 
 Deterministic pipeline components:
 
@@ -329,8 +339,8 @@ Deterministic pipeline components:
 - Context Planner: selects source files and records inclusion/omission reasons
 - Verifier Orchestrator: runs schema, mapping, ABI, compile, artifact, and
   runtime/frame verifiers
-- Reload Planner: chooses `device_only`, `host_only`, `mixed`, `abi_breaking`,
-  `full_resplit`, or `unsupported`
+- Reload Planner: chooses `device_only`, `host_only`, `warm_rebuild`, `mixed`,
+  `abi_breaking`, `full_resplit`, or `unsupported`
 - Artifact Inspector: checks generated files, symbols, reports, screenshots,
   and runner state
 
@@ -356,6 +366,27 @@ The agent may not:
 - write generated roles into the user workspace
 - silently fall back to full re-split
 - mutate user source
+
+### AI Delta Is Architecture-Aware Generated-Module Patching
+
+AI delta is not generic text replacement and not a mechanical replay of the
+user edit. It is an architecture-aware patch over internal generated roles.
+
+The delta agent receives:
+
+- architectural overview of the split
+- generated role manifest
+- user-to-generated symbol/span mappings
+- changed user delta
+- current generated role contents and hashes
+- compile manifest and device-link metadata
+- current reload plan attempt
+- verifier/build/runtime failure feedback
+
+It may patch `device`, `shared`, `core`, `gui`, `host_runner`, or multiple
+roles when the architectural delta requires it. The accepted patch is still
+decided by deterministic schema, mapping, ABI, compile, artifact, and runtime
+verifiers.
 
 ### Agentic Output Is Never Trusted Directly
 
@@ -464,8 +495,12 @@ These fields should be allowed but not required for Milestone 1:
 - multi-TU device role list
 - CMake codemodel hashes
 - device-link graph
+- global device symbol table hash
+- header dependency graph hash
+- template instantiation evidence
 - full source context report
 - runner isolation metadata
+- runtime memory arena statistics
 
 ### Milestone 0.5 Agentic Fields
 
@@ -639,6 +674,23 @@ Use for:
 - changes to generated `shared.h` equivalent
 - changes touching both render loop and kernel dispatch
 
+### `warm_rebuild`
+
+Use for:
+
+- device-reachable header/helper edits with bounded affected roles
+- template body edits with known affected instantiations
+- safe host/device role rebuilds that do not require AI re-split
+- sidecar relink when device-link topology is known and ABI is unchanged
+
+Required gates:
+
+- affected source/include graph is bounded
+- affected generated roles are known
+- template instantiation set is known or safely bounded
+- vendor compiler artifact checks pass
+- runner can reload or narrowly restart the affected artifact
+
 ### `abi_breaking`
 
 Use for:
@@ -708,6 +760,36 @@ For HIP, use the same principle. HIP code must be compiled for a specific AMD
 GPU architecture, and `hipcc` invokes `amdclang++` while passing required
 options through. Missing flags can change parse results and codegen behavior.
 
+### Header And Template Dependency Reality
+
+The fast path must assume large GPU projects are header-heavy. Kernels are often
+built from inline helpers, templates, `.cuh` files, and shared `.hpp` headers,
+not only from a single `.cu` or `.hip` body.
+
+Header edits are eligible for `device_only` only when the system can prove all
+of these:
+
+- the changed header is in the selected target's device include graph
+- every affected kernel/helper mapping is known
+- every affected generated role is known
+- every relevant template instantiation is known or safely bounded
+- signature, launch ABI, constant/global layout, and shared struct layout are
+  unchanged after recompilation
+- vendor compiler artifact checks pass
+
+If the dependency ripple cannot be bounded, reject the direct fast path. Choose
+one of:
+
+- warm deterministic rebuild/relink of affected roles
+- AI delta/verify loop
+- full re-split
+- unsupported with a specific dependency reason
+
+Template-heavy code such as Thrust, CUTLASS-style kernels, or project-local
+template metaprogramming needs explicit instantiation evidence. The AI may help
+explain or repair generated artifacts, but it may not guess which template
+instantiations are ABI-relevant.
+
 ### Fast Path Separation
 
 Direct device path:
@@ -720,6 +802,15 @@ Direct device path:
 AI delta path:
 
 - used when mapping exists but local patch cannot prove safe
+- architecture-aware patching of generated role modules
+- still verifier-gated
+
+Warm deterministic path:
+
+- no AI
+- used when a local span patch is insufficient but the affected rebuild/relink
+  set is known
+- may rebuild affected generated host/device roles or relink a sidecar
 - still verifier-gated
 
 Full re-split:
@@ -759,6 +850,8 @@ Reject `device_only` when any of these are true:
 - edit changes shared host/device struct definition
 - edit changes launch grid/block logic in host code
 - edit changes included header that affects multiple mapped kernels
+- header dependency impact cannot be bounded
+- template instantiations cannot be enumerated or safely bounded
 - parser cannot build a reliable before/after tree
 - required compile metadata is incomplete
 
@@ -888,6 +981,8 @@ Large repositories need a context engine.
 - CMake File API target graph
 - include graph
 - device symbol graph
+- global device symbol table
+- template instantiation graph where available
 - kernel launch graph
 - render/backend files
 - state type definitions
@@ -919,6 +1014,9 @@ Large repositories need a context engine.
 - all omitted files have reasons
 - same repo state produces same context
 - prompt budget overflow produces a structured error or safe summarization
+- header dependency edits produce a bounded affected-file/affected-role report
+- template-heavy edits are either backed by instantiation evidence or rejected
+  from the direct fast path
 
 ## 12. Multi Device Translation Unit Support
 
@@ -929,6 +1027,7 @@ The current one-device-role model will become brittle.
 - one generated device role per source device TU where possible
 - device headers preserved as internal generated headers
 - kernel-to-TU mapping persisted
+- global device symbol table across device TUs
 - per-TU compile cache
 - device-link bundle only when project requires RDC
 - affected-TU reload when ABI permits
@@ -944,6 +1043,7 @@ RDC mode:
 
 - compile affected role with relocatable device code
 - run device-link step for required bundle
+- resolve missing device symbols through the global device symbol table
 - reload linked artifact
 
 Unsupported:
@@ -960,13 +1060,32 @@ Unsupported:
 
 - compile affected bitcode/object
 - relink device image/fat binary as needed
+- resolve missing device symbols through the global device symbol table
 - reload affected bundle
+
+### Device-Link Repair Scope
+
+RDC/device-link failures are dependency failures, not ordinary syntax errors.
+When `nvlink`, HIP device linking, or vendor link steps fail because a symbol is
+missing from another translation unit, the repair loop needs a global symbol
+table to identify the owner TU, required include, declaration, or bundle
+membership.
+
+If the system cannot map the missing device symbol to a source TU and generated
+role, return:
+
+```text
+unsupported.device_link_symbol_unresolved
+```
+
+Do not let the repair agent guess cross-TU ownership.
 
 ### Acceptance Criteria
 
 - multiple user `.cu` / `.hip` files do not flatten into one generated file
 - editing one kernel body recompiles only the affected TU when safe
 - RDC projects have explicit device-link behavior
+- device-link failures include missing symbol, owner TU, and fallback reason
 - unsupported device-link cases fall back clearly
 
 ## 13. ABI And State Verifier
@@ -992,6 +1111,27 @@ The verifier is the safety core.
 CUDA variable specifiers such as `__device__`, `__constant__`, `__managed__`,
 and `__shared__` affect memory placement, so constant and device-global
 declarations must be treated as ABI/layout inputs, not ordinary body text.
+
+### Native Compiler Is The Final Authority
+
+Clang parsing is useful for source classification, but it is not enough to
+certify CUDA safety. NVCC has dialect details, proprietary attributes and
+macros such as `__launch_bounds__`, and template-instantiation behavior that
+can differ from Clang.
+
+For CUDA, a Clang AST match is only a candidate proof. `device_only` acceptance
+must be backed by the actual selected vendor compiler path where possible:
+
+- NVCC compile for CUDA projects
+- `hipcc`/`amdclang++` compile for HIP projects
+- emitted symbol/mangled-name comparison
+- constant/global symbol inspection
+- parameter size/alignment comparison
+- device-link result when RDC is enabled
+
+If the source parser says "safe" but the vendor compiler artifact does not
+confirm the same ABI/layout facts, reject `device_only` and choose a fallback.
+This avoids false positive safety matches that can crash the runner.
 
 ### Verifier Output
 
@@ -1046,11 +1186,16 @@ Engineers need immediate cause, not raw logs.
 - `mapping_missing`
 - `abi_changed`
 - `constant_layout_changed`
+- `header_dependency_unbounded`
+- `template_instantiation_unbounded`
 - `device_compile_failed`
 - `device_link_failed`
+- `device_link_symbol_unresolved`
+- `vram_fragmented`
 - `reload_failed`
 - `runner_crashed`
 - `screenshot_not_ready`
+- `platform_isolation_unsupported`
 - `unsupported_project_shape`
 
 ### Error Card Format
@@ -1156,6 +1301,10 @@ Body-only kernel edit:
 
 - direct device patch and sidecar compile
 
+Header/template edit with bounded impact:
+
+- warm deterministic rebuild/relink of affected roles
+
 Unsafe mapped edit:
 
 - agentic AI delta/verify loop
@@ -1169,6 +1318,8 @@ Mapping failure or major structural edit:
 - cache hit/miss
 - miss reason
 - compile invalidation reason
+- header dependency invalidation reason
+- template instantiation invalidation reason
 - AI call reason
 - agentic mode and attempt count
 - verifier failure reason codes
@@ -1195,6 +1346,40 @@ Requirements:
 - crash containment
 - artifact cleanup
 - explicit unsafe/debug mode
+
+Linux isolation primitives such as cgroups and seccomp are not a complete
+product strategy. Windows GPU developers need a Windows-specific isolation
+plan.
+
+Platform requirements:
+
+- Linux: process groups, cgroups, seccomp/AppArmor where available, filesystem
+  and network policy
+- Windows: Job Objects for process and memory limits, process tree cleanup,
+  restricted tokens or AppContainer-style isolation where feasible, filesystem
+  and network policy
+- WSL/containers: clearly report which host isolation boundary is actually in
+  effect
+
+### Runtime Memory And VRAM Reload Tiers
+
+If the runtime intercepts `cudaMalloc`, `hipMalloc`, or equivalent allocator
+calls for reload safety, the memory manager is part of the HMR contract.
+
+Tier-B shadow arena behavior must track:
+
+- total reserved bytes
+- live allocation map
+- free spans
+- fragmentation ratio
+- allocation owner and generation
+- whether pointers may still be visible to host or device code
+
+If a shadow arena allocation fails despite enough total free bytes, try a
+bounded defragmentation or compaction pass only when live pointer safety is
+provable. Otherwise reject the reload and choose a safe fallback such as warm
+restart or cold runner restart. Do not promise arbitrary VRAM defragmentation
+across vendor drivers.
 
 GPU runaway handling is harder than CPU process killing. Product behavior
 should be conservative:
@@ -1232,9 +1417,14 @@ Every run should emit one structured report.
 - generatedRoles
 - compileCommands
 - deviceLinkCommands
+- deviceSymbolTableHash
+- affectedHeaderGraph
+- affectedTemplateInstantiations
 - verifierRules
 - reloadTimings
 - screenshotTimings
+- memoryArenaStats
+- isolationBackend
 - runnerPid
 - runnerExitStatus
 - crashMarkers
@@ -1398,6 +1588,8 @@ Tasks:
 - patch generated device role locally
 - verify kernel signatures
 - verify constants/device globals
+- reject unbounded header/template dependency edits from the direct fast path
+- confirm ABI/layout with selected vendor compiler artifacts where possible
 - compile device sidecar only
 - reload sidecar
 - capture screenshot
@@ -1418,6 +1610,26 @@ Done when:
 - editing a mapped kernel arithmetic expression in user `.cu` / `.hip` avoids
   AI split, avoids AI delta, avoids host rebuild, and produces a visible
   post-HMR frame
+- header/template edits without bounded dependency proof are rejected from
+  direct `device_only` with reason codes
+
+### Milestone 1.5: Warm Deterministic Rebuild/Relink Path
+
+Tasks:
+
+- add affected header/device dependency report
+- add template instantiation evidence where available
+- add global device symbol table for generated device roles
+- rebuild affected generated roles without AI when impact is bounded
+- relink affected sidecars or host/device bundles without full re-split
+- reject unbounded dependency ripples with actionable reason codes
+
+Done when:
+
+- safe header/helper edits can use a deterministic warm path instead of full AI
+  re-split
+- unsafe or unbounded header/template edits are rejected predictably
+  without pretending to be instant HMR
 
 ### Milestone 2: Build Target Integration
 
@@ -1455,6 +1667,7 @@ Tasks:
 
 - extend manifest for multiple device roles
 - support per-TU compile
+- add global device symbol table across device TUs
 - support CUDA device-link where required
 - support HIP `-fgpu-rdc` where required
 - map kernels to TUs
@@ -1504,12 +1717,16 @@ Tasks:
 - add CPU/memory/time limits
 - add filesystem isolation
 - add seccomp/AppArmor where available
+- add Windows Job Object / restricted-process isolation plan
+- add runtime allocator/shadow-arena reporting
+- add bounded VRAM defragmentation or safe fallback behavior
 - add crash cleanup
 - separate unsafe debug mode
 
 Done when:
 
-- a crashing or hostile runner cannot corrupt the supervisor
+- a crashing or hostile runner cannot corrupt the supervisor on supported
+  platforms
 
 ## 22. Updated Definition Of Production Ready
 
@@ -1520,14 +1737,16 @@ GPU HMR is production-grade only when all are true:
 3. Large repos use deterministic source graph selection.
 4. AI split, AI delta, and AI repair paths are verifier-gated.
 5. User `.cu` / `.hip` body edits use direct device-only HMR.
-6. ABI-breaking edits are blocked before unsafe reload.
-7. Multi-device-TU projects are supported or clearly rejected.
-8. Generated roles remain internal and inspectable.
-9. Every run shows which fast path was used.
-10. CUDA and ROCm pass the supported framework matrix.
-11. Failures are categorized and actionable.
-12. Native runner crashes are isolated.
-13. Validation reports are reproducible and current.
+6. Header/template edits use warm deterministic rebuild or explicit fallback.
+7. ABI-breaking edits are blocked before unsafe reload.
+8. Vendor compiler artifacts confirm ABI/layout safety where required.
+9. Multi-device-TU projects are supported or clearly rejected.
+10. Generated roles remain internal and inspectable.
+11. Every run shows which fast path was used.
+12. CUDA and ROCm pass the supported framework matrix.
+13. Failures are categorized and actionable.
+14. Native runner crashes are isolated on supported platforms.
+15. Validation reports are reproducible and current.
 
 ## 23. Recommended Immediate Task
 
@@ -1558,6 +1777,20 @@ user edits src/gpu/*.hip or src/gpu/*.cu
   -> emit reload report
 ```
 
+Step 3: add the warm deterministic rebuild/relink path for bounded
+header/template dependency edits:
+
+```text
+user edits device-reachable .cuh/.hpp helper
+  -> compute affected header/device dependency graph
+  -> enumerate affected mappings and template instantiations where possible
+  -> rebuild/relink affected generated roles without AI
+  -> verify vendor compiler artifacts
+  -> reload or choose explicit fallback
+```
+
 Do not start with multi-TU or full CMake generality. Start with one target and
 one device TU, but build the metadata and verifier as if multi-TU will arrive
 next. Direct body-only edits should stay non-agentic when local proof succeeds.
+Header/template edits should not be sold as instant HMR unless their dependency
+ripple is bounded and verified.
