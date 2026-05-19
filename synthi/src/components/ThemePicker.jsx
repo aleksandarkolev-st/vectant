@@ -184,11 +184,24 @@ function ThemePickerOverlay({ onClose }) {
       dispatch(clearPreview());
       setPreviewingThemeId(null);
     };
+    // While previewing, the overlay sets pointerEvents:'none', so the row's
+    // onContextMenu handler no longer catches the release-time contextmenu
+    // event — block it at the window in the capture phase instead, and stop
+    // propagation so custom in-app context menu handlers do not run either.
+    const blockContextMenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') {
+        e.stopImmediatePropagation();
+      }
+    };
     window.addEventListener('mouseup', stop);
     window.addEventListener('blur', stop);
+    window.addEventListener('contextmenu', blockContextMenu, true);
     return () => {
       window.removeEventListener('mouseup', stop);
       window.removeEventListener('blur', stop);
+      window.removeEventListener('contextmenu', blockContextMenu, true);
     };
   }, [previewingThemeId, dispatch]);
 
@@ -212,6 +225,8 @@ function ThemePickerOverlay({ onClose }) {
     if (targetList.length === 0) return;
     setColumn(target);
     setSelectedIdx(0);
+    // Keep keyboard navigation alive when this is invoked from a header click.
+    inputRef.current?.focus();
   }, [darkThemes, lightThemes]);
 
   // ── Keyboard navigation ──────────────────────────────────
@@ -505,13 +520,26 @@ function ThemePickerOverlay({ onClose }) {
 
         {/* Footer hints */}
         <div
-          className="flex items-center justify-between px-3 py-1 text-[10px]"
+          className="flex items-center justify-between gap-3 px-3 py-1 text-[10px]"
           style={{
             borderTop: '1px solid var(--border-subtle)',
             color: 'var(--text-muted)',
           }}
         >
-          <span>↑↓ Navigate &middot; ←→ Switch column &middot; Right-click hold to preview &middot; Enter Confirm &middot; Esc Cancel</span>
+          <span className="flex items-center gap-1 flex-wrap">
+            <span>↑↓ Navigate &middot; ←→ Switch column &middot;</span>
+            <span
+              className="font-semibold px-1.5 py-0.5 rounded"
+              style={{
+                color: 'var(--accent-primary)',
+                background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--accent-primary) 35%, transparent)',
+              }}
+            >
+              Hold right-click to preview
+            </span>
+            <span>&middot; Enter Confirm &middot; Esc Cancel</span>
+          </span>
           <span>Ctrl+K Ctrl+T</span>
         </div>
       </div>
