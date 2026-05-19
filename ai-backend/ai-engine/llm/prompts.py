@@ -3976,12 +3976,33 @@ non-black representation that covers hundreds of pixels on the first frame.
 Never call `SDL_RenderPresent`; the runner presents automatically after
 `gui_on_render` returns.
 
+For particle-like SDL output, this shape is acceptable and should be preferred
+over point drawing:
+
+    SDL_SetRenderDrawColor(renderer, 10, 16, 24, 255);
+    SDL_RenderClear(renderer);
+    SDL_SetRenderDrawColor(renderer, 240, 245, 255, 255);
+    for (int i = 0; i < state->num_particles; ++i) {
+        SDL_Rect r{(int)state->particles[i].x, (int)state->particles[i].y, 4, 4};
+        SDL_RenderFillRect(renderer, &r);
+    }
+
 When a generated device kernel updates positions, colors, or other values that
 the GUI must display, keep host-visible mirror arrays in `AppState` and copy
 the device outputs back only after `synthi_gpu_launch` returns true. If the
 sidecar dispatcher is not installed yet or the launch fails, keep the previous
 host-visible mirror for that frame. Device-only HMR edits must be able to
 change what `gui_on_render` draws without changing the host ABI.
+
+Use an explicit guarded launch/readback shape, not a fire-and-forget launch:
+
+    bool launched = synthi_gpu_launch(nullptr, "update_particles", grid, block,
+                                      0, nullptr,
+                                      { &state->d_particles, &count_arg, &dt_arg });
+    if (launched) {
+        hipMemcpy(state->particles, state->d_particles, bytes,
+                  hipMemcpyDeviceToHost);
+    }
 
 Never dereference or index CUDA/HIP device pointers in `gui_on_render`.
 Pointers named like `d_particles`, `device_x`, or other cudaMalloc/hipMalloc
@@ -4002,6 +4023,24 @@ through a dedicated init/seed kernel launched from `core_on_update`. Track a
 returns true; only then run the update kernel and copy device outputs back. The
 first frame must have on-screen, non-overlapping data from the host mirrors,
 not uninitialized zeros or offscreen values.
+
+A valid update shape is:
+
+    if (!state->device_initialized) {
+        bool initialized = synthi_gpu_launch(nullptr, "init_particles", grid,
+                                             block, 0, nullptr,
+                                             { &state->d_particles, &count_arg });
+        if (initialized) state->device_initialized = true;
+        return;
+    }
+
+    bool updated = synthi_gpu_launch(nullptr, "update_particles", grid, block,
+                                     0, nullptr,
+                                     { &state->d_particles, &count_arg, &dt_arg });
+    if (updated) {
+        hipMemcpy(state->particles, state->d_particles, bytes,
+                  hipMemcpyDeviceToHost);
+    }
 
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 

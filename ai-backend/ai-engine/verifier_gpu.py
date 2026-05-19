@@ -141,7 +141,7 @@ _GPU_INIT_KERNEL_LAUNCH_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _SYNTHI_LAUNCH_RESULT_CHECK_RE = re.compile(
-    r"(?:\bif\s*\(\s*synthi_gpu_launch\s*\(|\b(?:bool|auto)\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*synthi_gpu_launch\s*\()",
+    r"(?:\bif\s*\(\s*synthi_gpu_launch\s*\(|\b(?:const\s+)?(?:bool|auto)(?:\s+const)?\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*synthi_gpu_launch\s*\()",
     re.DOTALL,
 )
 _GUI_HOST_MIRROR_INDEX_RE = re.compile(r"(?:->|\.)\s*(?P<name>h_[A-Za-z_][A-Za-z0-9_]*)\s*\[")
@@ -761,7 +761,9 @@ def verify_split_output(
                     "result of synthi_gpu_launch. If the sidecar dispatcher is "
                     "not installed or the launch fails, keep the previous "
                     "host-visible mirror instead of immediately calling "
-                    "cudaMemcpy/hipMemcpy and blocking the preview."
+                    "cudaMemcpy/hipMemcpy and blocking the preview. Use "
+                    "`bool launched = synthi_gpu_launch(...); if (launched) "
+                    "{ hipMemcpy(...DeviceToHost); }`."
                 ),
                 offending_module=core_path,
                 offending_symbol="core_on_update",
