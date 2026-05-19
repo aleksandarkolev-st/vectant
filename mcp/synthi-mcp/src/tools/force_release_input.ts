@@ -1,5 +1,7 @@
 import { session } from "../session.js";
-import { leaseRegistry, resolveLeaseOwner } from "../arbitration/lease.js";
+import { leaseRegistry } from "../arbitration/lease.js";
+import { authenticateBrokerBearer, authorizeBrokerCapability } from "../broker/auth.js";
+import { brokerError } from "../broker/errors.js";
 import {
   errorResponse,
   jsonResponse,
@@ -10,6 +12,7 @@ interface RawArgs {
   lease_id?: unknown;
   reason?: unknown;
   forced_by?: unknown;
+  broker_token?: unknown;
 }
 
 export async function forceReleaseInputTool(args: unknown): Promise<ToolResponse> {
@@ -20,8 +23,26 @@ export async function forceReleaseInputTool(args: unknown): Promise<ToolResponse
   if (typeof a.lease_id !== "string" || a.lease_id.length === 0) {
     return errorResponse("invalid_args", { field: "lease_id", expected: "non-empty string" });
   }
+
+  const auth = authenticateBrokerBearer(
+    typeof a.broker_token === "string" ? a.broker_token : undefined,
+    {
+      secret: process.env["SYNTHI_BROKER_AUTH_SECRET"],
+      issuer: process.env["SYNTHI_BROKER_AUTH_ISSUER"],
+      audience: process.env["SYNTHI_BROKER_AUTH_AUDIENCE"],
+    }
+  );
+  if (!auth.ok) return errorResponse(auth.error.error, auth.error as unknown as Record<string, unknown>);
+  const capability = authorizeBrokerCapability(auth.principal, "force_release_lease");
+  if (capability) return errorResponse(capability.error.error, capability.error as unknown as Record<string, unknown>);
+  if (a.forced_by !== undefined && a.forced_by !== auth.principal.subject) {
+    return errorResponse("FORBIDDEN", brokerError("FORBIDDEN", {
+      reason: "forced_by_mismatch",
+    }) as unknown as Record<string, unknown>);
+  }
+
   const reason = typeof a.reason === "string" && a.reason.length > 0 ? a.reason : "admin_force_release";
-  const forcedBy = typeof a.forced_by === "string" && a.forced_by.length > 0 ? a.forced_by : resolveLeaseOwner();
+  const forcedBy = auth.principal.subject;
   const result = leaseRegistry.forceRelease(a.lease_id, forcedBy, reason);
   session.touch();
   if (!result.ok) return errorResponse(result.error, { lease_id: a.lease_id });

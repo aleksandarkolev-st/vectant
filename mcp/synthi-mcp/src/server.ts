@@ -665,9 +665,10 @@ const TOOLS = [
       properties: {
         lease_id: { type: "string", description: "Lease id returned by synthi_acquire_input." },
         reason: { type: "string", description: "Audit reason for the forced release." },
-        forced_by: { type: "string", description: "Optional operator id; defaults to server-derived agent subject." },
+        broker_token: { type: "string", description: "Signed broker bearer token for an admin principal." },
+        forced_by: { type: "string", description: "Deprecated operator id override; when supplied, it must match the authenticated admin subject." },
       },
-      required: ["lease_id"],
+      required: ["lease_id", "broker_token"],
     },
   },
   {
