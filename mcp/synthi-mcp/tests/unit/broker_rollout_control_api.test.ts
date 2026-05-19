@@ -22,6 +22,11 @@ const adminPrincipal: BrokerPrincipal = {
   role: "admin",
 };
 
+const otherInputPrincipal: BrokerPrincipal = {
+  ...inputPrincipal,
+  subject: "other-agent",
+};
+
 describe("broker rollout controls", () => {
   beforeEach(() => {
     brokerAuditLog._resetForTests();
@@ -164,6 +169,39 @@ describe("broker control API lease and fallback contracts", () => {
       reason: "human_takeover",
     });
     expect(forced.ok).toBe(true);
+  });
+
+  it("rejects renew and release attempts from non-owner principals", () => {
+    const control = new BrokerControlPlane(new EventLog());
+    const lease = control.acquireLease({
+      principal: inputPrincipal,
+      session_id: "s1",
+      scope: ["keyboard"],
+      idempotency_key: "k1",
+    });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected acquire failure");
+
+    const renewedByOther = control.renewLease({
+      principal: otherInputPrincipal,
+      lease_id: lease.lease_id,
+      extend_ms: 1_000,
+      idempotency_key: "k2",
+    });
+    expect(renewedByOther.ok).toBe(false);
+    if (renewedByOther.ok) throw new Error("unexpected renew success");
+    expect(renewedByOther.error.error).toBe("FORBIDDEN");
+    expect(renewedByOther.error.detail?.["reason"]).toBe("lease_owner_mismatch");
+
+    const releasedByOther = control.releaseLease({
+      principal: otherInputPrincipal,
+      lease_id: lease.lease_id,
+      idempotency_key: "k3",
+    });
+    expect(releasedByOther.ok).toBe(false);
+    if (releasedByOther.ok) throw new Error("unexpected release success");
+    expect(releasedByOther.error.error).toBe("FORBIDDEN");
+    expect(leaseRegistry.snapshot().some((entry) => entry.lease_id === lease.lease_id)).toBe(true);
   });
 
   it("requires admin role for fallback controls", () => {

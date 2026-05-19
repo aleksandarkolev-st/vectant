@@ -145,6 +145,8 @@ export class BrokerControlPlane {
     const replay = this.idempotency.lookup({ scope, idempotency_key: input.idempotency_key, payload });
     if (replay.status === "conflict") return { ok: false, error: brokerError("IDEMPOTENCY_CONFLICT") };
     if (replay.status === "replay") return replay.record.response as { ok: true; lease_id: string; expires_at_ms: number };
+    const ownerError = this.requireLeaseOwner(input.lease_id, input.principal.subject);
+    if (ownerError) return { ok: false, error: ownerError };
     const renewed = leaseRegistry.renew(input.lease_id, payload.extend_ms);
     if (!renewed.ok) return { ok: false, error: brokerError(renewed.error, renewed.detail) };
     const response = { ok: true as const, lease_id: renewed.lease.lease_id, expires_at_ms: renewed.lease.expires_at };
@@ -164,6 +166,8 @@ export class BrokerControlPlane {
     const replay = this.idempotency.lookup({ scope, idempotency_key: input.idempotency_key, payload });
     if (replay.status === "conflict") return { ok: false, error: brokerError("IDEMPOTENCY_CONFLICT") };
     if (replay.status === "replay") return replay.record.response as { ok: true; released: boolean; reason?: string };
+    const ownerError = this.requireLeaseOwner(input.lease_id, input.principal.subject);
+    if (ownerError) return { ok: false, error: ownerError };
     const released = leaseRegistry.release(input.lease_id);
     const response = released.not_found
       ? { ok: true as const, released: false, reason: "already_expired" }
@@ -319,5 +323,17 @@ export class BrokerControlPlane {
 
   private scope(principal: BrokerPrincipal, endpoint: string, sessionId: string): string {
     return `${principalKey(principal)}:${endpoint}:${sessionId}`;
+  }
+
+  private requireLeaseOwner(leaseId: string, subject: string): BrokerErrorPayload | null {
+    const lease = leaseRegistry.snapshot().find((item) => item.lease_id === leaseId);
+    if (lease && lease.owner !== subject) {
+      return brokerError("FORBIDDEN", {
+        reason: "lease_owner_mismatch",
+        lease_id: leaseId,
+        lease_owner: lease.owner,
+      });
+    }
+    return null;
   }
 }
