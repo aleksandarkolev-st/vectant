@@ -7,7 +7,6 @@
 // accept a hot-reloaded module without being killed.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 use crate::hmr::adapter_matrix::AdapterFamily;
@@ -109,10 +108,7 @@ pub fn check_hmr_eligibility(input: &EligibilityInput) -> HmrEligibility {
 
     // 4. Per-family kill switch
     if input.rollout_flags.is_family_killed_str(family_str) {
-        return HmrEligibility::blocked(format!(
-            "HMR killed for adapter family {}",
-            family_str
-        ));
+        return HmrEligibility::blocked(format!("HMR killed for adapter family {}", family_str));
     }
 
     // 5. Tier0 = no HMR
@@ -163,7 +159,15 @@ mod tests {
     use crate::hmr::rollout_flags::RolloutFlags;
 
     fn test_manifest(family: &str, tier: u8) -> BuildManifest {
-        BuildManifest::new("p1", "rust", family, tier, BuildSlot::Core, "/tmp/t.so", "h")
+        BuildManifest::new(
+            "p1",
+            "rust",
+            family,
+            tier,
+            BuildSlot::Core,
+            "/tmp/t.so",
+            "h",
+        )
     }
 
     #[test]

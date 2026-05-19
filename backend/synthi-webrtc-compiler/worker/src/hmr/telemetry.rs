@@ -176,7 +176,10 @@ impl HmrTelemetry {
     /// Record a rollback with its reason code.
     pub fn record_rollback(&self, reason_code: impl Into<String>) {
         let mut inner = self.inner.lock().unwrap();
-        *inner.rollback_reasons.entry(reason_code.into()).or_default() += 1;
+        *inner
+            .rollback_reasons
+            .entry(reason_code.into())
+            .or_default() += 1;
     }
 
     // ── Reporting ────────────────────────────────────────────

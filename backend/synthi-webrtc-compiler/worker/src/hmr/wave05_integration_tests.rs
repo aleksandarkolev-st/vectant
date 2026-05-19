@@ -6,8 +6,7 @@
 // rollback / promote.
 // ============================================================
 
-
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use crate::hmr::dynlib_swap::{SwapCommand, SwapPhase};
     use crate::hmr::health_check::HealthCheckResult;

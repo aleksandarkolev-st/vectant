@@ -36,20 +36,13 @@
 // the worker lib's test binary has pre-existing compile errors in
 // unrelated wave* test modules. Same strategy as phase3 / phase4 tests.
 
-use worker::hmr::edit_applier::{
-    apply_edit_list, Edit, EditList, EditOperation,
-};
+use worker::hmr::edit_applier::{apply_edit_list, Edit, EditList, EditOperation};
 
 // ============================================================
 // Helpers
 // ============================================================
 
-fn edit(
-    module: &str,
-    op: EditOperation,
-    anchor: &str,
-    content: &str,
-) -> Edit {
+fn edit(module: &str, op: EditOperation, anchor: &str, content: &str) -> Edit {
     Edit {
         module: module.to_string(),
         operation: op,
@@ -138,9 +131,19 @@ fn applies_to_host_runner_only_other_modules_unchanged() {
 #[test]
 fn applies_mixed_edit_list_across_all_four_modules() {
     let edits = vec![
-        edit("core", EditOperation::Replace, "s->frame++", "s->frame += 1"),
+        edit(
+            "core",
+            EditOperation::Replace,
+            "s->frame++",
+            "s->frame += 1",
+        ),
         edit("gui", EditOperation::Replace, "draw(s)", "render(s)"),
-        edit("shared", EditOperation::Replace, "int frame;", "long frame;"),
+        edit(
+            "shared",
+            EditOperation::Replace,
+            "int frame;",
+            "long frame;",
+        ),
         edit(
             "host_runner",
             EditOperation::Replace,
@@ -211,13 +214,27 @@ fn host_runner_edit_against_empty_host_runner_fails_loudly() {
 #[test]
 fn unknown_module_returns_error_with_edit_index() {
     let edits = vec![
-        edit("core", EditOperation::Replace, "s->frame++", "s->frame += 1"),
-        edit("nonsense_module", EditOperation::Replace, "anchor", "content"),
+        edit(
+            "core",
+            EditOperation::Replace,
+            "s->frame++",
+            "s->frame += 1",
+        ),
+        edit(
+            "nonsense_module",
+            EditOperation::Replace,
+            "anchor",
+            "content",
+        ),
     ];
     let err = apply_edit_list(&edits, CORE, GUI, SHARED, HOST_RUNNER)
         .expect_err("unknown module must return error");
     let msg = format!("{}", err);
-    assert!(msg.contains("#1"), "error must mention edit index 1: {}", msg);
+    assert!(
+        msg.contains("#1"),
+        "error must mention edit index 1: {}",
+        msg
+    );
     assert!(
         msg.contains("nonsense_module"),
         "error must name the offending module: {}",
@@ -237,8 +254,7 @@ fn missing_anchor_in_host_runner_returns_error() {
         .expect_err("missing anchor must return error");
     let msg = format!("{}", err);
     assert!(
-        msg.to_lowercase().contains("not found")
-            || msg.to_lowercase().contains("anchor"),
+        msg.to_lowercase().contains("not found") || msg.to_lowercase().contains("anchor"),
         "error should mention anchor not found: {}",
         msg
     );
@@ -250,7 +266,8 @@ fn ambiguous_anchor_in_host_runner_returns_error() {
     // twice — the Edit::apply contract requires a unique anchor and
     // must reject ambiguous ones with a clear error so the caller can
     // fall back to Tier 3 with a meaningful diagnostic.
-    let host_runner = "void on_frame() {\n    frame_count++;\n}\nvoid on_extra() {\n    frame_count++;\n}\n";
+    let host_runner =
+        "void on_frame() {\n    frame_count++;\n}\nvoid on_extra() {\n    frame_count++;\n}\n";
     let edits = vec![edit(
         "host_runner",
         EditOperation::Replace,
@@ -275,10 +292,20 @@ fn first_failing_edit_short_circuits_no_disk_write() {
     // list (we test that locally by confirming Err propagates without
     // returning a partial result).
     let edits = vec![
-        edit("core", EditOperation::Replace, "s->frame++", "s->frame += 1"),
+        edit(
+            "core",
+            EditOperation::Replace,
+            "s->frame++",
+            "s->frame += 1",
+        ),
         edit("gui", EditOperation::Replace, "missing_anchor", "anything"),
         // Third edit would succeed if reached, but should NOT be reached
-        edit("shared", EditOperation::Replace, "int frame;", "int frame; int score;"),
+        edit(
+            "shared",
+            EditOperation::Replace,
+            "int frame;",
+            "int frame; int score;",
+        ),
     ];
     let result = apply_edit_list(&edits, CORE, GUI, SHARED, HOST_RUNNER);
     assert!(result.is_err(), "second edit failure must propagate");
@@ -308,8 +335,18 @@ fn sequential_edits_to_same_module_chain_correctly() {
 #[test]
 fn sequential_edits_across_modules_are_independent() {
     let edits = vec![
-        edit("core", EditOperation::Replace, "s->frame++", "s->frame += 2"),
-        edit("host_runner", EditOperation::Replace, "800, 600", "1280, 720"),
+        edit(
+            "core",
+            EditOperation::Replace,
+            "s->frame++",
+            "s->frame += 2",
+        ),
+        edit(
+            "host_runner",
+            EditOperation::Replace,
+            "800, 600",
+            "1280, 720",
+        ),
         edit("gui", EditOperation::Replace, "draw(s)", "draw_v2(s)"),
     ];
     let (c, g, _, h) = apply_edit_list(&edits, CORE, GUI, SHARED, HOST_RUNNER).unwrap();
@@ -336,7 +373,12 @@ fn insert_after_anchor_in_host_runner_preserves_trailing() {
 #[test]
 fn delete_anchor_in_host_runner_removes_only_anchor() {
     let host_runner = "before\nDELETE_ME\nafter\n";
-    let edits = vec![edit("host_runner", EditOperation::Delete, "DELETE_ME\n", "")];
+    let edits = vec![edit(
+        "host_runner",
+        EditOperation::Delete,
+        "DELETE_ME\n",
+        "",
+    )];
     let (_, _, _, h) = apply_edit_list(&edits, CORE, GUI, SHARED, host_runner).unwrap();
     assert_eq!(h, "before\nafter\n");
 }

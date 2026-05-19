@@ -6,7 +6,6 @@
 // corrupting the deterministic pipeline.
 // ============================================================
 
-
 use crate::hmr::ai_request_contract::{AiRecommendation, AiResponse, FilePatch};
 
 /// Validation verdict.
@@ -78,17 +77,17 @@ pub fn validate_response(
     // Token usage warnings
     if let Some(ref usage) = response.tokens_used {
         if usage.total_tokens > config.token_warning_threshold {
-            warnings.push(format!(
-                "high token usage: {} tokens",
-                usage.total_tokens
-            ));
+            warnings.push(format!("high token usage: {} tokens", usage.total_tokens));
         }
     }
 
     // Validate recommendation content
     if let Some(ref rec) = response.recommendation {
         match rec {
-            AiRecommendation::HealingPatch { patches, confidence } => {
+            AiRecommendation::HealingPatch {
+                patches,
+                confidence,
+            } => {
                 if *confidence < config.min_confidence {
                     errors.push(format!(
                         "confidence {} below minimum {}",
@@ -118,7 +117,11 @@ pub fn validate_response(
                     errors.push("split suggestion has no core or gui files".into());
                 }
                 // Check for path traversal
-                for path in core_files.iter().chain(gui_files.iter()).chain(shared_files.iter()) {
+                for path in core_files
+                    .iter()
+                    .chain(gui_files.iter())
+                    .chain(shared_files.iter())
+                {
                     if path.contains("..") {
                         errors.push(format!("path traversal in split suggestion: {}", path));
                     }

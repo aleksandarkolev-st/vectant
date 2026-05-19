@@ -6,7 +6,6 @@
 // transfer, health check.  Feeds telemetry pipeline.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// A single timing measurement.

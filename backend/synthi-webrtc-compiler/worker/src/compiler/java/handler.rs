@@ -28,8 +28,7 @@ pub async fn handle_java_request(
         let has_gui_in = |s: &str| -> bool {
             s.contains("javax.swing") || s.contains("java.awt") || s.contains("javafx.")
         };
-        let has_gui = has_gui_in(&req.source)
-            || req.files.iter().any(|f| has_gui_in(&f.content));
+        let has_gui = has_gui_in(&req.source) || req.files.iter().any(|f| has_gui_in(&f.content));
         if has_gui {
             eprintln!("[Java] Auto-detected GUI imports (main or deps) — enabling GUI mode");
             req.is_gui = true;
@@ -61,7 +60,14 @@ pub async fn handle_java_request(
         .send_text(serde_json::to_string(&payload).unwrap_or_default())
         .await;
 
-    run_java(ctx, &req, &result.classes_dir, &result.main_class, &session_id).await?;
+    run_java(
+        ctx,
+        &req,
+        &result.classes_dir,
+        &result.main_class,
+        &session_id,
+    )
+    .await?;
 
     Ok(serde_json::json!({ "status": "ok" }))
 }

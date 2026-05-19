@@ -6,7 +6,6 @@
 // changes.  Decides which approach based on the change set.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Kind of JVM class change.
@@ -172,7 +171,9 @@ mod tests {
 
     #[test]
     fn over_limit_escalates() {
-        let changes: Vec<_> = (0..60).map(|i| body_change(&format!("Class{}", i))).collect();
+        let changes: Vec<_> = (0..60)
+            .map(|i| body_change(&format!("Class{}", i)))
+            .collect();
         let d = decide_jvm_strategy(&changes, &JvmStrategyConfig::default());
         assert_eq!(d.strategy, JvmReloadStrategy::ClassLoaderRestart);
     }

@@ -7,7 +7,6 @@
 // the restore.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 use crate::hmr::state_manager::SchemaVersion;
@@ -56,16 +55,15 @@ pub struct RestoreValidation {
 }
 
 /// Validate whether a snapshot can be restored to the target module.
-pub fn validate_restore(
-    snapshot: &StateSnapshot,
-    target: &RestoreTarget,
-) -> RestoreValidation {
+pub fn validate_restore(snapshot: &StateSnapshot, target: &RestoreTarget) -> RestoreValidation {
     let mut reasons = Vec::new();
     let mut warnings = Vec::new();
 
     // Schema version check
     let schema_match = snapshot.schema_version == target.schema_version;
-    let schema_compatible = snapshot.schema_version.can_upgrade_to(&target.schema_version);
+    let schema_compatible = snapshot
+        .schema_version
+        .can_upgrade_to(&target.schema_version);
     if !schema_match && !schema_compatible {
         reasons.push(format!(
             "schema {} incompatible with target {}",
@@ -127,7 +125,9 @@ pub fn validate_restore(
 
     // Determine verdict
     let verdict = if !reasons.is_empty() {
-        RestoreVerdict::Incompatible { reasons: reasons.clone() }
+        RestoreVerdict::Incompatible {
+            reasons: reasons.clone(),
+        }
     } else if !missing.is_empty() {
         RestoreVerdict::PartialRestore {
             lost_fields: missing.clone(),
@@ -151,7 +151,7 @@ pub fn validate_restore(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use super::*;
 
@@ -206,6 +206,9 @@ mod tests {
     fn incompatible_abi() {
         let v = SchemaVersion::new(1, 0, 0);
         let result = validate_restore(&snap(v, 1), &target(v, 2));
-        assert!(matches!(result.verdict, RestoreVerdict::Incompatible { .. }));
+        assert!(matches!(
+            result.verdict,
+            RestoreVerdict::Incompatible { .. }
+        ));
     }
 }

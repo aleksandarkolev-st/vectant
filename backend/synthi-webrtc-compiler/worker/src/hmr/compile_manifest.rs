@@ -133,6 +133,137 @@ impl Default for Compiler {
     }
 }
 
+// ============================================================
+// GPU EXTENSION (GPU_HMR_ULTRAPLAN §5.1)
+// ============================================================
+//
+// Mirror of the Python `GpuBuildBlock` from ai-backend/ai-engine/
+// build_manifest.py. Sits as an optional sub-block on `CompileManifest`
+// so host-only projects deserialize unchanged. When `gpu` is `Some`,
+// the worker schedules `compile_device` alongside the host compile
+// stages and the GPU module adapter participates in hot-reload.
+//
+// The schema is the source of truth; this enum/struct must round-trip
+// to/from the JSON the Python side emits inside <synthi_build_manifest>.
+// Field names + serde renames are kept tight to match Python.
+
+/// GPU vendor — drives which adapter is instantiated by
+/// `adapter_registry.rs` and which runtime libraries (`cuda`, `cudart` vs
+/// `amdhip64`) the host runner links against.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum DeviceVendor {
+    Cuda,
+    Rocm,
+}
+
+impl DeviceVendor {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cuda => "cuda",
+            Self::Rocm => "rocm",
+        }
+    }
+}
+
+/// Device compiler executable. `nvcc` is the standard CUDA path;
+/// `clang-cuda` is the LLVM toolchain-driver alternative (same CUDA
+/// source but routed through clang's CUDA frontend). `hipcc` is the
+/// ROCm-side wrapper around clang for HIP source. The §5.3
+/// `select_compiler` helper resolves this enum to the executable name
+/// used in the spawn.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DeviceCompiler {
+    #[serde(rename = "nvcc")]
+    Nvcc,
+    #[serde(rename = "clang-cuda")]
+    ClangCuda,
+    #[serde(rename = "hipcc")]
+    Hipcc,
+}
+
+impl DeviceCompiler {
+    pub fn executable(&self) -> &'static str {
+        match self {
+            Self::Nvcc => "nvcc",
+            Self::ClangCuda => "clang++", // clang-cuda is `clang++ --cuda`
+            Self::Hipcc => "hipcc",
+        }
+    }
+}
+
+/// Device-state snapshot strategy. `Auto` lets the worker pick at
+/// runtime based on `device_checkpoint_probe.rs` (Tier A if available,
+/// fall through to Tier B). Explicit modes force the path for testing.
+/// See §6.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotMode {
+    DriverCheckpoint,
+    Userspace,
+    Auto,
+}
+
+impl SnapshotMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::DriverCheckpoint => "driver_checkpoint",
+            Self::Userspace => "userspace",
+            Self::Auto => "auto",
+        }
+    }
+}
+
+impl Default for SnapshotMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// How the cubin/hsaco gets shipped. Only `SidecarModule` is HMR-
+/// compatible — an embedded fatbin would require relinking the host
+/// `.so` to swap, defeating the point. `validate_manifest_v1`
+/// (Python side) rejects anything else before it reaches us; we
+/// model only the supported variant here so a bad manifest fails
+/// deserialization fast.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FatbinStrategy {
+    #[default]
+    SidecarModule,
+}
+
+/// GPU-side build recipe. Mirrors Python `GpuBuildBlock`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GpuBuildBlock {
+    pub vendor: DeviceVendor,
+    pub device_compiler: DeviceCompiler,
+    #[serde(default)]
+    pub arch: Vec<String>,
+    #[serde(default)]
+    pub device_flags: Vec<String>,
+    #[serde(default)]
+    pub runtime_libs: Vec<String>,
+    #[serde(default)]
+    pub snapshot_mode: SnapshotMode,
+    #[serde(default)]
+    pub fatbin_strategy: FatbinStrategy,
+}
+
+/// Which compile stage a given module is destined for. Used by
+/// `select_compiler` so the four host modules and the optional device
+/// module dispatch to the right toolchain without duplicating the
+/// logic at every call site (compile_core, compile_gui, compile_runner,
+/// compile_device).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleKind {
+    Core,
+    Gui,
+    Shared,
+    HostRunner,
+    Device,
+}
+
 /// How to compile the split modules for this specific project.
 ///
 /// Deserialized from the Python `BuildManifest` JSON that comes in via
@@ -177,6 +308,13 @@ pub struct CompileManifest {
     /// manifests that pass through unvalidated for some reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_steps: Option<Vec<serde_json::Value>>,
+
+    /// Optional GPU sub-block (GPU_HMR_ULTRAPLAN §5.1). `None` for the
+    /// overwhelming majority of projects today; when `Some`, the worker
+    /// schedules `compile_device` alongside the host compile stages and
+    /// the GPU module adapter participates in hot-reload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu: Option<GpuBuildBlock>,
 }
 
 fn default_std() -> String {
@@ -216,6 +354,7 @@ impl CompileManifest {
                 notes: "Hardcoded SDL2 default (no manifest in sidecar).".to_string(),
             },
             build_steps: None,
+            gpu: None,
         }
     }
 
@@ -223,6 +362,27 @@ impl CompileManifest {
     /// Returns `None` on parse failure — caller falls back to `sdl2_default()`.
     pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
+    }
+
+    /// Pick the compiler executable for a given module kind. Host
+    /// modules (`Core`, `Gui`, `Shared`, `HostRunner`) use the manifest's
+    /// host `compiler` field (`g++` / `clang++`). The device module uses
+    /// the GPU block's `device_compiler` (`nvcc` / `clang-cuda` / `hipcc`)
+    /// when present; falls back to `"nvcc"` if `Device` is requested on a
+    /// manifest without a `gpu` block (defensive — the orchestrator
+    /// shouldn't dispatch a Device build without the block, but the
+    /// fallback keeps the helper total).
+    ///
+    /// Spec: GPU_HMR_ULTRAPLAN §5.3.
+    pub fn select_compiler(&self, kind: ModuleKind) -> &'static str {
+        match kind {
+            ModuleKind::Device => self
+                .gpu
+                .as_ref()
+                .map(|g| g.device_compiler.executable())
+                .unwrap_or("nvcc"),
+            _ => self.compiler.executable(),
+        }
     }
 
     /// Whether this manifest requires process-restart on hot-reload (either
@@ -244,12 +404,15 @@ impl CompileManifest {
     /// changed, producing a silently wrong binary.
     pub fn tier0_safe(&self) -> bool {
         let has_o0 = self.common_flags.iter().any(|f| f == "-O0");
-        let no_higher_opt = !self.common_flags.iter().any(|f| {
-            f.starts_with("-O") && f != "-O0" && f != "-Os" // -Os is separate check
-                || f == "-Os"
-        });
-        let has_no_merge = self.common_flags.iter().any(|f| f == "-fno-merge-constants");
-        (has_o0 || no_higher_opt) && has_no_merge
+        let no_higher_opt = !self
+            .common_flags
+            .iter()
+            .any(|f| (f.starts_with("-O") && f != "-O0" && f != "-Os") || f == "-Os");
+        let has_no_merge = self
+            .common_flags
+            .iter()
+            .any(|f| f == "-fno-merge-constants");
+        has_o0 && no_higher_opt && has_no_merge
     }
 
     /// Ensure the manifest has Tier 0 safety flags. Returns a new
@@ -259,9 +422,8 @@ impl CompileManifest {
     pub fn with_tier0_flags(&self) -> Self {
         let mut m = self.clone();
         // Remove any optimization flags that conflict with -O0
-        m.common_flags.retain(|f| {
-            !(f.starts_with("-O") && f != "-O0")
-        });
+        m.common_flags
+            .retain(|f| !(f.starts_with("-O") && f != "-O0"));
         if !m.common_flags.iter().any(|f| f == "-O0") {
             m.common_flags.push("-O0".to_string());
         }
@@ -300,7 +462,10 @@ mod tests {
         assert_eq!(m.compiler.executable(), "g++");
         assert_eq!(m.std, "c++17");
         assert_eq!(m.gui_link_flags, vec!["-lSDL2".to_string()]);
-        assert_eq!(m.runner_link_flags, vec!["-lSDL2".to_string(), "-ldl".to_string()]);
+        assert_eq!(
+            m.runner_link_flags,
+            vec!["-lSDL2".to_string(), "-ldl".to_string()]
+        );
         assert_eq!(m.hot_reload_mode, HotReloadMode::Swap);
         assert_eq!(m.confidence.overall, ConfidenceLevel::High);
         assert_eq!(m.confidence.runner_synthesis, ConfidenceLevel::High);
@@ -441,7 +606,10 @@ mod tests {
     #[test]
     fn sdl2_default_is_tier0_safe() {
         let m = CompileManifest::sdl2_default();
-        assert!(m.tier0_safe(), "sdl2_default must include -O0 and -fno-merge-constants");
+        assert!(
+            m.tier0_safe(),
+            "sdl2_default must include -O0 and -fno-merge-constants"
+        );
     }
 
     #[test]
@@ -461,7 +629,8 @@ mod tests {
     #[test]
     fn with_tier0_flags_injects_missing() {
         let mut m = CompileManifest::sdl2_default();
-        m.common_flags.retain(|f| f != "-O0" && f != "-fno-merge-constants");
+        m.common_flags
+            .retain(|f| f != "-O0" && f != "-fno-merge-constants");
         assert!(!m.tier0_safe());
         let fixed = m.with_tier0_flags();
         assert!(fixed.tier0_safe());
@@ -474,5 +643,170 @@ mod tests {
         let fixed = m.with_tier0_flags();
         assert!(fixed.tier0_safe());
         assert!(!fixed.common_flags.contains(&"-O2".to_string()));
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // GPU sub-block (GPU_HMR_ULTRAPLAN §5.1)
+    // ────────────────────────────────────────────────────────────────
+
+    const CUDA_MANIFEST_JSON: &str = r#"{
+        "compiler": "g++",
+        "std": "c++26",
+        "common_flags": ["-shared","-fPIC"],
+        "core_link_flags": [],
+        "gui_link_flags": ["-lSDL2"],
+        "shared_link_flags": [],
+        "runner_link_flags": ["-lSDL2","-ldl","-lcudart","-lcuda"],
+        "system_packages": [],
+        "hot_reload_mode": "swap",
+        "confidence": {
+            "overall": "high",
+            "runner_synthesis": "high",
+            "link_flags": "high",
+            "notes": "CUDA vector-add"
+        },
+        "gpu": {
+            "vendor": "cuda",
+            "device_compiler": "nvcc",
+            "arch": ["sm_80","sm_90"],
+            "device_flags": ["-O3","-lineinfo","--use_fast_math"],
+            "runtime_libs": ["cudart","cuda"],
+            "snapshot_mode": "auto",
+            "fatbin_strategy": "sidecar_module"
+        }
+    }"#;
+
+    #[test]
+    fn parses_cuda_manifest() {
+        let m: CompileManifest = serde_json::from_str(CUDA_MANIFEST_JSON).unwrap();
+        let gpu = m.gpu.as_ref().expect("gpu block must parse");
+        assert_eq!(gpu.vendor, DeviceVendor::Cuda);
+        assert_eq!(gpu.device_compiler, DeviceCompiler::Nvcc);
+        assert_eq!(gpu.arch, vec!["sm_80".to_string(), "sm_90".to_string()]);
+        assert_eq!(gpu.snapshot_mode, SnapshotMode::Auto);
+        assert_eq!(gpu.fatbin_strategy, FatbinStrategy::SidecarModule);
+    }
+
+    #[test]
+    fn parses_rocm_manifest() {
+        let json = r#"{
+            "compiler": "g++",
+            "std": "c++26",
+            "common_flags": [],
+            "core_link_flags": [],
+            "gui_link_flags": [],
+            "shared_link_flags": [],
+            "runner_link_flags": [],
+            "system_packages": [],
+            "hot_reload_mode": "swap",
+            "confidence": {"overall":"high","runner_synthesis":"high","link_flags":"high","notes":""},
+            "gpu": {
+                "vendor": "rocm",
+                "device_compiler": "hipcc",
+                "arch": ["gfx90a"],
+                "device_flags": ["-O3"],
+                "runtime_libs": ["amdhip64"],
+                "snapshot_mode": "userspace",
+                "fatbin_strategy": "sidecar_module"
+            }
+        }"#;
+        let m: CompileManifest = serde_json::from_str(json).unwrap();
+        let gpu = m.gpu.unwrap();
+        assert_eq!(gpu.vendor, DeviceVendor::Rocm);
+        assert_eq!(gpu.device_compiler, DeviceCompiler::Hipcc);
+        assert_eq!(gpu.snapshot_mode, SnapshotMode::Userspace);
+    }
+
+    #[test]
+    fn host_only_manifest_has_no_gpu_block() {
+        let m: CompileManifest = serde_json::from_str(SAMPLE_SDL2_JSON).unwrap();
+        assert!(m.gpu.is_none());
+    }
+
+    #[test]
+    fn select_compiler_routes_device_to_nvcc() {
+        let m: CompileManifest = serde_json::from_str(CUDA_MANIFEST_JSON).unwrap();
+        assert_eq!(m.select_compiler(ModuleKind::Core), "g++");
+        assert_eq!(m.select_compiler(ModuleKind::Gui), "g++");
+        assert_eq!(m.select_compiler(ModuleKind::Device), "nvcc");
+    }
+
+    #[test]
+    fn select_compiler_routes_device_to_hipcc_on_rocm() {
+        let json = r#"{
+            "compiler": "clang++",
+            "std": "c++26",
+            "common_flags": [],
+            "core_link_flags": [],
+            "gui_link_flags": [],
+            "shared_link_flags": [],
+            "runner_link_flags": [],
+            "system_packages": [],
+            "hot_reload_mode": "swap",
+            "confidence": {"overall":"high","runner_synthesis":"high","link_flags":"high","notes":""},
+            "gpu": {
+                "vendor": "rocm",
+                "device_compiler": "hipcc",
+                "arch": ["gfx90a"],
+                "device_flags": [],
+                "runtime_libs": [],
+                "snapshot_mode": "auto",
+                "fatbin_strategy": "sidecar_module"
+            }
+        }"#;
+        let m: CompileManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.select_compiler(ModuleKind::Core), "clang++");
+        assert_eq!(m.select_compiler(ModuleKind::Device), "hipcc");
+    }
+
+    #[test]
+    fn select_compiler_falls_back_when_no_gpu_block() {
+        // Defensive: an orchestrator that wrongly dispatches a Device
+        // build on a host-only manifest still gets a sane default
+        // rather than a panic.
+        let m: CompileManifest = serde_json::from_str(SAMPLE_SDL2_JSON).unwrap();
+        assert_eq!(m.select_compiler(ModuleKind::Device), "nvcc");
+        assert_eq!(m.select_compiler(ModuleKind::Core), "g++");
+    }
+
+    #[test]
+    fn sdl2_default_has_no_gpu_block() {
+        let m = CompileManifest::sdl2_default();
+        assert!(m.gpu.is_none());
+    }
+
+    #[test]
+    fn gpu_block_serde_roundtrips() {
+        let m: CompileManifest = serde_json::from_str(CUDA_MANIFEST_JSON).unwrap();
+        let back = serde_json::to_string(&m).unwrap();
+        let again: CompileManifest = serde_json::from_str(&back).unwrap();
+        assert_eq!(m.gpu, again.gpu);
+    }
+
+    #[test]
+    fn clang_cuda_resolves_to_clang_plus_plus() {
+        let json = r#"{
+            "compiler": "clang++",
+            "std": "c++26",
+            "common_flags": [],
+            "core_link_flags": [],
+            "gui_link_flags": [],
+            "shared_link_flags": [],
+            "runner_link_flags": [],
+            "system_packages": [],
+            "hot_reload_mode": "swap",
+            "confidence": {"overall":"high","runner_synthesis":"high","link_flags":"high","notes":""},
+            "gpu": {
+                "vendor": "cuda",
+                "device_compiler": "clang-cuda",
+                "arch": ["sm_80"],
+                "device_flags": [],
+                "runtime_libs": [],
+                "snapshot_mode": "auto",
+                "fatbin_strategy": "sidecar_module"
+            }
+        }"#;
+        let m: CompileManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.select_compiler(ModuleKind::Device), "clang++");
     }
 }

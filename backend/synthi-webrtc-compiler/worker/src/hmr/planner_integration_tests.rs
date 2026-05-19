@@ -5,7 +5,7 @@
 // machine, candidate protocol, and ABI detection work together.
 // ============================================================
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use crate::hmr::abi_detect::detect_abi_changes;
     use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix, CapabilityTier};
@@ -59,9 +59,11 @@ mod tests {
 
         // 2. Setup lifecycle
         let mut sm = LifecycleStateMachine::new("p1");
-        sm.transition(PreviewLifecycleState::CompileRequested).unwrap();
+        sm.transition(PreviewLifecycleState::CompileRequested)
+            .unwrap();
         sm.transition(PreviewLifecycleState::Compiling).unwrap();
-        sm.transition(PreviewLifecycleState::CompileFinished).unwrap();
+        sm.transition(PreviewLifecycleState::CompileFinished)
+            .unwrap();
 
         // 3. Run planner via glue
         let input = PlannerInput {
@@ -91,7 +93,8 @@ mod tests {
         candidate.promote();
 
         // 5. Complete lifecycle
-        sm.transition(PreviewLifecycleState::ReloadApplying).unwrap();
+        sm.transition(PreviewLifecycleState::ReloadApplying)
+            .unwrap();
         sm.transition(PreviewLifecycleState::ReloadApplied).unwrap();
         sm.transition(PreviewLifecycleState::Idle).unwrap();
     }

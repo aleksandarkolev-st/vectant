@@ -6,7 +6,6 @@
 // Uses fd-passing on Unix or named pipes on Windows.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Method used to transfer a listening socket.

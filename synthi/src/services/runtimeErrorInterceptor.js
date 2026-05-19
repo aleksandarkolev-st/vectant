@@ -146,7 +146,7 @@ class RuntimeErrorInterceptor {
    */
   _handleCompileDiagnostics(event) {
     const detail = event.detail || {};
-    const diagnostics = detail.diagnostics || [];
+    const diagnostics = Array.isArray(detail.diagnostics) ? detail.diagnostics : [];
     const errorCount = detail.error_count || 0;
     
     if (errorCount === 0 && diagnostics.length === 0) return;
@@ -163,7 +163,7 @@ class RuntimeErrorInterceptor {
    */
   _handleCompileError(event) {
     const detail = event.detail || {};
-    const diagnostics = detail.diagnostics || [];
+    const diagnostics = Array.isArray(detail.diagnostics) ? detail.diagnostics : [];
     const module = detail.module || null;
     
     // Only heal on actual errors (not warnings)

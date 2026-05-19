@@ -65,7 +65,7 @@ const SYNTHI_THEME_FALLBACK = {
  * parent prop changes.  All communication happens through refs and WebSocket.
  * The freeze comparator always returns true (props are equal → skip re-render).
  */
-const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', onFsChange, fixedSessionId = null, shellType = null }) {
+const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSide = 'main', workspaceSlug = '', workspaceName = '', onFsChange, fixedSessionId = null, shellType = null }) {
   const containerRef = useRef(null);
   const terminalRef = useRef(null);   // { term, fitAddon, dispose() }
   const wsRef = useRef(null);
@@ -255,6 +255,12 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         cols: String(cols),
         rows: String(rows),
       });
+      // Friendly project name for the PTY prompt (~/<name> $). When the
+      // workspace page hasn't loaded the name yet, the backend falls back
+      // to the slug, so omitting this is safe.
+      if (workspaceName) {
+        params.set('name', workspaceName);
+      }
       // Include shell type if specified (e.g. 'bash', 'cmd', 'powershell')
       if (shellType) {
         params.set('shell', shellType);

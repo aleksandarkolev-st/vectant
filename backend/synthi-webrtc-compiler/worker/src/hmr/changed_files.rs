@@ -7,7 +7,6 @@
 // rebuild scope decisions.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -100,10 +99,7 @@ impl ChangeSet {
     pub fn by_class(&mut self) -> HashMap<FileClass, Vec<String>> {
         let mut result: HashMap<FileClass, Vec<String>> = HashMap::new();
         for f in self.classify() {
-            result
-                .entry(f.class)
-                .or_default()
-                .push(f.path.clone());
+            result.entry(f.class).or_default().push(f.path.clone());
         }
         result
     }

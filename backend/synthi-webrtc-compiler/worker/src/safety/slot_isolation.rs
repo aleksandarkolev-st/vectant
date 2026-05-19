@@ -28,7 +28,6 @@
 // This module supports both models with explicit configuration.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

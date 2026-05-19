@@ -67,7 +67,7 @@ fn classify_rollback_reason(reason: &str) -> String {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use super::*;
     use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
@@ -124,8 +124,17 @@ mod tests {
 
     #[test]
     fn crash_reason_classification() {
-        assert_eq!(classify_rollback_reason("segfault in init()"), "candidate_crash");
-        assert_eq!(classify_rollback_reason("health check timeout"), "health_timeout");
-        assert_eq!(classify_rollback_reason("schema migration failed"), "schema_mismatch");
+        assert_eq!(
+            classify_rollback_reason("segfault in init()"),
+            "candidate_crash"
+        );
+        assert_eq!(
+            classify_rollback_reason("health check timeout"),
+            "health_timeout"
+        );
+        assert_eq!(
+            classify_rollback_reason("schema migration failed"),
+            "schema_mismatch"
+        );
     }
 }

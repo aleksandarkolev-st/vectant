@@ -6,21 +6,33 @@
 // line map to find instruction addresses, then verifies the
 // immediate patcher can locate and replace integer operands.
 
+use std::process::Command;
 use worker::hmr::binary_patch::dwarf_line_map::line_to_addresses;
 use worker::hmr::binary_patch::imm_patcher::{find_immediates, patch_immediate};
-use std::process::Command;
 
 fn compile_so(dir: &std::path::Path, source: &str, name: &str) -> std::path::PathBuf {
     let src = dir.join(format!("{}.c", name));
     let so = dir.join(format!("lib{}.so", name));
     std::fs::write(&src, source).unwrap();
     let out = Command::new("gcc")
-        .args(["-shared", "-fPIC", "-O0", "-g", "-gdwarf-4", "-fno-merge-constants", "-o"])
+        .args([
+            "-shared",
+            "-fPIC",
+            "-O0",
+            "-g",
+            "-gdwarf-4",
+            "-fno-merge-constants",
+            "-o",
+        ])
         .arg(&so)
         .arg(&src)
         .output()
         .expect("gcc");
-    assert!(out.status.success(), "gcc: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "gcc: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     so
 }
 
@@ -84,7 +96,10 @@ fn patch_immediate_changes_value() {
     );
     // Old value should be gone
     let locs_old = find_immediates(&so, &va, Some(42)).unwrap();
-    assert!(locs_old.is_empty(), "old value 42 should be gone after patch");
+    assert!(
+        locs_old.is_empty(),
+        "old value 42 should be gone after patch"
+    );
 }
 
 #[test]

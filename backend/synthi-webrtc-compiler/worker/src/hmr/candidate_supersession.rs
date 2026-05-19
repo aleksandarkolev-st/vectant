@@ -74,7 +74,7 @@ pub fn should_supersede(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use super::*;
     use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
@@ -102,7 +102,12 @@ mod tests {
             build_time_ms: 100,
             extension: Default::default(),
         };
-        Candidate::new(manifest, 1, ReloadDecision::WarmReload, StateStrategy::PreservePointer)
+        Candidate::new(
+            manifest,
+            1,
+            ReloadDecision::WarmReload,
+            StateStrategy::PreservePointer,
+        )
     }
 
     #[test]

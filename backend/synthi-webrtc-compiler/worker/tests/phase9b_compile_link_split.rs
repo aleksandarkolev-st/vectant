@@ -94,7 +94,11 @@ fn compile_to_object_has_dash_c_flag() {
     );
     let args = args_of(&cmd);
     // -c must be present — without it ccache won't cache
-    assert!(args.contains(&"-c".to_string()), "missing -c in: {:?}", args);
+    assert!(
+        args.contains(&"-c".to_string()),
+        "missing -c in: {:?}",
+        args
+    );
 }
 
 #[test]
@@ -105,15 +109,18 @@ fn compile_to_object_strips_shared_flag() {
         &PathBuf::from("/tmp/core.o"),
         "-std=c++17",
         &vec![
-            "-shared".to_string(),  // MUST be stripped — incompatible with -c
+            "-shared".to_string(), // MUST be stripped — incompatible with -c
             "-fPIC".to_string(),
             "-g".to_string(),
         ],
         std::path::Path::new("/tmp"),
     );
     let args = args_of(&cmd);
-    assert!(!args.contains(&"-shared".to_string()),
-        "-shared must be stripped from compile step args: {:?}", args);
+    assert!(
+        !args.contains(&"-shared".to_string()),
+        "-shared must be stripped from compile step args: {:?}",
+        args
+    );
     // -fPIC and -g should survive the filter
     assert!(args.contains(&"-fPIC".to_string()));
     assert!(args.contains(&"-g".to_string()));
@@ -164,8 +171,11 @@ fn link_to_so_has_shared_flag() {
         std::path::Path::new("/tmp"),
     );
     let args = args_of(&cmd);
-    assert!(args.contains(&"-shared".to_string()),
-        "link step must include -shared: {:?}", args);
+    assert!(
+        args.contains(&"-shared".to_string()),
+        "link step must include -shared: {:?}",
+        args
+    );
 }
 
 #[test]
@@ -174,7 +184,11 @@ fn link_to_so_includes_link_flags() {
         "g++",
         &PathBuf::from("/tmp/gui.o"),
         &PathBuf::from("/tmp/libgui.so"),
-        &vec!["-lSDL2".to_string(), "-lfmod".to_string(), "-ldl".to_string()],
+        &vec![
+            "-lSDL2".to_string(),
+            "-lfmod".to_string(),
+            "-ldl".to_string(),
+        ],
         std::path::Path::new("/tmp"),
     );
     let args = args_of(&cmd);
@@ -214,8 +228,11 @@ fn link_to_exec_omits_shared_flag() {
         std::path::Path::new("/tmp"),
     );
     let args = args_of(&cmd);
-    assert!(!args.contains(&"-shared".to_string()),
-        "executable link must NOT include -shared: {:?}", args);
+    assert!(
+        !args.contains(&"-shared".to_string()),
+        "executable link must NOT include -shared: {:?}",
+        args
+    );
 }
 
 #[test]
@@ -252,7 +269,9 @@ fn link_to_exec_includes_object_and_output_paths() {
     );
     let args = args_of(&cmd);
     assert!(args.iter().any(|a| a.contains("host_runner_1.o")));
-    assert!(args.iter().any(|a| a.ends_with("host_runner_1") && !a.contains(".o")));
+    assert!(args
+        .iter()
+        .any(|a| a.ends_with("host_runner_1") && !a.contains(".o")));
     assert!(args.contains(&"-o".to_string()));
 }
 
@@ -277,13 +296,7 @@ fn compile_then_link_shape_is_consistent() {
         &vec!["-fPIC".to_string(), "-g".to_string()],
         workspace,
     );
-    let link = link_object_to_so_command(
-        "g++",
-        &obj,
-        &so,
-        &vec!["-lSDL2".to_string()],
-        workspace,
-    );
+    let link = link_object_to_so_command("g++", &obj, &so, &vec!["-lSDL2".to_string()], workspace);
 
     // Compile output should match link input
     let compile_args = args_of(&compile);

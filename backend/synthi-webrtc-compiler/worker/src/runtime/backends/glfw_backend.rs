@@ -54,9 +54,7 @@
 // as a Rust struct of function pointers, and we can run against
 // any libglfw3 ABI-compatible release.
 
-use crate::runtime::window_backend::{
-    BackendEvent, WindowBackend, WindowFlags, WindowHandle,
-};
+use crate::runtime::window_backend::{BackendEvent, WindowBackend, WindowFlags, WindowHandle};
 use anyhow::{anyhow, Result};
 use libloading::{Library, Symbol};
 use std::ffi::{c_char, c_int, c_void, CString};
@@ -178,9 +176,9 @@ impl GLFWBackend {
     unsafe fn resolve_symbols(&mut self, lib: &Library) -> Result<()> {
         macro_rules! resolve {
             ($field:ident, $name:literal, $ty:ty) => {
-                let sym: Symbol<$ty> = lib
-                    .get($name)
-                    .map_err(|e| anyhow!("symbol {} missing from libglfw: {}", stringify!($name), e))?;
+                let sym: Symbol<$ty> = lib.get($name).map_err(|e| {
+                    anyhow!("symbol {} missing from libglfw: {}", stringify!($name), e)
+                })?;
                 self.$field = Some(*sym);
             };
         }
@@ -188,7 +186,11 @@ impl GLFWBackend {
         resolve!(glfw_terminate, b"glfwTerminate\0", GlfwTerminate);
         resolve!(glfw_window_hint, b"glfwWindowHint\0", GlfwWindowHint);
         resolve!(glfw_create_window, b"glfwCreateWindow\0", GlfwCreateWindow);
-        resolve!(glfw_destroy_window, b"glfwDestroyWindow\0", GlfwDestroyWindow);
+        resolve!(
+            glfw_destroy_window,
+            b"glfwDestroyWindow\0",
+            GlfwDestroyWindow
+        );
         resolve!(
             glfw_make_context_current,
             b"glfwMakeContextCurrent\0",
@@ -264,7 +266,11 @@ impl WindowBackend for GLFWBackend {
         unsafe {
             hint_fn(
                 GLFW_RESIZABLE,
-                if flags.resizable { GLFW_TRUE } else { GLFW_FALSE },
+                if flags.resizable {
+                    GLFW_TRUE
+                } else {
+                    GLFW_FALSE
+                },
             );
             hint_fn(GLFW_VISIBLE, GLFW_TRUE);
             if flags.opengl {

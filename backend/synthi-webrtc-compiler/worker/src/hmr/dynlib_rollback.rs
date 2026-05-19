@@ -6,7 +6,6 @@
 // state, and what to report to the planner.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Phase at which failure occurred, determining rollback depth.
@@ -154,31 +153,22 @@ mod tests {
 
     #[test]
     fn load_failure_unloads_new() {
-        let action = determine_rollback_action(
-            FailurePhase::Load,
-            false,
-            &RollbackConfig::default(),
-        );
+        let action =
+            determine_rollback_action(FailurePhase::Load, false, &RollbackConfig::default());
         assert_eq!(action, RollbackAction::UnloadNew);
     }
 
     #[test]
     fn health_check_failure_restores_state() {
-        let action = determine_rollback_action(
-            FailurePhase::HealthCheck,
-            true,
-            &RollbackConfig::default(),
-        );
+        let action =
+            determine_rollback_action(FailurePhase::HealthCheck, true, &RollbackConfig::default());
         assert_eq!(action, RollbackAction::RevertSlotAndRestoreState);
     }
 
     #[test]
     fn health_check_without_snapshot_just_reverts() {
-        let action = determine_rollback_action(
-            FailurePhase::HealthCheck,
-            false,
-            &RollbackConfig::default(),
-        );
+        let action =
+            determine_rollback_action(FailurePhase::HealthCheck, false, &RollbackConfig::default());
         assert_eq!(action, RollbackAction::RevertSlot);
     }
 
@@ -191,7 +181,10 @@ mod tests {
             12,
         );
         assert!(report.state_restored);
-        assert_eq!(report.action_taken, RollbackAction::RevertSlotAndRestoreState);
+        assert_eq!(
+            report.action_taken,
+            RollbackAction::RevertSlotAndRestoreState
+        );
         assert_eq!(report.rollback_ms, 12);
     }
 }

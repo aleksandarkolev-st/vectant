@@ -193,11 +193,7 @@ pub fn patch_so_file(target_so: &Path, swaps: &[LiteralSwap]) -> Tier0Outcome {
     let bytes = match std::fs::read(target_so) {
         Ok(b) => b,
         Err(e) => {
-            return Tier0Outcome::PatchFailed(format!(
-                "read {} failed: {}",
-                target_so.display(),
-                e
-            ))
+            return Tier0Outcome::PatchFailed(format!("read {} failed: {}", target_so.display(), e))
         }
     };
     let mut patched = bytes.clone();
@@ -324,10 +320,7 @@ pub fn candidate_so_paths(build_dir: &Path) -> Vec<PathBuf> {
 /// Returns `Some(patched_paths)` when at least one .so was patched
 /// successfully, `None` when the bypass should be abandoned (caller
 /// falls through to the normal compile path).
-pub fn try_tier0_bypass(
-    build_dir: &Path,
-    swaps: &[LiteralSwap],
-) -> Option<Vec<PathBuf>> {
+pub fn try_tier0_bypass(build_dir: &Path, swaps: &[LiteralSwap]) -> Option<Vec<PathBuf>> {
     if swaps.is_empty() {
         return None;
     }
@@ -436,10 +429,7 @@ mod tests {
 
     #[test]
     fn find_all_occurrences_multiple_matches() {
-        assert_eq!(
-            find_all_occurrences(b"abc abc abc", b"abc"),
-            vec![0, 4, 8]
-        );
+        assert_eq!(find_all_occurrences(b"abc abc abc", b"abc"), vec![0, 4, 8]);
     }
 
     #[test]

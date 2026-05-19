@@ -111,8 +111,8 @@ impl WindowBackend for SDL2Backend {
         if !self.initialized {
             return Err(anyhow!("SDL2Backend::create_window called before init"));
         }
-        let c_title = CString::new(title)
-            .map_err(|e| anyhow!("title contains a null byte: {}", e))?;
+        let c_title =
+            CString::new(title).map_err(|e| anyhow!("title contains a null byte: {}", e))?;
         let win = unsafe {
             SDL_CreateWindow(
                 c_title.as_ptr(),
@@ -196,12 +196,8 @@ impl WindowBackend for SDL2Backend {
                 break;
             }
             // First 4 bytes of SDL_Event are the u32 event type.
-            let kind = u32::from_ne_bytes([
-                event.data[0],
-                event.data[1],
-                event.data[2],
-                event.data[3],
-            ]);
+            let kind =
+                u32::from_ne_bytes([event.data[0], event.data[1], event.data[2], event.data[3]]);
 
             // Copy the event into the arena. Because we pre-reserved
             // capacity AND we bail at the top of the loop if the

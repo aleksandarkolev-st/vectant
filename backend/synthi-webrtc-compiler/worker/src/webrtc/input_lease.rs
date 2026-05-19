@@ -183,7 +183,9 @@ mod tests {
     #[test]
     fn acquire_mints_a_lease_for_browser() {
         let reg = InputLeaseRegistry::new();
-        let lease = reg.acquire("b1", PeerRole::Browser, 5_000, false).expect("ok");
+        let lease = reg
+            .acquire("b1", PeerRole::Browser, 5_000, false)
+            .expect("ok");
         assert_eq!(lease.peer_id, "b1");
         assert_eq!(lease.lease_ms, 5_000);
     }
@@ -248,7 +250,8 @@ mod tests {
     #[test]
     fn expired_lease_is_swept_on_read() {
         let reg = InputLeaseRegistry::new();
-        reg.acquire("b1", PeerRole::Browser, MIN_LEASE_MS, false).unwrap();
+        reg.acquire("b1", PeerRole::Browser, MIN_LEASE_MS, false)
+            .unwrap();
         std::thread::sleep(Duration::from_millis(MIN_LEASE_MS + 20));
         assert!(reg.current_lease().is_none());
         // Immediately acquireable again by anyone.

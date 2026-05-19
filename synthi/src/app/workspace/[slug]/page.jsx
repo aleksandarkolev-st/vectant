@@ -66,7 +66,7 @@ import { fileCache } from '@/services/fileCache';
 import { preCompileHeal, detectLanguage } from '@/services/preCompileHealer';
 import { resolveDependencies } from '@/utils/dependencyResolver';
 import { DraggableVideoWidget } from '@/components/DraggableVideoWidget';
-import { useHMR } from '@/hooks/useHMR';
+import { useGpuMode, useHMR } from '@/hooks/useHMR';
 import { useRuntimeHealing } from '@/hooks/useRuntimeHealing';
 import { useRetryCompile } from '@/hooks/useRetryCompile';
 import { HMRStatusIndicator } from '@/components/HMRStatusIndicator';
@@ -105,6 +105,21 @@ import { activateTabAction, openTab, setFocusedTabGroup, splitNodeAction } from 
 // ─── Responsive: viewport observer + breakpoint-driven CSS ─────────────
 import { useViewport } from '@/hooks/useViewport';
 import '../responsive.css';
+
+const ADAPTED_COMPILE_FILES = [
+    'shared.h',
+    'core.cpp',
+    'gui.cpp',
+    'host_runner.cpp',
+    'device.cu',
+    'device.hip',
+    '.synthi/build_manifest.json',
+];
+
+const normalizeWorkspacePath = (path = '') => String(path)
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/^\.\//, '');
 
 // Feature flag: set to true to enable the new docking layout.
 // When false, the existing rigid ResizablePanelGroup layout is used.
@@ -275,6 +290,7 @@ export default function EditorPage({ params }) {
     // framework pill, CompileErrorCard, and ConfidenceWarning components.
     useCompileManifestListener();
     const hmrState = useHMR();
+    const { gpuModeEnabled, setGpuModeEnabled, preferGpuPipeline } = useGpuMode();
     const healingState = useRuntimeHealing({ editorRef, gateway, autoHeal: false });
     const { canRetry, retryCount, isRetrying, retry } = useRetryCompile({ compilerClient: client, autoRetry: true });
 
@@ -559,6 +575,26 @@ export default function EditorPage({ params }) {
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
     const [buildLogsCollapsed, setBuildLogsCollapsed] = useState(false);
+
+    // Friendly project name (from the DB) used as the terminal prompt label
+    // and anywhere else a human-readable workspace identifier is wanted.
+    // Falls back to the slug until the fetch resolves so the prompt never
+    // flashes empty. The route param `slug` is what /api/workspace/[slug]
+    // keys by (see app/api/workspace/[workspaceId]/route.js).
+    const [workspaceName, setWorkspaceName] = useState(slug);
+    useEffect(() => {
+        if (!slug) return undefined;
+        let cancelled = false;
+        fetch(`/api/workspace/${encodeURIComponent(slug)}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+                if (cancelled || !data) return;
+                const name = data?.workspace?.name || data?.name;
+                if (name && typeof name === 'string') setWorkspaceName(name);
+            })
+            .catch(() => { /* keep slug fallback */ });
+        return () => { cancelled = true; };
+    }, [slug]);
     const [hmrEnabled, setHmrEnabled] = useState(true);
     const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const [emulatorSessionId, setEmulatorSessionId] = useState(null);
@@ -2238,6 +2274,48 @@ export default function EditorPage({ params }) {
         }
     }, [rawFiles, slug]);
 
+    const augmentAdaptedCompileFiles = useCallback(async (existingFiles, filename, getContentForDependency) => {
+        const byPath = new Map();
+        for (const file of existingFiles || []) {
+            const name = normalizeWorkspacePath(file?.name || file?.path || '');
+            if (name && typeof file?.content === 'string') {
+                byPath.set(name, { name, content: file.content });
+            }
+        }
+
+        const activePath = normalizeWorkspacePath(filename);
+        const activeExt = (activePath.split('.').pop() || '').toLowerCase();
+        const canBeAdaptedCompile = ['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'cu', 'cuh', 'hip'].includes(activeExt);
+        if (!canBeAdaptedCompile) return Array.from(byPath.values());
+
+        for (const path of ADAPTED_COMPILE_FILES) {
+            const canonicalPath = normalizeWorkspacePath(path);
+            if (canonicalPath === activePath || byPath.has(canonicalPath)) continue;
+            const candidates = canonicalPath.startsWith('.synthi/')
+                ? [canonicalPath, canonicalPath.slice(1)]
+                : [canonicalPath];
+            try {
+                let content = '';
+                for (const candidate of candidates) {
+                    try {
+                        content = await getContentForDependency(candidate);
+                        if (typeof content === 'string' && content.length > 0) break;
+                    } catch (_) {
+                        // Try the next canonicalization form.
+                    }
+                }
+                if (typeof content === 'string' && content.length > 0) {
+                    byPath.set(canonicalPath, { name: canonicalPath, content });
+                }
+            } catch (_) {
+                // Most projects are not adapted split projects. Missing optional
+                // files should not block normal compiles.
+            }
+        }
+
+        return Array.from(byPath.values());
+    }, []);
+
     const handleRun = useCallback(async (options = {}) => {
         const isEvent = options && typeof options.preventDefault === 'function';
         const skipCancel = isEvent ? false : (options.skipCancel || false);
@@ -2291,6 +2369,7 @@ export default function EditorPage({ params }) {
         let additionalFiles = [];
         try {
             additionalFiles = await resolveDependencies(activeFile, rawFiles, getContentForDependency);
+            additionalFiles = await augmentAdaptedCompileFiles(additionalFiles, filename, getContentForDependency);
         } catch (e) {
             console.error("Dependency resolution failed", e);
             appendBuildLog(`Warning: Dependency resolution failed: ${e.message}`);
@@ -2371,6 +2450,7 @@ export default function EditorPage({ params }) {
                 projectRoot,
                 slug, // Pass workspace slug for mobile builds to download synced files
                 sessionId: mobileSid,
+                preferGpuPipeline,
                 onLog: (line) => {
                     appendBuildLog(line);
                     console.log('[build]', line);
@@ -2389,7 +2469,7 @@ export default function EditorPage({ params }) {
                 setEmulatorForcedError(msg);
             }
         }
-    }, [activeFile, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob, getLatestCurrentContent]);
+    }, [activeFile, appendBuildLog, dispatch, showTerminal, rawFiles, slug, compile, detectReactNativeProject, detectReactNativeInSource, runInGuiMode, emulatorSessionId, cancelMobileJob, getLatestCurrentContent, preferGpuPipeline, augmentAdaptedCompileFiles]);
 
     const handleStop = useCallback(async () => {
         const activeSessionId = client?.getActiveSessionId?.();
@@ -2500,7 +2580,7 @@ export default function EditorPage({ params }) {
 
         // Check if language is supported for compilation to avoid errors
         const ext = (filename.split('.').pop() || '').toLowerCase();
-        const supportedExts = ['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'rs', 'ts', 'tsx'];
+        const supportedExts = ['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'cu', 'cuh', 'hip', 'rs', 'ts', 'tsx'];
         if (!supportedExts.includes(ext)) {
             console.log(`[HMR] Skipping silent compilation for unsupported extension: .${ext}`);
             return;
@@ -2538,6 +2618,7 @@ export default function EditorPage({ params }) {
         let additionalFiles = [];
         try {
             additionalFiles = await resolveDependencies(activeFile, rawFiles, getContentForDependency);
+            additionalFiles = await augmentAdaptedCompileFiles(additionalFiles, filename, getContentForDependency);
         } catch (e) {
             console.error("Dependency resolution failed during save", e);
         }
@@ -2577,6 +2658,7 @@ export default function EditorPage({ params }) {
                 source,
                 files: additionalFiles,
                 isGui: shouldRunGui,
+                preferGpuPipeline,
             });
             setIsHmrRecompiling(false);
             console.log('[HMR] Re-run succeeded after save');
@@ -2602,7 +2684,7 @@ export default function EditorPage({ params }) {
                 }
             }
         } catch (_) { /* never let healing break save */ }
-    }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent]);
+    }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent, preferGpuPipeline, augmentAdaptedCompileFiles]);
 
     const handleEditorMount = useCallback((editorInstance) => {
         setEditor(editorInstance);
@@ -2641,11 +2723,20 @@ export default function EditorPage({ params }) {
     const handleMoveLineDown = useCallback(() => editor?.getAction('editor.action.moveLinesDownAction')?.run(), [editor]);
     const handleDuplicateSelection = useCallback(() => editor?.getAction('editor.action.duplicateSelection')?.run(), [editor]);
 
+    const activityBarHandlers = useActivityBarDocking();
+    const onToggleTerminalCb = useCallback(() => {
+        if (USE_DOCKING_WM) {
+            activityBarHandlers.terminal();
+        } else {
+            dispatch(toggleTerminal());
+        }
+    }, [dispatch, activityBarHandlers]);
+
     const EditorPanelComponent = (
         <EditorPanel
             onRun={handleRun}
             onSave={handleSave}
-            onToggleTerminal={() => dispatch(toggleTerminal())}
+            onToggleTerminal={onToggleTerminalCb}
             onEditorMount={handleEditorMount}
             analysisResult={lastResult}
             diagnostics={mergedDiagnostics}
@@ -2929,12 +3020,15 @@ export default function EditorPage({ params }) {
         editorProps: memoEditorProps,
         // AI healing surface so docked panels (HealingSettingsPanel) can consume it
         aiHealing,
+        // Friendly project name surfaced to the terminal panel for the
+        // prompt label (~/<workspaceName> $).
+        workspaceName,
     }), [
         editor, activeFile, mergedDiagnostics, diagnosticSummary,
         showAnalyzingSpinner, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
         getLatestCurrentContent, completionClearSignal, jumpstartPrompt, jumpstartAttachments,
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
-        aiHealing,
+        aiHealing, workspaceName,
     ]);
 
     if (workspaceMissing) {
@@ -2974,6 +3068,8 @@ export default function EditorPage({ params }) {
                         setRunInGuiMode={setRunInGuiMode}
                         hmrEnabled={hmrEnabled}
                         setHmrEnabled={setHmrEnabled}
+                        gpuModeEnabled={gpuModeEnabled}
+                        setGpuModeEnabled={setGpuModeEnabled}
                         onStop={handleStop}
                         onReload={handleRestart}
                         isRunning={isCompiling || isGuiRunning}

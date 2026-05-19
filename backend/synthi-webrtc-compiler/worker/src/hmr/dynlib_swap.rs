@@ -6,7 +6,6 @@
 // and the worker during a warm reload via dlopen/dlsym.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Messages sent from supervisor → worker for dynamic lib swap.
@@ -90,10 +89,7 @@ pub enum SwapAck {
 
     /// State restored from snapshot.
     #[serde(rename = "restored")]
-    Restored {
-        slot: String,
-        restore_time_ms: u64,
-    },
+    Restored { slot: String, restore_time_ms: u64 },
 
     /// Worker has resumed ticking.
     #[serde(rename = "resumed")]
@@ -101,10 +97,7 @@ pub enum SwapAck {
 
     /// Something went wrong during the swap.
     #[serde(rename = "error")]
-    Error {
-        phase: String,
-        message: String,
-    },
+    Error { phase: String, message: String },
 }
 
 /// Phases of the dynamic library swap.
@@ -123,14 +116,17 @@ pub enum SwapPhase {
 
 impl SwapPhase {
     pub fn is_terminal(&self) -> bool {
-        matches!(self, SwapPhase::Completed | SwapPhase::Failed | SwapPhase::Aborted)
+        matches!(
+            self,
+            SwapPhase::Completed | SwapPhase::Failed | SwapPhase::Aborted
+        )
     }
 }
 
 /// base64 serde adapter for Vec<u8> fields.
 mod base64_bytes {
-    use serde::{Deserialize, Deserializer, Serializer};
     use base64::{engine::general_purpose::STANDARD, Engine};
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
     where

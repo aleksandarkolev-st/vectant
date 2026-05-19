@@ -7,7 +7,6 @@
 // to the planner contract (Wave 03).
 // ============================================================
 
-
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
 use crate::hmr::planner_decision::{ReloadDecision, StateStrategy};
 use crate::hmr::rebuild_scope::{RebuildScope, ScopeResult};

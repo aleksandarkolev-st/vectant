@@ -1,0 +1,128 @@
+"""Unit tests for the GPU sub-block in BuildManifest.
+
+Spec: docs/GPU_HMR_ULTRAPLAN.md §5.1. The tests assert that:
+
+  - existing host-only manifests still validate (the GPU extension is
+    fully opt-in — `gpu: Optional[...] = None`),
+  - a well-formed CUDA manifest validates,
+  - a well-formed ROCm manifest validates,
+  - the validator rejects every documented misconfiguration (wrong
+    vendor, wrong compiler, vendor↔compiler mismatch, embedded
+    fatbin strategy, empty arch list).
+"""
+
+import json
+import pytest
+
+from build_manifest import (
+    BuildManifest,
+    ManifestRejection,
+    parse_manifest,
+    validate_manifest_v1,
+)
+
+
+HOST_ONLY_MANIFEST = {
+    "compiler": "g++",
+    "std": "c++26",
+    "common_flags": ["-shared", "-fPIC"],
+    "core_link_flags": [],
+    "gui_link_flags": ["-lSDL2"],
+    "shared_link_flags": [],
+    "runner_link_flags": ["-lSDL2", "-ldl"],
+    "system_packages": [],
+    "hot_reload_mode": "swap",
+    "confidence": {
+        "overall": "high",
+        "runner_synthesis": "high",
+        "link_flags": "high",
+        "notes": "",
+    },
+}
+
+
+def _with_gpu(**overrides):
+    base = dict(HOST_ONLY_MANIFEST)
+    gpu = {
+        "vendor": "cuda",
+        "device_compiler": "nvcc",
+        "arch": ["sm_80"],
+        "device_flags": ["-O3", "-lineinfo"],
+        "runtime_libs": ["cudart"],
+        "snapshot_mode": "auto",
+        "fatbin_strategy": "sidecar_module",
+    }
+    gpu.update(overrides)
+    base["gpu"] = gpu
+    return base
+
+
+def test_host_only_manifest_still_validates():
+    m = parse_manifest(HOST_ONLY_MANIFEST)
+    assert m.gpu is None
+    validate_manifest_v1(m)  # no raise
+
+
+def test_cuda_manifest_validates():
+    m = parse_manifest(_with_gpu(vendor="cuda", device_compiler="nvcc"))
+    assert m.gpu is not None
+    assert m.gpu.vendor == "cuda"
+    assert m.gpu.arch == ["sm_80"]
+    validate_manifest_v1(m)
+
+
+def test_rocm_manifest_validates():
+    m = parse_manifest(
+        _with_gpu(
+            vendor="rocm",
+            device_compiler="hipcc",
+            arch=["gfx90a"],
+            runtime_libs=["amdhip64"],
+        )
+    )
+    assert m.gpu is not None
+    assert m.gpu.vendor == "rocm"
+    validate_manifest_v1(m)
+
+
+def test_clang_cuda_is_valid_for_cuda():
+    m = parse_manifest(_with_gpu(vendor="cuda", device_compiler="clang-cuda"))
+    validate_manifest_v1(m)
+
+
+def test_rejects_cuda_with_hipcc():
+    m = parse_manifest(_with_gpu(vendor="cuda", device_compiler="hipcc"))
+    with pytest.raises(ManifestRejection, match="vendor=cuda"):
+        validate_manifest_v1(m)
+
+
+def test_rejects_rocm_with_nvcc():
+    m = parse_manifest(_with_gpu(vendor="rocm", device_compiler="nvcc", arch=["gfx90a"]))
+    with pytest.raises(ManifestRejection, match="vendor=rocm"):
+        validate_manifest_v1(m)
+
+
+def test_rejects_empty_arch():
+    m = parse_manifest(_with_gpu(arch=[]))
+    with pytest.raises(ManifestRejection, match="arch must not be empty"):
+        validate_manifest_v1(m)
+
+
+def test_rejects_unsupported_fatbin_strategy():
+    # The schema only allows "sidecar_module", but a forward-compat or
+    # malformed manifest could pass "embedded". Pydantic should reject
+    # at schema level OR our validator should reject — assert one path
+    # surfaces an error so the user gets a clean message.
+    raw = _with_gpu()
+    raw["gpu"]["fatbin_strategy"] = "embedded"
+    with pytest.raises((ManifestRejection, Exception)):
+        m = parse_manifest(raw)
+        validate_manifest_v1(m)
+
+
+def test_gpu_field_round_trips_through_json():
+    raw = _with_gpu()
+    payload = json.dumps(raw)
+    m = parse_manifest(payload)
+    assert m.gpu is not None
+    assert m.gpu.device_compiler == "nvcc"

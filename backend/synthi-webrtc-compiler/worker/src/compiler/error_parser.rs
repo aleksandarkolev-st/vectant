@@ -751,7 +751,9 @@ pub fn parse_javac_errors(stderr: &str, module: &str) -> DiagnosticReport {
     if report.diagnostics.is_empty() && !stderr.trim().is_empty() {
         let lower = stderr.to_lowercase();
         if lower.contains("error") || lower.contains("exception") {
-            report.add(Diagnostic::error(stderr.lines().next().unwrap_or("javac failed")));
+            report.add(Diagnostic::error(
+                stderr.lines().next().unwrap_or("javac failed"),
+            ));
         }
     }
 

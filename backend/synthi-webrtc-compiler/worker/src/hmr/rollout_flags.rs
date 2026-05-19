@@ -117,9 +117,7 @@ impl RolloutConfig {
             AdapterFamily::ManagedRuntime => "managed_runtime",
             AdapterFamily::ProcessSwap => "process_swap",
         };
-        self.families
-            .get(key)
-            .unwrap_or(&RESTRICTIVE_DEFAULT)
+        self.families.get(key).unwrap_or(&RESTRICTIVE_DEFAULT)
     }
 }
 
@@ -251,8 +249,14 @@ mod tests {
             max_allowed_tier: CapabilityTier::Tier1,
             ..Default::default()
         };
-        assert_eq!(cfg.effective_tier(CapabilityTier::Tier3), CapabilityTier::Tier1);
-        assert_eq!(cfg.effective_tier(CapabilityTier::Tier0), CapabilityTier::Tier0);
+        assert_eq!(
+            cfg.effective_tier(CapabilityTier::Tier3),
+            CapabilityTier::Tier1
+        );
+        assert_eq!(
+            cfg.effective_tier(CapabilityTier::Tier0),
+            CapabilityTier::Tier0
+        );
     }
 
     #[test]

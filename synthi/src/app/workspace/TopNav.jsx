@@ -21,6 +21,8 @@ function TopNav({
   setRunInGuiMode,
   hmrEnabled,
   setHmrEnabled,
+  gpuModeEnabled,
+  setGpuModeEnabled,
   onStop,
   onReload,
   isRunning,
@@ -209,6 +211,17 @@ function TopNav({
             it greys out and is non-clickable; the actual Stop + Restart
             live in the build-controls island next to the status bar.
             Mobile (< sm): Stop + Restart replace the run button here. */}
+            
+        {/* GPU Pipeline Toggle - desktop only */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className={`hidden xl:inline-flex h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${gpuModeEnabled ? 'th-btn-active' : ''}`}
+          onClick={() => setGpuModeEnabled(!gpuModeEnabled)}
+          title={gpuModeEnabled ? "GPU pipeline enabled — compile requests may use CUDA/ROCm HMR" : "GPU pipeline disabled — compile requests stay on the host path"}
+        >
+          {gpuModeEnabled ? "GPU" : "No GPU"}
+        </Button>
         {isRunning ? (
             <>
                 {/* Mobile-only: stop + restart in topnav */}

@@ -132,7 +132,9 @@ pub unsafe fn process_load_command(
             // ============================================================
 
             let slot = ModuleSlot::from_str(name);
-            let info = validator::validate_symbols(&new_lib, name);
+            let require_gpu_contract = validator::workspace_requires_gpu_contract();
+            let info =
+                validator::validate_symbols_with_gpu_contract(&new_lib, name, require_gpu_contract);
             let has_required_symbols = info.has_required_symbols;
             let module_abi_version = info.module_abi_version;
             if module_abi_version > 0 && (name == "core" || name == "gui") {
@@ -141,13 +143,35 @@ pub unsafe fn process_load_command(
                     name, module_abi_version
                 );
             }
+            if require_gpu_contract && validator::module_requires_gpu_contract(name) {
+                if info.has_gpu_contract {
+                    eprintln!(
+                        "[Runner] [GPU HMR] Host GPU ABI validated for '{}' (managed_state={})",
+                        name, info.has_gpu_state_serialization
+                    );
+                } else {
+                    eprintln!(
+                        "[Runner] [GPU HMR] ERROR: Host GPU ABI incomplete for '{}' missing={}",
+                        name,
+                        info.missing_gpu_contract_symbols.join(",")
+                    );
+                }
+            }
 
             if !has_required_symbols {
                 eprintln!("[Runner] [HMR] ERROR: Module '{}' missing required symbols. Aborting HMR (old module continues).", name);
                 eprintln!("[Runner] [HMR] Expected: {} = core_on_load+core_on_update | gui = gui_on_load+gui_on_render | main = on_load+on_update", name);
 
                 // Send structured HMR rejection event
-                let status = HmrStatus::rejected(name, "Missing required symbols");
+                let reason = if !info.missing_gpu_contract_symbols.is_empty() {
+                    format!(
+                        "Missing GPU host ABI symbols: {}",
+                        info.missing_gpu_contract_symbols.join(",")
+                    )
+                } else {
+                    "Missing required symbols".to_string()
+                };
+                let status = HmrStatus::rejected(name, &reason);
                 eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
                 return;
             }
