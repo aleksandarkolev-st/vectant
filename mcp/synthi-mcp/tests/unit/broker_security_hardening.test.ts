@@ -117,6 +117,47 @@ describe("broker security hardening", () => {
     });
   });
 
+  it("filters and redacts resumed subscription events", () => {
+    const registry = new BrokerSubscriptionRegistry();
+    const sub = registry.subscribe({
+      principal: readOnlyPrincipal,
+      session_id: "s1",
+      topics: ["events", "logs"],
+    });
+    expect(sub.ok).toBe(true);
+    if (!sub.ok) throw new Error("unexpected subscribe failure");
+
+    const resumed = registry.resume({
+      subscription_id: sub.subscription_id,
+      last_seen_event_id: 0,
+      events: [
+        {
+          kind: "input",
+          seq: 1,
+          ts: 1,
+          action: "mouse:click",
+          payload: { session_id: "s2", access_token: "secret-token" },
+        },
+        {
+          kind: "console",
+          seq: 2,
+          ts: 2,
+          level: "error",
+          source: "mcp_internal",
+          message: "Authorization: Bearer abc.def.ghi",
+        },
+      ],
+    });
+
+    expect(resumed.ok).toBe(true);
+    if (!resumed.ok) throw new Error("unexpected resume failure");
+    expect(resumed.events).toHaveLength(1);
+    expect(resumed.events[0]).toMatchObject({
+      kind: "console",
+      message: "Authorization: [REDACTED]",
+    });
+  });
+
   it("redacts replay results and audits replay access", () => {
     const log = new EventLog();
     log.push({

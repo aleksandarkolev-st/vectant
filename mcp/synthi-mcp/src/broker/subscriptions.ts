@@ -110,11 +110,20 @@ export class BrokerSubscriptionRegistry {
     }
     sub.cursor = input.last_seen_event_id;
     sub.last_emit_at = input.now ?? Date.now();
-    const replay = input.events.filter((event) => event.seq > input.last_seen_event_id);
+    const rawReplay = input.events.filter((event) => event.seq > input.last_seen_event_id);
+    let replay: EventLogEntry[];
+    try {
+      replay = rawReplay
+        .filter((event) => sub.session_id === eventSessionId(event, sub.session_id))
+        .filter((event) => eventMatchesTopics(event, sub.topics))
+        .map((event) => redactBrokerEvent(event, sub.principal.role));
+    } catch {
+      return { ok: false, error: brokerError("FORBIDDEN", { reason: "redaction_failed" }) };
+    }
     return {
       ok: true,
       resumed_from_event_id: input.last_seen_event_id,
-      gap_detected: replay[0] ? replay[0].seq > input.last_seen_event_id + 1 : false,
+      gap_detected: rawReplay[0] ? rawReplay[0].seq > input.last_seen_event_id + 1 : false,
       events: replay,
     };
   }
