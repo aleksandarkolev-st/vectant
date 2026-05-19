@@ -186,8 +186,15 @@ function ThemePickerOverlay({ onClose }) {
     };
     // While previewing, the overlay sets pointerEvents:'none', so the row's
     // onContextMenu handler no longer catches the release-time contextmenu
-    // event — block it at the window in the capture phase instead.
-    const blockContextMenu = (e) => e.preventDefault();
+    // event — block it at the window in the capture phase instead, and stop
+    // propagation so custom in-app context menu handlers do not run either.
+    const blockContextMenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === 'function') {
+        e.stopImmediatePropagation();
+      }
+    };
     window.addEventListener('mouseup', stop);
     window.addEventListener('blur', stop);
     window.addEventListener('contextmenu', blockContextMenu, true);
