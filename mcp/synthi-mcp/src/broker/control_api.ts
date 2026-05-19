@@ -27,6 +27,8 @@ import {
 import { auditBrokerEvent, redactBrokerEvent } from "./security.js";
 import { brokerFallbackController, type BrokerFallbackMode, type BrokerFallbackResult } from "./fallback.js";
 
+type AcquireLeaseResponse = { ok: true; lease_id: string; expires_at_ms: number } | { ok: false; error: BrokerErrorPayload };
+
 export class BrokerControlPlane {
   readonly subscriptions = new BrokerSubscriptionRegistry();
   private readonly idempotency = new IdempotencyStore<unknown>();
@@ -92,7 +94,7 @@ export class BrokerControlPlane {
     preemptible?: boolean;
     priority?: LeasePriority;
     idempotency_key: string;
-  }): { ok: true; lease_id: string; expires_at_ms: number } | { ok: false; error: BrokerErrorPayload } {
+  }): AcquireLeaseResponse {
     const auth = authorizeBrokerCapability(input.principal, "acquire_lease", input.session_id);
     if (auth) return auth;
     const payload = {
@@ -106,7 +108,7 @@ export class BrokerControlPlane {
     const scope = this.scope(input.principal, "acquire_lease", input.session_id);
     const replay = this.idempotency.lookup({ scope, idempotency_key: input.idempotency_key, payload });
     if (replay.status === "conflict") return { ok: false, error: brokerError("IDEMPOTENCY_CONFLICT") };
-    if (replay.status === "replay") return replay.record.response as { ok: true; lease_id: string; expires_at_ms: number };
+    if (replay.status === "replay") return replay.record.response as AcquireLeaseResponse;
     const result = leaseRegistry.acquireWithPolicy(payload.lease_ms, input.principal.subject, {
       scope: payload.scope,
       preemptible: payload.preemptible,
@@ -114,13 +116,15 @@ export class BrokerControlPlane {
       reason: payload.reason,
     });
     if (!result.ok) {
-      return {
-        ok: false,
+      const response = {
+        ok: false as const,
         error: brokerError("LEASE_DENIED", {
           current_lease_id: result.current.lease_id,
           queued_request_id: result.queued?.request_id,
         }),
       };
+      this.idempotency.remember({ scope, idempotency_key: input.idempotency_key, payload, response });
+      return response;
     }
     const response = { ok: true as const, lease_id: result.lease.lease_id, expires_at_ms: result.lease.expires_at };
     this.idempotency.remember({ scope, idempotency_key: input.idempotency_key, payload, response });

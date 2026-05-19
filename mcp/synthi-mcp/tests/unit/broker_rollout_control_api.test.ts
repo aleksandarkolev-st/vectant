@@ -129,6 +129,44 @@ describe("broker control API lease and fallback contracts", () => {
     expect(conflict.error.error).toBe("IDEMPOTENCY_CONFLICT");
   });
 
+  it("replays denied lease acquisition without duplicate queue entries", () => {
+    const prev = process.env["SYNTHI_BROKER_INPUT_MODE"];
+    process.env["SYNTHI_BROKER_INPUT_MODE"] = "enforce";
+    try {
+      const control = new BrokerControlPlane(new EventLog());
+      const first = control.acquireLease({
+        principal: inputPrincipal,
+        session_id: "s1",
+        scope: ["mouse"],
+        idempotency_key: "holder",
+      });
+      expect(first.ok).toBe(true);
+
+      const denied = control.acquireLease({
+        principal: otherInputPrincipal,
+        session_id: "s1",
+        scope: ["keyboard"],
+        idempotency_key: "contender",
+      });
+      expect(denied.ok).toBe(false);
+      if (denied.ok) throw new Error("unexpected acquire success");
+      expect(denied.error.error).toBe("LEASE_DENIED");
+      expect(leaseRegistry.queueSnapshot()).toHaveLength(1);
+
+      const replay = control.acquireLease({
+        principal: otherInputPrincipal,
+        session_id: "s1",
+        scope: ["keyboard"],
+        idempotency_key: "contender",
+      });
+      expect(replay).toEqual(denied);
+      expect(leaseRegistry.queueSnapshot()).toHaveLength(1);
+    } finally {
+      if (prev === undefined) delete process.env["SYNTHI_BROKER_INPUT_MODE"];
+      else process.env["SYNTHI_BROKER_INPUT_MODE"] = prev;
+    }
+  });
+
   it("renews, releases, and force releases through the control API", () => {
     const control = new BrokerControlPlane(new EventLog());
     const lease = control.acquireLease({
