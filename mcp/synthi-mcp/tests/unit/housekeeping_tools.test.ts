@@ -69,6 +69,15 @@ describe("synthi_get_event_log", () => {
     expect(entries.length).toBe(1);
   });
 
+  it("returns lease events by kind", async () => {
+    eventLog.push({ kind: "lease", action: "queued", owner: "agent", payload: { request_id: "req_1" } });
+    const res = await getEventLogTool({ kind: "lease" });
+    expect(res.isError).toBeUndefined();
+    const entries = (res.structuredContent as { entries: Array<{ kind: string }> }).entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.kind).toBe("lease");
+  });
+
   it("rejects invalid kind", async () => {
     const res = await getEventLogTool({ kind: "totally_not_a_kind" });
     expect(res.isError).toBe(true);
