@@ -4195,6 +4195,16 @@ extern "C" unsigned long long device_kernel_sig_hash(const char* name);
 
     Do not emit plain `__global__ void particle_flow(...)`; C++ name
     mangling makes `hipModuleGetFunction` / `cuModuleGetFunction` fail.
+  - Preserve every user-authored `__global__` kernel name in the generated
+    device role. Do not replace `advance_particle_field` or similar source
+    kernels with simplified substitutes like `update_particles`; wrap the
+    original signature for Synthi dispatch instead.
+  - Preserve device constants and identifiers used by those kernels, including
+    tokenized values such as `kHmrScaleDirection`, `kHmrScaleColorBias`,
+    `kResetPadding`, color constants, bounds constants, and helper functions.
+    Do not fold them into unrelated literals or rename them, because
+    device-only HMR needs the generated device file to expose the same
+    editable semantics as the user source.
   - **No `cuMalloc`/`hipMalloc` outside the Synthi allocation registry**
     in host_runner.cpp. The registry records `(ptr, size, owner_module,
     semantic_name, lifetime_hint, dirty)` for every live Synthi-managed
@@ -4391,6 +4401,8 @@ ROCm/HIP must not. A ROCm `device_flags` list should usually be
   guard, boundary condition, constant, reset path, and host/device copy that
   can affect output must survive the split unchanged unless it is only being
   mechanically routed through the Synthi GPU launch/runtime ABI.
+  Original `__global__` kernel names and device constants must remain visible
+  in the generated device role for device-only HMR edits.
 
 # USER SOURCE
 

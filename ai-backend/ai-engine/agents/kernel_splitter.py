@@ -188,6 +188,32 @@ def _normalise_file_map(files: Mapping[str, Any]) -> Dict[str, str]:
     return out
 
 
+def _source_file_map(files: Optional[Sequence[Mapping[str, Any]]]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    if not files:
+        return out
+    for index, item in enumerate(files):
+        if isinstance(item, Mapping):
+            name = item.get("path") or item.get("name") or item.get("filename")
+            content = item.get("content") or item.get("source") or item.get("file_content")
+        else:
+            name = (
+                getattr(item, "path", None)
+                or getattr(item, "name", None)
+                or getattr(item, "filename", None)
+            )
+            content = (
+                getattr(item, "content", None)
+                or getattr(item, "source", None)
+                or getattr(item, "file_content", None)
+            )
+        if not name:
+            name = f"input-{index}.cpp"
+        if isinstance(content, str) and content.strip():
+            out[str(name).strip().replace("\\", "/")] = content
+    return out
+
+
 def _extract_block(pattern: re.Pattern, text: str) -> str:
     m = pattern.search(text)
     return m.group("body").strip() if m else ""
@@ -367,6 +393,7 @@ async def run_kernel_splitter(
         files=parsed["files"],
         manifest_arch=arch_list,
         manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
+        source_files=_source_file_map(files),
     )
 
     return KernelSplitResult(

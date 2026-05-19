@@ -152,6 +152,7 @@ _DEVICE_DESCRIPTOR_INIT_RE = re.compile(
     r"\bDeviceDescriptor\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*\{(?P<body>.*?)\}\s*;",
     re.DOTALL,
 )
+_SOURCE_DEVICE_IDENTIFIER_RE = re.compile(r"\bk[A-Z][A-Za-z0-9_]*\b")
 
 _NEW_FILE_OPS = {"create", "new", "add_file"}
 
@@ -464,6 +465,25 @@ def _mirror_initialized_in_load(core_load_body: str, mirror: str, fields: Set[st
     )
 
 
+def _source_device_files(source_files: Optional[Mapping[str, str]]) -> Mapping[str, str]:
+    if not source_files:
+        return {}
+    return {
+        path: source
+        for path, source in source_files.items()
+        if path.replace("\\", "/").lower().endswith((".cu", ".hip"))
+    }
+
+
+def _source_device_identifiers(source_device_sources: Mapping[str, str]) -> Set[str]:
+    identifiers: Set[str] = set()
+    for source in source_device_sources.values():
+        if "__global__" not in source and "__device__" not in source:
+            continue
+        identifiers.update(_SOURCE_DEVICE_IDENTIFIER_RE.findall(source))
+    return identifiers
+
+
 def _manifest_role_path(manifest: Optional[Mapping[str, object]], role: str) -> Optional[str]:
     if not isinstance(manifest, dict):
         return None
@@ -526,6 +546,7 @@ def verify_split_output(
     files: Mapping[str, str],
     manifest_arch: Iterable[str],
     manifest: Optional[Mapping[str, object]] = None,
+    source_files: Optional[Mapping[str, str]] = None,
 ) -> SplitVerificationResult:
     """Verify the Kernel Splitter Agent's output (§5.6 item 2).
 
@@ -584,6 +605,7 @@ def verify_split_output(
     host_runner_path = role_paths.get("host_runner") or "host_runner"
     device_path = role_paths.get("device") or "device"
     device_source = files.get(device_path) or ""
+    source_device_sources = _source_device_files(source_files)
 
     allowed_include_paths: Set[str] = {"synthi_gpu_runtime.h"}
     for path in (shared_path, core_path, gui_path, host_runner_path, device_path):
@@ -626,6 +648,24 @@ def verify_split_output(
             )
 
     declared_kernels = set(_collect_kernel_signatures(device_source).keys())
+    source_kernel_names: Set[str] = set()
+    for source in source_device_sources.values():
+        source_kernel_names.update(_collect_kernel_signatures(source).keys())
+    for kernel in sorted(source_kernel_names):
+        if kernel not in declared_kernels:
+            violations.append(
+                Violation(
+                    rule="source_device_kernel_not_preserved",
+                    message=(
+                        f"The generated device role omits original kernel {kernel!r}. "
+                        "GPU splits must preserve user-authored kernel names and "
+                        "semantics so device-only HMR can patch the existing kernel "
+                        "instead of replacing it with a simplified substitute."
+                    ),
+                    offending_module=device_path,
+                    offending_symbol=kernel,
+                )
+            )
     for match in _GLOBAL_DECL_RE.finditer(device_source):
         prefix = device_source[max(0, match.start() - 48) : match.start()]
         if 'extern "C"' not in prefix:
@@ -643,6 +683,22 @@ def verify_split_output(
             )
 
     shared_source = files.get(shared_path) or ""
+    for identifier in sorted(_source_device_identifiers(source_device_sources)):
+        if identifier not in device_source:
+            violations.append(
+                Violation(
+                    rule="source_device_identifier_not_preserved",
+                    message=(
+                        f"The generated device role omits original device identifier "
+                        f"{identifier!r}. Preserve constants and tokenized values from "
+                        "the user's GPU source in the device role instead of folding "
+                        "or replacing them; device-only HMR must be able to edit the "
+                        "same device semantics."
+                    ),
+                    offending_module=device_path,
+                    offending_symbol=identifier,
+                )
+            )
     if "synthi_gpu_runtime.h" not in shared_source:
         violations.append(
             Violation(
