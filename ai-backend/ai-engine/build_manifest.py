@@ -409,6 +409,8 @@ def normalize_gpu_split_manifest(
     for flag in include_flags:
         if flag not in common_flags:
             common_flags.append(flag)
+    if "-shared" not in common_flags:
+        common_flags.append("-shared")
     if "-fPIC" not in common_flags:
         common_flags.append("-fPIC")
     manifest["common_flags"] = common_flags

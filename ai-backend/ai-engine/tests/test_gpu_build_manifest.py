@@ -189,6 +189,8 @@ def test_normalizes_ai_gpu_manifest_defaults_for_rocm():
     assert parsed.gpu.arch == ["gfx1201"]
     assert parsed.confidence.overall == "high"
     assert "-I/opt/rocm/include" in parsed.common_flags
+    assert "-shared" in parsed.common_flags
+    assert "-fPIC" in parsed.common_flags
     assert "-lamdhip64" in parsed.core_link_flags
     assert "-lSDL2" in parsed.gui_link_flags
     assert "-ldl" in parsed.runner_link_flags
