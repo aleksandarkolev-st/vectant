@@ -4035,6 +4035,37 @@ from `core_on_update` while `!device_initialized`, and do not mark
 The init launch argument list must include every device buffer passed to update
 kernels, and the init kernel body must write the buffers it receives.
 
+For separate-array kernels, do not collapse initialization to a single struct
+buffer or to only the displayed coordinates. If the update launch passes
+`d_x`, `d_y`, `d_vx`, `d_vy`, and `d_rgba`, the init launch must pass all of
+those device pointers too:
+
+    if (!state->device_initialized) {
+        bool initialized = synthi_gpu_launch(nullptr, "init_particle_field",
+                                             grid, block, 0, nullptr,
+                                             { &state->d_x, &state->d_y,
+                                               &state->d_vx, &state->d_vy,
+                                               &state->d_rgba, &count_arg });
+        if (initialized) state->device_initialized = true;
+        return;
+    }
+
+The matching device kernel must receive and write every pointer it is given:
+
+    extern "C" __global__ void init_particle_field(float* x, float* y,
+                                                   float* vx, float* vy,
+                                                   unsigned int* rgba,
+                                                   int count) {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if (i < count) {
+            x[i] = float((i % 32) * 20 + 12);
+            y[i] = float((i / 32) * 16 + 12);
+            vx[i] = 0.0f;
+            vy[i] = 0.0f;
+            rgba[i] = 0xffffffffu;
+        }
+    }
+
 A valid first-frame host mirror setup is:
 
     state->particles = new Particle[state->num_particles];
