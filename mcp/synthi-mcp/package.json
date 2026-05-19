@@ -28,8 +28,8 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
-    "test:unit": "vitest run --project unit",
-    "test:integration": "vitest run --project integration",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/release-smoke.mjs --command dist/index.js",
     "smoke:image": "node scripts/release-smoke.mjs",
@@ -40,7 +40,8 @@
     "spike:E3": "tsx tests/spike/E3_p99_load.ts",
     "spike:E4": "tsx tests/spike/E4_cost_budget.ts",
     "soak": "node tests/soak/soak_loop.mjs",
-    "live:phase3": "node scripts/live-test-phase3.mjs"
+    "live:phase3": "node scripts/live-test-phase3.mjs",
+    "smoke:operator-agents": "node scripts/operator-multi-agent-smoke.mjs"
   },
   "engines": {
     "node": ">=18.0.0"
