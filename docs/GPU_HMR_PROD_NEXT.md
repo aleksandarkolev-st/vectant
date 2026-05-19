@@ -1,590 +1,1274 @@
-# GPU HMR Production Next Plan
+# GPU HMR Production Hardening Plan
 
-Date: 2026-05-20
+Draft date: 2026-05-20
 
-This document combines the current GPU HMR validation status with the next
-engineering work required to make the pipeline production-grade for engineers
-working on large native GPU projects with hundreds or thousands of files.
+## 1. Objective
 
-## Executive Summary
+GPU HMR should become reliable for engineers working on real native GPU
+projects, including repositories with hundreds or thousands of files.
 
-The GPU HMR mechanism is real and already useful:
-
-- first run can AI-split an ordinary user project into internal Synthi HMR roles,
-- generated role files stay internal and do not pollute the user workspace,
-- CUDA is reported working,
-- ROCm/GLFW was validated end-to-end on `gfx1201`,
-- device-only sidecar reload works without full app restart,
-- screenshots prove visible output before and after HMR.
-
-The remaining production work is mostly about scale, determinism, and breadth:
-
-- build-system integration for real CMake/compile database projects,
-- source graph selection for thousands of files,
-- direct user `.cu` / `.hip` edit mapping into the generated device role,
-- multi device translation unit support,
-- stronger failure UX, observability, and artifact inspection,
-- a real vendor/framework validation matrix.
-
-The intended production model is:
-
-1. Full AI split once per project/target/version.
-2. Persist an internal sidecar with the generated roles, architecture cache,
-   manifest, and source baseline.
-3. For edits, avoid full AI split whenever possible.
-4. Prefer local deterministic patching, then AI delta/diff patch, then full
-   re-split only as a last resort.
-5. For device-only kernel body edits, compile and reload only the device
-   sidecar.
-
-## Current Working Baseline
-
-### Validated Behavior
-
-The latest dense validation proved the following for the ROCm/GLFW path:
-
-- Run file: `src/app/main.cpp`
-- Workspace: `293` user files
-- Relevant source mix: `51` `.cpp` / `.hpp` / `.h` / `.hip` files
-- GPU target: ROCm `gfx1201`
-- Render backend: GLFW/OpenGL
-- First compile: full AI GPU split
-- Device HMR: device-only sidecar compile and reload
-- Generated roles: `shared.h`, `core.cpp`, `gui.cpp`, `host_runner.cpp`,
-  `device.hip`
-- Generated roles are internal only and are not written to the visible user
-  workspace
-- Device reload succeeded with preserved runner state
-- First and post-HMR screenshots were visibly non-black and materially different
-
-Representative validation workspace:
+The production goal is not merely "make generated GPU demos reload." The goal
+is:
 
 ```text
-http://localhost:3000/workspace/gpu-scale-validation-glfw-userfiles-20260519233656
+real user project
+  -> real build target selected
+  -> deterministic source context selected
+  -> AI split only when needed
+  -> generated roles stay internal
+  -> safe edits hot-reload quickly
+  -> unsafe edits fall back predictably
+  -> every decision is explainable
 ```
 
-Representative validation report:
+The highest-value workflow is kernel tuning:
 
 ```text
-mcp/synthi-mcp/.gpu-hmr-test-logs/scale-validation-glfw-results.txt
-```
-
-### Current Fast Paths
-
-The current speed comes from multiple layers. These should be preserved and
-made more deterministic.
-
-#### 1. First Run: Full AI Split
-
-The first run from the user entry file does the expensive work:
-
-```text
-ordinary user project
-  -> full GPU AI split
-  -> internal shared/core/gui/host_runner/device roles
-  -> compile
-  -> runner launch
-```
-
-This is expected to be seconds-level latency. In the latest ROCm/GLFW
-validation, the first full split and compile took about 14 seconds.
-
-#### 2. Repeat Run: Split Cache
-
-The worker caches AI split output by a key that includes:
-
-- primary source,
-- file context,
-- GPU vendor and arch,
-- model,
-- split schema version,
-- GPU mode flags.
-
-Repeat runs of the same project can skip the full AI split.
-
-#### 3. Post-Split User Edits: Adapted Project Path
-
-After first split, the worker has an internal sidecar:
-
-```text
-.synthi_split_meta.json
-```
-
-The sidecar tracks:
-
-- original user source baseline,
-- architecture cache,
-- compile manifest,
-- generated role paths.
-
-When the user edits the original source and runs again, the worker compares old
-user source to new user source and tries:
-
-1. Tier 0 / Tier 1 local value patching, no AI.
-2. Tier 2 AI diff/delta patch, tiny edit list, no full split.
-3. Tier 3 full AI re-split only if the patch path fails.
-
-#### 4. Device-Only Generated Role HMR
-
-The validation harness proved the fastest current GPU path:
-
-```text
-edit generated device source internally
-  -> compile device.cu/device.hip only
-  -> reload sidecar
-  -> no full split
-  -> no AI delta
-  -> no host module rebuild
-```
-
-In the validation report, the device-only HMR phase was about 1 second end to
-end, and the actual device reload took only a few milliseconds.
-
-## Best Production Fast Path
-
-The production goal should be:
-
-```text
-first run:
-  full AI split once
-
-normal edits:
-  local patch when deterministic
-  otherwise AI diff/delta patch
-  full AI re-split only on failure
-
-device kernel body edits:
-  classify as device-only
-  update generated device role
-  compile device sidecar only
-  reload sidecar
-```
-
-The most important next optimization is:
-
-```text
-user .cu/.hip body edit
-  -> map directly to generated device role
-  -> verify kernel signatures and constant layout unchanged
-  -> compile/reload device sidecar
-  -> skip full AI split
-  -> often skip AI delta
-```
-
-That would make the common GPU tuning loop nearly as fast as the internal
-validation path.
-
-## Production-Grade Requirements
-
-### 1. Real Build-System Integration
-
-Current state:
-
-- The splitter infers a compile manifest from source and file context.
-- This works for curated projects and some straightforward workspaces.
-- It is not enough for large engineer-owned repositories.
-
-Production requirement:
-
-- ingest `compile_commands.json`,
-- understand CMake targets,
-- preserve include directories,
-- preserve preprocessor defines,
-- preserve target-specific link flags,
-- preserve framework/library flags,
-- map the clicked Run file to the actual build target,
-- surface target ambiguity instead of guessing.
-
-Without this, large projects will fail on missing macros, generated headers,
-private include roots, platform defines, or target-specific link options.
-
-Acceptance criteria:
-
-- A CMake project with multiple targets can select the correct app target.
-- Split manifest includes the same effective include dirs, defines, standard,
-  and link flags as the source target.
-- Missing or ambiguous target selection returns an actionable error card.
-
-### 2. Scalable Source Graph Selection
-
-Current state:
-
-- The worker can pass a large file set.
-- The GPU splitter now receives multi-file context.
-- Prompt budget still requires truncation and prioritization.
-
-Production requirement:
-
-- build a dependency graph from the entry target,
-- include transitive headers,
-- include device translation units,
-- include relevant render/backend files,
-- include build config and target metadata,
-- exclude docs, vendor blobs, generated outputs, and unrelated modules,
-- record exactly which files were included and why.
-
-The AI should not see "a lot of files"; it should see the right files.
-
-Acceptance criteria:
-
-- A 5,000-file repo can produce a bounded source context.
-- Context selection is deterministic and logged.
-- Dropped files are explainable by rule, not silent prompt-budget loss.
-
-### 3. Direct User Device Edit Mapping
-
-Current state:
-
-- Internal generated device-only edits are fast.
-- User `.cu` / `.hip` edits still need stronger mapping into the generated
-  device role.
-
-Production requirement:
-
-- maintain source-to-generated mapping for kernels, constants, helpers, and
-  launch sites,
-- classify user device edits as body-only, signature-changing, constant-layout
-  changing, or mixed host/device,
-- apply safe body-only edits directly to the generated device role,
-- run signature and constant layout verification,
-- compile only the device sidecar when ABI is unchanged.
-
-Acceptance criteria:
-
-- Editing a kernel arithmetic expression in user `.cu` / `.hip` triggers
-  `device_only` without AI re-split.
-- Editing a kernel signature triggers `abi_breaking`.
-- Editing host launch arguments triggers `mixed` or `abi_breaking` as needed.
-- The UI explains the chosen reload plan.
-
-### 4. Multi Device Translation Unit Support
-
-Current state:
-
-- The current GPU HMR contract supports one generated device role:
-  `device.cu` or `device.hip`.
-
-Production requirement:
-
-- support multiple source `.cu` / `.hip` files,
-- support device headers,
-- support separate compilation where possible,
-- support device linking where required,
-- map kernels to device translation units,
-- reload only the affected sidecar or linked bundle when safe.
-
-Acceptance criteria:
-
-- Multiple user device files can be split without flattening everything into
-  one brittle generated file.
-- Device-only edits in one translation unit do not force unrelated device
-  recompiles when the ABI allows it.
-- Unsupported RDC/device-link cases produce clear fallback behavior.
-
-### 5. ABI, State, And Reload Plan Hardening
-
-Current state:
-
-- Kernel signature hashes and constant layout checks exist.
-- Device-only HMR works for unchanged signatures/layout.
-
-Production requirement:
-
-- tighten reload plan classification,
-- record kernel ABI before and after every edit,
-- detect constant-memory layout changes,
-- detect state layout changes,
-- decide between `device_only`, `host_only`, `mixed`, and `abi_breaking`
-  deterministically,
-- preserve state where possible and explain when cold reload is required.
-
-Acceptance criteria:
-
-- Every reload decision has a machine-readable reason.
-- ABI-breaking changes cannot accidentally use `device_only`.
-- Device-only edits preserve runner process and host module state.
-
-### 6. Framework And Vendor Matrix
-
-Current state:
-
-- CUDA is reported working.
-- ROCm/GLFW is end-to-end validated.
-- SDL2 and GLFW are the most mature paths.
-- Other libraries are prompt-supported but not fully matrix-proven.
-
-Production requirement:
-
-Run end-to-end validation across:
-
-- CUDA + SDL2,
-- CUDA + GLFW/OpenGL,
-- ROCm + SDL2,
-- ROCm + GLFW/OpenGL,
-- raylib,
-- SFML,
-- ImGui on SDL/GLFW,
-- OpenGL context edge cases,
-- Vulkan or explicit unsupported/fallback handling.
-
-Acceptance criteria:
-
-- Each matrix case has:
-  - first compile,
-  - visible screenshot,
-  - device-only edit,
-  - post-HMR screenshot,
-  - no generated role files in the user workspace,
-  - logged reload plan,
-  - runner survival check.
-
-### 7. Failure UX For Engineers
-
-Current state:
-
-- Failures are mostly visible in logs and validation reports.
-- Engineers need better immediate feedback.
-
-Production requirement:
-
-- show exact missing include/library/target reason,
-- show verifier rejection reason,
-- show whether the system used full split, delta patch, or device-only path,
-- offer concrete next actions,
-- never silently produce a wrong or black app.
-
-Acceptance criteria:
-
-- Compile failures are categorized.
-- AI split verifier failures are shown with stable rule names.
-- Unsupported project structures return "not supported yet" with a reason,
-  not a vague compile error.
-
-### 8. Generated Artifact Lifecycle And Inspection
-
-Current state:
-
-- Generated role files are internal and no longer pollute the visible user
-  workspace.
-
-Production requirement:
-
-- keep generated roles internal by default,
-- provide an internal generated split viewer for debugging,
-- show user source to generated role mapping,
-- show generated manifest and compile commands,
-- clean up old temp builds,
-- prevent stale generated artifacts from being confused with user files.
-
-Acceptance criteria:
-
-- User file tree remains user-authored.
-- Engineers can inspect generated roles through an explicit debug panel.
-- Every generated artifact has provenance: source hash, target, model,
-  manifest, and timestamp.
-
-### 9. Performance And Caching
-
-Current state:
-
-- AI split cache exists.
-- Incremental compile cache exists.
-- Speculative diff patching exists for some edit flows.
-
-Production requirement:
-
-- stronger cache keys based on build target and compile flags,
-- file-level hashing for thousands of files,
-- send changed files only after first split where safe,
-- speculative diff patch when user pauses,
-- avoid duplicate AI calls between save and compile,
-- make device-only edits avoid host rebuilds consistently.
-
-Acceptance criteria:
-
-- No repeated full AI split for unchanged project state.
-- Common kernel body edit reaches visible post-HMR frame in low single-digit
-  seconds.
-- Cache hit/miss reasons are logged.
-
-### 10. Safety And Isolation
-
-Current state:
-
-- The current dev pipeline can run arbitrary native code.
-- Some validation paths use unsafe/in-process runner mode.
-
-Production requirement:
-
-- isolate user native processes,
-- enforce CPU/GPU/memory/time limits,
-- contain runner crashes,
-- kill runaway kernels where possible,
-- separate debug unsafe mode from normal product mode,
-- clean temporary workspaces and GPU artifacts.
-
-Acceptance criteria:
-
-- A crashing runner does not corrupt the supervisor.
-- Resource limits are enforced per session.
-- Unsafe mode is opt-in and visible.
-
-### 11. Observability
-
-Production debugging requires structured traces for:
-
-- selected entry file,
-- selected build target,
-- selected source context files,
-- AI split cache key and hit/miss,
-- AI model and prompt schema version,
-- generated manifest,
-- generated role paths,
-- compile command for each module,
-- reload plan,
-- HMR timing,
-- screenshot readiness timing,
-- verifier rejection rules,
-- crash markers.
-
-Acceptance criteria:
-
-- One run report can explain why a compile was slow or why it rebuilt.
-- Engineers can distinguish "AI split", "AI delta", "local patch",
-  "device-only compile", and "cold reload" from UI/logs.
-
-## Implementation Roadmap
-
-### Milestone 1: Make Current Fast Path Explicit
-
-Tasks:
-
-- expose reload plan in UI/logs,
-- expose whether run used full split, cache, local patch, AI delta, or
-  device-only compile,
-- add direct report links from workspace,
-- document the Run file and expected edit files.
-
-Done when:
-
-- an engineer can tell why a run was fast or slow without reading container
-  logs.
-
-### Milestone 2: Direct User Device Edit To Device-Only HMR
-
-Tasks:
-
-- persist kernel source mapping from user `.cu` / `.hip` to generated device
-  role,
-- classify device body edits,
-- apply safe body edits to generated device role,
-- verify unchanged signature and constant layout,
-- compile/reload device sidecar only.
-
-Done when:
-
-- editing a kernel arithmetic expression in the user device file avoids full
-  split and avoids host rebuild.
-
-### Milestone 3: Build Graph Ingestion
-
-Tasks:
-
-- parse `compile_commands.json`,
-- infer CMake targets,
-- map Run file to target,
-- preserve include dirs, defines, standards, and link flags,
-- update compile manifest generation to use target data.
-
-Done when:
-
-- a nontrivial CMake GPU app builds through Synthi without manual flag
-  guessing.
-
-### Milestone 4: Large Repo Context Engine
-
-Tasks:
-
-- build source graph selection,
-- rank and cap files deterministically,
-- include transitive headers/device/render/build config,
-- log included and omitted files.
-
-Done when:
-
-- a thousands-file repo can be split with a bounded, explainable context.
-
-### Milestone 5: Multi Device TU
-
-Tasks:
-
-- extend manifest for multiple device roles,
-- support per-TU compile,
-- support device link where required,
-- map kernels to TUs,
-- reload affected sidecars.
-
-Done when:
-
-- projects with multiple `.cu` / `.hip` files can use GPU HMR without forced
-  flattening into one file.
-
-### Milestone 6: Production Matrix
-
-Tasks:
-
-- add validation fixtures for CUDA/ROCm and SDL2/GLFW/raylib/SFML/ImGui,
-- run first compile and device-only HMR for each,
-- assert no generated files in user tree,
-- record artifacts.
-
-Done when:
-
-- every supported backend has a current passing report.
-
-## Non-Goals For The Next Phase
-
-These are important, but should not block the next production hardening pass:
-
-- arbitrary proprietary engine integration without build metadata,
-- full Vulkan HMR if context/swapchain ownership is not modeled,
-- automatic support for every CUDA RDC/device-link layout,
-- zero-latency first compile,
-- exposing generated role files as normal user workspace files.
-
-Generated role files should remain internal. Inspection should happen through a
-debug viewer, not by writing `core.cpp`, `gui.cpp`, `host_runner.cpp`,
-`shared.h`, or `device.cu/.hip` into the user tree.
-
-## Definition Of Production Ready
-
-GPU HMR can be called production-grade for engineers when:
-
-1. First run works from a real build target, not a guessed file.
-2. Thousands-file repos use deterministic source graph selection.
-3. Common `.cu` / `.hip` body edits use direct device-only HMR.
-4. ABI-breaking edits are detected before unsafe reload.
-5. Generated files remain internal and inspectable.
-6. Every run shows which fast path was used.
-7. CUDA and ROCm pass the supported framework matrix.
-8. Failures are actionable without reading raw container logs.
-9. Crashes and runaway native code are isolated.
-10. Validation reports are current, reproducible, and checked into the repo.
-
-## Recommended Next Task
-
-Implement the direct user device edit path:
-
-```text
-user edits src/gpu/*.cu or src/gpu/*.hip
-  -> classify body-only vs ABI-changing
+user edits a .cu or .hip kernel body
+  -> classify edit as device-body-only
   -> map edit into generated device role
-  -> verify signatures/constants unchanged
+  -> verify ABI and layout unchanged
+  -> compile affected device sidecar only
+  -> reload sidecar without restarting host runner
+  -> capture post-HMR frame
+```
+
+This should be the first serious production slice, but it must be implemented
+with ABI gates and build metadata. Regex patching alone is not acceptable.
+
+## 2. Current Baseline
+
+### Proven
+
+The ROCm/GLFW validation is a real milestone:
+
+- entry file: `src/app/main.cpp`
+- workspace size: `293` user files
+- relevant source mix: `51` `.cpp` / `.hpp` / `.h` / `.hip` files
+- GPU target: ROCm `gfx1201`
+- render backend: GLFW/OpenGL
+- generated roles: `shared.h`, `core.cpp`, `gui.cpp`, `host_runner.cpp`,
+  `device.hip`
+- generated files: internal only
+- device reload: succeeded
+- runner state: preserved
+- screenshots: visible before and after HMR
+
+This proves the mechanism can work end-to-end for one important path.
+
+### Not Yet Proven
+
+The following should be treated as claims requiring matrix validation:
+
+- CUDA production readiness
+- large CMake repository support
+- multi-target project selection
+- multi-device-translation-unit support
+- raylib/SFML/ImGui coverage
+- Vulkan coverage
+- RDC/device-link coverage
+- safe reload under ABI-changing edits
+- sandboxing of arbitrary native code
+
+Do not write "CUDA works" in production docs unless it is backed by a current
+validation report. Use "CUDA path exists" or "CUDA requires matrix validation."
+
+## 3. External Constraints That Shape The Design
+
+Build-system metadata is mandatory. CMake can generate
+`compile_commands.json` with exact compiler calls for translation units, but
+only for Makefile and Ninja generators, and CMake warns that this does not
+work well with Unity builds. That matters because large C++ projects often use
+target-specific defines, include roots, generated headers, and build modes.
+
+`compile_commands.json` is necessary but insufficient. The Clang compilation
+database spec says each command object describes one way a translation unit is
+compiled, and the same file can have multiple command objects for different
+configurations. The `arguments` field is preferred over shell-escaped
+`command`, because escaping is an error source.
+
+For CMake projects, target discovery should use the CMake File API, not
+string-parsing `CMakeLists.txt`. The File API provides semantic build-system
+information, including configurations, directories, projects, and targets.
+
+Multi-TU device support must preserve vendor compilation semantics. CUDA
+separate device compilation is not the default. NVIDIA documents that
+whole-program compilation is still the default, while separate compilation
+uses relocatable device code, `--device-c`, and `--device-link`.
+
+HIP has the same class of issue. In non-RDC mode, device code in one
+translation unit cannot call device functions in another. With `-fgpu-rdc`,
+multiple translation units are linked into device images. ROCm also documents
+`-fgpu-rdc` as relocatable device code, or separate compilation mode.
+
+Native runner isolation is not optional. Docker seccomp can restrict system
+calls, and cgroups can limit CPU and memory, but neither automatically solves
+all GPU runaway or driver-level failure modes. Use them as part of a sandbox,
+not as the whole sandbox.
+
+## 4. Production Invariants
+
+These are non-negotiable.
+
+### Invariant 1: User Workspace Purity
+
+Generated files must never appear as normal user files.
+
+Allowed:
+
+- internal generated split viewer
+- debug-only generated artifact panel
+- downloadable validation artifact bundle
+- internal `.synthi` sidecar
+
+Not allowed:
+
+- `core.cpp` in user tree
+- `gui.cpp` in user tree
+- `host_runner.cpp` in user tree
+- `shared.h` in user tree
+- `device.cu` / `device.hip` in user tree
+
+### Invariant 2: No Unsafe Fast Path
+
+`device_only` reload is allowed only when all of these are true:
+
+- kernel signatures unchanged
+- launch ABI unchanged
+- constant/global device symbol layout unchanged
+- host-visible state layout unchanged
+- device role mapping is valid
+- affected generated role compiles
+- post-compile symbol verifier passes
+- runner reload API accepts the artifact
+
+If any gate fails, fall back to:
+
+- mixed reload
+- cold runner restart
+- AI delta patch
+- full re-split
+- unsupported with reason
+
+Never guess.
+
+### Invariant 3: Every Run Has A Reload Plan
+
+Every run should produce a machine-readable reload plan:
+
+```json
+{
+  "plan": "device_only",
+  "reasonCodes": [
+    "edit.kernel_body_only",
+    "abi.kernel_signature_unchanged",
+    "abi.constant_layout_unchanged",
+    "build.device_sidecar_only"
+  ],
+  "fallbacksAvailable": ["ai_delta", "full_resplit", "cold_restart"],
+  "affectedUserFiles": ["src/gpu/raster.hip"],
+  "affectedGeneratedRoles": ["device.hip"],
+  "timingsMs": {
+    "classify": 12,
+    "patch": 8,
+    "compile": 840,
+    "reload": 4,
+    "firstFrame": 120
+  }
+}
+```
+
+### Invariant 4: Deterministic Context, Not Prompt Truncation
+
+The AI should not receive "whatever fits." It should receive a deterministic,
+explainable source graph.
+
+Every included file needs a reason:
+
+- entry translation unit
+- target source
+- transitive include
+- device translation unit
+- kernel declaration
+- kernel launch site
+- render backend
+- state type definition
+- generated-header prerequisite
+- build metadata
+
+Every dropped file needs a reason:
+
+- unrelated target
+- vendor dependency
+- docs/tests/examples
+- generated output
+- binary/blob
+- prompt-budget exclusion after lower priority ranking
+
+Critical files must not be silently dropped.
+
+## 5. Target Architecture
+
+### First Run
+
+```text
+user Run file
+  -> resolve build target
+  -> collect compile/build metadata
+  -> select source context
+  -> full AI split
+  -> verify generated roles
+  -> compile internal roles
+  -> launch isolated runner
+  -> capture first visible frame
+  -> persist sidecar metadata
+```
+
+### Repeat Run Without Edits
+
+```text
+same target and same source hashes
+  -> split cache hit
+  -> compile cache hit where possible
+  -> runner reuse or fast launch
+```
+
+### User Edit After Split
+
+```text
+changed user files
+  -> classify edit
+  -> choose reload plan
+  -> local deterministic patch when safe
+  -> AI delta patch when local patch cannot prove safety
+  -> full re-split only when necessary
+```
+
+### Device-Body Edit
+
+```text
+changed .cu/.hip file
+  -> parse with original compile flags
+  -> find mapped kernel/helper span
+  -> classify body-only vs ABI/layout/mixed
+  -> patch generated device role
+  -> verify ABI and constants
+  -> compile affected sidecar only
+  -> reload
+  -> screenshot
+```
+
+## 6. Required Sidecar Schema
+
+The current `.synthi_split_meta.json` should become a formal contract, not an
+incidental cache file.
+
+### Milestone 1 Required Fields
+
+Milestone 1 should require only:
+
+- `schemaVersion`
+- target identity
+- source baseline hashes
+- generated role paths
+- user-to-generated device mappings
+- kernel signature hashes
+- constant/global layout hashes
+- last reload plan report
+
+Reason: otherwise the first slice becomes too large and delays the
+highest-value workflow.
+
+### Forward-Compatible Fields
+
+These fields should be allowed but not required for Milestone 1:
+
+- host state layouts
+- multi-TU device role list
+- CMake codemodel hashes
+- device-link graph
+- full source context report
+- runner isolation metadata
+
+### Minimum Shape
+
+```json
+{
+  "schemaVersion": "gpu-hmr-meta-v1",
+  "project": {
+    "workspaceRoot": "...",
+    "sourceRoot": "...",
+    "buildRoot": "...",
+    "entryFile": "src/app/main.cpp"
+  },
+  "target": {
+    "buildSystem": "cmake",
+    "targetName": "gpu_app",
+    "configuration": "Debug",
+    "compiler": "hipcc",
+    "languageStandards": {
+      "CXX": "20",
+      "CUDA": null,
+      "HIP": "hip"
+    }
+  },
+  "sourceBaseline": {
+    "files": [
+      {
+        "path": "src/gpu/raster.hip",
+        "sha256": "...",
+        "role": "device_source",
+        "includedBecause": ["target_source", "contains_kernel"]
+      }
+    ]
+  },
+  "generatedRoles": {
+    "shared": ".synthi/generated/.../shared.h",
+    "core": ".synthi/generated/.../core.cpp",
+    "gui": ".synthi/generated/.../gui.cpp",
+    "hostRunner": ".synthi/generated/.../host_runner.cpp",
+    "deviceRoles": [
+      {
+        "id": "device.raster",
+        "path": ".synthi/generated/.../device_raster.hip",
+        "sourceFiles": ["src/gpu/raster.hip"],
+        "compiler": "hipcc",
+        "arch": "gfx1201"
+      }
+    ]
+  },
+  "mappings": [
+    {
+      "kind": "kernel",
+      "symbolId": "kernel:shade_pixels(float*,int,int)",
+      "userFile": "src/gpu/raster.hip",
+      "userRange": {"startByte": 1024, "endByte": 1890},
+      "generatedRole": "device.raster",
+      "generatedRange": {"startByte": 3400, "endByte": 4266},
+      "bodyHash": "...",
+      "signatureHash": "...",
+      "launchSites": ["src/app/main.cpp:144"]
+    }
+  ],
+  "abi": {
+    "kernels": [],
+    "deviceGlobals": [],
+    "constantSymbols": [],
+    "hostStateTypes": [],
+    "launchSites": []
+  },
+  "cacheKeys": {
+    "fullSplit": "...",
+    "localPatch": "...",
+    "deviceCompile": "..."
+  },
+  "lastReloadPlan": null
+}
+```
+
+## 7. Reload Plan Classification
+
+Use explicit classes.
+
+### `device_only`
+
+Allowed for:
+
+- kernel arithmetic/body changes
+- helper function body changes
+- local variable changes
+- loop/body tuning
+- math intrinsic changes
+- comments/formatting in mapped device body
+
+Required gates:
+
+- no signature change
+- no launch argument change
+- no struct layout change used across host/device boundary
+- no constant/global symbol layout change
+- no include graph change affecting ABI
+- no macro change affecting unmapped generated code
+- host module rebuild not required
+
+### `host_only`
+
+Allowed for:
+
+- UI-only code
+- camera controls
+- CPU-side constants not copied to device layout
+- logging
+- non-GPU render wrapper behavior
+
+Required gates:
+
+- no device role changes
+- no launch ABI changes
+- runner state can be preserved or safely patched
+
+### `mixed`
+
+Use for:
+
+- host launch argument changes
+- host/device shared type changes
+- changes to generated `shared.h` equivalent
+- changes touching both render loop and kernel dispatch
+
+### `abi_breaking`
+
+Use for:
+
+- kernel signature changes
+- kernel name/linkage changes
+- device global or constant symbol layout changes
+- host/device struct layout changes
+- state layout changes
+- RDC/device-link topology changes
+- compiler flag or architecture changes
+
+### `unsupported`
+
+Use for:
+
+- macro-generated kernels without stable source mapping
+- templates where instantiations cannot be enumerated
+- device code generated by external build step not present
+- RDC/device-link mode not supported for the project
+- unsupported graphics/context ownership
+- missing compile metadata
+- ambiguous target selection
+
+Do not hide unsupported cases behind vague compile errors.
+
+## 8. Direct User Device Edit Path
+
+This is the recommended next implementation slice.
+
+### Scope For First Version
+
+Keep the first version deliberately narrow:
+
+- single selected build target
+- single device translation unit
+- CUDA or HIP, one vendor path at a time
+- existing generated device role
+- mapped `.cu` / `.hip` kernel/helper body-only edits
+- no macro-generated kernels
+- no signature edits
+- no struct layout edits
+- no constant/global layout edits
+- no host launch edits
+- no RDC/device-link topology changes
+- one generated device role
+
+This narrow scope is enough to prove the highest-frequency workflow.
+
+### Parsing Is A Hard Safety Gate
+
+Regex may find candidate spans. Regex may not prove safety.
+
+`device_only` requires compiler-compatible parsing with the selected target's
+effective flags. If parsing fails, reject `device_only`.
+
+Use compile database flags where available. `compile_commands.json` records the
+working directory, command, source file, and can contain multiple commands for
+the same file under different configurations. The parser cannot use "some
+flags"; it needs the selected target's effective flags.
+
+For CUDA, Clang parsing is a strong tool, but not perfect proof that NVCC
+semantics are identical in every edge case. There is no formal CUDA language
+spec, and Clang CUDA dialect behavior can differ from NVCC.
+
+For HIP, use the same principle. HIP code must be compiled for a specific AMD
+GPU architecture, and `hipcc` invokes `amdclang++` while passing required
+options through. Missing flags can change parse results and codegen behavior.
+
+### Fast Path Separation
+
+Direct device path:
+
+- local only
+- no AI
+- mapped body-only edits only
+- must pass parser and ABI verifier
+
+AI delta path:
+
+- used when mapping exists but local patch cannot prove safe
+- still verifier-gated
+
+Full re-split:
+
+- last resort
+
+### Algorithm
+
+1. Detect changed files since `sourceBaseline`.
+2. Filter changed files to `.cu` / `.cuh` / `.hip` / `.h` / `.hpp` used by the
+   device role.
+3. Load the original compile command for the owning translation unit.
+4. Parse old and new source with the same selected-target flags.
+5. Diff AST/symbol spans, not just text.
+6. Match changed span to sidecar mapping.
+7. Classify edit.
+8. If body-only, patch generated device role.
+9. Recompute kernel ABI and constant/global symbol metadata.
+10. Compile generated device role only.
+11. Inspect compiled artifact symbols/layout where possible.
+12. Reload sidecar.
+13. Capture screenshot or frame readiness signal.
+14. Write reload report.
+
+### Rejection Rules
+
+Reject `device_only` when any of these are true:
+
+- edit crosses mapped and unmapped regions
+- edit changes function parameters
+- edit changes return type
+- edit changes function attributes
+- edit changes linkage/static/extern visibility
+- edit changes template parameters
+- edit changes `constexpr` values used in ABI/layout
+- edit changes `__constant__` or device global declarations
+- edit changes shared host/device struct definition
+- edit changes launch grid/block logic in host code
+- edit changes included header that affects multiple mapped kernels
+- parser cannot build a reliable before/after tree
+- required compile metadata is incomplete
+
+### Acceptance Criteria
+
+Arithmetic body edit:
+
+- `reloadPlan = device_only`
+- no AI call
+- no full AI split
+- no host rebuild
+- runner survives
+- post-HMR frame captured
+
+Signature edit:
+
+- `reloadPlan = abi_breaking`
+- `device_only` blocked
+- UI/report shows signature hash changed
+
+Launch argument edit:
+
+- `reloadPlan = mixed` or `abi_breaking`
+- UI/report shows launch ABI changed
+
+Constant/global edit:
+
+- `reloadPlan = abi_breaking`
+- `device_only` blocked
+- UI/report shows constant/global layout changed
+
+Parse failure:
+
+- `device_only` rejected
+- fallback chosen
+- reason code shown
+
+Old sidecar:
+
+- existing flow still works
+- `device_only` disabled unless required fields exist
+
+## 9. Build-System Integration
+
+This must graduate from "infer manifest from context" to "derive manifest from
+target."
+
+### Inputs
+
+- `compile_commands.json`
+- CMake File API codemodel
+- CMake cache
+- build configuration
+- target name
+- source file to target mapping
+- generated header locations
+- compiler identity
+- GPU vendor
+- GPU architecture
+- framework/library link flags
+
+### Target Resolution
+
+The clicked Run file should map to one build target.
+
+Resolution order:
+
+1. explicit target selected by user
+2. single executable target containing Run file
+3. single target that owns the entry translation unit
+4. target inferred from launch/debug config
+5. error card if ambiguous
+
+Bad behavior:
+
+- guessing the first executable target
+- guessing from file name alone
+- silently dropping target-specific defines
+- silently ignoring generated headers
+
+### Incomplete Metadata Rule
+
+If compile database or target metadata is incomplete:
+
+- no `device_only` proof
+- fallback to AI delta or full re-split
+- show missing metadata reason
+
+### Compile Manifest
+
+The split manifest must preserve:
+
+- compiler path
+- compiler kind
+- language mode
+- standard
+- include directories
+- system include directories
+- defines
+- undefines
+- GPU arch flags
+- RDC/device-link flags
+- warnings that affect compilation
+- source file working directory
+- generated header paths
+- link libraries
+- link directories
+- runtime library paths
+- framework flags
+
+### Acceptance Criteria
+
+- multi-target CMake project resolves correct app target
+- ambiguous target returns actionable UI error
+- compile manifest matches target-effective flags
+- generated headers are available before split/compile
+- Unity build projects are handled explicitly or rejected with reason
+
+## 10. Scalable Source Graph Selection
+
+Large repositories need a context engine.
+
+### Inputs
+
+- resolved target
+- compile database entries
+- CMake File API target graph
+- include graph
+- device symbol graph
+- kernel launch graph
+- render/backend files
+- state type definitions
+- build metadata
+
+### Selection Tiers
+
+- Tier 0: entry file, selected target metadata, compile flags
+- Tier 1: files defining kernels, launch sites, host/device shared types
+- Tier 2: transitive headers required to parse Tier 1
+- Tier 3: render backend and UI loop files
+- Tier 4: local project helpers directly called by Tier 1 and 2
+- Tier 5: summarized external/vendor APIs
+- Tier 6: omitted docs/tests/examples/unrelated targets/generated blobs
+
+### Determinism Rules
+
+- sort by stable path and dependency distance
+- hash every included file
+- record inclusion reason
+- record omission reason
+- hard-fail if required parse dependency is missing
+- never silently truncate critical files
+
+### Acceptance Criteria
+
+- 5,000-file repository produces bounded context
+- all included files have reasons
+- all omitted files have reasons
+- same repo state produces same context
+- prompt budget overflow produces a structured error or safe summarization
+
+## 11. Multi Device Translation Unit Support
+
+The current one-device-role model will become brittle.
+
+### Required Model
+
+- one generated device role per source device TU where possible
+- device headers preserved as internal generated headers
+- kernel-to-TU mapping persisted
+- per-TU compile cache
+- device-link bundle only when project requires RDC
+- affected-TU reload when ABI permits
+- linked-bundle reload when device-link is required
+
+### CUDA-Specific Handling
+
+Whole-program device mode:
+
+- compile affected generated `.cu` role when isolated
+
+RDC mode:
+
+- compile affected role with relocatable device code
+- run device-link step for required bundle
+- reload linked artifact
+
+Unsupported:
+
+- explain which device-link mode is not handled
+
+### HIP-Specific Handling
+
+`-fno-gpu-rdc`:
+
+- affected TU must be self-contained for device calls
+
+`-fgpu-rdc`:
+
+- compile affected bitcode/object
+- relink device image/fat binary as needed
+- reload affected bundle
+
+### Acceptance Criteria
+
+- multiple user `.cu` / `.hip` files do not flatten into one generated file
+- editing one kernel body recompiles only the affected TU when safe
+- RDC projects have explicit device-link behavior
+- unsupported device-link cases fall back clearly
+
+## 12. ABI And State Verifier
+
+The verifier is the safety core.
+
+### Track Before And After Every Edit
+
+- kernel name
+- kernel mangled name
+- kernel parameters
+- parameter sizes and alignment
+- launch argument order
+- device global symbols
+- constant symbols
+- host/device shared struct layouts
+- state object layouts
+- generated shared header hash
+- compiler flags affecting ABI
+- GPU architecture
+- RDC/device-link mode
+
+CUDA variable specifiers such as `__device__`, `__constant__`, `__managed__`,
+and `__shared__` affect memory placement, so constant and device-global
+declarations must be treated as ABI/layout inputs, not ordinary body text.
+
+### Verifier Output
+
+```json
+{
+  "verdict": "reject_device_only",
+  "rule": "abi.kernel_signature_changed",
+  "before": "shade_pixels(float*, int, int)",
+  "after": "shade_pixels(float*, int, int, float)",
+  "safeFallback": "mixed_or_full_resplit"
+}
+```
+
+### Verifier Artifacts
+
+For every rejected fast path, save the before/after evidence:
+
+- before signature hash
+- after signature hash
+- before constant/global layout hash
+- after constant/global layout hash
+- changed user span
+- mapped generated span
+- parser status
+- rejection rule
+- chosen fallback
+
+This prevents "the system refused HMR" from becoming another opaque failure
+mode.
+
+### Acceptance Criteria
+
+- ABI-breaking edit cannot enter `device_only` path
+- constant layout change cannot enter `device_only` path
+- state layout change causes cold reload or state migration
+- runner state is preserved only when verifier allows it
+
+## 13. Failure UX
+
+Engineers need immediate cause, not raw logs.
+
+### Error Card Categories
+
+- `target_resolution_failed`
+- `compile_database_missing`
+- `generated_header_missing`
+- `include_not_found`
+- `library_not_found`
+- `gpu_arch_missing`
+- `vendor_toolchain_missing`
+- `split_verifier_failed`
+- `mapping_missing`
+- `abi_changed`
+- `constant_layout_changed`
+- `device_compile_failed`
+- `device_link_failed`
+- `reload_failed`
+- `runner_crashed`
+- `screenshot_not_ready`
+- `unsupported_project_shape`
+
+### Error Card Format
+
+```text
+Problem:
+  Device-only reload rejected.
+
+Reason:
+  Kernel signature changed.
+
+Changed symbol:
+  shade_pixels(float*, int, int) -> shade_pixels(float*, int, int, float)
+
+Chosen fallback:
+  mixed rebuild required.
+
+Next action:
+  Re-run with host launch site update, or revert signature change.
+```
+
+Bad error:
+
+```text
+Build failed.
+```
+
+## 14. Generated Artifact Lifecycle
+
+### Internal Artifacts
+
+- generated roles
+- compile manifests
+- source mapping
+- ABI snapshots
+- device sidecars
+- linked bundles
+- screenshots
+- run reports
+- logs
+
+### Required Provenance
+
+- source file hashes
+- target name
+- build configuration
+- compiler identity
+- GPU vendor and arch
+- model name
+- split schema version
+- prompt schema version
+- generated timestamp
+- parent run id
+- cache key
+
+### Debug Viewer
+
+Provide a read-only internal viewer:
+
+- generated role files
+- user-to-generated mapping
+- compile command per role
+- ABI snapshot
+- reload plan
+- cache hit/miss reason
+- validation screenshots
+
+Do not expose generated roles as normal editable workspace files.
+
+## 15. Performance And Caching
+
+### Cache Keys
+
+Use more than source text:
+
+- target name
+- configuration
+- compiler path/version
+- language standard
+- include dirs
+- defines
+- GPU arch
+- RDC/device-link mode
+- framework flags
+- source graph hashes
+- split schema version
+- model/version
+- prompt schema version
+
+### Fast Path Targets
+
+Repeat run unchanged:
+
+- no AI split
+
+Small deterministic host/device value edit:
+
+- local patch
+
+Body-only kernel edit:
+
+- direct device patch and sidecar compile
+
+Unsafe mapped edit:
+
+- AI delta patch
+
+Mapping failure or major structural edit:
+
+- full re-split
+
+### Required Logs
+
+- cache hit/miss
+- miss reason
+- compile invalidation reason
+- AI call reason
+- patch tier used
+- reload plan
+- time per phase
+- first-frame time
+
+## 16. Safety And Isolation
+
+The runner executes arbitrary native code. Treat it as hostile.
+
+Requirements:
+
+- separate supervisor and runner process
+- no unsafe in-process runner in product mode
+- per-session process group
+- CPU and memory limits
+- wall-clock timeout
+- GPU visibility restrictions where supported
+- filesystem isolation
+- network policy
+- seccomp/AppArmor profile where supported
+- crash containment
+- artifact cleanup
+- explicit unsafe/debug mode
+
+GPU runaway handling is harder than CPU process killing. Product behavior
+should be conservative:
+
+- timeout kernel execution where API allows
+- kill runner process on suspected runaway
+- reset session state after GPU fault
+- surface driver/device fault clearly
+- avoid claiming guaranteed per-kernel kill across vendors
+
+## 17. Observability
+
+Every run should emit one structured report.
+
+### Minimum Trace Fields
+
+- runId
+- workspaceId
+- entryFile
+- selectedTarget
+- targetResolutionMethod
+- sourceContextFiles
+- omittedFiles
+- compileDbHash
+- cmakeCodemodelHash
+- gpuVendor
+- gpuArch
+- model
+- splitSchemaVersion
+- promptSchemaVersion
+- splitCacheKey
+- splitCacheHit
+- patchTier
+- reloadPlan
+- generatedRoles
+- compileCommands
+- deviceLinkCommands
+- verifierRules
+- reloadTimings
+- screenshotTimings
+- runnerPid
+- runnerExitStatus
+- crashMarkers
+- artifactPaths
+
+### UI Summary
+
+```text
+Run mode:
+  device_only
+
+Why:
+  kernel body edit, ABI unchanged, constant layout unchanged
+
+Rebuilt:
+  device_raster.hip only
+
+Skipped:
+  full AI split, host rebuild, runner restart
+
+Time:
+  classify 12 ms, compile 840 ms, reload 4 ms, frame 120 ms
+```
+
+## 18. Validation Matrix
+
+### Must-Pass Matrix
+
+- CUDA + SDL2
+- CUDA + GLFW/OpenGL
+- ROCm + SDL2
+- ROCm + GLFW/OpenGL
+- raylib
+- SFML
+- ImGui + SDL2
+- ImGui + GLFW
+- OpenGL context edge cases
+- Vulkan unsupported or explicit fallback
+
+Vulkan is not in the same bucket as SDL2/GLFW/OpenGL. Vulkan is unsupported
+for GPU HMR unless context, swapchain, pipeline, descriptor, and
+synchronization ownership are modeled. The current requirement is explicit
+fallback or unsupported error, not a near-term HMR claim.
+
+### Per-Case Assertions
+
+- first compile succeeds
+- first screenshot visible and non-black
+- generated files absent from user tree
+- device body edit detected
+- reload plan recorded
+- device-only compile used when safe
+- post-HMR screenshot visible and materially changed
+- runner survives device-only reload
+- cache report produced
+- failure card produced for forced bad edit
+
+### Validation Artifact Bundle
+
+- run report
+- source context report
+- compile manifest
+- generated manifest
+- reload plan
+- before/after screenshots
+- stdout/stderr
+- verifier report
+- cache report
+- runner survival marker
+
+## 19. Backward Compatibility
+
+Backward compatibility is required.
+
+Implementation rules:
+
+- read old sidecar shape
+- write new sidecar shape
+- migrate known fields opportunistically
+- if required new fields are missing, do not fail existing run
+- if required new fields are missing, disable unsafe fast path
+- fall back to AI delta or full re-split
+
+This avoids breaking current ROCm/GLFW validation and existing cached splits.
+
+## 20. Revised Roadmap
+
+### Milestone 0: Contracts And Instrumentation
+
+Do this before more feature work.
+
+Tasks:
+
+- formalize `.synthi_split_meta.json`
+- formalize reload plan schema
+- add reason-coded verifier output
+- add run report
+- show reload plan in UI/logs
+- show fast path used
+- show cache hit/miss reason
+- preserve old sidecar compatibility
+
+Done when:
+
+- an engineer can explain every run without reading raw container logs
+
+### Milestone 1: Direct User Device-Body Edit Path
+
+Tasks:
+
+- persist kernel/helper source mappings
+- classify body-only edits
+- patch generated device role locally
+- verify kernel signatures
+- verify constants/device globals
+- compile device sidecar only
+- reload sidecar
+- capture screenshot
+- emit verifier artifacts and reload report
+
+Initial scope:
+
+- single device TU
+- single generated device role
+- no macro-generated kernels
+- no signature/layout edits
+- no host launch edits
+- no RDC/device-link changes
+- one vendor path first
+
+Done when:
+
+- editing a mapped kernel arithmetic expression in user `.cu` / `.hip` avoids
+  AI split, avoids AI delta, avoids host rebuild, and produces a visible
+  post-HMR frame
+
+### Milestone 2: Build Target Integration
+
+Tasks:
+
+- parse `compile_commands.json`
+- query CMake File API
+- resolve Run file to target
+- preserve target compile flags
+- preserve link flags
+- detect generated headers
+- surface ambiguity
+
+Done when:
+
+- a nontrivial multi-target CMake GPU app builds without guessed flags
+
+### Milestone 3: Large Repo Context Engine
+
+Tasks:
+
+- build include/source graph
+- rank files deterministically
+- include device/render/state/build metadata
+- exclude unrelated/vendor/generated content
+- log included and omitted files
+
+Done when:
+
+- a 5,000-file repo produces bounded, reproducible, explainable context
+
+### Milestone 4: Multi Device TU
+
+Tasks:
+
+- extend manifest for multiple device roles
+- support per-TU compile
+- support CUDA device-link where required
+- support HIP `-fgpu-rdc` where required
+- map kernels to TUs
+- reload affected sidecars or linked bundles
+
+Done when:
+
+- projects with multiple `.cu` / `.hip` files use HMR without forced
+  flattening
+
+### Milestone 5: Failure UX And Artifact Viewer
+
+Tasks:
+
+- add categorized error cards
+- add generated split viewer
+- add mapping viewer
+- add manifest viewer
+- add compile command viewer
+- add verifier report panel
+
+Done when:
+
+- failures are actionable without raw logs
+
+### Milestone 6: Vendor/Framework Matrix
+
+Tasks:
+
+- add validation fixtures
+- run first compile and device-only HMR
+- assert screenshots
+- assert user tree purity
+- assert reload plan
+- assert runner survival
+- publish current reports
+
+Done when:
+
+- every claimed backend has a current passing report
+
+### Milestone 7: Product Isolation
+
+Tasks:
+
+- separate runner process
+- add CPU/memory/time limits
+- add filesystem isolation
+- add seccomp/AppArmor where available
+- add crash cleanup
+- separate unsafe debug mode
+
+Done when:
+
+- a crashing or hostile runner cannot corrupt the supervisor
+
+## 21. Updated Definition Of Production Ready
+
+GPU HMR is production-grade only when all are true:
+
+1. Runs start from real build targets, not guessed files.
+2. Target compile flags and link flags are preserved.
+3. Large repos use deterministic source graph selection.
+4. User `.cu` / `.hip` body edits use direct device-only HMR.
+5. ABI-breaking edits are blocked before unsafe reload.
+6. Multi-device-TU projects are supported or clearly rejected.
+7. Generated roles remain internal and inspectable.
+8. Every run shows which fast path was used.
+9. CUDA and ROCm pass the supported framework matrix.
+10. Failures are categorized and actionable.
+11. Native runner crashes are isolated.
+12. Validation reports are reproducible and current.
+
+## 22. Recommended Immediate Task
+
+Implement this vertical slice:
+
+```text
+user edits src/gpu/*.hip or src/gpu/*.cu
+  -> detect changed mapped kernel body
+  -> classify body-only
+  -> patch generated device role
+  -> verify signature and constant/global layout
   -> compile device sidecar only
   -> reload sidecar
   -> capture screenshot
+  -> emit reload report
 ```
 
-This gives the largest practical win because kernel tuning is the highest
-frequency GPU workflow, and it should not require full AI split or host module
-rebuilds.
+Do not start with multi-TU or full CMake generality. Start with one target and
+one device TU, but build the metadata and verifier as if multi-TU will arrive
+next. That avoids a rewrite later.
