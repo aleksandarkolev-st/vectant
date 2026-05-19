@@ -59,6 +59,16 @@ const FORBIDDEN_ABI = [
   'device_kernel_sig_hash',
 ];
 const FORBIDDEN_ROLE_NAMES = ['core', 'gui', 'host_runner', 'device', 'shared'];
+const GENERATED_WORKSPACE_ARTIFACTS = new Set([
+  'core.cpp',
+  'gui.cpp',
+  'host_runner.cpp',
+  'shared.h',
+  'device.hip',
+  'device.cu',
+  '.synthi_split_meta.json',
+  '.synthi/build_manifest.json',
+]);
 
 const report = {
   slug: CFG.slug,
@@ -206,6 +216,13 @@ async function writeFilesBatch({ slug, files }) {
 async function stageAndCommit({ slug, message }) {
   await httpJson('POST', `${CFG.collabUrl}/git/${slug}/stage-all`, {}, { 'x-user-id': CFG.hostId });
   await httpJson('POST', `${CFG.collabUrl}/git/${slug}/commit`, { message }, { 'x-user-id': CFG.hostId });
+}
+
+async function listWorkspaceFiles(slug) {
+  const result = await httpJson('GET', `${CFG.collabUrl}/git/${slug}/files`, null, { 'x-user-id': CFG.hostId });
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result.files)) return result.files;
+  return [];
 }
 
 async function dockerLogs(container, checkpoint) {
@@ -1179,14 +1196,30 @@ function validateGeneratedSplit(split, renderBackend) {
   record('generated split contains HMR ABI', 'pass', Object.values(split.roles).join(', '));
 }
 
-async function persistGeneratedSplitToWorkspace(split) {
-  const files = Object.entries(split.files).map(([filePath, content]) => ({ path: filePath, content }));
-  files.push({ path: '.synthi_split_meta.json', content: split.sidecarRaw });
-  files.push({ path: '.synthi/build_manifest.json', content: JSON.stringify(split.manifest, null, 2) + '\n' });
-  await writeFilesBatch({ slug: CFG.slug, files });
-  await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: persist generated split' })
-    .catch((e) => record('workspace commit generated split', 'warn', e.message.slice(0, 200)));
-  record('persist generated split to workspace', 'pass', `${files.length} files`);
+function generatedWorkspaceArtifacts(split) {
+  const artifacts = new Set(GENERATED_WORKSPACE_ARTIFACTS);
+  for (const rel of Object.values(split?.roles ?? {})) {
+    artifacts.add(cleanRel(rel));
+  }
+  return artifacts;
+}
+
+function recordGeneratedSplitKeptInternal(split) {
+  record('generated split kept internal', 'pass', `${Object.values(split.roles).join(', ')} supplied inline to HMR compile only`);
+}
+
+async function assertNoGeneratedSplitWorkspaceArtifacts(split) {
+  const listed = await listWorkspaceFiles(CFG.slug);
+  const paths = listed
+    .map((entry) => (typeof entry === 'string' ? entry : entry?.path))
+    .map(cleanRel)
+    .filter(Boolean);
+  const generatedArtifacts = generatedWorkspaceArtifacts(split);
+  const leaked = paths.filter((p) => generatedArtifacts.has(p));
+  if (leaked.length) {
+    fail(`workspace contains generated split artifacts: ${leaked.join(', ')}`);
+  }
+  record('workspace visible tree remains user files only', 'pass', `${paths.length} listed files; no generated split artifacts`);
 }
 
 function editGeneratedDevice(source) {
@@ -1219,7 +1252,6 @@ async function compileGeneratedDevice(split, editedDevice, checkpoint) {
     { name: '.synthi/build_manifest.json', content: JSON.stringify(split.manifest, null, 2) + '\n' },
   ];
   const additionalFiles = allFiles.filter((f) => cleanRel(f.name) !== cleanRel(split.roles.device));
-  await writeFilesBatch({ slug: CFG.slug, files: [{ path: split.roles.device, content: editedDevice }] });
   return compileViaMcp({
     language: 'cpp',
     filename: split.roles.device,
@@ -1364,12 +1396,13 @@ async function run() {
   const split = await readGeneratedSplit(vendor, firstCheckpoint);
   validateGeneratedSplit(split, CFG.renderBackend);
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
-  await persistGeneratedSplitToWorkspace(split);
+  recordGeneratedSplitKeptInternal(split);
 
   const editedDevice = editGeneratedDevice(split.files[split.roles.device]);
   const secondCheckpoint = await workerCheckpoint();
   await compileGeneratedDevice(split, editedDevice, secondCheckpoint);
   record('device edit compile via MCP', 'pass', split.roles.device);
+  await assertNoGeneratedSplitWorkspaceArtifacts(split);
 
   const hotSwap = await awaitLogRegex(
     CFG.workerContainer,
