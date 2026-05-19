@@ -3865,8 +3865,8 @@ appropriate paths and map each role in
                        Default filename: `host_runner.cpp`.
 
 5. device role       - every `__global__` and `__device__` symbol. Builds to
-                       a sidecar `cubin` (CUDA) / `hsaco` (HIP) loaded by
-                       `cuModuleLoadData` / `hipModuleLoad`. The current
+                       a sidecar `cubin` (CUDA) / `hsaco` (HIP) loaded by the
+                       Synthi CUDA/HIP sidecar loader. The current
                        runtime supports one device translation unit role;
                        multi-TU device builds require a later manifest/runtime
                        contract. Default filename: `device.cu` for CUDA or
@@ -3962,22 +3962,25 @@ state pointer to `gui_on_render`.
 `gui_on_render` must be complete executable drawing code. Never leave comments
 such as "rendering logic here", TODOs, placeholders, omitted drawing code, or
 empty render functions. The first rendered frames must be visibly non-black.
-Preserve the user's rendering backend: for SDL/SDL2 sources, use the supplied
-`SDL_Renderer*` render surface and issue concrete SDL drawing calls; for other
-backends, use that backend's supplied render surface/context. If the GPU state
-is not directly drawable, maintain or copy enough host-visible render data, or
-draw a faithful visible representation from the preserved state, but do not
-compile a blank renderer.
+Preserve the user's rendering/windowing backend exactly. Do not translate a
+GLFW/OpenGL, raylib, SFML, Vulkan, SDL2, or other source project into a
+different backend just because an example uses that backend. Use the supplied
+host render surface/context for the backend already present in the user's
+source and issue concrete drawing calls for that backend.
 
-For SDL/SDL2 output, screenshot validation expects substantial visible pixels.
-Do not rely on a single `SDL_RenderDrawPoint`, an all-black clear, or a sparse
-marker. Draw filled particle rectangles, lines, textures, geometry, or another
+Screenshot validation expects substantial visible pixels for every backend.
+Do not rely on a single point, an all-black clear, or a sparse marker. Draw
+filled particle rectangles/quads, lines, textures, geometry, or another
 non-black representation that covers hundreds of pixels on the first frame.
-Never call `SDL_RenderPresent`; the runner presents automatically after
+The hot GUI module never owns presentation: never call backend present/swap
+APIs such as `SDL_RenderPresent`, `SDL_GL_SwapWindow`, `glfwSwapBuffers`,
+`glXSwapBuffers`, `eglSwapBuffers`, `SwapBuffers`, `glutSwapBuffers`,
+`EndDrawing`, or an SFML display call. The Synthi runner presents after
 `gui_on_render` returns.
 
-For particle-like SDL output, this shape is acceptable and should be preferred
-over point drawing:
+If the original source uses SDL/SDL2, use the supplied `SDL_Renderer*` render
+surface and concrete SDL drawing calls. For particle-like SDL output, this
+shape is acceptable and should be preferred over point drawing:
 
     SDL_SetRenderDrawColor(renderer, 10, 16, 24, 255);
     SDL_RenderClear(renderer);
@@ -3986,6 +3989,17 @@ over point drawing:
         SDL_Rect r{(int)state->particles[i].x, (int)state->particles[i].y, 4, 4};
         SDL_RenderFillRect(renderer, &r);
     }
+
+If the original source uses GLFW/OpenGL, preserve GLFW/OpenGL. Store the
+runner-supplied `GLFWwindow*` or OpenGL context handle in state, draw into the
+current OpenGL context with calls such as `glViewport`, `glClearColor`,
+`glClear`, `glBegin`/`glEnd` quads or vertex-buffer drawing, and let the runner
+swap buffers. Do not call `glfwCreateWindow`, `glfwGetCurrentContext`, or
+`glfwSwapBuffers` in `gui.cpp`.
+
+If the GPU state is not directly drawable, maintain or copy enough
+host-visible render data, or draw a faithful visible representation from the
+preserved state using the user's backend. Do not compile a blank renderer.
 
 When a generated device kernel updates positions, colors, or other values that
 the GUI must display, keep host-visible mirror arrays in `AppState` and copy

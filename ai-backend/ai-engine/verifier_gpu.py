@@ -107,11 +107,44 @@ _PLACEHOLDER_RENDER_RE = re.compile(
     r"render(?:ing)?\s+code\s+here|omitted)\b",
     re.IGNORECASE,
 )
-_SDL_RENDER_PRESENT_RE = re.compile(r"\bSDL_RenderPresent\s*\(")
+_GUI_BACKEND_PRESENT_RE = re.compile(
+    r"\b(?P<name>"
+    r"SDL_RenderPresent|"
+    r"SDL_GL_SwapWindow|"
+    r"glfwSwapBuffers|"
+    r"glXSwapBuffers|"
+    r"eglSwapBuffers|"
+    r"wglSwapLayerBuffers|"
+    r"SwapBuffers|"
+    r"glutSwapBuffers|"
+    r"EndDrawing|"
+    r"sfRenderWindow_display"
+    r")\s*\("
+)
+_GUI_CREATES_RENDER_SURFACE_RE = re.compile(
+    r"\b(?P<name>"
+    r"SDL_CreateWindow|"
+    r"SDL_CreateRenderer|"
+    r"SDL_GL_CreateContext|"
+    r"glfwCreateWindow|"
+    r"glutCreateWindow|"
+    r"eglCreateWindowSurface|"
+    r"XCreateWindow|"
+    r"InitWindow|"
+    r"sfRenderWindow_create"
+    r")\s*\("
+)
 _SDL_RENDER_API_RE = re.compile(r"\bSDL_Render[A-Za-z0-9_]*\s*\(")
 _SDL_SUBSTANTIAL_DRAW_RE = re.compile(
     r"\bSDL_Render(?:FillRect|DrawRect|DrawLine|DrawLines|DrawPoints|Copy|CopyEx|Geometry)\s*\("
 )
+_RENDER_BACKEND_MARKERS = {
+    "sdl": re.compile(r"(?:\bSDL_[A-Za-z0-9_]*\b|SDL2?/SDL\.h|SDL2/SDL\.h)"),
+    "glfw": re.compile(r"(?:\bGLFWwindow\b|\bglfw[A-Za-z0-9_]*\b|GLFW/glfw3\.h)"),
+    "raylib": re.compile(r"(?:\bInitWindow\b|\bBeginDrawing\b|\bEndDrawing\b|raylib\.h)"),
+    "sfml": re.compile(r"(?:\bsf::RenderWindow\b|\bsfRenderWindow_[A-Za-z0-9_]*\b|SFML/Graphics\.hpp)"),
+    "glut": re.compile(r"(?:\bglutCreateWindow\b|\bglutSwapBuffers\b|GL/glut\.h)"),
+}
 _GUI_STATE_RENDERER_FIELD_RE = re.compile(r"(?:->|\.)\s*(?P<name>renderer)\b")
 _CORE_RENDERER_FIELD_ASSIGN_RE = re.compile(
     r"(?:->|\.)\s*renderer\s*=\s*"
@@ -553,6 +586,15 @@ def _source_device_files(source_files: Optional[Mapping[str, str]]) -> Mapping[s
     }
 
 
+def _render_backends_in_sources(sources: Iterable[str]) -> Set[str]:
+    found: Set[str] = set()
+    for source in sources:
+        for backend, pattern in _RENDER_BACKEND_MARKERS.items():
+            if pattern.search(source):
+                found.add(backend)
+    return found
+
+
 def _source_device_identifiers(source_device_sources: Mapping[str, str]) -> Set[str]:
     identifiers: Set[str] = set()
     for source in source_device_sources.values():
@@ -698,6 +740,9 @@ def verify_split_output(
     device_path = role_paths.get("device") or "device"
     device_source = files.get(device_path) or ""
     source_device_sources = _source_device_files(source_files)
+    source_render_backends = _render_backends_in_sources(
+        source_files.values() if source_files else []
+    )
 
     allowed_include_paths: Set[str] = {"synthi_gpu_runtime.h"}
     for path in (shared_path, core_path, gui_path, host_runner_path, device_path):
@@ -1134,6 +1179,29 @@ def verify_split_output(
                     break
 
     gui_source = files.get(gui_path) or ""
+    host_runner_source = files.get(host_runner_path) or ""
+    generated_render_backends = _render_backends_in_sources(
+        (shared_source, core_source, gui_source, host_runner_source)
+    )
+    changed_backends = {
+        backend
+        for backend in generated_render_backends - source_render_backends
+        if backend == "sdl" and source_render_backends - {"sdl"}
+    }
+    for backend in sorted(changed_backends):
+        violations.append(
+            Violation(
+                rule="render_backend_changed",
+                message=(
+                    f"The generated split introduced {backend.upper()} rendering "
+                    "even though the source project used a different rendering "
+                    "backend. Preserve the user's backend/windowing library and "
+                    "render through the runner-supplied surface for that backend."
+                ),
+                offending_module=gui_path,
+                offending_symbol=backend,
+            )
+        )
     for symbol in ("gui_on_load", "gui_on_render"):
         if not re.search(rf'extern\s+"C"[^;{{\n]*\b{symbol}\s*\(', gui_source):
             violations.append(
@@ -1160,18 +1228,38 @@ def verify_split_output(
                 offending_symbol=placeholder_render.group(0),
             )
         )
-    render_present = _SDL_RENDER_PRESENT_RE.search(gui_source)
+    render_present = _GUI_BACKEND_PRESENT_RE.search(gui_source)
     if render_present:
+        symbol = render_present.group("name")
         violations.append(
             Violation(
-                rule="gui_calls_sdl_render_present",
+                rule="gui_calls_sdl_render_present"
+                if symbol == "SDL_RenderPresent"
+                else "gui_calls_backend_present",
                 message=(
-                    "The gui role must not call SDL_RenderPresent(). The "
-                    "Synthi runner presents the frame after gui_on_render "
-                    "returns; generated code should only clear and draw."
+                    f"The gui role must not call {symbol}(). The Synthi "
+                    "runner owns presentation for the selected backend after "
+                    "gui_on_render returns; generated GUI code should only "
+                    "clear and draw."
                 ),
                 offending_module=gui_path,
-                offending_symbol="SDL_RenderPresent",
+                offending_symbol=symbol,
+            )
+        )
+    created_surface = _GUI_CREATES_RENDER_SURFACE_RE.search(gui_source)
+    if created_surface:
+        symbol = created_surface.group("name")
+        violations.append(
+            Violation(
+                rule="gui_creates_render_surface",
+                message=(
+                    f"The gui role must not call {symbol}(). The runner owns "
+                    "window/context creation; generated hot modules must use "
+                    "the host render surface passed through core_on_load or "
+                    "gui_on_load instead of creating replacement surfaces."
+                ),
+                offending_module=gui_path,
+                offending_symbol=symbol,
             )
         )
     if _SDL_RENDER_API_RE.search(gui_source) and not _SDL_SUBSTANTIAL_DRAW_RE.search(gui_source):
@@ -1344,8 +1432,6 @@ def verify_split_output(
                 offending_module=gui_path,
             )
         )
-
-    host_runner_source = files.get(host_runner_path) or ""
     if re.search(r"\bsynthi_(?:gpu_)?register", host_runner_source):
         violations.append(
             Violation(

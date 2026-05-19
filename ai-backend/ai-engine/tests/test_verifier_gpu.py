@@ -909,6 +909,59 @@ def test_split_rejects_implicit_render_surface_lookup():
     assert any(v.rule == "gui_uses_implicit_render_surface_lookup" for v in r.violations)
 
 
+def test_split_rejects_backend_swap_in_gui():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "particle_flow", 1, 256, 0, stream, { &x }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
+        "gui.cpp": '#include <GLFW/glfw3.h>\nextern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void* window) { glfwSwapBuffers((GLFWwindow*)window); }',
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void particle_flow(float*) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(
+        v.rule == "gui_calls_backend_present" and v.offending_symbol == "glfwSwapBuffers"
+        for v in r.violations
+    )
+
+
+def test_split_rejects_gui_creating_render_surface():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "particle_flow", 1, 256, 0, stream, { &x }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
+        "gui.cpp": '#include <GLFW/glfw3.h>\nextern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) { glfwCreateWindow(800, 600, "bad", nullptr, nullptr); }',
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void particle_flow(float*) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(
+        v.rule == "gui_creates_render_surface" and v.offending_symbol == "glfwCreateWindow"
+        for v in r.violations
+    )
+
+
+def test_split_rejects_translating_glfw_source_to_sdl():
+    source_files = {
+        "src/render/glfw_canvas.cpp": '#include <GLFW/glfw3.h>\nvoid draw(GLFWwindow* window) { glClear(GL_COLOR_BUFFER_BIT); }',
+        "src/gpu/particles.hip": 'extern "C" __global__ void particle_flow(float*) {}',
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "particle_flow", 1, 256, 0, stream, { &x }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
+        "gui.cpp": '#include <SDL2/SDL.h>\nextern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) { SDL_RenderClear(nullptr); }',
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void particle_flow(float*) {}',
+    }
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(
+        v.rule == "render_backend_changed" and v.offending_symbol == "sdl"
+        for v in r.violations
+    )
+
+
 def test_split_rejects_treating_runner_renderer_as_window():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"',
