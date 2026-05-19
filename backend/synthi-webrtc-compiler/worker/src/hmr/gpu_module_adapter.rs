@@ -125,7 +125,7 @@ impl GpuVendor {
     pub fn module_load_symbol(&self) -> &'static str {
         match self {
             Self::Cuda => "cuModuleLoadData",
-            Self::Rocm => "hipModuleLoadData",
+            Self::Rocm => "hipModuleLoad",
         }
     }
 
@@ -744,9 +744,15 @@ impl Adapter for GpuModuleAdapter {
         }
 
         let load_result = (|| -> Result<(), String> {
-            self.module_manager
-                .load_standby(&symbols, &blob)
-                .map_err(Self::module_manager_error)?;
+            if self.config.vendor == GpuVendor::Rocm {
+                self.module_manager
+                    .load_standby_from_file(&symbols, artifact, blob.len())
+                    .map_err(Self::module_manager_error)?;
+            } else {
+                self.module_manager
+                    .load_standby(&symbols, &blob)
+                    .map_err(Self::module_manager_error)?;
+            }
             self.module_manager
                 .resolve_kernels(&symbols, &req.build_manifest.exported_symbols)
                 .map_err(Self::module_manager_error)?;
@@ -908,6 +914,10 @@ mod tests {
         0
     }
 
+    unsafe extern "C" fn ok_module_load(module: *mut CuModule, _path: *const u8) -> CuResult {
+        ok_module_load_data(module, std::ptr::null())
+    }
+
     unsafe extern "C" fn ok_module_unload(_module: CuModule) -> CuResult {
         0
     }
@@ -980,6 +990,7 @@ mod tests {
             cu_device_get: ok_device_get,
             cu_ctx_get_current: ok_ctx_get_current,
             cu_module_load_data: ok_module_load_data,
+            cu_module_load: ok_module_load,
             cu_module_unload: ok_module_unload,
             cu_module_get_function: ok_module_get_function,
             cu_launch_kernel: ok_launch_kernel,
@@ -1458,10 +1469,16 @@ mod tests {
         let first_path = first.path().to_string_lossy().to_string();
         let second_path = second.path().to_string_lossy().to_string();
         let mut a = adapter_with_symbols(drain_error_symbols());
-        let initial = a.reload(&request_with_artifact(&first_path, vec!["device.cu".into()]));
+        let initial = a.reload(&request_with_artifact(
+            &first_path,
+            vec!["device.cu".into()],
+        ));
         assert!(matches!(initial, AdapterReloadResult::Success { .. }));
 
-        let r = a.reload(&request_with_artifact(&second_path, vec!["device.cu".into()]));
+        let r = a.reload(&request_with_artifact(
+            &second_path,
+            vec!["device.cu".into()],
+        ));
         match r {
             AdapterReloadResult::Failed {
                 ref error,
