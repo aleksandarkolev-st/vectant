@@ -114,6 +114,7 @@ export class BrokerControlPlane {
       preemptible: payload.preemptible,
       priority: payload.priority,
       reason: payload.reason,
+      session_id: input.session_id,
     });
     if (!result.ok) {
       const response = {

@@ -89,6 +89,7 @@ export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
     preemptible,
     priority,
     reason,
+    session_id: attached.sessionId,
   });
   if (!result.ok) {
     return errorResponse(result.error, {

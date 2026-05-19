@@ -27,6 +27,12 @@ const otherInputPrincipal: BrokerPrincipal = {
   subject: "other-agent",
 };
 
+const secondSessionPrincipal: BrokerPrincipal = {
+  ...inputPrincipal,
+  subject: "agent-s2",
+  session_ids: ["s2"],
+};
+
 describe("broker rollout controls", () => {
   beforeEach(() => {
     brokerAuditLog._resetForTests();
@@ -161,6 +167,40 @@ describe("broker control API lease and fallback contracts", () => {
       });
       expect(replay).toEqual(denied);
       expect(leaseRegistry.queueSnapshot()).toHaveLength(1);
+    } finally {
+      if (prev === undefined) delete process.env["SYNTHI_BROKER_INPUT_MODE"];
+      else process.env["SYNTHI_BROKER_INPUT_MODE"] = prev;
+    }
+  });
+
+  it("scopes broker leases and queues by session", () => {
+    const prev = process.env["SYNTHI_BROKER_INPUT_MODE"];
+    process.env["SYNTHI_BROKER_INPUT_MODE"] = "enforce";
+    try {
+      const control = new BrokerControlPlane(new EventLog());
+      const first = control.acquireLease({
+        principal: inputPrincipal,
+        session_id: "s1",
+        scope: ["mouse"],
+        idempotency_key: "s1-holder",
+      });
+      const second = control.acquireLease({
+        principal: secondSessionPrincipal,
+        session_id: "s2",
+        scope: ["mouse"],
+        idempotency_key: "s2-holder",
+      });
+      expect(first.ok).toBe(true);
+      expect(second.ok).toBe(true);
+      if (!first.ok || !second.ok) throw new Error("unexpected acquire failure");
+      expect(first.lease_id).not.toBe(second.lease_id);
+      expect(leaseRegistry.snapshot("s1").map((lease) => lease.lease_id)).toContain(first.lease_id);
+      expect(leaseRegistry.snapshot("s2").map((lease) => lease.lease_id)).toContain(second.lease_id);
+
+      const blocked = leaseRegistry.validateForBrokerInput(first.lease_id, "mouse", Date.now(), "s2");
+      expect(blocked.allowed).toBe(false);
+      if (blocked.allowed) throw new Error("unexpected cross-session validation success");
+      expect(blocked.error).toBe("LEASE_DENIED");
     } finally {
       if (prev === undefined) delete process.env["SYNTHI_BROKER_INPUT_MODE"];
       else process.env["SYNTHI_BROKER_INPUT_MODE"] = prev;

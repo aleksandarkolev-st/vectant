@@ -63,7 +63,7 @@ export async function checkBrokerInputGate(input: {
   const leaseId = typeof input.lease_id === "string" && input.lease_id.length > 0
     ? input.lease_id
     : undefined;
-  const leaseGate = leaseRegistry.validateForBrokerInput(leaseId, input.scope, now);
+  const leaseGate = leaseRegistry.validateForBrokerInput(leaseId, input.scope, now, input.attached.sessionId);
   if (!leaseGate.allowed) {
     return buildGateError(leaseGate.error, input.action, {
       ...leaseGate.detail,

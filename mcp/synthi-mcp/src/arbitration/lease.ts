@@ -29,6 +29,7 @@ export type LeasePriority = "normal" | "urgent_human_override";
 
 export interface InputLease {
   lease_id: string;
+  session_id?: string;
   acquired_at: number;
   expires_at: number;
   lease_ms: number;
@@ -79,6 +80,7 @@ export interface LeaseValidationBlocked {
 
 export interface LeaseQueueEntry {
   request_id: string;
+  session_id?: string;
   owner: string;
   requested_at: number;
   lease_ms: number;
@@ -100,6 +102,7 @@ export interface ForceReleaseResult {
 export interface InputActionBatch {
   batch_id: string;
   lease_id: string;
+  session_id?: string;
   owner: string;
   action_count: number;
   created_at: number;
@@ -141,6 +144,16 @@ function mergeScopes(current: readonly LeaseScope[], requested: readonly LeaseSc
   return out;
 }
 
+function normalizeSessionId(sessionId: string | undefined): string | undefined {
+  return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : undefined;
+}
+
+function matchesSession(resourceSessionId: string | undefined, requestedSessionId: string | undefined): boolean {
+  const normalized = normalizeSessionId(requestedSessionId);
+  if (!normalized) return true;
+  return resourceSessionId === undefined || resourceSessionId === normalized;
+}
+
 class LeaseRegistry {
   private active = new Map<string, InputLease>();
   private readonly preempted = new Set<string>();
@@ -168,9 +181,10 @@ class LeaseRegistry {
       preemptible?: boolean;
       priority?: LeasePriority;
       reason?: string | null;
+      session_id?: string;
     } = {}
   ): AcquireResult | AcquireRejection {
-    const current = this.currentLease();
+    const current = this.currentLease(opts.session_id);
     const singleHolderRequired =
       resolveLeaseMode() === "single-holder" ||
       process.env["SYNTHI_BROKER_INPUT_MODE"] === "enforce";
@@ -207,14 +221,16 @@ class LeaseRegistry {
   validateForBrokerInput(
     callerLeaseId: string | undefined,
     scope: LeaseScope,
-    now: number = Date.now()
+    now: number = Date.now(),
+    session_id?: string
   ): LeaseValidationAllowed | LeaseValidationBlocked {
+    const sessionId = normalizeSessionId(session_id);
     if (!callerLeaseId) {
       return {
         allowed: false,
         error: "LEASE_REQUIRED",
-        current: this.currentLease(),
-        detail: { scope },
+        current: this.currentLease(sessionId),
+        detail: { scope, ...(sessionId ? { session_id: sessionId } : {}) },
       };
     }
     this.evictExpired(now);
@@ -223,8 +239,8 @@ class LeaseRegistry {
       return {
         allowed: false,
         error: "LEASE_PREEMPTED",
-        current: this.currentLease(),
-        detail: { lease_id: callerLeaseId, scope },
+        current: this.currentLease(sessionId),
+        detail: { lease_id: callerLeaseId, scope, ...(sessionId ? { session_id: sessionId } : {}) },
       };
     }
     if (!lease) {
@@ -232,12 +248,26 @@ class LeaseRegistry {
         allowed: false,
         error: "LEASE_EXPIRED",
         current: null,
-        detail: { lease_id: callerLeaseId, scope },
+        detail: { lease_id: callerLeaseId, scope, ...(sessionId ? { session_id: sessionId } : {}) },
+      };
+    }
+    if (!matchesSession(lease.session_id, sessionId)) {
+      return {
+        allowed: false,
+        error: "LEASE_DENIED",
+        current: this.currentLease(sessionId),
+        detail: {
+          lease_id: callerLeaseId,
+          scope,
+          requested_session_id: sessionId,
+          lease_session_id: lease.session_id,
+        },
       };
     }
     if (lease.expires_at <= now) {
       this.active.delete(lease.lease_id);
       this.acquireOrder.delete(lease.lease_id);
+      this.grantNextQueued(lease.session_id, now);
       return {
         allowed: false,
         error: "LEASE_EXPIRED",
@@ -247,6 +277,7 @@ class LeaseRegistry {
           scope,
           expires_at: lease.expires_at,
           received_at: now,
+          ...(sessionId ? { session_id: sessionId } : {}),
         },
       };
     }
@@ -259,6 +290,7 @@ class LeaseRegistry {
           lease_id: callerLeaseId,
           requested_scope: scope,
           lease_scope: lease.scope,
+          ...(sessionId ? { session_id: sessionId } : {}),
         },
       };
     }
@@ -313,12 +345,14 @@ class LeaseRegistry {
       preemptible?: boolean;
       priority?: LeasePriority;
       reason?: string | null;
+      session_id?: string;
     } = {}
   ): InputLease {
     const ms = Math.max(MIN_LEASE_MS, Math.min(MAX_LEASE_MS, Math.floor(lease_ms)));
     const acquiredAt = Date.now();
     const lease: InputLease = {
       lease_id: `lease_${randomUUID()}`,
+      ...(normalizeSessionId(opts.session_id) ? { session_id: normalizeSessionId(opts.session_id) } : {}),
       acquired_at: acquiredAt,
       expires_at: acquiredAt + ms,
       lease_ms: ms,
@@ -335,29 +369,33 @@ class LeaseRegistry {
     return lease;
   }
 
-  release(lease_id?: string): { released: string[]; not_found: string | null } {
+  release(lease_id?: string, session_id?: string): { released: string[]; not_found: string | null } {
+    const sessionId = normalizeSessionId(session_id);
     if (lease_id === undefined) {
-      const ids = Array.from(this.active.keys());
-      this.active.clear();
-      this.acquireOrder.clear();
+      const leases = Array.from(this.active.values()).filter((lease) => matchesSession(lease.session_id, sessionId));
+      const ids = leases.map((lease) => lease.lease_id);
+      for (const id of ids) {
+        this.active.delete(id);
+        this.acquireOrder.delete(id);
+      }
       if (ids.length > 0) {
         eventLog.push({
           kind: "lease",
           action: "released_all",
-          payload: { released: ids },
+          payload: { released: ids, ...(sessionId ? { session_id: sessionId } : {}) },
         });
       }
-      this.grantNextQueued();
+      this.grantNextQueued(sessionId);
       return { released: ids, not_found: null };
     }
     const lease = this.active.get(lease_id);
-    if (!lease) {
+    if (!lease || !matchesSession(lease.session_id, sessionId)) {
       return { released: [], not_found: lease_id };
     }
     this.active.delete(lease_id);
     this.acquireOrder.delete(lease_id);
     this.emitLeaseEvent("released", lease, {});
-    this.grantNextQueued();
+    this.grantNextQueued(lease.session_id ?? sessionId);
     return { released: [lease_id], not_found: null };
   }
 
@@ -394,15 +432,16 @@ class LeaseRegistry {
       action: "force_released",
       lease_id,
       owner: lease.owner,
-      payload: { forced_by: forcedBy, reason },
+      payload: { forced_by: forcedBy, reason, ...(lease.session_id ? { session_id: lease.session_id } : {}) },
     });
     this.emitLeaseLoss(lease, "force_released", forcedBy, reason);
-    this.grantNextQueued();
+    this.grantNextQueued(lease.session_id);
     return { ok: true, released: true, lease_id, forced_by: forcedBy, reason };
   }
 
-  queueSnapshot(now: number = Date.now()): LeaseQueueEntry[] {
-    return this.fairnessQueue.map((entry) => ({
+  queueSnapshot(now: number = Date.now(), session_id?: string): LeaseQueueEntry[] {
+    const sessionId = normalizeSessionId(session_id);
+    return this.fairnessQueue.filter((entry) => matchesSession(entry.session_id, sessionId)).map((entry) => ({
       ...entry,
       scope: [...entry.scope],
       starvation_deadline_ms: entry.starvation_deadline_ms,
@@ -410,8 +449,8 @@ class LeaseRegistry {
     }));
   }
 
-  nextQueuedCandidate(now: number = Date.now()): LeaseQueueEntry | null {
-    const next = this.pickNextQueued(now);
+  nextQueuedCandidate(now: number = Date.now(), session_id?: string): LeaseQueueEntry | null {
+    const next = this.pickNextQueued(now, session_id);
     return next ? { ...next, scope: [...next.scope] } : null;
   }
 
@@ -419,14 +458,16 @@ class LeaseRegistry {
     lease_id: string;
     actions: readonly unknown[];
     scope?: LeaseScope;
+    session_id?: string;
     now?: number;
   }): { ok: true; batch: InputActionBatch } | LeaseValidationBlocked {
-    const validation = this.validateForBrokerInput(input.lease_id, input.scope ?? "mouse", input.now ?? Date.now());
+    const validation = this.validateForBrokerInput(input.lease_id, input.scope ?? "mouse", input.now ?? Date.now(), input.session_id);
     if (!validation.allowed) return validation;
     const now = input.now ?? Date.now();
     const batch: InputActionBatch = {
       batch_id: `batch_${randomUUID()}`,
       lease_id: validation.lease.lease_id,
+      ...(validation.lease.session_id ? { session_id: validation.lease.session_id } : {}),
       owner: validation.lease.owner,
       action_count: input.actions.length,
       created_at: now,
@@ -443,11 +484,13 @@ class LeaseRegistry {
     return { ok: true, batch };
   }
 
-  currentLease(): InputLease | null {
+  currentLease(session_id?: string): InputLease | null {
     this.evictExpired();
+    const sessionId = normalizeSessionId(session_id);
     let best: InputLease | null = null;
     let bestOrder = -1;
     for (const lease of this.active.values()) {
+      if (!matchesSession(lease.session_id, sessionId)) continue;
       const order = this.acquireOrder.get(lease.lease_id) ?? 0;
       if (!best || order > bestOrder) {
         best = lease;
@@ -457,9 +500,10 @@ class LeaseRegistry {
     return best;
   }
 
-  snapshot(): InputLease[] {
+  snapshot(session_id?: string): InputLease[] {
     this.evictExpired();
-    return Array.from(this.active.values());
+    const sessionId = normalizeSessionId(session_id);
+    return Array.from(this.active.values()).filter((lease) => matchesSession(lease.session_id, sessionId));
   }
 
   private enqueue(
@@ -470,11 +514,13 @@ class LeaseRegistry {
       preemptible?: boolean;
       priority?: LeasePriority;
       reason?: string | null;
+      session_id?: string;
     }
   ): LeaseQueueEntry {
     const now = Date.now();
     const entry: LeaseQueueEntry = {
       request_id: `lease_req_${++this.queueCounter}`,
+      ...(normalizeSessionId(opts.session_id) ? { session_id: normalizeSessionId(opts.session_id) } : {}),
       owner,
       requested_at: now,
       lease_ms: Math.max(MIN_LEASE_MS, Math.min(MAX_LEASE_MS, Math.floor(lease_ms))),
@@ -504,14 +550,15 @@ class LeaseRegistry {
       action: "preempted",
       lease_id: lease.lease_id,
       owner: lease.owner,
-      payload: { preempted_by: actor, reason },
+      payload: { preempted_by: actor, reason, ...(lease.session_id ? { session_id: lease.session_id } : {}) },
     });
     this.emitLeaseLoss(lease, "preempted", actor, reason);
   }
 
-  private grantNextQueued(now: number = Date.now()): InputLease | null {
-    if (this.active.size > 0) return null;
-    const next = this.pickNextQueued(now);
+  private grantNextQueued(session_id?: string, now: number = Date.now()): InputLease | null {
+    const sessionId = normalizeSessionId(session_id);
+    if (this.hasActiveLeaseForSession(sessionId)) return null;
+    const next = this.pickNextQueued(now, sessionId);
     if (!next) return null;
     const idx = this.fairnessQueue.findIndex((entry) => entry.request_id === next.request_id);
     if (idx >= 0) this.fairnessQueue.splice(idx, 1);
@@ -520,12 +567,14 @@ class LeaseRegistry {
       preemptible: next.preemptible,
       priority: next.priority,
       reason: next.reason,
+      session_id: next.session_id,
     });
   }
 
-  private pickNextQueued(now: number): LeaseQueueEntry | null {
+  private pickNextQueued(now: number, session_id?: string): LeaseQueueEntry | null {
     if (this.fairnessQueue.length === 0) return null;
-    const sorted = [...this.fairnessQueue].sort((a, b) => {
+    const sessionId = normalizeSessionId(session_id);
+    const sorted = this.fairnessQueue.filter((entry) => matchesSession(entry.session_id, sessionId)).sort((a, b) => {
       const urgent = Number(b.priority === "urgent_human_override") - Number(a.priority === "urgent_human_override");
       if (urgent !== 0) return urgent;
       const starved = Number(now >= b.starvation_deadline_ms) - Number(now >= a.starvation_deadline_ms);
@@ -533,6 +582,15 @@ class LeaseRegistry {
       return a.requested_at - b.requested_at;
     });
     return sorted[0] ?? null;
+  }
+
+  private hasActiveLeaseForSession(session_id?: string): boolean {
+    const sessionId = normalizeSessionId(session_id);
+    if (!sessionId) return this.active.size > 0;
+    for (const lease of this.active.values()) {
+      if (matchesSession(lease.session_id, sessionId)) return true;
+    }
+    return false;
   }
 
   private emitLeaseEvent(action: "acquired" | "renewed" | "released", lease: InputLease, payload: Record<string, unknown>): void {
@@ -543,6 +601,7 @@ class LeaseRegistry {
       owner: lease.owner,
       payload: {
         ...payload,
+        ...(lease.session_id ? { session_id: lease.session_id } : {}),
         scope: [...lease.scope],
         expires_at: lease.expires_at,
         priority: lease.priority,
@@ -563,6 +622,7 @@ class LeaseRegistry {
         actor,
         reason,
         scope: [...lease.scope],
+        ...(lease.session_id ? { session_id: lease.session_id } : {}),
       },
     });
   }
@@ -572,7 +632,7 @@ class LeaseRegistry {
       if (lease.expires_at <= now) {
         this.active.delete(id);
         this.acquireOrder.delete(id);
-        this.grantNextQueued(now);
+        this.grantNextQueued(lease.session_id, now);
       }
     }
   }
