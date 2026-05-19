@@ -1304,7 +1304,7 @@ async function run() {
   const project = buildScaleProject(vendor, arch, CFG.renderBackend);
   report.workspace_file_count = project.files.length;
   report.relevant_file_count = project.relevantFiles.length;
-  report.source_file_mix = sourceFileMix(project.files);
+  report.source_file_mix = sourceFileMix(project.relevantFiles);
   if (project.files.length < 200) fail(`scale fixture only has ${project.files.length} files`);
   if (report.source_file_mix.total < 40) fail(`scale fixture only has ${report.source_file_mix.total} source/header/device files`);
   record('source file mix', 'pass', JSON.stringify(report.source_file_mix));
