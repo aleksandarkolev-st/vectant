@@ -25,6 +25,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
       status: result.status,
       elapsedMs: result.elapsedMs,
       source: result.source,
+      detail: result.detail ?? null,
     });
   } catch (err) {
     return errorFromException("wait_hmr_failed", err);

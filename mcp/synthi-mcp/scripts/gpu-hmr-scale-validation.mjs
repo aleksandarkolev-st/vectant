@@ -794,6 +794,7 @@ async function compileViaMcp(args, waitTimeoutMs, phaseName, checkpoint) {
     wait_hmr_elapsed_ms: wait?.elapsedMs ?? null,
     wait_hmr_status: wait?.status ?? 'unknown',
     wait_hmr_source: wait?.source ?? null,
+    wait_hmr_detail: wait?.detail ?? null,
     wall_elapsed_ms: wallElapsed,
     worker_log_markers: collectWorkerMarkers(workerTail),
   };
@@ -1022,7 +1023,10 @@ async function writeReport() {
     '',
     ...report.checks.map((r) => `${r.status.toUpperCase()} ${r.name}${r.detail ? ` - ${r.detail}` : ''}`),
     '',
-    ...report.phases.map((p) => `PHASE ${p.name} wait=${p.wait_hmr_status} wait_ms=${p.wait_hmr_elapsed_ms} wall_ms=${p.wall_elapsed_ms}`),
+    ...report.phases.map((p) => {
+      const detail = p.wait_hmr_detail ? ` detail=${JSON.stringify(p.wait_hmr_detail).slice(0, 500)}` : '';
+      return `PHASE ${p.name} wait=${p.wait_hmr_status} source=${p.wait_hmr_source ?? ''} wait_ms=${p.wait_hmr_elapsed_ms} wall_ms=${p.wall_elapsed_ms}${detail}`;
+    }),
     '',
     ...report.screenshots.map((s) => `SCREENSHOT ${s.captured_after_phase} ${s.width}x${s.height} visible=${s.visible_pixels} luma=${s.mean_luma.toFixed(1)} path=${s.path} differs=${s.differs_from_first ?? ''}`),
   ];
