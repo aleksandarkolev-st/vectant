@@ -68,6 +68,7 @@ describe("broker-enforced input gate", () => {
       y: 10,
       lease_id: lease.lease.lease_id,
       based_on_frame_seq: 10,
+      based_on_viewport: { w: 800, h: 600 },
     });
     expect(res.isError).toBeUndefined();
     expect(sent).toHaveLength(2);
@@ -105,6 +106,25 @@ describe("broker-enforced input gate", () => {
     });
     expect(res.isError).toBe(true);
     expect((res.structuredContent as { error: string }).error).toBe("FRAME_STALE");
+    expect(sent).toHaveLength(0);
+  }));
+
+  it("rejects input when viewport dimensions changed", async () => withBrokerInputEnforced(async () => {
+    const { sent } = installFakeAttached({ seq: 10, ts: Date.now() });
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "agent", { scope: ["mouse"] });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected acquire rejection");
+    const res = await mouseTool({
+      action: "click",
+      x: 10,
+      y: 10,
+      lease_id: lease.lease.lease_id,
+      based_on_frame_seq: 10,
+      based_on_viewport: { w: 1024, h: 600 },
+    });
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { error: string; reason?: string }).error).toBe("FRAME_STALE");
+    expect((res.structuredContent as { reason?: string }).reason).toBe("viewport_changed");
     expect(sent).toHaveLength(0);
   }));
 

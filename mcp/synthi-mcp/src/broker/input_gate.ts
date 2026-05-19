@@ -2,7 +2,6 @@ import type { AttachedSession } from "../session.js";
 import { leaseRegistry, type LeaseScope } from "../arbitration/lease.js";
 import type { BrokerErrorCode } from "./errors.js";
 import { brokerError } from "./errors.js";
-import type { BrokerViewport } from "./contracts.js";
 import { brokerFallbackController } from "./fallback.js";
 import { brokerRolloutController } from "./rollout.js";
 import { brokerRuntime } from "./runtime.js";
@@ -19,7 +18,11 @@ export interface BrokerInputGateError {
 interface RawViewport {
   w?: unknown;
   h?: unknown;
-  dpr?: unknown;
+}
+
+interface InputViewport {
+  w: number;
+  h: number;
 }
 
 export function resolveBrokerInputMode(): BrokerInputMode {
@@ -122,7 +125,7 @@ export async function checkBrokerInputGate(input: {
   if (viewport && (viewport.w !== frame.width || viewport.h !== frame.height)) {
     return buildGateError("FRAME_STALE", input.action, {
       reason: "viewport_changed",
-      frame_viewport: { w: frame.width, h: frame.height, dpr: viewport.dpr },
+      frame_viewport: { w: frame.width, h: frame.height },
       based_on_viewport: viewport,
       lease_id: leaseId,
     });
@@ -131,21 +134,19 @@ export async function checkBrokerInputGate(input: {
   return null;
 }
 
-function parseViewport(raw: unknown): BrokerViewport | "invalid" | null {
+function parseViewport(raw: unknown): InputViewport | "invalid" | null {
   if (raw === undefined) return null;
   if (!raw || typeof raw !== "object") return "invalid";
   const v = raw as RawViewport;
   if (
     typeof v.w !== "number" ||
     typeof v.h !== "number" ||
-    typeof v.dpr !== "number" ||
     v.w <= 0 ||
-    v.h <= 0 ||
-    v.dpr <= 0
+    v.h <= 0
   ) {
     return "invalid";
   }
-  return { w: v.w, h: v.h, dpr: v.dpr };
+  return { w: v.w, h: v.h };
 }
 
 function buildGateError(

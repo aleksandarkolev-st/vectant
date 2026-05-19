@@ -246,8 +246,8 @@ const TOOLS = [
         },
         based_on_viewport: {
           type: "object",
-          properties: { w: { type: "number" }, h: { type: "number" }, dpr: { type: "number" } },
-          required: ["w", "h", "dpr"],
+          properties: { w: { type: "number" }, h: { type: "number" } },
+          required: ["w", "h"],
         },
       },
       required: ["x", "y"],
@@ -271,8 +271,8 @@ const TOOLS = [
         },
         based_on_viewport: {
           type: "object",
-          properties: { w: { type: "number" }, h: { type: "number" }, dpr: { type: "number" } },
-          required: ["w", "h", "dpr"],
+          properties: { w: { type: "number" }, h: { type: "number" } },
+          required: ["w", "h"],
         },
       },
       required: ["text"],
@@ -494,9 +494,9 @@ const TOOLS = [
         },
         based_on_viewport: {
           type: "object",
-          properties: { w: { type: "number" }, h: { type: "number" }, dpr: { type: "number" } },
-          required: ["w", "h", "dpr"],
-          description: "Optional viewport/DPR observed with based_on_frame_seq. Broker-enforced input rejects if the current viewport changed.",
+          properties: { w: { type: "number" }, h: { type: "number" } },
+          required: ["w", "h"],
+          description: "Optional viewport observed with based_on_frame_seq. Broker-enforced input rejects if the current viewport dimensions changed.",
         },
       },
       required: ["action"],
@@ -547,9 +547,9 @@ const TOOLS = [
         },
         based_on_viewport: {
           type: "object",
-          properties: { w: { type: "number" }, h: { type: "number" }, dpr: { type: "number" } },
-          required: ["w", "h", "dpr"],
-          description: "Optional viewport/DPR observed with based_on_frame_seq. Broker-enforced input rejects if the current viewport changed.",
+          properties: { w: { type: "number" }, h: { type: "number" } },
+          required: ["w", "h"],
+          description: "Optional viewport observed with based_on_frame_seq. Broker-enforced input rejects if the current viewport dimensions changed.",
         },
       },
       required: ["action"],
@@ -582,8 +582,8 @@ const TOOLS = [
         based_on_frame_seq: { type: "number" },
         based_on_viewport: {
           type: "object",
-          properties: { w: { type: "number" }, h: { type: "number" }, dpr: { type: "number" } },
-          required: ["w", "h", "dpr"],
+          properties: { w: { type: "number" }, h: { type: "number" } },
+          required: ["w", "h"],
         },
         action: {
           type: "object",
