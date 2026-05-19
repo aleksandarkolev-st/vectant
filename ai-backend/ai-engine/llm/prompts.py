@@ -4024,6 +4024,15 @@ returns true; only then run the update kernel and copy device outputs back. The
 first frame must have on-screen, non-overlapping data from the host mirrors,
 not uninitialized zeros or offscreen values.
 
+When preserving an existing user kernel such as `advance_particle_field`, still
+emit a generated init/seed kernel for the Synthi device role if the original
+project initialized arrays on the host. For separate arrays, that init kernel
+must fill every device buffer (`x`, `y`, `vx`, `vy`, `rgba`, etc.) with the same
+math used by the user's constructor/setup code. For struct buffers, it must fill
+every displayed field. Include the init kernel in `device_descriptor`, launch it
+from `core_on_update` while `!device_initialized`, and do not mark
+`device_initialized = true` unless that launch returns true.
+
 A valid first-frame host mirror setup is:
 
     state->particles = new Particle[state->num_particles];

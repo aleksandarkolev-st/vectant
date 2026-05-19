@@ -968,10 +968,11 @@ def verify_split_output(
                     "but never initializes those buffers with a host-to-device "
                     "copy, memset, or dedicated init/seed kernel. Preserve "
                     "the user's initial state in host-visible mirrors, then "
-                    "either call cudaMemcpy/hipMemcpy with HostToDevice, call "
-                    "cudaMemset/hipMemset, or launch a real initialization "
-                    "kernel such as init_particles before the first update "
-                    "kernel."
+                    "launch a real initialization kernel such as init_particles "
+                    "from core_on_update before the first update kernel. Since "
+                    "raw HostToDevice copies in core_on_load are rejected, the "
+                    "init kernel should fill every device buffer from the same "
+                    "constructor/setup math used for the first-frame host mirror."
                 ),
                 offending_module=core_path,
             )
