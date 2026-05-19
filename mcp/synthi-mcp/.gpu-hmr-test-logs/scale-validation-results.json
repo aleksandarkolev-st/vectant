@@ -1,0 +1,209 @@
+{
+  "slug": "gpu-scale-validation-20260519040608",
+  "repo_commit": "f4c82be09c36c2a8ad18be52b77d97209f4fa731",
+  "model": "gemini-3.1-flash-lite-preview",
+  "vendor": "rocm",
+  "arch": "gfx1201",
+  "workspace_file_count": 253,
+  "relevant_file_count": 13,
+  "started_at": "2026-05-19T01:06:08.567Z",
+  "finished_at": "2026-05-19T01:06:50.933Z",
+  "compose_files": [
+    "docker-compose.yml",
+    "docker-compose.gpu-amd.yml"
+  ],
+  "containers": {
+    "worker": {
+      "id": "d3ecd9200ce688f805a0aa7efe28197978798d1e048fdba04c569ae3a10f767e",
+      "image_id": "sha256:2b4bbdfe89bf83f89ea72f1321c9df99fb625b4bfe9a6c307e0fbc44f27145cb",
+      "image": "vectant-ade-worker-gpu:local",
+      "created": "2026-05-19T01:05:48.871889966Z"
+    },
+    "ai_engine": {
+      "id": "4a8492b7520da9ae26a64fb12afecdd798f62fb1ee5ed1e8d0340d87e78734d6",
+      "image_id": "sha256:8314be6418e2b217758be533817b8eb603bca30cc1a27ecfa2a82514881e169d",
+      "image": "vectant-ade-ai-engine",
+      "created": "2026-05-19T01:05:48.882327843Z"
+    },
+    "mcp": {
+      "id": "5c6dead9b7e83ba6cf1c2c3b0416e00795d596686f1ccd343d553d7e4856bd3f",
+      "image_id": "sha256:ae86370928f8986aa60284fc4b471dfea0b6616c5b7d6b2ab8bd54a1dc73c33d",
+      "image": "vectant-ade-mcp",
+      "created": "2026-05-19T01:03:29.1303582Z"
+    }
+  },
+  "env": {
+    "SYNTHI_GEMINI_MODEL": "gemini-3.1-flash-lite-preview",
+    "SYNTHI_GPU_VENDOR": "auto",
+    "SYNTHI_GPU_ARCH": "gfx1201",
+    "SYNTHI_SYNC_TO_GCS": "0"
+  },
+  "worker_restarted_before_run": true,
+  "ai_engine_restarted_before_run": true,
+  "split_cache_bypassed_by_worker_restart": true,
+  "generated_roles": {
+    "shared": "shared.h",
+    "core": "core.cpp",
+    "gui": "gui.cpp",
+    "host_runner": "host_runner.cpp",
+    "device": "device.hip"
+  },
+  "phases": [
+    {
+      "name": "first_ai_split_compile",
+      "compile_dispatched_at": "2026-05-19T01:06:11.997Z",
+      "wait_hmr_started_at": "2026-05-19T01:06:12.000Z",
+      "wait_hmr_finished_at": "2026-05-19T01:06:47.448Z",
+      "wait_hmr_elapsed_ms": 35442,
+      "wait_hmr_status": "applied",
+      "wait_hmr_source": "candidate_notification",
+      "wait_hmr_detail": {
+        "preview_id": "gpu-scale-validation-20260519040608",
+        "generation": 1,
+        "total_reload_ms": 1246
+      },
+      "wall_elapsed_ms": 35451,
+      "worker_log_markers": [
+        "[AI Split] ENTER (cache_key=18439160476754464323, src_len=375, files=253, gpu_mode=rocm, gpu_arch=gfx1201, gpu_markers=true)",
+        "GPU markers detected; calling GPU split endpoint: http://ai-engine:8000/refactor/split/gpu",
+        "GPU split endpoint returned a 5-file split",
+        "[compile-device] hipcc -> /tmp/.tmpbCQ5kb/build/device_1779152804.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmpbCQ5kb/build/device_1779152804.hsaco\", \"device.hip\"] }",
+        "[compile-device] hipcc ok  artifact=/tmp/.tmpbCQ5kb/build/device_1779152804.hsaco  diagnostics_kernels=0"
+      ]
+    },
+    {
+      "name": "device_only_hmr",
+      "compile_dispatched_at": "2026-05-19T01:06:50.109Z",
+      "wait_hmr_started_at": "2026-05-19T01:06:50.111Z",
+      "wait_hmr_finished_at": "2026-05-19T01:06:50.881Z",
+      "wait_hmr_elapsed_ms": 767,
+      "wait_hmr_status": "rejected",
+      "wait_hmr_source": "hmr_status",
+      "wait_hmr_detail": {
+        "status": "rejected",
+        "module": "device",
+        "reason": "GPU sidecar reload already in flight",
+        "fallback": "Wait for active GPU sidecar reload or restart runner"
+      },
+      "wall_elapsed_ms": 772,
+      "worker_log_markers": [
+        "[compile-device] hipcc -> /tmp/.tmpbCQ5kb/build/device_1779152810.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmpbCQ5kb/build/device_1779152810.hsaco\", \"device.hip\"] }",
+        "[compile-device] hipcc ok  artifact=/tmp/.tmpbCQ5kb/build/device_1779152810.hsaco  diagnostics_kernels=0"
+      ]
+    }
+  ],
+  "screenshots": [
+    {
+      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260519040608-first-compile.png",
+      "width": 800,
+      "height": 600,
+      "visible_pixels": 0,
+      "mean_luma": 0,
+      "captured_after_phase": "first-compile",
+      "attempt": 1,
+      "seq": 2
+    },
+    {
+      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260519040608-first-compile-attempt-2.png",
+      "width": 800,
+      "height": 600,
+      "visible_pixels": 16384,
+      "mean_luma": 22.684898313276793,
+      "captured_after_phase": "first-compile",
+      "attempt": 2,
+      "seq": 34
+    }
+  ],
+  "checks": [
+    {
+      "name": "gpu target",
+      "status": "pass",
+      "detail": "rocm arch=gfx1201",
+      "ts": "2026-05-19T01:06:08.987Z"
+    },
+    {
+      "name": "ordinary user project guard",
+      "status": "pass",
+      "detail": "253 files, no Synthi ABI or generated role filenames",
+      "ts": "2026-05-19T01:06:08.988Z"
+    },
+    {
+      "name": "create workspace",
+      "status": "pass",
+      "detail": "id=cmpbxmek90010pt01sxqn5l7i slug=gpu-scale-validation-20260519040608",
+      "ts": "2026-05-19T01:06:09.261Z"
+    },
+    {
+      "name": "seed scale workspace",
+      "status": "pass",
+      "detail": "253 files",
+      "ts": "2026-05-19T01:06:10.435Z"
+    },
+    {
+      "name": "mcp tools/list",
+      "status": "pass",
+      "detail": "count=42",
+      "ts": "2026-05-19T01:06:10.819Z"
+    },
+    {
+      "name": "mcp attach",
+      "status": "pass",
+      "detail": "attached",
+      "ts": "2026-05-19T01:06:11.997Z"
+    },
+    {
+      "name": "first compile via MCP",
+      "status": "pass",
+      "detail": "files=253",
+      "ts": "2026-05-19T01:06:47.502Z"
+    },
+    {
+      "name": "worker saw full file set",
+      "status": "pass",
+      "detail": "[AI Split] ENTER (cache_key=18439160476754464323, src_len=375, files=253, gpu_mode=rocm, gpu_arch=gfx1201",
+      "ts": "2026-05-19T01:06:47.551Z"
+    },
+    {
+      "name": "ai-engine saw full file set",
+      "status": "pass",
+      "detail": "[split/gpu] request file context count=253 focus=src/app/main.cpp names=['src/app/main.cpp",
+      "ts": "2026-05-19T01:06:47.610Z"
+    },
+    {
+      "name": "screenshot first-compile retry",
+      "status": "warn",
+      "detail": "800x600 visible=0 luma=0.0 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260519040608-first-compile.png attempt=1/6",
+      "ts": "2026-05-19T01:06:48.134Z"
+    },
+    {
+      "name": "screenshot first-compile",
+      "status": "pass",
+      "detail": "800x600 visible=16384 luma=22.7 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260519040608-first-compile-attempt-2.png attempt=2",
+      "ts": "2026-05-19T01:06:49.158Z"
+    },
+    {
+      "name": "generated split contains HMR ABI",
+      "status": "pass",
+      "detail": "shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip",
+      "ts": "2026-05-19T01:06:49.982Z"
+    },
+    {
+      "name": "read generated split from worker",
+      "status": "pass",
+      "detail": "worker=/tmp/.tmpbCQ5kb",
+      "ts": "2026-05-19T01:06:49.982Z"
+    },
+    {
+      "name": "persist generated split to workspace",
+      "status": "pass",
+      "detail": "7 files",
+      "ts": "2026-05-19T01:06:50.101Z"
+    },
+    {
+      "name": "fatal",
+      "status": "fail",
+      "detail": "Error: device_only_hmr wait_hmr status=rejected detail={\"status\":\"rejected\",\"elapsedMs\":767,\"source\":\"hmr_status\",\"detail\":{\"status\":\"rejected\",\"module\":\"device\",\"reason\":\"GPU sidecar reload already in flight\",\"fallback\":\"Wait for active GPU sidecar reload or restart runner\"}}\n    at compileViaMcp (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-scale-validation.mjs:803:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async run (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-scale-validation.mjs:1124:3)",
+      "ts": "2026-05-19T01:06:50.933Z"
+    }
+  ]
+}
