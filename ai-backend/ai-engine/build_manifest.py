@@ -371,23 +371,24 @@ def normalize_gpu_split_manifest(
     manifest["files"] = [str(p) for p in files]
 
     manifest["compiler"] = manifest.get("compiler") if manifest.get("compiler") in {"g++", "clang++"} else "g++"
-    manifest.setdefault("std", "c++26")
-    manifest.setdefault("common_flags", [])
-    manifest.setdefault("core_link_flags", [])
-    manifest.setdefault("gui_link_flags", [])
-    manifest.setdefault("shared_link_flags", [])
-    manifest.setdefault("runner_link_flags", [])
-    manifest.setdefault("system_packages", [])
-    manifest.setdefault("hot_reload_mode", "swap")
-    manifest.setdefault(
-        "confidence",
-        {
-            "overall": "high",
-            "runner_synthesis": "high",
-            "link_flags": "high",
-            "notes": "GPU manifest defaults normalized by ai-engine.",
-        },
-    )
+    manifest["std"] = str(manifest.get("std") or "c++26")
+    for field in (
+        "common_flags",
+        "core_link_flags",
+        "gui_link_flags",
+        "shared_link_flags",
+        "runner_link_flags",
+        "system_packages",
+    ):
+        manifest[field] = _normalize_str_list(manifest.get(field))
+    if manifest.get("hot_reload_mode") not in {"swap", "process_restart", "auto"}:
+        manifest["hot_reload_mode"] = "swap"
+    manifest["confidence"] = _normalize_confidence_block(manifest.get("confidence"))
+    # The GPU splitter emits the generated 5-role module pipeline, which the
+    # worker compiles directly. Build-system hints copied from the user's
+    # original CMake/make project are stale after splitting and should not trip
+    # V1's host-project multi-step rejection.
+    manifest["build_steps"] = []
 
     common_flags = list(manifest["common_flags"])
     host_link_fields = ("core_link_flags", "gui_link_flags", "runner_link_flags")
@@ -496,6 +497,37 @@ def _extract_source_link_hints(source: str) -> List[str]:
             lib = lib[:-4]
         add(lib)
     return flags
+
+
+def _normalize_str_list(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw] if raw.strip() else []
+    if isinstance(raw, list):
+        return [str(item) for item in raw if str(item).strip()]
+    return []
+
+
+def _normalize_confidence_block(raw: Any) -> dict:
+    default = {
+        "overall": "high",
+        "runner_synthesis": "high",
+        "link_flags": "high",
+        "notes": "GPU manifest defaults normalized by ai-engine.",
+    }
+    if not isinstance(raw, Mapping):
+        return default
+
+    confidence = dict(default)
+    for key in ("overall", "runner_synthesis", "link_flags"):
+        value = str(raw.get(key) or "").lower()
+        if value in {"high", "medium", "low"}:
+            confidence[key] = value
+    notes = raw.get("notes")
+    if notes is not None:
+        confidence["notes"] = str(notes)
+    return confidence
 
 
 def _normalize_gpu_device_flags(raw_flags: Any, vendor: str) -> List[str]:

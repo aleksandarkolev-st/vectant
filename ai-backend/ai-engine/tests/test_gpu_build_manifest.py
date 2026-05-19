@@ -200,7 +200,14 @@ def test_normalizes_ai_gpu_manifest_defaults_for_rocm():
 
 def test_normalizes_glfw_opengl_gpu_manifest_link_flags():
     normalized = normalize_gpu_split_manifest(
-        {"gpu": {"vendor": "rocm"}, "gui_link_flags": [], "runner_link_flags": []},
+        {
+            "gpu": {"vendor": "rocm"},
+            "gui_link_flags": [],
+            "runner_link_flags": [],
+            "build_steps": [{"cmd": "cmake --build build"}],
+            "hot_reload_mode": "cmake",
+            "confidence": {"overall": "medium"},
+        },
         split_files={
             "shared.h": "",
             "core.cpp": "",
@@ -229,6 +236,10 @@ def test_normalizes_glfw_opengl_gpu_manifest_link_flags():
     )
     parsed = parse_manifest(normalized)
     validate_manifest_v1(parsed)
+    assert parsed.build_steps == []
+    assert parsed.hot_reload_mode == "swap"
+    assert parsed.confidence.overall == "medium"
+    assert parsed.confidence.runner_synthesis == "high"
     assert "-lglfw" in parsed.gui_link_flags
     assert "-lglfw" in parsed.runner_link_flags
     assert "-lGL" in parsed.gui_link_flags
