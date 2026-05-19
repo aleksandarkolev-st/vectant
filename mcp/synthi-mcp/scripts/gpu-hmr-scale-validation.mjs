@@ -67,6 +67,7 @@ const report = {
   vendor: '',
   arch: '',
   render_backend: CFG.renderBackend,
+  source_file_mix: {},
   workspace_file_count: 0,
   relevant_file_count: 0,
   started_at: new Date().toISOString(),
@@ -401,6 +402,83 @@ async function stopMcp() {
 
 function addFile(files, pathName, content, relevant = false) {
   files.push({ path: pathName, content: content.trimStart().replace(/\r\n/g, '\n'), relevant });
+}
+
+function addMultiSourceShardPack(files) {
+  for (let i = 0; i < 10; i += 1) {
+    const suffix = String(i).padStart(2, '0');
+    addFile(files, `src/field/flow_profile_${suffix}.hpp`, `
+#pragma once
+namespace scale::field_profile_${i} {
+constexpr float kRadialPull = ${(0.18 + i * 0.011).toFixed(3)}f;
+constexpr float kTangentialBias = ${(0.03 + i * 0.004).toFixed(3)}f;
+inline float radial_weight(float normalized_radius) {
+  return kRadialPull + normalized_radius * kTangentialBias;
+}
+}
+`, true);
+  }
+
+  for (let i = 0; i < 10; i += 1) {
+    const suffix = String(i).padStart(2, '0');
+    addFile(files, `src/field/flow_table_${suffix}.h`, `
+#pragma once
+namespace scale_flow_table_${i} {
+static const int kPaletteBand = ${i % 4};
+static const float kBoundaryDamping = ${(0.61 + i * 0.01).toFixed(3)}f;
+static inline float clamp_edge(float v, float lo, float hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+}
+`, true);
+  }
+
+  for (let i = 0; i < 10; i += 1) {
+    const suffix = String(i).padStart(2, '0');
+    addFile(files, `src/field/flow_module_${suffix}.cpp`, `
+#include "flow_profile_${suffix}.hpp"
+#include "flow_table_${suffix}.h"
+namespace scale::field_module_${i} {
+float archived_force_${i}(float radius, float velocity) {
+  float weighted = field_profile_${i}::radial_weight(radius);
+  return scale_flow_table_${i}::clamp_edge(weighted + velocity * 0.125f, -4.0f, 4.0f);
+}
+}
+`, true);
+  }
+
+  for (let i = 0; i < 10; i += 1) {
+    const suffix = String(i).padStart(2, '0');
+    addFile(files, `src/kernels/flow_kernel_${suffix}.hip`, `
+#include "../field/flow_profile_${suffix}.hpp"
+#include "../field/flow_table_${suffix}.h"
+namespace scale::kernel_notes_${i} {
+constexpr float kFlowGain = field_profile_${i}::kRadialPull;
+constexpr int kColorBand = scale_flow_table_${i}::kPaletteBand;
+struct FlowKernelNote {
+  float gain;
+  int band;
+};
+static inline FlowKernelNote note() {
+  return {kFlowGain, kColorBand};
+}
+}
+`, true);
+  }
+}
+
+function sourceFileMix(files) {
+  const mix = { cpp: 0, hpp: 0, h: 0, hip: 0, cu: 0, total: 0 };
+  for (const file of files) {
+    const lower = file.path.toLowerCase();
+    if (lower.endsWith('.cpp')) mix.cpp += 1;
+    else if (lower.endsWith('.hpp')) mix.hpp += 1;
+    else if (lower.endsWith('.h')) mix.h += 1;
+    else if (lower.endsWith('.hip')) mix.hip += 1;
+    else if (lower.endsWith('.cu')) mix.cu += 1;
+  }
+  mix.total = mix.cpp + mix.hpp + mix.h + mix.hip + mix.cu;
+  return mix;
 }
 
 function buildScaleProject(vendor, arch, renderBackend) {
@@ -850,6 +928,8 @@ int main() {
 `, true);
   }
 
+  addMultiSourceShardPack(files);
+
   for (let i = 0; i < 120; i += 1) {
     addFile(files, `docs/notes/field-note-${String(i).padStart(3, '0')}.md`, `
 # Field Note ${i}
@@ -1172,6 +1252,7 @@ async function writeReport() {
     `vendor: ${report.vendor}`,
     `arch: ${report.arch}`,
     `render_backend: ${report.render_backend}`,
+    `source_file_mix: ${JSON.stringify(report.source_file_mix)}`,
     `workspace_file_count: ${report.workspace_file_count}`,
     `relevant_file_count: ${report.relevant_file_count}`,
     `generated_roles: ${JSON.stringify(report.generated_roles)}`,
@@ -1223,7 +1304,10 @@ async function run() {
   const project = buildScaleProject(vendor, arch, CFG.renderBackend);
   report.workspace_file_count = project.files.length;
   report.relevant_file_count = project.relevantFiles.length;
+  report.source_file_mix = sourceFileMix(project.files);
   if (project.files.length < 200) fail(`scale fixture only has ${project.files.length} files`);
+  if (report.source_file_mix.total < 40) fail(`scale fixture only has ${report.source_file_mix.total} source/header/device files`);
+  record('source file mix', 'pass', JSON.stringify(report.source_file_mix));
   assertOrdinaryUserProject(project.files);
 
   const workspace = await createWorkspace({ name: `Synthi GPU Scale Validation (${vendor}/${CFG.renderBackend})`, slug: CFG.slug });
