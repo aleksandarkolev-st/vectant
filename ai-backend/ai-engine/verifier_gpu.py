@@ -128,9 +128,21 @@ _GPU_MEM_INIT_RE = re.compile(
     r"\b(?:cudaMemset|hipMemset)\s*\(",
     re.DOTALL,
 )
+_GPU_HOST_TO_DEVICE_COPY_RE = re.compile(
+    r"\b(?:cudaMemcpy|hipMemcpy)\s*\([^;]*\b(?:cudaMemcpyHostToDevice|hipMemcpyHostToDevice)\b",
+    re.DOTALL,
+)
+_GPU_DEVICE_TO_HOST_COPY_RE = re.compile(
+    r"\b(?:cudaMemcpy|hipMemcpy)\s*\([^;]*\b(?:cudaMemcpyDeviceToHost|hipMemcpyDeviceToHost)\b",
+    re.DOTALL,
+)
 _GPU_INIT_KERNEL_LAUNCH_RE = re.compile(
     r"\bsynthi_gpu_launch\s*\([^;]*\"[^\"]*(?:init|seed|setup|reset)[^\"]*\"",
     re.IGNORECASE | re.DOTALL,
+)
+_SYNTHI_LAUNCH_RESULT_CHECK_RE = re.compile(
+    r"(?:\bif\s*\(\s*synthi_gpu_launch\s*\(|\b(?:bool|auto)\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*synthi_gpu_launch\s*\()",
+    re.DOTALL,
 )
 _GUI_HOST_MIRROR_INDEX_RE = re.compile(r"(?:->|\.)\s*(?P<name>h_[A-Za-z_][A-Za-z0-9_]*)\s*\[")
 _DEVICE_DESCRIPTOR_INIT_RE = re.compile(
@@ -397,6 +409,23 @@ def _split_top_level_args(body: str) -> List[str]:
     if tail:
         args.append(tail)
     return args
+
+
+def _function_body(source: str, name: str) -> str:
+    match = re.search(rf"\b{name}\s*\([^)]*\)\s*\{{", source)
+    if not match:
+        return ""
+    i = match.end()
+    depth = 1
+    while i < len(source) and depth:
+        if source[i] == "{":
+            depth += 1
+        elif source[i] == "}":
+            depth -= 1
+        i += 1
+    if depth != 0:
+        return ""
+    return source[match.end(): i - 1]
 
 
 def _manifest_role_path(manifest: Optional[Mapping[str, object]], role: str) -> Optional[str]:
@@ -699,6 +728,43 @@ def verify_split_output(
                     "not synthi_register(&ptr, ...)."
                 ),
                 offending_module=core_path,
+            )
+        )
+    core_load_body = _function_body(core_source, "core_on_load")
+    if _GPU_HOST_TO_DEVICE_COPY_RE.search(core_load_body):
+        violations.append(
+            Violation(
+                rule="host_to_device_copy_in_core_on_load",
+                message=(
+                    "core_on_load must not block first render on a raw "
+                    "cudaMemcpy/hipMemcpy HostToDevice copy. Populate "
+                    "host-visible mirrors for the first frame, allocate and "
+                    "register device buffers, then initialize device state "
+                    "through a Synthi-launched init/seed kernel that can be "
+                    "retried from core_on_update once the sidecar dispatcher "
+                    "is installed."
+                ),
+                offending_module=core_path,
+                offending_symbol="core_on_load",
+            )
+        )
+    if (
+        _GPU_DEVICE_TO_HOST_COPY_RE.search(core_source)
+        and re.search(r"\bsynthi_gpu_launch\s*\(", core_source)
+        and not _SYNTHI_LAUNCH_RESULT_CHECK_RE.search(core_source)
+    ):
+        violations.append(
+            Violation(
+                rule="device_to_host_copy_not_launch_guarded",
+                message=(
+                    "DeviceToHost mirror copies must be guarded by the boolean "
+                    "result of synthi_gpu_launch. If the sidecar dispatcher is "
+                    "not installed or the launch fails, keep the previous "
+                    "host-visible mirror instead of immediately calling "
+                    "cudaMemcpy/hipMemcpy and blocking the preview."
+                ),
+                offending_module=core_path,
+                offending_symbol="core_on_update",
             )
         )
     if (

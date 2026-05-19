@@ -417,6 +417,49 @@ def test_split_rejects_uninitialized_device_buffers():
     assert any(v.rule == "device_buffers_not_initialized" for v in r.violations)
 
 
+def test_split_rejects_host_to_device_copy_in_core_on_load():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* d_particles; float* h_particles; int n; };',
+        "core.cpp": (
+            '#include <hip/hip_runtime.h>\n'
+            'extern "C" void* core_on_load(void*, void*) { '
+            'static AppState s; s.n = 1024; s.h_particles = new float[1024]; '
+            'hipMalloc(&s.d_particles, 4096); synthi_register(s.d_particles, 4096, "persistent"); '
+            'hipMemcpy(s.d_particles, s.h_particles, 4096, hipMemcpyHostToDevice); return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { bool ok = synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { &d_particles, &n }); if (ok) {} }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": 'extern "C" __global__ void step(float*, int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert any(v.rule == "host_to_device_copy_in_core_on_load" for v in r.violations)
+
+
+def test_split_rejects_unguarded_device_to_host_copy_after_launch():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* d_particles; float* h_particles; int n; };',
+        "core.cpp": (
+            '#include <hip/hip_runtime.h>\n'
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; hipMalloc(&s.d_particles, 4096); return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { &d_particles, &n }); '
+            'hipMemcpy(h_particles, d_particles, 4096, hipMemcpyDeviceToHost); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": 'extern "C" __global__ void step(float*, int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert any(v.rule == "device_to_host_copy_not_launch_guarded" for v in r.violations)
+
+
 def test_split_rejects_zeroed_host_mirror_used_for_render():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* d_particles; float* h_particles; int n; void* renderer; };',

@@ -3978,26 +3978,30 @@ Never call `SDL_RenderPresent`; the runner presents automatically after
 
 When a generated device kernel updates positions, colors, or other values that
 the GUI must display, keep host-visible mirror arrays in `AppState` and copy
-the device outputs back after `synthi_gpu_launch` before the GUI reads them.
-Device-only HMR edits must be able to change what `gui_on_render` draws without
-changing the host ABI.
+the device outputs back only after `synthi_gpu_launch` returns true. If the
+sidecar dispatcher is not installed yet or the launch fails, keep the previous
+host-visible mirror for that frame. Device-only HMR edits must be able to
+change what `gui_on_render` draws without changing the host ABI.
 
 Never dereference or index CUDA/HIP device pointers in `gui_on_render`.
 Pointers named like `d_particles`, `device_x`, or other cudaMalloc/hipMalloc
 results are GPU addresses and will crash when read by SDL/OpenGL/CPU drawing
 code. Store host mirrors such as `particles`, `x`, `y`, or `rgba` in `AppState`
-and update those mirrors in `core_on_update` with `cudaMemcpy`/`hipMemcpy` after
-the GPU launch.
+and update those mirrors in `core_on_update` with `cudaMemcpy`/`hipMemcpy` only
+inside the success branch of the corresponding `synthi_gpu_launch(...)`.
 
 Do not leave GPU buffers uninitialized. In `core_on_load`, preserve the user's
 constructor or setup logic that creates initial positions, velocities, colors,
 counts, bounds, and constants. Fill the host mirrors with those values, then
-copy them to the CUDA/HIP buffers with `cudaMemcpyHostToDevice` or
-`hipMemcpyHostToDevice` (or use a deterministic memset only when that is truly
-the user's intended initial value) before the first update launch. A dedicated
-init/seed kernel is also valid if it writes every displayed value before the
-first update kernel. The first frame must have on-screen, non-overlapping data
-that matches the user's setup, not uninitialized zeros or offscreen values.
+return quickly so the first render can draw those host mirrors. Do not call
+`cudaMemcpyHostToDevice` or `hipMemcpyHostToDevice` inside `core_on_load`; that
+blocks first-frame rendering and bypasses the sidecar HMR boundary. Allocate and
+register device buffers in `core_on_load`, then initialize GPU-side contents
+through a dedicated init/seed kernel launched from `core_on_update`. Track a
+`device_initialized` flag and retry the init launch until `synthi_gpu_launch`
+returns true; only then run the update kernel and copy device outputs back. The
+first frame must have on-screen, non-overlapping data from the host mirrors,
+not uninitialized zeros or offscreen values.
 
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 
@@ -4062,8 +4066,10 @@ real runtime code/header surface, not prose:
     runtime registry so the worker can preserve them across sidecar
     cubin/hsaco swaps.
     Allocate buffers in `core_on_load` with the original
-    `cudaMalloc`/`hipMalloc` calls, seed/copy any initial host arrays to the
-    device before the first launch, then register the allocated pointer value.
+    `cudaMalloc`/`hipMalloc` calls, fill host mirrors for first-frame drawing,
+    and register the allocated pointer value. Do not perform HostToDevice copies
+    in `core_on_load`; seed GPU contents through a Synthi-launched init kernel
+    that can be retried from `core_on_update`.
     Register buffers from `core.cpp` lifecycle code, not `host_runner.cpp`.
     Never register the address of a pointer field:
 
