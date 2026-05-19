@@ -84,7 +84,7 @@ use state_manager::StateManager;
 use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
 #[cfg(feature = "gpu-hmr")]
-use worker::hmr::adapter_trait::{Adapter, AdapterReloadRequest};
+use worker::hmr::adapter_trait::{Adapter, AdapterReloadRequest, AdapterReloadResult};
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
 #[cfg(feature = "gpu-hmr")]
@@ -98,6 +98,15 @@ use worker::hmr::gpu_module_adapter::{GpuModuleAdapter, GpuModuleAdapterConfig, 
 // };
 use worker::debug_log;
 use worker::runtime::legacy_module_state::{AppState, ModuleState};
+
+#[cfg(feature = "gpu-hmr")]
+struct GpuReloadCompletion {
+    language: String,
+    artifact_path: String,
+    kernels: String,
+    adapter: GpuModuleAdapter,
+    result: AdapterReloadResult,
+}
 
 // ============================================================
 // INDEPENDENT SWAP DOMAINS: Separate state for each module
@@ -798,6 +807,10 @@ fn main() {
     let kv_api = create_kv_api();
     #[cfg(feature = "gpu-hmr")]
     let mut gpu_adapters: HashMap<String, GpuModuleAdapter> = HashMap::new();
+    #[cfg(feature = "gpu-hmr")]
+    let (gpu_reload_tx, gpu_reload_rx) = mpsc::channel::<GpuReloadCompletion>();
+    #[cfg(feature = "gpu-hmr")]
+    let mut gpu_reload_inflight: HashMap<String, Instant> = HashMap::new();
 
     #[cfg(target_os = "linux")]
     debug_log!("[Runner] Frame capture enabled (Linux build)");
@@ -819,6 +832,19 @@ fn main() {
     }
 
     loop {
+        #[cfg(feature = "gpu-hmr")]
+        while let Ok(completion) = gpu_reload_rx.try_recv() {
+            eprintln!(
+                "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact={} kernels={} result={:?}",
+                completion.language,
+                completion.artifact_path,
+                completion.kernels,
+                completion.result
+            );
+            gpu_reload_inflight.remove(&completion.language);
+            gpu_adapters.insert(completion.language, completion.adapter);
+        }
+
         // Poll SDL2 events and pass them to loaded modules.
         //
         // ULTRAPLAN Lightning Phase 10g.3b — route through the
@@ -1281,20 +1307,6 @@ fn main() {
                             }
                         };
 
-                        if !gpu_adapters.contains_key(language) {
-                            let mut adapter = GpuModuleAdapter::new(GpuModuleAdapterConfig {
-                                vendor,
-                                ..Default::default()
-                            });
-                            if let Err(e) = adapter.initialize() {
-                                eprintln!(
-                                    "[Runner] [GPU HMR] Device adapter init failed vendor={}: {}",
-                                    language, e
-                                );
-                            }
-                            gpu_adapters.insert(language.to_string(), adapter);
-                        }
-
                         let artifact_hash = std::fs::metadata(artifact_path)
                             .map(|m| m.len().to_string())
                             .unwrap_or_else(|_| "unknown".to_string());
@@ -1329,16 +1341,55 @@ fn main() {
                             timeout_ms: 5000,
                         };
 
-                        if let Some(adapter) = gpu_adapters.get_mut(language) {
-                            let result = adapter.reload(&req);
+                        if gpu_reload_inflight.contains_key(language) {
                             eprintln!(
-                                "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact={} kernels={} result={:?}",
+                                "[Runner] [GPU HMR] Device sidecar reload skipped vendor={} artifact={} kernels={} reason=reload-in-flight",
                                 language,
                                 artifact_path,
-                                kernels.join(","),
-                                result
+                                kernels.join(",")
                             );
+                            continue;
                         }
+
+                        let mut adapter =
+                            gpu_adapters
+                                .remove(language)
+                                .unwrap_or_else(|| {
+                                    let mut adapter =
+                                        GpuModuleAdapter::new(GpuModuleAdapterConfig {
+                                            vendor,
+                                            ..Default::default()
+                                        });
+                                    if let Err(e) = adapter.initialize() {
+                                        eprintln!(
+                                            "[Runner] [GPU HMR] Device adapter init failed vendor={}: {}",
+                                            language, e
+                                        );
+                                    }
+                                    adapter
+                                });
+
+                        let completion_tx = gpu_reload_tx.clone();
+                        let language_owned = language.to_string();
+                        let artifact_path_owned = artifact_path.to_string();
+                        let kernels_log = kernels.join(",");
+                        gpu_reload_inflight.insert(language_owned.clone(), Instant::now());
+                        eprintln!(
+                            "[Runner] [GPU HMR] Device sidecar reload started vendor={} artifact={} kernels={}",
+                            language_owned,
+                            artifact_path_owned,
+                            kernels_log
+                        );
+                        thread::spawn(move || {
+                            let result = adapter.reload(&req);
+                            let _ = completion_tx.send(GpuReloadCompletion {
+                                language: language_owned,
+                                artifact_path: artifact_path_owned,
+                                kernels: kernels_log,
+                                adapter,
+                                result,
+                            });
+                        });
                     }
 
                     #[cfg(not(feature = "gpu-hmr"))]
