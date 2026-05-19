@@ -218,4 +218,55 @@ describe("broker security hardening", () => {
     expect((replay.events[0]?.kind === "error" ? replay.events[0].detail?.["access_token"] : null)).toBe("[REDACTED]");
     expect(brokerAuditLog.snapshot().some((entry) => entry.action === "replay")).toBe(true);
   });
+
+  it("filters replay results by explicit session metadata", () => {
+    const log = new EventLog();
+    log.push({
+      kind: "frame",
+      session_id: "s1",
+      frame_seq: 1,
+      frame_ts_ms: 1,
+      ingest_ts_ms: 1,
+      viewport: { w: 10, h: 10, dpr: 1 },
+      is_keyframe: false,
+    });
+    log.push({
+      kind: "frame",
+      session_id: "s2",
+      frame_seq: 1,
+      frame_ts_ms: 2,
+      ingest_ts_ms: 2,
+      viewport: { w: 10, h: 10, dpr: 1 },
+      is_keyframe: false,
+    });
+    log.push({
+      kind: "input",
+      action: "mouse:click",
+      payload: { session_id: "s2", tool_call_id: "tc_s2" },
+    });
+    log.push({
+      kind: "error",
+      code: "FRAME_STALE",
+      detail: { session_id: "s1", access_token: "secret-token" },
+    });
+    log.push({
+      kind: "console",
+      level: "info",
+      source: "mcp_internal",
+      message: "legacy global event",
+    });
+    const control = new BrokerControlPlane(log);
+
+    const replay = control.replay({
+      principal: inputPrincipal,
+      session_id: "s1",
+      from_event_id: 0,
+    });
+
+    expect(replay.ok).toBe(true);
+    if (!replay.ok) throw new Error("unexpected replay failure");
+    expect(replay.events.map((event) => event.seq)).toEqual([1, 4, 5]);
+    expect(replay.events.some((event) => event.kind === "frame" && event.session_id === "s2")).toBe(false);
+    expect((replay.events[1]?.kind === "error" ? replay.events[1].detail?.["access_token"] : null)).toBe("[REDACTED]");
+  });
 });

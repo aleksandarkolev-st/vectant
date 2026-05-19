@@ -272,6 +272,7 @@ export class BrokerControlPlane {
       limit: input.limit,
     });
     if (!result.ok) return result;
+    const events = result.events.filter((event) => eventMatchesReplaySession(event, input.session_id));
     auditBrokerEvent({
       action: "replay",
       principal: input.principal,
@@ -279,13 +280,13 @@ export class BrokerControlPlane {
         session_id: input.session_id,
         from_event_id: input.from_event_id,
         to_event_id: input.to_event_id ?? null,
-        returned_events: result.events.length,
+        returned_events: events.length,
       },
     });
     try {
       return {
         ...result,
-        events: result.events.map((event) => redactBrokerEvent(event, input.principal.role)),
+        events: events.map((event) => redactBrokerEvent(event, input.principal.role)),
       };
     } catch {
       return { ok: false, error: brokerError("FORBIDDEN", { reason: "redaction_failed" }) };
@@ -358,4 +359,25 @@ export class BrokerControlPlane {
     }
     return null;
   }
+}
+
+function eventMatchesReplaySession(event: EventLogEntry, requestedSessionId: string): boolean {
+  const explicitSessionId = explicitEventSessionId(event);
+  return explicitSessionId === null || explicitSessionId === requestedSessionId;
+}
+
+function explicitEventSessionId(event: EventLogEntry): string | null {
+  if (event.kind === "frame") return event.session_id;
+  if (event.kind === "input") return stringField(event.payload["session_id"]);
+  if (event.kind === "lease") return stringField(event.payload["session_id"]);
+  if (event.kind === "error") return stringField(event.detail?.["session_id"]);
+  if (event.kind === "usage") return stringField(event.detail?.["session_id"]);
+  if (event.kind === "source_state") return stringField(event.detail?.["session_id"]);
+  if (event.kind === "security") return stringField(event.detail?.["session_id"]);
+  if (event.kind === "lifecycle") return stringField(event.detail?.["session_id"]);
+  return null;
+}
+
+function stringField(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
