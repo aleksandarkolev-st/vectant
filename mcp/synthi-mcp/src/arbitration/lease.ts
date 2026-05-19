@@ -361,6 +361,28 @@ class LeaseRegistry {
     return { released: [lease_id], not_found: null };
   }
 
+  invalidateAll(reason: string, now: number = Date.now()): { released: string[]; queued: string[] } {
+    const released = Array.from(this.active.keys());
+    const queued = this.fairnessQueue.map((entry) => entry.request_id);
+    this.active.clear();
+    this.acquireOrder.clear();
+    this.fairnessQueue.length = 0;
+    if (released.length > 0 || queued.length > 0) {
+      eventLog.push({
+        kind: "lease",
+        action: "released_all",
+        payload: {
+          released,
+          queued,
+          invalidated: true,
+          reason,
+        },
+        ts: now,
+      });
+    }
+    return { released, queued };
+  }
+
   forceRelease(lease_id: string, forcedBy: string, reason: string): ForceReleaseResult | { ok: false; error: "lease_not_found" } {
     const lease = this.active.get(lease_id);
     if (!lease) return { ok: false, error: "lease_not_found" };

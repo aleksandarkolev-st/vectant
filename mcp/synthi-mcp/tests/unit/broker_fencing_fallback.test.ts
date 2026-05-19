@@ -104,6 +104,7 @@ describe("fallback controls", () => {
 describe("broker recovery", () => {
   beforeEach(() => {
     brokerRuntime._resetForTests();
+    brokerFallbackController.clear();
     leaseRegistry._resetForTests();
     session._resetForTests();
     eventLog._resetForTests();
@@ -125,6 +126,21 @@ describe("broker recovery", () => {
     });
     expect(res.isError).toBe(true);
     expect((res.structuredContent as { error: string }).error).toBe("BROKER_RECOVERING");
+  }));
+
+  it("drops queued lease requests during recovery", async () => withBrokerInputEnforced(async () => {
+    const active = leaseRegistry.acquireWithPolicy(5_000, "agent_a", { scope: ["mouse"] });
+    expect(active.ok).toBe(true);
+    const queued = leaseRegistry.acquireWithPolicy(5_000, "agent_b", { scope: ["keyboard"] });
+    expect(queued.ok).toBe(false);
+    expect(leaseRegistry.queueSnapshot()).toHaveLength(1);
+
+    brokerRuntime.enterRecovering("restart");
+    brokerRuntime.markReady();
+
+    expect(leaseRegistry.snapshot()).toHaveLength(0);
+    expect(leaseRegistry.queueSnapshot()).toHaveLength(0);
+    expect(leaseRegistry.currentLease()).toBeNull();
   }));
 
   it("records recovery time when marked ready", () => {

@@ -24,7 +24,7 @@ class BrokerRuntime {
   enterRecovering(reason: string, now: number = Date.now()): BrokerRecoveryIncident {
     this.state = "recovering";
     this.recovery = { recovery_start_ts: now, reason };
-    leaseRegistry.release();
+    leaseRegistry.invalidateAll(reason, now);
     eventLog.push({
       kind: "lifecycle",
       state: "migrating",
