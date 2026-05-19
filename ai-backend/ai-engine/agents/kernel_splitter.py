@@ -268,12 +268,15 @@ def _include_in_project_context(path: str, source: str) -> bool:
 
 def _project_context_sort_key(item: tuple[str, str], focus: Optional[str]) -> tuple[int, str]:
     path = item[0].replace("\\", "/")
+    source = item[1]
     focus_path = (focus or "").replace("\\", "/")
     if focus_path and path == focus_path:
         return (0, path)
     if path == "CMakeLists.txt":
         return (1, path)
-    if path.startswith("src/gpu/") or path.startswith("src/kernels/"):
+    if (path.startswith("src/gpu/") or path.startswith("src/kernels/")) and (
+        "__global__" in source or "__device__" in source
+    ):
         return (2, path)
     if path.startswith("src/app/"):
         return (3, path)
@@ -312,6 +315,12 @@ def _project_source_context(source_files: Mapping[str, str], focus: Optional[str
             "files; adapt their behavior into the generated HMR roles."
         ),
         "Do not assume the active editor file is the whole project.",
+        (
+            "Only source files containing actual `__global__` or `__device__` "
+            "device code are device-preservation anchors. Auxiliary `.hip`/`.cu` "
+            "files without those qualifiers are ordinary helper context; do not "
+            "force every helper constant into the generated device role."
+        ),
     ]
     used = sum(len(part) for part in sections)
     included = 0
