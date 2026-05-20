@@ -1246,12 +1246,9 @@ function editGeneratedDevice(source) {
 
 async function compileGeneratedDevice(split, editedDevice, checkpoint) {
   split.files[split.roles.device] = editedDevice;
-  const allFiles = [
-    ...Object.entries(split.files).map(([name, content]) => ({ name, content })),
-    { name: '.synthi_split_meta.json', content: split.sidecarRaw },
-    { name: '.synthi/build_manifest.json', content: JSON.stringify(split.manifest, null, 2) + '\n' },
-  ];
-  const additionalFiles = allFiles.filter((f) => cleanRel(f.name) !== cleanRel(split.roles.device));
+  const additionalFiles = Object.entries(split.files)
+    .filter(([name]) => cleanRel(name) !== cleanRel(split.roles.device))
+    .map(([name, content]) => ({ name, content }));
   return compileViaMcp({
     language: 'cpp',
     filename: split.roles.device,
