@@ -2,6 +2,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use tree_sitter::Parser;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceFastPathResult {
@@ -14,7 +15,11 @@ pub struct DeviceFastPathResult {
 
 impl DeviceFastPathResult {
     fn rejected(reason_codes: Vec<&str>, user_path: &str) -> Self {
-        let codes: Vec<String> = reason_codes.into_iter().map(str::to_string).collect();
+        Self::rejected_strings(reason_codes.into_iter().map(str::to_string).collect(), user_path)
+    }
+
+    fn rejected_strings(reason_codes: Vec<String>, user_path: &str) -> Self {
+        let codes = reason_codes;
         let plan = rejection_plan(&codes);
         Self {
             accepted: false,
@@ -54,6 +59,9 @@ pub fn try_direct_device_body_patch(
     if let Some(reason) = device_only_capability_rejection_reason(sidecar) {
         return DeviceFastPathResult::rejected(vec![reason], &user_path);
     }
+    if let Some(reason) = device_compile_metadata_rejection_reason(sidecar) {
+        return DeviceFastPathResult::rejected(vec![reason], &user_path);
+    }
 
     let Some(old_user_source) = source_baseline(sidecar, &user_path) else {
         return DeviceFastPathResult::rejected(vec!["mapping.source_baseline_missing"], &user_path);
@@ -65,6 +73,11 @@ pub fn try_direct_device_body_patch(
                 &user_path,
             );
         }
+    }
+    if let Err(reason_codes) =
+        validate_device_ast_gate(&old_user_source, new_user_source, generated_device_source)
+    {
+        return DeviceFastPathResult::rejected_strings(reason_codes, &user_path);
     }
 
     let old_signatures = kernel_signatures(&old_user_source);
@@ -154,6 +167,11 @@ pub fn try_direct_device_body_patch(
         "abi.kernel_signature_unchanged".to_string(),
         "abi.constant_global_layout_unchanged".to_string(),
         "mapping.device_role_valid".to_string(),
+        "parser.user_baseline_ast_passed".to_string(),
+        "parser.user_candidate_ast_passed".to_string(),
+        "parser.generated_device_ast_passed".to_string(),
+        "build.selected_compile_command_present".to_string(),
+        "build.effective_flags_hash_present".to_string(),
         "build.device_sidecar_only".to_string(),
     ];
     codes.extend(
@@ -248,6 +266,99 @@ pub fn device_only_capability_rejection_reason(sidecar: &Value) -> Option<&'stat
     }
 
     None
+}
+
+fn device_compile_metadata_rejection_reason(sidecar: &Value) -> Option<&'static str> {
+    let selected_command = sidecar
+        .get("selectedCompileCommand")
+        .or_else(|| sidecar.get("selected_compile_command"));
+    let has_command_identity = selected_command
+        .and_then(|command| {
+            command
+                .get("identity")
+                .or_else(|| command.get("argumentsHash"))
+                .or_else(|| command.get("effectiveFlagsHash"))
+        })
+        .and_then(Value::as_str)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if !has_command_identity {
+        return Some("build.selected_compile_command_missing");
+    }
+
+    let has_effective_flags = sidecar
+        .get("effectiveFlagsHash")
+        .or_else(|| {
+            selected_command.and_then(|command| command.get("effectiveFlagsHash"))
+        })
+        .and_then(Value::as_str)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if !has_effective_flags {
+        return Some("build.effective_flags_hash_missing");
+    }
+
+    None
+}
+
+fn validate_device_ast_gate(
+    old_user_source: &str,
+    new_user_source: &str,
+    generated_device_source: &str,
+) -> Result<(), Vec<String>> {
+    let inputs = [
+        ("parser.user_baseline_ast_failed", old_user_source),
+        ("parser.user_candidate_ast_failed", new_user_source),
+        ("parser.generated_device_ast_failed", generated_device_source),
+    ];
+    let mut failures = Vec::new();
+    for (reason, source) in inputs {
+        if parse_device_cpp_ast(source).is_err() {
+            failures.push(reason.to_string());
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        let mut reason_codes = vec!["parser.device_ast_parse_failed".to_string()];
+        reason_codes.extend(failures);
+        Err(reason_codes)
+    }
+}
+
+fn parse_device_cpp_ast(source: &str) -> Result<(), String> {
+    let parseable = sanitize_gpu_annotations_for_cpp_parser(source);
+    let mut parser = Parser::new();
+    let language = tree_sitter_cpp::LANGUAGE;
+    parser
+        .set_language(&language.into())
+        .map_err(|e| format!("set_language: {e}"))?;
+    let tree = parser
+        .parse(&parseable, None)
+        .ok_or_else(|| "parse returned None".to_string())?;
+    if tree.root_node().has_error() {
+        Err("tree_sitter_cpp_parse_error".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn sanitize_gpu_annotations_for_cpp_parser(source: &str) -> String {
+    let launch_bounds = Regex::new(r"__launch_bounds__\s*\([^)]*\)")
+        .expect("launch bounds sanitizer regex");
+    let mut out = launch_bounds.replace_all(source, "").into_owned();
+    for token in [
+        "__global__",
+        "__device__",
+        "__host__",
+        "__constant__",
+        "__managed__",
+        "__shared__",
+        "__restrict__",
+    ] {
+        out = out.replace(token, "");
+    }
+    out
 }
 
 fn source_baseline(sidecar: &Value, path: &str) -> Option<String> {
@@ -490,6 +601,13 @@ mod tests {
     fn sidecar() -> Value {
         let source = "__constant__ float gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += gain[0];\n}\n";
         json!({
+            "selectedCompileCommand": {
+                "schemaVersion": "synthi.gpu.selected_compile_command.v1",
+                "source": "compile_commands.json",
+                "identity": "compile-command-id",
+                "effectiveFlagsHash": "flags-hash"
+            },
+            "effectiveFlagsHash": "flags-hash",
             "toolchainCapabilities": {
                 "status": "current",
                 "supportsDeviceOnlyReload": true
@@ -535,6 +653,14 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("gain[0] * 2.0f"));
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "parser.user_baseline_ast_passed"));
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "build.selected_compile_command_present"));
         assert!(result
             .reason_codes
             .iter()
@@ -640,6 +766,66 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "toolchain_capability_missing"));
+    }
+
+    #[test]
+    fn missing_selected_compile_command_blocks_fast_path() {
+        let mut missing = sidecar();
+        missing.as_object_mut().unwrap().remove("selectedCompileCommand");
+
+        let result = try_direct_device_body_patch(
+            &missing,
+            "src/gpu/flow.hip",
+            generated_source(),
+            generated_source(),
+        );
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "build.selected_compile_command_missing"));
+    }
+
+    #[test]
+    fn missing_effective_flags_hash_blocks_fast_path() {
+        let mut missing = sidecar();
+        missing.as_object_mut().unwrap().remove("effectiveFlagsHash");
+        missing["selectedCompileCommand"]
+            .as_object_mut()
+            .unwrap()
+            .remove("effectiveFlagsHash");
+
+        let result = try_direct_device_body_patch(
+            &missing,
+            "src/gpu/flow.hip",
+            generated_source(),
+            generated_source(),
+        );
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "build.effective_flags_hash_missing"));
+    }
+
+    #[test]
+    fn device_ast_parse_failure_blocks_fast_path() {
+        let next = "__constant__ float gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += ;\n}\n";
+
+        let result =
+            try_direct_device_body_patch(&sidecar(), "src/gpu/flow.hip", next, generated_source());
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "parser.device_ast_parse_failed"));
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "parser.user_candidate_ast_failed"));
     }
 
     #[test]
