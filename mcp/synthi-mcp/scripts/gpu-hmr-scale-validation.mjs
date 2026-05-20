@@ -276,6 +276,14 @@ async function readWorkerFile(workspacePath, relPath) {
   return execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(full)}`], 10000, true);
 }
 
+async function writeWorkerFile(workspacePath, relPath, content) {
+  const safeName = relPath.replace(/[\\/:\s]+/g, '_').replace(/^_+/, '') || 'worker-file';
+  const tmp = path.join(ARTIFACT_DIR, `${CFG.slug}-${safeName}.tmp`);
+  await writeFile(tmp, content);
+  const full = `${workspacePath.replace(/\/+$/, '')}/${relPath.replace(/^\/+/, '')}`;
+  await execText('docker', ['cp', tmp, `${CFG.workerContainer}:${full}`], 10000, true);
+}
+
 class McpClient {
   constructor(proc) {
     this.proc = proc;
@@ -1308,6 +1316,16 @@ function editUserDeviceConstantGlobalLayout(source) {
   throw new Error('user device source did not preserve an insertion point for a device-global layout probe');
 }
 
+function sidecarWithStaleToolchain(rawSidecar) {
+  const sidecar = JSON.parse(rawSidecar);
+  sidecar.toolchainCapabilities = sidecar.toolchainCapabilities && typeof sidecar.toolchainCapabilities === 'object'
+    ? sidecar.toolchainCapabilities
+    : {};
+  sidecar.toolchainCapabilities.status = 'stale';
+  sidecar.toolchainCapabilities.staleReason = 'scale_validation_probe';
+  return `${JSON.stringify(sidecar, null, 2)}\n`;
+}
+
 async function compileUserDeviceDelta(project, editedDevice, vendor, checkpoint) {
   if (CFG.hmrDeltaMode !== 'ai_user_delta') {
     throw new Error(`unsupported SYNTHI_SCALE_HMR_DELTA_MODE=${CFG.hmrDeltaMode}; expected ai_user_delta`);
@@ -1339,6 +1357,10 @@ async function dispatchUserDeviceSignatureNegative(project, signatureEditedDevic
 
 async function dispatchUserDeviceConstantGlobalNegative(project, layoutEditedDevice, vendor, checkpoint) {
   return dispatchUserDeviceNegative(project, layoutEditedDevice, vendor, checkpoint, 'negative_constant_global_rejection');
+}
+
+async function dispatchUserDeviceStaleToolchainNegative(project, editedDevice, vendor, checkpoint) {
+  return dispatchUserDeviceNegative(project, editedDevice, vendor, checkpoint, 'negative_stale_toolchain_rejection');
 }
 
 async function dispatchUserDeviceNegative(project, deviceSource, vendor, checkpoint, phaseName) {
@@ -1600,6 +1622,35 @@ async function run() {
   record('signature edit stops unsafe fallback', signatureHardStop.matched ? 'pass' : 'fail', signatureHardStop.snippet || 'no hard-stop rejection marker');
   if (!signatureHardStop.matched) throw new Error('signature hard-stop evidence missing');
   await assertNoSidecarReloadAfterHardStop(signatureHardStop, negativeCheckpoint, 'signature edit does not reload sidecar');
+
+  const staleCapabilityDevice = editUserDeviceSource(editedDevice);
+  await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: staleCapabilityDevice }] });
+  await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: stale toolchain rejection probe' });
+  const staleToolchainSidecar = sidecarWithStaleToolchain(
+    await readWorkerFile(split.workspacePath, '.synthi_split_meta.json'),
+  );
+  await writeWorkerFile(split.workspacePath, '.synthi_split_meta.json', staleToolchainSidecar);
+  const staleToolchainCheckpoint = await workerCheckpoint();
+  await dispatchUserDeviceStaleToolchainNegative(project, staleCapabilityDevice, vendor, staleToolchainCheckpoint);
+  record('stale toolchain edit compile dispatched via MCP', 'pass', project.devicePath);
+  const staleToolchainReject = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[gpu-hmr\] device_only fast path rejected: user=[^\n]*toolchain_capability_stale[^\n]*/,
+    10000,
+    staleToolchainCheckpoint,
+  );
+  record('stale toolchain capability blocks device_only', staleToolchainReject.matched ? 'pass' : 'fail', staleToolchainReject.snippet || 'no toolchain_capability_stale rejection marker');
+  if (!staleToolchainReject.matched) throw new Error('stale toolchain rejection evidence missing');
+
+  const staleToolchainHardStop = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[gpu-hmr\] device_only hard stop: user=[^\n]*toolchain_capability_stale[^\n]*/,
+    10000,
+    staleToolchainCheckpoint,
+  );
+  record('stale toolchain capability stops unsafe fallback', staleToolchainHardStop.matched ? 'pass' : 'fail', staleToolchainHardStop.snippet || 'no stale toolchain hard-stop marker');
+  if (!staleToolchainHardStop.matched) throw new Error('stale toolchain hard-stop evidence missing');
+  await assertNoSidecarReloadAfterHardStop(staleToolchainHardStop, staleToolchainCheckpoint, 'stale toolchain capability does not reload sidecar');
 
   await writeReport();
   const failures = report.checks.filter((r) => r.status === 'fail');
