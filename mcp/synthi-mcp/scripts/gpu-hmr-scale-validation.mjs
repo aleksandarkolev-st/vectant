@@ -112,6 +112,7 @@ const report = {
   generated_roles: {},
   launch_indirection: {},
   warm_rebuild: {},
+  runtime_policy: {},
   phases: [],
   screenshots: [],
   checks: [],
@@ -1319,6 +1320,7 @@ function collectWorkerMarkers(text) {
     /GPU markers detected; calling GPU split endpoint[^\n]*/g,
     /GPU split endpoint returned a 5-file split/g,
     /\[GPU AI Delta\][^\n]*/g,
+    /\[gpu-hmr\] device_only (?:fast path accepted|fast path rejected|hard stop)[^\n]*/g,
     /\[gpu-hmr\] warm_rebuild[^\n]*/g,
     /\[compile-device\] (?:hipcc|nvcc)[^\n]*/g,
     /\[gpu-reload\] plan=[^\n]*/g,
@@ -1750,7 +1752,16 @@ function editUserDeviceConstantGlobalLayout(source) {
 }
 
 function editTemplateHeaderSource(source) {
-  const edited = source.replace(/\b0\.00001f\b/, '0.00300f');
+  const replacements = [
+    [/\b0\.00001f\b/, '0.00300f'],
+    [/\b0\.00300f\b/, '0.00450f'],
+    [/\b0\.00450f\b/, '0.00600f'],
+  ];
+  for (const [regex, replacement] of replacements) {
+    const edited = source.replace(regex, replacement);
+    if (edited !== source) return edited;
+  }
+  const edited = source.replace(/\b0\.00600f\b/, '0.00750f');
   if (edited === source) throw new Error('template header did not preserve the arithmetic tuning literal');
   return edited;
 }
@@ -1807,6 +1818,170 @@ function sidecarWithStaleLaunchPointer(rawSidecar) {
     sidecar.runReport.staleLaunchPointerChecks = staleChecks;
   }
   return `${JSON.stringify(sidecar, null, 2)}\n`;
+}
+
+function sidecarWithGpuDeviceTaint(rawSidecar) {
+  const sidecar = JSON.parse(rawSidecar);
+  const marker = {
+    kind: 'tdr_timeout',
+    reasonCode: 'gpu_driver_tdr',
+    source: 'scale_validation_probe',
+  };
+  sidecar.gpuDriverFaultMarkers = [marker];
+  sidecar.gpuDeviceTainted = true;
+  delete sidecar.gpuFaultPolicy;
+  delete sidecar.fastPathPolicy;
+  delete sidecar.arbiterDecision;
+  delete sidecar.selectedPlan;
+  delete sidecar.arbiterReasonCodes;
+  delete sidecar.rankedReloadOptions;
+  delete sidecar.consentRequired;
+  delete sidecar.consentReason;
+  delete sidecar.runReport;
+  return `${JSON.stringify(sidecar, null, 2)}\n`;
+}
+
+function sidecarWithFragmentedVram(rawSidecar) {
+  const sidecar = JSON.parse(rawSidecar);
+  sidecar.memoryArenaStats = {
+    schemaVersion: 'synthi.gpu.memory_arena_stats.v1',
+    status: 'reported',
+    totalReservedBytes: 1024,
+    liveAllocationBytes: 768,
+    liveAllocationCount: 6,
+    freeSpanCount: 4,
+    largestFreeBlockBytes: 64,
+    fragmentationRatio: 0.62,
+    reloadGeneration: 120,
+    pendingAllocationBytes: 128,
+    recentAllocationFailureReason: 'largest_free_block_too_small',
+    pointerSafetyProvable: false,
+  };
+  delete sidecar.memoryRefreshPolicy;
+  delete sidecar.plannedMemoryRefresh;
+  delete sidecar.fastPathPolicy;
+  delete sidecar.arbiterDecision;
+  delete sidecar.selectedPlan;
+  delete sidecar.arbiterReasonCodes;
+  delete sidecar.rankedReloadOptions;
+  delete sidecar.consentRequired;
+  delete sidecar.consentReason;
+  delete sidecar.runReport;
+  return `${JSON.stringify(sidecar, null, 2)}\n`;
+}
+
+function sidecarWithRdcIncrementalDeviceLinkUnsupported(rawSidecar) {
+  const sidecar = JSON.parse(rawSidecar);
+  const roleIds = generatedDeviceRoleIds(sidecar);
+  sidecar.toolchainCapabilities = {
+    ...(sidecar.toolchainCapabilities && typeof sidecar.toolchainCapabilities === 'object'
+      ? sidecar.toolchainCapabilities
+      : {}),
+    schemaVersion: 'synthi.gpu.toolchain_capability.v1',
+    status: 'current',
+    requiresRdc: true,
+    supportsIncrementalDeviceLink: false,
+    rdcDeviceLink: {
+      schemaVersion: 'synthi.gpu.rdc_device_link.v1',
+      required: true,
+      supportsIncremental: false,
+      estimatedMs: 3000,
+      budgetMs: 5000,
+      linkerBound: true,
+      overBudget: false,
+      affectedRoles: roleIds,
+      reasonCodes: ['rdc_device_link_required', 'incremental_device_link_unsupported'],
+    },
+  };
+  if (sidecar.compile_manifest?.gpu && typeof sidecar.compile_manifest.gpu === 'object') {
+    const gpu = sidecar.compile_manifest.gpu;
+    const deviceFlags = Array.isArray(gpu.device_flags) ? gpu.device_flags : [];
+    gpu.device_flags = Array.from(new Set([...deviceFlags, '-fgpu-rdc']));
+    gpu.device_link = {
+      ...(gpu.device_link && typeof gpu.device_link === 'object' ? gpu.device_link : {}),
+      requires_rdc: true,
+      supports_incremental: false,
+      affected_roles: roleIds,
+      estimated_ms: 3000,
+      budget_ms: 5000,
+    };
+  }
+  delete sidecar.fastPathPolicy;
+  delete sidecar.arbiterDecision;
+  delete sidecar.selectedPlan;
+  delete sidecar.arbiterReasonCodes;
+  delete sidecar.rankedReloadOptions;
+  delete sidecar.consentRequired;
+  delete sidecar.consentReason;
+  delete sidecar.runReport;
+  return `${JSON.stringify(sidecar, null, 2)}\n`;
+}
+
+function generatedDeviceRoleIds(sidecar) {
+  const roles = [];
+  const generatedRoles = sidecar.generatedRoles || sidecar.generated_roles || {};
+  const roleList = generatedRoles.deviceRoles || generatedRoles.device_roles || [];
+  if (Array.isArray(roleList)) {
+    for (const role of roleList) {
+      const id = role?.id || role?.roleId || role?.name;
+      if (typeof id === 'string' && id.trim()) roles.push(id.trim());
+    }
+  }
+  const manifestRoles = sidecar.compile_manifest?.gpu?.device_roles
+    || sidecar.compileManifest?.gpu?.deviceRoles
+    || [];
+  if (Array.isArray(manifestRoles)) {
+    for (const role of manifestRoles) {
+      const id = role?.id || role?.roleId || role?.name;
+      if (typeof id === 'string' && id.trim()) roles.push(id.trim());
+    }
+  }
+  return [...new Set(roles)].sort();
+}
+
+function validateGpuTaintPolicySidecar(rawSidecar) {
+  const sidecar = typeof rawSidecar === 'string' ? JSON.parse(rawSidecar) : rawSidecar;
+  const policy = sidecar.gpuFaultPolicy || sidecar.gpu_fault_policy || {};
+  if (policy.tainted !== true) {
+    throw new Error(`GPU fault policy did not mark session tainted: ${JSON.stringify(policy).slice(0, 500)}`);
+  }
+  if (policy.screenshotsAcceptedAsProof !== false) {
+    throw new Error(`GPU fault policy still accepts screenshots as proof: ${JSON.stringify(policy).slice(0, 500)}`);
+  }
+  const reasons = Array.isArray(policy.reasonCodes) ? policy.reasonCodes : [];
+  if (!reasons.includes('gpu_device_tainted')) {
+    throw new Error(`GPU fault policy missing gpu_device_tainted reason: ${JSON.stringify(policy).slice(0, 500)}`);
+  }
+  report.runtime_policy.gpu_taint = {
+    status: policy.status,
+    screenshotsAcceptedAsProof: policy.screenshotsAcceptedAsProof,
+    reasonCodes: reasons,
+  };
+  record('GPU device taint invalidates screenshot proof', 'pass', reasons.join(','));
+}
+
+function validateMemoryRefreshPolicySidecar(rawSidecar) {
+  const sidecar = typeof rawSidecar === 'string' ? JSON.parse(rawSidecar) : rawSidecar;
+  const policy = sidecar.memoryRefreshPolicy || sidecar.memory_refresh_policy || {};
+  if (policy.status !== 'refresh_required') {
+    throw new Error(`memory refresh policy did not require refresh: ${JSON.stringify(policy).slice(0, 500)}`);
+  }
+  const planned = policy.plannedMemoryRefresh || {};
+  if (planned.needed !== true) {
+    throw new Error(`memory refresh policy missing planned refresh: ${JSON.stringify(policy).slice(0, 500)}`);
+  }
+  const reasons = Array.isArray(policy.reasonCodes) ? policy.reasonCodes : [];
+  for (const required of ['vram_fragmented', 'vram_session_refresh_required']) {
+    if (!reasons.includes(required)) {
+      throw new Error(`memory refresh policy missing ${required}: ${JSON.stringify(policy).slice(0, 500)}`);
+    }
+  }
+  report.runtime_policy.vram_refresh = {
+    status: policy.status,
+    plannedMemoryRefresh: planned,
+    reasonCodes: reasons,
+  };
+  record('fragmented VRAM requires planned session refresh', 'pass', reasons.join(','));
 }
 
 async function compileUserDeviceDelta(project, editedDevice, vendor, checkpoint) {
@@ -1947,6 +2122,14 @@ async function dispatchUserDeviceMissingToolchainNegative(project, editedDevice,
 
 async function dispatchUserDeviceStaleLaunchPointerNegative(project, editedDevice, vendor, checkpoint) {
   return dispatchUserDeviceNegative(project, editedDevice, vendor, checkpoint, 'negative_stale_launch_pointer_rejection');
+}
+
+async function dispatchUserDeviceGpuTaintNegative(project, editedDevice, vendor, checkpoint) {
+  return dispatchUserDeviceNegative(project, editedDevice, vendor, checkpoint, 'negative_gpu_taint_rejection');
+}
+
+async function dispatchUserDeviceFragmentedVramNegative(project, editedDevice, vendor, checkpoint) {
+  return dispatchUserDeviceNegative(project, editedDevice, vendor, checkpoint, 'negative_fragmented_vram_rejection');
 }
 
 async function dispatchForcedAiDeltaStaleLaunchPointerNegative(project, editedDevice, vendor, checkpoint) {
@@ -2492,6 +2675,62 @@ async function run() {
   if (!missingAiDeltaReject.matched) throw new Error('forced missing-toolchain GPU AI delta verifier rejection evidence missing');
   await assertNoSidecarReloadAfterHardStop(missingAiDeltaReject, missingAiDeltaCheckpoint, 'missing toolchain AI delta does not reload sidecar');
 
+  const gpuTaintDevice = editUserDeviceSource(missingCapabilityDevice);
+  await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: gpuTaintDevice }] });
+  await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: gpu taint rejection probe' });
+  const gpuTaintSidecar = sidecarWithGpuDeviceTaint(verifiedFastPathSidecarRaw);
+  await writeWorkerFile(split.workspacePath, '.synthi_split_meta.json', gpuTaintSidecar);
+  const gpuTaintCheckpoint = await workerCheckpoint();
+  await dispatchUserDeviceGpuTaintNegative(project, gpuTaintDevice, vendor, gpuTaintCheckpoint);
+  record('GPU taint edit compile dispatched via MCP', 'pass', project.devicePath);
+  const gpuTaintReject = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[gpu-hmr\] device_only fast path rejected: user=[^\n]*gpu_device_tainted[^\n]*/,
+    10000,
+    gpuTaintCheckpoint,
+  );
+  record('GPU device taint blocks device_only', gpuTaintReject.matched ? 'pass' : 'fail', gpuTaintReject.snippet || 'no gpu_device_tainted rejection marker');
+  if (!gpuTaintReject.matched) throw new Error('GPU device taint rejection evidence missing');
+
+  const gpuTaintHardStop = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[gpu-hmr\] device_only hard stop: user=[^\n]*gpu_device_tainted[^\n]*/,
+    10000,
+    gpuTaintCheckpoint,
+  );
+  record('GPU device taint stops unsafe fallback', gpuTaintHardStop.matched ? 'pass' : 'fail', gpuTaintHardStop.snippet || 'no GPU taint hard-stop marker');
+  if (!gpuTaintHardStop.matched) throw new Error('GPU device taint hard-stop evidence missing');
+  await assertNoSidecarReloadAfterHardStop(gpuTaintHardStop, gpuTaintCheckpoint, 'GPU device taint does not reload sidecar');
+  validateGpuTaintPolicySidecar(await readWorkerFile(split.workspacePath, '.synthi_split_meta.json'));
+
+  const fragmentedVramDevice = editUserDeviceSource(gpuTaintDevice);
+  await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: fragmentedVramDevice }] });
+  await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: fragmented vram rejection probe' });
+  const fragmentedVramSidecar = sidecarWithFragmentedVram(verifiedFastPathSidecarRaw);
+  await writeWorkerFile(split.workspacePath, '.synthi_split_meta.json', fragmentedVramSidecar);
+  const fragmentedVramCheckpoint = await workerCheckpoint();
+  await dispatchUserDeviceFragmentedVramNegative(project, fragmentedVramDevice, vendor, fragmentedVramCheckpoint);
+  record('fragmented VRAM edit compile dispatched via MCP', 'pass', project.devicePath);
+  const fragmentedVramReject = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[gpu-hmr\] device_only fast path rejected: user=[^\n]*vram_session_refresh_required[^\n]*/,
+    10000,
+    fragmentedVramCheckpoint,
+  );
+  record('fragmented VRAM blocks device_only', fragmentedVramReject.matched ? 'pass' : 'fail', fragmentedVramReject.snippet || 'no vram_session_refresh_required rejection marker');
+  if (!fragmentedVramReject.matched) throw new Error('fragmented VRAM rejection evidence missing');
+
+  const fragmentedVramHardStop = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[gpu-hmr\] device_only hard stop: user=[^\n]*vram_session_refresh_required[^\n]*/,
+    10000,
+    fragmentedVramCheckpoint,
+  );
+  record('fragmented VRAM stops unsafe fallback', fragmentedVramHardStop.matched ? 'pass' : 'fail', fragmentedVramHardStop.snippet || 'no fragmented VRAM hard-stop marker');
+  if (!fragmentedVramHardStop.matched) throw new Error('fragmented VRAM hard-stop evidence missing');
+  await assertNoSidecarReloadAfterHardStop(fragmentedVramHardStop, fragmentedVramCheckpoint, 'fragmented VRAM does not reload sidecar');
+  validateMemoryRefreshPolicySidecar(await readWorkerFile(split.workspacePath, '.synthi_split_meta.json'));
+
   if (CFG.templateEvidenceMode !== 'fresh' && project.templateHeaderPath) {
     await writeWorkerFile(split.workspacePath, '.synthi_split_meta.json', verifiedFastPathSidecarRaw);
     const headerFile = project.files.find((f) => f.path === project.templateHeaderPath);
@@ -2514,6 +2753,35 @@ async function run() {
     record(`${CFG.templateEvidenceMode} template evidence rejects warm rebuild execution`, templateReject.matched ? 'pass' : 'fail', templateReject.snippet || `no ${expectedReason} warm rejection marker`);
     if (!templateReject.matched) throw new Error(`${expectedReason} warm rebuild rejection evidence missing`);
     await assertNoSidecarReloadAfterHardStop(templateReject, templateRejectCheckpoint, `${expectedReason} warm rebuild does not reload sidecar`);
+  }
+
+  if (CFG.templateEvidenceMode === 'fresh' && project.templateHeaderPath) {
+    await writeWorkerFile(split.workspacePath, '.synthi_split_meta.json', sidecarWithRdcIncrementalDeviceLinkUnsupported(verifiedFastPathSidecarRaw));
+    const headerFile = project.files.find((f) => f.path === project.templateHeaderPath);
+    if (!headerFile) throw new Error(`missing template header ${project.templateHeaderPath}`);
+    const rdcHeader = editTemplateHeaderSource(headerFile.content);
+    await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.templateHeaderPath, content: rdcHeader }] });
+    await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: rdc linker-bound rejection probe' });
+    const rdcCheckpoint = await workerCheckpoint();
+    await dispatchTemplateWarmRebuildNegative(project, rdcHeader, editedDevice, vendor, rdcCheckpoint);
+    record('RDC warm rebuild rejection compile dispatched via MCP', 'pass', project.templateHeaderPath);
+    const rdcReject = await awaitLogRegex(
+      CFG.workerContainer,
+      /\[gpu-hmr\] warm_rebuild rejected: user=[^\n]*incremental_device_link_unsupported[^\n]*/,
+      10000,
+      rdcCheckpoint,
+    );
+    record('unsupported incremental device-link blocks warm rebuild auto-run', rdcReject.matched ? 'pass' : 'fail', rdcReject.snippet || 'no incremental_device_link_unsupported warm rejection marker');
+    if (!rdcReject.matched) throw new Error('unsupported incremental device-link warm rebuild rejection evidence missing');
+    const linkerBound = await awaitLogRegex(
+      CFG.workerContainer,
+      /\[gpu-hmr\] warm_rebuild rejected: user=[^\n]*device_linker_bound[^\n]*/,
+      10000,
+      rdcCheckpoint,
+    );
+    record('RDC warm path reports linker-bound consent reason', linkerBound.matched ? 'pass' : 'fail', linkerBound.snippet || 'no device_linker_bound warm rejection marker');
+    if (!linkerBound.matched) throw new Error('RDC linker-bound warm rebuild evidence missing');
+    await assertNoSidecarReloadAfterHardStop(rdcReject, rdcCheckpoint, 'unsupported incremental device-link warm rebuild does not reload sidecar');
   }
 
   await writeReport();
