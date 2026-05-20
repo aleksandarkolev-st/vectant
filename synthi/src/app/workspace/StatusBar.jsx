@@ -13,6 +13,7 @@ import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
 import { getCurrentUser } from '@/services/userIdentity';
 import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw, GripVertical, X, Minimize2, Maximize2 } from 'lucide-react';
 import { HealingIndicator } from '@/components/healing/HealingIndicator';
+import PresenceList from '@/components/collaboration/PresenceList';
 import OperatorStatusBarButton from './OperatorStatusBarButton';
 import VectantLogoCollapsed from './VectantLogoCollapsed';
 import {
@@ -617,6 +618,11 @@ function StatusBarInner({
               <span className="status-island-number font-semibold" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>{otherUserCount}</span>
             </span>
           )}
+        </div>
+
+        {/* Presence avatars — right-click for per-user quick actions */}
+        <div className="flex items-center ml-1">
+          <PresenceList slug={slug} />
         </div>
 
         {/* Operator */}

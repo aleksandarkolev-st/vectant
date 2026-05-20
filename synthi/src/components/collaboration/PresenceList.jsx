@@ -1,8 +1,15 @@
 "use client";
 
 import { useMemo } from 'react';
+import { useDispatch } from 'react-redux';
+import { toast } from 'sonner';
 import { usePresence } from '@/hooks/usePresence';
 import getInitials from '@/utils/getInitials';
+import { selectFileThunk } from '@/redux/workspaceSlice';
+import {
+  ContextMenu,
+  useContextMenu,
+} from '@/components/docking-wm/components/ContextMenu';
 
 /**
  * PresenceList – Google-Docs-style horizontal avatar bar.
@@ -11,10 +18,13 @@ import getInitials from '@/utils/getInitials';
  * coloured border matching each user's awareness colour and a tooltip
  * showing their display name.
  *
- * Designed to sit in the StatusBar or workspace header.
+ * Right-clicking an avatar opens a context menu with quick actions:
+ * copy name, copy active file path, jump to the file they're editing.
  */
 export default function PresenceList({ slug, maxVisible = 5 }) {
   const users = usePresence(slug);
+  const dispatch = useDispatch();
+  const { menuState, openMenu, closeMenu } = useContextMenu();
 
   // Limit how many we render inline; overflow gets a "+N" pill
   const visible = useMemo(() => users.slice(0, maxVisible), [users, maxVisible]);
@@ -22,27 +32,71 @@ export default function PresenceList({ slug, maxVisible = 5 }) {
 
   if (users.length === 0) return null;
 
+  const handleContextMenu = (e, user) => {
+    const activeFile = user.activeFile || null;
+    const fileName = activeFile
+      ? activeFile.slice(activeFile.lastIndexOf('/') + 1)
+      : null;
+
+    const copyToClipboard = (text, label) => {
+      navigator.clipboard.writeText(text).then(
+        () => toast.success(`Copied ${label}`),
+        () => toast.error('Copy failed'),
+      );
+    };
+
+    openMenu(e, [
+      {
+        id: 'copy-name',
+        label: 'Copy Name',
+        action: () => copyToClipboard(user.name, user.name),
+      },
+      {
+        id: 'copy-path',
+        label: 'Copy Active File Path',
+        disabled: !activeFile,
+        dividerAfter: true,
+        action: () => copyToClipboard(activeFile, activeFile),
+      },
+      {
+        id: 'open-file',
+        label: activeFile ? `Open ${fileName}` : 'Open Active File',
+        disabled: !activeFile,
+        action: () => {
+          dispatch(selectFileThunk({ path: activeFile, name: fileName }));
+        },
+      },
+    ]);
+  };
+
   return (
-    <div className="flex items-center gap-0.5">
-      {visible.map((entry) => (
-        <Avatar key={entry.user.id} user={entry.user} />
-      ))}
-      {overflow > 0 && (
-        <span
-          className="flex items-center justify-center w-6 h-6 rounded-full
-                     bg-[#1a1b24] text-[10px] font-semibold text-[#9ba2b8]
-                     border border-[#2a2b38] ml-0.5 select-none"
-          title={`${overflow} more user${overflow > 1 ? 's' : ''}`}
-        >
-          +{overflow}
-        </span>
-      )}
-    </div>
+    <>
+      <div className="flex items-center gap-0.5">
+        {visible.map((entry) => (
+          <Avatar
+            key={entry.user.id}
+            user={entry.user}
+            onContextMenu={(e) => handleContextMenu(e, entry.user)}
+          />
+        ))}
+        {overflow > 0 && (
+          <span
+            className="flex items-center justify-center w-6 h-6 rounded-full
+                       bg-[#1a1b24] text-[10px] font-semibold text-[#9ba2b8]
+                       border border-[#2a2b38] ml-0.5 select-none"
+            title={`${overflow} more user${overflow > 1 ? 's' : ''}`}
+          >
+            +{overflow}
+          </span>
+        )}
+      </div>
+      {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
+    </>
   );
 }
 
 /** Single circular avatar with coloured border ring. */
-function Avatar({ user }) {
+function Avatar({ user, onContextMenu }) {
   const { name, color, image } = user;
   const initials = getInitials(name);
 
@@ -50,6 +104,7 @@ function Avatar({ user }) {
     <div
       className="relative group flex-shrink-0"
       title={name}
+      onContextMenu={onContextMenu}
     >
       {/* Coloured ring */}
       <div
