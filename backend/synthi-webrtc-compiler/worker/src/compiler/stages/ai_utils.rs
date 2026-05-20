@@ -806,6 +806,94 @@ pub async fn perform_ai_diff_patch(
     Ok(edit_list.edits)
 }
 
+#[derive(Debug, Clone)]
+pub struct GpuDiffPatchResult {
+    pub reload_plan: String,
+    pub edits: Vec<crate::hmr::edit_applier::Edit>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GpuDiffPatchResponse {
+    #[serde(default)]
+    reload_plan: Option<String>,
+    #[serde(default)]
+    edits: Vec<crate::hmr::edit_applier::Edit>,
+    #[serde(default)]
+    elapsed_seconds: Option<f64>,
+}
+
+/// GPU-aware AI delta path. Unlike the generic diff patch endpoint, this sends
+/// the current device role and accepts `module="device"` edits, while the Rust
+/// side still applies and verifies the patch locally.
+pub async fn perform_gpu_ai_diff_patch(
+    diff: &str,
+    core_content: &str,
+    gui_content: &str,
+    shared_content: &str,
+    host_runner_content: &str,
+    device_content: &str,
+    architecture: Option<&str>,
+    mapping_report: Option<&serde_json::Value>,
+    compile_manifest: Option<&serde_json::Value>,
+    reload_plan_report: Option<&serde_json::Value>,
+    reload_plan_hint: Option<&str>,
+) -> Result<GpuDiffPatchResult> {
+    let client = reqwest::Client::new();
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/refactor/diff_patch/gpu", backend_url);
+
+    eprintln!(
+        "[GPU AI Delta] Calling {} with diff={} bytes arch={} chars device={} bytes hint={}",
+        url,
+        diff.len(),
+        architecture.map(|s| s.len()).unwrap_or(0),
+        device_content.len(),
+        reload_plan_hint.unwrap_or("none"),
+    );
+
+    let payload = serde_json::json!({
+        "diff": diff,
+        "core_content": core_content,
+        "gui_content": gui_content,
+        "shared_content": shared_content,
+        "host_runner_content": host_runner_content,
+        "device_content": device_content,
+        "architecture": architecture.unwrap_or(""),
+        "mapping_report": mapping_report.cloned().unwrap_or(serde_json::Value::Null),
+        "compile_manifest": compile_manifest.cloned().unwrap_or(serde_json::Value::Null),
+        "reload_plan_report": reload_plan_report.cloned().unwrap_or(serde_json::Value::Null),
+        "reload_plan": reload_plan_hint,
+    });
+
+    let res: serde_json::Value = add_ai_auth(client.post(&url))
+        .json(&payload)
+        .timeout(ai_http_timeout())
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let parsed: GpuDiffPatchResponse = serde_json::from_value(res.clone()).map_err(|e| {
+        anyhow::anyhow!(
+            "[GPU AI Delta] failed to parse GPU diff response: {} (raw: {})",
+            e,
+            res.to_string().chars().take(300).collect::<String>()
+        )
+    })?;
+    let reload_plan = parsed.reload_plan.unwrap_or_else(|| "mixed".to_string());
+    eprintln!(
+        "[GPU AI Delta] Completed in {:.2}s plan={} edit(s)={}",
+        parsed.elapsed_seconds.unwrap_or(0.0),
+        reload_plan,
+        parsed.edits.len()
+    );
+
+    Ok(GpuDiffPatchResult {
+        reload_plan,
+        edits: parsed.edits,
+    })
+}
+
 // NOTE: perform_targeted_delta_patch was removed together with the
 // classify step in handler.rs. Rationale: classify took ~4s per edit
 // (network + Google API TTFT + Python SDK overhead for a lite call)

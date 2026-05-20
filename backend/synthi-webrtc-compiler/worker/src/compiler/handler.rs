@@ -16,7 +16,9 @@ static TIER0_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 static TIER0_INELIGIBLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // Import our new modular stages
-use crate::compiler::stages::ai_utils::{perform_ai_diff_patch, perform_ai_split};
+use crate::compiler::stages::ai_utils::{
+    perform_ai_diff_patch, perform_ai_split, perform_gpu_ai_diff_patch,
+};
 use crate::compiler::stages::compile_core::compile_core;
 use crate::compiler::stages::compile_device::{compile_device_phase0, DeviceCompileOutcome};
 use crate::compiler::stages::compile_gui::compile_gui;
@@ -252,7 +254,7 @@ use crate::hmr::deterministic_compile::{
 use crate::hmr::gpu_device_fast_path::{
     device_source_hash, mapped_generated_device_path, try_direct_device_body_patch,
 };
-use crate::hmr::gpu_prod_contracts::normalize_split_sidecar;
+use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
 
 fn strip_c_like_comments(source: &str) -> String {
@@ -464,6 +466,27 @@ fn kernel_abi_fingerprint_source(source: &str) -> String {
     }
 }
 
+fn device_constant_global_layout_fingerprint(source: &str) -> String {
+    let re = match regex::Regex::new(r"\b(__constant__|__device__|__managed__)\s+([^;]+);") {
+        Ok(re) => re,
+        Err(_) => return String::new(),
+    };
+    let mut decls = Vec::new();
+    for captures in re.captures_iter(source) {
+        let storage = captures.get(1).map(|m| m.as_str()).unwrap_or("");
+        let decl = captures
+            .get(2)
+            .map(|m| m.as_str().split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default();
+        if decl.contains('(') {
+            continue;
+        }
+        decls.push(format!("{storage} {decl}"));
+    }
+    decls.sort();
+    format!("{}", hash_content(&decls.join(";")))
+}
+
 fn device_filename_for_vendor(vendor: DeviceVendor) -> &'static str {
     match vendor {
         DeviceVendor::Cuda => "device.cu",
@@ -478,6 +501,46 @@ fn is_device_source_request(filename: &str) -> bool {
             lower.ends_with(".cu") || lower.ends_with(".hip")
         })
         .unwrap_or(false)
+}
+
+fn sidecar_string_for_path(
+    sidecar: &serde_json::Value,
+    object_key: &str,
+    path: &str,
+) -> Option<String> {
+    let normalized = normalized_request_filename(path).unwrap_or_else(|| path.replace('\\', "/"));
+    sidecar
+        .get(object_key)
+        .and_then(|v| v.as_object())
+        .and_then(|m| {
+            m.get(&normalized).or_else(|| m.get(path)).or_else(|| {
+                m.iter()
+                    .find(|(candidate, _)| {
+                        normalized_request_filename(candidate).as_deref()
+                            == Some(normalized.as_str())
+                    })
+                    .map(|(_, value)| value)
+            })
+        })
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+fn ai_delta_reload_plan_report(
+    plan: &str,
+    user_path: &str,
+    generated_path: Option<&str>,
+    reason_codes: Vec<String>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": RELOAD_PLAN_SCHEMA_VERSION,
+        "plan": plan,
+        "reasonCodes": reason_codes,
+        "fallbacksAvailable": ["warm_rebuild", "ai_delta", "full_resplit", "cold_restart"],
+        "affectedUserFiles": [user_path],
+        "affectedGeneratedRoles": generated_path.map(|p| vec![p.to_string()]).unwrap_or_default(),
+        "timingsMs": {},
+    })
 }
 
 fn upsert_object_field(
@@ -898,7 +961,9 @@ pub async fn handle_compile_request(
                     if sidecar_manifest_json.is_null() { "no" } else { "yes" },
                 );
 
-                let direct_device_split = if is_device_source_request(&req.filename) {
+                let direct_device_split = if is_device_source_request(&req.filename)
+                    && !req.force_gpu_ai_delta
+                {
                     let request_device_name = normalized_request_filename(&req.filename)
                         .unwrap_or_else(|| req.filename.replace('\\', "/"));
                     let generated_device_path =
@@ -1042,7 +1107,20 @@ pub async fn handle_compile_request(
 
                 if let Some(split) = direct_device_split {
                     split
-                } else if let Some(old_source) = original_source {
+                } else if let Some(old_source) = {
+                    let request_name = normalized_request_filename(&req.filename)
+                        .unwrap_or_else(|| req.filename.replace('\\', "/"));
+                    if is_device_source_request(&req.filename) {
+                        sidecar_string_for_path(
+                            &sidecar_meta,
+                            "sourceBaselineContents",
+                            &request_name,
+                        )
+                        .or(original_source)
+                    } else {
+                        original_source
+                    }
+                } {
                     let diff = build_simple_diff(&old_source, &req.source);
 
                     if diff.is_empty() {
@@ -1053,236 +1131,449 @@ pub async fn handle_compile_request(
                             "gui": { "content": gui_content, "filename": gui_filename }
                         })
                     } else {
-                        // ── Tiered patching (no AI classifier) ──
-                        //
-                        // Tier 1: VALUE_CHANGE → instant regex patcher (0ms)
-                        //         Detected synchronously by classify_edit() —
-                        //         pure Rust, ~1ms, no AI call.
-                        //
-                        // Tier 2: anything else → single full /refactor/diff_patch
-                        //         call with all three split modules + the cached
-                        //         architecture doc. The AI uses the arch doc's
-                        //         "Where User Code Goes" section to route each
-                        //         hunk to the right module(s) internally. No
-                        //         external classifier.
-                        //
-                        // Tier 3: full AI re-split (last resort) if Tier 2 errors.
-                        //
-                        // Previously, Tier 2 used an /classify/edit AI call to
-                        // pick ONE module and a targeted single-module prompt.
-                        // classify cost ~4s per edit (Gemini API TTFT + SDK
-                        // overhead) which exceeded the ~1-3s saved by the
-                        // smaller targeted prompt — net latency LOSS. And when
-                        // classify timed out, the Tier 2 loop silently dropped
-                        // the edit because all hunks were EditTarget::Unknown.
-                        // Killing classify removed both the latency regression
-                        // and the silent-drop failure mode.
-                        use crate::hmr::diff_patcher::patch_split_files;
-                        use crate::hmr::edit_classifier::classify_edit;
+                        if req.force_gpu_ai_delta {
+                            let request_device_name = normalized_request_filename(&req.filename)
+                                .unwrap_or_else(|| req.filename.replace('\\', "/"));
+                            if !is_device_source_request(&request_device_name) {
+                                anyhow::bail!(
+                                    "force_gpu_ai_delta requires a .cu/.hip request, got {}",
+                                    req.filename
+                                );
+                            }
 
-                        let sync_classification = classify_edit(&old_source, &req.source);
-                        let is_value_only = sync_classification.is_value_only;
-                        eprintln!(
-                            "[HMR] sync classify: {} hunks, value_only={}",
-                            sync_classification.hunks.len(),
-                            is_value_only
-                        );
+                            let sidecar_manifest =
+                                CompileManifest::from_json_value(&sidecar_manifest_json)
+                                    .ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "force_gpu_ai_delta requires a compile manifest in the split sidecar"
+                                        )
+                                    })?;
+                            if sidecar_manifest.gpu.is_none() {
+                                anyhow::bail!(
+                                    "force_gpu_ai_delta requires a GPU compile manifest, but no gpu block is present"
+                                );
+                            }
 
-                        // ULTRAPLAN Lightning Phase 11 — Tier 0 v2 eligibility.
-                        // Run tree-sitter AST classifier to confirm the edit is
-                        // purely value changes (strings, integers). The regex
-                        // `is_value_only` is a fast pre-filter; tree-sitter is
-                        // the authoritative check that also detects integer
-                        // literal changes for DWARF+iced-x86 patching.
-                        if is_value_only {
-                            use crate::hmr::ts_value_classifier::{
-                                classify_ast, AstClassification,
+                            let generated_device_path = mapped_generated_device_path(
+                                &sidecar_meta,
+                                &request_device_name,
+                            )
+                            .or_else(|| {
+                                sidecar_manifest
+                                    .device_source_filename()
+                                    .map(|s| s.replace('\\', "/"))
+                            })
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "force_gpu_ai_delta could not resolve the internal generated device role"
+                                )
+                            })?;
+                            let generated_device_source = {
+                                let rel = compile_request_relpath(&generated_device_path)?;
+                                tokio::fs::read_to_string(ctx.workspace_path.join(rel))
+                                    .await
+                                    .with_context(|| {
+                                        format!(
+                                            "reading generated device role {} for GPU AI delta",
+                                            generated_device_path
+                                        )
+                                    })?
                             };
-                            match classify_ast(&old_source, &req.source) {
-                                AstClassification::ValueOnly { ref changes }
-                                    if !changes.is_empty() =>
-                                {
-                                    eprintln!(
+
+                            let arch_hint: Option<&str> = if architecture_md.is_empty() {
+                                None
+                            } else {
+                                Some(architecture_md.as_str())
+                            };
+                            let ai_delta = perform_gpu_ai_diff_patch(
+                                &diff,
+                                &core_content,
+                                &gui_content,
+                                &shared_content,
+                                &host_runner_content,
+                                &generated_device_source,
+                                arch_hint,
+                                sidecar_meta
+                                    .get("deviceMappingReport")
+                                    .or_else(|| sidecar_meta.get("device_mapping_report")),
+                                Some(&sidecar_manifest_json),
+                                sidecar_meta
+                                    .get("lastReloadPlanReport")
+                                    .or_else(|| sidecar_meta.get("last_reload_plan_report")),
+                                Some("device_only"),
+                            )
+                            .await?;
+                            if ai_delta.edits.is_empty() {
+                                anyhow::bail!(
+                                    "GPU AI delta returned no edits for {}",
+                                    request_device_name
+                                );
+                            }
+
+                            let (
+                                final_core,
+                                final_gui,
+                                final_shared,
+                                final_host_runner,
+                                final_device,
+                            ) = crate::hmr::edit_applier::apply_edit_list_with_device(
+                                &ai_delta.edits,
+                                &core_content,
+                                &gui_content,
+                                &shared_content,
+                                &host_runner_content,
+                                &generated_device_source,
+                            )?;
+
+                            let signature_before =
+                                kernel_abi_fingerprint_source(&generated_device_source);
+                            let signature_after = kernel_abi_fingerprint_source(&final_device);
+                            let layout_before =
+                                device_constant_global_layout_fingerprint(&generated_device_source);
+                            let layout_after =
+                                device_constant_global_layout_fingerprint(&final_device);
+                            if ai_delta.reload_plan == "device_only"
+                                && (signature_before != signature_after
+                                    || layout_before != layout_after)
+                            {
+                                anyhow::bail!(
+                                    "GPU AI delta verifier rejected device_only: signature_changed={} constant_global_layout_changed={}",
+                                    signature_before != signature_after,
+                                    layout_before != layout_after
+                                );
+                            }
+
+                            if let Some(ref p) = enrichment.adapted_status.core_path {
+                                let _ = tokio::fs::write(p, &final_core).await;
+                            }
+                            if let Some(ref p) = enrichment.adapted_status.gui_path {
+                                let _ = tokio::fs::write(p, &final_gui).await;
+                            }
+                            if let Some(ref p) = enrichment.adapted_status.shared_path {
+                                let _ = tokio::fs::write(p, &final_shared).await;
+                            }
+                            if let Some(ref p) = enrichment.adapted_status.host_runner_path {
+                                if final_host_runner != host_runner_content {
+                                    let _ = tokio::fs::write(p, &final_host_runner).await;
+                                }
+                            }
+                            write_compile_request_file(
+                                &ctx.workspace_path,
+                                &generated_device_path,
+                                &final_device,
+                            )
+                            .await?;
+
+                            let baseline_hash = device_source_hash(&req.source);
+                            let mut meta = sidecar_meta.as_object().cloned().unwrap_or_default();
+                            upsert_object_field(
+                                &mut meta,
+                                "sourceBaselineContents",
+                                &request_device_name,
+                                serde_json::Value::String(req.source.clone()),
+                            );
+                            upsert_object_field(
+                                &mut meta,
+                                "sourceBaselineHashes",
+                                &request_device_name,
+                                serde_json::Value::String(baseline_hash.clone()),
+                            );
+                            upsert_device_mapping_report_field(
+                                &mut meta,
+                                "sourceBaselineContents",
+                                &request_device_name,
+                                serde_json::Value::String(req.source.clone()),
+                            );
+                            upsert_device_mapping_report_field(
+                                &mut meta,
+                                "sourceBaselineHashes",
+                                &request_device_name,
+                                serde_json::Value::String(baseline_hash.clone()),
+                            );
+                            let reason_codes = vec![
+                                "ai_delta.generated_role_patch".to_string(),
+                                format!("ai_delta.reload_plan.{}", ai_delta.reload_plan),
+                                "verifier.ai_delta_edits_applied".to_string(),
+                                "verifier.kernel_signature_checked".to_string(),
+                                "verifier.constant_global_layout_checked".to_string(),
+                            ];
+                            let plan_report = ai_delta_reload_plan_report(
+                                &ai_delta.reload_plan,
+                                &request_device_name,
+                                Some(&generated_device_path),
+                                reason_codes,
+                            );
+                            meta.insert("lastReloadPlanReport".to_string(), plan_report.clone());
+                            meta.insert(
+                                "patchTier".to_string(),
+                                serde_json::Value::String("ai_delta".to_string()),
+                            );
+                            meta.insert(
+                                "cacheReport".to_string(),
+                                serde_json::json!({
+                                    "splitCacheHit": false,
+                                    "splitCacheReason": "ai_delta_after_full_split",
+                                    "splitCacheKey": format!("gpu-ai-delta:{}:{}", request_device_name, baseline_hash),
+                                }),
+                            );
+                            invalidate_derived_gpu_reports(&mut meta);
+                            write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta))
+                                .await;
+                            eprintln!(
+                                "[GPU AI Delta] accepted: user={} generated={} plan={} edits={}",
+                                request_device_name,
+                                generated_device_path,
+                                ai_delta.reload_plan,
+                                ai_delta.edits.len()
+                            );
+                            serde_json::json!({
+                                "shared": { "content": final_shared, "filename": shared_filename },
+                                "core": { "content": final_core, "filename": core_filename },
+                                "gui": { "content": final_gui, "filename": gui_filename },
+                                "host_runner": { "content": final_host_runner, "filename": host_runner_filename },
+                                "device": { "content": final_device, "filename": generated_device_path },
+                                "_synthi_manifest": sidecar_manifest_json.clone(),
+                                "_synthi_reload_plan": plan_report,
+                            })
+                        } else {
+                            // ── Tiered patching (no AI classifier) ──
+                            //
+                            // Tier 1: VALUE_CHANGE → instant regex patcher (0ms)
+                            //         Detected synchronously by classify_edit() —
+                            //         pure Rust, ~1ms, no AI call.
+                            //
+                            // Tier 2: anything else → single full /refactor/diff_patch
+                            //         call with all three split modules + the cached
+                            //         architecture doc. The AI uses the arch doc's
+                            //         "Where User Code Goes" section to route each
+                            //         hunk to the right module(s) internally. No
+                            //         external classifier.
+                            //
+                            // Tier 3: full AI re-split (last resort) if Tier 2 errors.
+                            //
+                            // Previously, Tier 2 used an /classify/edit AI call to
+                            // pick ONE module and a targeted single-module prompt.
+                            // classify cost ~4s per edit (Gemini API TTFT + SDK
+                            // overhead) which exceeded the ~1-3s saved by the
+                            // smaller targeted prompt — net latency LOSS. And when
+                            // classify timed out, the Tier 2 loop silently dropped
+                            // the edit because all hunks were EditTarget::Unknown.
+                            // Killing classify removed both the latency regression
+                            // and the silent-drop failure mode.
+                            use crate::hmr::diff_patcher::patch_split_files;
+                            use crate::hmr::edit_classifier::classify_edit;
+
+                            let sync_classification = classify_edit(&old_source, &req.source);
+                            let is_value_only = sync_classification.is_value_only;
+                            eprintln!(
+                                "[HMR] sync classify: {} hunks, value_only={}",
+                                sync_classification.hunks.len(),
+                                is_value_only
+                            );
+
+                            // ULTRAPLAN Lightning Phase 11 — Tier 0 v2 eligibility.
+                            // Run tree-sitter AST classifier to confirm the edit is
+                            // purely value changes (strings, integers). The regex
+                            // `is_value_only` is a fast pre-filter; tree-sitter is
+                            // the authoritative check that also detects integer
+                            // literal changes for DWARF+iced-x86 patching.
+                            if is_value_only {
+                                use crate::hmr::ts_value_classifier::{
+                                    classify_ast, AstClassification,
+                                };
+                                match classify_ast(&old_source, &req.source) {
+                                    AstClassification::ValueOnly { ref changes }
+                                        if !changes.is_empty() =>
+                                    {
+                                        eprintln!(
                                         "[HMR] Tier 0 v2 ELIGIBLE: {} value change(s) (tree-sitter confirmed)",
                                         changes.len()
                                     );
-                                    tier0_v2_eligible = true;
-                                    tier0_old_source = Some(old_source.clone());
-                                }
-                                AstClassification::ValueOnly { .. } => {
-                                    eprintln!("[HMR] Tier 0 v2: value-only but no literal changes");
-                                }
-                                AstClassification::Structural => {
-                                    eprintln!("[HMR] Tier 0 v2: tree-sitter says structural (regex disagreed)");
-                                }
-                                AstClassification::ParseError(e) => {
-                                    eprintln!("[HMR] Tier 0 v2: parse error ({}), falling back to regex path", e);
+                                        tier0_v2_eligible = true;
+                                        tier0_old_source = Some(old_source.clone());
+                                    }
+                                    AstClassification::ValueOnly { .. } => {
+                                        eprintln!(
+                                            "[HMR] Tier 0 v2: value-only but no literal changes"
+                                        );
+                                    }
+                                    AstClassification::Structural => {
+                                        eprintln!("[HMR] Tier 0 v2: tree-sitter says structural (regex disagreed)");
+                                    }
+                                    AstClassification::ParseError(e) => {
+                                        eprintln!("[HMR] Tier 0 v2: parse error ({}), falling back to regex path", e);
+                                    }
                                 }
                             }
-                        }
 
-                        let arch_hint: Option<&str> = if architecture_md.is_empty() {
-                            None
-                        } else {
-                            Some(architecture_md.as_str())
-                        };
+                            let arch_hint: Option<&str> = if architecture_md.is_empty() {
+                                None
+                            } else {
+                                Some(architecture_md.as_str())
+                            };
 
-                        let (final_core, final_gui, final_shared, final_host_runner) =
-                            if is_value_only {
-                                // Tier 1: pure value change — instant regex.
-                                // patch_split_files only knows about core/gui/shared
-                                // (legacy 3-module patcher); host_runner is preserved
-                                // verbatim from disk because Tier 1 is always value
-                                // changes (never structural edits to the runner).
-                                let patch = patch_split_files(
-                                    &old_source,
-                                    &req.source,
-                                    &core_content,
-                                    &gui_content,
-                                    &shared_content,
-                                );
-                                if patch.has_changes() {
-                                    eprintln!("[HMR] Tier 1: instant value patch (0ms)");
-                                    (
-                                        patch.core.unwrap_or_else(|| core_content.clone()),
-                                        patch.gui.unwrap_or_else(|| gui_content.clone()),
-                                        patch.shared.unwrap_or_else(|| shared_content.clone()),
-                                        host_runner_content.clone(),
-                                    )
-                                } else {
-                                    // Regex couldn't find the value — fall through
-                                    // to the AI path below rather than drop the edit.
-                                    eprintln!("[HMR] Tier 1: regex patch failed despite value_only classification — falling through to AI diff_patch");
-                                    match perform_ai_diff_patch(
-                                        &diff,
+                            let (final_core, final_gui, final_shared, final_host_runner) =
+                                if is_value_only {
+                                    // Tier 1: pure value change — instant regex.
+                                    // patch_split_files only knows about core/gui/shared
+                                    // (legacy 3-module patcher); host_runner is preserved
+                                    // verbatim from disk because Tier 1 is always value
+                                    // changes (never structural edits to the runner).
+                                    let patch = patch_split_files(
+                                        &old_source,
+                                        &req.source,
                                         &core_content,
                                         &gui_content,
                                         &shared_content,
-                                        &host_runner_content,
-                                        arch_hint,
-                                    )
-                                    .await
-                                    {
-                                        Ok(edits) => {
-                                            match apply_edit_list(
-                                                &edits,
-                                                &core_content,
-                                                &gui_content,
-                                                &shared_content,
-                                                &host_runner_content,
-                                            ) {
-                                                Ok((c, g, s, h)) => (c, g, s, h),
-                                                Err(apply_err) => {
-                                                    eprintln!(
+                                    );
+                                    if patch.has_changes() {
+                                        eprintln!("[HMR] Tier 1: instant value patch (0ms)");
+                                        (
+                                            patch.core.unwrap_or_else(|| core_content.clone()),
+                                            patch.gui.unwrap_or_else(|| gui_content.clone()),
+                                            patch.shared.unwrap_or_else(|| shared_content.clone()),
+                                            host_runner_content.clone(),
+                                        )
+                                    } else {
+                                        // Regex couldn't find the value — fall through
+                                        // to the AI path below rather than drop the edit.
+                                        eprintln!("[HMR] Tier 1: regex patch failed despite value_only classification — falling through to AI diff_patch");
+                                        match perform_ai_diff_patch(
+                                            &diff,
+                                            &core_content,
+                                            &gui_content,
+                                            &shared_content,
+                                            &host_runner_content,
+                                            arch_hint,
+                                        )
+                                        .await
+                                        {
+                                            Ok(edits) => {
+                                                match apply_edit_list(
+                                                    &edits,
+                                                    &core_content,
+                                                    &gui_content,
+                                                    &shared_content,
+                                                    &host_runner_content,
+                                                ) {
+                                                    Ok((c, g, s, h)) => (c, g, s, h),
+                                                    Err(apply_err) => {
+                                                        eprintln!(
                                                     "[HMR] Tier 2 (value-fallback) edit apply FAILED: {} → falling through to Tier 3 full re-split",
                                                     apply_err
                                                 );
-                                                    let result = perform_ai_split(&req).await?;
-                                                    let fresh_arch = result
-                                                        .get("_synthi_architecture")
-                                                        .and_then(|v| v.as_str())
-                                                        .unwrap_or("");
-                                                    let fresh_manifest = result
-                                                        .get("_synthi_manifest")
-                                                        .cloned()
-                                                        .unwrap_or(serde_json::Value::Null);
-                                                    let fresh_cache_report = result
-                                                        .get("_synthi_cache_report")
-                                                        .cloned()
-                                                        .unwrap_or(serde_json::Value::Null);
-                                                    let fresh_agentic_report =
-                                                        split_agentic_report(&result);
-                                                    let fresh_generated_report =
-                                                        generated_artifact_report(&result);
-                                                    let fresh_mapping_report =
-                                                        device_mapping_report(&result);
-                                                    let fresh_source_report =
-                                                        source_context_report(&result);
-                                                    let meta = serde_json::json!({
-                                                        "split_hash": source_hash_str,
-                                                        "original_source": req.source,
-                                                        "architecture": fresh_arch,
-                                                        "compile_manifest": fresh_manifest,
-                                                        "cache_report": fresh_cache_report,
-                                                        "agentic_report": fresh_agentic_report,
-                                                        "generated_artifact_report": fresh_generated_report,
-                                                        "device_mapping_report": fresh_mapping_report,
-                                                        "source_context_report": fresh_source_report,
-                                                    });
-                                                    write_sidecar_logged(&sidecar_path, &meta)
-                                                        .await;
-                                                    return Ok(result);
+                                                        let result = perform_ai_split(&req).await?;
+                                                        let fresh_arch = result
+                                                            .get("_synthi_architecture")
+                                                            .and_then(|v| v.as_str())
+                                                            .unwrap_or("");
+                                                        let fresh_manifest = result
+                                                            .get("_synthi_manifest")
+                                                            .cloned()
+                                                            .unwrap_or(serde_json::Value::Null);
+                                                        let fresh_cache_report = result
+                                                            .get("_synthi_cache_report")
+                                                            .cloned()
+                                                            .unwrap_or(serde_json::Value::Null);
+                                                        let fresh_agentic_report =
+                                                            split_agentic_report(&result);
+                                                        let fresh_generated_report =
+                                                            generated_artifact_report(&result);
+                                                        let fresh_mapping_report =
+                                                            device_mapping_report(&result);
+                                                        let fresh_source_report =
+                                                            source_context_report(&result);
+                                                        let meta = serde_json::json!({
+                                                            "split_hash": source_hash_str,
+                                                            "original_source": req.source,
+                                                            "architecture": fresh_arch,
+                                                            "compile_manifest": fresh_manifest,
+                                                            "cache_report": fresh_cache_report,
+                                                            "agentic_report": fresh_agentic_report,
+                                                            "generated_artifact_report": fresh_generated_report,
+                                                            "device_mapping_report": fresh_mapping_report,
+                                                            "source_context_report": fresh_source_report,
+                                                        });
+                                                        write_sidecar_logged(&sidecar_path, &meta)
+                                                            .await;
+                                                        return Ok(result);
+                                                    }
                                                 }
                                             }
-                                        }
-                                        Err(e) => {
-                                            eprintln!("[HMR] Tier 2 (value-fallback) AI diff_patch failed: {}, falling through to Tier 3 full re-split", e);
-                                            let result = perform_ai_split(&req).await?;
-                                            let fresh_arch = result
-                                                .get("_synthi_architecture")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("");
-                                            let fresh_manifest = result
-                                                .get("_synthi_manifest")
-                                                .cloned()
-                                                .unwrap_or(serde_json::Value::Null);
-                                            let fresh_cache_report = result
-                                                .get("_synthi_cache_report")
-                                                .cloned()
-                                                .unwrap_or(serde_json::Value::Null);
-                                            let fresh_agentic_report =
-                                                split_agentic_report(&result);
-                                            let fresh_generated_report =
-                                                generated_artifact_report(&result);
-                                            let fresh_mapping_report =
-                                                device_mapping_report(&result);
-                                            let fresh_source_report =
-                                                source_context_report(&result);
-                                            let meta = serde_json::json!({
-                                                "split_hash": source_hash_str,
-                                                "original_source": req.source,
-                                                "architecture": fresh_arch,
-                                                "compile_manifest": fresh_manifest,
-                                                "cache_report": fresh_cache_report,
-                                                "agentic_report": fresh_agentic_report,
-                                                "generated_artifact_report": fresh_generated_report,
-                                                "device_mapping_report": fresh_mapping_report,
-                                                "source_context_report": fresh_source_report,
-                                            });
-                                            write_sidecar_logged(&sidecar_path, &meta).await;
-                                            return Ok(result);
+                                            Err(e) => {
+                                                eprintln!("[HMR] Tier 2 (value-fallback) AI diff_patch failed: {}, falling through to Tier 3 full re-split", e);
+                                                let result = perform_ai_split(&req).await?;
+                                                let fresh_arch = result
+                                                    .get("_synthi_architecture")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                let fresh_manifest = result
+                                                    .get("_synthi_manifest")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null);
+                                                let fresh_cache_report = result
+                                                    .get("_synthi_cache_report")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null);
+                                                let fresh_agentic_report =
+                                                    split_agentic_report(&result);
+                                                let fresh_generated_report =
+                                                    generated_artifact_report(&result);
+                                                let fresh_mapping_report =
+                                                    device_mapping_report(&result);
+                                                let fresh_source_report =
+                                                    source_context_report(&result);
+                                                let meta = serde_json::json!({
+                                                    "split_hash": source_hash_str,
+                                                    "original_source": req.source,
+                                                    "architecture": fresh_arch,
+                                                    "compile_manifest": fresh_manifest,
+                                                    "cache_report": fresh_cache_report,
+                                                    "agentic_report": fresh_agentic_report,
+                                                    "generated_artifact_report": fresh_generated_report,
+                                                    "device_mapping_report": fresh_mapping_report,
+                                                    "source_context_report": fresh_source_report,
+                                                });
+                                                write_sidecar_logged(&sidecar_path, &meta).await;
+                                                return Ok(result);
+                                            }
                                         }
                                     }
-                                }
-                            } else {
-                                // Tier 2: non-value edit.
-                                //
-                                // First check the speculative cache for a hit.
-                                // If the file-sync handler fired a speculative
-                                // diff_patch while the user was pausing and
-                                // the AI call completed before compile, the
-                                // edits are already in the cache keyed by the
-                                // current source hash. Apply them directly and
-                                // skip the live AI call entirely.
-                                //
-                                // On any miss / apply failure, fall through
-                                // transparently to the normal live AI call.
-                                let spec_hash =
-                                    crate::hmr::speculative_diff_patch::hash_source(&req.source);
-                                // Wait up to 15s for any in-flight speculation
-                                // for this source hash. This de-duplicates the
-                                // Ctrl+S race: the frontend sends the file-sync
-                                // write and the compile request back-to-back,
-                                // so the speculative task is usually still in
-                                // its 300ms debounce when compile arrives. Without
-                                // the wait, handler.rs would fire its own live
-                                // AI call in parallel — two calls for the same
-                                // edit, no benefit. Waiting collapses them to one.
-                                // On miss / timeout, take_matching_or_wait
-                                // returns None and we fall through to the live
-                                // AI call below with no extra latency.
-                                let speculative_applied: Option<(String, String, String, String)> = {
-                                    if let Some(cached_edits) =
+                                } else {
+                                    // Tier 2: non-value edit.
+                                    //
+                                    // First check the speculative cache for a hit.
+                                    // If the file-sync handler fired a speculative
+                                    // diff_patch while the user was pausing and
+                                    // the AI call completed before compile, the
+                                    // edits are already in the cache keyed by the
+                                    // current source hash. Apply them directly and
+                                    // skip the live AI call entirely.
+                                    //
+                                    // On any miss / apply failure, fall through
+                                    // transparently to the normal live AI call.
+                                    let spec_hash = crate::hmr::speculative_diff_patch::hash_source(
+                                        &req.source,
+                                    );
+                                    // Wait up to 15s for any in-flight speculation
+                                    // for this source hash. This de-duplicates the
+                                    // Ctrl+S race: the frontend sends the file-sync
+                                    // write and the compile request back-to-back,
+                                    // so the speculative task is usually still in
+                                    // its 300ms debounce when compile arrives. Without
+                                    // the wait, handler.rs would fire its own live
+                                    // AI call in parallel — two calls for the same
+                                    // edit, no benefit. Waiting collapses them to one.
+                                    // On miss / timeout, take_matching_or_wait
+                                    // returns None and we fall through to the live
+                                    // AI call below with no extra latency.
+                                    let speculative_applied: Option<(
+                                        String,
+                                        String,
+                                        String,
+                                        String,
+                                    )> = {
+                                        if let Some(cached_edits) =
                                         crate::hmr::speculative_diff_patch::take_matching_or_wait(
                                             spec_hash,
                                             std::time::Duration::from_secs(25),
@@ -1319,43 +1610,43 @@ pub async fn handle_compile_request(
                                     } else {
                                         None
                                     }
-                                };
+                                    };
 
-                                if let Some(quad) = speculative_applied {
-                                    quad
-                                } else {
-                                    // Live AI call (diff-only output format — ~100
-                                    // output tokens, ~1s generation on pro).
-                                    eprintln!(
+                                    if let Some(quad) = speculative_applied {
+                                        quad
+                                    } else {
+                                        // Live AI call (diff-only output format — ~100
+                                        // output tokens, ~1s generation on pro).
+                                        eprintln!(
                                     "[HMR] Tier 2: AI diff_patch (diff={} bytes, arch={} chars, host_runner={} bytes)",
                                     diff.len(),
                                     architecture_md.len(),
                                     host_runner_content.len()
                                 );
-                                    match perform_ai_diff_patch(
-                                        &diff,
-                                        &core_content,
-                                        &gui_content,
-                                        &shared_content,
-                                        &host_runner_content,
-                                        arch_hint,
-                                    )
-                                    .await
-                                    {
-                                        Ok(edits) => {
-                                            eprintln!(
+                                        match perform_ai_diff_patch(
+                                            &diff,
+                                            &core_content,
+                                            &gui_content,
+                                            &shared_content,
+                                            &host_runner_content,
+                                            arch_hint,
+                                        )
+                                        .await
+                                        {
+                                            Ok(edits) => {
+                                                eprintln!(
                                             "[HMR] Tier 2: received {} edit(s), applying locally",
                                             edits.len()
                                         );
-                                            match apply_edit_list(
-                                                &edits,
-                                                &core_content,
-                                                &gui_content,
-                                                &shared_content,
-                                                &host_runner_content,
-                                            ) {
-                                                Ok((c, g, s, h)) => {
-                                                    eprintln!(
+                                                match apply_edit_list(
+                                                    &edits,
+                                                    &core_content,
+                                                    &gui_content,
+                                                    &shared_content,
+                                                    &host_runner_content,
+                                                ) {
+                                                    Ok((c, g, s, h)) => {
+                                                        eprintln!(
                                                     "[HMR] Tier 2 SUCCESS ({} edits, core_changed={} gui_changed={} shared_changed={} host_runner_changed={})",
                                                     edits.len(),
                                                     c != core_content,
@@ -1363,151 +1654,152 @@ pub async fn handle_compile_request(
                                                     s != shared_content,
                                                     h != host_runner_content
                                                 );
-                                                    (c, g, s, h)
-                                                }
-                                                Err(apply_err) => {
-                                                    // Anchor missing / ambiguous / unknown module.
-                                                    // Don't try to partially apply — fall through
-                                                    // to Tier 3 for a correct full re-split.
-                                                    eprintln!(
+                                                        (c, g, s, h)
+                                                    }
+                                                    Err(apply_err) => {
+                                                        // Anchor missing / ambiguous / unknown module.
+                                                        // Don't try to partially apply — fall through
+                                                        // to Tier 3 for a correct full re-split.
+                                                        eprintln!(
                                                     "[HMR] Tier 2 edit apply FAILED: {} → falling through to Tier 3 full re-split",
                                                     apply_err
                                                 );
-                                                    let result = perform_ai_split(&req).await?;
-                                                    let fresh_arch = result
-                                                        .get("_synthi_architecture")
-                                                        .and_then(|v| v.as_str())
-                                                        .unwrap_or("");
-                                                    let fresh_manifest = result
-                                                        .get("_synthi_manifest")
-                                                        .cloned()
-                                                        .unwrap_or(serde_json::Value::Null);
-                                                    let fresh_cache_report = result
-                                                        .get("_synthi_cache_report")
-                                                        .cloned()
-                                                        .unwrap_or(serde_json::Value::Null);
-                                                    let fresh_agentic_report =
-                                                        split_agentic_report(&result);
-                                                    let fresh_generated_report =
-                                                        generated_artifact_report(&result);
-                                                    let fresh_mapping_report =
-                                                        device_mapping_report(&result);
-                                                    let fresh_source_report =
-                                                        source_context_report(&result);
-                                                    let meta = serde_json::json!({
-                                                        "split_hash": source_hash_str,
-                                                        "original_source": req.source,
-                                                        "architecture": fresh_arch,
-                                                        "compile_manifest": fresh_manifest,
-                                                        "cache_report": fresh_cache_report,
-                                                        "agentic_report": fresh_agentic_report,
-                                                        "generated_artifact_report": fresh_generated_report,
-                                                        "device_mapping_report": fresh_mapping_report,
-                                                        "source_context_report": fresh_source_report,
-                                                    });
-                                                    write_sidecar_logged(&sidecar_path, &meta)
-                                                        .await;
-                                                    return Ok(result);
+                                                        let result = perform_ai_split(&req).await?;
+                                                        let fresh_arch = result
+                                                            .get("_synthi_architecture")
+                                                            .and_then(|v| v.as_str())
+                                                            .unwrap_or("");
+                                                        let fresh_manifest = result
+                                                            .get("_synthi_manifest")
+                                                            .cloned()
+                                                            .unwrap_or(serde_json::Value::Null);
+                                                        let fresh_cache_report = result
+                                                            .get("_synthi_cache_report")
+                                                            .cloned()
+                                                            .unwrap_or(serde_json::Value::Null);
+                                                        let fresh_agentic_report =
+                                                            split_agentic_report(&result);
+                                                        let fresh_generated_report =
+                                                            generated_artifact_report(&result);
+                                                        let fresh_mapping_report =
+                                                            device_mapping_report(&result);
+                                                        let fresh_source_report =
+                                                            source_context_report(&result);
+                                                        let meta = serde_json::json!({
+                                                            "split_hash": source_hash_str,
+                                                            "original_source": req.source,
+                                                            "architecture": fresh_arch,
+                                                            "compile_manifest": fresh_manifest,
+                                                            "cache_report": fresh_cache_report,
+                                                            "agentic_report": fresh_agentic_report,
+                                                            "generated_artifact_report": fresh_generated_report,
+                                                            "device_mapping_report": fresh_mapping_report,
+                                                            "source_context_report": fresh_source_report,
+                                                        });
+                                                        write_sidecar_logged(&sidecar_path, &meta)
+                                                            .await;
+                                                        return Ok(result);
+                                                    }
                                                 }
                                             }
-                                        }
-                                        Err(e) => {
-                                            eprintln!(
+                                            Err(e) => {
+                                                eprintln!(
                                             "[HMR] Tier 2 AI diff_patch FAILED: {} → falling through to Tier 3 full re-split",
                                             e
                                         );
-                                            let result = perform_ai_split(&req).await?;
-                                            let fresh_arch = result
-                                                .get("_synthi_architecture")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("");
-                                            let fresh_manifest = result
-                                                .get("_synthi_manifest")
-                                                .cloned()
-                                                .unwrap_or(serde_json::Value::Null);
-                                            let fresh_cache_report = result
-                                                .get("_synthi_cache_report")
-                                                .cloned()
-                                                .unwrap_or(serde_json::Value::Null);
-                                            let fresh_agentic_report =
-                                                split_agentic_report(&result);
-                                            let fresh_generated_report =
-                                                generated_artifact_report(&result);
-                                            let fresh_mapping_report =
-                                                device_mapping_report(&result);
-                                            let fresh_source_report =
-                                                source_context_report(&result);
-                                            let meta = serde_json::json!({
-                                                "split_hash": source_hash_str,
-                                                "original_source": req.source,
-                                                "architecture": fresh_arch,
-                                                "compile_manifest": fresh_manifest,
-                                                "cache_report": fresh_cache_report,
-                                                "agentic_report": fresh_agentic_report,
-                                                "generated_artifact_report": fresh_generated_report,
-                                                "device_mapping_report": fresh_mapping_report,
-                                                "source_context_report": fresh_source_report,
-                                            });
-                                            write_sidecar_logged(&sidecar_path, &meta).await;
-                                            return Ok(result);
+                                                let result = perform_ai_split(&req).await?;
+                                                let fresh_arch = result
+                                                    .get("_synthi_architecture")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                let fresh_manifest = result
+                                                    .get("_synthi_manifest")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null);
+                                                let fresh_cache_report = result
+                                                    .get("_synthi_cache_report")
+                                                    .cloned()
+                                                    .unwrap_or(serde_json::Value::Null);
+                                                let fresh_agentic_report =
+                                                    split_agentic_report(&result);
+                                                let fresh_generated_report =
+                                                    generated_artifact_report(&result);
+                                                let fresh_mapping_report =
+                                                    device_mapping_report(&result);
+                                                let fresh_source_report =
+                                                    source_context_report(&result);
+                                                let meta = serde_json::json!({
+                                                    "split_hash": source_hash_str,
+                                                    "original_source": req.source,
+                                                    "architecture": fresh_arch,
+                                                    "compile_manifest": fresh_manifest,
+                                                    "cache_report": fresh_cache_report,
+                                                    "agentic_report": fresh_agentic_report,
+                                                    "generated_artifact_report": fresh_generated_report,
+                                                    "device_mapping_report": fresh_mapping_report,
+                                                    "source_context_report": fresh_source_report,
+                                                });
+                                                write_sidecar_logged(&sidecar_path, &meta).await;
+                                                return Ok(result);
+                                            }
                                         }
                                     }
-                                }
-                            };
+                                };
 
-                        // Write patched files to disk + update sidecar. Preserve
-                        // the existing architecture cache AND compile manifest
-                        // — this is a diff-patch apply, not a re-split, so the
-                        // architecture is still valid (same split modules, same
-                        // contract) and the manifest hasn't changed (same
-                        // library, same link flags).
-                        if let Some(ref p) = enrichment.adapted_status.core_path {
-                            let _ = tokio::fs::write(p, &final_core).await;
-                        }
-                        if let Some(ref p) = enrichment.adapted_status.gui_path {
-                            let _ = tokio::fs::write(p, &final_gui).await;
-                        }
-                        if let Some(ref p) = enrichment.adapted_status.shared_path {
-                            let _ = tokio::fs::write(p, &final_shared).await;
-                        }
-                        // ULTRAPLAN Phase 5: persist host_runner.cpp if the
-                        // diff_patch produced edits targeting it. The hash
-                        // change vs `host_runner_content` will be picked up
-                        // by compile_runner downstream (its content cache
-                        // re-keys on this string), triggering a runner
-                        // rebuild only when the runner actually changed.
-                        if let Some(ref p) = enrichment.adapted_status.host_runner_path {
-                            if final_host_runner != host_runner_content {
-                                let _ = tokio::fs::write(p, &final_host_runner).await;
-                                eprintln!(
-                                    "[HMR] Tier 2: host_runner.cpp updated ({} → {} bytes)",
-                                    host_runner_content.len(),
-                                    final_host_runner.len()
-                                );
+                            // Write patched files to disk + update sidecar. Preserve
+                            // the existing architecture cache AND compile manifest
+                            // — this is a diff-patch apply, not a re-split, so the
+                            // architecture is still valid (same split modules, same
+                            // contract) and the manifest hasn't changed (same
+                            // library, same link flags).
+                            if let Some(ref p) = enrichment.adapted_status.core_path {
+                                let _ = tokio::fs::write(p, &final_core).await;
                             }
-                        }
-                        let source_report = sidecar_meta
-                            .get("sourceContextReport")
-                            .or_else(|| sidecar_meta.get("source_context_report"))
-                            .cloned()
-                            .unwrap_or(serde_json::Value::Null);
-                        let meta = serde_json::json!({
-                            "split_hash": source_hash_str,
-                            "original_source": req.source,
-                            "architecture": architecture_md,
-                            "compile_manifest": sidecar_manifest_json.clone(),
-                            "source_context_report": source_report.clone(),
-                        });
-                        write_sidecar_logged(&sidecar_path, &meta).await;
+                            if let Some(ref p) = enrichment.adapted_status.gui_path {
+                                let _ = tokio::fs::write(p, &final_gui).await;
+                            }
+                            if let Some(ref p) = enrichment.adapted_status.shared_path {
+                                let _ = tokio::fs::write(p, &final_shared).await;
+                            }
+                            // ULTRAPLAN Phase 5: persist host_runner.cpp if the
+                            // diff_patch produced edits targeting it. The hash
+                            // change vs `host_runner_content` will be picked up
+                            // by compile_runner downstream (its content cache
+                            // re-keys on this string), triggering a runner
+                            // rebuild only when the runner actually changed.
+                            if let Some(ref p) = enrichment.adapted_status.host_runner_path {
+                                if final_host_runner != host_runner_content {
+                                    let _ = tokio::fs::write(p, &final_host_runner).await;
+                                    eprintln!(
+                                        "[HMR] Tier 2: host_runner.cpp updated ({} → {} bytes)",
+                                        host_runner_content.len(),
+                                        final_host_runner.len()
+                                    );
+                                }
+                            }
+                            let source_report = sidecar_meta
+                                .get("sourceContextReport")
+                                .or_else(|| sidecar_meta.get("source_context_report"))
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null);
+                            let meta = serde_json::json!({
+                                "split_hash": source_hash_str,
+                                "original_source": req.source,
+                                "architecture": architecture_md,
+                                "compile_manifest": sidecar_manifest_json.clone(),
+                                "source_context_report": source_report.clone(),
+                            });
+                            write_sidecar_logged(&sidecar_path, &meta).await;
 
-                        serde_json::json!({
-                            "shared": { "content": final_shared, "filename": shared_filename },
-                            "core": { "content": final_core, "filename": core_filename },
-                            "gui": { "content": final_gui, "filename": gui_filename },
-                            "host_runner": { "content": final_host_runner, "filename": host_runner_filename },
-                            "_synthi_manifest": sidecar_manifest_json.clone(),
-                            "_synthi_source_context_report": source_report,
-                        })
+                            serde_json::json!({
+                                "shared": { "content": final_shared, "filename": shared_filename },
+                                "core": { "content": final_core, "filename": core_filename },
+                                "gui": { "content": final_gui, "filename": gui_filename },
+                                "host_runner": { "content": final_host_runner, "filename": host_runner_filename },
+                                "_synthi_manifest": sidecar_manifest_json.clone(),
+                                "_synthi_source_context_report": source_report,
+                            })
+                        }
                     }
                 } else {
                     // No original source saved — need AI re-split

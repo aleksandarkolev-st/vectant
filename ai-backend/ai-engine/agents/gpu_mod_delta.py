@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 try:
     from pydantic import BaseModel
@@ -46,6 +46,9 @@ class GpuDiffPatchRequest(BaseModel):
     host_runner_content: str = ""
     device_content: str = ""
     architecture: Optional[str] = None
+    mapping_report: Optional[Any] = None
+    compile_manifest: Optional[Any] = None
+    reload_plan_report: Optional[Any] = None
     reload_plan: Optional[ReloadPlan] = None
     model: Optional[str] = None
     api_key: Optional[str] = None
@@ -123,6 +126,9 @@ def classify_mod_delta(
 def build_gpu_diff_patch_prompt(req: GpuDiffPatchRequest) -> str:
     replacements = {
         "{ARCHITECTURE}": req.architecture or "",
+        "{MAPPING_REPORT}": _json_block(req.mapping_report),
+        "{COMPILE_MANIFEST}": _json_block(req.compile_manifest),
+        "{RELOAD_PLAN_REPORT}": _json_block(req.reload_plan_report),
         "{SHARED_CONTENT}": req.shared_content or "",
         "{CORE_CONTENT}": req.core_content or "",
         "{GUI_CONTENT}": req.gui_content or "",
@@ -136,6 +142,17 @@ def build_gpu_diff_patch_prompt(req: GpuDiffPatchRequest) -> str:
     if req.reload_plan:
         prompt += f"\n\nClassifier reload_plan hint: {req.reload_plan}\n"
     return prompt
+
+
+def _json_block(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, sort_keys=True, indent=2)
+    except TypeError:
+        return str(value)
 
 
 def validate_gpu_edit_list(edits: object) -> List[dict]:
