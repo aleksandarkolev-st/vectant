@@ -1292,6 +1292,22 @@ function editUserDeviceSignature(source) {
   return edited;
 }
 
+function editUserDeviceConstantGlobalLayout(source) {
+  if (source.includes('synthi_hmr_layout_probe')) {
+    throw new Error('user device source already contains layout probe symbol');
+  }
+  const insertion = '__constant__ float synthi_hmr_layout_probe[2];\n';
+  const namespaceIndex = source.search(/\bnamespace\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/);
+  if (namespaceIndex >= 0) {
+    return `${source.slice(0, namespaceIndex)}${insertion}${source.slice(namespaceIndex)}`;
+  }
+  const kernelIndex = source.search(/(?:extern\s+"C"\s+)?__global__\s+void\s+[A-Za-z_][A-Za-z0-9_]*\s*\(/);
+  if (kernelIndex >= 0) {
+    return `${source.slice(0, kernelIndex)}${insertion}${source.slice(kernelIndex)}`;
+  }
+  throw new Error('user device source did not preserve an insertion point for a device-global layout probe');
+}
+
 async function compileUserDeviceDelta(project, editedDevice, vendor, checkpoint) {
   if (CFG.hmrDeltaMode !== 'ai_user_delta') {
     throw new Error(`unsupported SYNTHI_SCALE_HMR_DELTA_MODE=${CFG.hmrDeltaMode}; expected ai_user_delta`);
@@ -1318,13 +1334,21 @@ async function compileUserDeviceDelta(project, editedDevice, vendor, checkpoint)
 }
 
 async function dispatchUserDeviceSignatureNegative(project, signatureEditedDevice, vendor, checkpoint) {
+  return dispatchUserDeviceNegative(project, signatureEditedDevice, vendor, checkpoint, 'negative_signature_rejection');
+}
+
+async function dispatchUserDeviceConstantGlobalNegative(project, layoutEditedDevice, vendor, checkpoint) {
+  return dispatchUserDeviceNegative(project, layoutEditedDevice, vendor, checkpoint, 'negative_constant_global_rejection');
+}
+
+async function dispatchUserDeviceNegative(project, deviceSource, vendor, checkpoint, phaseName) {
   const additionalFiles = project.files
     .filter((f) => cleanRel(f.path) !== cleanRel(project.devicePath))
     .map((f) => ({ name: f.path, content: f.content }));
   return dispatchCompileViaMcp({
     language: 'cpp',
     filename: project.devicePath,
-    source: signatureEditedDevice,
+    source: deviceSource,
     files: additionalFiles,
     is_gui: true,
     use_ai_split: false,
@@ -1335,7 +1359,19 @@ async function dispatchUserDeviceSignatureNegative(project, signatureEditedDevic
     slug: CFG.slug,
     width: 800,
     height: 600,
-  }, CFG.hotSwapTimeoutMs, 'negative_signature_rejection', checkpoint);
+  }, CFG.hotSwapTimeoutMs, phaseName, checkpoint);
+}
+
+async function assertNoSidecarReloadAfterHardStop(hardStop, checkpoint, checkName) {
+  await sleep(1500);
+  const negativeTail = await dockerLogs(CFG.workerContainer, checkpoint);
+  const hardStopOffset = hardStop.snippet ? negativeTail.indexOf(hardStop.snippet) : -1;
+  const tailAfterHardStop = hardStopOffset >= 0
+    ? negativeTail.slice(hardStopOffset + hardStop.snippet.length)
+    : negativeTail;
+  const reload = tailAfterHardStop.match(/Device sidecar reload vendor=[^\n]*result=Success[^\n]*/);
+  record(checkName, reload ? 'fail' : 'pass', reload?.[0] || 'no successful sidecar reload after hard-stop rejection');
+  if (reload) throw new Error(`${checkName}: unexpected sidecar reload: ${reload[0]}`);
 }
 
 async function writeReport() {
@@ -1515,6 +1551,31 @@ async function run() {
   record('runner stayed alive after GPU HMR', crashMatch ? 'fail' : 'pass', crashMatch?.[0] || 'no runner crash marker');
   if (crashMatch) throw new Error(`runner/device failure after HMR: ${crashMatch[0]}`);
 
+  const layoutEditedDevice = editUserDeviceConstantGlobalLayout(editedDevice);
+  await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: layoutEditedDevice }] });
+  await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: constant layout rejection probe' });
+  const layoutCheckpoint = await workerCheckpoint();
+  await dispatchUserDeviceConstantGlobalNegative(project, layoutEditedDevice, vendor, layoutCheckpoint);
+  record('constant/global edit compile dispatched via MCP', 'pass', project.devicePath);
+  const layoutReject = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[gpu-hmr\] device_only fast path rejected: user=[^\n]*abi\.constant_global_layout_changed[^\n]*/,
+    10000,
+    layoutCheckpoint,
+  );
+  record('constant/global edit blocks device_only', layoutReject.matched ? 'pass' : 'fail', layoutReject.snippet || 'no abi.constant_global_layout_changed rejection marker');
+  if (!layoutReject.matched) throw new Error('constant/global layout rejection evidence missing');
+
+  const layoutHardStop = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[gpu-hmr\] device_only hard stop: user=[^\n]*abi\.constant_global_layout_changed[^\n]*/,
+    10000,
+    layoutCheckpoint,
+  );
+  record('constant/global edit stops unsafe fallback', layoutHardStop.matched ? 'pass' : 'fail', layoutHardStop.snippet || 'no hard-stop rejection marker');
+  if (!layoutHardStop.matched) throw new Error('constant/global layout hard-stop evidence missing');
+  await assertNoSidecarReloadAfterHardStop(layoutHardStop, layoutCheckpoint, 'constant/global edit does not reload sidecar');
+
   const signatureEditedDevice = editUserDeviceSignature(editedDevice);
   await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: signatureEditedDevice }] });
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: signature rejection probe' });
@@ -1538,16 +1599,7 @@ async function run() {
   );
   record('signature edit stops unsafe fallback', signatureHardStop.matched ? 'pass' : 'fail', signatureHardStop.snippet || 'no hard-stop rejection marker');
   if (!signatureHardStop.matched) throw new Error('signature hard-stop evidence missing');
-
-  await sleep(1500);
-  const negativeTail = await dockerLogs(CFG.workerContainer, negativeCheckpoint);
-  const hardStopOffset = signatureHardStop.snippet ? negativeTail.indexOf(signatureHardStop.snippet) : -1;
-  const tailAfterHardStop = hardStopOffset >= 0
-    ? negativeTail.slice(hardStopOffset + signatureHardStop.snippet.length)
-    : negativeTail;
-  const signatureReload = tailAfterHardStop.match(/Device sidecar reload vendor=[^\n]*result=Success[^\n]*/);
-  record('signature edit does not reload sidecar', signatureReload ? 'fail' : 'pass', signatureReload?.[0] || 'no successful sidecar reload after signature rejection');
-  if (signatureReload) throw new Error(`signature edit unexpectedly reloaded sidecar: ${signatureReload[0]}`);
+  await assertNoSidecarReloadAfterHardStop(signatureHardStop, negativeCheckpoint, 'signature edit does not reload sidecar');
 
   await writeReport();
   const failures = report.checks.filter((r) => r.status === 'fail');
