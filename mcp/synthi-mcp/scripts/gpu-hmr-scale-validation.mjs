@@ -54,6 +54,8 @@ const RESULTS_JSON = path.join(LOG_DIR, 'scale-validation-results.json');
 const RESULTS_TXT = path.join(LOG_DIR, 'scale-validation-results.txt');
 const BACKEND_RESULTS_JSON = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-results.json`);
 const BACKEND_RESULTS_TXT = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-results.txt`);
+const MODE_RESULTS_JSON = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-results.json`);
+const MODE_RESULTS_TXT = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-results.txt`);
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
@@ -2021,6 +2023,7 @@ async function writeReport() {
   const json = JSON.stringify(report, null, 2) + '\n';
   await writeFile(RESULTS_JSON, json);
   await writeFile(BACKEND_RESULTS_JSON, json);
+  await writeFile(MODE_RESULTS_JSON, json);
   const lines = [
     `slug: ${report.slug}`,
     `repo_commit: ${report.repo_commit}`,
@@ -2048,8 +2051,10 @@ async function writeReport() {
   const text = lines.join('\n') + '\n';
   await writeFile(RESULTS_TXT, text);
   await writeFile(BACKEND_RESULTS_TXT, text);
+  await writeFile(MODE_RESULTS_TXT, text);
   console.log(`results: ${RESULTS_TXT}`);
   console.log(`backend_results: ${BACKEND_RESULTS_TXT}`);
+  console.log(`mode_results: ${MODE_RESULTS_TXT}`);
 }
 
 async function run() {
