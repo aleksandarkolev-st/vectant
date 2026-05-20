@@ -1197,13 +1197,104 @@ fn run_report(
     reload_plan: &Value,
     cache_report: &Value,
 ) -> Value {
+    let ranked_options = root
+        .get("rankedReloadOptions")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let warm_option = ranked_plan_option(&ranked_options, "warm_rebuild");
+    let rdc_device_link = toolchain_profile
+        .get("rdcDeviceLink")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let device_link_required = toolchain_profile
+        .get("requiresRdc")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let device_link_estimate_ms = rdc_device_link
+        .get("estimatedMs")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let device_link_budget_ms = rdc_device_link
+        .get("budgetMs")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let device_linker_bound = rdc_device_link
+        .get("linkerBound")
+        .cloned()
+        .unwrap_or_else(|| Value::Bool(device_link_required));
+    let device_link_budget_result = if rdc_device_link
+        .get("overBudget")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        Value::String("over_budget".to_string())
+    } else if device_link_required {
+        Value::String("within_budget".to_string())
+    } else {
+        Value::String("not_required".to_string())
+    };
+    let warm_path_estimate_ms = root
+        .get("warmPathEstimateMs")
+        .cloned()
+        .or_else(|| warm_option.and_then(|option| option.get("estimatedMs").cloned()))
+        .unwrap_or(Value::Null);
+    let warm_path_budget_result = root
+        .get("warmPathBudgetResult")
+        .cloned()
+        .unwrap_or_else(|| {
+            if warm_option
+                .and_then(|option| option.get("reasonCodes"))
+                .and_then(Value::as_array)
+                .map(|codes| {
+                    codes
+                        .iter()
+                        .any(|code| code.as_str() == Some("warm_rebuild_budget_exceeded"))
+                })
+                .unwrap_or(false)
+            {
+                Value::String("over_budget".to_string())
+            } else {
+                Value::String("not_measured".to_string())
+            }
+        });
+
     json!({
         "schemaVersion": RUN_REPORT_SCHEMA_VERSION,
         "runId": root
             .get("runId")
             .and_then(Value::as_str)
             .unwrap_or("unknown"),
+        "workspaceId": root.get("workspaceId").cloned().unwrap_or(Value::Null),
+        "entryFile": root.get("entryFile").cloned().unwrap_or(Value::Null),
         "selectedTarget": root.get("targetIdentity").cloned().unwrap_or(Value::Null),
+        "targetResolutionMethod": root
+            .get("targetResolutionMethod")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "sourceContextFiles": source_context_paths(root, "included"),
+        "omittedFiles": source_context_paths(root, "dropped"),
+        "compileDbHash": root.get("compileDbHash").cloned().unwrap_or(Value::Null),
+        "cmakeCodemodelHash": root
+            .get("cmakeCodemodelHash")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "gpuVendor": toolchain_profile
+            .get("gpuVendor")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "gpuArch": toolchain_profile
+            .get("gpuArch")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "model": root.get("model").cloned().unwrap_or(Value::Null),
+        "splitSchemaVersion": root
+            .get("splitSchemaVersion")
+            .cloned()
+            .unwrap_or_else(|| Value::String(SIDECAR_SCHEMA_VERSION.to_string())),
+        "promptSchemaVersion": root
+            .get("promptSchemaVersion")
+            .cloned()
+            .unwrap_or(Value::Null),
         "selectedCompileCommand": selected_compile_command,
         "effectiveFlagsHash": root.get("effectiveFlagsHash").cloned().unwrap_or(Value::Null),
         "toolchainCapabilityProfileHash": toolchain_hash,
@@ -1220,13 +1311,26 @@ fn run_report(
         "patchTier": root.get("patchTier").cloned().unwrap_or(Value::Null),
         "reloadPlan": reload_plan,
         "arbiterDecision": root.get("arbiterDecision").cloned().unwrap_or(Value::Null),
-        "rankedReloadOptions": root
-            .get("rankedReloadOptions")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new())),
+        "rankedReloadOptions": ranked_options,
         "consentRequired": root.get("consentRequired").cloned().unwrap_or(Value::Null),
         "consentReason": root.get("consentReason").cloned().unwrap_or(Value::Null),
         "generatedRoles": root.get("generatedRoles").cloned().unwrap_or(Value::Null),
+        "compileCommands": root
+            .get("compileCommands")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(vec![selected_compile_command.clone()])),
+        "deviceLinkCommands": root
+            .get("deviceLinkCommands")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+        "deviceSymbolTableHash": root
+            .get("deviceSymbolTableHash")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "affectedHeaderGraph": root
+            .get("affectedHeaderGraph")
+            .cloned()
+            .unwrap_or(Value::Null),
         "deviceMappingStatus": root
             .get("deviceMappingStatus")
             .cloned()
@@ -1261,10 +1365,33 @@ fn run_report(
             .get("templateEvidenceInvalidationReasons")
             .cloned()
             .unwrap_or(Value::Null),
+        "templateArtifactFingerprintChanges": root
+            .get("templateArtifactFingerprintChanges")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+        "templateTriageAgentDecision": root
+            .get("templateTriageAgentDecision")
+            .cloned()
+            .unwrap_or(Value::Null),
         "affectedTemplateInstantiations": root
             .get("affectedTemplateInstantiations")
             .cloned()
             .unwrap_or(Value::Null),
+        "warmPathEstimateMs": warm_path_estimate_ms,
+        "warmPathActualMs": root
+            .get("warmPathActualMs")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "warmPathBudgetResult": warm_path_budget_result,
+        "deviceLinkRequired": Value::Bool(device_link_required),
+        "deviceLinkEstimateMs": device_link_estimate_ms,
+        "deviceLinkActualMs": root
+            .get("deviceLinkActualMs")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "deviceLinkBudgetMs": device_link_budget_ms,
+        "deviceLinkBudgetResult": device_link_budget_result,
+        "deviceLinkerBound": device_linker_bound,
         "kernelSignatureHashes": root
             .get("kernelSignatureHashes")
             .cloned()
@@ -1301,7 +1428,138 @@ fn run_report(
             .get("staleLaunchPointerChecks")
             .cloned()
             .unwrap_or(Value::Null),
+        "verifierRules": root.get("verifierRules").cloned().unwrap_or(Value::Null),
+        "reloadTimings": reload_plan
+            .get("timingsMs")
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Map::new())),
+        "screenshotTimings": root
+            .get("screenshotTimings")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "memoryArenaStats": root
+            .get("memoryArenaStats")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "reloadGeneration": root
+            .get("reloadGeneration")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "vramFragmentationRatio": root
+            .get("vramFragmentationRatio")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "largestFreeBlockBytes": root
+            .get("largestFreeBlockBytes")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "plannedMemoryRefresh": root
+            .get("plannedMemoryRefresh")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "gpuDriverFaultMarkers": root
+            .get("gpuDriverFaultMarkers")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+        "isolationBackend": root
+            .get("isolationBackend")
+            .cloned()
+            .or_else(|| {
+                root.get("isolationReport")
+                    .and_then(|report| report.get("backend"))
+                    .cloned()
+            })
+            .unwrap_or(Value::Null),
+        "runnerPid": root.get("runnerPid").cloned().unwrap_or(Value::Null),
+        "runnerExitStatus": root
+            .get("runnerExitStatus")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "crashMarkers": root
+            .get("crashMarkers")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+        "artifactPaths": root
+            .get("artifactPaths")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+        "agenticAcceptedAttempt": root
+            .get("agenticReport")
+            .and_then(|report| report.get("acceptedAttempt"))
+            .cloned()
+            .or_else(|| {
+                root.get("agenticReport")
+                    .and_then(|report| report.get("finalAcceptedAttempt"))
+                    .cloned()
+            })
+            .unwrap_or(Value::Null),
+        "agenticVerifierFailures": agentic_verifier_failures(root),
     })
+}
+
+fn ranked_plan_option<'a>(ranked_options: &'a Value, plan: &str) -> Option<&'a Value> {
+    ranked_options.as_array().and_then(|items| {
+        items
+            .iter()
+            .find(|item| item.get("plan").and_then(Value::as_str) == Some(plan))
+    })
+}
+
+fn source_context_paths(root: &Map<String, Value>, field: &str) -> Value {
+    root.get("sourceContextReport")
+        .and_then(|report| report.get(field))
+        .and_then(Value::as_array)
+        .map(|items| {
+            Value::Array(
+                items
+                    .iter()
+                    .filter_map(|item| item.get("path").and_then(Value::as_str))
+                    .map(|path| Value::String(path.to_string()))
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| Value::Array(Vec::new()))
+}
+
+fn agentic_verifier_failures(root: &Map<String, Value>) -> Value {
+    let Some(attempts) = root
+        .get("agenticReport")
+        .and_then(|report| report.get("attempts"))
+        .and_then(Value::as_array)
+    else {
+        return Value::Array(Vec::new());
+    };
+
+    let mut failures = Vec::new();
+    for attempt in attempts {
+        let attempt_number = attempt
+            .get("attempt")
+            .cloned()
+            .or_else(|| attempt.get("attemptNumber").cloned())
+            .unwrap_or(Value::Null);
+        let Some(verifiers) = attempt.get("verifiers").and_then(Value::as_array) else {
+            continue;
+        };
+        for verifier in verifiers {
+            if verifier.get("status").and_then(Value::as_str) == Some("pass") {
+                continue;
+            }
+            failures.push(json!({
+                "attempt": attempt_number,
+                "verifier": verifier
+                    .get("name")
+                    .or_else(|| verifier.get("rule"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "status": verifier.get("status").cloned().unwrap_or(Value::Null),
+                "reasonCodes": verifier
+                    .get("reasonCodes")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new())),
+            }));
+        }
+    }
+    Value::Array(failures)
 }
 
 fn string_array(value: Option<&Value>) -> Vec<String> {
@@ -2338,6 +2596,112 @@ mod tests {
                 .pointer("/runReport/sourceContextReport/deterministicContextComplete")
                 .and_then(Value::as_bool),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn run_report_exposes_prod_next_trace_fields() {
+        let manifest = gpu_compile_manifest();
+        let flags_hash = effective_flags_hash_for(&manifest);
+        let agentic_report = json!({
+            "schemaVersion": "synthi.gpu.agentic_split.v1",
+            "mode": "full_split",
+            "attemptCount": 2,
+            "acceptedAttempt": "attempt-002",
+            "attempts": [
+                {
+                    "attempt": 1,
+                    "verifiers": [
+                        {
+                            "name": "runtime.frame_visible",
+                            "status": "fail",
+                            "reasonCodes": ["screenshot_not_ready"]
+                        }
+                    ]
+                },
+                {
+                    "attempt": 2,
+                    "verifiers": [
+                        {
+                            "name": "runtime.frame_visible",
+                            "status": "pass",
+                            "reasonCodes": []
+                        }
+                    ]
+                }
+            ]
+        });
+        let source_context_report = json!({
+            "included": [{"path": "src/gpu/flow.hip"}],
+            "dropped": [{"path": "docs/design.md"}],
+            "criticalDropped": []
+        });
+        let sidecar = json!({
+            "workspaceId": "gpu-workspace",
+            "entryFile": "src/app/main.cpp",
+            "targetResolutionMethod": "single_target",
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": reload_plan("warm_rebuild", vec!["device"]),
+            "templateEvidence": template_evidence(&flags_hash, true, "clang-libtooling+vendor-artifacts"),
+            "agentic_report": agentic_report,
+            "source_context_report": source_context_report,
+            "launch_indirection_report": launch_indirection_report(),
+            "warmPathActualMs": 1800,
+            "artifactPaths": [".synthi/generated/gpu/device.hip"]
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let report = migrated.get("runReport").expect("run report");
+
+        assert_eq!(
+            report.pointer("/workspaceId").and_then(Value::as_str),
+            Some("gpu-workspace")
+        );
+        assert_eq!(
+            report.pointer("/sourceContextFiles/0").and_then(Value::as_str),
+            Some("src/gpu/flow.hip")
+        );
+        assert_eq!(
+            report.pointer("/omittedFiles/0").and_then(Value::as_str),
+            Some("docs/design.md")
+        );
+        assert_eq!(
+            report.pointer("/gpuVendor").and_then(Value::as_str),
+            Some("rocm")
+        );
+        assert_eq!(
+            report.pointer("/warmPathEstimateMs").and_then(Value::as_u64),
+            Some(5000)
+        );
+        assert_eq!(
+            report.pointer("/warmPathActualMs").and_then(Value::as_u64),
+            Some(1800)
+        );
+        assert_eq!(
+            report.pointer("/deviceLinkRequired").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report
+                .pointer("/deviceLinkBudgetResult")
+                .and_then(Value::as_str),
+            Some("not_required")
+        );
+        assert_eq!(
+            report
+                .pointer("/agenticAcceptedAttempt")
+                .and_then(Value::as_str),
+            Some("attempt-002")
+        );
+        assert_eq!(
+            report
+                .pointer("/agenticVerifierFailures/0/reasonCodes/0")
+                .and_then(Value::as_str),
+            Some("screenshot_not_ready")
+        );
+        assert_eq!(
+            report.pointer("/artifactPaths/0").and_then(Value::as_str),
+            Some(".synthi/generated/gpu/device.hip")
         );
     }
 
