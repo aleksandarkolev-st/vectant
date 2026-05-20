@@ -67,11 +67,6 @@ pub fn try_direct_device_body_patch(
         }
     }
 
-    let mappings = mappings_for_source(sidecar, &user_path);
-    if mappings.is_empty() {
-        return DeviceFastPathResult::rejected(vec!["mapping.device_mapping_missing"], &user_path);
-    }
-
     let old_signatures = kernel_signatures(&old_user_source);
     let new_signatures = kernel_signatures(new_user_source);
     if old_signatures != new_signatures {
@@ -84,6 +79,11 @@ pub fn try_direct_device_body_patch(
             vec!["abi.constant_global_layout_changed"],
             &user_path,
         );
+    }
+
+    let mappings = mappings_for_source(sidecar, &user_path);
+    if mappings.is_empty() {
+        return DeviceFastPathResult::rejected(vec!["mapping.device_mapping_missing"], &user_path);
     }
 
     let old_regions = kernel_regions(&old_user_source);
@@ -575,6 +575,30 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "abi.constant_global_layout_changed"));
+    }
+
+    #[test]
+    fn constant_global_layout_edit_is_blocked_before_mapping_lookup() {
+        let mut missing_mapping = sidecar();
+        missing_mapping["deviceMappings"] = Value::Array(Vec::new());
+        let next = "__constant__ double gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += gain[0];\n}\n";
+
+        let result = try_direct_device_body_patch(
+            &missing_mapping,
+            "src/gpu/flow.hip",
+            next,
+            generated_source(),
+        );
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "abi.constant_global_layout_changed"));
+        assert!(!result
+            .reason_codes
+            .iter()
+            .any(|code| code == "mapping.device_mapping_missing"));
     }
 
     #[test]
