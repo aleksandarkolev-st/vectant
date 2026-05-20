@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import posixpath
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
@@ -177,18 +178,55 @@ def split_failure_verification(rule: str, message: str) -> SplitVerificationResu
     )
 
 
+def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
+    joined = "\n".join(rejection_notes)
+    guidance: List[str] = []
+    if "generated_role_includes_project_header" in joined:
+        guidance.append(
+            "- Inline/adapt every quoted project header into generated role code; generated roles may quote-include only emitted role files or synthi_gpu_runtime.h."
+        )
+    if "source_device_identifier_not_" in joined or "source_device_constant_" in joined:
+        guidance.append(
+            "- Copy device constants and helper bodies into device.hip/device.cu and keep actual reads of those identifiers in the preserved kernel body."
+        )
+    if "host_visible_mirror_not_initialized_for_render" in joined:
+        guidance.append(
+            "- In core_on_load, immediately fill every host-visible mirror that gui_on_render reads with varied on-screen values from the user's setup math."
+        )
+    if "device_init_kernel_incomplete" in joined:
+        guidance.append(
+            "- The init/seed kernel launch and signature must include every device pointer passed to update kernels, and the init body must write each pointer."
+        )
+    if "generated.host_state_type_not_shared" in joined:
+        guidance.append(
+            "- Define the host-visible state record exactly once in shared.h; core.cpp, gui.cpp, and host_runner.cpp must include shared.h and use that type."
+        )
+    if "generated.shared_namespace_symbol_unqualified" in joined:
+        guidance.append(
+            "- If shared.h puts constants or types in a namespace, qualify every use in core.cpp/gui.cpp/host_runner.cpp or import them explicitly."
+        )
+    if "host_runner_omits_gui_module" in joined:
+        guidance.append(
+            "- host_runner.cpp must load/resolve gui_on_load and gui_on_render and call gui_on_render on the core state every frame before presenting."
+        )
+    if not guidance:
+        return ""
+    return "Verifier-specific repair checklist:\n" + "\n".join(guidance)
+
+
 def build_split_retry_prompt(
     base_prompt: Optional[str],
     rejection_notes: Sequence[str],
 ) -> str:
     notes = "\n".join(note for note in rejection_notes if note.strip())
+    playbook = _retry_remediation_playbook(rejection_notes)
     repair_instruction = (
         "The previous GPU split attempt failed Synthi's deterministic "
         "verifiers. Regenerate the complete GPU role split and fix all "
         "violations exactly. Do not repeat any rejected pattern:\n"
         f"{notes}"
     )
-    return "\n\n".join(p for p in [base_prompt, repair_instruction] if p)
+    return "\n\n".join(p for p in [base_prompt, repair_instruction, playbook] if p)
 
 
 _JSON_BLOCK_RE = re.compile(r"<JSON>(?P<body>.*?)</JSON>", re.DOTALL)
@@ -214,6 +252,7 @@ _ROLE_FILENAMES = {
 }
 _SOURCE_GLOBAL_KERNEL_RE = re.compile(r"\b__global__\s+(?:void\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _SOURCE_DEVICE_IDENTIFIER_RE = re.compile(r"\bk[A-Z][A-Za-z0-9_]*\b")
+_QUOTE_INCLUDE_RE = re.compile(r"#\s*include\s+\"(?P<path>[^\"]+)\"")
 _PROJECT_CONTEXT_MAX_CHARS = 70000
 _PROJECT_CONTEXT_PER_FILE_MAX_CHARS = 3000
 
@@ -321,12 +360,67 @@ def _source_file_map(files: Optional[Sequence[Mapping[str, Any]]]) -> Dict[str, 
     return out
 
 
+def _resolve_quoted_include(
+    include_path: str,
+    *,
+    including_path: str,
+    source_files: Mapping[str, str],
+) -> Optional[str]:
+    include_path = include_path.strip().replace("\\", "/")
+    if not include_path:
+        return None
+    including_dir = including_path.replace("\\", "/").rsplit("/", 1)[0]
+    candidates = []
+    if including_dir:
+        candidates.append(f"{including_dir}/{include_path}")
+    candidates.append(include_path)
+    for candidate in candidates:
+        normalized = posixpath.normpath(candidate.replace("\\", "/"))
+        if normalized in source_files:
+            return normalized
+
+    basename = include_path.rsplit("/", 1)[-1]
+    matches = [
+        path.replace("\\", "/")
+        for path in source_files
+        if path.replace("\\", "/").rsplit("/", 1)[-1] == basename
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _device_reachable_source_files(source_files: Mapping[str, str]) -> Dict[str, str]:
+    normalized = {path.replace("\\", "/"): source for path, source in source_files.items()}
+    roots = sorted(
+        path
+        for path, source in normalized.items()
+        if path.lower().endswith((".cu", ".hip"))
+        and ("__global__" in source or "__device__" in source)
+    )
+    reachable: Dict[str, str] = {}
+    queue = list(roots)
+    while queue:
+        path = queue.pop(0)
+        if path in reachable:
+            continue
+        source = normalized.get(path)
+        if source is None:
+            continue
+        reachable[path] = source
+        for match in _QUOTE_INCLUDE_RE.finditer(source):
+            resolved = _resolve_quoted_include(
+                match.group("path"),
+                including_path=path,
+                source_files=normalized,
+            )
+            if resolved and resolved not in reachable and _looks_like_source_file(resolved):
+                queue.append(resolved)
+    return {path: reachable[path] for path in sorted(reachable)}
+
+
 def _source_device_preservation_contract(source_files: Mapping[str, str]) -> str:
-    device_sources = {
-        path: source
-        for path, source in source_files.items()
-        if path.lower().endswith((".cu", ".hip")) and ("__global__" in source or "__device__" in source)
-    }
+    device_sources = _device_reachable_source_files(source_files)
     if not device_sources:
         return ""
     kernels = sorted(
@@ -345,8 +439,10 @@ def _source_device_preservation_contract(source_files: Mapping[str, str]) -> str
     )
     sections = [
         "# SOURCE DEVICE PRESERVATION CONTRACT",
-        "The generated device role must copy/adapt the user GPU source below, not summarize it.",
-        "Preserve original __global__ kernel names, non-empty kernel bodies, device helpers, constants, branches, boundary/reset logic, and output writes.",
+        "The generated device role must copy/adapt the device-reachable user GPU source below, not summarize it.",
+        "This includes the selected .cu/.hip translation unit and any quoted project headers reachable from it.",
+        "Preserve original __global__ kernel names, non-empty kernel bodies, device helpers, constants, branches, boundary/reset logic, template helper math, and output writes.",
+        "Do not include these original project headers from generated role files; inline/adapt the needed structs, constants, and helper function bodies into the generated roles.",
         "Do not emit dangling constant declarations, empty kernels, renamed kernels, or simplified substitute kernels.",
     ]
     if kernels:

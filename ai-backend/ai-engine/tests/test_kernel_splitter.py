@@ -12,6 +12,7 @@ from agents.kernel_splitter import (
     KernelSplitterError,
     build_split_retry_prompt,
     _project_source_context,
+    _source_device_preservation_contract,
     build_prompt,
     parse_kernel_split_response,
     split_failure_verification,
@@ -246,6 +247,8 @@ def test_build_split_retry_prompt_preserves_previous_rejections():
     assert "deterministic verifiers" in prompt
     assert "device_init_kernel_incomplete" in prompt
     assert "split_response_unparseable" in prompt
+    assert "Verifier-specific repair checklist" in prompt
+    assert "init/seed kernel launch and signature" in prompt
 
 
 def test_build_prompt_attaches_extra_instructions():
@@ -273,3 +276,20 @@ def test_project_source_context_includes_multi_file_sources():
     assert "// FILE: src/field/flow_table_00.h" in context
     assert "// FILE: src/field/flow_module_00.cpp" in context
     assert "docs/notes/field-note-000.md" not in context
+
+
+def test_source_device_preservation_contract_follows_device_headers():
+    contract = _source_device_preservation_contract(
+        {
+            "src/gpu/kernels.hip": '#include "particle_api.hpp"\nextern "C" __global__ void k(float* x) { x[0] += kGain; }',
+            "src/gpu/particle_api.hpp": '#pragma once\n#include "../config/device_constants.hpp"\nstruct LaunchParams { int n; };',
+            "src/config/device_constants.hpp": "#pragma once\nconstexpr float kGain = 1.0f;",
+            "src/app/main.cpp": "int main() { return 0; }",
+        }
+    )
+
+    assert "src/gpu/kernels.hip" in contract
+    assert "src/gpu/particle_api.hpp" in contract
+    assert "src/config/device_constants.hpp" in contract
+    assert "kGain" in contract
+    assert "Do not include these original project headers" in contract
