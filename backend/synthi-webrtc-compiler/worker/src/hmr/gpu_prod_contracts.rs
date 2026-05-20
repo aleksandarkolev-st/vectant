@@ -572,6 +572,31 @@ fn merge_object_field(root: &mut Map<String, Value>, key: &str, candidate: Optio
     }
 }
 
+fn accepted_template_effective_flags_hashes(
+    root: &Map<String, Value>,
+    effective_flags_hash: &str,
+) -> Vec<String> {
+    let mut hashes = Vec::new();
+    if !effective_flags_hash.is_empty() {
+        hashes.push(effective_flags_hash.to_string());
+    }
+    if let Some(items) = root
+        .get("sourceContextReport")
+        .and_then(|report| report.get("buildMetadata"))
+        .and_then(|metadata| metadata.get("templateEvidenceCompileCommands"))
+        .and_then(Value::as_array)
+    {
+        for item in items {
+            if let Some(hash) = item.get("effectiveFlagsHash").and_then(Value::as_str) {
+                if !hash.is_empty() && !hashes.iter().any(|existing| existing == hash) {
+                    hashes.push(hash.to_string());
+                }
+            }
+        }
+    }
+    hashes
+}
+
 fn promote_template_evidence(root: &mut Map<String, Value>, effective_flags_hash: &str) {
     let evidence = root
         .get("templateEvidence")
@@ -644,7 +669,12 @@ fn promote_template_evidence(root: &mut Map<String, Value>, effective_flags_hash
     if !is_compiler_derived_template_evidence(producer) {
         invalidation.push("template_evidence_not_compiler_derived");
     }
-    if evidence_flags_hash.is_empty() || evidence_flags_hash != effective_flags_hash {
+    let accepted_flags_hashes = accepted_template_effective_flags_hashes(root, effective_flags_hash);
+    if evidence_flags_hash.is_empty()
+        || !accepted_flags_hashes
+            .iter()
+            .any(|accepted| accepted == evidence_flags_hash)
+    {
         invalidation.push("template_evidence_effective_flags_mismatch");
     }
     if !bounded {
@@ -2448,6 +2478,65 @@ mod tests {
             Some("pass")
         );
         assert!(has_reason(warm_rebuild, "arbiter.safe"));
+    }
+
+    #[test]
+    fn source_context_template_evidence_accepts_target_compile_command_hash() {
+        let manifest = gpu_compile_manifest();
+        let focus_flags_hash = effective_flags_hash_for(&manifest);
+        let device_flags_hash = stable_hash(&json!(["--offload-arch=gfx1201", "-O3", "src/gpu/kernels.hip"]));
+        let plan = reload_plan("warm_rebuild", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "effectiveFlagsHash": focus_flags_hash,
+            "lastReloadPlanReport": plan,
+            "launch_indirection_report": launch_indirection_report(),
+            "sourceContextReport": {
+                "schemaVersion": "synthi.gpu.source_context.v1",
+                "buildMetadata": {
+                    "templateEvidenceStatus": "fresh",
+                    "templateEvidenceHash": "template-hash",
+                    "templateEvidenceCandidateCount": 1,
+                    "templateEvidenceInvalidationReasons": [],
+                    "templateEvidenceCompileCommands": [
+                        {
+                            "file": "src/app/main.cpp",
+                            "effectiveFlagsHash": focus_flags_hash
+                        },
+                        {
+                            "file": "src/gpu/kernels.hip",
+                            "effectiveFlagsHash": device_flags_hash
+                        }
+                    ],
+                    "templateEvidence": template_evidence(
+                        &device_flags_hash,
+                        true,
+                        "clang-libtooling+vendor-artifacts"
+                    )
+                }
+            }
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let warm_rebuild = ranked_option(&migrated, "warm_rebuild");
+
+        assert_eq!(
+            migrated
+                .pointer("/templateEvidenceStatus")
+                .and_then(Value::as_str),
+            Some("fresh")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/templateEvidenceInvalidationReasons")
+                .and_then(Value::as_array)
+                .map(Vec::is_empty),
+            Some(true)
+        );
+        assert_eq!(
+            warm_rebuild.get("safety").and_then(Value::as_str),
+            Some("pass")
+        );
     }
 
     #[test]
