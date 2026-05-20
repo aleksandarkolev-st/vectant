@@ -4,6 +4,7 @@
 //   -> user device-source AI delta -> GPU sidecar HMR -> visible changed frame.
 
 import { spawn, execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -37,6 +38,7 @@ const CFG = {
   hotSwapTimeoutMs: Number(process.env.SYNTHI_SCALE_HMR_TIMEOUT_MS ?? 30000),
   hmrDeltaMode: (process.env.SYNTHI_SCALE_HMR_DELTA_MODE ?? 'ai_user_delta').toLowerCase(),
   aiDeltaEvidenceTimeoutMs: Number(process.env.SYNTHI_SCALE_AI_DELTA_EVIDENCE_TIMEOUT_MS ?? 45000),
+  templateEvidenceMode: (process.env.SYNTHI_SCALE_TEMPLATE_EVIDENCE ?? 'missing').toLowerCase(),
   screenshotAttempts: Number(process.env.SYNTHI_SCALE_SCREENSHOT_ATTEMPTS ?? 6),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_FRESHNESS_MS ?? 5000),
@@ -50,6 +52,18 @@ const RESULTS_JSON = path.join(LOG_DIR, 'scale-validation-results.json');
 const RESULTS_TXT = path.join(LOG_DIR, 'scale-validation-results.txt');
 const BACKEND_RESULTS_JSON = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-results.json`);
 const BACKEND_RESULTS_TXT = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-results.txt`);
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function stableHash(value) {
+  return createHash('sha256').update(stableJson(value), 'utf8').digest('hex');
+}
 
 const FORBIDDEN_ABI = [
   'core_on_load',
@@ -80,6 +94,7 @@ const report = {
   arch: '',
   render_backend: CFG.renderBackend,
   source_file_mix: {},
+  template_evidence_mode: CFG.templateEvidenceMode,
   workspace_file_count: 0,
   relevant_file_count: 0,
   started_at: new Date().toISOString(),
@@ -516,11 +531,35 @@ function buildScaleProject(vendor, arch, renderBackend) {
   const deviceExt = isRocm ? 'hip' : 'cu';
   const runtimeInclude = isRocm ? '#include <hip/hip_runtime.h>' : '#include <cuda_runtime.h>';
   const launchComment = isRocm ? 'hipLaunchKernelGGL' : 'cudaLaunchKernel';
+  const useTemplateEvidenceFixture = CFG.templateEvidenceMode === 'fresh';
+  const templateInclude = useTemplateEvidenceFixture ? '#include "particle_template_math.hpp"' : '';
+  const attractionGain = useTemplateEvidenceFixture
+    ? '::scale_template::tuned_gain<float, 128>(0.42f)'
+    : '0.42f';
+  const integrationScale = useTemplateEvidenceFixture
+    ? '::scale_template::tuned_gain<float, 256>(44.0f)'
+    : '44.0f';
   const renderSource = renderBackend === 'glfw' ? 'src/render/glfw_canvas.cpp' : 'src/render/sdl_canvas.cpp';
   const renderLink = renderBackend === 'glfw'
     ? 'target_link_libraries(particle_field PRIVATE glfw GL)'
     : 'target_link_libraries(particle_field PRIVATE SDL2)';
   const files = [];
+  const mainCompileArguments = [
+    'clang++',
+    '-std=c++20',
+    '-Isrc',
+    `-DSCALE_GPU_TARGET=${isRocm ? 'rocm' : 'cuda'}`,
+    `-DSCALE_GPU_ARCH=${arch}`,
+    '-c',
+    'src/app/main.cpp',
+  ];
+  const deviceCompileArguments = [
+    isRocm ? 'hipcc' : 'nvcc',
+    '-Isrc',
+    isRocm ? `--offload-arch=${arch}` : `-arch=${arch}`,
+    '-c',
+    `src/gpu/particle_kernels.${deviceExt}`,
+  ];
 
   addFile(files, 'README.md', `
 # Particle Field Validation Fixture
@@ -546,26 +585,12 @@ ${renderLink}
     {
       directory: '/workspace/particle_field_validation/build',
       file: '/workspace/particle_field_validation/src/app/main.cpp',
-      arguments: [
-        'clang++',
-        '-std=c++20',
-        '-Isrc',
-        `-DSCALE_GPU_TARGET=${isRocm ? 'rocm' : 'cuda'}`,
-        `-DSCALE_GPU_ARCH=${arch}`,
-        '-c',
-        'src/app/main.cpp',
-      ],
+      arguments: mainCompileArguments,
     },
     {
       directory: '/workspace/particle_field_validation/build',
       file: `/workspace/particle_field_validation/src/gpu/particle_kernels.${deviceExt}`,
-      arguments: [
-        isRocm ? 'hipcc' : 'nvcc',
-        '-Isrc',
-        isRocm ? `--offload-arch=${arch}` : `-arch=${arch}`,
-        '-c',
-        `src/gpu/particle_kernels.${deviceExt}`,
-      ],
+      arguments: deviceCompileArguments,
     },
   ], null, 2) + '\n', true);
 
@@ -596,6 +621,49 @@ ${renderLink}
       { path: `src/gpu/particle_kernels.${deviceExt}` },
     ],
   }, null, 2) + '\n', true);
+
+  if (useTemplateEvidenceFixture) {
+    const templateEvidenceEntries = [
+      {
+        templateName: 'scale_template::tuned_gain<T, BLOCK_SIZE>',
+        templateArgs: ['float', '128'],
+        owningTU: `src/gpu/particle_kernels.${deviceExt}`,
+        instantiationSite: 'src/gpu/particle_template_math.hpp:7',
+        reachableFromKernel: 'advance_particle_field(float*, float*, float*, float*, unsigned int*, int, scale::LaunchParams)',
+        changedInputs: ['BLOCK_SIZE'],
+        sourceHeaders: ['src/gpu/particle_template_math.hpp'],
+        generatedRole: 'device.particle_kernels',
+        abiFingerprint: stableHash(['tuned_gain', 'float', '128', arch]),
+        layoutFingerprint: stableHash(['layout', 'tuned_gain', 'float', '128', arch]),
+        artifactFingerprint: stableHash(['artifact', 'tuned_gain', 'float', '128', arch]),
+      },
+      {
+        templateName: 'scale_template::tuned_gain<T, BLOCK_SIZE>',
+        templateArgs: ['float', '256'],
+        owningTU: `src/gpu/particle_kernels.${deviceExt}`,
+        instantiationSite: 'src/gpu/particle_template_math.hpp:7',
+        reachableFromKernel: 'advance_particle_field(float*, float*, float*, float*, unsigned int*, int, scale::LaunchParams)',
+        changedInputs: ['BLOCK_SIZE'],
+        sourceHeaders: ['src/gpu/particle_template_math.hpp'],
+        generatedRole: 'device.particle_kernels',
+        abiFingerprint: stableHash(['tuned_gain', 'float', '256', arch]),
+        layoutFingerprint: stableHash(['layout', 'tuned_gain', 'float', '256', arch]),
+        artifactFingerprint: stableHash(['artifact', 'tuned_gain', 'float', '256', arch]),
+      },
+    ];
+    addFile(files, '.cmake/api/v1/reply/synthi-template-evidence.json', JSON.stringify({
+      templateEvidence: {
+        schemaVersion: 'synthi.gpu.template_evidence.v1',
+        status: 'fresh',
+        producer: 'clang-libtooling+vendor-artifacts',
+        compileCommandHash: stableHash(deviceCompileArguments),
+        effectiveFlagsHash: stableHash(deviceCompileArguments.slice(1)),
+        gpuArch: arch,
+        bounded: true,
+        entries: templateEvidenceEntries,
+      },
+    }, null, 2) + '\n', true);
+  }
 
   addFile(files, 'src/config/particle_config.hpp', `
 #pragma once
@@ -663,9 +731,24 @@ void launch_particle_field(ParticleBuffers buffers, LaunchParams params);
 }
 `, true);
 
+  if (useTemplateEvidenceFixture) {
+    addFile(files, 'src/gpu/particle_template_math.hpp', `
+#pragma once
+
+namespace scale_template {
+template <typename T, int BLOCK_SIZE>
+__device__ T tuned_gain(T value) {
+  constexpr T adjustment = static_cast<T>((BLOCK_SIZE % 257) + 1) * static_cast<T>(0.00001f);
+  return value + adjustment;
+}
+}
+`, true);
+  }
+
   addFile(files, `src/gpu/particle_kernels.${deviceExt}`, `
 ${runtimeInclude}
 #include "particle_api.hpp"
+${templateInclude}
 
 namespace scale {
 constexpr float kHmrScaleDirection = 1.0f; // HMR_SCALE_DIRECTION_TOKEN
@@ -691,11 +774,11 @@ extern "C" __global__ void advance_particle_field(
   float dy = params.center_y - py;
   float len = sqrtf(dx * dx + dy * dy) + 0.001f;
   float swirl = ((i & 7) - 3.5f) * 0.018f;
-  vx[i] += kHmrScaleDirection * ((dx / len) * 0.42f - dy * swirl) * params.dt;
-  vy[i] += kHmrScaleDirection * ((dy / len) * 0.42f + dx * swirl) * params.dt;
+  vx[i] += kHmrScaleDirection * ((dx / len) * ${attractionGain} - dy * swirl) * params.dt;
+  vy[i] += kHmrScaleDirection * ((dy / len) * ${attractionGain} + dx * swirl) * params.dt;
 
-  px += vx[i] * params.dt * 44.0f;
-  py += vy[i] * params.dt * 44.0f;
+  px += vx[i] * params.dt * ${integrationScale};
+  py += vy[i] * params.dt * ${integrationScale};
 
   if (px < kResetPadding) {
     px = params.bounds_x - kResetPadding;
@@ -1439,11 +1522,39 @@ function validateProdRunReportContract(split, project, vendor, arch) {
   if (!headerGraph.reachableHeaders?.includes('src/gpu/particle_api.hpp')) {
     throw new Error(`device include graph missing reachable particle_api.hpp: ${JSON.stringify(headerGraph).slice(0, 500)}`);
   }
-  if (reportDoc.templateEvidenceStatus !== 'missing') {
-    throw new Error(`unexpected templateEvidenceStatus for non-template fixture: ${reportDoc.templateEvidenceStatus ?? 'missing'}`);
-  }
-  if (!reportDoc.templateEvidenceInvalidationReasons?.includes('template_evidence_missing')) {
-    throw new Error('run report missing template_evidence_missing invalidation reason');
+  if (CFG.templateEvidenceMode === 'fresh') {
+    if (!headerGraph.reachableHeaders?.includes('src/gpu/particle_template_math.hpp')) {
+      throw new Error(`device include graph missing reachable template header: ${JSON.stringify(headerGraph).slice(0, 500)}`);
+    }
+    if (reportDoc.templateEvidenceStatus !== 'fresh') {
+      throw new Error(`fresh template evidence was not accepted: ${reportDoc.templateEvidenceStatus ?? 'missing'}`);
+    }
+    if (reportDoc.templateEvidenceInvalidationReasons?.length) {
+      throw new Error(`fresh template evidence has invalidation reasons: ${reportDoc.templateEvidenceInvalidationReasons.join(',')}`);
+    }
+    const instantiations = reportDoc.affectedTemplateInstantiations || [];
+    if (!Array.isArray(instantiations) || instantiations.length < 2) {
+      throw new Error(`run report missing bounded template instantiations: ${JSON.stringify(instantiations).slice(0, 500)}`);
+    }
+    const warmOption = reportDoc.rankedReloadOptions.find((option) => option.plan === 'warm_rebuild');
+    if (!warmOption || warmOption.safety !== 'pass') {
+      throw new Error(`warm_rebuild was not ranked safe with fresh template evidence: ${JSON.stringify(warmOption).slice(0, 500)}`);
+    }
+    if (warmOption.requiresConsent) {
+      throw new Error(`non-RDC fresh template evidence should not require consent: ${JSON.stringify(warmOption).slice(0, 500)}`);
+    }
+    record(
+      'fresh template evidence enables bounded warm rebuild option',
+      'pass',
+      `instantiations=${instantiations.length} warm=${warmOption.safety}`,
+    );
+  } else {
+    if (reportDoc.templateEvidenceStatus !== 'missing') {
+      throw new Error(`unexpected templateEvidenceStatus for non-template fixture: ${reportDoc.templateEvidenceStatus ?? 'missing'}`);
+    }
+    if (!reportDoc.templateEvidenceInvalidationReasons?.includes('template_evidence_missing')) {
+      throw new Error('run report missing template_evidence_missing invalidation reason');
+    }
   }
   report.prod_run_report = {
     schemaVersion: reportDoc.schemaVersion,
@@ -1455,6 +1566,9 @@ function validateProdRunReportContract(split, project, vendor, arch) {
     targetName: selectedTarget.targetName,
     toolchainCapabilityProfileHash: reportDoc.toolchainCapabilityProfileHash,
     templateEvidenceStatus: reportDoc.templateEvidenceStatus,
+    affectedTemplateInstantiationCount: Array.isArray(reportDoc.affectedTemplateInstantiations)
+      ? reportDoc.affectedTemplateInstantiations.length
+      : 0,
     affectedHeaderGraphStatus: headerGraph.status,
   };
   record(
@@ -1711,6 +1825,7 @@ async function writeReport() {
     `vendor: ${report.vendor}`,
     `arch: ${report.arch}`,
     `render_backend: ${report.render_backend}`,
+    `template_evidence_mode: ${report.template_evidence_mode}`,
     `source_file_mix: ${JSON.stringify(report.source_file_mix)}`,
     `workspace_file_count: ${report.workspace_file_count}`,
     `relevant_file_count: ${report.relevant_file_count}`,
@@ -1740,6 +1855,9 @@ async function run() {
   if (!['sdl2', 'glfw'].includes(CFG.renderBackend)) {
     fail(`unsupported SYNTHI_SCALE_RENDER_BACKEND=${CFG.renderBackend}; expected sdl2 or glfw`);
   }
+  if (!['missing', 'fresh'].includes(CFG.templateEvidenceMode)) {
+    fail(`unsupported SYNTHI_SCALE_TEMPLATE_EVIDENCE=${CFG.templateEvidenceMode}; expected missing or fresh`);
+  }
   await resolveDockerContainers();
   report.repo_commit = await execText('git', ['rev-parse', 'HEAD'], 10000, true);
   const vendor = await detectVendor();
@@ -1753,6 +1871,7 @@ async function run() {
     SYNTHI_GPU_ARCH: arch,
     SYNTHI_SCALE_RENDER_BACKEND: CFG.renderBackend,
     SYNTHI_SCALE_HMR_DELTA_MODE: CFG.hmrDeltaMode,
+    SYNTHI_SCALE_TEMPLATE_EVIDENCE: CFG.templateEvidenceMode,
     SYNTHI_SYNC_TO_GCS: process.env.SYNTHI_SYNC_TO_GCS ?? '',
   };
   report.containers = {
@@ -1760,7 +1879,11 @@ async function run() {
     ai_engine: await containerSnapshot(CFG.aiEngineContainer),
     mcp: await containerSnapshot(CFG.mcpContainer),
   };
-  record('gpu target', 'pass', `${vendor} arch=${arch} render_backend=${CFG.renderBackend}`);
+  record(
+    'gpu target',
+    'pass',
+    `${vendor} arch=${arch} render_backend=${CFG.renderBackend} template_evidence=${CFG.templateEvidenceMode}`,
+  );
 
   const project = buildScaleProject(vendor, arch, CFG.renderBackend);
   report.workspace_file_count = project.files.length;
