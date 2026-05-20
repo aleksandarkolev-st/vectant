@@ -1,5 +1,6 @@
 'use client';
 import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
 import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
@@ -605,10 +606,12 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
     return () => window.removeEventListener('keydown', onKey);
   }, [onConfirm, onCancel]);
 
-  return (
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
     <div
-      className="absolute inset-0 z-30 flex items-center justify-center backdrop-blur-sm"
-      style={{ background: 'rgba(0,0,0,0.55)' }}
+      className="fixed inset-0 flex items-center justify-center backdrop-blur-sm"
+      style={{ background: 'rgba(0,0,0,0.55)', zIndex: 2147483646 }}
       onClick={onCancel}
     >
       <div
@@ -668,7 +671,8 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
