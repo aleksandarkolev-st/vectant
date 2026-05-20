@@ -107,6 +107,7 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
         .filter(|v| !v.is_null())
         .unwrap_or_else(default_isolation_report);
     root.insert("isolationReport".to_string(), isolation_report);
+    promote_runtime_safety_reports(&mut root);
     promote_template_evidence(&mut root, &effective_flags_hash);
     root.entry("generatedArtifactPolicy".to_string())
         .or_insert_with(generated_artifact_policy);
@@ -371,6 +372,18 @@ fn toolchain_capabilities_from_manifest(manifest: &Value, flags_hash: &str) -> V
                 .and_then(Value::as_bool)
         })
         .unwrap_or(false);
+    let mut device_link_reason_codes = Vec::new();
+    if requires_rdc {
+        device_link_reason_codes.push(Value::String("rdc_device_link_required".to_string()));
+        if !supports_incremental_device_link {
+            device_link_reason_codes.push(Value::String(
+                "incremental_device_link_unsupported".to_string(),
+            ));
+        }
+        if rdc_over_budget {
+            device_link_reason_codes.push(Value::String("rdc_link_over_budget".to_string()));
+        }
+    }
     let has_gpu = gpu.is_some();
     let supports_device_only = has_gpu && !requires_rdc;
 
@@ -392,13 +405,7 @@ fn toolchain_capabilities_from_manifest(manifest: &Value, flags_hash: &str) -> V
             "budgetMs": device_link_budget_ms,
             "overBudget": rdc_over_budget,
             "costSource": if device_link.is_some() { "manifest_device_link" } else if requires_rdc { "default_policy" } else { "not_required" },
-            "reasonCodes": if rdc_over_budget {
-                json!(["rdc_device_link_required", "rdc_link_over_budget"])
-            } else if requires_rdc {
-                json!(["rdc_device_link_required"])
-            } else {
-                json!([])
-            },
+            "reasonCodes": device_link_reason_codes,
         },
         "supportsSymbolInspection": has_gpu,
         "supportsSafeModuleUnload": has_gpu,
@@ -978,6 +985,265 @@ fn default_isolation_report() -> Value {
     })
 }
 
+fn promote_runtime_safety_reports(root: &mut Map<String, Value>) {
+    let fault_markers = root
+        .get("gpuDriverFaultMarkers")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| root.get("gpu_driver_fault_markers").cloned())
+        .filter(|v| !v.is_null())
+        .or_else(|| {
+            root.get("isolationReport")
+                .and_then(|report| report.get("gpuDriverFaultMarkers"))
+                .cloned()
+                .filter(|v| !v.is_null())
+        })
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    root.insert("gpuDriverFaultMarkers".to_string(), fault_markers.clone());
+
+    let fault_policy = root
+        .get("gpuFaultPolicy")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| root.get("gpu_fault_policy").cloned())
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(|| gpu_fault_policy(root, &fault_markers));
+    let tainted = fault_policy
+        .get("tainted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    root.insert("gpuFaultPolicy".to_string(), fault_policy);
+    root.insert("gpuDeviceTainted".to_string(), Value::Bool(tainted));
+
+    let memory_arena_stats = root
+        .get("memoryArenaStats")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| root.get("memory_arena_stats").cloned())
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(default_memory_arena_stats);
+    root.insert("memoryArenaStats".to_string(), memory_arena_stats.clone());
+
+    let memory_policy = root
+        .get("memoryRefreshPolicy")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| root.get("memory_refresh_policy").cloned())
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(|| memory_refresh_policy(root, &memory_arena_stats));
+    let planned_refresh = memory_policy
+        .get("plannedMemoryRefresh")
+        .cloned()
+        .unwrap_or(Value::Null);
+    root.insert("plannedMemoryRefresh".to_string(), planned_refresh);
+    root.insert("memoryRefreshPolicy".to_string(), memory_policy);
+}
+
+fn default_memory_arena_stats() -> Value {
+    json!({
+        "schemaVersion": "synthi.gpu.memory_arena_stats.v1",
+        "status": "not_reported",
+        "totalReservedBytes": null,
+        "liveAllocationBytes": null,
+        "liveAllocationCount": null,
+        "freeSpanCount": null,
+        "largestFreeBlockBytes": null,
+        "fragmentationRatio": null,
+        "reloadGeneration": null,
+        "pendingAllocationBytes": null,
+        "recentAllocationFailureReason": null,
+        "pointerSafetyProvable": false,
+    })
+}
+
+fn gpu_fault_policy(root: &Map<String, Value>, markers: &Value) -> Value {
+    let explicitly_tainted = root
+        .get("gpuDeviceTainted")
+        .or_else(|| root.get("gpu_device_tainted"))
+        .or_else(|| root.get("gpuSessionTainted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let marker_items = markers.as_array().cloned().unwrap_or_default();
+    let mut reason_codes = Vec::new();
+    let marker_tainted = !marker_items.is_empty();
+    if explicitly_tainted || marker_tainted {
+        push_reason_code(&mut reason_codes, "gpu_device_tainted");
+    }
+    for marker in &marker_items {
+        let marker_text = marker
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| {
+                marker
+                    .get("reasonCode")
+                    .or_else(|| marker.get("reason"))
+                    .or_else(|| marker.get("kind"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if marker_text.contains("tdr") || marker_text.contains("timeout") {
+            push_reason_code(&mut reason_codes, "gpu_driver_tdr");
+        }
+        if marker_text.contains("device_lost")
+            || marker_text.contains("device-lost")
+            || marker_text.contains("driver_fault")
+        {
+            push_reason_code(&mut reason_codes, "gpu_device_tainted");
+        }
+    }
+    let tainted = explicitly_tainted || marker_tainted;
+    json!({
+        "schemaVersion": "synthi.gpu.driver_fault_policy.v1",
+        "status": if tainted { "tainted" } else { "clear" },
+        "tainted": tainted,
+        "markers": markers,
+        "screenshotsAcceptedAsProof": !tainted,
+        "requiredRecovery": if tainted {
+            Value::String("cold_runner_restart_or_gpu_session_reset".to_string())
+        } else {
+            Value::Null
+        },
+        "reasonCodes": reason_codes,
+    })
+}
+
+fn memory_refresh_policy(root: &Map<String, Value>, stats: &Value) -> Value {
+    let reload_generation = numeric_u64(root, stats, &["reloadGeneration", "reload_generation"]);
+    let fragmentation = numeric_f64(
+        root,
+        stats,
+        &[
+            "vramFragmentationRatio",
+            "fragmentationRatio",
+            "fragmentation_ratio",
+        ],
+    );
+    let largest_free_block =
+        numeric_u64(root, stats, &["largestFreeBlockBytes", "largest_free_block_bytes"]);
+    let pending_allocation =
+        numeric_u64(root, stats, &["pendingAllocationBytes", "pending_allocation_bytes"]);
+    let failure_reason = string_field(
+        root,
+        stats,
+        &[
+            "recentAllocationFailureReason",
+            "recent_allocation_failure_reason",
+            "allocationFailureReason",
+        ],
+    );
+    let pointer_safety_provable = stats
+        .get("pointerSafetyProvable")
+        .or_else(|| stats.get("pointer_safety_provable"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let mut status = "ok";
+    let mut reason_codes = Vec::new();
+    if let Some(generation) = reload_generation {
+        if generation > 100 {
+            status = "refresh_recommended";
+            push_reason_code(&mut reason_codes, "vram_session_refresh_recommended");
+        } else if generation > 50 {
+            status = "warn";
+            push_reason_code(&mut reason_codes, "vram_reload_generation_warning");
+        }
+    }
+    if let Some(ratio) = fragmentation {
+        if ratio > 0.50 {
+            status = "refresh_recommended";
+            push_reason_code(&mut reason_codes, "vram_session_refresh_recommended");
+        } else if ratio > 0.35 && status == "ok" {
+            status = "warn";
+            push_reason_code(&mut reason_codes, "vram_fragmentation_warning");
+        } else if ratio > 0.35 {
+            push_reason_code(&mut reason_codes, "vram_fragmentation_warning");
+        }
+    }
+
+    let pending_allocation_would_fail = pending_allocation
+        .zip(largest_free_block)
+        .map(|(pending, largest)| pending > largest)
+        .unwrap_or(false);
+    let allocation_failed_from_fragmentation = failure_reason
+        .as_deref()
+        .map(|reason| {
+            let lower = reason.to_ascii_lowercase();
+            lower.contains("fragment") || lower.contains("largest_free_block")
+        })
+        .unwrap_or(false);
+    if pending_allocation_would_fail || allocation_failed_from_fragmentation {
+        status = "refresh_required";
+        push_reason_code(&mut reason_codes, "vram_fragmented");
+        push_reason_code(&mut reason_codes, "vram_session_refresh_required");
+    }
+
+    if status == "ok" && reload_generation.is_none() && fragmentation.is_none() {
+        status = "not_reported";
+    }
+    let planned_refresh = status != "ok" && status != "not_reported";
+    json!({
+        "schemaVersion": "synthi.gpu.memory_refresh_policy.v1",
+        "status": status,
+        "reloadGeneration": reload_generation,
+        "vramFragmentationRatio": fragmentation,
+        "largestFreeBlockBytes": largest_free_block,
+        "pendingAllocationBytes": pending_allocation,
+        "recentAllocationFailureReason": failure_reason,
+        "pointerSafetyProvable": pointer_safety_provable,
+        "boundedDefragmentationAllowed": status == "refresh_required" && pointer_safety_provable,
+        "plannedMemoryRefresh": {
+            "needed": planned_refresh,
+            "status": status,
+            "reasonCodes": reason_codes,
+        },
+        "reasonCodes": reason_codes,
+    })
+}
+
+fn numeric_u64(root: &Map<String, Value>, stats: &Value, keys: &[&str]) -> Option<u64> {
+    for key in keys {
+        if let Some(value) = root.get(*key).or_else(|| stats.get(*key)) {
+            if let Some(number) = value.as_u64() {
+                return Some(number);
+            }
+        }
+    }
+    None
+}
+
+fn numeric_f64(root: &Map<String, Value>, stats: &Value, keys: &[&str]) -> Option<f64> {
+    for key in keys {
+        if let Some(value) = root.get(*key).or_else(|| stats.get(*key)) {
+            if let Some(number) = value.as_f64() {
+                return Some(number);
+            }
+        }
+    }
+    None
+}
+
+fn string_field(root: &Map<String, Value>, stats: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = root.get(*key).or_else(|| stats.get(*key)) {
+            if let Some(text) = value.as_str() {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn push_reason_code(reason_codes: &mut Vec<Value>, reason: &str) {
+    if !reason_codes
+        .iter()
+        .any(|code| code.as_str() == Some(reason))
+    {
+        reason_codes.push(Value::String(reason.to_string()));
+    }
+}
+
 fn default_generated_artifact_report() -> Value {
     json!({
         "schemaVersion": "synthi.gpu.generated_artifact_purity.v1",
@@ -1117,13 +1383,38 @@ fn fast_path_policy(toolchain_profile: &Value, root: &Map<String, Value>) -> Val
     if !launch_ok {
         blocked.push(launch_indirection_block_reason(root));
     }
+    let gpu_tainted = root
+        .get("gpuFaultPolicy")
+        .and_then(|v| v.get("tainted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if gpu_tainted {
+        blocked.push("gpu_device_tainted");
+    }
+    let memory_refresh_required = root
+        .get("memoryRefreshPolicy")
+        .and_then(|v| v.get("status"))
+        .and_then(Value::as_str)
+        == Some("refresh_required");
+    if memory_refresh_required {
+        blocked.push("vram_session_refresh_required");
+    }
     if template_status != "fresh" {
         blocked.push("template_evidence_missing");
     }
 
     json!({
-        "deviceOnlyAllowed": profile_current && supports_device_only && !multi_device_tu && launch_ok,
-        "warmRebuildAllowed": profile_current && template_status == "fresh" && launch_ok,
+        "deviceOnlyAllowed": profile_current
+            && supports_device_only
+            && !multi_device_tu
+            && launch_ok
+            && !gpu_tainted
+            && !memory_refresh_required,
+        "warmRebuildAllowed": profile_current
+            && template_status == "fresh"
+            && launch_ok
+            && !gpu_tainted
+            && !memory_refresh_required,
         "blockedReasonCodes": blocked,
     })
 }
@@ -1251,6 +1542,10 @@ fn ranked_reload_options(
         .and_then(|profile| profile.get("overBudget"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let supports_incremental_device_link = toolchain_profile
+        .get("supportsIncrementalDeviceLink")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let estimated_rdc_ms = rdc_device_link
         .and_then(|profile| profile.get("estimatedMs"))
         .and_then(Value::as_u64)
@@ -1293,9 +1588,41 @@ fn ranked_reload_options(
         .unwrap_or(false);
     let launch_ok = launch_indirection_ok(root);
     let launch_block_reason = launch_indirection_block_reason(root);
+    let gpu_tainted = root
+        .get("gpuFaultPolicy")
+        .and_then(|v| v.get("tainted"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let memory_refresh_required = root
+        .get("memoryRefreshPolicy")
+        .and_then(|v| v.get("status"))
+        .and_then(Value::as_str)
+        == Some("refresh_required");
+    let memory_refresh_reasons: Vec<String> = root
+        .get("memoryRefreshPolicy")
+        .and_then(|v| v.get("reasonCodes"))
+        .and_then(Value::as_array)
+        .map(|codes| {
+            codes
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .filter(|codes: &Vec<String>| !codes.is_empty())
+        .unwrap_or_else(|| vec!["vram_session_refresh_required".to_string()]);
 
-    let device_only_safety = profile_current && supports_device_only && !multi_device_tu && launch_ok;
-    let warm_safety = profile_current && template_fresh && launch_ok;
+    let device_only_safety = profile_current
+        && supports_device_only
+        && !multi_device_tu
+        && launch_ok
+        && !gpu_tainted
+        && !memory_refresh_required;
+    let warm_safety = profile_current
+        && template_fresh
+        && launch_ok
+        && !gpu_tainted
+        && !memory_refresh_required;
     let device_only_requires_consent = device_only_safety && unsafe_debug_mode;
     let warm_requires_consent =
         warm_safety && (requires_rdc || rdc_over_budget || unsafe_debug_mode);
@@ -1323,6 +1650,19 @@ fn ranked_reload_options(
         if !launch_ok {
             device_only_reasons.push(launch_block_reason.to_string());
         }
+        if gpu_tainted {
+            device_only_reasons.push("gpu_device_tainted".to_string());
+        }
+        if memory_refresh_required {
+            for reason in &memory_refresh_reasons {
+                if !device_only_reasons.contains(reason) {
+                    device_only_reasons.push(reason.clone());
+                }
+            }
+            if !device_only_reasons.contains(&"vram_session_refresh_required".to_string()) {
+                device_only_reasons.push("vram_session_refresh_required".to_string());
+            }
+        }
     }
 
     let mut warm_reasons: Vec<String> = Vec::new();
@@ -1337,6 +1677,9 @@ fn ranked_reload_options(
             }
             if rdc_linker_bound {
                 warm_reasons.push("device_linker_bound".to_string());
+            }
+            if requires_rdc && !supports_incremental_device_link {
+                warm_reasons.push("incremental_device_link_unsupported".to_string());
             }
             if rdc_over_budget {
                 warm_reasons.push("rdc_link_over_budget".to_string());
@@ -1359,6 +1702,19 @@ fn ranked_reload_options(
         }
         if !launch_ok {
             warm_reasons.push(launch_block_reason.to_string());
+        }
+        if gpu_tainted {
+            warm_reasons.push("gpu_device_tainted".to_string());
+        }
+        if memory_refresh_required {
+            for reason in &memory_refresh_reasons {
+                if !warm_reasons.contains(reason) {
+                    warm_reasons.push(reason.clone());
+                }
+            }
+            if !warm_reasons.contains(&"vram_session_refresh_required".to_string()) {
+                warm_reasons.push("vram_session_refresh_required".to_string());
+            }
         }
     }
 
@@ -1389,6 +1745,23 @@ fn ranked_reload_options(
         Value::String("multi_role_ai_delta_requires_consent".to_string())
     } else {
         Value::Null
+    };
+    let mut cold_restart_reasons = vec![
+        "state_loss_requires_consent".to_string(),
+        "arbiter_user_consent_required".to_string(),
+    ];
+    if gpu_tainted {
+        cold_restart_reasons.push("gpu_device_tainted".to_string());
+    }
+    if memory_refresh_required {
+        cold_restart_reasons.push("vram_session_refresh_required".to_string());
+    }
+    let cold_restart_consent_reason = if gpu_tainted {
+        "gpu_device_tainted"
+    } else if memory_refresh_required {
+        "vram_session_refresh_required"
+    } else {
+        "state_loss_requires_consent"
     };
 
     json!([
@@ -1434,8 +1807,8 @@ fn ranked_reload_options(
             "estimatedMs": 5000,
             "stateLoss": true,
             "requiresConsent": true,
-            "consentReason": "state_loss_requires_consent",
-            "reasonCodes": ["state_loss_requires_consent", "arbiter_user_consent_required"],
+            "consentReason": cold_restart_consent_reason,
+            "reasonCodes": cold_restart_reasons,
         }
     ])
 }
@@ -1684,6 +2057,14 @@ fn failure_card_template(reason_codes: &[String]) -> Option<FailureCardTemplate>
             next_action: "Use a normal incremental build, AI delta, or request consent for the slower path.",
         });
     }
+    if has_reason(reason_codes, "incremental_device_link_unsupported") {
+        return Some(FailureCardTemplate {
+            category: "incremental_device_link_unsupported",
+            problem: "Warm rebuild requires consent.",
+            reason: "The selected toolchain does not report supported incremental device linking for this RDC path.",
+            next_action: "Ask the developer before running the full device-link path, or use a normal incremental build/cold restart.",
+        });
+    }
     if has_reason(reason_codes, "device_linker_bound")
         || has_reason(reason_codes, "rdc_link_over_budget")
     {
@@ -1708,6 +2089,16 @@ fn failure_card_template(reason_codes: &[String]) -> Option<FailureCardTemplate>
             problem: "Reload requires developer consent.",
             reason: "The fallback may lose runner state.",
             next_action: "Ask the developer before cold restart or state-losing reload.",
+        });
+    }
+    if has_reason(reason_codes, "vram_fragmented")
+        || has_reason(reason_codes, "vram_session_refresh_required")
+    {
+        return Some(FailureCardTemplate {
+            category: "vram_session_refresh_required",
+            problem: "GPU reload paused.",
+            reason: "The runtime memory arena reports fragmentation or allocation pressure that requires a planned session refresh.",
+            next_action: "Refresh or cold restart the runner before attempting a reload that needs the affected VRAM allocation.",
         });
     }
     if has_reason(reason_codes, "gpu_device_tainted")
@@ -1853,9 +2244,50 @@ fn run_report(
                 Value::String("not_measured".to_string())
             }
         });
+    let memory_arena_stats = root
+        .get("memoryArenaStats")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let memory_refresh_policy = root
+        .get("memoryRefreshPolicy")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let reload_generation = root
+        .get("reloadGeneration")
+        .cloned()
+        .or_else(|| memory_refresh_policy.get("reloadGeneration").cloned())
+        .unwrap_or(Value::Null);
+    let vram_fragmentation_ratio = root
+        .get("vramFragmentationRatio")
+        .cloned()
+        .or_else(|| {
+            memory_refresh_policy
+                .get("vramFragmentationRatio")
+                .cloned()
+        })
+        .unwrap_or(Value::Null);
+    let largest_free_block_bytes = root
+        .get("largestFreeBlockBytes")
+        .cloned()
+        .or_else(|| {
+            memory_refresh_policy
+                .get("largestFreeBlockBytes")
+                .cloned()
+        })
+        .unwrap_or(Value::Null);
+    let gpu_fault_policy = root.get("gpuFaultPolicy").cloned().unwrap_or(Value::Null);
+    let isolation_backend = root
+        .get("isolationBackend")
+        .cloned()
+        .or_else(|| {
+            root.get("isolationReport")
+                .and_then(|report| report.get("isolationBackend").or_else(|| report.get("backend")))
+                .cloned()
+        })
+        .unwrap_or(Value::Null);
     let failure_card = run_failure_card(root, reload_plan);
 
-    json!({
+    let mut report = json!({
         "schemaVersion": RUN_REPORT_SCHEMA_VERSION,
         "runId": root
             .get("runId")
@@ -2035,22 +2467,10 @@ fn run_report(
             .get("screenshotTimings")
             .cloned()
             .unwrap_or(Value::Null),
-        "memoryArenaStats": root
-            .get("memoryArenaStats")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "reloadGeneration": root
-            .get("reloadGeneration")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "vramFragmentationRatio": root
-            .get("vramFragmentationRatio")
-            .cloned()
-            .unwrap_or(Value::Null),
-        "largestFreeBlockBytes": root
-            .get("largestFreeBlockBytes")
-            .cloned()
-            .unwrap_or(Value::Null),
+        "memoryArenaStats": memory_arena_stats,
+        "reloadGeneration": reload_generation,
+        "vramFragmentationRatio": vram_fragmentation_ratio,
+        "largestFreeBlockBytes": largest_free_block_bytes,
         "plannedMemoryRefresh": root
             .get("plannedMemoryRefresh")
             .cloned()
@@ -2059,15 +2479,7 @@ fn run_report(
             .get("gpuDriverFaultMarkers")
             .cloned()
             .unwrap_or_else(|| Value::Array(Vec::new())),
-        "isolationBackend": root
-            .get("isolationBackend")
-            .cloned()
-            .or_else(|| {
-                root.get("isolationReport")
-                    .and_then(|report| report.get("backend"))
-                    .cloned()
-            })
-            .unwrap_or(Value::Null),
+        "isolationBackend": isolation_backend,
         "runnerPid": root.get("runnerPid").cloned().unwrap_or(Value::Null),
         "runnerExitStatus": root
             .get("runnerExitStatus")
@@ -2092,7 +2504,12 @@ fn run_report(
             })
             .unwrap_or(Value::Null),
         "agenticVerifierFailures": agentic_verifier_failures(root),
-    })
+    });
+    if let Some(report) = report.as_object_mut() {
+        report.insert("memoryRefreshPolicy".to_string(), memory_refresh_policy);
+        report.insert("gpuFaultPolicy".to_string(), gpu_fault_policy);
+    }
+    report
 }
 
 fn promote_verifier_reports_into_run_report(
@@ -2670,6 +3087,51 @@ mod tests {
     }
 
     #[test]
+    fn rdc_warm_rebuild_reports_unsupported_incremental_device_link() {
+        let mut manifest = gpu_compile_manifest();
+        manifest["gpu"]["device_flags"] = json!(["-O3", "-fgpu-rdc"]);
+        manifest["gpu"]["device_link"] = json!({
+            "requires_rdc": true,
+            "affected_roles": ["device.device"],
+            "supports_incremental": false,
+            "estimated_ms": 3000,
+            "budget_ms": 5000
+        });
+        let flags_hash = effective_flags_hash_for(&manifest);
+        let plan = reload_plan("warm_rebuild", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "templateEvidence": template_evidence(&flags_hash, true, "clang-libtooling+vendor-artifacts"),
+            "launch_indirection_report": launch_indirection_report(),
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let warm_rebuild = ranked_option(&migrated, "warm_rebuild");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("ask_developer")
+        );
+        assert!(has_reason(
+            warm_rebuild,
+            "incremental_device_link_unsupported"
+        ));
+        assert_eq!(
+            migrated
+                .pointer("/toolchainCapabilities/supportsIncrementalDeviceLink")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/failureCard/category")
+                .and_then(Value::as_str),
+            Some("incremental_device_link_unsupported")
+        );
+    }
+
+    #[test]
     fn arbiter_auto_runs_current_device_only_plan() {
         let manifest = gpu_compile_manifest();
         let plan = reload_plan("device_only", vec!["device"]);
@@ -2748,6 +3210,132 @@ mod tests {
                 .pointer("/runReport/isolationReport/isolationBackend")
                 .and_then(Value::as_str),
             Some("unsafe_inprocess")
+        );
+    }
+
+    #[test]
+    fn gpu_driver_fault_taint_blocks_fast_paths_and_screenshot_proof() {
+        let manifest = gpu_compile_manifest();
+        let plan = reload_plan("device_only", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "launch_indirection_report": launch_indirection_report(),
+            "gpuDriverFaultMarkers": [
+                {
+                    "kind": "tdr_timeout",
+                    "reasonCode": "gpu_driver_tdr"
+                }
+            ]
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let device_only = ranked_option(&migrated, "device_only");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("fallback")
+        );
+        assert_eq!(
+            device_only.get("safety").and_then(Value::as_str),
+            Some("fail")
+        );
+        assert!(has_reason(device_only, "gpu_device_tainted"));
+        assert_eq!(
+            migrated
+                .pointer("/runReport/gpuFaultPolicy/screenshotsAcceptedAsProof")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/failureCard/category")
+                .and_then(Value::as_str),
+            Some("gpu_device_tainted")
+        );
+    }
+
+    #[test]
+    fn vram_refresh_warning_is_reported_without_blocking_device_only() {
+        let manifest = gpu_compile_manifest();
+        let plan = reload_plan("device_only", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "launch_indirection_report": launch_indirection_report(),
+            "memoryArenaStats": {
+                "schemaVersion": "synthi.gpu.memory_arena_stats.v1",
+                "reloadGeneration": 60,
+                "fragmentationRatio": 0.36,
+                "largestFreeBlockBytes": 4096,
+                "pendingAllocationBytes": 1024,
+                "pointerSafetyProvable": false
+            }
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let device_only = ranked_option(&migrated, "device_only");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("auto_run")
+        );
+        assert_eq!(
+            device_only.get("safety").and_then(Value::as_str),
+            Some("pass")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/plannedMemoryRefresh/status")
+                .and_then(Value::as_str),
+            Some("warn")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/vramFragmentationRatio")
+                .and_then(Value::as_f64),
+            Some(0.36)
+        );
+    }
+
+    #[test]
+    fn fragmented_vram_blocks_reload_before_known_large_allocation_failure() {
+        let manifest = gpu_compile_manifest();
+        let plan = reload_plan("device_only", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "launch_indirection_report": launch_indirection_report(),
+            "memoryArenaStats": {
+                "schemaVersion": "synthi.gpu.memory_arena_stats.v1",
+                "reloadGeneration": 120,
+                "fragmentationRatio": 0.62,
+                "largestFreeBlockBytes": 64,
+                "pendingAllocationBytes": 128,
+                "pointerSafetyProvable": false
+            }
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let device_only = ranked_option(&migrated, "device_only");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("fallback")
+        );
+        assert!(has_reason(device_only, "vram_fragmented"));
+        assert!(has_reason(device_only, "vram_session_refresh_required"));
+        assert_eq!(
+            migrated
+                .pointer("/runReport/memoryRefreshPolicy/status")
+                .and_then(Value::as_str),
+            Some("refresh_required")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/failureCard/category")
+                .and_then(Value::as_str),
+            Some("vram_session_refresh_required")
         );
     }
 
