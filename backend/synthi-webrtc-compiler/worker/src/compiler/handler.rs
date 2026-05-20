@@ -252,7 +252,8 @@ use crate::hmr::deterministic_compile::{
     DeterministicRebuildScope,
 };
 use crate::hmr::gpu_device_fast_path::{
-    device_source_hash, mapped_generated_device_path, try_direct_device_body_patch,
+    device_only_capability_rejection_reason, device_source_hash, mapped_generated_device_path,
+    try_direct_device_body_patch,
 };
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
@@ -593,6 +594,49 @@ fn gpu_ai_delta_rejection_reports(
         }
     });
     (plan_report, verifier_report, reason_codes)
+}
+
+fn gpu_ai_delta_policy_rejection_reports(
+    requested_plan: &str,
+    user_path: &str,
+    generated_path: &str,
+    policy_reasons: Vec<String>,
+    touched_roles: Vec<String>,
+) -> (serde_json::Value, serde_json::Value, Vec<String>) {
+    let mut reason_codes = vec!["verifier.ai_delta_rejected".to_string()];
+    for reason in policy_reasons {
+        if !reason_codes.iter().any(|existing| existing == &reason) {
+            reason_codes.push(reason);
+        }
+    }
+
+    let plan_report = ai_delta_reload_plan_report(
+        "unsupported",
+        user_path,
+        Some(generated_path),
+        reason_codes.clone(),
+    );
+    let verifier_report = serde_json::json!({
+        "schemaVersion": "synthi.gpu.ai_delta_verifier.v1",
+        "status": "reject",
+        "requestedReloadPlan": requested_plan,
+        "selectedFallback": "unsupported",
+        "reasonCodes": reason_codes,
+        "userFile": user_path,
+        "generatedRole": generated_path,
+        "evidence": {
+            "touchedGeneratedRoles": touched_roles
+        }
+    });
+    (plan_report, verifier_report, reason_codes)
+}
+
+fn gpu_ai_delta_touched_roles(edits: &[crate::hmr::edit_applier::Edit]) -> Vec<String> {
+    let mut roles = std::collections::BTreeSet::new();
+    for edit in edits {
+        roles.insert(edit.module.clone());
+    }
+    roles.into_iter().collect()
 }
 
 fn device_fast_path_rejection_blocks_fallback(reason_codes: &[String]) -> bool {
@@ -1281,6 +1325,59 @@ pub async fn handle_compile_request(
                                 anyhow::bail!(
                                     "GPU AI delta returned no edits for {}",
                                     request_device_name
+                                );
+                            }
+
+                            let touched_roles = gpu_ai_delta_touched_roles(&ai_delta.edits);
+                            let mut policy_reasons = Vec::new();
+                            if ai_delta.reload_plan == "device_only" {
+                                if let Some(reason) =
+                                    device_only_capability_rejection_reason(&sidecar_meta)
+                                {
+                                    policy_reasons.push(reason.to_string());
+                                }
+                            }
+                            if touched_roles.len() > 1 {
+                                policy_reasons
+                                    .push("multi_role_ai_delta_requires_consent".to_string());
+                                policy_reasons.push("arbiter_user_consent_required".to_string());
+                            }
+                            if !policy_reasons.is_empty() {
+                                let (plan_report, verifier_report, reason_codes) =
+                                    gpu_ai_delta_policy_rejection_reports(
+                                        &ai_delta.reload_plan,
+                                        &request_device_name,
+                                        &generated_device_path,
+                                        policy_reasons,
+                                        touched_roles,
+                                    );
+                                let mut meta =
+                                    sidecar_meta.as_object().cloned().unwrap_or_default();
+                                meta.insert("lastReloadPlanReport".to_string(), plan_report);
+                                meta.insert(
+                                    "lastGpuAiDeltaVerifierReport".to_string(),
+                                    verifier_report,
+                                );
+                                meta.insert(
+                                    "patchTier".to_string(),
+                                    serde_json::Value::String("ai_delta_rejected".to_string()),
+                                );
+                                invalidate_derived_gpu_reports(&mut meta);
+                                write_sidecar_logged(
+                                    &sidecar_path,
+                                    &serde_json::Value::Object(meta),
+                                )
+                                .await;
+                                eprintln!(
+                                    "[GPU AI Delta] rejected: user={} generated={} requested_plan={} reasons={}",
+                                    request_device_name,
+                                    generated_device_path,
+                                    ai_delta.reload_plan,
+                                    reason_codes.join(",")
+                                );
+                                anyhow::bail!(
+                                    "GPU AI delta verifier rejected unsafe policy: reason_codes={}",
+                                    reason_codes.join(",")
                                 );
                             }
 
@@ -3830,6 +3927,75 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
                 .pointer("/evidence/constantGlobalLayout/changed")
                 .and_then(serde_json::Value::as_bool),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn gpu_ai_delta_policy_rejection_report_records_consent_reason() {
+        let (plan, report, reasons) = gpu_ai_delta_policy_rejection_reports(
+            "device_only",
+            "src/gpu/particle_kernels.hip",
+            ".synthi/generated/gpu/device.hip",
+            vec![
+                "toolchain_capability_stale".to_string(),
+                "multi_role_ai_delta_requires_consent".to_string(),
+                "arbiter_user_consent_required".to_string(),
+            ],
+            vec!["device".to_string(), "shared".to_string()],
+        );
+
+        assert_eq!(
+            plan.get("plan").and_then(serde_json::Value::as_str),
+            Some("unsupported")
+        );
+        assert!(reasons
+            .iter()
+            .any(|code| code == "verifier.ai_delta_rejected"));
+        assert!(reasons
+            .iter()
+            .any(|code| code == "toolchain_capability_stale"));
+        assert!(reasons
+            .iter()
+            .any(|code| code == "multi_role_ai_delta_requires_consent"));
+        assert!(reasons
+            .iter()
+            .any(|code| code == "arbiter_user_consent_required"));
+        assert_eq!(
+            report
+                .pointer("/evidence/touchedGeneratedRoles/0")
+                .and_then(serde_json::Value::as_str),
+            Some("device")
+        );
+    }
+
+    #[test]
+    fn gpu_ai_delta_touched_roles_are_stable_and_unique() {
+        use crate::hmr::edit_applier::{Edit, EditOperation};
+
+        let edits = vec![
+            Edit {
+                module: "device".to_string(),
+                operation: EditOperation::Replace,
+                anchor: "a".to_string(),
+                content: "b".to_string(),
+            },
+            Edit {
+                module: "shared".to_string(),
+                operation: EditOperation::Replace,
+                anchor: "x".to_string(),
+                content: "y".to_string(),
+            },
+            Edit {
+                module: "device".to_string(),
+                operation: EditOperation::Replace,
+                anchor: "c".to_string(),
+                content: "d".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            gpu_ai_delta_touched_roles(&edits),
+            vec!["device".to_string(), "shared".to_string()]
         );
     }
 

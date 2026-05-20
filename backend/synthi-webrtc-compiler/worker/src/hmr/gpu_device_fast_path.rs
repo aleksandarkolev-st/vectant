@@ -196,7 +196,7 @@ pub fn device_source_hash(source: &str) -> String {
     sha256_hex(source)
 }
 
-fn device_only_capability_rejection_reason(sidecar: &Value) -> Option<&'static str> {
+pub fn device_only_capability_rejection_reason(sidecar: &Value) -> Option<&'static str> {
     let profile_status = sidecar
         .pointer("/toolchainCapabilities/status")
         .and_then(Value::as_str);
@@ -576,7 +576,10 @@ mod tests {
     #[test]
     fn missing_capability_blocks_fast_path() {
         let mut missing = sidecar();
-        missing.as_object_mut().unwrap().remove("toolchainCapabilities");
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("toolchainCapabilities");
 
         let result = try_direct_device_body_patch(
             &missing,
