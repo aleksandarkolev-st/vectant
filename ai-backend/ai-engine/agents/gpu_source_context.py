@@ -117,6 +117,196 @@ def _parse_compile_commands(source_files: Mapping[str, str]) -> Tuple[str, List[
     return ("missing", [], None)
 
 
+def _parse_json_file(path: str, content: str) -> tuple[Optional[Any], Optional[str]]:
+    try:
+        return json.loads(content), None
+    except json.JSONDecodeError as exc:
+        return None, f"{path}: {exc}"
+
+
+def _cmake_reply_files(source_files: Mapping[str, str]) -> Dict[str, str]:
+    return {
+        normalize_path(path): content
+        for path, content in source_files.items()
+        if normalize_path(path).startswith(".cmake/api/v1/reply/")
+        and normalize_path(path).lower().endswith(".json")
+    }
+
+
+def _path_matches(candidate: str, target: str) -> bool:
+    candidate = normalize_path(candidate)
+    target = normalize_path(target)
+    return candidate == target or candidate.endswith("/" + target) or target.endswith("/" + candidate)
+
+
+def _cmake_reply_json_path(reply_path: str, json_file: str) -> str:
+    json_file = normalize_path(json_file)
+    if json_file.startswith(".cmake/api/v1/reply/"):
+        return json_file
+    parent = normalize_path(reply_path).rsplit("/", 1)[0]
+    return normalize_path(f"{parent}/{json_file}")
+
+
+def _cmake_file_api_report(source_files: Mapping[str, str], focus: Optional[str]) -> dict:
+    reply_files = _cmake_reply_files(source_files)
+    if not reply_files:
+        if any(normalize_path(path).rsplit("/", 1)[-1] == "CMakeLists.txt" for path in source_files):
+            return {
+                "status": "cmake_project_file_api_missing",
+                "codemodelHash": None,
+                "targetResolution": {
+                    "status": "missing",
+                    "method": "cmake_file_api_missing",
+                    "reasonCodes": ["cmake_file_api_missing"],
+                },
+                "targets": [],
+            }
+        return {
+            "status": "not_cmake_project",
+            "codemodelHash": None,
+            "targetResolution": {
+                "status": "not_applicable",
+                "method": "not_cmake_project",
+                "reasonCodes": [],
+            },
+            "targets": [],
+        }
+
+    codemodel_items: list[tuple[str, dict]] = []
+    parse_errors: list[str] = []
+    for path, content in sorted(reply_files.items()):
+        parsed, error = _parse_json_file(path, content)
+        if error:
+            parse_errors.append(error)
+            continue
+        if isinstance(parsed, dict) and (
+            parsed.get("kind") == "codemodel"
+            or path.rsplit("/", 1)[-1].startswith("codemodel")
+        ):
+            codemodel_items.append((path, parsed))
+
+    if parse_errors and not codemodel_items:
+        return {
+            "status": "parse_failed",
+            "codemodelHash": stable_hash(reply_files),
+            "targetResolution": {
+                "status": "parse_failed",
+                "method": "cmake_file_api_parse_failed",
+                "reasonCodes": ["cmake_file_api_parse_failed"],
+            },
+            "targets": [],
+            "errors": parse_errors,
+        }
+    if not codemodel_items:
+        return {
+            "status": "codemodel_missing",
+            "codemodelHash": stable_hash(reply_files),
+            "targetResolution": {
+                "status": "missing",
+                "method": "cmake_codemodel_missing",
+                "reasonCodes": ["cmake_codemodel_missing"],
+            },
+            "targets": [],
+        }
+
+    targets: list[dict] = []
+    for codemodel_path, codemodel in codemodel_items:
+        configurations = codemodel.get("configurations")
+        if not isinstance(configurations, list):
+            continue
+        for configuration in configurations:
+            if not isinstance(configuration, dict):
+                continue
+            config_name = str(configuration.get("name") or "")
+            for target_ref in configuration.get("targets") or []:
+                if not isinstance(target_ref, dict):
+                    continue
+                target_name = str(target_ref.get("name") or "")
+                target_id = str(target_ref.get("id") or "")
+                target_json_file = str(target_ref.get("jsonFile") or "")
+                target_path = _cmake_reply_json_path(codemodel_path, target_json_file) if target_json_file else ""
+                target_obj: dict[str, Any] = {}
+                if target_path in reply_files:
+                    parsed_target, error = _parse_json_file(target_path, reply_files[target_path])
+                    if error:
+                        parse_errors.append(error)
+                    elif isinstance(parsed_target, dict):
+                        target_obj = parsed_target
+                sources = []
+                for source in target_obj.get("sources") or []:
+                    if isinstance(source, dict):
+                        source_path = source.get("path") or source.get("compileGroupIndex")
+                        if isinstance(source_path, str):
+                            sources.append(normalize_path(source_path))
+                    elif isinstance(source, str):
+                        sources.append(normalize_path(source))
+                target_type = str(target_obj.get("type") or target_ref.get("type") or "")
+                targets.append(
+                    {
+                        "name": target_obj.get("name") or target_name,
+                        "id": target_obj.get("id") or target_id,
+                        "configuration": config_name,
+                        "type": target_type,
+                        "jsonFile": target_json_file or None,
+                        "sourceFiles": sorted(set(sources)),
+                    }
+                )
+
+    focus_path = normalize_path(focus or "")
+    matching_targets = [
+        target
+        for target in targets
+        if focus_path
+        and any(_path_matches(source, focus_path) for source in target.get("sourceFiles", []))
+    ]
+    executable_matches = [
+        target for target in matching_targets if str(target.get("type") or "").upper() == "EXECUTABLE"
+    ]
+    selected: Optional[dict] = None
+    method = "no_matching_target"
+    status = "unmatched"
+    reason_codes: list[str] = []
+    if len(executable_matches) == 1:
+        selected = executable_matches[0]
+        method = "single_executable_target_containing_focus"
+        status = "selected"
+    elif len(executable_matches) > 1:
+        method = "ambiguous_executable_targets_containing_focus"
+        status = "ambiguous"
+        reason_codes.append("target_resolution_ambiguous")
+    elif len(matching_targets) == 1:
+        selected = matching_targets[0]
+        method = "single_target_containing_focus"
+        status = "selected"
+    elif len(matching_targets) > 1:
+        method = "ambiguous_targets_containing_focus"
+        status = "ambiguous"
+        reason_codes.append("target_resolution_ambiguous")
+    elif targets:
+        reason_codes.append("target_resolution_unmatched")
+    else:
+        status = "missing"
+        method = "cmake_targets_missing"
+        reason_codes.append("cmake_targets_missing")
+
+    return {
+        "status": "available",
+        "codemodelHash": stable_hash(
+            {path: content_hash(content) for path, content in sorted(reply_files.items())}
+        ),
+        "targetCount": len(targets),
+        "targets": targets,
+        "errors": parse_errors,
+        "targetResolution": {
+            "status": status,
+            "method": method,
+            "selectedTarget": selected,
+            "matchingTargets": matching_targets,
+            "reasonCodes": reason_codes,
+        },
+    }
+
+
 def _command_arguments(entry: Mapping[str, Any]) -> List[str]:
     arguments = entry.get("arguments")
     if isinstance(arguments, list):
@@ -135,11 +325,13 @@ def _selected_compile_command(
     focus: Optional[str],
 ) -> dict:
     status, entries, error = _parse_compile_commands(source_files)
+    compile_db_hash = stable_hash(entries) if entries else None
     if status != "available":
         return {
             "status": status,
             "source": "compile_commands.json",
             "error": error,
+            "compileDatabaseHash": compile_db_hash,
         }
 
     focus_path = normalize_path(focus or "")
@@ -171,6 +363,7 @@ def _selected_compile_command(
             "source": "compile_commands.json",
             "entryCount": len(entries),
             "candidateSourceFiles": [path for path, _priority in ranked_sources[:16]],
+            "compileDatabaseHash": compile_db_hash,
         }
 
     args = _command_arguments(selected)
@@ -184,18 +377,11 @@ def _selected_compile_command(
         "compiler": args[0].rsplit("/", 1)[-1] if args else None,
         "argumentsHash": stable_hash(args),
         "effectiveFlagsHash": stable_hash(args[1:] if len(args) > 1 else []),
+        "compileDatabaseHash": compile_db_hash,
         "entryCount": len(entries),
         "duplicateCommandCount": duplicate_count,
         "usesArgumentsField": isinstance(selected.get("arguments"), list),
     }
-
-
-def _cmake_file_api_status(source_files: Mapping[str, str]) -> str:
-    if any(normalize_path(path).startswith(".cmake/api/v1/reply/") for path in source_files):
-        return "available"
-    if any(normalize_path(path).rsplit("/", 1)[-1] == "CMakeLists.txt" for path in source_files):
-        return "cmake_project_file_api_missing"
-    return "not_cmake_project"
 
 
 def build_source_context_report(
@@ -271,6 +457,7 @@ def build_source_context_report(
     ]
     multi_device_tu = len(device_translation_units) > 1
     selected_command = _selected_compile_command(normalized_files, focus)
+    cmake_file_api = _cmake_file_api_report(normalized_files, focus)
     report = {
         "schemaVersion": SOURCE_CONTEXT_SCHEMA_VERSION,
         "focus": normalize_path(focus or ""),
@@ -304,8 +491,12 @@ def build_source_context_report(
         },
         "buildMetadata": {
             "compileCommandsStatus": selected_command.get("status"),
-            "cmakeFileApiStatus": _cmake_file_api_status(normalized_files),
+            "compileDbHash": selected_command.get("compileDatabaseHash"),
+            "cmakeFileApiStatus": cmake_file_api.get("status"),
             "selectedCompileCommand": selected_command,
+            "cmakeFileApi": cmake_file_api,
+            "cmakeCodemodelHash": cmake_file_api.get("codemodelHash"),
+            "targetResolution": cmake_file_api.get("targetResolution"),
         },
     }
     report["sourceContextHash"] = stable_hash(
@@ -360,6 +551,23 @@ def format_source_context_prompt(report: Mapping[str, Any], source_files: Mappin
         lines.append(
             "Selected compile command: unavailable; preserve source semantics and rely on the manifest contract."
         )
+    target_resolution = (
+        report.get("buildMetadata", {})
+        if isinstance(report.get("buildMetadata"), dict)
+        else {}
+    ).get("targetResolution", {})
+    if isinstance(target_resolution, dict):
+        selected_target = target_resolution.get("selectedTarget")
+        if isinstance(selected_target, dict) and target_resolution.get("status") == "selected":
+            lines.append(
+                "Resolved CMake target: "
+                f"{selected_target.get('name')} "
+                f"({target_resolution.get('method')}, configuration={selected_target.get('configuration')})."
+            )
+        elif target_resolution.get("status") == "ambiguous":
+            lines.append(
+                "CMake target resolution is ambiguous; do not guess target-specific flags or sources."
+            )
 
     for item in included:
         if not isinstance(item, dict):

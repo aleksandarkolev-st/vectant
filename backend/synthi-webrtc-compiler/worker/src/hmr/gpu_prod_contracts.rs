@@ -90,6 +90,7 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
         "sourceContextReport".to_string(),
         source_context_report.clone(),
     );
+    promote_build_metadata(&mut root, &source_context_report);
     let device_tu_topology = root
         .get("deviceTuTopology")
         .cloned()
@@ -429,6 +430,86 @@ fn promote_device_mapping_report(root: &mut Map<String, Value>, report: &Value) 
         "constantGlobalLayoutHashes",
         report.get("constantGlobalLayoutHashes"),
     );
+}
+
+fn promote_build_metadata(root: &mut Map<String, Value>, source_context_report: &Value) {
+    let build_metadata = source_context_report.get("buildMetadata");
+    insert_if_missing_or_null(
+        root,
+        "compileDbHash",
+        build_metadata
+            .and_then(|m| m.get("compileDbHash"))
+            .cloned()
+            .or_else(|| {
+                build_metadata
+                    .and_then(|m| m.get("selectedCompileCommand"))
+                    .and_then(|cmd| cmd.get("compileDatabaseHash"))
+                    .cloned()
+            }),
+    );
+    insert_if_missing_or_null(
+        root,
+        "cmakeCodemodelHash",
+        build_metadata
+            .and_then(|m| m.get("cmakeCodemodelHash"))
+            .cloned()
+            .or_else(|| {
+                build_metadata
+                    .and_then(|m| m.get("cmakeFileApi"))
+                    .and_then(|api| api.get("codemodelHash"))
+                    .cloned()
+            }),
+    );
+    let target_resolution = build_metadata.and_then(|m| m.get("targetResolution"));
+    insert_if_missing_or_null(
+        root,
+        "targetResolutionMethod",
+        target_resolution
+            .and_then(|target| target.get("method"))
+            .cloned(),
+    );
+
+    let Some(selected_target) = target_resolution
+        .and_then(|target| target.get("selectedTarget"))
+        .and_then(Value::as_object)
+    else {
+        return;
+    };
+    let target_entry = root
+        .entry("targetIdentity".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !target_entry.is_object() {
+        *target_entry = Value::Object(Map::new());
+    }
+    if let Some(target) = target_entry.as_object_mut() {
+        insert_if_missing_or_null(
+            target,
+            "buildSystem",
+            Some(Value::String("cmake".to_string())),
+        );
+        insert_if_missing_or_null(target, "targetName", selected_target.get("name").cloned());
+        insert_if_missing_or_null(
+            target,
+            "configuration",
+            selected_target.get("configuration").cloned(),
+        );
+        insert_if_missing_or_null(target, "targetType", selected_target.get("type").cloned());
+        insert_if_missing_or_null(target, "sourceFiles", selected_target.get("sourceFiles").cloned());
+    }
+}
+
+fn insert_if_missing_or_null(root: &mut Map<String, Value>, key: &str, value: Option<Value>) {
+    let Some(value) = value.filter(|v| !v.is_null()) else {
+        return;
+    };
+    let replace = match root.get(key) {
+        None | Some(Value::Null) => true,
+        Some(Value::String(s)) => s.is_empty(),
+        _ => false,
+    };
+    if replace {
+        root.insert(key.to_string(), value);
+    }
 }
 
 fn replace_empty_field(root: &mut Map<String, Value>, key: &str, candidate: Option<&Value>) {
@@ -2586,13 +2667,26 @@ mod tests {
             "deterministicContextComplete": true,
             "buildMetadata": {
                 "compileCommandsStatus": "selected",
+                "compileDbHash": "compile-db-1",
                 "cmakeFileApiStatus": "cmake_project_file_api_missing",
+                "cmakeCodemodelHash": "codemodel-1",
                 "selectedCompileCommand": {
                     "status": "selected",
                     "source": "compile_commands.json",
                     "file": "src/app/main.cpp",
                     "compiler": "clang++",
                     "effectiveFlagsHash": "flags1"
+                },
+                "targetResolution": {
+                    "status": "selected",
+                    "method": "single_executable_target_containing_focus",
+                    "selectedTarget": {
+                        "name": "gpu_app",
+                        "configuration": "Debug",
+                        "type": "EXECUTABLE",
+                        "sourceFiles": ["src/app/main.cpp", "src/gpu/flow.hip"]
+                    },
+                    "reasonCodes": []
                 }
             }
         });
@@ -2620,6 +2714,38 @@ mod tests {
                 .pointer("/runReport/sourceContextReport/deterministicContextComplete")
                 .and_then(Value::as_bool),
             Some(true)
+        );
+        assert_eq!(
+            migrated.pointer("/compileDbHash").and_then(Value::as_str),
+            Some("compile-db-1")
+        );
+        assert_eq!(
+            migrated.pointer("/cmakeCodemodelHash").and_then(Value::as_str),
+            Some("codemodel-1")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/targetResolutionMethod")
+                .and_then(Value::as_str),
+            Some("single_executable_target_containing_focus")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/targetIdentity/targetName")
+                .and_then(Value::as_str),
+            Some("gpu_app")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/compileDbHash")
+                .and_then(Value::as_str),
+            Some("compile-db-1")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/cmakeCodemodelHash")
+                .and_then(Value::as_str),
+            Some("codemodel-1")
         );
     }
 
