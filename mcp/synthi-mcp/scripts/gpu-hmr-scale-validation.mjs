@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Large multi-file GPU HMR validation:
 //   ordinary user project -> MCP compile -> AI GPU split -> visible first frame
-//   -> generated device-only edit -> GPU sidecar HMR -> visible changed frame.
+//   -> user device-source AI delta -> GPU sidecar HMR -> visible changed frame.
 
 import { spawn, execFile } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -35,6 +35,7 @@ const CFG = {
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_SCALE_FIRST_TIMEOUT_MS ?? 240000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_SCALE_HMR_TIMEOUT_MS ?? 30000),
+  hmrDeltaMode: (process.env.SYNTHI_SCALE_HMR_DELTA_MODE ?? 'ai_user_delta').toLowerCase(),
   screenshotAttempts: Number(process.env.SYNTHI_SCALE_SCREENSHOT_ATTEMPTS ?? 6),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_FRESHNESS_MS ?? 5000),
@@ -981,6 +982,7 @@ constexpr int kValue = ${i};
     files,
     relevantFiles: files.filter((f) => f.relevant),
     primaryPath: 'src/app/main.cpp',
+    devicePath: `src/gpu/particle_kernels.${deviceExt}`,
   };
 }
 
@@ -1040,6 +1042,7 @@ function collectWorkerMarkers(text) {
     /\[AI Split\] ENTER[^\n]*/g,
     /GPU markers detected; calling GPU split endpoint[^\n]*/g,
     /GPU split endpoint returned a 5-file split/g,
+    /\[GPU AI Delta\][^\n]*/g,
     /\[compile-device\] (?:hipcc|nvcc)[^\n]*/g,
     /\[gpu-reload\] plan=[^\n]*/g,
     /Device sidecar reload vendor=[^\n]*result=Success[^\n]*/g,
@@ -1222,49 +1225,42 @@ async function assertNoGeneratedSplitWorkspaceArtifacts(split) {
   record('workspace visible tree remains user files only', 'pass', `${paths.length} listed files; no generated split artifacts`);
 }
 
-function editGeneratedDevice(source) {
+function editUserDeviceSource(source) {
   const replacements = [
-    [/__constant__\s+int\s+kHmrScaleColorBias\s*=\s*0\s*;/, '__constant__ int kHmrScaleColorBias = 3;'],
-    [/__constant__\s+float\s+kHmrScaleColorBias\s*=\s*0(?:\.0f?)?\s*;/, '__constant__ float kHmrScaleColorBias = 3.0f;'],
-    [/constexpr\s+int\s+kHmrScaleColorBias\s*=\s*0\s*;/, 'constexpr int kHmrScaleColorBias = 3;'],
-    [/const\s+int\s+kHmrScaleColorBias\s*=\s*0\s*;/, 'const int kHmrScaleColorBias = 3;'],
-    [/kHmrScaleColorBias\s*=\s*0/g, 'kHmrScaleColorBias = 3'],
-    [/__constant__\s+float\s+kHmrScaleDirection\s*=\s*1\.0f\s*;/, '__constant__ float kHmrScaleDirection = -1.0f;'],
-    [/constexpr\s+float\s+kHmrScaleDirection\s*=\s*1\.0f\s*;/, 'constexpr float kHmrScaleDirection = -1.0f;'],
-    [/const\s+float\s+kHmrScaleDirection\s*=\s*1\.0f\s*;/, 'const float kHmrScaleDirection = -1.0f;'],
-    [/float\s+direction\s*=\s*1\.0f\s*;/, 'float direction = -1.0f;'],
-    [/0xff28d7ffu/g, '0xffff5c8au'],
-    [/\brgba\s*\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*=\s*([^;]+);/, (_m, idx, expr) => `rgba[${idx}] = ((${expr}) ^ 0x00ffffffu);`],
     [/\bvx\s*\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*\+=\s*([^;]+);/, (_m, idx, expr) => `vx[${idx}] -= ${expr};`],
+    [/\bvy\s*\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*\+=\s*([^;]+);/, (_m, idx, expr) => `vy[${idx}] -= ${expr};`],
+    [/\brgba\s*\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*=\s*([^;]+);/, (_m, idx, expr) => `rgba[${idx}] = ((${expr}) ^ 0x00ffffffu);`],
   ];
   for (const [regex, replacement] of replacements) {
     const edited = source.replace(regex, replacement);
     if (edited !== source) return edited;
   }
-  throw new Error('generated device source did not preserve an editable scale validation token');
+  throw new Error('user device source did not preserve an editable scale validation token');
 }
 
-async function compileGeneratedDevice(split, editedDevice, checkpoint) {
-  split.files[split.roles.device] = editedDevice;
-  const additionalFiles = Object.entries(split.files)
-    .filter(([name]) => cleanRel(name) !== cleanRel(split.roles.device))
-    .map(([name, content]) => ({ name, content }));
+async function compileUserDeviceDelta(project, editedDevice, vendor, checkpoint) {
+  if (CFG.hmrDeltaMode !== 'ai_user_delta') {
+    throw new Error(`unsupported SYNTHI_SCALE_HMR_DELTA_MODE=${CFG.hmrDeltaMode}; expected ai_user_delta`);
+  }
+  const additionalFiles = project.files
+    .filter((f) => cleanRel(f.path) !== cleanRel(project.devicePath))
+    .map((f) => ({ name: f.path, content: f.content }));
   return compileViaMcp({
     language: 'cpp',
-    filename: split.roles.device,
+    filename: project.devicePath,
     source: editedDevice,
     files: additionalFiles,
     is_gui: true,
     use_ai_split: false,
     user_requested_deterministic: true,
+    force_gpu_ai_delta: true,
     prefer_gpu_pipeline: true,
-    gpu_mode: split.manifest.gpu.vendor,
+    gpu_mode: vendor,
     gpu_arch: CFG.gpuArch,
-    compile_manifest: split.manifest,
     slug: CFG.slug,
     width: 800,
     height: 600,
-  }, CFG.hotSwapTimeoutMs, 'device_only_hmr', checkpoint);
+  }, CFG.hotSwapTimeoutMs, 'ai_device_delta_hmr', checkpoint);
 }
 
 async function writeReport() {
@@ -1321,6 +1317,7 @@ async function run() {
     SYNTHI_GPU_VENDOR: process.env.SYNTHI_GPU_VENDOR ?? '',
     SYNTHI_GPU_ARCH: arch,
     SYNTHI_SCALE_RENDER_BACKEND: CFG.renderBackend,
+    SYNTHI_SCALE_HMR_DELTA_MODE: CFG.hmrDeltaMode,
     SYNTHI_SYNC_TO_GCS: process.env.SYNTHI_SYNC_TO_GCS ?? '',
   };
   report.containers = {
@@ -1347,6 +1344,8 @@ async function run() {
 
   const primary = project.files.find((f) => f.path === project.primaryPath);
   if (!primary) fail(`missing primary source ${project.primaryPath}`);
+  const deviceSource = project.files.find((f) => f.path === project.devicePath);
+  if (!deviceSource) fail(`missing device source ${project.devicePath}`);
   const additionalFiles = project.files
     .filter((f) => f.path !== project.primaryPath)
     .map((f) => ({ name: f.path, content: f.content }));
@@ -1395,11 +1394,31 @@ async function run() {
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
   recordGeneratedSplitKeptInternal(split);
 
-  const editedDevice = editGeneratedDevice(split.files[split.roles.device]);
+  const editedDevice = editUserDeviceSource(deviceSource.content);
+  await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: editedDevice }] });
+  await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: user device delta' });
   const secondCheckpoint = await workerCheckpoint();
-  await compileGeneratedDevice(split, editedDevice, secondCheckpoint);
-  record('device edit compile via MCP', 'pass', split.roles.device);
+  await compileUserDeviceDelta(project, editedDevice, vendor, secondCheckpoint);
+  record('user device-source AI delta compile via MCP', 'pass', project.devicePath);
   await assertNoGeneratedSplitWorkspaceArtifacts(split);
+
+  const aiDeltaWorker = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[GPU AI Delta\] Calling [^\n]*\/refactor\/diff_patch\/gpu[^\n]*|\[GPU AI Delta\] accepted: user=[^\n]*/,
+    5000,
+    secondCheckpoint,
+  );
+  record('worker forced GPU AI delta endpoint', aiDeltaWorker.matched ? 'pass' : 'fail', aiDeltaWorker.snippet || 'no GPU AI delta worker marker');
+  if (!aiDeltaWorker.matched) throw new Error('GPU AI delta worker evidence missing');
+
+  const aiDeltaBackend = await awaitLogRegex(
+    CFG.aiEngineContainer,
+    /\[GpuDiffPatch\][^\n]*/,
+    5000,
+    secondCheckpoint,
+  );
+  record('ai-engine processed GPU delta', aiDeltaBackend.matched ? 'pass' : 'fail', aiDeltaBackend.snippet || 'no GpuDiffPatch marker');
+  if (!aiDeltaBackend.matched) throw new Error('GPU AI delta backend evidence missing');
 
   const hotSwap = await awaitLogRegex(
     CFG.workerContainer,

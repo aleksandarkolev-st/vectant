@@ -191,6 +191,19 @@ const TOOLS = [
           type: "boolean",
           description: "Explicit opt-in to deterministic split (Loop A). Default false.",
         },
+        force_gpu_ai_delta: {
+          type: "boolean",
+          description:
+            "Force GPU source edits through the verifier-gated GPU AI delta path instead of the local direct-device fast path.",
+        },
+        use_gpu_ai_delta: {
+          type: "boolean",
+          description: "Alias for force_gpu_ai_delta.",
+        },
+        force_ai_delta: {
+          type: "boolean",
+          description: "Alias for force_gpu_ai_delta.",
+        },
         prefer_gpu_pipeline: {
           type: "boolean",
           description: "Forward the compile through the GPU HMR detector/pipeline when a GPU manifest or source is present. Defaults true in the worker.",
