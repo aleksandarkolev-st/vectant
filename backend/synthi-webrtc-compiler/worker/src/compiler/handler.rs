@@ -3842,6 +3842,9 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
         assert!(device_fast_path_rejection_blocks_fallback(&[
             "abi.constant_global_layout_changed".to_string()
         ]));
+        assert!(device_fast_path_rejection_blocks_fallback(&[
+            "toolchain_capability_stale".to_string()
+        ]));
         assert!(!device_fast_path_rejection_blocks_fallback(&[
             "mapping.patch_anchor_missing".to_string()
         ]));
