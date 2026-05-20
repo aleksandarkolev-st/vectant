@@ -64,6 +64,14 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
         .or_insert_with(|| Value::Object(Map::new()));
     root.entry("constantGlobalLayoutHashes".to_string())
         .or_insert_with(|| Value::Object(Map::new()));
+    let device_mapping_report = root
+        .get("deviceMappingReport")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| root.get("device_mapping_report").cloned())
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(default_device_mapping_report);
+    promote_device_mapping_report(&mut root, &device_mapping_report);
     root.entry("templateEvidenceStatus".to_string())
         .or_insert_with(|| Value::String("missing".to_string()));
     root.entry("templateEvidenceInvalidationReasons".to_string())
@@ -335,6 +343,68 @@ fn generated_roles_from_manifest(manifest: &Value) -> Value {
     Value::Object(roles)
 }
 
+fn promote_device_mapping_report(root: &mut Map<String, Value>, report: &Value) {
+    root.insert("deviceMappingReport".to_string(), report.clone());
+    root.entry("deviceMappingStatus".to_string())
+        .or_insert_with(|| {
+            report
+                .get("mappingStatus")
+                .cloned()
+                .unwrap_or_else(|| Value::String("missing".to_string()))
+        });
+    replace_empty_field(root, "deviceMappings", report.get("deviceMappings"));
+    merge_object_field(
+        root,
+        "sourceBaselineHashes",
+        report.get("sourceBaselineHashes"),
+    );
+    merge_object_field(
+        root,
+        "sourceBaselineContents",
+        report.get("sourceBaselineContents"),
+    );
+    replace_empty_field(
+        root,
+        "kernelSignatureHashes",
+        report.get("kernelSignatureHashes"),
+    );
+    replace_empty_field(
+        root,
+        "constantGlobalLayoutHashes",
+        report.get("constantGlobalLayoutHashes"),
+    );
+}
+
+fn replace_empty_field(root: &mut Map<String, Value>, key: &str, candidate: Option<&Value>) {
+    let Some(candidate) = candidate.filter(|v| !v.is_null()) else {
+        return;
+    };
+    let replace = match root.get(key) {
+        None | Some(Value::Null) => true,
+        Some(Value::Array(items)) => items.is_empty(),
+        Some(Value::Object(map)) => map.is_empty(),
+        _ => false,
+    };
+    if replace {
+        root.insert(key.to_string(), candidate.clone());
+    }
+}
+
+fn merge_object_field(root: &mut Map<String, Value>, key: &str, candidate: Option<&Value>) {
+    let Some(candidate_obj) = candidate.and_then(Value::as_object) else {
+        return;
+    };
+    let entry = root
+        .entry(key.to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(existing) = entry.as_object_mut() else {
+        return;
+    };
+    for (k, v) in candidate_obj {
+        existing.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+}
+
 fn generated_artifact_policy() -> Value {
     json!({
         "rolesAreInternal": true,
@@ -348,6 +418,20 @@ fn generated_artifact_policy() -> Value {
             "device.cu",
             "device.hip"
         ],
+    })
+}
+
+fn default_device_mapping_report() -> Value {
+    json!({
+        "schemaVersion": "synthi.gpu.device_mapping.v1",
+        "generatedDevicePath": null,
+        "mappingStatus": "missing",
+        "deviceMappings": [],
+        "unmappedKernels": [],
+        "sourceBaselineHashes": {},
+        "sourceBaselineContents": {},
+        "kernelSignatureHashes": {},
+        "constantGlobalLayoutHashes": {},
     })
 }
 
@@ -717,6 +801,23 @@ fn run_report(
         "consentRequired": root.get("consentRequired").cloned().unwrap_or(Value::Null),
         "consentReason": root.get("consentReason").cloned().unwrap_or(Value::Null),
         "generatedRoles": root.get("generatedRoles").cloned().unwrap_or(Value::Null),
+        "deviceMappingStatus": root
+            .get("deviceMappingStatus")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "deviceMappingReport": root
+            .get("deviceMappingReport")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "deviceMappings": root.get("deviceMappings").cloned().unwrap_or(Value::Null),
+        "kernelSignatureHashes": root
+            .get("kernelSignatureHashes")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "constantGlobalLayoutHashes": root
+            .get("constantGlobalLayoutHashes")
+            .cloned()
+            .unwrap_or(Value::Null),
         "generatedArtifactReport": root
             .get("generatedArtifactReport")
             .cloned()
@@ -1218,6 +1319,74 @@ mod tests {
                 .pointer("/runReport/noUserTreePollutionVerified")
                 .and_then(Value::as_bool),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn device_mapping_report_is_promoted_into_sidecar_contract() {
+        let manifest = gpu_compile_manifest();
+        let mapping_report = json!({
+            "schemaVersion": "synthi.gpu.device_mapping.v1",
+            "generatedDevicePath": "internal/device.hip",
+            "mappingStatus": "mapped",
+            "deviceMappings": [
+                {
+                    "kind": "kernel",
+                    "symbol": "flow",
+                    "sourcePath": "src/gpu/flow.hip",
+                    "generatedRole": "device",
+                    "generatedPath": "internal/device.hip",
+                    "mappingConfidence": "same_name_signature",
+                    "signatureHash": "0xabc",
+                    "sourceBodyRange": {"startByte": 40, "endByte": 80},
+                    "generatedBodyRange": {"startByte": 20, "endByte": 60}
+                }
+            ],
+            "unmappedKernels": [],
+            "sourceBaselineHashes": {"src/gpu/flow.hip": "hash1"},
+            "sourceBaselineContents": {"src/gpu/flow.hip": "__global__ void flow(float* x) {}"},
+            "kernelSignatureHashes": {"flow": "0xabc"},
+            "constantGlobalLayoutHashes": {
+                "src/gpu/flow.hip": "0xc1",
+                "generated:device": "0xc1"
+            }
+        });
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "device_mapping_report": mapping_report,
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+
+        assert_eq!(
+            migrated
+                .pointer("/deviceMappingStatus")
+                .and_then(Value::as_str),
+            Some("mapped")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/deviceMappings/0/sourcePath")
+                .and_then(Value::as_str),
+            Some("src/gpu/flow.hip")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/sourceBaselineHashes/src~1gpu~1flow.hip")
+                .and_then(Value::as_str),
+            Some("hash1")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/kernelSignatureHashes/flow")
+                .and_then(Value::as_str),
+            Some("0xabc")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/deviceMappingStatus")
+                .and_then(Value::as_str),
+            Some("mapped")
         );
     }
 }

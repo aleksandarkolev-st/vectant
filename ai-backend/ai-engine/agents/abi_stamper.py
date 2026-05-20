@@ -20,7 +20,7 @@ _GLOBAL_DECL_RE = re.compile(
     re.MULTILINE,
 )
 _CONSTANT_DECL_RE = re.compile(
-    r"__constant__\s+(?P<decl>[^;]+);",
+    r"\b(?P<storage>__constant__|__device__|__managed__)\s+(?P<decl>[^;]+);",
     re.MULTILINE,
 )
 _HASH_KEY = b"synthi-gpu-hmr-v1"
@@ -72,7 +72,10 @@ def extract_kernel_signatures(source: str) -> Dict[str, str]:
 def constant_layout_hash(source: str) -> str:
     decls = []
     for match in _CONSTANT_DECL_RE.finditer(source):
-        decls.append(re.sub(r"\s+", " ", match.group("decl")).strip())
+        decl = re.sub(r"\s+", " ", match.group("decl")).strip()
+        if "(" in decl:
+            continue
+        decls.append(f"{match.group('storage')} {decl}")
     return _hash64_hex(";".join(sorted(decls)))
 
 

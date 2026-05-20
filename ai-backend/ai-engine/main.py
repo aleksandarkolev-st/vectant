@@ -2079,6 +2079,7 @@ from agents.kernel_splitter import (  # noqa: E402
     split_agentic_report as _split_agentic_report,
     split_attempt_record as _split_attempt_record,
 )
+from agents.gpu_device_mapping import build_device_mapping_report  # noqa: E402
 from agents.gpu_mod_delta import (  # noqa: E402
     GpuDiffPatchRequest,
     build_gpu_diff_patch_prompt as _build_gpu_diff_patch_prompt,
@@ -2096,8 +2097,8 @@ def _file_map_from_request(req: AnalyzeAiRequest) -> dict[str, str]:
     for f in req.files or []:
         path = getattr(f, "path", None) or getattr(f, "name", None) or "input.cpp"
         files[path] = f.content
-    if not files and req.code:
-        files[req.focus or "input.cpp"] = req.code
+    if req.code:
+        files.setdefault(req.focus or "input.cpp", req.code)
     return files
 
 
@@ -2335,6 +2336,11 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         manifest_parsed = parse_manifest(manifest_out)
         validate_manifest_v1(manifest_parsed)
         manifest_out = manifest_to_dict(manifest_parsed)
+        device_mapping_report = build_device_mapping_report(
+            source_files=file_map,
+            generated_files=split_files_out,
+            manifest=manifest_out,
+        )
     except ManifestRejection as e:
         raise HTTPException(status_code=422, detail=e.message)
     except Exception as e:
@@ -2353,6 +2359,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         "launch_graph": split.launch_graph,
         "gpu_detection": detection.to_dict(),
         "generated_artifact_report": generated_artifact_report,
+        "device_mapping_report": device_mapping_report,
         "agentic_report": _split_agentic_report(
             attempts=split_attempts,
             accepted=True,

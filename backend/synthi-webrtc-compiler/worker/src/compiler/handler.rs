@@ -200,6 +200,13 @@ fn generated_artifact_report(result: &serde_json::Value) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+fn device_mapping_report(result: &serde_json::Value) -> serde_json::Value {
+    result
+        .get("_synthi_device_mapping_report")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
 /// Thin handler-side wrapper around `edit_applier::apply_edit_list`
 /// that adds per-edit eprintln logging for operator observability.
 /// The actual dispatch logic lives in `hmr::edit_applier::apply_edit_list`
@@ -633,6 +640,7 @@ pub async fn handle_compile_request(
                 .unwrap_or(serde_json::Value::Null);
             let agentic_report = split_agentic_report(&result);
             let generated_report = generated_artifact_report(&result);
+            let mapping_report = device_mapping_report(&result);
             let meta = serde_json::json!({
                 "split_hash": source_hash_str,
                 "original_source": req.source,
@@ -641,6 +649,7 @@ pub async fn handle_compile_request(
                 "cache_report": cache_report,
                 "agentic_report": agentic_report,
                 "generated_artifact_report": generated_report,
+                "device_mapping_report": mapping_report,
             });
             write_sidecar_logged(&sidecar_path, &meta).await;
 
@@ -953,6 +962,8 @@ pub async fn handle_compile_request(
                                                         split_agentic_report(&result);
                                                     let fresh_generated_report =
                                                         generated_artifact_report(&result);
+                                                    let fresh_mapping_report =
+                                                        device_mapping_report(&result);
                                                     let meta = serde_json::json!({
                                                         "split_hash": source_hash_str,
                                                         "original_source": req.source,
@@ -961,6 +972,7 @@ pub async fn handle_compile_request(
                                                         "cache_report": fresh_cache_report,
                                                         "agentic_report": fresh_agentic_report,
                                                         "generated_artifact_report": fresh_generated_report,
+                                                        "device_mapping_report": fresh_mapping_report,
                                                     });
                                                     write_sidecar_logged(&sidecar_path, &meta)
                                                         .await;
@@ -987,6 +999,8 @@ pub async fn handle_compile_request(
                                                 split_agentic_report(&result);
                                             let fresh_generated_report =
                                                 generated_artifact_report(&result);
+                                            let fresh_mapping_report =
+                                                device_mapping_report(&result);
                                             let meta = serde_json::json!({
                                                 "split_hash": source_hash_str,
                                                 "original_source": req.source,
@@ -995,6 +1009,7 @@ pub async fn handle_compile_request(
                                                 "cache_report": fresh_cache_report,
                                                 "agentic_report": fresh_agentic_report,
                                                 "generated_artifact_report": fresh_generated_report,
+                                                "device_mapping_report": fresh_mapping_report,
                                             });
                                             write_sidecar_logged(&sidecar_path, &meta).await;
                                             return Ok(result);
@@ -1137,6 +1152,8 @@ pub async fn handle_compile_request(
                                                         split_agentic_report(&result);
                                                     let fresh_generated_report =
                                                         generated_artifact_report(&result);
+                                                    let fresh_mapping_report =
+                                                        device_mapping_report(&result);
                                                     let meta = serde_json::json!({
                                                         "split_hash": source_hash_str,
                                                         "original_source": req.source,
@@ -1145,6 +1162,7 @@ pub async fn handle_compile_request(
                                                         "cache_report": fresh_cache_report,
                                                         "agentic_report": fresh_agentic_report,
                                                         "generated_artifact_report": fresh_generated_report,
+                                                        "device_mapping_report": fresh_mapping_report,
                                                     });
                                                     write_sidecar_logged(&sidecar_path, &meta)
                                                         .await;
@@ -1174,6 +1192,8 @@ pub async fn handle_compile_request(
                                                 split_agentic_report(&result);
                                             let fresh_generated_report =
                                                 generated_artifact_report(&result);
+                                            let fresh_mapping_report =
+                                                device_mapping_report(&result);
                                             let meta = serde_json::json!({
                                                 "split_hash": source_hash_str,
                                                 "original_source": req.source,
@@ -1182,6 +1202,7 @@ pub async fn handle_compile_request(
                                                 "cache_report": fresh_cache_report,
                                                 "agentic_report": fresh_agentic_report,
                                                 "generated_artifact_report": fresh_generated_report,
+                                                "device_mapping_report": fresh_mapping_report,
                                             });
                                             write_sidecar_logged(&sidecar_path, &meta).await;
                                             return Ok(result);
@@ -1255,6 +1276,7 @@ pub async fn handle_compile_request(
                         .unwrap_or(serde_json::Value::Null);
                     let fresh_agentic_report = split_agentic_report(&result);
                     let fresh_generated_report = generated_artifact_report(&result);
+                    let fresh_mapping_report = device_mapping_report(&result);
                     let meta = serde_json::json!({
                         "split_hash": source_hash_str,
                         "original_source": req.source,
@@ -1263,6 +1285,7 @@ pub async fn handle_compile_request(
                         "cache_report": fresh_cache_report,
                         "agentic_report": fresh_agentic_report,
                         "generated_artifact_report": fresh_generated_report,
+                        "device_mapping_report": fresh_mapping_report,
                     });
                     write_sidecar_logged(&sidecar_path, &meta).await;
                     result

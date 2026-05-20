@@ -650,6 +650,18 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         }
     }
 
+    if let Some(mapping_report) = raw_response.get("device_mapping_report") {
+        if !mapping_report.is_null() {
+            eprintln!("[AI Split] device mapping report captured");
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert(
+                    "_synthi_device_mapping_report".to_string(),
+                    mapping_report.clone(),
+                );
+            }
+        }
+    }
+
     // ULTRAPLAN Phase 4: log host_runner presence. The parsed `res` Value
     // already carries `host_runner` as a sibling of `core`/`gui`/`shared`
     // (because the universal split prompt outputs all four fields inside
