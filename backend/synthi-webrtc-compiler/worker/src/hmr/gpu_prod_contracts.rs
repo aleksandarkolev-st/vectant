@@ -72,6 +72,13 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
         .filter(|v| !v.is_null())
         .unwrap_or_else(default_device_mapping_report);
     promote_device_mapping_report(&mut root, &device_mapping_report);
+    root.entry("affectedHeaderGraph".to_string())
+        .or_insert_with(|| {
+            device_mapping_report
+                .get("deviceIncludeGraph")
+                .cloned()
+                .unwrap_or(Value::Null)
+        });
     let source_context_report = root
         .get("sourceContextReport")
         .cloned()
@@ -2490,6 +2497,17 @@ mod tests {
             "constantGlobalLayoutHashes": {
                 "src/gpu/flow.hip": "0xc1",
                 "generated:device": "0xc1"
+            },
+            "deviceIncludeGraph": {
+                "schemaVersion": "synthi.gpu.device_include_graph.v1",
+                "status": "bounded",
+                "deviceTranslationUnits": ["src/gpu/flow.hip"],
+                "reachableHeaders": ["src/gpu/flow.cuh"],
+                "edges": [
+                    {"source": "src/gpu/flow.hip", "includes": ["src/gpu/flow.cuh"]}
+                ],
+                "missingIncludes": [],
+                "reasonCodes": []
             }
         });
         let sidecar = json!({
@@ -2528,6 +2546,12 @@ mod tests {
                 .pointer("/runReport/deviceMappingStatus")
                 .and_then(Value::as_str),
             Some("mapped")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/affectedHeaderGraph/reachableHeaders/0")
+                .and_then(Value::as_str),
+            Some("src/gpu/flow.cuh")
         );
     }
 
