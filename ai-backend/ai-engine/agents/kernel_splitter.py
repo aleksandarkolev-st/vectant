@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from agents.gpu_detect import GpuDetectionResult
+from agents.gpu_source_context import build_project_source_context
 from llm.prompts import GPU_SPLIT_PROMPT
 from verifier_gpu import SplitVerificationResult, verify_split_output
 
@@ -64,6 +65,7 @@ class KernelSplitResult:
     architecture_md: str
     kernel_hashes: Dict[str, str] = field(default_factory=dict)
     launch_graph: List[dict] = field(default_factory=list)
+    source_context_report: dict = field(default_factory=dict)
     verification: Optional[SplitVerificationResult] = None
     raw_response: str = ""
 
@@ -74,6 +76,7 @@ class KernelSplitResult:
             "architecture_md": self.architecture_md,
             "kernel_hashes": self.kernel_hashes,
             "launch_graph": self.launch_graph,
+            "source_context_report": self.source_context_report,
             "verification": self.verification.to_dict() if self.verification else None,
         }
 
@@ -565,6 +568,10 @@ async def run_kernel_splitter(
     source_map = _source_file_map(files)
     if focus and user_code:
         source_map.setdefault(str(focus).strip().replace("\\", "/"), user_code)
+    project_context, source_context_report = build_project_source_context(
+        source_map,
+        focus=focus,
+    )
     prompt = build_prompt(
         user_code,
         detection=detection,
@@ -572,7 +579,7 @@ async def run_kernel_splitter(
             part
             for part in [
                 extra_instructions,
-                _project_source_context(source_map, focus=focus),
+                project_context,
                 _source_device_preservation_contract(source_map),
             ]
             if part
@@ -612,6 +619,7 @@ async def run_kernel_splitter(
         architecture_md=parsed["architecture_md"],
         kernel_hashes=parsed["kernel_hashes"],
         launch_graph=parsed["launch_graph"],
+        source_context_report=source_context_report,
         verification=verification,
         raw_response=raw,
     )

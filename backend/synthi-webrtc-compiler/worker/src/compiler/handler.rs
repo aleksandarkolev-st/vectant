@@ -207,6 +207,13 @@ fn device_mapping_report(result: &serde_json::Value) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+fn source_context_report(result: &serde_json::Value) -> serde_json::Value {
+    result
+        .get("_synthi_source_context_report")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
 /// Thin handler-side wrapper around `edit_applier::apply_edit_list`
 /// that adds per-edit eprintln logging for operator observability.
 /// The actual dispatch logic lives in `hmr::edit_applier::apply_edit_list`
@@ -709,6 +716,7 @@ pub async fn handle_compile_request(
             let agentic_report = split_agentic_report(&result);
             let generated_report = generated_artifact_report(&result);
             let mapping_report = device_mapping_report(&result);
+            let source_report = source_context_report(&result);
             let meta = serde_json::json!({
                 "split_hash": source_hash_str,
                 "original_source": req.source,
@@ -718,6 +726,7 @@ pub async fn handle_compile_request(
                 "agentic_report": agentic_report,
                 "generated_artifact_report": generated_report,
                 "device_mapping_report": mapping_report,
+                "source_context_report": source_report,
             });
             write_sidecar_logged(&sidecar_path, &meta).await;
 
@@ -895,24 +904,23 @@ pub async fn handle_compile_request(
                     let generated_device_path =
                         mapped_generated_device_path(&sidecar_meta, &request_device_name)
                             .or_else(|| mapped_generated_device_path(&sidecar_meta, &req.filename));
-                    let generated_device_source = if let Some(path) =
-                        generated_device_path.as_deref()
-                    {
-                        match compile_request_relpath(path) {
-                            Ok(rel) => tokio::fs::read_to_string(ctx.workspace_path.join(rel))
-                                .await
-                                .unwrap_or_default(),
-                            Err(e) => {
-                                eprintln!(
+                    let generated_device_source =
+                        if let Some(path) = generated_device_path.as_deref() {
+                            match compile_request_relpath(path) {
+                                Ok(rel) => tokio::fs::read_to_string(ctx.workspace_path.join(rel))
+                                    .await
+                                    .unwrap_or_default(),
+                                Err(e) => {
+                                    eprintln!(
                                     "[gpu-hmr] device fast path: generated role path rejected: {}",
                                     e
                                 );
-                                String::new()
+                                    String::new()
+                                }
                             }
-                        }
-                    } else {
-                        String::new()
-                    };
+                        } else {
+                            String::new()
+                        };
                     let device_patch = try_direct_device_body_patch(
                         &sidecar_meta,
                         &request_device_name,
@@ -1188,6 +1196,8 @@ pub async fn handle_compile_request(
                                                         generated_artifact_report(&result);
                                                     let fresh_mapping_report =
                                                         device_mapping_report(&result);
+                                                    let fresh_source_report =
+                                                        source_context_report(&result);
                                                     let meta = serde_json::json!({
                                                         "split_hash": source_hash_str,
                                                         "original_source": req.source,
@@ -1197,6 +1207,7 @@ pub async fn handle_compile_request(
                                                         "agentic_report": fresh_agentic_report,
                                                         "generated_artifact_report": fresh_generated_report,
                                                         "device_mapping_report": fresh_mapping_report,
+                                                        "source_context_report": fresh_source_report,
                                                     });
                                                     write_sidecar_logged(&sidecar_path, &meta)
                                                         .await;
@@ -1225,6 +1236,8 @@ pub async fn handle_compile_request(
                                                 generated_artifact_report(&result);
                                             let fresh_mapping_report =
                                                 device_mapping_report(&result);
+                                            let fresh_source_report =
+                                                source_context_report(&result);
                                             let meta = serde_json::json!({
                                                 "split_hash": source_hash_str,
                                                 "original_source": req.source,
@@ -1234,6 +1247,7 @@ pub async fn handle_compile_request(
                                                 "agentic_report": fresh_agentic_report,
                                                 "generated_artifact_report": fresh_generated_report,
                                                 "device_mapping_report": fresh_mapping_report,
+                                                "source_context_report": fresh_source_report,
                                             });
                                             write_sidecar_logged(&sidecar_path, &meta).await;
                                             return Ok(result);
@@ -1378,6 +1392,8 @@ pub async fn handle_compile_request(
                                                         generated_artifact_report(&result);
                                                     let fresh_mapping_report =
                                                         device_mapping_report(&result);
+                                                    let fresh_source_report =
+                                                        source_context_report(&result);
                                                     let meta = serde_json::json!({
                                                         "split_hash": source_hash_str,
                                                         "original_source": req.source,
@@ -1387,6 +1403,7 @@ pub async fn handle_compile_request(
                                                         "agentic_report": fresh_agentic_report,
                                                         "generated_artifact_report": fresh_generated_report,
                                                         "device_mapping_report": fresh_mapping_report,
+                                                        "source_context_report": fresh_source_report,
                                                     });
                                                     write_sidecar_logged(&sidecar_path, &meta)
                                                         .await;
@@ -1418,6 +1435,8 @@ pub async fn handle_compile_request(
                                                 generated_artifact_report(&result);
                                             let fresh_mapping_report =
                                                 device_mapping_report(&result);
+                                            let fresh_source_report =
+                                                source_context_report(&result);
                                             let meta = serde_json::json!({
                                                 "split_hash": source_hash_str,
                                                 "original_source": req.source,
@@ -1427,6 +1446,7 @@ pub async fn handle_compile_request(
                                                 "agentic_report": fresh_agentic_report,
                                                 "generated_artifact_report": fresh_generated_report,
                                                 "device_mapping_report": fresh_mapping_report,
+                                                "source_context_report": fresh_source_report,
                                             });
                                             write_sidecar_logged(&sidecar_path, &meta).await;
                                             return Ok(result);
@@ -1466,11 +1486,17 @@ pub async fn handle_compile_request(
                                 );
                             }
                         }
+                        let source_report = sidecar_meta
+                            .get("sourceContextReport")
+                            .or_else(|| sidecar_meta.get("source_context_report"))
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
                         let meta = serde_json::json!({
                             "split_hash": source_hash_str,
                             "original_source": req.source,
                             "architecture": architecture_md,
                             "compile_manifest": sidecar_manifest_json.clone(),
+                            "source_context_report": source_report.clone(),
                         });
                         write_sidecar_logged(&sidecar_path, &meta).await;
 
@@ -1480,6 +1506,7 @@ pub async fn handle_compile_request(
                             "gui": { "content": final_gui, "filename": gui_filename },
                             "host_runner": { "content": final_host_runner, "filename": host_runner_filename },
                             "_synthi_manifest": sidecar_manifest_json.clone(),
+                            "_synthi_source_context_report": source_report,
                         })
                     }
                 } else {
@@ -1501,6 +1528,7 @@ pub async fn handle_compile_request(
                     let fresh_agentic_report = split_agentic_report(&result);
                     let fresh_generated_report = generated_artifact_report(&result);
                     let fresh_mapping_report = device_mapping_report(&result);
+                    let fresh_source_report = source_context_report(&result);
                     let meta = serde_json::json!({
                         "split_hash": source_hash_str,
                         "original_source": req.source,
@@ -1510,6 +1538,7 @@ pub async fn handle_compile_request(
                         "agentic_report": fresh_agentic_report,
                         "generated_artifact_report": fresh_generated_report,
                         "device_mapping_report": fresh_mapping_report,
+                        "source_context_report": fresh_source_report,
                     });
                     write_sidecar_logged(&sidecar_path, &meta).await;
                     result

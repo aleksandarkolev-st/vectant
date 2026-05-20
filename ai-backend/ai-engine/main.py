@@ -2357,6 +2357,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         "manifest": manifest_out,
         "kernel_hashes": split.kernel_hashes,
         "launch_graph": split.launch_graph,
+        "source_context_report": split.source_context_report,
         "gpu_detection": detection.to_dict(),
         "generated_artifact_report": generated_artifact_report,
         "device_mapping_report": device_mapping_report,

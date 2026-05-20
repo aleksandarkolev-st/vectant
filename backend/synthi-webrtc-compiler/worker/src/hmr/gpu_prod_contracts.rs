@@ -72,6 +72,17 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
         .filter(|v| !v.is_null())
         .unwrap_or_else(default_device_mapping_report);
     promote_device_mapping_report(&mut root, &device_mapping_report);
+    let source_context_report = root
+        .get("sourceContextReport")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| root.get("source_context_report").cloned())
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(default_source_context_report);
+    root.insert(
+        "sourceContextReport".to_string(),
+        source_context_report.clone(),
+    );
     promote_template_evidence(&mut root, &effective_flags_hash);
     root.entry("generatedArtifactPolicy".to_string())
         .or_insert_with(generated_artifact_policy);
@@ -568,6 +579,30 @@ fn default_device_mapping_report() -> Value {
     })
 }
 
+fn default_source_context_report() -> Value {
+    json!({
+        "schemaVersion": "synthi.gpu.source_context.v1",
+        "status": "missing",
+        "workspaceFileCount": 0,
+        "candidateFileCount": 0,
+        "includedFileCount": 0,
+        "droppedFileCount": 0,
+        "included": [],
+        "dropped": [],
+        "criticalDropped": [],
+        "deterministicContextComplete": false,
+        "reasonCodes": ["source_context_report_missing"],
+        "buildMetadata": {
+            "compileCommandsStatus": "missing",
+            "cmakeFileApiStatus": "unknown",
+            "selectedCompileCommand": {
+                "status": "missing",
+                "source": "compile_commands.json"
+            }
+        },
+    })
+}
+
 fn default_generated_artifact_report() -> Value {
     json!({
         "schemaVersion": "synthi.gpu.generated_artifact_purity.v1",
@@ -964,6 +999,10 @@ fn run_report(
             .cloned()
             .unwrap_or(Value::Null),
         "deviceMappings": root.get("deviceMappings").cloned().unwrap_or(Value::Null),
+        "sourceContextReport": root
+            .get("sourceContextReport")
+            .cloned()
+            .unwrap_or(Value::Null),
         "templateEvidenceHash": root
             .get("templateEvidenceHash")
             .cloned()
@@ -1767,6 +1806,74 @@ mod tests {
                 .pointer("/runReport/deviceMappingStatus")
                 .and_then(Value::as_str),
             Some("mapped")
+        );
+    }
+
+    #[test]
+    fn source_context_report_is_promoted_into_run_report() {
+        let manifest = gpu_compile_manifest();
+        let source_context_report = json!({
+            "schemaVersion": "synthi.gpu.source_context.v1",
+            "focus": "src/app/main.cpp",
+            "workspaceFileCount": 293,
+            "candidateFileCount": 51,
+            "includedFileCount": 12,
+            "droppedFileCount": 281,
+            "sourceContextHash": "ctx1",
+            "included": [
+                {
+                    "path": "src/gpu/flow.hip",
+                    "includeReason": "device_translation_unit",
+                    "priority": 2,
+                    "contentHash": "h1"
+                }
+            ],
+            "dropped": [
+                {
+                    "path": "docs/readme.md",
+                    "dropReason": "docs_tests_examples",
+                    "priority": 99,
+                    "contentHash": "h2"
+                }
+            ],
+            "criticalDropped": [],
+            "deterministicContextComplete": true,
+            "buildMetadata": {
+                "compileCommandsStatus": "selected",
+                "cmakeFileApiStatus": "cmake_project_file_api_missing",
+                "selectedCompileCommand": {
+                    "status": "selected",
+                    "source": "compile_commands.json",
+                    "file": "src/app/main.cpp",
+                    "compiler": "clang++",
+                    "effectiveFlagsHash": "flags1"
+                }
+            }
+        });
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "source_context_report": source_context_report,
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+
+        assert_eq!(
+            migrated
+                .pointer("/sourceContextReport/sourceContextHash")
+                .and_then(Value::as_str),
+            Some("ctx1")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/sourceContextReport/buildMetadata/selectedCompileCommand/file")
+                .and_then(Value::as_str),
+            Some("src/app/main.cpp")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/sourceContextReport/deterministicContextComplete")
+                .and_then(Value::as_bool),
+            Some(true)
         );
     }
 }
