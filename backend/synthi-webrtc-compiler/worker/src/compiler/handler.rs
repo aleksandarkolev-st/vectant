@@ -942,6 +942,10 @@ fn device_fast_path_rejection_blocks_fallback(reason_codes: &[String]) -> bool {
                 | "stale_launch_pointer_check_missing"
                 | "launch_indirection_unverified"
                 | "multi_device_tu_requires_topology_verification"
+                | "gpu_device_tainted"
+                | "gpu_driver_tdr"
+                | "vram_session_refresh_required"
+                | "vram_fragmented"
         )
     })
 }
@@ -4698,6 +4702,12 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
         ]));
         assert!(device_fast_path_rejection_blocks_fallback(&[
             "fast_path_policy_blocks_device_only".to_string()
+        ]));
+        assert!(device_fast_path_rejection_blocks_fallback(&[
+            "gpu_device_tainted".to_string()
+        ]));
+        assert!(device_fast_path_rejection_blocks_fallback(&[
+            "vram_session_refresh_required".to_string()
         ]));
         assert!(!device_fast_path_rejection_blocks_fallback(&[
             "mapping.patch_anchor_missing".to_string()
