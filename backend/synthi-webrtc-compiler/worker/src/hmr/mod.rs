@@ -53,6 +53,7 @@ pub mod dynlib_symbol_resolver;
 pub mod edit_applier;
 pub mod edit_classifier;
 pub mod fast_refresh;
+pub mod gpu_device_fast_path;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_dirty_bit;
 #[cfg(feature = "gpu-hmr")]
