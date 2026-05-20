@@ -1337,13 +1337,6 @@ pub async fn handle_compile_request(
                                 Some("device_only"),
                             )
                             .await?;
-                            if ai_delta.edits.is_empty() {
-                                anyhow::bail!(
-                                    "GPU AI delta returned no edits for {}",
-                                    request_device_name
-                                );
-                            }
-
                             let touched_roles = gpu_ai_delta_touched_roles(&ai_delta.edits);
                             let mut policy_reasons = Vec::new();
                             if ai_delta.reload_plan == "device_only" {
@@ -1357,6 +1350,9 @@ pub async fn handle_compile_request(
                                 policy_reasons
                                     .push("multi_role_ai_delta_requires_consent".to_string());
                                 policy_reasons.push("arbiter_user_consent_required".to_string());
+                            }
+                            if ai_delta.edits.is_empty() {
+                                policy_reasons.push("verifier.ai_delta_no_edits".to_string());
                             }
                             if !policy_reasons.is_empty() {
                                 let (plan_report, verifier_report, reason_codes) =
@@ -4002,6 +3998,41 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
                 .pointer("/evidence/touchedGeneratedRoles/0")
                 .and_then(serde_json::Value::as_str),
             Some("device")
+        );
+    }
+
+    #[test]
+    fn gpu_ai_delta_policy_rejection_report_records_empty_ai_delta() {
+        let (plan, report, reasons) = gpu_ai_delta_policy_rejection_reports(
+            "device_only",
+            "src/gpu/particle_kernels.hip",
+            ".synthi/generated/gpu/device.hip",
+            vec![
+                "toolchain_capability_stale".to_string(),
+                "verifier.ai_delta_no_edits".to_string(),
+            ],
+            Vec::new(),
+        );
+
+        assert_eq!(
+            plan.get("plan").and_then(serde_json::Value::as_str),
+            Some("unsupported")
+        );
+        assert!(reasons
+            .iter()
+            .any(|code| code == "verifier.ai_delta_rejected"));
+        assert!(reasons
+            .iter()
+            .any(|code| code == "toolchain_capability_stale"));
+        assert!(reasons
+            .iter()
+            .any(|code| code == "verifier.ai_delta_no_edits"));
+        assert_eq!(
+            report
+                .pointer("/evidence/touchedGeneratedRoles")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(0)
         );
     }
 
