@@ -268,6 +268,9 @@ def test_normalizes_ai_gpu_manifest_defaults_for_cuda_dynamic_paths():
     assert parsed.gpu.arch == ["sm_120"]
     assert parsed.module_files.device == "gpu/flow_device_x.cu"
     assert parsed.module_files.host_runner == "run/flow_runner_x.cpp"
+    assert parsed.gpu.device_roles[0]["path"] == "gpu/flow_device_x.cu"
+    assert parsed.gpu.device_roles[0]["id"] == "device.flow_device_x"
+    assert parsed.gpu.device_link["requires_rdc"] is False
     assert "-I/usr/local/cuda/include" in parsed.common_flags
     assert "-lcudart" in parsed.runner_link_flags
 
@@ -323,8 +326,41 @@ def test_internalizes_generated_gpu_roles_out_of_user_tree():
     assert parsed.module_files.shared == ".synthi/generated/gpu/shared.h"
     assert parsed.module_files.core == ".synthi/generated/gpu/core.cpp"
     assert parsed.module_files.device == ".synthi/generated/gpu/device.hip"
+    assert parsed.gpu is not None
+    assert parsed.gpu.device_roles[0]["path"] == ".synthi/generated/gpu/device.hip"
+    assert parsed.gpu.device_link["affected_roles"] == [parsed.gpu.device_roles[0]["id"]]
     assert set(files) == set(parsed.files)
     assert files[".synthi/generated/gpu/device.hip"] == "device"
     assert report["rolesAreInternal"] is True
     assert report["internalRoot"] == ".synthi/generated/gpu"
     assert "src/user_owned.hpp" in report["droppedExtraGeneratedFiles"]
+
+
+def test_gpu_manifest_records_rdc_device_link_topology():
+    normalized = normalize_gpu_split_manifest(
+        {
+            "gpu": {
+                "vendor": "rocm",
+                "device_flags": ["-O3", "-fgpu-rdc"],
+                "device_link": {"estimated_ms": 9000, "budget_ms": 5000},
+            }
+        },
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        vendor_hint="rocm",
+        arch_hint="gfx1201",
+    )
+
+    parsed = parse_manifest(normalized)
+    validate_manifest_v1(parsed)
+
+    assert parsed.gpu is not None
+    assert parsed.gpu.device_roles[0]["requires_rdc"] is True
+    assert parsed.gpu.device_link["requires_rdc"] is True
+    assert parsed.gpu.device_link["estimated_ms"] == 9000
+    assert parsed.gpu.device_link["budget_ms"] == 5000

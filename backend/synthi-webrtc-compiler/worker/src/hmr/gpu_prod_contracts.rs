@@ -326,21 +326,51 @@ fn toolchain_capabilities_from_manifest(manifest: &Value, flags_hash: &str) -> V
         .and_then(|g| g.get("device_flags"))
         .cloned()
         .unwrap_or_else(|| Value::Array(Vec::new()));
+    let device_link = gpu.and_then(|g| {
+        g.get("device_link")
+            .or_else(|| g.get("deviceLink"))
+            .and_then(Value::as_object)
+    });
     let requires_rdc = string_array(Some(&device_flags)).iter().any(|f| {
         f.contains("-fgpu-rdc")
             || f.contains("--relocatable-device-code")
             || f.contains("-rdc=true")
             || f == "--device-c"
-    });
+    }) || device_link
+        .and_then(|link| {
+            link.get("requires_rdc")
+                .or_else(|| link.get("requiresRdc"))
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false);
     let device_link_budget_ms = gpu
-        .and_then(|g| g.get("device_link_budget_ms"))
+        .and_then(|g| {
+            g.get("device_link_budget_ms").or_else(|| {
+                device_link.and_then(|link| {
+                    link.get("budget_ms").or_else(|| link.get("budgetMs"))
+                })
+            })
+        })
         .and_then(Value::as_u64)
         .unwrap_or(5_000);
     let estimated_device_link_ms = gpu
-        .and_then(|g| g.get("device_link_estimated_ms"))
+        .and_then(|g| {
+            g.get("device_link_estimated_ms").or_else(|| {
+                device_link.and_then(|link| {
+                    link.get("estimated_ms").or_else(|| link.get("estimatedMs"))
+                })
+            })
+        })
         .and_then(Value::as_u64)
         .unwrap_or(if requires_rdc { 8_000 } else { 0 });
     let rdc_over_budget = requires_rdc && estimated_device_link_ms > device_link_budget_ms;
+    let supports_incremental_device_link = device_link
+        .and_then(|link| {
+            link.get("supports_incremental")
+                .or_else(|| link.get("supportsIncremental"))
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false);
     let has_gpu = gpu.is_some();
     let supports_device_only = has_gpu && !requires_rdc;
 
@@ -354,14 +384,14 @@ fn toolchain_capabilities_from_manifest(manifest: &Value, flags_hash: &str) -> V
         "effectiveFlagsHash": flags_hash,
         "requiresRdc": requires_rdc,
         "supportsDeviceOnlyReload": supports_device_only,
-        "supportsIncrementalDeviceLink": false,
+        "supportsIncrementalDeviceLink": supports_incremental_device_link,
         "rdcDeviceLink": {
             "required": requires_rdc,
             "linkerBound": requires_rdc,
             "estimatedMs": estimated_device_link_ms,
             "budgetMs": device_link_budget_ms,
             "overBudget": rdc_over_budget,
-            "costSource": if requires_rdc { "default_policy" } else { "not_required" },
+            "costSource": if device_link.is_some() { "manifest_device_link" } else if requires_rdc { "default_policy" } else { "not_required" },
             "reasonCodes": if rdc_over_budget {
                 json!(["rdc_device_link_required", "rdc_link_over_budget"])
             } else if requires_rdc {
@@ -416,7 +446,108 @@ fn generated_roles_from_manifest(manifest: &Value) -> Value {
             );
         }
     }
+    roles.insert(
+        "deviceRoles".to_string(),
+        device_roles_from_manifest(manifest, module_files),
+    );
     Value::Object(roles)
+}
+
+fn device_roles_from_manifest(manifest: &Value, module_files: Option<&Map<String, Value>>) -> Value {
+    let gpu = manifest.get("gpu").and_then(Value::as_object);
+    if let Some(device_roles) = gpu
+        .and_then(|g| g.get("device_roles").or_else(|| g.get("deviceRoles")))
+        .and_then(Value::as_array)
+    {
+        let roles = device_roles
+            .iter()
+            .filter_map(|role| {
+                let role_obj = role.as_object()?;
+                let path = role_obj
+                    .get("path")
+                    .or_else(|| role_obj.get("generatedPath"))
+                    .and_then(Value::as_str)?;
+                let role_id = role_obj
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| device_role_id_for_path(path));
+                Some(json!({
+                    "id": role_id,
+                    "path": path,
+                    "sourceFiles": role_obj
+                        .get("source_files")
+                        .or_else(|| role_obj.get("sourceFiles"))
+                        .cloned()
+                        .unwrap_or_else(|| Value::Array(Vec::new())),
+                    "compiler": role_obj.get("compiler").cloned().unwrap_or(Value::Null),
+                    "arch": role_obj
+                        .get("arch")
+                        .cloned()
+                        .unwrap_or_else(|| Value::Array(Vec::new())),
+                    "requiresRdc": role_obj
+                        .get("requires_rdc")
+                        .or_else(|| role_obj.get("requiresRdc"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    "internal": true,
+                }))
+            })
+            .collect::<Vec<_>>();
+        if !roles.is_empty() {
+            return Value::Array(roles);
+        }
+    }
+
+    let device_path = module_files
+        .and_then(|m| m.get("device"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| legacy_role_path("device"));
+    let Some(path) = device_path else {
+        return Value::Array(Vec::new());
+    };
+    Value::Array(vec![json!({
+        "id": device_role_id_for_path(&path),
+        "path": path,
+        "sourceFiles": [],
+        "compiler": gpu
+            .and_then(|g| g.get("device_compiler"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "arch": gpu
+            .and_then(|g| g.get("arch"))
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+        "requiresRdc": false,
+        "internal": true,
+    })])
+}
+
+fn device_role_id_for_path(path: &str) -> String {
+    let filename = path
+        .rsplit(|ch| ch == '/' || ch == '\\')
+        .next()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("device");
+    let stem = filename.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(filename);
+    let slug = stem
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string();
+    if slug.is_empty() {
+        "device.device".to_string()
+    } else {
+        format!("device.{slug}")
+    }
 }
 
 fn promote_device_mapping_report(root: &mut Map<String, Value>, report: &Value) {
@@ -2099,7 +2230,24 @@ mod tests {
                 "device_compiler": "hipcc",
                 "arch": ["gfx1201"],
                 "device_flags": ["-O3"],
-                "fatbin_strategy": "sidecar_module"
+                "fatbin_strategy": "sidecar_module",
+                "device_roles": [
+                    {
+                        "id": "device.device",
+                        "path": "internal/device.hip",
+                        "source_files": ["src/gpu/device.hip"],
+                        "compiler": "hipcc",
+                        "arch": ["gfx1201"],
+                        "requires_rdc": false
+                    }
+                ],
+                "device_link": {
+                    "requires_rdc": false,
+                    "affected_roles": ["device.device"],
+                    "supports_incremental": false,
+                    "estimated_ms": 0,
+                    "budget_ms": 5000
+                }
             }
         })
     }
@@ -2260,7 +2408,24 @@ mod tests {
                     "device_compiler": "hipcc",
                     "arch": ["gfx1201"],
                     "device_flags": ["-O3"],
-                    "fatbin_strategy": "sidecar_module"
+                    "fatbin_strategy": "sidecar_module",
+                    "device_roles": [
+                        {
+                            "id": "device.device",
+                            "path": "internal/device.hip",
+                            "source_files": ["src/gpu/device.hip"],
+                            "compiler": "hipcc",
+                            "arch": ["gfx1201"],
+                            "requires_rdc": false
+                        }
+                    ],
+                    "device_link": {
+                        "requires_rdc": false,
+                        "affected_roles": ["device.device"],
+                        "supports_incremental": false,
+                        "estimated_ms": 0,
+                        "budget_ms": 5000
+                    }
                 }
             },
             "cache_report": {
@@ -2301,6 +2466,18 @@ mod tests {
                 .pointer("/generatedRoles/device/internal")
                 .and_then(Value::as_bool),
             Some(true)
+        );
+        assert_eq!(
+            migrated
+                .pointer("/generatedRoles/deviceRoles/0/id")
+                .and_then(Value::as_str),
+            Some("device.device")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/generatedRoles/deviceRoles/0/sourceFiles/0")
+                .and_then(Value::as_str),
+            Some("src/gpu/device.hip")
         );
     }
 
@@ -2411,7 +2588,12 @@ mod tests {
                     "vendor": "rocm",
                     "device_compiler": "hipcc",
                     "arch": ["gfx1201"],
-                    "device_flags": ["-fgpu-rdc"]
+                    "device_flags": ["-O3"],
+                    "device_link": {
+                        "requires_rdc": true,
+                        "estimated_ms": 7000,
+                        "budget_ms": 5000
+                    }
                 }
             }
         });
@@ -2430,12 +2612,25 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(false)
         );
+        assert_eq!(
+            migrated
+                .pointer("/toolchainCapabilities/rdcDeviceLink/costSource")
+                .and_then(Value::as_str),
+            Some("manifest_device_link")
+        );
     }
 
     #[test]
     fn rdc_warm_rebuild_reports_link_cost_and_requires_consent() {
         let mut manifest = gpu_compile_manifest();
         manifest["gpu"]["device_flags"] = json!(["-O3", "-fgpu-rdc"]);
+        manifest["gpu"]["device_link"] = json!({
+            "requires_rdc": true,
+            "affected_roles": ["device.device"],
+            "supports_incremental": false,
+            "estimated_ms": 8000,
+            "budget_ms": 5000
+        });
         let flags_hash = effective_flags_hash_for(&manifest);
         let plan = reload_plan("warm_rebuild", vec!["device"]);
         let sidecar = json!({

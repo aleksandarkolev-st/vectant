@@ -93,6 +93,11 @@ class GpuBuildBlock(BaseModel):
     runtime_libs: List[str] = Field(default_factory=list)
     snapshot_mode: SnapshotMode = "auto"
     fatbin_strategy: FatbinStrategy = "sidecar_module"
+    # Production GPU HMR metadata. V1 still compiles a single generated
+    # sidecar, but the manifest must carry role/link topology so RDC and
+    # future multi-device-TU paths are explicit instead of inferred.
+    device_roles: List[dict] = Field(default_factory=list)
+    device_link: dict = Field(default_factory=dict)
 
     if _PYDANTIC_V2:
         model_config = ConfigDict(extra="ignore")
@@ -336,6 +341,104 @@ def _gpu_internal_role_paths(vendor: str) -> dict[str, str]:
     }
 
 
+def _gpu_device_role_id(path: str) -> str:
+    normalized = str(path or "device").replace("\\", "/").rsplit("/", 1)[-1]
+    stem = normalized.rsplit(".", 1)[0] or "device"
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", stem).strip("_") or "device"
+    return f"device.{slug}"
+
+
+def _gpu_device_link_bundle_id(raw_bundle_id: Any, affected_roles: List[str]) -> str:
+    if raw_bundle_id:
+        return str(raw_bundle_id)
+    role_seed = "__".join(role for role in affected_roles if role) or "device"
+    role_seed = role_seed.replace("device.", "")
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", role_seed).strip("_") or "device"
+    return f"device.bundle.{slug[:96]}"
+
+
+def _gpu_rdc_required(device_flags: Any) -> bool:
+    flags = _normalize_str_list(device_flags)
+    return any(
+        flag in {"-fgpu-rdc", "--device-c", "--gpu-rdc"}
+        or flag.startswith("--relocatable-device-code")
+        or flag == "-rdc=true"
+        or (flag.startswith("-rdc=") and flag.rsplit("=", 1)[-1].lower() in {"1", "true", "on"})
+        for flag in flags
+    )
+
+
+def _normalize_gpu_device_roles(
+    raw_roles: Any,
+    *,
+    device_path: str,
+    compiler: str,
+    arch: List[str],
+    device_flags: List[str],
+) -> List[dict]:
+    roles: List[dict] = []
+    if isinstance(raw_roles, list):
+        for item in raw_roles:
+            if not isinstance(item, Mapping):
+                continue
+            path = str(item.get("path") or item.get("generated_path") or "").replace("\\", "/")
+            if not path:
+                continue
+            role_arch = _normalize_str_list(item.get("arch")) or list(arch)
+            roles.append(
+                {
+                    "id": str(item.get("id") or _gpu_device_role_id(path)),
+                    "path": path,
+                    "source_files": _normalize_str_list(
+                        item.get("source_files") or item.get("sourceFiles")
+                    ),
+                    "compiler": str(item.get("compiler") or compiler),
+                    "arch": role_arch,
+                    "requires_rdc": bool(item.get("requires_rdc"))
+                    or bool(item.get("requiresRdc"))
+                    or _gpu_rdc_required(device_flags),
+                }
+            )
+    if not roles:
+        roles.append(
+            {
+                "id": _gpu_device_role_id(device_path),
+                "path": device_path,
+                "source_files": [],
+                "compiler": compiler,
+                "arch": list(arch),
+                "requires_rdc": _gpu_rdc_required(device_flags),
+            }
+        )
+    return roles
+
+
+def _normalize_gpu_device_link(raw_link: Any, *, device_roles: List[dict], device_flags: List[str]) -> dict:
+    link = dict(raw_link) if isinstance(raw_link, Mapping) else {}
+    affected_roles = _normalize_str_list(link.get("affected_roles") or link.get("affectedRoles")) or [
+        str(role.get("id")) for role in device_roles
+    ]
+    requires_rdc = bool(
+        link.get("requires_rdc")
+        or link.get("requiresRdc")
+        or _gpu_rdc_required(device_flags)
+        or any(role.get("requires_rdc") for role in device_roles)
+    )
+    return {
+        "requires_rdc": requires_rdc,
+        "bundle_id": _gpu_device_link_bundle_id(
+            link.get("bundle_id") or link.get("bundleId"),
+            affected_roles,
+        ),
+        "affected_roles": affected_roles,
+        "supports_incremental": bool(
+            link.get("supports_incremental") or link.get("supportsIncremental")
+        ),
+        "estimated_ms": int(link.get("estimated_ms") or link.get("estimatedMs") or (8000 if requires_rdc else 0)),
+        "budget_ms": int(link.get("budget_ms") or link.get("budgetMs") or 5000),
+    }
+
+
 def _lookup_generated_role_content(
     split_files: Mapping[str, str],
     *,
@@ -412,6 +515,25 @@ def internalize_gpu_generated_artifacts(
 
     manifest_out["module_files"] = internal_roles
     manifest_out["files"] = list(internal_roles.values())
+    if gpu:
+        arch = _normalize_str_list(gpu.get("arch"))
+        device_flags = _normalize_gpu_device_flags(gpu.get("device_flags"), vendor)
+        compiler = str(gpu.get("device_compiler") or ("hipcc" if vendor == "rocm" else "nvcc"))
+        gpu["device_roles"] = _normalize_gpu_device_roles(
+            gpu.get("device_roles"),
+            device_path=internal_roles["device"],
+            compiler=compiler,
+            arch=arch,
+            device_flags=device_flags,
+        )
+        for role in gpu["device_roles"]:
+            role["path"] = internal_roles["device"]
+        gpu["device_link"] = _normalize_gpu_device_link(
+            gpu.get("device_link"),
+            device_roles=gpu["device_roles"],
+            device_flags=device_flags,
+        )
+        manifest_out["gpu"] = gpu
     consumed_paths = {m["sourcePath"] for m in mappings if m["sourcePath"]}
     report = {
         "schemaVersion": "synthi.gpu.generated_artifact_purity.v1",
@@ -568,6 +690,18 @@ def normalize_gpu_split_manifest(
     elif not isinstance(gpu.get("arch"), list) or not gpu.get("arch"):
         gpu["arch"] = [arch]
     gpu["device_flags"] = _normalize_gpu_device_flags(gpu.get("device_flags"), vendor)
+    gpu["device_roles"] = _normalize_gpu_device_roles(
+        gpu.get("device_roles"),
+        device_path=str(roles.get("device") or default_device),
+        compiler=compiler,
+        arch=_normalize_str_list(gpu.get("arch")),
+        device_flags=gpu["device_flags"],
+    )
+    gpu["device_link"] = _normalize_gpu_device_link(
+        gpu.get("device_link"),
+        device_roles=gpu["device_roles"],
+        device_flags=gpu["device_flags"],
+    )
     if not isinstance(gpu.get("runtime_libs"), list) or not gpu.get("runtime_libs"):
         gpu["runtime_libs"] = runtime_libs
     gpu.setdefault("snapshot_mode", "auto")

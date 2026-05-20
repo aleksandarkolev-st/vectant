@@ -558,6 +558,8 @@ mod tests {
             runtime_libs: vec!["cudart".to_string()],
             snapshot_mode: SnapshotMode::Auto,
             fatbin_strategy: FatbinStrategy::SidecarModule,
+            device_roles: Vec::new(),
+            device_link: Default::default(),
         }
     }
 
@@ -570,6 +572,8 @@ mod tests {
             runtime_libs: vec!["amdhip64".to_string()],
             snapshot_mode: SnapshotMode::Userspace,
             fatbin_strategy: FatbinStrategy::SidecarModule,
+            device_roles: Vec::new(),
+            device_link: Default::default(),
         }
     }
 

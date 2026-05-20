@@ -220,6 +220,8 @@ mod tests {
             runtime_libs: vec![],
             snapshot_mode: SnapshotMode::Auto,
             fatbin_strategy: FatbinStrategy::SidecarModule,
+            device_roles: Vec::new(),
+            device_link: Default::default(),
         }
     }
 

@@ -233,6 +233,42 @@ pub enum FatbinStrategy {
     SidecarModule,
 }
 
+/// One generated device role. V1 still compiles the primary device sidecar,
+/// but the manifest preserves role topology for multi-device-TU and RDC
+/// decisions instead of inferring it from filenames.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GpuDeviceRole {
+    pub id: String,
+    pub path: String,
+    #[serde(default)]
+    pub source_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler: Option<String>,
+    #[serde(default)]
+    pub arch: Vec<String>,
+    #[serde(default)]
+    pub requires_rdc: bool,
+}
+
+/// Device-link topology and cost metadata. When `requires_rdc` is true,
+/// the Arbiter must treat warm/device paths as linker-bound unless a later
+/// vendor-specific probe proves otherwise.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GpuDeviceLink {
+    #[serde(default)]
+    pub requires_rdc: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
+    #[serde(default)]
+    pub affected_roles: Vec<String>,
+    #[serde(default)]
+    pub supports_incremental: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_ms: Option<u64>,
+}
+
 /// GPU-side build recipe. Mirrors Python `GpuBuildBlock`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GpuBuildBlock {
@@ -248,6 +284,10 @@ pub struct GpuBuildBlock {
     pub snapshot_mode: SnapshotMode,
     #[serde(default)]
     pub fatbin_strategy: FatbinStrategy,
+    #[serde(default)]
+    pub device_roles: Vec<GpuDeviceRole>,
+    #[serde(default)]
+    pub device_link: GpuDeviceLink,
 }
 
 /// Which compile stage a given module is destined for. Used by
@@ -871,5 +911,61 @@ mod tests {
         }"#;
         let m: CompileManifest = serde_json::from_str(json).unwrap();
         assert_eq!(m.select_compiler(ModuleKind::Device), "clang++");
+    }
+
+    #[test]
+    fn parses_gpu_device_roles_and_device_link_topology() {
+        let json = r#"{
+            "compiler": "clang++",
+            "std": "c++26",
+            "common_flags": [],
+            "core_link_flags": [],
+            "gui_link_flags": [],
+            "shared_link_flags": [],
+            "runner_link_flags": [],
+            "system_packages": [],
+            "hot_reload_mode": "swap",
+            "confidence": {"overall":"high","runner_synthesis":"high","link_flags":"high","notes":""},
+            "gpu": {
+                "vendor": "rocm",
+                "device_compiler": "hipcc",
+                "arch": ["gfx1201"],
+                "device_flags": ["-O3", "-fgpu-rdc"],
+                "runtime_libs": ["amdhip64"],
+                "snapshot_mode": "auto",
+                "fatbin_strategy": "sidecar_module",
+                "device_roles": [
+                    {
+                        "id": "device.raster",
+                        "path": ".synthi/generated/gpu/device_raster.hip",
+                        "source_files": ["src/gpu/raster.hip"],
+                        "compiler": "hipcc",
+                        "arch": ["gfx1201"],
+                        "requires_rdc": true
+                    }
+                ],
+                "device_link": {
+                    "requires_rdc": true,
+                    "bundle_id": "bundle.raster",
+                    "affected_roles": ["device.raster"],
+                    "supports_incremental": false,
+                    "estimated_ms": 9000,
+                    "budget_ms": 5000
+                }
+            }
+        }"#;
+        let m: CompileManifest = serde_json::from_str(json).unwrap();
+        let gpu = m.gpu.expect("gpu block");
+
+        assert_eq!(gpu.device_roles.len(), 1);
+        assert_eq!(gpu.device_roles[0].id, "device.raster");
+        assert_eq!(
+            gpu.device_roles[0].source_files,
+            vec!["src/gpu/raster.hip".to_string()]
+        );
+        assert!(gpu.device_roles[0].requires_rdc);
+        assert!(gpu.device_link.requires_rdc);
+        assert_eq!(gpu.device_link.bundle_id.as_deref(), Some("bundle.raster"));
+        assert_eq!(gpu.device_link.estimated_ms, Some(9000));
     }
 }
