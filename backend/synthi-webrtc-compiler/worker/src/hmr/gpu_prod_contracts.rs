@@ -1356,6 +1356,304 @@ fn default_agentic_report() -> Value {
     })
 }
 
+fn run_failure_card(root: &Map<String, Value>, reload_plan: &Value) -> Value {
+    let reason_codes = run_failure_reason_codes(root, reload_plan);
+    let Some(template) = failure_card_template(&reason_codes) else {
+        return Value::Null;
+    };
+    let fallback = reload_plan
+        .get("safeFallback")
+        .or_else(|| reload_plan.get("selectedFallback"))
+        .cloned()
+        .or_else(|| {
+            reload_plan
+                .get("fallbacksAvailable")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .cloned()
+        })
+        .or_else(|| root.get("selectedPlan").cloned())
+        .unwrap_or(Value::Null);
+
+    json!({
+        "schemaVersion": "synthi.gpu.failure_card.v1",
+        "category": template.category,
+        "problem": template.problem,
+        "reason": template.reason,
+        "changedSymbol": failure_card_changed_symbol(root),
+        "chosenFallback": fallback,
+        "nextAction": template.next_action,
+        "reasonCodes": reason_codes,
+        "formatted": format!(
+            "Problem:\n  {}\n\nReason:\n  {}\n\nChosen fallback:\n  {}\n\nNext action:\n  {}",
+            template.problem,
+            template.reason,
+            fallback
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| fallback.to_string()),
+            template.next_action
+        ),
+    })
+}
+
+fn run_failure_reason_codes(root: &Map<String, Value>, reload_plan: &Value) -> Vec<String> {
+    let mut codes = Vec::new();
+    append_reason_codes(
+        &mut codes,
+        root.get("lastDeviceFastPathVerifierReport")
+            .and_then(|report| report.get("reasonCodes")),
+    );
+    append_reason_codes(
+        &mut codes,
+        root.get("lastGpuAiDeltaVerifierReport")
+            .and_then(|report| report.get("reasonCodes")),
+    );
+    append_reason_codes(&mut codes, reload_plan.get("reasonCodes"));
+    append_reason_codes(&mut codes, root.get("arbiterReasonCodes"));
+
+    if root
+        .get("consentRequired")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        if let Some(reason) = root.get("consentReason").and_then(Value::as_str) {
+            codes.push(reason.to_string());
+        }
+        codes.push("arbiter_user_consent_required".to_string());
+    }
+
+    dedupe_strings(codes)
+}
+
+fn append_reason_codes(codes: &mut Vec<String>, value: Option<&Value>) {
+    if let Some(items) = value.and_then(Value::as_array) {
+        for item in items {
+            if let Some(code) = item.as_str().filter(|s| !s.trim().is_empty()) {
+                codes.push(code.to_string());
+            }
+        }
+    }
+}
+
+fn dedupe_strings(items: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in items {
+        if !out.iter().any(|existing| existing == &item) {
+            out.push(item);
+        }
+    }
+    out
+}
+
+struct FailureCardTemplate {
+    category: &'static str,
+    problem: &'static str,
+    reason: &'static str,
+    next_action: &'static str,
+}
+
+fn failure_card_template(reason_codes: &[String]) -> Option<FailureCardTemplate> {
+    if has_reason(reason_codes, "abi.kernel_signature_changed") {
+        return Some(FailureCardTemplate {
+            category: "abi_changed",
+            problem: "Device-only reload rejected.",
+            reason: "Kernel signature changed.",
+            next_action: "Update the host launch path and use a mixed rebuild, or revert the signature change.",
+        });
+    }
+    if has_reason(reason_codes, "abi.constant_global_layout_changed") {
+        return Some(FailureCardTemplate {
+            category: "constant_layout_changed",
+            problem: "Device-only reload rejected.",
+            reason: "Device constant or global symbol layout changed.",
+            next_action: "Use a mixed or cold reload path that rebuilds ABI metadata, or revert the layout change.",
+        });
+    }
+    if has_reason(reason_codes, "stale_launch_pointer_detected") {
+        return Some(FailureCardTemplate {
+            category: "stale_launch_pointer_detected",
+            problem: "Sidecar reload rejected.",
+            reason: "A generated launch path bypasses the launch indirection table or may retain a stale launch pointer.",
+            next_action: "Regenerate or repair the internal launch roles so every launch goes through the stable indirection table.",
+        });
+    }
+    if has_reason(reason_codes, "toolchain_capability_missing") {
+        return Some(FailureCardTemplate {
+            category: "toolchain_capability_missing",
+            problem: "Fast GPU reload rejected.",
+            reason: "The selected target has no current toolchain capability profile.",
+            next_action: "Resolve build metadata and rerun the toolchain capability probe before using device-only or warm rebuild.",
+        });
+    }
+    if has_reason(reason_codes, "toolchain_capability_stale") {
+        return Some(FailureCardTemplate {
+            category: "toolchain_capability_stale",
+            problem: "Fast GPU reload rejected.",
+            reason: "The toolchain capability profile is stale for the selected compile command or flags.",
+            next_action: "Refresh build metadata and toolchain probes, then retry the reload.",
+        });
+    }
+    if has_reason(reason_codes, "template_evidence_missing") {
+        return Some(FailureCardTemplate {
+            category: "template_evidence_missing",
+            problem: "Warm rebuild rejected.",
+            reason: "Compiler-derived template evidence is missing.",
+            next_action: "Run the template evidence collector or fall back to AI delta, full re-split, or a normal rebuild.",
+        });
+    }
+    if has_reason(reason_codes, "template_evidence_stale") {
+        return Some(FailureCardTemplate {
+            category: "template_evidence_stale",
+            problem: "Warm rebuild rejected.",
+            reason: "Compiler-derived template evidence is stale for the current source, flags, or GPU architecture.",
+            next_action: "Refresh template evidence before using warm rebuild.",
+        });
+    }
+    if has_reason(reason_codes, "template_instantiation_unbounded") {
+        return Some(FailureCardTemplate {
+            category: "template_instantiation_unbounded",
+            problem: "Warm rebuild rejected.",
+            reason: "Affected template instantiations cannot be bounded.",
+            next_action: "Use a full re-split, normal rebuild, or narrow the edit to mapped non-template device code.",
+        });
+    }
+    if has_reason(reason_codes, "header_dependency_unbounded") {
+        return Some(FailureCardTemplate {
+            category: "header_dependency_unbounded",
+            problem: "Direct GPU reload rejected.",
+            reason: "The affected header dependency ripple is not bounded.",
+            next_action: "Refresh source-context metadata or use a broader rebuild path.",
+        });
+    }
+    if has_reason(reason_codes, "mapping.device_mapping_missing")
+        || has_reason(reason_codes, "mapping.source_baseline_missing")
+        || has_reason(reason_codes, "mapping.source_baseline_stale")
+    {
+        return Some(FailureCardTemplate {
+            category: "mapping_missing",
+            problem: "Device-only reload rejected.",
+            reason: "The user source no longer has a valid mapping to an internal generated device role.",
+            next_action: "Use AI delta or a full re-split to regenerate mappings.",
+        });
+    }
+    if has_reason(reason_codes, "parser.device_ast_parse_failed") {
+        return Some(FailureCardTemplate {
+            category: "unsupported_project_shape",
+            problem: "Device-only reload rejected.",
+            reason: "The selected-target parser could not build a reliable before/after device AST.",
+            next_action: "Fix the parse error or use AI delta/full re-split instead of the direct fast path.",
+        });
+    }
+    if has_reason(reason_codes, "warm_rebuild_budget_exceeded") {
+        return Some(FailureCardTemplate {
+            category: "warm_rebuild_budget_exceeded",
+            problem: "Warm rebuild skipped.",
+            reason: "The deterministic warm path exceeded its latency budget.",
+            next_action: "Use a normal incremental build, AI delta, or request consent for the slower path.",
+        });
+    }
+    if has_reason(reason_codes, "device_linker_bound")
+        || has_reason(reason_codes, "rdc_link_over_budget")
+    {
+        return Some(FailureCardTemplate {
+            category: "device_linker_bound",
+            problem: "Warm rebuild requires consent.",
+            reason: "RDC device linking is expected to dominate reload latency.",
+            next_action: "Ask the developer before running the linker-bound path or choose a clearer fallback.",
+        });
+    }
+    if has_reason(reason_codes, "multi_role_ai_delta_requires_consent") {
+        return Some(FailureCardTemplate {
+            category: "multi_role_ai_delta_requires_consent",
+            problem: "AI delta requires developer consent.",
+            reason: "The proposed AI delta touches multiple generated roles.",
+            next_action: "Review the proposed role changes or run a full re-split with explicit consent.",
+        });
+    }
+    if has_reason(reason_codes, "state_loss_requires_consent") {
+        return Some(FailureCardTemplate {
+            category: "state_loss_requires_consent",
+            problem: "Reload requires developer consent.",
+            reason: "The fallback may lose runner state.",
+            next_action: "Ask the developer before cold restart or state-losing reload.",
+        });
+    }
+    if has_reason(reason_codes, "gpu_device_tainted")
+        || has_reason(reason_codes, "gpu_driver_tdr")
+    {
+        return Some(FailureCardTemplate {
+            category: "gpu_device_tainted",
+            problem: "GPU validation stopped.",
+            reason: "The GPU device or preview session is marked tainted after a suspected driver fault.",
+            next_action: "Cold restart the runner or reset the GPU session before accepting screenshots as proof.",
+        });
+    }
+    if has_reason(reason_codes, "screenshot_not_ready") {
+        return Some(FailureCardTemplate {
+            category: "screenshot_not_ready",
+            problem: "Runtime verification incomplete.",
+            reason: "The runner did not produce a visible validation frame.",
+            next_action: "Wait for a visible frame or inspect runtime/render failures before marking validation passed.",
+        });
+    }
+    if has_reason(reason_codes, "arbiter_user_consent_required") {
+        return Some(FailureCardTemplate {
+            category: "arbiter_user_consent_required",
+            problem: "Reload requires developer consent.",
+            reason: "The Arbiter selected a costly, disruptive, experimental, or state-affecting path.",
+            next_action: "Request developer consent before executing this path.",
+        });
+    }
+    None
+}
+
+fn has_reason(reason_codes: &[String], expected: &str) -> bool {
+    reason_codes.iter().any(|code| code == expected)
+}
+
+fn failure_card_changed_symbol(root: &Map<String, Value>) -> Value {
+    let Some(report) = root.get("lastDeviceFastPathVerifierReport") else {
+        return Value::Null;
+    };
+    let evidence = report.get("evidence").unwrap_or(&Value::Null);
+    let kernel_signature = evidence.get("kernelSignature").unwrap_or(&Value::Null);
+    if kernel_signature
+        .get("changed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return json!({
+            "kernelSignaturesBefore": kernel_signature
+                .pointer("/before/signatures")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "kernelSignaturesAfter": kernel_signature
+                .pointer("/after/signatures")
+                .cloned()
+                .unwrap_or(Value::Null),
+        });
+    }
+    let constant_layout = evidence.get("constantGlobalLayout").unwrap_or(&Value::Null);
+    if constant_layout
+        .get("changed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return json!({
+            "beforeConstantGlobalLayoutHash": constant_layout
+                .get("beforeHash")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "afterConstantGlobalLayoutHash": constant_layout
+                .get("afterHash")
+                .cloned()
+                .unwrap_or(Value::Null),
+        });
+    }
+    Value::Null
+}
+
 fn run_report(
     root: &Map<String, Value>,
     selected_compile_command: &Value,
@@ -1424,6 +1722,7 @@ fn run_report(
                 Value::String("not_measured".to_string())
             }
         });
+    let failure_card = run_failure_card(root, reload_plan);
 
     json!({
         "schemaVersion": RUN_REPORT_SCHEMA_VERSION,
@@ -1481,6 +1780,7 @@ fn run_report(
         "rankedReloadOptions": ranked_options,
         "consentRequired": root.get("consentRequired").cloned().unwrap_or(Value::Null),
         "consentReason": root.get("consentReason").cloned().unwrap_or(Value::Null),
+        "failureCard": failure_card,
         "generatedRoles": root.get("generatedRoles").cloned().unwrap_or(Value::Null),
         "compileCommands": root
             .get("compileCommands")
@@ -2879,6 +3179,60 @@ mod tests {
                 .pointer("/runReport/deviceFastPathVerifierReport/evidence/kernelSignature/changed")
                 .and_then(Value::as_bool),
             Some(true)
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/failureCard/category")
+                .and_then(Value::as_str),
+            Some("abi_changed")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/failureCard/problem")
+                .and_then(Value::as_str),
+            Some("Device-only reload rejected.")
+        );
+    }
+
+    #[test]
+    fn run_report_emits_failure_card_for_template_evidence_rejection() {
+        let manifest = gpu_compile_manifest();
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": {
+                "schemaVersion": RELOAD_PLAN_SCHEMA_VERSION,
+                "plan": "unsupported",
+                "reasonCodes": [
+                    "template_evidence_missing",
+                    "template_instantiation_unbounded"
+                ],
+                "fallbacksAvailable": ["ai_delta", "full_resplit", "cold_restart"],
+                "affectedUserFiles": ["src/gpu/particle_template_math.hpp"],
+                "affectedGeneratedRoles": ["device.hip"],
+                "timingsMs": {}
+            }
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+
+        assert_eq!(
+            migrated
+                .pointer("/runReport/failureCard/category")
+                .and_then(Value::as_str),
+            Some("template_evidence_missing")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/failureCard/chosenFallback")
+                .and_then(Value::as_str),
+            Some("ai_delta")
+        );
+        assert!(
+            migrated
+                .pointer("/runReport/failureCard/formatted")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("Problem:\n  Warm rebuild rejected.")
         );
     }
 
