@@ -1,38 +1,40 @@
-slug: gpu-scale-validation-20260520182924
-repo_commit: 9592c3fd90fbe3c27014473b1e29be38baea5355
+slug: gpu-scale-validation-20260520191101
+repo_commit: 72e14fcdfe7d207f7176e0a106968065c4d1c704
 model: gemini-3.1-flash-lite-preview
 vendor: rocm
 arch: gfx1201
 render_backend: glfw
 source_file_mix: {"cpp":13,"hpp":17,"h":10,"hip":11,"cu":0,"total":51}
-workspace_file_count: 293
-relevant_file_count: 53
+workspace_file_count: 296
+relevant_file_count: 56
 generated_roles: {"shared":".synthi/generated/gpu/shared.h","core":".synthi/generated/gpu/core.cpp","gui":".synthi/generated/gpu/gui.cpp","host_runner":".synthi/generated/gpu/host_runner.cpp","device":".synthi/generated/gpu/device.hip"}
+prod_run_report: {"schemaVersion":"synthi.gpu.run_report.v1","arbiterDecision":"skip","selectedPlan":null,"compileDbHash":"74da1bb7537dce11d2c43813f3d1416c7cc8a361f898a07cea22c3657166aa7d","cmakeCodemodelHash":"7d6168282a8cd54f27afbe9da87fa2d3346e69f758d88b2bb5675c62dd307db1","targetResolutionMethod":"single_executable_target_containing_focus","targetName":"particle_field","toolchainCapabilityProfileHash":"384e78e4e83b805d1e0efb0f7ea10aa4fd076c2b57232810197aabcf85dda771","templateEvidenceStatus":"missing","affectedHeaderGraphStatus":"bounded"}
 
 PASS gpu target - rocm arch=gfx1201 render_backend=glfw
 PASS source file mix - {"cpp":13,"hpp":17,"h":10,"hip":11,"cu":0,"total":51}
-PASS ordinary user project guard - 293 files, no Synthi ABI or generated role filenames
-PASS create workspace - id=cmpeebwin000pl201btwpulop slug=gpu-scale-validation-20260520182924
-PASS seed scale workspace - 293 files
+PASS ordinary user project guard - 296 files, no Synthi ABI or generated role filenames
+PASS create workspace - id=cmpeftfvp000rl201opd1iixn slug=gpu-scale-validation-20260520191101
+PASS seed scale workspace - 296 files
 PASS mcp tools/list - count=42
 PASS mcp attach - attached
-PASS first compile via MCP - files=293
-PASS worker saw full file set - [AI Split] ENTER (cache_key=623742474748146535, src_len=377, files=293, gpu_mode=rocm, gpu_arch=gfx1201
-PASS ai-engine saw full file set - [split/gpu] request file context count=293 focus=src/app/main.cpp names=['src/app/main.cpp
-WARN screenshot first-compile retry - 800x600 visible=0 luma=0.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520182924-first-compile.png attempt=1/12
-PASS screenshot first-compile - 800x600 visible=45445 luma=19.6 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520182924-first-compile-attempt-2.png attempt=2
+PASS first compile via MCP - files=296
+PASS worker saw full file set - [AI Split] ENTER (cache_key=7068589390867307339, src_len=377, files=296, gpu_mode=rocm, gpu_arch=gfx1201
+PASS ai-engine saw full file set - [split/gpu] request file context count=296 focus=src/app/main.cpp names=['src/app/main.cpp
+WARN screenshot first-compile retry - 800x600 visible=0 luma=0.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520191101-first-compile.png attempt=1/6
+PASS screenshot first-compile - 800x600 visible=27504 luma=22.4 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520191101-first-compile-attempt-2.png attempt=2
 PASS generated split preserved GLFW/OpenGL backend - no SDL markers in generated roles
 PASS generated split contains HMR ABI - .synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip
 PASS generated launch sites use indirection table - launchSites=2 tableVersion=1
 PASS stale launch pointer check passed - reload_failed.stale_launch_pointer
-PASS read generated split from worker - worker=/tmp/.tmpRSwYtb
+PASS production run report records target, capability, cache, and header graph - target=particle_field arbiter=skip headers=2
+PASS read generated split from worker - worker=/tmp/.tmp9GnVdP
 PASS generated split kept internal - .synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip supplied inline to HMR compile only
 PASS user device-source AI delta compile via MCP - src/gpu/particle_kernels.hip
-PASS workspace visible tree remains user files only - 309 listed files; no generated split artifacts
-PASS worker forced GPU AI delta endpoint - [GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=1970 bytes arch=332 chars device=1895 bytes hint=device_only
-PASS ai-engine processed GPU delta - [GpuDiffPatch] plan=device_only edits=1 attempt=1/2 elapsed=19.47s
+PASS workspace visible tree remains user files only - 316 listed files; no generated split artifacts
+PASS worker forced GPU AI delta endpoint - [GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=1970 bytes arch=193 chars device=1886 bytes hint=device_only
+PASS ai-engine processed GPU delta - [GpuDiffPatch] plan=device_only edits=1 attempt=1/2 elapsed=0.90s
 PASS device-only GPU HMR observed - [gpu-reload] plan=device_only  reason=device-file-only-edit
-PASS screenshot post-hmr - 800x600 visible=41609 luma=18.8 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520182924-post-hmr.png
+PASS screenshot post-hmr - 800x600 visible=24128 luma=20.7 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520191101-post-hmr.png
 PASS runner stayed alive after GPU HMR - no runner crash marker
 PASS constant/global edit compile dispatched via MCP - src/gpu/particle_kernels.hip
 PASS constant/global edit blocks device_only - [gpu-hmr] device_only fast path rejected: user=src/gpu/particle_kernels.hip reasons=abi.constant_global_layout_changed
@@ -47,8 +49,8 @@ PASS stale launch pointer blocks device_only - [gpu-hmr] device_only fast path r
 PASS stale launch pointer stops unsafe fallback - [gpu-hmr] device_only hard stop: user=src/gpu/particle_kernels.hip reasons=stale_launch_pointer_detected
 PASS stale launch pointer does not reload sidecar - no successful sidecar reload after hard-stop rejection
 PASS stale launch pointer forced AI delta dispatched via MCP - src/gpu/particle_kernels.hip
-PASS worker sent stale-launch-pointer delta to GPU AI endpoint - [GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=1970 bytes arch=332 chars device=1895 bytes hint=device_only
-PASS ai-engine processed stale-launch-pointer GPU delta - [GpuDiffPatch] plan=device_only edits=1 attempt=1/2 elapsed=10.04s
+PASS worker sent stale-launch-pointer delta to GPU AI endpoint - [GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=1970 bytes arch=193 chars device=1886 bytes hint=device_only
+PASS ai-engine processed stale-launch-pointer GPU delta - [GpuDiffPatch] plan=device_only edits=1 attempt=1/2 elapsed=11.97s
 PASS stale launch pointer AI delta rejected by verifier policy - [GPU AI Delta] rejected: user=src/gpu/particle_kernels.hip generated=.synthi/generated/gpu/device.hip requested_plan=device_only reasons=verifier.ai_delta_rejected,stale_launch_pointer_detected
 PASS stale launch pointer AI delta does not reload sidecar - no successful sidecar reload after hard-stop rejection
 PASS stale toolchain edit compile dispatched via MCP - src/gpu/particle_kernels.hip
@@ -56,8 +58,8 @@ PASS stale toolchain capability blocks device_only - [gpu-hmr] device_only fast 
 PASS stale toolchain capability stops unsafe fallback - [gpu-hmr] device_only hard stop: user=src/gpu/particle_kernels.hip reasons=toolchain_capability_stale
 PASS stale toolchain capability does not reload sidecar - no successful sidecar reload after hard-stop rejection
 PASS stale toolchain forced AI delta dispatched via MCP - src/gpu/particle_kernels.hip
-PASS worker sent stale-toolchain delta to GPU AI endpoint - [GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2023 bytes arch=332 chars device=1895 bytes hint=device_only
-PASS ai-engine processed stale-toolchain GPU delta - [GpuDiffPatch] verifier rejected attempt=1/2 failures=[{'index': 0, 'module': 'device', 'reason': 'anchor_missing', 'anchor': '  vx[i] -= kHmrScaleDirection * ((dx / len) * 0.42f - dy * swirl) * params.dt;\n  vy[i] += kHmrScaleDirection * ((dy / len) * 0.42f + dx * swirl) * params.dt;\n\n  px += vx[i] * params.dt * 44.0f;\n  py += vy[i] * params.dt * 44.0f;\n\n  if (px < kResetPadding) { px = params.bounds_x - kResetPadding; vx[i] = fabsf(vx[i]) * 0.72f; }\n  else if (px > params.bounds_x - kRes
+PASS worker sent stale-toolchain delta to GPU AI endpoint - [GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2023 bytes arch=193 chars device=1886 bytes hint=device_only
+PASS ai-engine processed stale-toolchain GPU delta - [GpuDiffPatch] plan=device_only edits=2 attempt=1/2 elapsed=16.74s
 PASS stale toolchain AI delta rejected by verifier policy - [GPU AI Delta] rejected: user=src/gpu/particle_kernels.hip generated=.synthi/generated/gpu/device.hip requested_plan=device_only reasons=verifier.ai_delta_rejected,toolchain_capability_stale
 PASS stale toolchain AI delta does not reload sidecar - no successful sidecar reload after hard-stop rejection
 PASS missing toolchain edit compile dispatched via MCP - src/gpu/particle_kernels.hip
@@ -65,22 +67,22 @@ PASS missing toolchain capability blocks device_only - [gpu-hmr] device_only fas
 PASS missing toolchain capability stops unsafe fallback - [gpu-hmr] device_only hard stop: user=src/gpu/particle_kernels.hip reasons=toolchain_capability_missing
 PASS missing toolchain capability does not reload sidecar - no successful sidecar reload after hard-stop rejection
 PASS missing toolchain forced AI delta dispatched via MCP - src/gpu/particle_kernels.hip
-PASS worker sent missing-toolchain delta to GPU AI endpoint - [GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2023 bytes arch=332 chars device=1895 bytes hint=device_only
-PASS ai-engine processed missing-toolchain GPU delta - [GpuDiffPatch] plan=device_only edits=2 attempt=1/2 elapsed=9.90s
+PASS worker sent missing-toolchain delta to GPU AI endpoint - [GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2023 bytes arch=193 chars device=1886 bytes hint=device_only
+PASS ai-engine processed missing-toolchain GPU delta - [GpuDiffPatch] plan=device_only edits=2 attempt=1/2 elapsed=1.07s
 PASS missing toolchain AI delta rejected by verifier policy - [GPU AI Delta] rejected: user=src/gpu/particle_kernels.hip generated=.synthi/generated/gpu/device.hip requested_plan=device_only reasons=verifier.ai_delta_rejected,toolchain_capability_missing
 PASS missing toolchain AI delta does not reload sidecar - no successful sidecar reload after hard-stop rejection
 
-PHASE first_ai_split_compile wait=applied source=candidate_notification wait_ms=27087 terminal_wait_ms=27087 wall_ms=28124 detail={"preview_id":"gpu-scale-validation-20260520182924","generation":1,"total_reload_ms":1251} frame_gate={"status":"disabled","reason":"no_frame_advance_observed","pipeline_budget_ms":80}
-PHASE ai_device_delta_hmr wait=applied source=hmr_status wait_ms=20519 terminal_wait_ms=20400 wall_ms=21306 detail={"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true} frame_gate={"status":"satisfied","frame_seq":717,"ts_ms":1779301821283,"pipeline_budget_ms":80}
-PHASE negative_constant_global_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=89 detail={"ok":true,"session_id":"gpu-scale-validation-20260520182924","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779301822905,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
-PHASE negative_signature_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=78 detail={"ok":true,"session_id":"gpu-scale-validation-20260520182924","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779301824729,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
-PHASE negative_stale_launch_pointer_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=81 detail={"ok":true,"session_id":"gpu-scale-validation-20260520182924","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779301826627,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
-PHASE negative_forced_ai_delta_stale_launch_pointer_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=82 detail={"ok":true,"session_id":"gpu-scale-validation-20260520182924","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779301828357,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
-PHASE negative_stale_toolchain_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=84 detail={"ok":true,"session_id":"gpu-scale-validation-20260520182924","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779301840367,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
-PHASE negative_forced_ai_delta_stale_toolchain_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=95 detail={"ok":true,"session_id":"gpu-scale-validation-20260520182924","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779301842129,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
-PHASE negative_missing_toolchain_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=106 detail={"ok":true,"session_id":"gpu-scale-validation-20260520182924","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779301855128,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
-PHASE negative_forced_ai_delta_missing_toolchain_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=102 detail={"ok":true,"session_id":"gpu-scale-validation-20260520182924","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779301856949,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
+PHASE first_ai_split_compile wait=applied source=candidate_notification wait_ms=84265 terminal_wait_ms=84265 wall_ms=85113 detail={"preview_id":"gpu-scale-validation-20260520191101","generation":1,"total_reload_ms":1254} frame_gate={"status":"disabled","reason":"no_frame_advance_observed","pipeline_budget_ms":80}
+PHASE ai_device_delta_hmr wait=applied source=hmr_status wait_ms=1963 terminal_wait_ms=1837 wall_ms=2048 detail={"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true} frame_gate={"status":"satisfied","frame_seq":150,"ts_ms":1779304356351,"pipeline_budget_ms":80}
+PHASE negative_constant_global_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=89 detail={"ok":true,"session_id":"gpu-scale-validation-20260520191101","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779304357980,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
+PHASE negative_signature_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=104 detail={"ok":true,"session_id":"gpu-scale-validation-20260520191101","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779304359840,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
+PHASE negative_stale_launch_pointer_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=76 detail={"ok":true,"session_id":"gpu-scale-validation-20260520191101","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779304361811,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
+PHASE negative_forced_ai_delta_stale_launch_pointer_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=76 detail={"ok":true,"session_id":"gpu-scale-validation-20260520191101","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779304363510,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
+PHASE negative_stale_toolchain_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=87 detail={"ok":true,"session_id":"gpu-scale-validation-20260520191101","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779304377907,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
+PHASE negative_forced_ai_delta_stale_toolchain_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=87 detail={"ok":true,"session_id":"gpu-scale-validation-20260520191101","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779304379630,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
+PHASE negative_missing_toolchain_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=85 detail={"ok":true,"session_id":"gpu-scale-validation-20260520191101","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779304399015,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
+PHASE negative_forced_ai_delta_missing_toolchain_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=79 detail={"ok":true,"session_id":"gpu-scale-validation-20260520191101","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779304400740,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
 
-SCREENSHOT first-compile 800x600 visible=0 luma=0.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520182924-first-compile.png differs=
-SCREENSHOT first-compile 800x600 visible=45445 luma=19.6 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520182924-first-compile-attempt-2.png differs=
-SCREENSHOT post-hmr 800x600 visible=41609 luma=18.8 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520182924-post-hmr.png differs=true
+SCREENSHOT first-compile 800x600 visible=0 luma=0.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520191101-first-compile.png differs=
+SCREENSHOT first-compile 800x600 visible=27504 luma=22.4 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520191101-first-compile-attempt-2.png differs=
+SCREENSHOT post-hmr 800x600 visible=24128 luma=20.7 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520191101-post-hmr.png differs=true
