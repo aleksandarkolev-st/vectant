@@ -1,6 +1,6 @@
 {
-  "slug": "gpu-scale-validation-20260520213943",
-  "repo_commit": "6f416f015bfcd1d5035a69e5cabf23391043480d",
+  "slug": "gpu-scale-validation-20260521010546",
+  "repo_commit": "96a91e67456055b89fc67d85cd46f77d7b82040e",
   "model": "gemini-3.1-flash-lite-preview",
   "vendor": "rocm",
   "arch": "gfx1201",
@@ -16,30 +16,30 @@
   "template_evidence_mode": "fresh",
   "workspace_file_count": 298,
   "relevant_file_count": 58,
-  "started_at": "2026-05-20T21:39:43.552Z",
-  "finished_at": "2026-05-20T21:42:29.642Z",
+  "started_at": "2026-05-20T22:05:46.844Z",
+  "finished_at": "2026-05-20T22:07:59.071Z",
   "compose_files": [
     "docker-compose.yml",
     "docker-compose.gpu-amd.yml"
   ],
   "containers": {
     "worker": {
-      "id": "66212d6241ee45d35105bea0fc6aa72961fe82a1789f85cff0b83a38a3d00d24",
-      "image_id": "sha256:7489e12c8f511130ebbf337f1e100d7d78640c88a3a1cadf0dc66ec521775d1b",
+      "id": "d14399bd344af34b15d2cf0d332c81e27efa042f2366679415071db8700accd5",
+      "image_id": "sha256:54abd590970a5d0600d1cc49518b2731e23b5e62bf905a450df5a5cd1f6a737f",
       "image": "vectant-ade-worker-gpu:local",
-      "created": "2026-05-20T21:39:04.769461183Z"
+      "created": "2026-05-20T22:03:21.551242203Z"
     },
     "ai_engine": {
-      "id": "e8af9b793e0a47b4bb507ab9411b35a80f1c45644db323622847dbc126d0d796",
+      "id": "910f8ba418caa85d2fd0cf5029d76d1734ecdce397d0e4102449deb39616a5bd",
       "image_id": "sha256:f3880243e7205bb451fdc7993c6717a1f66b1a9dbb1238cdd75935079bd98579",
       "image": "vectant-ade-ai-engine",
-      "created": "2026-05-20T21:39:04.780497281Z"
+      "created": "2026-05-20T22:03:21.540819892Z"
     },
     "mcp": {
-      "id": "9f6e21f6643941fa07673fffdabbba83891696fde81284206b9c778a5282b6ca",
+      "id": "f16ad29b2a3774f6851484e0b022f59f57150e14aabeccdf539a3487d1c0435b",
       "image_id": "sha256:f8c790cb99095b1ac21af3ed273a5535167af79f1fefb510ccb7291fcf49c896",
       "image": "vectant-ade-mcp",
-      "created": "2026-05-20T21:39:16.330233497Z"
+      "created": "2026-05-20T22:03:33.219416695Z"
     }
   },
   "env": {
@@ -69,43 +69,57 @@
     "staleLaunchPointerCheckStatus": "pass",
     "failureReasonCode": "reload_failed.stale_launch_pointer"
   },
+  "warm_rebuild": {
+    "plan": "warm_rebuild",
+    "patchTier": "warm_rebuild",
+    "arbiterDecision": "auto_run",
+    "selectedPlan": "warm_rebuild",
+    "reasonCodes": [
+      "build.device_sidecar_rebuild",
+      "build.warm_rebuild",
+      "edit.device_reachable_header",
+      "template_evidence_fresh",
+      "template_instantiation_bounded"
+    ],
+    "verifierStatus": "accept"
+  },
   "phases": [
     {
       "name": "first_ai_split_compile",
-      "compile_dispatched_at": "2026-05-20T21:39:47.477Z",
-      "wait_hmr_started_at": "2026-05-20T21:39:47.489Z",
-      "wait_hmr_finished_at": "2026-05-20T21:41:28.146Z",
-      "wait_hmr_elapsed_ms": 6792,
-      "wait_hmr_terminal_elapsed_ms": 6791,
+      "compile_dispatched_at": "2026-05-20T22:05:50.320Z",
+      "wait_hmr_started_at": "2026-05-20T22:05:50.332Z",
+      "wait_hmr_finished_at": "2026-05-20T22:07:03.519Z",
+      "wait_hmr_elapsed_ms": 10389,
+      "wait_hmr_terminal_elapsed_ms": 10389,
       "wait_hmr_status": "applied",
       "wait_hmr_source": "candidate_notification",
       "wait_hmr_detail": {
-        "preview_id": "gpu-scale-validation-20260520213943",
+        "preview_id": "gpu-scale-validation-20260521010546",
         "generation": 1,
-        "total_reload_ms": 1271
+        "total_reload_ms": 1255
       },
       "frame_gate": {
         "status": "disabled",
         "reason": "no_frame_advance_observed",
         "pipeline_budget_ms": 80
       },
-      "wall_elapsed_ms": 100669,
+      "wall_elapsed_ms": 73199,
       "worker_log_markers": [
         "[AI Split] ENTER (cache_key=3725320517552057976, src_len=377, files=298, gpu_mode=rocm, gpu_arch=gfx1201, gpu_markers=true)",
         "GPU markers detected; calling GPU split endpoint: http://ai-engine:8000/refactor/split/gpu",
         "GPU split endpoint returned a 5-file split",
-        "[compile-device] hipcc -> /tmp/.tmpBtaL67/build/device_1779313256.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmpBtaL67/build/device_1779313256.hsaco\", \".synthi/generated/gpu/device.hip\"] }",
+        "[compile-device] hipcc -> /tmp/.tmp9nNJUo/build/device_1779314790.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmp9nNJUo/build/device_1779314790.hsaco\", \".synthi/generated/gpu/device.hip\"] }",
         "[compile-device] hipcc FAILED status=exit status: 1",
-        "[compile-device] hipcc ok  artifact=/tmp/.tmpBtaL67/build/device_1779313256.hsaco  diagnostics_kernels=0"
+        "[compile-device] hipcc ok  artifact=/tmp/.tmp9nNJUo/build/device_1779314790.hsaco  diagnostics_kernels=0"
       ]
     },
     {
       "name": "ai_device_delta_hmr",
-      "compile_dispatched_at": "2026-05-20T21:41:30.954Z",
-      "wait_hmr_started_at": "2026-05-20T21:41:30.969Z",
-      "wait_hmr_finished_at": "2026-05-20T21:41:36.284Z",
-      "wait_hmr_elapsed_ms": 5110,
-      "wait_hmr_terminal_elapsed_ms": 5018,
+      "compile_dispatched_at": "2026-05-20T22:07:06.489Z",
+      "wait_hmr_started_at": "2026-05-20T22:07:06.504Z",
+      "wait_hmr_finished_at": "2026-05-20T22:07:08.450Z",
+      "wait_hmr_elapsed_ms": 1868,
+      "wait_hmr_terminal_elapsed_ms": 1741,
       "wait_hmr_status": "applied",
       "wait_hmr_source": "hmr_status",
       "wait_hmr_detail": {
@@ -116,24 +130,54 @@
       },
       "frame_gate": {
         "status": "satisfied",
-        "frame_seq": 237,
-        "ts_ms": 1779313295941,
+        "frame_seq": 144,
+        "ts_ms": 1779314827967,
         "pipeline_budget_ms": 80
       },
-      "wall_elapsed_ms": 5330,
+      "wall_elapsed_ms": 1961,
       "worker_log_markers": [
-        "[GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2219 bytes arch=157 chars device=2793 bytes hint=device_only",
-        "[GPU AI Delta] Completed in 4.17s plan=device_only edit(s)=1",
+        "[GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2219 bytes arch=166 chars device=2710 bytes hint=device_only",
+        "[GPU AI Delta] Completed in 0.90s plan=device_only edit(s)=1",
         "[GPU AI Delta] accepted: user=src/gpu/particle_kernels.hip generated=.synthi/generated/gpu/device.hip plan=device_only edits=1",
-        "[compile-device] hipcc -> /tmp/.tmpBtaL67/build/device_1779313295.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmpBtaL67/build/device_1779313295.hsaco\", \".synthi/generated/gpu/device.hip\"] }",
-        "[compile-device] hipcc ok  artifact=/tmp/.tmpBtaL67/build/device_1779313295.hsaco  diagnostics_kernels=0",
+        "[compile-device] hipcc -> /tmp/.tmp9nNJUo/build/device_1779314827.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmp9nNJUo/build/device_1779314827.hsaco\", \".synthi/generated/gpu/device.hip\"] }",
+        "[compile-device] hipcc ok  artifact=/tmp/.tmp9nNJUo/build/device_1779314827.hsaco  diagnostics_kernels=0",
         "[gpu-reload] plan=device_only  reason=device-file-only-edit",
-        "Device sidecar reload vendor=rocm artifact=/tmp/.tmpBtaL67/build/device_1779313295.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 3, state_preserved: true }"
+        "Device sidecar reload vendor=rocm artifact=/tmp/.tmp9nNJUo/build/device_1779314827.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 4, state_preserved: true }"
+      ]
+    },
+    {
+      "name": "template_warm_rebuild_hmr",
+      "compile_dispatched_at": "2026-05-20T22:07:10.066Z",
+      "wait_hmr_started_at": "2026-05-20T22:07:10.079Z",
+      "wait_hmr_finished_at": "2026-05-20T22:07:10.944Z",
+      "wait_hmr_elapsed_ms": 2017,
+      "wait_hmr_terminal_elapsed_ms": 1916,
+      "wait_hmr_status": "applied",
+      "wait_hmr_source": "hmr_status",
+      "wait_hmr_detail": {
+        "status": "applied",
+        "module": "device",
+        "capability": "GPU sidecar HMR",
+        "state_preserved": true
+      },
+      "frame_gate": {
+        "status": "satisfied",
+        "frame_seq": 216,
+        "ts_ms": 1779314831558,
+        "pipeline_budget_ms": 80
+      },
+      "wall_elapsed_ms": 878,
+      "worker_log_markers": [
+        "[gpu-hmr] warm_rebuild accepted: user=src/gpu/particle_template_math.hpp generated=.synthi/generated/gpu/device.hip reasons=build.device_sidecar_rebuild,build.warm_rebuild,edit.device_reachable_header,template_evidence_fresh,template_instantiation_bounded",
+        "[compile-device] hipcc -> /tmp/.tmp9nNJUo/build/device_1779314829.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmp9nNJUo/build/device_1779314829.hsaco\", \".synthi/generated/gpu/device.hip\"] }",
+        "[compile-device] hipcc ok  artifact=/tmp/.tmp9nNJUo/build/device_1779314829.hsaco  diagnostics_kernels=0",
+        "[gpu-reload] plan=device_only  reason=device-file-only-edit",
+        "Device sidecar reload vendor=rocm artifact=/tmp/.tmp9nNJUo/build/device_1779314829.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 3, state_preserved: true }"
       ]
     },
     {
       "name": "negative_constant_global_rejection",
-      "compile_dispatched_at": "2026-05-20T21:41:38.034Z",
+      "compile_dispatched_at": "2026-05-20T22:07:12.521Z",
       "wait_hmr_started_at": null,
       "wait_hmr_finished_at": null,
       "wait_hmr_elapsed_ms": null,
@@ -142,19 +186,23 @@
       "wait_hmr_source": "negative_validation",
       "wait_hmr_detail": {
         "ok": true,
-        "session_id": "gpu-scale-validation-20260520213943",
+        "session_id": "gpu-scale-validation-20260521010546",
         "language": "cpp",
         "filename": "src/gpu/particle_kernels.hip",
-        "dispatched_at": 1779313297636,
+        "dispatched_at": 1779314833086,
         "note": "Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."
       },
       "frame_gate": null,
-      "wall_elapsed_ms": 81,
-      "worker_log_markers": []
+      "wall_elapsed_ms": 78,
+      "worker_log_markers": [
+        "[compile-device] hipcc ok  artifact=/tmp/.tmp9nNJUo/build/device_1779314829.hsaco  diagnostics_kernels=0",
+        "[gpu-reload] plan=device_only  reason=device-file-only-edit",
+        "Device sidecar reload vendor=rocm artifact=/tmp/.tmp9nNJUo/build/device_1779314829.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 3, state_preserved: true }"
+      ]
     },
     {
       "name": "negative_signature_rejection",
-      "compile_dispatched_at": "2026-05-20T21:41:39.914Z",
+      "compile_dispatched_at": "2026-05-20T22:07:14.375Z",
       "wait_hmr_started_at": null,
       "wait_hmr_finished_at": null,
       "wait_hmr_elapsed_ms": null,
@@ -163,19 +211,19 @@
       "wait_hmr_source": "negative_validation",
       "wait_hmr_detail": {
         "ok": true,
-        "session_id": "gpu-scale-validation-20260520213943",
+        "session_id": "gpu-scale-validation-20260521010546",
         "language": "cpp",
         "filename": "src/gpu/particle_kernels.hip",
-        "dispatched_at": 1779313299446,
+        "dispatched_at": 1779314834870,
         "note": "Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."
       },
       "frame_gate": null,
-      "wall_elapsed_ms": 88,
+      "wall_elapsed_ms": 86,
       "worker_log_markers": []
     },
     {
       "name": "negative_stale_launch_pointer_rejection",
-      "compile_dispatched_at": "2026-05-20T21:41:41.866Z",
+      "compile_dispatched_at": "2026-05-20T22:07:16.293Z",
       "wait_hmr_started_at": null,
       "wait_hmr_finished_at": null,
       "wait_hmr_elapsed_ms": null,
@@ -184,19 +232,19 @@
       "wait_hmr_source": "negative_validation",
       "wait_hmr_detail": {
         "ok": true,
-        "session_id": "gpu-scale-validation-20260520213943",
+        "session_id": "gpu-scale-validation-20260521010546",
         "language": "cpp",
         "filename": "src/gpu/particle_kernels.hip",
-        "dispatched_at": 1779313301322,
+        "dispatched_at": 1779314836716,
         "note": "Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."
       },
       "frame_gate": null,
-      "wall_elapsed_ms": 91,
+      "wall_elapsed_ms": 82,
       "worker_log_markers": []
     },
     {
       "name": "negative_forced_ai_delta_stale_launch_pointer_rejection",
-      "compile_dispatched_at": "2026-05-20T21:41:43.654Z",
+      "compile_dispatched_at": "2026-05-20T22:07:18.065Z",
       "wait_hmr_started_at": null,
       "wait_hmr_finished_at": null,
       "wait_hmr_elapsed_ms": null,
@@ -205,19 +253,19 @@
       "wait_hmr_source": "negative_validation",
       "wait_hmr_detail": {
         "ok": true,
-        "session_id": "gpu-scale-validation-20260520213943",
+        "session_id": "gpu-scale-validation-20260521010546",
         "language": "cpp",
         "filename": "src/gpu/particle_kernels.hip",
-        "dispatched_at": 1779313304225,
+        "dispatched_at": 1779314838420,
         "note": "Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."
       },
       "frame_gate": null,
-      "wall_elapsed_ms": 83,
+      "wall_elapsed_ms": 68,
       "worker_log_markers": []
     },
     {
       "name": "negative_stale_toolchain_rejection",
-      "compile_dispatched_at": "2026-05-20T21:41:51.898Z",
+      "compile_dispatched_at": "2026-05-20T22:07:21.560Z",
       "wait_hmr_started_at": null,
       "wait_hmr_finished_at": null,
       "wait_hmr_elapsed_ms": null,
@@ -226,22 +274,22 @@
       "wait_hmr_source": "negative_validation",
       "wait_hmr_detail": {
         "ok": true,
-        "session_id": "gpu-scale-validation-20260520213943",
+        "session_id": "gpu-scale-validation-20260521010546",
         "language": "cpp",
         "filename": "src/gpu/particle_kernels.hip",
-        "dispatched_at": 1779313312160,
+        "dispatched_at": 1779314841784,
         "note": "Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."
       },
       "frame_gate": null,
-      "wall_elapsed_ms": 79,
+      "wall_elapsed_ms": 75,
       "worker_log_markers": [
-        "[GPU AI Delta] Completed in 5.92s plan=device_only edit(s)=1",
+        "[GPU AI Delta] Completed in 1.04s plan=device_only edit(s)=1",
         "[GPU AI Delta] rejected: user=src/gpu/particle_kernels.hip generated=.synthi/generated/gpu/device.hip requested_plan=device_only reasons=verifier.ai_delta_rejected,stale_launch_pointer_detected"
       ]
     },
     {
       "name": "negative_forced_ai_delta_stale_toolchain_rejection",
-      "compile_dispatched_at": "2026-05-20T21:41:53.670Z",
+      "compile_dispatched_at": "2026-05-20T22:07:23.311Z",
       "wait_hmr_started_at": null,
       "wait_hmr_finished_at": null,
       "wait_hmr_elapsed_ms": null,
@@ -250,10 +298,10 @@
       "wait_hmr_source": "negative_validation",
       "wait_hmr_detail": {
         "ok": true,
-        "session_id": "gpu-scale-validation-20260520213943",
+        "session_id": "gpu-scale-validation-20260521010546",
         "language": "cpp",
         "filename": "src/gpu/particle_kernels.hip",
-        "dispatched_at": 1779313313864,
+        "dispatched_at": 1779314843465,
         "note": "Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."
       },
       "frame_gate": null,
@@ -262,7 +310,7 @@
     },
     {
       "name": "negative_missing_toolchain_rejection",
-      "compile_dispatched_at": "2026-05-20T21:42:24.474Z",
+      "compile_dispatched_at": "2026-05-20T22:07:26.721Z",
       "wait_hmr_started_at": null,
       "wait_hmr_finished_at": null,
       "wait_hmr_elapsed_ms": null,
@@ -271,22 +319,19 @@
       "wait_hmr_source": "negative_validation",
       "wait_hmr_detail": {
         "ok": true,
-        "session_id": "gpu-scale-validation-20260520213943",
+        "session_id": "gpu-scale-validation-20260521010546",
         "language": "cpp",
         "filename": "src/gpu/particle_kernels.hip",
-        "dispatched_at": 1779313344693,
+        "dispatched_at": 1779314846745,
         "note": "Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."
       },
       "frame_gate": null,
-      "wall_elapsed_ms": 87,
-      "worker_log_markers": [
-        "[GPU AI Delta] Completed in 28.97s plan=device_only edit(s)=2",
-        "[GPU AI Delta] rejected: user=src/gpu/particle_kernels.hip generated=.synthi/generated/gpu/device.hip requested_plan=device_only reasons=verifier.ai_delta_rejected,toolchain_capability_stale"
-      ]
+      "wall_elapsed_ms": 77,
+      "worker_log_markers": []
     },
     {
       "name": "negative_forced_ai_delta_missing_toolchain_rejection",
-      "compile_dispatched_at": "2026-05-20T21:42:26.268Z",
+      "compile_dispatched_at": "2026-05-20T22:07:28.489Z",
       "wait_hmr_started_at": null,
       "wait_hmr_finished_at": null,
       "wait_hmr_elapsed_ms": null,
@@ -295,47 +340,58 @@
       "wait_hmr_source": "negative_validation",
       "wait_hmr_detail": {
         "ok": true,
-        "session_id": "gpu-scale-validation-20260520213943",
+        "session_id": "gpu-scale-validation-20260521010546",
         "language": "cpp",
         "filename": "src/gpu/particle_kernels.hip",
-        "dispatched_at": 1779313346413,
+        "dispatched_at": 1779314848443,
         "note": "Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."
       },
       "frame_gate": null,
-      "wall_elapsed_ms": 80,
+      "wall_elapsed_ms": 73,
       "worker_log_markers": []
     }
   ],
   "screenshots": [
     {
-      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260520213943-first-compile.png",
+      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260521010546-first-compile.png",
       "width": 800,
       "height": 600,
       "visible_pixels": 0,
       "mean_luma": 0,
       "captured_after_phase": "first-compile",
       "attempt": 1,
-      "seq": 2
+      "seq": 1
     },
     {
-      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260520213943-first-compile-attempt-2.png",
+      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260521010546-first-compile-attempt-2.png",
       "width": 800,
       "height": 600,
-      "visible_pixels": 43144,
-      "mean_luma": 19.749142958780464,
+      "visible_pixels": 40193,
+      "mean_luma": 19.804125725051847,
       "captured_after_phase": "first-compile",
       "attempt": 2,
       "seq": 32
     },
     {
-      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260520213943-post-hmr.png",
+      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260521010546-post-hmr.png",
       "width": 800,
       "height": 600,
-      "visible_pixels": 41215,
-      "mean_luma": 18.688233352421072,
+      "visible_pixels": 43608,
+      "mean_luma": 19.144576483285615,
       "captured_after_phase": "post-hmr",
       "attempt": 1,
-      "seq": 255,
+      "seq": 162,
+      "differs_from_first": true
+    },
+    {
+      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260521010546-post-warm-rebuild.png",
+      "width": 800,
+      "height": 600,
+      "visible_pixels": 33323,
+      "mean_luma": 17.26353712239253,
+      "captured_after_phase": "post-warm-rebuild",
+      "attempt": 1,
+      "seq": 235,
       "differs_from_first": true
     }
   ],
@@ -344,373 +400,421 @@
       "name": "gpu target",
       "status": "pass",
       "detail": "rocm arch=gfx1201 render_backend=glfw template_evidence=fresh",
-      "ts": "2026-05-20T21:39:43.922Z"
+      "ts": "2026-05-20T22:05:47.205Z"
     },
     {
       "name": "source file mix",
       "status": "pass",
       "detail": "{\"cpp\":13,\"hpp\":18,\"h\":10,\"hip\":11,\"cu\":0,\"total\":52}",
-      "ts": "2026-05-20T21:39:43.923Z"
+      "ts": "2026-05-20T22:05:47.207Z"
     },
     {
       "name": "ordinary user project guard",
       "status": "pass",
       "detail": "298 files, no Synthi ABI or generated role filenames",
-      "ts": "2026-05-20T21:39:43.924Z"
+      "ts": "2026-05-20T22:05:47.208Z"
     },
     {
       "name": "create workspace",
       "status": "pass",
-      "detail": "id=cmpel4nzg0015l201xhjmzelc slug=gpu-scale-validation-20260520213943",
-      "ts": "2026-05-20T21:39:44.361Z"
+      "detail": "id=cmpem25xk0017l201n1uyc976 slug=gpu-scale-validation-20260521010546",
+      "ts": "2026-05-20T22:05:47.344Z"
     },
     {
       "name": "seed scale workspace",
       "status": "pass",
       "detail": "298 files",
-      "ts": "2026-05-20T21:39:45.758Z"
+      "ts": "2026-05-20T22:05:48.698Z"
     },
     {
       "name": "mcp tools/list",
       "status": "pass",
       "detail": "count=42",
-      "ts": "2026-05-20T21:39:46.232Z"
+      "ts": "2026-05-20T22:05:49.074Z"
     },
     {
       "name": "mcp attach",
       "status": "pass",
       "detail": "attached",
-      "ts": "2026-05-20T21:39:47.476Z"
+      "ts": "2026-05-20T22:05:50.320Z"
     },
     {
       "name": "first compile via MCP",
       "status": "pass",
       "detail": "files=298",
-      "ts": "2026-05-20T21:41:28.201Z"
+      "ts": "2026-05-20T22:07:03.574Z"
     },
     {
       "name": "worker saw full file set",
       "status": "pass",
       "detail": "[AI Split] ENTER (cache_key=3725320517552057976, src_len=377, files=298, gpu_mode=rocm, gpu_arch=gfx1201",
-      "ts": "2026-05-20T21:41:28.254Z"
+      "ts": "2026-05-20T22:07:03.627Z"
     },
     {
       "name": "ai-engine saw full file set",
       "status": "pass",
       "detail": "[split/gpu] request file context count=298 focus=src/app/main.cpp names=['src/app/main.cpp",
-      "ts": "2026-05-20T21:41:28.323Z"
+      "ts": "2026-05-20T22:07:03.689Z"
     },
     {
       "name": "screenshot first-compile retry",
       "status": "warn",
-      "detail": "800x600 visible=0 luma=0.0 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260520213943-first-compile.png attempt=1/6",
-      "ts": "2026-05-20T21:41:28.868Z"
+      "detail": "800x600 visible=0 luma=0.0 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260521010546-first-compile.png attempt=1/6",
+      "ts": "2026-05-20T22:07:04.240Z"
     },
     {
       "name": "screenshot first-compile",
       "status": "pass",
-      "detail": "800x600 visible=43144 luma=19.7 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260520213943-first-compile-attempt-2.png attempt=2",
-      "ts": "2026-05-20T21:41:29.907Z"
+      "detail": "800x600 visible=40193 luma=19.8 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260521010546-first-compile-attempt-2.png attempt=2",
+      "ts": "2026-05-20T22:07:05.282Z"
     },
     {
       "name": "generated split preserved GLFW/OpenGL backend",
       "status": "pass",
       "detail": "no SDL markers in generated roles",
-      "ts": "2026-05-20T21:41:30.859Z"
+      "ts": "2026-05-20T22:07:06.380Z"
     },
     {
       "name": "generated split contains HMR ABI",
       "status": "pass",
       "detail": ".synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip",
-      "ts": "2026-05-20T21:41:30.859Z"
+      "ts": "2026-05-20T22:07:06.380Z"
     },
     {
       "name": "generated launch sites use indirection table",
       "status": "pass",
       "detail": "launchSites=2 tableVersion=1",
-      "ts": "2026-05-20T21:41:30.859Z"
+      "ts": "2026-05-20T22:07:06.380Z"
     },
     {
       "name": "stale launch pointer check passed",
       "status": "pass",
       "detail": "reload_failed.stale_launch_pointer",
-      "ts": "2026-05-20T21:41:30.860Z"
+      "ts": "2026-05-20T22:07:06.380Z"
     },
     {
       "name": "fresh template evidence enables bounded warm rebuild option",
       "status": "pass",
       "detail": "instantiations=2 warm=pass",
-      "ts": "2026-05-20T21:41:30.860Z"
+      "ts": "2026-05-20T22:07:06.381Z"
     },
     {
       "name": "production run report records target, capability, cache, and header graph",
       "status": "pass",
       "detail": "target=particle_field arbiter=skip headers=3",
-      "ts": "2026-05-20T21:41:30.860Z"
+      "ts": "2026-05-20T22:07:06.381Z"
     },
     {
       "name": "read generated split from worker",
       "status": "pass",
-      "detail": "worker=/tmp/.tmpBtaL67",
-      "ts": "2026-05-20T21:41:30.860Z"
+      "detail": "worker=/tmp/.tmp9nNJUo",
+      "ts": "2026-05-20T22:07:06.381Z"
     },
     {
       "name": "generated split kept internal",
       "status": "pass",
       "detail": ".synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip supplied inline to HMR compile only",
-      "ts": "2026-05-20T21:41:30.860Z"
+      "ts": "2026-05-20T22:07:06.381Z"
     },
     {
       "name": "user device-source AI delta compile via MCP",
       "status": "pass",
       "detail": "src/gpu/particle_kernels.hip",
-      "ts": "2026-05-20T21:41:36.356Z"
+      "ts": "2026-05-20T22:07:08.514Z"
     },
     {
       "name": "workspace visible tree remains user files only",
       "status": "pass",
       "detail": "318 listed files; no generated split artifacts",
-      "ts": "2026-05-20T21:41:36.400Z"
+      "ts": "2026-05-20T22:07:08.547Z"
     },
     {
       "name": "worker forced GPU AI delta endpoint",
       "status": "pass",
-      "detail": "[GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2219 bytes arch=157 chars device=2793 bytes hint=device_only",
-      "ts": "2026-05-20T21:41:36.464Z"
+      "detail": "[GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2219 bytes arch=166 chars device=2710 bytes hint=device_only",
+      "ts": "2026-05-20T22:07:08.605Z"
     },
     {
       "name": "ai-engine processed GPU delta",
       "status": "pass",
-      "detail": "[GpuDiffPatch] plan=device_only edits=1 attempt=1/2 elapsed=4.17s",
-      "ts": "2026-05-20T21:41:36.524Z"
+      "detail": "[GpuDiffPatch] plan=device_only edits=1 attempt=1/2 elapsed=0.90s",
+      "ts": "2026-05-20T22:07:08.665Z"
     },
     {
       "name": "device-only GPU HMR observed",
       "status": "pass",
       "detail": "[gpu-reload] plan=device_only  reason=device-file-only-edit",
-      "ts": "2026-05-20T21:41:36.592Z"
+      "ts": "2026-05-20T22:07:08.739Z"
     },
     {
       "name": "screenshot post-hmr",
       "status": "pass",
-      "detail": "800x600 visible=41215 luma=18.7 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260520213943-post-hmr.png",
-      "ts": "2026-05-20T21:41:37.734Z"
+      "detail": "800x600 visible=43608 luma=19.1 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260521010546-post-hmr.png",
+      "ts": "2026-05-20T22:07:09.786Z"
     },
     {
       "name": "runner stayed alive after GPU HMR",
       "status": "pass",
       "detail": "no runner crash marker",
-      "ts": "2026-05-20T21:41:37.794Z"
+      "ts": "2026-05-20T22:07:09.842Z"
+    },
+    {
+      "name": "template header warm rebuild compile via MCP",
+      "status": "pass",
+      "detail": "src/gpu/particle_template_math.hpp",
+      "ts": "2026-05-20T22:07:11.001Z"
+    },
+    {
+      "name": "workspace visible tree remains user files only",
+      "status": "pass",
+      "detail": "318 listed files; no generated split artifacts",
+      "ts": "2026-05-20T22:07:11.031Z"
+    },
+    {
+      "name": "bounded template edit uses warm_rebuild",
+      "status": "pass",
+      "detail": "[gpu-hmr] warm_rebuild accepted: user=src/gpu/particle_template_math.hpp generated=.synthi/generated/gpu/device.hip reasons=build.device_sidecar_rebuild,build.warm_rebuild",
+      "ts": "2026-05-20T22:07:11.082Z"
+    },
+    {
+      "name": "warm rebuild compiles device sidecar",
+      "status": "pass",
+      "detail": "[compile-device] hipcc -> /tmp/.tmp9nNJUo/build/device_1779314829.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmp9nNJUo/build/device_1779314829.hsaco\", \".synthi/generated/gpu/device.hip\"] }",
+      "ts": "2026-05-20T22:07:11.141Z"
+    },
+    {
+      "name": "warm rebuild reload observed",
+      "status": "pass",
+      "detail": "Device sidecar reload vendor=rocm artifact=/tmp/.tmp9nNJUo/build/device_1779314829.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 3, state_preserved: true }",
+      "ts": "2026-05-20T22:07:11.202Z"
+    },
+    {
+      "name": "warm rebuild avoided AI split and AI delta",
+      "status": "pass",
+      "detail": "no AI split/delta marker during warm rebuild",
+      "ts": "2026-05-20T22:07:11.262Z"
+    },
+    {
+      "name": "screenshot post-warm-rebuild",
+      "status": "pass",
+      "detail": "800x600 visible=33323 luma=17.3 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-20260521010546-post-warm-rebuild.png",
+      "ts": "2026-05-20T22:07:12.302Z"
+    },
+    {
+      "name": "warm rebuild report accepted bounded template edit",
+      "status": "pass",
+      "detail": "build.device_sidecar_rebuild,build.warm_rebuild,edit.device_reachable_header,template_evidence_fresh,template_instantiation_bounded",
+      "ts": "2026-05-20T22:07:12.429Z"
     },
     {
       "name": "constant/global edit compile dispatched via MCP",
       "status": "pass",
       "detail": "src/gpu/particle_kernels.hip",
-      "ts": "2026-05-20T21:41:38.115Z"
+      "ts": "2026-05-20T22:07:12.599Z"
     },
     {
       "name": "constant/global edit blocks device_only",
       "status": "pass",
       "detail": "[gpu-hmr] device_only fast path rejected: user=src/gpu/particle_kernels.hip reasons=abi.constant_global_layout_changed",
-      "ts": "2026-05-20T21:41:38.190Z"
+      "ts": "2026-05-20T22:07:12.661Z"
     },
     {
       "name": "constant/global edit stops unsafe fallback",
       "status": "pass",
       "detail": "[gpu-hmr] device_only hard stop: user=src/gpu/particle_kernels.hip reasons=abi.constant_global_layout_changed",
-      "ts": "2026-05-20T21:41:38.259Z"
+      "ts": "2026-05-20T22:07:12.719Z"
     },
     {
       "name": "constant/global edit does not reload sidecar",
       "status": "pass",
       "detail": "no successful sidecar reload after hard-stop rejection",
-      "ts": "2026-05-20T21:41:39.823Z"
+      "ts": "2026-05-20T22:07:14.282Z"
     },
     {
       "name": "signature edit compile dispatched via MCP",
       "status": "pass",
       "detail": "src/gpu/particle_kernels.hip",
-      "ts": "2026-05-20T21:41:40.002Z"
+      "ts": "2026-05-20T22:07:14.461Z"
     },
     {
       "name": "signature edit blocks device_only",
       "status": "pass",
       "detail": "[gpu-hmr] device_only fast path rejected: user=src/gpu/particle_kernels.hip reasons=abi.kernel_signature_changed",
-      "ts": "2026-05-20T21:41:40.074Z"
+      "ts": "2026-05-20T22:07:14.517Z"
     },
     {
       "name": "signature edit stops unsafe fallback",
       "status": "pass",
       "detail": "[gpu-hmr] device_only hard stop: user=src/gpu/particle_kernels.hip reasons=abi.kernel_signature_changed",
-      "ts": "2026-05-20T21:41:40.135Z"
+      "ts": "2026-05-20T22:07:14.572Z"
     },
     {
       "name": "signature edit does not reload sidecar",
       "status": "pass",
       "detail": "no successful sidecar reload after hard-stop rejection",
-      "ts": "2026-05-20T21:41:41.698Z"
+      "ts": "2026-05-20T22:07:16.130Z"
     },
     {
       "name": "stale launch pointer edit compile dispatched via MCP",
       "status": "pass",
       "detail": "src/gpu/particle_kernels.hip",
-      "ts": "2026-05-20T21:41:41.957Z"
+      "ts": "2026-05-20T22:07:16.375Z"
     },
     {
       "name": "stale launch pointer blocks device_only",
       "status": "pass",
       "detail": "[gpu-hmr] device_only fast path rejected: user=src/gpu/particle_kernels.hip reasons=stale_launch_pointer_detected",
-      "ts": "2026-05-20T21:41:42.026Z"
+      "ts": "2026-05-20T22:07:16.443Z"
     },
     {
       "name": "stale launch pointer stops unsafe fallback",
       "status": "pass",
       "detail": "[gpu-hmr] device_only hard stop: user=src/gpu/particle_kernels.hip reasons=stale_launch_pointer_detected",
-      "ts": "2026-05-20T21:41:42.082Z"
+      "ts": "2026-05-20T22:07:16.507Z"
     },
     {
       "name": "stale launch pointer does not reload sidecar",
       "status": "pass",
       "detail": "no successful sidecar reload after hard-stop rejection",
-      "ts": "2026-05-20T21:41:43.653Z"
+      "ts": "2026-05-20T22:07:18.064Z"
     },
     {
       "name": "stale launch pointer forced AI delta dispatched via MCP",
       "status": "pass",
       "detail": "src/gpu/particle_kernels.hip",
-      "ts": "2026-05-20T21:41:43.737Z"
+      "ts": "2026-05-20T22:07:18.133Z"
     },
     {
       "name": "worker sent stale-launch-pointer delta to GPU AI endpoint",
       "status": "pass",
-      "detail": "[GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2219 bytes arch=157 chars device=2793 bytes hint=device_only",
-      "ts": "2026-05-20T21:41:43.806Z"
+      "detail": "[GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2219 bytes arch=166 chars device=2710 bytes hint=device_only",
+      "ts": "2026-05-20T22:07:18.194Z"
     },
     {
       "name": "ai-engine processed stale-launch-pointer GPU delta",
       "status": "pass",
-      "detail": "[GpuDiffPatch] plan=device_only edits=1 attempt=1/2 elapsed=5.92s",
-      "ts": "2026-05-20T21:41:50.108Z"
+      "detail": "[GpuDiffPatch] plan=device_only edits=1 attempt=1/2 elapsed=1.04s",
+      "ts": "2026-05-20T22:07:19.775Z"
     },
     {
       "name": "stale launch pointer AI delta rejected by verifier policy",
       "status": "pass",
       "detail": "[GPU AI Delta] rejected: user=src/gpu/particle_kernels.hip generated=.synthi/generated/gpu/device.hip requested_plan=device_only reasons=verifier.ai_delta_rejected,stale_launch_pointer_detected",
-      "ts": "2026-05-20T21:41:50.172Z"
+      "ts": "2026-05-20T22:07:19.829Z"
     },
     {
       "name": "stale launch pointer AI delta does not reload sidecar",
       "status": "pass",
       "detail": "no successful sidecar reload after hard-stop rejection",
-      "ts": "2026-05-20T21:41:51.739Z"
+      "ts": "2026-05-20T22:07:21.393Z"
     },
     {
       "name": "stale toolchain edit compile dispatched via MCP",
       "status": "pass",
       "detail": "src/gpu/particle_kernels.hip",
-      "ts": "2026-05-20T21:41:51.977Z"
+      "ts": "2026-05-20T22:07:21.635Z"
     },
     {
       "name": "stale toolchain capability blocks device_only",
       "status": "pass",
       "detail": "[gpu-hmr] device_only fast path rejected: user=src/gpu/particle_kernels.hip reasons=toolchain_capability_stale",
-      "ts": "2026-05-20T21:41:52.039Z"
+      "ts": "2026-05-20T22:07:21.697Z"
     },
     {
       "name": "stale toolchain capability stops unsafe fallback",
       "status": "pass",
       "detail": "[gpu-hmr] device_only hard stop: user=src/gpu/particle_kernels.hip reasons=toolchain_capability_stale",
-      "ts": "2026-05-20T21:41:52.104Z"
+      "ts": "2026-05-20T22:07:21.752Z"
     },
     {
       "name": "stale toolchain capability does not reload sidecar",
       "status": "pass",
       "detail": "no successful sidecar reload after hard-stop rejection",
-      "ts": "2026-05-20T21:41:53.669Z"
+      "ts": "2026-05-20T22:07:23.310Z"
     },
     {
       "name": "stale toolchain forced AI delta dispatched via MCP",
       "status": "pass",
       "detail": "src/gpu/particle_kernels.hip",
-      "ts": "2026-05-20T21:41:53.744Z"
+      "ts": "2026-05-20T22:07:23.385Z"
     },
     {
       "name": "worker sent stale-toolchain delta to GPU AI endpoint",
       "status": "pass",
-      "detail": "[GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2272 bytes arch=157 chars device=2793 bytes hint=device_only",
-      "ts": "2026-05-20T21:41:53.813Z"
+      "detail": "[GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2272 bytes arch=166 chars device=2710 bytes hint=device_only",
+      "ts": "2026-05-20T22:07:23.451Z"
     },
     {
       "name": "ai-engine processed stale-toolchain GPU delta",
       "status": "pass",
-      "detail": "[GpuDiffPatch] plan=device_only edits=2 attempt=1/2 elapsed=28.97s",
-      "ts": "2026-05-20T21:42:22.753Z"
+      "detail": "[GpuDiffPatch] plan=device_only edits=2 attempt=1/2 elapsed=0.93s",
+      "ts": "2026-05-20T22:07:25.030Z"
     },
     {
       "name": "stale toolchain AI delta rejected by verifier policy",
       "status": "pass",
       "detail": "[GPU AI Delta] rejected: user=src/gpu/particle_kernels.hip generated=.synthi/generated/gpu/device.hip requested_plan=device_only reasons=verifier.ai_delta_rejected,toolchain_capability_stale",
-      "ts": "2026-05-20T21:42:22.824Z"
+      "ts": "2026-05-20T22:07:25.089Z"
     },
     {
       "name": "stale toolchain AI delta does not reload sidecar",
       "status": "pass",
       "detail": "no successful sidecar reload after hard-stop rejection",
-      "ts": "2026-05-20T21:42:24.401Z"
+      "ts": "2026-05-20T22:07:26.655Z"
     },
     {
       "name": "missing toolchain edit compile dispatched via MCP",
       "status": "pass",
       "detail": "src/gpu/particle_kernels.hip",
-      "ts": "2026-05-20T21:42:24.561Z"
+      "ts": "2026-05-20T22:07:26.798Z"
     },
     {
       "name": "missing toolchain capability blocks device_only",
       "status": "pass",
       "detail": "[gpu-hmr] device_only fast path rejected: user=src/gpu/particle_kernels.hip reasons=toolchain_capability_missing",
-      "ts": "2026-05-20T21:42:24.630Z"
+      "ts": "2026-05-20T22:07:26.860Z"
     },
     {
       "name": "missing toolchain capability stops unsafe fallback",
       "status": "pass",
       "detail": "[gpu-hmr] device_only hard stop: user=src/gpu/particle_kernels.hip reasons=toolchain_capability_missing",
-      "ts": "2026-05-20T21:42:24.694Z"
+      "ts": "2026-05-20T22:07:26.925Z"
     },
     {
       "name": "missing toolchain capability does not reload sidecar",
       "status": "pass",
       "detail": "no successful sidecar reload after hard-stop rejection",
-      "ts": "2026-05-20T21:42:26.268Z"
+      "ts": "2026-05-20T22:07:28.489Z"
     },
     {
       "name": "missing toolchain forced AI delta dispatched via MCP",
       "status": "pass",
       "detail": "src/gpu/particle_kernels.hip",
-      "ts": "2026-05-20T21:42:26.348Z"
+      "ts": "2026-05-20T22:07:28.562Z"
     },
     {
       "name": "worker sent missing-toolchain delta to GPU AI endpoint",
       "status": "pass",
-      "detail": "[GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2272 bytes arch=157 chars device=2793 bytes hint=device_only",
-      "ts": "2026-05-20T21:42:26.420Z"
+      "detail": "[GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=2272 bytes arch=166 chars device=2710 bytes hint=device_only",
+      "ts": "2026-05-20T22:07:28.623Z"
     },
     {
       "name": "ai-engine processed missing-toolchain GPU delta",
       "status": "pass",
-      "detail": "[GpuDiffPatch] plan=device_only edits=2 attempt=1/2 elapsed=0.95s",
-      "ts": "2026-05-20T21:42:28.012Z"
+      "detail": "[GpuDiffPatch] plan=device_only edits=2 attempt=1/2 elapsed=28.77s",
+      "ts": "2026-05-20T22:07:57.430Z"
     },
     {
       "name": "missing toolchain AI delta rejected by verifier policy",
       "status": "pass",
       "detail": "[GPU AI Delta] rejected: user=src/gpu/particle_kernels.hip generated=.synthi/generated/gpu/device.hip requested_plan=device_only reasons=verifier.ai_delta_rejected,toolchain_capability_missing",
-      "ts": "2026-05-20T21:42:28.074Z"
+      "ts": "2026-05-20T22:07:57.495Z"
     },
     {
       "name": "missing toolchain AI delta does not reload sidecar",
       "status": "pass",
       "detail": "no successful sidecar reload after hard-stop rejection",
-      "ts": "2026-05-20T21:42:29.642Z"
+      "ts": "2026-05-20T22:07:59.071Z"
     }
   ],
   "prod_run_report": {
