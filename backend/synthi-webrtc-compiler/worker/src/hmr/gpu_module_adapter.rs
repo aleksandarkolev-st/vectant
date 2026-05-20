@@ -381,15 +381,7 @@ impl GpuModuleAdapter {
     /// resolved. Exposed so the adapter test can prove the table is
     /// complete without poking private state.
     pub fn required_driver_symbols(&self) -> Vec<&'static str> {
-        let v = self.config.vendor;
-        vec![
-            v.module_load_symbol(),
-            v.module_unload_symbol(),
-            v.module_get_function_symbol(),
-            v.launch_kernel_symbol(),
-            v.ctx_synchronize_symbol(),
-            v.stream_synchronize_symbol(),
-        ]
+        gpu_driver_loader::required_symbol_names(self.config.vendor).to_vec()
     }
 
     pub fn last_reload_log(&self) -> &[String] {
@@ -1089,13 +1081,22 @@ mod tests {
     fn required_symbol_table_is_complete_cuda() {
         let a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
         let syms = a.required_driver_symbols();
+        let expected = gpu_driver_loader::required_symbol_names(GpuVendor::Cuda);
+        assert_eq!(syms.as_slice(), expected.as_slice());
+        assert!(syms.contains(&"cuInit"));
+        assert!(syms.contains(&"cuDeviceGet"));
+        assert!(syms.contains(&"cuCtxGetCurrent"));
         assert!(syms.contains(&"cuModuleLoadData"));
+        assert!(syms.contains(&"cuModuleLoad"));
         assert!(syms.contains(&"cuModuleUnload"));
         assert!(syms.contains(&"cuModuleGetFunction"));
         assert!(syms.contains(&"cuLaunchKernel"));
         assert!(syms.contains(&"cuCtxSynchronize"));
         assert!(syms.contains(&"cuStreamSynchronize"));
-        assert_eq!(syms.len(), 6);
+        assert!(syms.contains(&"cuMemAlloc_v2"));
+        assert!(syms.contains(&"cuMemFree_v2"));
+        assert!(syms.contains(&"cuMemcpyDtoD_v2"));
+        assert_eq!(syms.len(), expected.len());
     }
 
     #[test]
@@ -1106,13 +1107,22 @@ mod tests {
         };
         let a = GpuModuleAdapter::new(cfg);
         let syms = a.required_driver_symbols();
+        let expected = gpu_driver_loader::required_symbol_names(GpuVendor::Rocm);
+        assert_eq!(syms.as_slice(), expected.as_slice());
+        assert!(syms.contains(&"hipInit"));
+        assert!(syms.contains(&"hipDeviceGet"));
+        assert!(syms.contains(&"hipCtxGetCurrent"));
         assert!(syms.contains(&"hipModuleLoadData"));
+        assert!(syms.contains(&"hipModuleLoad"));
         assert!(syms.contains(&"hipModuleUnload"));
         assert!(syms.contains(&"hipModuleGetFunction"));
         assert!(syms.contains(&"hipModuleLaunchKernel"));
         assert!(syms.contains(&"hipDeviceSynchronize"));
         assert!(syms.contains(&"hipStreamSynchronize"));
-        assert_eq!(syms.len(), 6);
+        assert!(syms.contains(&"hipMalloc"));
+        assert!(syms.contains(&"hipFree"));
+        assert!(syms.contains(&"hipMemcpyDtoD"));
+        assert_eq!(syms.len(), expected.len());
     }
 
     #[test]
