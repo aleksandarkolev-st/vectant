@@ -1104,6 +1104,22 @@ def test_split_rejects_unresolved_synthi_launch_site():
     )
 
 
+def test_split_rejects_direct_launch_table_bypass():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": (
+            "void l() { auto t = synthi_gpu_launch_table(); "
+            "synthi_gpu_launch_raw_checked(gpu, \"vec_add\", 0, 0, 0, 0, 0, 0, 0, 0, t.generation); }"
+        ),
+        "gui.cpp": "",
+        "host_runner.cpp": "",
+        "device.cu": "__global__ void vec_add(float*) {}",
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert not r.ok
+    assert any(v.rule == "launch_indirection_bypassed" for v in r.violations)
+
+
 def test_split_rejects_missing_device_file():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"',

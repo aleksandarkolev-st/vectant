@@ -67,6 +67,21 @@ bool synthi_gpu_launch_raw(
     const void* const* args,
     std::size_t arg_count);
 
+std::uint64_t synthi_gpu_launch_generation();
+
+bool synthi_gpu_launch_raw_checked(
+    SynthiGpuRuntime* gpu,
+    const char* kernel_name,
+    const void* grid,
+    std::size_t grid_size,
+    const void* block,
+    std::size_t block_size,
+    std::size_t shared_bytes,
+    std::uintptr_t stream_token,
+    const void* const* args,
+    std::size_t arg_count,
+    std::uint64_t expected_generation);
+
 void synthi_gpu_register_buffer(
     SynthiGpuRuntime* gpu,
     void* ptr,
@@ -78,6 +93,29 @@ bool synthi_gpu_pack_buffer(const char* semantic_name, const void* ptr, std::siz
 bool synthi_gpu_restore_buffer(const unsigned char* blob, const char* semantic_name, void** out_ptr);
 
 }} // extern "C"
+
+struct SynthiGpuLaunchTable {{
+    std::uint64_t generation;
+    bool (*launch_raw)(
+        SynthiGpuRuntime*,
+        const char*,
+        const void*,
+        std::size_t,
+        const void*,
+        std::size_t,
+        std::size_t,
+        std::uintptr_t,
+        const void* const*,
+        std::size_t,
+        std::uint64_t);
+}};
+
+inline SynthiGpuLaunchTable synthi_gpu_launch_table() {{
+    return SynthiGpuLaunchTable{{
+        synthi_gpu_launch_generation(),
+        &synthi_gpu_launch_raw_checked,
+    }};
+}}
 
 inline std::uintptr_t synthi_gpu_stream_token(std::nullptr_t) {{
     return 0;
@@ -101,7 +139,8 @@ inline bool synthi_gpu_launch(
     std::size_t shared_bytes,
     Stream stream,
     std::initializer_list<const void*> args) {{
-    return synthi_gpu_launch_raw(
+    const SynthiGpuLaunchTable table = synthi_gpu_launch_table();
+    return table.launch_raw(
         gpu,
         kernel_name,
         static_cast<const void*>(&grid),
@@ -111,7 +150,8 @@ inline bool synthi_gpu_launch(
         shared_bytes,
         synthi_gpu_stream_token(stream),
         args.begin(),
-        args.size());
+        args.size(),
+        table.generation);
 }}
 
 inline void synthi_register(
@@ -183,6 +223,8 @@ mod tests {
     fn header_declares_launch_and_lifecycle_contract() {
         let h = render_gpu_runtime_header(&gpu(DeviceVendor::Cuda));
         assert!(h.contains("synthi_gpu_launch_raw"));
+        assert!(h.contains("synthi_gpu_launch_raw_checked"));
+        assert!(h.contains("SynthiGpuLaunchTable"));
         assert!(h.contains("inline bool synthi_gpu_launch"));
         assert!(h.contains("synthi_gpu_stream_token(std::nullptr_t)"));
         assert!(h.contains("const DeviceDescriptor* device_descriptor()"));

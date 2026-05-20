@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +40,8 @@ pub struct LaunchRecord {
     pub shared_bytes: usize,
     pub stream_token: usize,
     pub arg_count: usize,
+    pub expected_generation: u64,
+    pub active_generation: u64,
     pub dispatched: bool,
     pub dispatch_error: Option<String>,
 }
@@ -70,6 +73,7 @@ struct BoundaryState {
 
 static STATE: OnceLock<Mutex<BoundaryState>> = OnceLock::new();
 static DISPATCHER: OnceLock<Mutex<Option<Arc<dyn GpuLaunchDispatcher>>>> = OnceLock::new();
+static LAUNCH_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn state() -> &'static Mutex<BoundaryState> {
     STATE.get_or_init(|| Mutex::new(BoundaryState::default()))
@@ -85,14 +89,22 @@ pub fn install_launch_dispatcher(
     let mut guard = dispatcher_slot()
         .lock()
         .expect("gpu runtime dispatcher mutex poisoned");
-    guard.replace(dispatcher)
+    let previous = guard.replace(dispatcher);
+    LAUNCH_GENERATION.fetch_add(1, Ordering::SeqCst);
+    previous
 }
 
 pub fn clear_launch_dispatcher() -> Option<Arc<dyn GpuLaunchDispatcher>> {
     let mut guard = dispatcher_slot()
         .lock()
         .expect("gpu runtime dispatcher mutex poisoned");
-    guard.take()
+    let previous = guard.take();
+    LAUNCH_GENERATION.fetch_add(1, Ordering::SeqCst);
+    previous
+}
+
+pub fn current_launch_generation() -> u64 {
+    LAUNCH_GENERATION.load(Ordering::SeqCst)
 }
 
 fn cstr(ptr: *const c_char) -> Option<String> {
@@ -180,6 +192,40 @@ pub extern "C" fn synthi_gpu_register_buffer(
 }
 
 #[no_mangle]
+pub extern "C" fn synthi_gpu_launch_generation() -> u64 {
+    current_launch_generation()
+}
+
+#[no_mangle]
+pub extern "C" fn synthi_gpu_launch_raw_checked(
+    _gpu: *mut c_void,
+    kernel_name: *const c_char,
+    _grid: *const c_void,
+    grid_size: usize,
+    _block: *const c_void,
+    block_size: usize,
+    shared_bytes: usize,
+    stream_token: usize,
+    args: *const *const c_void,
+    arg_count: usize,
+    expected_generation: u64,
+) -> bool {
+    synthi_gpu_launch_raw_impl(
+        _gpu,
+        kernel_name,
+        _grid,
+        grid_size,
+        _block,
+        block_size,
+        shared_bytes,
+        stream_token,
+        args,
+        arg_count,
+        expected_generation,
+    )
+}
+
+#[no_mangle]
 pub extern "C" fn synthi_gpu_launch_raw(
     _gpu: *mut c_void,
     kernel_name: *const c_char,
@@ -192,9 +238,39 @@ pub extern "C" fn synthi_gpu_launch_raw(
     args: *const *const c_void,
     arg_count: usize,
 ) -> bool {
+    synthi_gpu_launch_raw_impl(
+        _gpu,
+        kernel_name,
+        _grid,
+        grid_size,
+        _block,
+        block_size,
+        shared_bytes,
+        stream_token,
+        args,
+        arg_count,
+        current_launch_generation(),
+    )
+}
+
+fn synthi_gpu_launch_raw_impl(
+    _gpu: *mut c_void,
+    kernel_name: *const c_char,
+    _grid: *const c_void,
+    grid_size: usize,
+    _block: *const c_void,
+    block_size: usize,
+    shared_bytes: usize,
+    stream_token: usize,
+    args: *const *const c_void,
+    arg_count: usize,
+    expected_generation: u64,
+) -> bool {
     let kernel_name = cstr(kernel_name).unwrap_or_else(|| "<unknown>".to_string());
     let grid = read_launch_dims(_grid, grid_size);
     let block = read_launch_dims(_block, block_size);
+    let active_generation = current_launch_generation();
+    let stale_generation = expected_generation != 0 && expected_generation != active_generation;
     let request = GpuLaunchRequest {
         kernel_name: kernel_name.clone(),
         grid,
@@ -221,17 +297,27 @@ pub extern "C" fn synthi_gpu_launch_raw(
             shared_bytes,
             stream_token,
             arg_count,
+            expected_generation,
+            active_generation,
             dispatched: false,
             dispatch_error: None,
         });
-        let dispatcher = dispatcher_slot()
-            .lock()
-            .expect("gpu runtime dispatcher mutex poisoned")
-            .clone();
+        let dispatcher = if stale_generation {
+            None
+        } else {
+            dispatcher_slot()
+                .lock()
+                .expect("gpu runtime dispatcher mutex poisoned")
+                .clone()
+        };
         (launch_index, dispatcher)
     };
 
-    let dispatch_result = dispatcher.as_ref().map(|d| d.dispatch(&request, args));
+    let dispatch_result = if stale_generation {
+        Some(Err("reload_failed.stale_launch_pointer".to_string()))
+    } else {
+        dispatcher.as_ref().map(|d| d.dispatch(&request, args))
+    };
 
     let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     if let Some(record) = guard.launches.get_mut(launch_index) {
@@ -266,7 +352,9 @@ pub extern "C" fn synthi_gpu_launch_raw(
         arg_count,
         stream_token,
         shared_bytes,
-        if dispatcher.is_some() {
+        if stale_generation {
+            "stale-pointer"
+        } else if dispatcher.is_some() {
             if ok { "ok" } else { "failed" }
         } else {
             "missing-dispatcher"
@@ -341,6 +429,7 @@ pub fn reset_for_test() {
     let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     *guard = BoundaryState::default();
     clear_launch_dispatcher();
+    LAUNCH_GENERATION.store(1, Ordering::SeqCst);
 }
 
 #[cfg(test)]
@@ -463,10 +552,12 @@ mod tests {
         let _guard = test_guard();
         reset_for_test();
         let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let before = synthi_gpu_launch_generation();
         install_launch_dispatcher(Arc::new(TestDispatcher {
             should_fail: false,
             calls: calls.clone(),
         }));
+        assert!(synthi_gpu_launch_generation() > before);
 
         let kernel = CString::new("gemm").unwrap();
         let grid = [8_u32, 4, 1];
@@ -495,6 +586,10 @@ mod tests {
         let launches = launch_records_snapshot();
         assert!(launches[0].dispatched);
         assert!(launches[0].dispatch_error.is_none());
+        assert_eq!(
+            launches[0].expected_generation,
+            launches[0].active_generation
+        );
     }
 
     #[test]
@@ -527,6 +622,50 @@ mod tests {
         assert_eq!(
             launches[0].dispatch_error.as_deref(),
             Some("synthetic launch failure")
+        );
+    }
+
+    #[test]
+    fn checked_launch_rejects_stale_generation() {
+        let _guard = test_guard();
+        reset_for_test();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: calls.clone(),
+        }));
+        let stale_generation = synthi_gpu_launch_generation();
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: calls.clone(),
+        }));
+
+        let kernel = CString::new("stale").unwrap();
+        let dim = 1_u32;
+        let ok = synthi_gpu_launch_raw_checked(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+            stale_generation,
+        );
+
+        assert!(!ok);
+        assert!(calls.lock().unwrap().is_empty());
+        let launches = launch_records_snapshot();
+        assert_eq!(
+            launches[0].dispatch_error.as_deref(),
+            Some("reload_failed.stale_launch_pointer")
+        );
+        assert_ne!(
+            launches[0].expected_generation,
+            launches[0].active_generation
         );
     }
 }

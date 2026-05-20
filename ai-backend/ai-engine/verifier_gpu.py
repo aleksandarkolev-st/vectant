@@ -413,6 +413,10 @@ _SYNTHI_LAUNCH_CALL_RE = re.compile(
     r"\bsynthi_gpu_launch\s*\(\s*[^,]+,\s*[\"'](?P<name>[A-Za-z_][A-Za-z0-9_]*)[\"']",
     re.DOTALL,
 )
+_SYNTHI_LAUNCH_BYPASS_RE = re.compile(
+    r"\bsynthi_gpu_(?:launch_raw(?:_checked)?|launch_table|launch_generation)\s*\(",
+    re.DOTALL,
+)
 
 
 def _iter_call_bodies(source: str, name: str) -> Iterable[str]:
@@ -1506,6 +1510,21 @@ def verify_split_output(
                     ),
                     offending_module=host_path,
                     offending_symbol=kernel,
+                )
+            )
+        for match in _SYNTHI_LAUNCH_BYPASS_RE.finditer(src):
+            symbol = match.group(0).split("(", 1)[0]
+            violations.append(
+                Violation(
+                    rule="launch_indirection_bypassed",
+                    message=(
+                        f"Host file {host_path} calls {symbol} directly. "
+                        "Generated roles must call synthi_gpu_launch(...) so "
+                        "the runtime can use the generation-checked launch "
+                        "indirection table and reject stale launch pointers."
+                    ),
+                    offending_module=host_path,
+                    offending_symbol=symbol,
                 )
             )
         for match in _SYNTHI_LAUNCH_CALL_RE.finditer(src):
