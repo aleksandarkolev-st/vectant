@@ -15,11 +15,12 @@ pub struct DeviceFastPathResult {
 impl DeviceFastPathResult {
     fn rejected(reason_codes: Vec<&str>, user_path: &str) -> Self {
         let codes: Vec<String> = reason_codes.into_iter().map(str::to_string).collect();
+        let plan = rejection_plan(&codes);
         Self {
             accepted: false,
             generated_path: None,
             patched_device_source: None,
-            reload_plan: reload_plan("unsupported", &codes, user_path, None),
+            reload_plan: reload_plan(plan, &codes, user_path, None),
             reason_codes: codes,
         }
     }
@@ -398,6 +399,19 @@ fn is_device_source_path(path: &str) -> bool {
     lower.ends_with(".cu") || lower.ends_with(".hip")
 }
 
+fn rejection_plan(reason_codes: &[String]) -> &'static str {
+    if reason_codes.iter().any(|code| {
+        matches!(
+            code.as_str(),
+            "abi.kernel_signature_changed" | "abi.constant_global_layout_changed"
+        )
+    }) {
+        "abi_breaking"
+    } else {
+        "unsupported"
+    }
+}
+
 fn sha256_hex(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
@@ -500,6 +514,10 @@ mod tests {
             try_direct_device_body_patch(&sidecar(), "src/gpu/flow.hip", next, generated_source());
 
         assert!(!result.accepted);
+        assert_eq!(
+            result.reload_plan.get("plan").and_then(Value::as_str),
+            Some("abi_breaking")
+        );
         assert!(result
             .reason_codes
             .iter()
@@ -514,6 +532,10 @@ mod tests {
             try_direct_device_body_patch(&sidecar(), "src/gpu/flow.hip", next, generated_source());
 
         assert!(!result.accepted);
+        assert_eq!(
+            result.reload_plan.get("plan").and_then(Value::as_str),
+            Some("abi_breaking")
+        );
         assert!(result
             .reason_codes
             .iter()

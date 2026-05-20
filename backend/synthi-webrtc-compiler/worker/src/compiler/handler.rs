@@ -595,6 +595,15 @@ fn gpu_ai_delta_rejection_reports(
     (plan_report, verifier_report, reason_codes)
 }
 
+fn device_fast_path_rejection_blocks_fallback(reason_codes: &[String]) -> bool {
+    reason_codes.iter().any(|code| {
+        matches!(
+            code.as_str(),
+            "abi.kernel_signature_changed" | "abi.constant_global_layout_changed"
+        )
+    })
+}
+
 fn upsert_object_field(
     root: &mut serde_json::Map<String, serde_json::Value>,
     object_key: &str,
@@ -1151,6 +1160,12 @@ pub async fn handle_compile_request(
                             request_device_name,
                             device_patch.reason_codes.join(",")
                         );
+                        if device_fast_path_rejection_blocks_fallback(&device_patch.reason_codes) {
+                            anyhow::bail!(
+                                "GPU device-only reload rejected before fallback: reason_codes={}",
+                                device_patch.reason_codes.join(",")
+                            );
+                        }
                         None
                     }
                 } else {
@@ -3809,5 +3824,19 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
                 .and_then(serde_json::Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn abi_device_fast_path_rejections_do_not_fall_through() {
+        assert!(device_fast_path_rejection_blocks_fallback(&[
+            "edit.kernel_body_only".to_string(),
+            "abi.kernel_signature_changed".to_string(),
+        ]));
+        assert!(device_fast_path_rejection_blocks_fallback(&[
+            "abi.constant_global_layout_changed".to_string()
+        ]));
+        assert!(!device_fast_path_rejection_blocks_fallback(&[
+            "mapping.patch_anchor_missing".to_string()
+        ]));
     }
 }
