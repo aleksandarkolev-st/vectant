@@ -2262,6 +2262,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 source_files=file_map.keys(),
                 verification=split.verification,
                 repair_prompt=attempt > 1,
+                repair_report=split.repair_report,
             )
         )
 
@@ -2366,6 +2367,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
             accepted=True,
             max_attempts=max_split_attempts,
         ),
+        "split_repair_report": split.repair_report,
         "lang": req.lang,
         "verified": bool(split.verification.ok if split.verification else True),
         "verification": verification,

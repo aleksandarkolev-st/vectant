@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from agents.gpu_detect import GpuDetectionResult
+from agents.gpu_split_repair import repair_split_artifacts
 from agents.gpu_source_context import build_project_source_context
 from llm.prompts import GPU_SPLIT_PROMPT
 from verifier_gpu import SplitVerificationResult, verify_split_output
@@ -67,6 +68,7 @@ class KernelSplitResult:
     launch_graph: List[dict] = field(default_factory=list)
     source_context_report: dict = field(default_factory=dict)
     verification: Optional[SplitVerificationResult] = None
+    repair_report: dict = field(default_factory=dict)
     raw_response: str = ""
 
     def to_dict(self) -> dict:
@@ -78,6 +80,7 @@ class KernelSplitResult:
             "launch_graph": self.launch_graph,
             "source_context_report": self.source_context_report,
             "verification": self.verification.to_dict() if self.verification else None,
+            "repair_report": self.repair_report,
         }
 
 
@@ -101,6 +104,7 @@ def split_attempt_record(
     source_files: Iterable[str],
     verification: Optional[SplitVerificationResult],
     repair_prompt: bool = False,
+    repair_report: Optional[Mapping[str, Any]] = None,
 ) -> dict:
     """Return persisted metadata for one propose -> verify split attempt."""
 
@@ -116,6 +120,7 @@ def split_attempt_record(
         "promptHash": prompt_hash,
         "sourceFiles": sorted({str(path).replace("\\", "/") for path in source_files}),
         "repairScope": "generated_artifacts_only" if repair_prompt else None,
+        "repairReport": dict(repair_report or {}),
         "accepted": ok,
         "verifiers": [
             {
@@ -612,6 +617,30 @@ async def run_kernel_splitter(
         manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
         source_files=source_map,
     )
+    repair_report: dict = {
+        "schemaVersion": "synthi.gpu.split_repair.v1",
+        "repaired": False,
+        "inputReasonCodes": [v.rule for v in verification.violations],
+        "repairRules": [],
+        "changedFiles": [],
+        "scope": "generated_artifacts_only",
+    }
+    if not verification.ok:
+        repaired_files, repair_report = repair_split_artifacts(
+            files=parsed["files"],
+            manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
+            source_files=source_map,
+            verification=verification,
+        )
+        if repair_report.get("repaired"):
+            repaired_verification = verify_split_output(
+                files=repaired_files,
+                manifest_arch=arch_list,
+                manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
+                source_files=source_map,
+            )
+            parsed["files"] = repaired_files
+            verification = repaired_verification
 
     return KernelSplitResult(
         files=parsed["files"],
@@ -621,5 +650,6 @@ async def run_kernel_splitter(
         launch_graph=parsed["launch_graph"],
         source_context_report=source_context_report,
         verification=verification,
+        repair_report=repair_report,
         raw_response=raw,
     )
