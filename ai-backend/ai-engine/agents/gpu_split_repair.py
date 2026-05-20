@@ -25,6 +25,8 @@ from verifier_gpu import (
 REPAIR_SCHEMA_VERSION = "synthi.gpu.split_repair.v1"
 
 _DEVICE_SOURCE_EXTENSIONS = (".cu", ".hip")
+_DEVICE_HEADER_EXTENSIONS = (".h", ".hpp", ".hh", ".hxx", ".cuh")
+_QUOTE_INCLUDE_RE = re.compile(r"#\s*include\s+\"(?P<path>[^\"]+)\"")
 _SOURCE_DEVICE_CONST_DECL_RE = re.compile(
     r"(?P<decl>\b(?:(?:constexpr|const|__constant__)\s+)*"
     r"(?P<type>(?:std::)?uint32_t|unsigned\s+int|int|float|double)\s+"
@@ -89,6 +91,24 @@ def repair_split_artifacts(
     core_path = role_paths.get("core")
 
     if device_path and device_path in repaired:
+        if any(
+            rule.startswith(
+                (
+                    "source_device_identifier_",
+                    "source_device_kernel_",
+                )
+            )
+            for rule in input_reason_codes
+        ):
+            device_after, changed = _repair_source_device_semantics(
+                repaired[device_path],
+                source_files,
+            )
+            if changed:
+                repaired[device_path] = device_after
+                changed_files.add(device_path)
+                repair_rules.append("repair.source_device_semantics")
+
         device_after, changed = _repair_device_constant_declarations(
             repaired[device_path],
             source_files,
@@ -133,9 +153,164 @@ def _source_device_files(source_files: Mapping[str, str]) -> Dict[str, str]:
     }
 
 
+def _resolve_quoted_include(
+    include_path: str,
+    *,
+    including_path: str,
+    source_files: Mapping[str, str],
+) -> Optional[str]:
+    include_path = include_path.strip().replace("\\", "/")
+    if not include_path:
+        return None
+    including_dir = including_path.replace("\\", "/").rsplit("/", 1)[0]
+    candidates = []
+    if including_dir:
+        candidates.append(f"{including_dir}/{include_path}")
+    candidates.append(include_path)
+    for candidate in candidates:
+        parts: List[str] = []
+        for part in candidate.replace("\\", "/").split("/"):
+            if not part or part == ".":
+                continue
+            if part == "..":
+                if parts:
+                    parts.pop()
+                continue
+            parts.append(part)
+        normalized = "/".join(parts)
+        if normalized in source_files:
+            return normalized
+
+    basename = include_path.rsplit("/", 1)[-1]
+    matches = [
+        path.replace("\\", "/")
+        for path in source_files
+        if path.replace("\\", "/").rsplit("/", 1)[-1] == basename
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _source_device_reachable_files(source_files: Mapping[str, str]) -> Dict[str, str]:
+    normalized = {path.replace("\\", "/"): source for path, source in source_files.items()}
+    roots = sorted(_source_device_files(normalized))
+    reachable: Dict[str, str] = {}
+    queue = list(roots)
+    while queue:
+        path = queue.pop(0)
+        if path in reachable:
+            continue
+        source = normalized.get(path)
+        if source is None:
+            continue
+        reachable[path] = source
+        for match in _QUOTE_INCLUDE_RE.finditer(source):
+            resolved = _resolve_quoted_include(
+                match.group("path"),
+                including_path=path,
+                source_files=normalized,
+            )
+            if resolved and resolved not in reachable:
+                lower = resolved.lower()
+                if lower.endswith(_DEVICE_SOURCE_EXTENSIONS + _DEVICE_HEADER_EXTENSIONS):
+                    queue.append(resolved)
+    return {path: reachable[path] for path in sorted(reachable)}
+
+
+def _strip_project_includes(source: str) -> str:
+    return _QUOTE_INCLUDE_RE.sub("", source)
+
+
+def _strip_single_namespace_wrapper(source: str) -> str:
+    text = re.sub(r"(?m)^\s*#\s*pragma\s+once\s*$", "", source).strip()
+    match = re.search(r"\bnamespace\s+[A-Za-z_][A-Za-z0-9_]*\s*\{", text)
+    if not match:
+        return text
+    prefix = text[: match.start()].strip()
+    if prefix:
+        return text
+    close = _matching_brace(text, match.end() - 1)
+    if close is None:
+        return text
+    suffix = text[close + 1 :].strip()
+    if suffix:
+        return text
+    return text[match.end() : close].strip()
+
+
+def _inlineable_device_source(source: str) -> str:
+    return _strip_single_namespace_wrapper(_strip_project_includes(source))
+
+
+def _kernel_function_span(source: str, kernel: str) -> Optional[Tuple[int, int]]:
+    for match in _GLOBAL_KERNEL_SIGNATURE_RE.finditer(source):
+        if match.group("name") != kernel:
+            continue
+        open_brace = source.find("{", match.end())
+        if open_brace < 0:
+            return None
+        close_brace = _matching_brace(source, open_brace)
+        if close_brace is None:
+            return None
+        return match.start(), close_brace + 1
+    return None
+
+
+def _source_device_support_preamble(reachable: Mapping[str, str]) -> str:
+    parts: List[str] = []
+    seen: Set[str] = set()
+    for path, source in sorted(reachable.items()):
+        inline_source = _inlineable_device_source(source)
+        if path.lower().endswith(_DEVICE_SOURCE_EXTENSIONS):
+            first_kernel = _GLOBAL_KERNEL_SIGNATURE_RE.search(inline_source)
+            if first_kernel:
+                inline_source = inline_source[: first_kernel.start()]
+        inline_source = inline_source.strip()
+        if not inline_source or inline_source in seen:
+            continue
+        seen.add(inline_source)
+        parts.append(f"// Inlined from {path}\n{inline_source}")
+    return "\n\n".join(parts).strip()
+
+
+def _repair_source_device_semantics(
+    device_source: str,
+    source_files: Mapping[str, str],
+) -> tuple[str, bool]:
+    reachable = _source_device_reachable_files(source_files)
+    if not reachable:
+        return device_source, False
+
+    out = device_source
+    preamble = _source_device_support_preamble(reachable)
+    marker = "// Synthi source-device preservation preamble"
+    if preamble and marker not in out:
+        include_matches = list(re.finditer(r"(?m)^#\s*include\s+[<\"].*[>\"]\s*$", out))
+        insert_at = include_matches[-1].end() if include_matches else 0
+        out = out[:insert_at] + f"\n\n{marker}\n{preamble}\n" + out[insert_at:]
+
+    for path, source in sorted(reachable.items()):
+        if not path.lower().endswith(_DEVICE_SOURCE_EXTENSIONS):
+            continue
+        inline_source = _inlineable_device_source(source)
+        for match in list(_GLOBAL_KERNEL_SIGNATURE_RE.finditer(inline_source)):
+            kernel = match.group("name")
+            source_span = _kernel_function_span(inline_source, kernel)
+            if source_span is None:
+                continue
+            source_function = inline_source[source_span[0] : source_span[1]].strip()
+            generated_span = _kernel_function_span(out, kernel)
+            if generated_span is None:
+                out = out.rstrip() + "\n\n" + source_function + "\n"
+            else:
+                out = out[: generated_span[0]] + source_function + out[generated_span[1] :]
+    return out, out != device_source
+
+
 def _source_constant_declarations(source_files: Mapping[str, str]) -> Dict[str, str]:
     declarations: Dict[str, str] = {}
-    for _path, source in sorted(_source_device_files(source_files).items()):
+    for _path, source in sorted(_source_device_reachable_files(source_files).items()):
         for match in _SOURCE_DEVICE_CONST_DECL_RE.finditer(source):
             declaration = re.sub(r"\s+", " ", match.group("decl").strip())
             if "=" not in declaration:
