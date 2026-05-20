@@ -2075,7 +2075,9 @@ from diff_patch_helpers import (  # noqa: E402 — late import is intentional
 from agents.gpu_detect import detect_project as _detect_gpu_project  # noqa: E402
 from agents.kernel_splitter import (  # noqa: E402
     KernelSplitterError as _KernelSplitterError,
+    build_split_retry_prompt as _build_split_retry_prompt,
     run_kernel_splitter as _run_kernel_splitter,
+    split_failure_verification as _split_failure_verification,
     split_agentic_report as _split_agentic_report,
     split_attempt_record as _split_attempt_record,
 )
@@ -2235,6 +2237,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     split_prompt = req.prompt
     max_split_attempts = 3
     split_attempts = []
+    rejection_notes_history: list[str] = []
     for attempt in range(1, max_split_attempts + 1):
         try:
             split = await _run_kernel_splitter(
@@ -2249,7 +2252,54 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 focus=req.focus,
             )
         except _KernelSplitterError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+            verification = _split_failure_verification(
+                "split_response_unparseable",
+                str(e),
+            )
+            split_attempts.append(
+                _split_attempt_record(
+                    attempt=attempt,
+                    max_attempts=max_split_attempts,
+                    model=split_model,
+                    prompt=split_prompt,
+                    source_files=file_map.keys(),
+                    verification=verification,
+                    repair_prompt=attempt > 1,
+                    repair_report={
+                        "schemaVersion": "synthi.gpu.split_repair.v1",
+                        "repaired": False,
+                        "inputReasonCodes": [v.rule for v in verification.violations],
+                        "repairRules": [],
+                        "changedFiles": [],
+                        "scope": "generated_artifacts_only",
+                    },
+                )
+            )
+            notes = "\n".join(
+                f"- {v.rule}: {v.message}" for v in verification.violations
+            )
+            logger.info(
+                "[split/gpu] splitter rejected split attempt %s/%s before verifier: %s",
+                attempt,
+                max_split_attempts,
+                notes,
+            )
+            if attempt == max_split_attempts:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": "GPU split failed before verification after retries",
+                        "verification": verification.to_dict(),
+                        "agentic_report": _split_agentic_report(
+                            attempts=split_attempts,
+                            accepted=False,
+                            max_attempts=max_split_attempts,
+                        ),
+                    },
+                )
+            rejection_notes_history.append(notes)
+            split_prompt = _build_split_retry_prompt(req.prompt, rejection_notes_history)
+            continue
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
 
@@ -2280,17 +2330,8 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         )
         if attempt == max_split_attempts:
             break
-        split_prompt = "\n\n".join(
-            p for p in [
-                req.prompt,
-                (
-                    "The previous GPU split failed Synthi's verifier. "
-                    "Regenerate the complete GPU role split and fix all "
-                    "violations exactly. Do not repeat any rejected pattern:\n"
-                    f"{notes}"
-                ),
-            ] if p
-        )
+        rejection_notes_history.append(notes)
+        split_prompt = _build_split_retry_prompt(req.prompt, rejection_notes_history)
 
     if split is None:
         raise HTTPException(status_code=400, detail="GPU split did not produce a result")

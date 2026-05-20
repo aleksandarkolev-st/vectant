@@ -10,9 +10,11 @@ import pytest
 from agents.gpu_detect import GpuDetectionResult, GpuDetectionEvidence
 from agents.kernel_splitter import (
     KernelSplitterError,
+    build_split_retry_prompt,
     _project_source_context,
     build_prompt,
     parse_kernel_split_response,
+    split_failure_verification,
     split_agentic_report,
     split_attempt_record,
 )
@@ -218,6 +220,32 @@ def test_split_attempt_record_hashes_prompt_and_reports_verifier_codes():
     assert report["attemptCount"] == 1
     assert report["boundedRetries"] is True
     assert report["persistedAfterVerification"] is False
+
+
+def test_split_failure_verification_is_reason_coded():
+    verification = split_failure_verification(
+        "split_response_unparseable",
+        "Response missing <JSON> block",
+    )
+
+    assert verification.ok is False
+    assert verification.violations[0].rule == "split_response_unparseable"
+    assert "missing <JSON>" in verification.violations[0].message
+
+
+def test_build_split_retry_prompt_preserves_previous_rejections():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- device_init_kernel_incomplete: missing d_x",
+            "- split_response_unparseable: missing <JSON>",
+        ],
+    )
+
+    assert "original prompt" in prompt
+    assert "deterministic verifiers" in prompt
+    assert "device_init_kernel_incomplete" in prompt
+    assert "split_response_unparseable" in prompt
 
 
 def test_build_prompt_attaches_extra_instructions():

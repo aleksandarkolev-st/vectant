@@ -45,7 +45,7 @@ from agents.gpu_detect import GpuDetectionResult
 from agents.gpu_split_repair import repair_split_artifacts
 from agents.gpu_source_context import build_project_source_context
 from llm.prompts import GPU_SPLIT_PROMPT
-from verifier_gpu import SplitVerificationResult, verify_split_output
+from verifier_gpu import SplitVerificationResult, Violation, verify_split_output
 
 if TYPE_CHECKING:  # avoid pulling the provider factory + its heavy SDK deps
     # at module-import time. The runtime `provider` parameter is duck-typed
@@ -161,6 +161,34 @@ def split_agentic_report(
         "repairScope": "generated_artifacts_only",
         "attempts": attempts_list,
     }
+
+
+def split_failure_verification(rule: str, message: str) -> SplitVerificationResult:
+    """Represent a failed split proposal as deterministic verifier output."""
+
+    return SplitVerificationResult(
+        ok=False,
+        violations=[
+            Violation(
+                rule=rule,
+                message=message,
+            )
+        ],
+    )
+
+
+def build_split_retry_prompt(
+    base_prompt: Optional[str],
+    rejection_notes: Sequence[str],
+) -> str:
+    notes = "\n".join(note for note in rejection_notes if note.strip())
+    repair_instruction = (
+        "The previous GPU split attempt failed Synthi's deterministic "
+        "verifiers. Regenerate the complete GPU role split and fix all "
+        "violations exactly. Do not repeat any rejected pattern:\n"
+        f"{notes}"
+    )
+    return "\n\n".join(p for p in [base_prompt, repair_instruction] if p)
 
 
 _JSON_BLOCK_RE = re.compile(r"<JSON>(?P<body>.*?)</JSON>", re.DOTALL)
