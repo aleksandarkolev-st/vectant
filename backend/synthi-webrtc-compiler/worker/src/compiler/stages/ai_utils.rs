@@ -41,10 +41,9 @@ fn get_ai_backend_url() -> String {
 }
 
 fn add_ai_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    match std::env::var("AI_BACKEND_AUTH_TOKEN").or_else(|_| std::env::var("AI_ENGINE_AUTH_TOKEN")) {
-        Ok(token) if !token.trim().is_empty() => {
-            request.header("x-synthi-internal-token", token)
-        }
+    match std::env::var("AI_BACKEND_AUTH_TOKEN").or_else(|_| std::env::var("AI_ENGINE_AUTH_TOKEN"))
+    {
+        Ok(token) if !token.trim().is_empty() => request.header("x-synthi-internal-token", token),
         _ => request,
     }
 }
@@ -154,6 +153,27 @@ fn split_content(value: Option<&serde_json::Value>) -> Option<String> {
             .map(|s| s.to_string()),
         _ => None,
     }
+}
+
+fn with_split_cache_report(
+    mut result: serde_json::Value,
+    cache_key: u64,
+    hit: bool,
+    reason: &str,
+    entries_before_lookup: usize,
+) -> serde_json::Value {
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert(
+            "_synthi_cache_report".to_string(),
+            serde_json::json!({
+                "splitCacheHit": hit,
+                "splitCacheReason": reason,
+                "splitCacheKey": cache_key.to_string(),
+                "splitCacheEntries": entries_before_lookup,
+            }),
+        );
+    }
+    result
 }
 
 fn manifest_module_file(manifest: &serde_json::Value, role: &str) -> Option<String> {
@@ -304,14 +324,21 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         has_gpu_markers
     );
 
-    {
+    let cache_entries_before_lookup = {
         let cache = get_ai_split_cache().lock().await;
         if let Some(cached) = cache.get(&source_hash) {
             eprintln!("[AI Split] Level 1 HIT (exact source_hash match)");
-            return Ok(cached.result.clone());
+            return Ok(with_split_cache_report(
+                cached.result.clone(),
+                source_hash,
+                true,
+                "exact_source_hash",
+                cache.len(),
+            ));
         }
         eprintln!("[AI Split] Level 1 MISS (cache entries: {})", cache.len());
-    }
+        cache.len()
+    };
 
     // Level 3: Full AI Split
     // The AI engine exposes /refactor/split/verified for verified splitting.
@@ -553,6 +580,13 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // The architecture is a plain markdown string (may be empty if the split
     // model forgot to emit the <synthi_arch_cache> XML block).
     let mut res = normalize_split_response(res, raw_response.get("manifest"));
+    res = with_split_cache_report(
+        res,
+        source_hash,
+        false,
+        "exact_source_hash_miss",
+        cache_entries_before_lookup,
+    );
     if let Some(arch) = raw_response.get("architecture").and_then(|v| v.as_str()) {
         if !arch.is_empty() {
             eprintln!(
