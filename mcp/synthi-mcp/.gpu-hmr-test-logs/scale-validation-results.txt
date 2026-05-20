@@ -1,5 +1,5 @@
-slug: gpu-scale-validation-glfw-userfiles-20260519233656
-repo_commit: e11d4d8494ccc65b23b31696725aa28b5af6e540
+slug: gpu-scale-validation-20260520033018
+repo_commit: 73ab144d03f37a47c79e64d3aff8f3d935286e98
 model: gemini-3.1-flash-lite-preview
 vendor: rocm
 arch: gfx1201
@@ -7,33 +7,33 @@ render_backend: glfw
 source_file_mix: {"cpp":13,"hpp":17,"h":10,"hip":11,"cu":0,"total":51}
 workspace_file_count: 293
 relevant_file_count: 53
-generated_roles: {"shared":"shared.h","core":"core.cpp","gui":"gui.cpp","host_runner":"host_runner.cpp","device":"device.hip"}
+generated_roles: {"shared":".synthi/generated/gpu/shared.h","core":".synthi/generated/gpu/core.cpp","gui":".synthi/generated/gpu/gui.cpp","host_runner":".synthi/generated/gpu/host_runner.cpp","device":".synthi/generated/gpu/device.hip"}
 
 PASS gpu target - rocm arch=gfx1201 render_backend=glfw
 PASS source file mix - {"cpp":13,"hpp":17,"h":10,"hip":11,"cu":0,"total":51}
 PASS ordinary user project guard - 293 files, no Synthi ABI or generated role filenames
-PASS create workspace - id=cmpd3g2q8000dpt01uedmgj99 slug=gpu-scale-validation-glfw-userfiles-20260519233656
+PASS create workspace - id=cmpdi7no2000spt01kvlcq5bq slug=gpu-scale-validation-20260520033018
 PASS seed scale workspace - 293 files
 PASS mcp tools/list - count=42
 PASS mcp attach - attached
 PASS first compile via MCP - files=293
 PASS worker saw full file set - [AI Split] ENTER (cache_key=623742474748146535, src_len=377, files=293, gpu_mode=rocm, gpu_arch=gfx1201
 PASS ai-engine saw full file set - [split/gpu] request file context count=293 focus=src/app/main.cpp names=['src/app/main.cpp
-WARN screenshot first-compile retry - 800x600 visible=0 luma=0.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-glfw-userfiles-20260519233656-first-compile.png attempt=1/6
-PASS screenshot first-compile - 800x600 visible=41090 luma=20.1 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-glfw-userfiles-20260519233656-first-compile-attempt-2.png attempt=2
+WARN screenshot first-compile retry - 800x600 visible=0 luma=0.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520033018-first-compile.png attempt=1/6
+PASS screenshot first-compile - 800x600 visible=44350 luma=20.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520033018-first-compile-attempt-2.png attempt=2
 PASS generated split preserved GLFW/OpenGL backend - no SDL markers in generated roles
-PASS generated split contains HMR ABI - shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip
-PASS read generated split from worker - worker=/tmp/.tmpZyLKNg
-PASS generated split kept internal - shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip supplied inline to HMR compile only
-PASS device edit compile via MCP - device.hip
+PASS generated split contains HMR ABI - .synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip
+PASS read generated split from worker - worker=/tmp/.tmpdpIXBR
+PASS generated split kept internal - .synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip supplied inline to HMR compile only
+PASS device edit compile via MCP - .synthi/generated/gpu/device.hip
 PASS workspace visible tree remains user files only - 309 listed files; no generated split artifacts
-PASS device-only GPU HMR observed - Device sidecar reload vendor=rocm artifact=/tmp/.tmpZyLKNg/build/device_1779223038.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 5, state_preserved: true }
-PASS screenshot post-hmr - 800x600 visible=41001 luma=18.8 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-glfw-userfiles-20260519233656-post-hmr.png
+PASS device-only GPU HMR observed - [gpu-reload] plan=device_only  reason=device-file-only-edit
+PASS screenshot post-hmr - 800x600 visible=42594 luma=19.2 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520033018-post-hmr.png
 PASS runner stayed alive after GPU HMR - no runner crash marker
 
-PHASE first_ai_split_compile wait=applied source=candidate_notification wait_ms=14015 terminal_wait_ms=14015 wall_ms=14015 detail={"preview_id":"gpu-scale-validation-glfw-userfiles-20260519233656","generation":1,"total_reload_ms":1256} frame_gate={"status":"disabled","reason":"no_frame_advance_observed","pipeline_budget_ms":80}
-PHASE device_only_hmr wait=applied source=hmr_status wait_ms=1046 terminal_wait_ms=921 wall_ms=1055 detail={"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true} frame_gate={"status":"satisfied","frame_seq":117,"ts_ms":1779223039147,"pipeline_budget_ms":80}
+PHASE first_ai_split_compile wait=applied source=candidate_notification wait_ms=27781 terminal_wait_ms=27781 wall_ms=27785 detail={"preview_id":"gpu-scale-validation-20260520033018","generation":1,"total_reload_ms":1250} frame_gate={"status":"disabled","reason":"no_frame_advance_observed","pipeline_budget_ms":80}
+PHASE device_only_hmr wait=applied source=hmr_status wait_ms=764 terminal_wait_ms=651 wall_ms=770 detail={"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true} frame_gate={"status":"satisfied","frame_seq":102,"ts_ms":1779247853807,"pipeline_budget_ms":80}
 
-SCREENSHOT first-compile 800x600 visible=0 luma=0.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-glfw-userfiles-20260519233656-first-compile.png differs=
-SCREENSHOT first-compile 800x600 visible=41090 luma=20.1 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-glfw-userfiles-20260519233656-first-compile-attempt-2.png differs=
-SCREENSHOT post-hmr 800x600 visible=41001 luma=18.8 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-glfw-userfiles-20260519233656-post-hmr.png differs=true
+SCREENSHOT first-compile 800x600 visible=0 luma=0.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520033018-first-compile.png differs=
+SCREENSHOT first-compile 800x600 visible=44350 luma=20.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520033018-first-compile-attempt-2.png differs=
+SCREENSHOT post-hmr 800x600 visible=42594 luma=19.2 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520033018-post-hmr.png differs=true
