@@ -645,7 +645,10 @@ fn device_fast_path_rejection_blocks_fallback(reason_codes: &[String]) -> bool {
             code.as_str(),
             "abi.kernel_signature_changed"
                 | "abi.constant_global_layout_changed"
+                | "toolchain_capability_missing"
                 | "toolchain_capability_stale"
+                | "toolchain_capability_no_device_only_reload"
+                | "fast_path_policy_blocks_device_only"
         )
     })
 }
@@ -4009,7 +4012,16 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
             "abi.constant_global_layout_changed".to_string()
         ]));
         assert!(device_fast_path_rejection_blocks_fallback(&[
+            "toolchain_capability_missing".to_string()
+        ]));
+        assert!(device_fast_path_rejection_blocks_fallback(&[
             "toolchain_capability_stale".to_string()
+        ]));
+        assert!(device_fast_path_rejection_blocks_fallback(&[
+            "toolchain_capability_no_device_only_reload".to_string()
+        ]));
+        assert!(device_fast_path_rejection_blocks_fallback(&[
+            "fast_path_policy_blocks_device_only".to_string()
         ]));
         assert!(!device_fast_path_rejection_blocks_fallback(&[
             "mapping.patch_anchor_missing".to_string()
