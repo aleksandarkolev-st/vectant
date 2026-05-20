@@ -2074,10 +2074,12 @@ from diff_patch_helpers import (  # noqa: E402 — late import is intentional
 )
 from agents.gpu_detect import detect_project as _detect_gpu_project  # noqa: E402
 from agents.kernel_splitter import (  # noqa: E402
+    KernelSplitProviderError as _KernelSplitProviderError,
     KernelSplitterError as _KernelSplitterError,
     build_split_retry_prompt as _build_split_retry_prompt,
     run_kernel_splitter as _run_kernel_splitter,
     split_failure_verification as _split_failure_verification,
+    split_provider_failure_verification as _split_provider_failure_verification,
     split_agentic_report as _split_agentic_report,
     split_attempt_record as _split_attempt_record,
 )
@@ -2303,6 +2305,53 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
             rejection_notes_history.append(notes)
             split_prompt = _build_split_retry_prompt(req.prompt, rejection_notes_history)
             continue
+        except _KernelSplitProviderError as e:
+            verification = _split_provider_failure_verification(e)
+            split_attempts.append(
+                _split_attempt_record(
+                    attempt=attempt,
+                    max_attempts=max_split_attempts,
+                    model=split_model,
+                    prompt=split_prompt,
+                    source_files=file_map.keys(),
+                    verification=verification,
+                    repair_prompt=attempt > 1,
+                    repair_report={
+                        "schemaVersion": "synthi.gpu.split_repair.v1",
+                        "repaired": False,
+                        "inputReasonCodes": [v.rule for v in verification.violations],
+                        "repairRules": [],
+                        "changedFiles": [],
+                        "scope": "generated_artifacts_only",
+                    },
+                )
+            )
+            notes = "\n".join(
+                f"- {v.rule}: {v.message}" for v in verification.violations
+            )
+            logger.info(
+                "[split/gpu] provider failed split attempt %s/%s before verifier: %s",
+                attempt,
+                max_split_attempts,
+                notes,
+            )
+            rule = (
+                verification.violations[0].rule
+                if verification.violations
+                else "ai_provider_error"
+            )
+            raise HTTPException(
+                status_code=504 if rule == "ai_provider_timeout" else 503,
+                detail={
+                    "message": "GPU split AI provider failed before verification",
+                    "verification": verification.to_dict(),
+                    "agentic_report": _split_agentic_report(
+                        attempts=split_attempts,
+                        accepted=False,
+                        max_attempts=max_split_attempts,
+                    ),
+                },
+            )
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
 

@@ -91,6 +91,38 @@ class KernelSplitterError(Exception):
     """
 
 
+class KernelSplitProviderError(Exception):
+    """Raised when the upstream AI provider fails before producing a split."""
+
+    def __init__(self, original: BaseException):
+        self.original = original
+        message = (
+            f"{type(original).__name__}: {original}"
+            if str(original)
+            else type(original).__name__
+        )
+        super().__init__(message)
+
+
+def split_provider_failure_verification(exc: BaseException) -> SplitVerificationResult:
+    """Represent an AI provider failure as reason-coded split evidence."""
+
+    original = exc.original if isinstance(exc, KernelSplitProviderError) else exc
+    err_type = type(original).__name__
+    message = str(original)
+    lowered = f"{err_type} {message}".lower()
+    if isinstance(original, TimeoutError) or "timeout" in lowered:
+        rule = "ai_provider_timeout"
+    elif "rate limit" in lowered or "429" in lowered:
+        rule = "ai_provider_rate_limited"
+    elif "unavailable" in lowered or "overload" in lowered or "503" in lowered:
+        rule = "ai_provider_unavailable"
+    else:
+        rule = "ai_provider_error"
+    detail = f"{err_type}: {message}" if message else err_type
+    return split_failure_verification(rule, detail)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Extraction
 # ─────────────────────────────────────────────────────────────────────────────
@@ -715,16 +747,19 @@ async def run_kernel_splitter(
         ),
     )
 
-    raw = await provider.ask_llm(
-        user_code,
-        lang,
-        prompt,
-        mode="split",
-        files=files,
-        focus=focus,
-        model=model,
-        api_key=api_key,
-    )
+    try:
+        raw = await provider.ask_llm(
+            user_code,
+            lang,
+            prompt,
+            mode="split",
+            files=files,
+            focus=focus,
+            model=model,
+            api_key=api_key,
+        )
+    except Exception as exc:
+        raise KernelSplitProviderError(exc) from exc
 
     parsed = parse_kernel_split_response(raw)
     arch_list: List[str] = []

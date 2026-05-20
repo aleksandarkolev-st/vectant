@@ -68,6 +68,51 @@ fn ai_http_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+fn summarize_ai_error_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return "<empty response body>".to_string();
+    }
+    let detail = serde_json::from_str::<serde_json::Value>(trimmed)
+        .ok()
+        .and_then(|json| json.get("detail").cloned().or(Some(json)));
+    let summary = match detail {
+        Some(serde_json::Value::String(s)) => s,
+        Some(value) => value.to_string(),
+        None => trimmed.to_string(),
+    };
+    summary.chars().take(1200).collect()
+}
+
+async fn post_ai_json(
+    client: &reqwest::Client,
+    url: &str,
+    payload: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let resp = add_ai_auth(client.post(url))
+        .json(payload)
+        .timeout(ai_http_timeout())
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    if !status.is_success() {
+        return Err(anyhow!(
+            "AI endpoint {} failed with HTTP status {}: {}",
+            url,
+            status,
+            summarize_ai_error_body(&body)
+        ));
+    }
+    serde_json::from_str::<serde_json::Value>(&body).map_err(|e| {
+        anyhow!(
+            "AI endpoint {} returned invalid JSON body: {}",
+            url,
+            e
+        )
+    })
+}
+
 fn text_has_gpu_markers(source: &str) -> bool {
     let lower = source.to_ascii_lowercase();
     source.contains("__global__")
@@ -408,14 +453,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             gpu_split_url
         );
         let gpu_result: Result<serde_json::Value, anyhow::Error> = async {
-            let resp = client
-                .post(&gpu_split_url)
-                .json(&payload)
-                .timeout(ai_http_timeout())
-                .send()
-                .await?
-                .error_for_status()?;
-            Ok(resp.json::<serde_json::Value>().await?)
+            post_ai_json(&client, &gpu_split_url, &payload).await
         }
         .await;
         match gpu_result {
@@ -452,14 +490,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             verified_url
         );
         let verified_result: Result<serde_json::Value, anyhow::Error> = async {
-            let resp = client
-                .post(&verified_url)
-                .json(&payload)
-                .timeout(ai_http_timeout())
-                .send()
-                .await?
-                .error_for_status()?;
-            Ok(resp.json::<serde_json::Value>().await?)
+            post_ai_json(&client, &verified_url, &payload).await
         }
         .await;
 
@@ -470,28 +501,14 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                     "[AI Split] Verified returned no result field: {:?}, trying unverified",
                     json.to_string().chars().take(200).collect::<String>()
                 );
-                client
-                    .post(&split_url)
-                    .json(&payload)
-                    .timeout(ai_http_timeout())
-                    .send()
-                    .await?
-                    .json::<serde_json::Value>()
-                    .await?
+                post_ai_json(&client, &split_url, &payload).await?
             }
             Err(e) => {
                 eprintln!(
                     "[AI Split] Verified endpoint failed ({}), trying unverified",
                     e
                 );
-                let resp = client
-                    .post(&split_url)
-                    .json(&payload)
-                    .timeout(ai_http_timeout())
-                    .send()
-                    .await?
-                    .error_for_status()?;
-                resp.json::<serde_json::Value>().await?
+                post_ai_json(&client, &split_url, &payload).await?
             }
         }
     };
@@ -1345,6 +1362,35 @@ mod tests {
         assert!(text_has_gpu_markers("#include <hip/hip_runtime.h>"));
         assert!(text_has_gpu_markers("kernel<<<grid, block>>>(x);"));
         assert!(!text_has_gpu_markers("int main() { return 0; }"));
+    }
+
+    #[test]
+    fn summarizes_ai_error_body_detail_object() {
+        let body = json!({
+            "detail": {
+                "message": "GPU split AI provider failed before verification",
+                "verification": {
+                    "ok": false,
+                    "violations": [
+                        {"rule": "ai_provider_timeout", "message": "TimeoutError"}
+                    ]
+                }
+            }
+        })
+        .to_string();
+
+        let summary = summarize_ai_error_body(&body);
+
+        assert!(summary.contains("GPU split AI provider failed before verification"));
+        assert!(summary.contains("ai_provider_timeout"));
+        assert!(summary.contains("TimeoutError"));
+    }
+
+    #[test]
+    fn summarizes_ai_error_body_string_detail() {
+        let summary = summarize_ai_error_body(r#"{"detail":"bad split"}"#);
+
+        assert_eq!(summary, "bad split");
     }
 
     #[test]

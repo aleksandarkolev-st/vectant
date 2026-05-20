@@ -9,6 +9,7 @@ import pytest
 
 from agents.gpu_detect import GpuDetectionResult, GpuDetectionEvidence
 from agents.kernel_splitter import (
+    KernelSplitProviderError,
     KernelSplitterError,
     build_split_retry_prompt,
     _project_source_context,
@@ -16,6 +17,7 @@ from agents.kernel_splitter import (
     build_prompt,
     parse_kernel_split_response,
     split_failure_verification,
+    split_provider_failure_verification,
     split_agentic_report,
     split_attempt_record,
 )
@@ -232,6 +234,16 @@ def test_split_failure_verification_is_reason_coded():
     assert verification.ok is False
     assert verification.violations[0].rule == "split_response_unparseable"
     assert "missing <JSON>" in verification.violations[0].message
+
+
+def test_split_provider_timeout_is_reason_coded():
+    verification = split_provider_failure_verification(
+        KernelSplitProviderError(TimeoutError())
+    )
+
+    assert verification.ok is False
+    assert verification.violations[0].rule == "ai_provider_timeout"
+    assert "TimeoutError" in verification.violations[0].message
 
 
 def test_build_split_retry_prompt_preserves_previous_rejections():
