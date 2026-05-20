@@ -83,6 +83,14 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
         "sourceContextReport".to_string(),
         source_context_report.clone(),
     );
+    let device_tu_topology = root
+        .get("deviceTuTopology")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| source_context_report.get("deviceTuTopology").cloned())
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(default_device_tu_topology);
+    root.insert("deviceTuTopology".to_string(), device_tu_topology);
     promote_template_evidence(&mut root, &effective_flags_hash);
     root.entry("generatedArtifactPolicy".to_string())
         .or_insert_with(generated_artifact_policy);
@@ -627,6 +635,16 @@ fn default_source_context_report() -> Value {
     })
 }
 
+fn default_device_tu_topology() -> Value {
+    json!({
+        "deviceTranslationUnitCount": 0,
+        "deviceTranslationUnits": [],
+        "multiDeviceTu": false,
+        "supportStatus": "unknown",
+        "reasonCodes": [],
+    })
+}
+
 fn default_generated_artifact_report() -> Value {
     json!({
         "schemaVersion": "synthi.gpu.generated_artifact_purity.v1",
@@ -666,12 +684,20 @@ fn fast_path_policy(toolchain_profile: &Value, root: &Map<String, Value>) -> Val
     if profile_current && !supports_device_only {
         blocked.push("toolchain_capability_no_device_only_reload");
     }
+    let multi_device_tu = root
+        .get("deviceTuTopology")
+        .and_then(|v| v.get("multiDeviceTu"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if multi_device_tu {
+        blocked.push("multi_device_tu_requires_topology_verification");
+    }
     if template_status != "fresh" {
         blocked.push("template_evidence_missing");
     }
 
     json!({
-        "deviceOnlyAllowed": profile_current && supports_device_only,
+        "deviceOnlyAllowed": profile_current && supports_device_only && !multi_device_tu,
         "warmRebuildAllowed": profile_current && template_status == "fresh",
         "blockedReasonCodes": blocked,
     })
@@ -830,8 +856,13 @@ fn ranked_reload_options(
         .and_then(Value::as_array)
         .map(|roles| roles.len())
         .unwrap_or(0);
+    let multi_device_tu = root
+        .get("deviceTuTopology")
+        .and_then(|v| v.get("multiDeviceTu"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
-    let device_only_safety = profile_current && supports_device_only;
+    let device_only_safety = profile_current && supports_device_only && !multi_device_tu;
     let warm_safety = profile_current && template_fresh;
     let warm_requires_consent = warm_safety && (requires_rdc || rdc_over_budget);
     let mut device_only_reasons: Vec<String> = Vec::new();
@@ -847,6 +878,9 @@ fn ranked_reload_options(
         }
         if profile_current && !supports_device_only {
             device_only_reasons.push("toolchain_capability_no_device_only_reload".to_string());
+        }
+        if multi_device_tu {
+            device_only_reasons.push("multi_device_tu_requires_topology_verification".to_string());
         }
     }
 
@@ -1048,6 +1082,10 @@ fn run_report(
         "deviceMappings": root.get("deviceMappings").cloned().unwrap_or(Value::Null),
         "sourceContextReport": root
             .get("sourceContextReport")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "deviceTuTopology": root
+            .get("deviceTuTopology")
             .cloned()
             .unwrap_or(Value::Null),
         "templateEvidenceHash": root
@@ -1960,6 +1998,57 @@ mod tests {
         assert_eq!(
             migrated
                 .pointer("/runReport/sourceContextReport/deterministicContextComplete")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn multi_device_tu_topology_blocks_device_only_fast_path() {
+        let manifest = gpu_compile_manifest();
+        let plan = reload_plan("device_only", vec!["device"]);
+        let source_context_report = json!({
+            "schemaVersion": "synthi.gpu.source_context.v1",
+            "included": [],
+            "dropped": [],
+            "criticalDropped": [],
+            "deviceTuTopology": {
+                "deviceTranslationUnitCount": 2,
+                "deviceTranslationUnits": [
+                    {"path": "src/gpu/a.hip", "contentHash": "a"},
+                    {"path": "src/gpu/b.hip", "contentHash": "b"}
+                ],
+                "multiDeviceTu": true,
+                "supportStatus": "multi_device_tu_requires_topology_verification",
+                "reasonCodes": ["multi_device_tu_requires_topology_verification"]
+            }
+        });
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "source_context_report": source_context_report,
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let device_only = ranked_option(&migrated, "device_only");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("fallback")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/fastPathPolicy/deviceOnlyAllowed")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(has_reason(
+            device_only,
+            "multi_device_tu_requires_topology_verification"
+        ));
+        assert_eq!(
+            migrated
+                .pointer("/runReport/deviceTuTopology/multiDeviceTu")
                 .and_then(Value::as_bool),
             Some(true)
         );

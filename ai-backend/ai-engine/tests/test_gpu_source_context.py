@@ -64,3 +64,19 @@ def test_source_context_marks_critical_budget_drop():
     assert report["deterministicContextComplete"] is False
     assert report["criticalDropped"]
     assert report["criticalDropped"][0]["dropReason"] == "prompt_budget_exclusion"
+
+
+def test_source_context_reports_multi_device_tu_topology():
+    files = {
+        "src/app/main.cpp": "int main(){ return 0; }",
+        "src/gpu/a.hip": "__global__ void a() {}",
+        "src/gpu/b.hip": "__device__ int b(){ return 1; }",
+    }
+
+    _prompt, report = build_project_source_context(files, focus="src/app/main.cpp")
+    topology = report["deviceTuTopology"]
+
+    assert topology["multiDeviceTu"] is True
+    assert topology["deviceTranslationUnitCount"] == 2
+    assert topology["supportStatus"] == "multi_device_tu_requires_topology_verification"
+    assert "multi_device_tu_requires_topology_verification" in topology["reasonCodes"]

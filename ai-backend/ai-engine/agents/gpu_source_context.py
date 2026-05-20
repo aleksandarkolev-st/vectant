@@ -260,6 +260,16 @@ def build_source_context_report(
         if item.get("dropReason") == "prompt_budget_exclusion"
         and int(item.get("priority", 99)) <= 4
     ]
+    device_translation_units = [
+        {
+            "path": item["path"],
+            "contentHash": item["contentHash"],
+            "includedInPrompt": any(included_item["path"] == item["path"] for included_item in included),
+        }
+        for item in candidates
+        if item.get("reason") == "device_translation_unit"
+    ]
+    multi_device_tu = len(device_translation_units) > 1
     selected_command = _selected_compile_command(normalized_files, focus)
     report = {
         "schemaVersion": SOURCE_CONTEXT_SCHEMA_VERSION,
@@ -272,6 +282,21 @@ def build_source_context_report(
         "dropped": sorted(dropped, key=lambda item: (item.get("dropReason", ""), item["path"])),
         "criticalDropped": critical_dropped,
         "deterministicContextComplete": not critical_dropped,
+        "deviceTuTopology": {
+            "deviceTranslationUnitCount": len(device_translation_units),
+            "deviceTranslationUnits": device_translation_units,
+            "multiDeviceTu": multi_device_tu,
+            "supportStatus": (
+                "single_device_tu"
+                if not multi_device_tu
+                else "multi_device_tu_requires_topology_verification"
+            ),
+            "reasonCodes": (
+                []
+                if not multi_device_tu
+                else ["multi_device_tu_requires_topology_verification"]
+            ),
+        },
         "promptBudget": {
             "maxChars": max_chars,
             "perFileMaxChars": per_file_max_chars,
