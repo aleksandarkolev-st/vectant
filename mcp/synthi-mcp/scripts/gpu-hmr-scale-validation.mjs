@@ -542,6 +542,61 @@ add_executable(particle_field
 ${renderLink}
 `, true);
 
+  addFile(files, 'compile_commands.json', JSON.stringify([
+    {
+      directory: '/workspace/particle_field_validation/build',
+      file: '/workspace/particle_field_validation/src/app/main.cpp',
+      arguments: [
+        'clang++',
+        '-std=c++20',
+        '-Isrc',
+        `-DSCALE_GPU_TARGET=${isRocm ? 'rocm' : 'cuda'}`,
+        `-DSCALE_GPU_ARCH=${arch}`,
+        '-c',
+        'src/app/main.cpp',
+      ],
+    },
+    {
+      directory: '/workspace/particle_field_validation/build',
+      file: `/workspace/particle_field_validation/src/gpu/particle_kernels.${deviceExt}`,
+      arguments: [
+        isRocm ? 'hipcc' : 'nvcc',
+        '-Isrc',
+        isRocm ? `--offload-arch=${arch}` : `-arch=${arch}`,
+        '-c',
+        `src/gpu/particle_kernels.${deviceExt}`,
+      ],
+    },
+  ], null, 2) + '\n', true);
+
+  addFile(files, '.cmake/api/v1/reply/codemodel-v2-debug.json', JSON.stringify({
+    kind: 'codemodel',
+    configurations: [
+      {
+        name: 'Debug',
+        targets: [
+          {
+            name: 'particle_field',
+            id: 'particle_field::@scale',
+            jsonFile: 'target-particle_field-Debug.json',
+          },
+        ],
+      },
+    ],
+  }, null, 2) + '\n', true);
+
+  addFile(files, '.cmake/api/v1/reply/target-particle_field-Debug.json', JSON.stringify({
+    name: 'particle_field',
+    id: 'particle_field::@scale',
+    type: 'EXECUTABLE',
+    sources: [
+      { path: 'src/app/main.cpp' },
+      { path: 'src/app/simulation.cpp' },
+      { path: renderSource },
+      { path: `src/gpu/particle_kernels.${deviceExt}` },
+    ],
+  }, null, 2) + '\n', true);
+
   addFile(files, 'src/config/particle_config.hpp', `
 #pragma once
 namespace scale {
@@ -1317,6 +1372,98 @@ function validateLaunchIndirectionContract(split) {
   record('stale launch pointer check passed', 'pass', staleChecks.failureReasonCode);
 }
 
+function validateProdRunReportContract(split, project, vendor, arch) {
+  const reportDoc = split.sidecar?.runReport;
+  if (!reportDoc || typeof reportDoc !== 'object') {
+    throw new Error('split sidecar missing production runReport');
+  }
+  if (reportDoc.schemaVersion !== 'synthi.gpu.run_report.v1') {
+    throw new Error(`unexpected run report schema: ${reportDoc.schemaVersion ?? 'missing'}`);
+  }
+  const capability = reportDoc.toolchainCapabilityProfile || split.sidecar?.toolchainCapabilities;
+  if (!capability || capability.status !== 'current') {
+    throw new Error(`run report missing current toolchain capability profile: ${JSON.stringify(capability).slice(0, 300)}`);
+  }
+  if (capability.gpuVendor !== vendor) {
+    throw new Error(`run report vendor mismatch: ${capability.gpuVendor ?? 'missing'} !== ${vendor}`);
+  }
+  if (capability.gpuArch !== arch) {
+    throw new Error(`run report arch mismatch: ${capability.gpuArch ?? 'missing'} !== ${arch}`);
+  }
+  if (!reportDoc.toolchainCapabilityProfileHash) {
+    throw new Error('run report missing toolchainCapabilityProfileHash');
+  }
+  if (!reportDoc.effectiveFlagsHash) {
+    throw new Error('run report missing effectiveFlagsHash');
+  }
+  if (!Array.isArray(reportDoc.rankedReloadOptions) || reportDoc.rankedReloadOptions.length === 0) {
+    throw new Error('run report missing ranked reload options');
+  }
+  if (!reportDoc.arbiterDecision) {
+    throw new Error('run report missing arbiterDecision');
+  }
+  if (!reportDoc.compileDbHash) {
+    throw new Error('run report missing compileDbHash');
+  }
+  if (!reportDoc.cmakeCodemodelHash) {
+    throw new Error('run report missing cmakeCodemodelHash');
+  }
+  const buildMetadata = reportDoc.sourceContextReport?.buildMetadata || {};
+  const targetResolution = buildMetadata.targetResolution || {};
+  if (buildMetadata.compileCommandsStatus !== 'selected') {
+    throw new Error(`compile_commands was not selected: ${buildMetadata.compileCommandsStatus ?? 'missing'}`);
+  }
+  if (buildMetadata.cmakeFileApiStatus !== 'available') {
+    throw new Error(`CMake File API was not available: ${buildMetadata.cmakeFileApiStatus ?? 'missing'}`);
+  }
+  if (targetResolution.status !== 'selected') {
+    throw new Error(`CMake target was not selected: ${JSON.stringify(targetResolution).slice(0, 500)}`);
+  }
+  if (targetResolution.selectedTarget?.name !== 'particle_field') {
+    throw new Error(`unexpected selected CMake target: ${targetResolution.selectedTarget?.name ?? 'missing'}`);
+  }
+  if (!targetResolution.selectedTarget?.sourceFiles?.includes(project.primaryPath)) {
+    throw new Error(`selected CMake target does not include ${project.primaryPath}`);
+  }
+  const selectedTarget = reportDoc.selectedTarget || {};
+  if (selectedTarget.targetName !== 'particle_field') {
+    throw new Error(`run report selectedTarget not promoted from CMake File API: ${JSON.stringify(selectedTarget).slice(0, 300)}`);
+  }
+  const headerGraph = reportDoc.affectedHeaderGraph;
+  if (!headerGraph || headerGraph.schemaVersion !== 'synthi.gpu.device_include_graph.v1') {
+    throw new Error(`run report missing device include graph: ${JSON.stringify(headerGraph).slice(0, 300)}`);
+  }
+  if (headerGraph.status !== 'bounded') {
+    throw new Error(`device include graph is not bounded: ${JSON.stringify(headerGraph).slice(0, 500)}`);
+  }
+  if (!headerGraph.reachableHeaders?.includes('src/gpu/particle_api.hpp')) {
+    throw new Error(`device include graph missing reachable particle_api.hpp: ${JSON.stringify(headerGraph).slice(0, 500)}`);
+  }
+  if (reportDoc.templateEvidenceStatus !== 'missing') {
+    throw new Error(`unexpected templateEvidenceStatus for non-template fixture: ${reportDoc.templateEvidenceStatus ?? 'missing'}`);
+  }
+  if (!reportDoc.templateEvidenceInvalidationReasons?.includes('template_evidence_missing')) {
+    throw new Error('run report missing template_evidence_missing invalidation reason');
+  }
+  report.prod_run_report = {
+    schemaVersion: reportDoc.schemaVersion,
+    arbiterDecision: reportDoc.arbiterDecision,
+    selectedPlan: reportDoc.selectedPlan ?? null,
+    compileDbHash: reportDoc.compileDbHash,
+    cmakeCodemodelHash: reportDoc.cmakeCodemodelHash,
+    targetResolutionMethod: reportDoc.targetResolutionMethod ?? targetResolution.method ?? null,
+    targetName: selectedTarget.targetName,
+    toolchainCapabilityProfileHash: reportDoc.toolchainCapabilityProfileHash,
+    templateEvidenceStatus: reportDoc.templateEvidenceStatus,
+    affectedHeaderGraphStatus: headerGraph.status,
+  };
+  record(
+    'production run report records target, capability, cache, and header graph',
+    'pass',
+    `target=${selectedTarget.targetName} arbiter=${reportDoc.arbiterDecision} headers=${headerGraph.reachableHeaders.length}`,
+  );
+}
+
 function generatedWorkspaceArtifacts(split) {
   const artifacts = new Set(GENERATED_WORKSPACE_ARTIFACTS);
   for (const rel of Object.values(split?.roles ?? {})) {
@@ -1568,6 +1715,7 @@ async function writeReport() {
     `workspace_file_count: ${report.workspace_file_count}`,
     `relevant_file_count: ${report.relevant_file_count}`,
     `generated_roles: ${JSON.stringify(report.generated_roles)}`,
+    `prod_run_report: ${JSON.stringify(report.prod_run_report ?? null)}`,
     '',
     ...report.checks.map((r) => `${r.status.toUpperCase()} ${r.name}${r.detail ? ` - ${r.detail}` : ''}`),
     '',
@@ -1679,6 +1827,7 @@ async function run() {
   const split = await readGeneratedSplit(vendor, firstCheckpoint);
   validateGeneratedSplit(split, CFG.renderBackend);
   validateLaunchIndirectionContract(split);
+  validateProdRunReportContract(split, project, vendor, arch);
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
   recordGeneratedSplitKeptInternal(split);
 
