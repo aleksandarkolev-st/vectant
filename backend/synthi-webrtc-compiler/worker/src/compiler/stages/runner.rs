@@ -85,6 +85,14 @@ fn runner_load_command(name: &str, path: &str) -> String {
     }
 }
 
+fn runner_session_matches(current: Option<&str>, requested: Option<&str>) -> bool {
+    match (current, requested) {
+        (Some(current), Some(requested)) => current == requested,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 pub async fn handle_runner_execution(
     ctx: &CompileContext,
     req: &CompileRequest,
@@ -168,12 +176,15 @@ pub async fn handle_runner_execution(
         };
         let gui_mode_same = state.is_gui == req.is_gui;
         let resolution_same = state.width == req_width && state.height == req_height;
-        debug_log!("[Main] Existing runner: alive={}, is_gui={}, gui_mode_same={}, resolution_same={}, has_on_update={}",
-            runner_alive, state.is_gui, gui_mode_same, resolution_same, has_on_update);
+        let session_same =
+            runner_session_matches(state.session_id.as_deref(), session_id.as_deref());
+        debug_log!("[Main] Existing runner: alive={}, is_gui={}, gui_mode_same={}, resolution_same={}, session_same={}, current_session={:?}, requested_session={:?}, has_on_update={}",
+            runner_alive, state.is_gui, gui_mode_same, resolution_same, session_same, state.session_id.as_deref(), session_id.as_deref(), has_on_update);
 
         // HMR enabled: reuse running process when alive AND GUI mode and
-        // resolution match.
-        runner_alive && gui_mode_same && resolution_same
+        // resolution/session identity match. Reusing a runner across
+        // sessions can send HMR commands into the previous workspace.
+        runner_alive && gui_mode_same && resolution_same && session_same
     } else {
         false
     };
@@ -1118,7 +1129,7 @@ pub async fn handle_runner_execution(
 
 #[cfg(test)]
 mod tests {
-    use super::runner_load_command;
+    use super::{runner_load_command, runner_session_matches};
 
     #[test]
     fn gpu_device_load_command_preserves_legacy_shape_without_abi() {
@@ -1134,5 +1145,26 @@ mod tests {
             runner_load_command("__gpu_device:rocm:advance,init:12345", "/tmp/device.hsaco"),
             "load_device rocm /tmp/device.hsaco advance,init 12345\n"
         );
+    }
+
+    #[test]
+    fn runner_session_match_allows_same_session() {
+        assert!(runner_session_matches(Some("session-a"), Some("session-a")));
+    }
+
+    #[test]
+    fn runner_session_match_rejects_cross_session_hmr() {
+        assert!(!runner_session_matches(Some("session-a"), Some("session-b")));
+    }
+
+    #[test]
+    fn runner_session_match_rejects_missing_requested_or_current_identity() {
+        assert!(!runner_session_matches(Some("session-a"), None));
+        assert!(!runner_session_matches(None, Some("session-a")));
+    }
+
+    #[test]
+    fn runner_session_match_preserves_sessionless_compatibility() {
+        assert!(runner_session_matches(None, None));
     }
 }
