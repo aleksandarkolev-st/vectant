@@ -44,6 +44,8 @@ const CFG = {
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_FRESHNESS_MS ?? 5000),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
+  mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
+    ?? ((process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY) ? 'gemini_api' : 'agent_side'),
 };
 
 const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
@@ -390,7 +392,7 @@ async function startMcp() {
       '-i',
       '-e', `SYNTHI_SESSION_ID=${CFG.slug}`,
       '-e', `SYNTHI_SIGNALING_URL=${CFG.mcpSignalingUrl}`,
-      '-e', 'SYNTHI_VISION_BACKEND=gemini_api',
+      '-e', `SYNTHI_VISION_BACKEND=${CFG.mcpVisionBackend}`,
       '-e', `GOOGLE_API_KEY=${CFG.googleApiKey}`,
       '-e', `GEMINI_API_KEY=${CFG.googleApiKey}`,
       '-e', `SYNTHI_GEMINI_MODEL=${CFG.geminiModel}`,
@@ -406,7 +408,7 @@ async function startMcp() {
         ...process.env,
         SYNTHI_SESSION_ID: CFG.slug,
         SYNTHI_SIGNALING_URL: CFG.signalingUrl,
-        SYNTHI_VISION_BACKEND: 'gemini_api',
+        SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
         GOOGLE_API_KEY: CFG.googleApiKey,
         GEMINI_API_KEY: CFG.googleApiKey,
         SYNTHI_GEMINI_MODEL: CFG.geminiModel,
