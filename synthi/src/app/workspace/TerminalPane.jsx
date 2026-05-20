@@ -1,10 +1,24 @@
 'use client';
 import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
-import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste, X } from 'lucide-react';
+import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { resolveCollabWsUrl } from '@/lib/collab-url';
+import {
+  TERMINAL_COLOR_KEYS,
+  getTerminalOverrides,
+  setTerminalOverrides,
+  subscribeTerminalOverrides,
+  applyOverridesToTheme,
+} from '@/lib/terminal-color-overrides';
+
+// ─── Session-scoped paste auto-approve ───────────────────────────────────
+// When the user ticks "Don't ask again this session" in the multi-line
+// paste dialog, we set this module-level flag. It survives across all
+// terminal panes (memo-frozen) but resets on a full page reload.
+let sessionAutoApprovePaste = false;
 
 /**
  * TerminalPane — Renders a single interactive terminal backed by a real PTY
@@ -93,19 +107,31 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   // Multi-line paste confirmation: null when no pending paste, otherwise
   // { text, lineCount, charCount } describing the clipboard payload.
   const [pasteConfirm, setPasteConfirm] = useState(null);
+  // Color customizer floating panel
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  // Live overrides — re-renders when user tweaks colors
+  const [colorOverrides, setColorOverrides] = useState(() => getTerminalOverrides());
 
   // Stable session key: survives re-renders, unique per terminal tab + pane side
   const sessionKey = `${terminalId}-${paneSide}`;
 
-  // ─── Live terminal theme sync ─────────────────────────────────────────
+  // ─── Subscribe to override changes from other panes / the customizer ──
+  useEffect(() => {
+    const unsubscribe = subscribeTerminalOverrides((next) => {
+      setColorOverrides(next || {});
+    });
+    return unsubscribe;
+  }, []);
+
+  // ─── Live terminal theme sync (theme + user overrides) ────────────────
   useEffect(() => {
     if (terminalRef.current?.term && terminalTheme) {
       const term = terminalRef.current.term;
-      term.options.theme = terminalTheme;
+      term.options.theme = applyOverridesToTheme(terminalTheme, colorOverrides);
       // Force an immediate full repaint so colors apply without delay
       try { term.refresh(0, term.rows - 1); } catch (_) {}
     }
-  }, [terminalTheme]);
+  }, [terminalTheme, colorOverrides]);
 
   // ─── Cleanup helper ───────────────────────────────────────────────────
   const cleanup = useCallback(() => {
@@ -159,11 +185,15 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       if (disposed || !containerRef.current) return;
 
       // ── Create xterm instance ───────────────────────────────────────
+      const initialTheme = applyOverridesToTheme(
+        terminalTheme || SYNTHI_THEME_FALLBACK,
+        getTerminalOverrides(),
+      );
       const term = new Terminal({
         fontFamily: 'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Monaco, Consolas, monospace',
         fontSize: 13,
         lineHeight: 1.4,
-        theme: terminalTheme || SYNTHI_THEME_FALLBACK,
+        theme: initialTheme,
         cursorBlink: true,
         cursorStyle: 'bar',
         scrollback: 5000,
@@ -225,7 +255,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           const text = await navigator.clipboard.readText();
           if (!text) return;
           const hasEmbeddedNewline = text.replace(/\r?\n$/, '').includes('\n');
-          if (hasEmbeddedNewline) {
+          // Session auto-approve skips the confirmation modal entirely.
+          if (hasEmbeddedNewline && !sessionAutoApprovePaste) {
             const lineCount = text.split(/\r?\n/).length;
             setPasteConfirm({ text, lineCount, charCount: text.length });
           } else {
@@ -480,9 +511,10 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   }, [cleanup]);
 
   // ─── Multi-line paste confirmation actions ────────────────────────────
-  const confirmPaste = useCallback(() => {
+  const confirmPaste = useCallback((opts) => {
     const pending = pasteConfirm;
     setPasteConfirm(null);
+    if (opts?.autoApprove) sessionAutoApprovePaste = true;
     if (!pending) return;
     const term = terminalRef.current?.term;
     if (!term) return;
@@ -501,6 +533,21 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     <div className="terminal-pane-shell h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
       <div ref={containerRef} className="h-full w-full" />
 
+      {/* Palette button — opens the terminal color customizer */}
+      <button
+        type="button"
+        onClick={() => setColorPickerOpen(true)}
+        title="Customize terminal colors"
+        aria-label="Customize terminal colors"
+        className="absolute top-1.5 right-1.5 z-10 rounded p-1 opacity-40 hover:opacity-100 transition-opacity"
+        style={{
+          color: 'var(--text-muted)',
+          background: 'color-mix(in srgb, var(--bg-app) 60%, transparent)',
+        }}
+      >
+        <Palette className="w-3.5 h-3.5" />
+      </button>
+
       {pasteConfirm && (
         <MultiLinePasteDialog
           text={pasteConfirm.text}
@@ -508,6 +555,14 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           charCount={pasteConfirm.charCount}
           onConfirm={confirmPaste}
           onCancel={cancelPaste}
+        />
+      )}
+
+      {colorPickerOpen && (
+        <TerminalColorPanel
+          baseTheme={terminalTheme || SYNTHI_THEME_FALLBACK}
+          overrides={colorOverrides}
+          onClose={() => setColorPickerOpen(false)}
         />
       )}
 
@@ -572,15 +627,62 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 }, /* freeze — never re-render from parent */ () => true);
 
 /**
- * MultiLinePasteDialog — a floating, draggable confirmation panel for
- * multi-line right-click pastes into the terminal. It lives inside the
- * terminal-pane-shell (parent has `position: relative`), so it shrinks
- * proportionally when the user collapses the terminal pane. There is no
- * backdrop — the terminal stays interactive behind it.
+ * Reusable: drag a panel by its titlebar within the viewport.
+ * Returns { pos, panelRef, onTitleMouseDown }. `pos === null` means the
+ * panel should centre itself via CSS until the user starts dragging.
+ */
+function useDraggableViewportPanel() {
+  const [pos, setPos] = useState(null); // { x, y } | null
+  const panelRef = useRef(null);
+  const dragRef = useRef(null);
+
+  const onTitleMouseDown = useCallback((e) => {
+    if (e.button !== 0) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: rect.left,
+      originY: rect.top,
+    };
+    e.preventDefault();
+  }, []);
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = dragRef.current;
+      const panel = panelRef.current;
+      if (!d || !panel) return;
+      const w = panel.offsetWidth;
+      const h = panel.offsetHeight;
+      const x = Math.max(8, Math.min(d.originX + (e.clientX - d.startX), window.innerWidth - w - 8));
+      const y = Math.max(8, Math.min(d.originY + (e.clientY - d.startY), window.innerHeight - h - 8));
+      setPos({ x, y });
+    };
+    const onUp = () => { dragRef.current = null; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  return { pos, panelRef, onTitleMouseDown };
+}
+
+/**
+ * MultiLinePasteDialog — viewport-centred floating panel (portal to body)
+ * shown when the user right-clicks to paste a multi-line clipboard payload.
  *
+ * No backdrop dim/blur — the IDE stays interactive behind it.
  * Drag: mousedown on the titlebar.
  * Keyboard: Escape cancels, Ctrl/Cmd+Enter confirms. Cancel autofocuses so
- * an accidental Enter doesn't accept a hostile clipboard payload.
+ * a stray Enter doesn't accept a hostile clipboard payload.
+ * Auto-approve: a checkbox skips this dialog for the rest of the page
+ * session (resets on full reload).
  */
 function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel }) {
   const PREVIEW_LINE_LIMIT = 40;
@@ -594,111 +696,41 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
   const truncated =
     lines.length > PREVIEW_LINE_LIMIT || text.length > PREVIEW_CHAR_LIMIT;
 
-  // Default to centred inside the pane. `null` means "centre via CSS".
-  // Once the user drags, we switch to explicit pixel offsets.
-  const [pos, setPos] = useState(null); // { x, y } | null
-  const panelRef = useRef(null);
-  const dragRef = useRef(null); // { startX, startY, originX, originY, parentW, parentH }
-
-  // Keep the panel inside the parent on parent resize. If the parent shrinks
-  // below the panel's bounds, clamp the panel back into view so the whole
-  // floating window collapses proportionally with the terminal pane.
-  useEffect(() => {
-    if (!panelRef.current) return;
-    const parent = panelRef.current.parentElement;
-    if (!parent) return;
-    const observer = new ResizeObserver(() => {
-      const panel = panelRef.current;
-      if (!panel || !pos) return;
-      const pw = parent.clientWidth;
-      const ph = parent.clientHeight;
-      const w = panel.offsetWidth;
-      const h = panel.offsetHeight;
-      const clampedX = Math.max(8, Math.min(pos.x, pw - w - 8));
-      const clampedY = Math.max(8, Math.min(pos.y, ph - h - 8));
-      if (clampedX !== pos.x || clampedY !== pos.y) {
-        setPos({ x: clampedX, y: clampedY });
-      }
-    });
-    observer.observe(parent);
-    return () => observer.disconnect();
-  }, [pos]);
-
-  const onTitleMouseDown = (e) => {
-    if (e.button !== 0) return;
-    const panel = panelRef.current;
-    if (!panel) return;
-    const parent = panel.parentElement;
-    if (!parent) return;
-    const panelRect = panel.getBoundingClientRect();
-    const parentRect = parent.getBoundingClientRect();
-    dragRef.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      originX: panelRect.left - parentRect.left,
-      originY: panelRect.top - parentRect.top,
-      parentW: parent.clientWidth,
-      parentH: parent.clientHeight,
-    };
-    e.preventDefault();
-  };
-
-  useEffect(() => {
-    const onMove = (e) => {
-      const d = dragRef.current;
-      if (!d) return;
-      const panel = panelRef.current;
-      if (!panel) return;
-      const w = panel.offsetWidth;
-      const h = panel.offsetHeight;
-      const x = Math.max(8, Math.min(d.originX + (e.clientX - d.startX), d.parentW - w - 8));
-      const y = Math.max(8, Math.min(d.originY + (e.clientY - d.startY), d.parentH - h - 8));
-      setPos({ x, y });
-    };
-    const onUp = () => { dragRef.current = null; };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, []);
+  const [autoApprove, setAutoApprove] = useState(false);
+  const { pos, panelRef, onTitleMouseDown } = useDraggableViewportPanel();
 
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
       else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        onConfirm();
+        onConfirm({ autoApprove });
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onConfirm, onCancel]);
+  }, [onConfirm, onCancel, autoApprove]);
 
-  // When centred (initial), use CSS transform; once dragged, switch to
-  // explicit offsets. `max-width`/`max-height` against the parent are what
-  // make the panel collapse proportionally as the terminal pane shrinks.
+  if (typeof document === 'undefined') return null;
+
   const placement = pos
     ? { left: pos.x, top: pos.y }
     : { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' };
 
-  return (
+  return createPortal(
     <div
       ref={panelRef}
-      className="absolute rounded-lg border shadow-2xl flex flex-col"
+      className="fixed rounded-lg border shadow-2xl flex flex-col"
       style={{
         ...placement,
-        width: 440,
-        maxWidth: 'calc(100% - 16px)',
-        maxHeight: 'calc(100% - 16px)',
+        width: 460,
+        maxWidth: 'calc(100vw - 16px)',
+        maxHeight: 'calc(100vh - 16px)',
         background: 'var(--bg-elevated, #18181b)',
         borderColor: 'var(--border-medium, #3f3f46)',
-        zIndex: 40,
+        zIndex: 2147483646,
       }}
-      onMouseDown={(e) => e.stopPropagation()}
     >
-      {/* Title bar — drag handle */}
       <div
         onMouseDown={onTitleMouseDown}
         className="flex items-center gap-2 px-3 py-2 border-b rounded-t-lg select-none"
@@ -724,7 +756,6 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
         </button>
       </div>
 
-      {/* Body — scrolls if the parent is too short */}
       <div className="p-3 overflow-auto flex-1 min-h-0">
         <p className="text-xs mb-2 leading-relaxed" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
           {lineCount} lines ({charCount} chars). Each newline is sent as Enter
@@ -749,6 +780,19 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
           </p>
         )}
 
+        <label
+          className="flex items-center gap-2 text-[11px] mb-3 cursor-pointer select-none"
+          style={{ color: 'var(--text-secondary, #a1a1aa)' }}
+        >
+          <input
+            type="checkbox"
+            checked={autoApprove}
+            onChange={(e) => setAutoApprove(e.target.checked)}
+            className="cursor-pointer"
+          />
+          Auto-approve multi-line pastes for the rest of this session
+        </label>
+
         <div className="flex items-center justify-end gap-2">
           <button
             type="button"
@@ -762,7 +806,7 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
           </button>
           <button
             type="button"
-            onClick={onConfirm}
+            onClick={() => onConfirm({ autoApprove })}
             className="px-3 py-1.5 rounded-md text-xs font-semibold transition-colors text-white"
             style={{ background: 'var(--accent-warning, #d97706)' }}
           >
@@ -771,7 +815,175 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
+  );
+}
+
+/**
+ * TerminalColorPanel — viewport-centred floating customizer for the xterm
+ * colors. Persists overrides to localStorage and broadcasts them to every
+ * mounted TerminalPane so the change is immediate. "Reset" wipes the
+ * override layer and falls back to the active ThemeProvider theme.
+ */
+const COLOR_LABELS = {
+  background: 'Background',
+  foreground: 'Foreground',
+  cursor: 'Cursor',
+  cursorAccent: 'Cursor Accent',
+  selectionBackground: 'Selection Bg',
+  selectionForeground: 'Selection Fg',
+  black: 'Black',
+  red: 'Red',
+  green: 'Green',
+  yellow: 'Yellow',
+  blue: 'Blue',
+  magenta: 'Magenta',
+  cyan: 'Cyan',
+  white: 'White',
+  brightBlack: 'Bright Black',
+  brightRed: 'Bright Red',
+  brightGreen: 'Bright Green',
+  brightYellow: 'Bright Yellow',
+  brightBlue: 'Bright Blue',
+  brightMagenta: 'Bright Magenta',
+  brightCyan: 'Bright Cyan',
+  brightWhite: 'Bright White',
+};
+
+// Strip "rgba(…)" / non-hex inputs that <input type=color> can't display.
+function toHexInputValue(value) {
+  if (typeof value !== 'string') return '#000000';
+  const m = value.trim().match(/^#([0-9a-f]{6})$/i);
+  return m ? `#${m[1]}` : '#000000';
+}
+
+function TerminalColorPanel({ baseTheme, overrides, onClose }) {
+  const { pos, panelRef, onTitleMouseDown } = useDraggableViewportPanel();
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const updateKey = (key, value) => {
+    const next = { ...overrides, [key]: value };
+    setTerminalOverrides(next);
+  };
+
+  const resetKey = (key) => {
+    const next = { ...overrides };
+    delete next[key];
+    setTerminalOverrides(next);
+  };
+
+  const resetAll = () => setTerminalOverrides({});
+
+  if (typeof document === 'undefined') return null;
+
+  const placement = pos
+    ? { left: pos.x, top: pos.y }
+    : { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' };
+
+  return createPortal(
+    <div
+      ref={panelRef}
+      className="fixed rounded-lg border shadow-2xl flex flex-col"
+      style={{
+        ...placement,
+        width: 460,
+        maxWidth: 'calc(100vw - 16px)',
+        maxHeight: 'calc(100vh - 16px)',
+        background: 'var(--bg-elevated, #18181b)',
+        borderColor: 'var(--border-medium, #3f3f46)',
+        zIndex: 2147483646,
+      }}
+    >
+      <div
+        onMouseDown={onTitleMouseDown}
+        className="flex items-center gap-2 px-3 py-2 border-b rounded-t-lg select-none"
+        style={{
+          borderColor: 'var(--border-subtle, #2a2b38)',
+          background: 'var(--bg-app, #0a0b10)',
+          cursor: 'move',
+        }}
+      >
+        <Palette className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--accent-primary, #b545ff)' }} />
+        <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
+          Terminal Colors
+        </span>
+        <button
+          type="button"
+          onClick={resetAll}
+          onMouseDown={(e) => e.stopPropagation()}
+          title="Reset all to theme defaults"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] hover:bg-white/10"
+          style={{ color: 'var(--text-muted, #6b7089)' }}
+        >
+          <RotateCcw className="w-3 h-3" />
+          Reset all
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          onMouseDown={(e) => e.stopPropagation()}
+          aria-label="Close"
+          className="rounded p-0.5 hover:bg-white/10"
+          style={{ color: 'var(--text-muted, #6b7089)' }}
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      <div className="p-3 overflow-auto flex-1 min-h-0">
+        <p className="text-[11px] mb-3 leading-relaxed" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+          Overrides apply on top of the active theme and persist on this device.
+          Click ↺ to revert a single color.
+        </p>
+
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+          {TERMINAL_COLOR_KEYS.map((key) => {
+            const effective = overrides[key] ?? baseTheme[key] ?? '#000000';
+            const overridden = Object.prototype.hasOwnProperty.call(overrides, key);
+            return (
+              <div key={key} className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={toHexInputValue(effective)}
+                  onChange={(e) => updateKey(key, e.target.value)}
+                  className="w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent"
+                  title={effective}
+                />
+                <span
+                  className="text-[11px] flex-1 truncate"
+                  style={{
+                    color: overridden ? 'var(--text-primary, #e4e4e7)' : 'var(--text-secondary, #a1a1aa)',
+                    fontWeight: overridden ? 600 : 400,
+                  }}
+                >
+                  {COLOR_LABELS[key] || key}
+                </span>
+                {overridden && (
+                  <button
+                    type="button"
+                    onClick={() => resetKey(key)}
+                    title="Revert to theme default"
+                    className="rounded p-0.5 hover:bg-white/10"
+                    style={{ color: 'var(--text-muted, #6b7089)' }}
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
