@@ -144,6 +144,96 @@ def build_gpu_diff_patch_prompt(req: GpuDiffPatchRequest) -> str:
     return prompt
 
 
+def gpu_diff_patch_anchor_failures(
+    req: GpuDiffPatchRequest,
+    edits: Iterable[Mapping[str, object]],
+) -> List[dict]:
+    contents = {
+        "shared": req.shared_content or "",
+        "core": req.core_content or "",
+        "gui": req.gui_content or "",
+        "host_runner": req.host_runner_content or "",
+        "device": req.device_content or "",
+    }
+    failures: List[dict] = []
+    for index, edit in enumerate(edits):
+        module = _normalize_module(str(edit.get("module", "")))
+        anchor = edit.get("anchor")
+        if module not in contents:
+            failures.append(
+                {
+                    "index": index,
+                    "module": module,
+                    "reason": "unknown_module",
+                    "anchor": str(anchor or ""),
+                }
+            )
+            continue
+        if not isinstance(anchor, str) or not anchor:
+            failures.append(
+                {
+                    "index": index,
+                    "module": module,
+                    "reason": "missing_anchor",
+                    "anchor": "",
+                }
+            )
+            continue
+        content = contents[module]
+        count = content.count(anchor)
+        if count == 1:
+            continue
+        failures.append(
+            {
+                "index": index,
+                "module": module,
+                "reason": "anchor_missing" if count == 0 else "anchor_ambiguous",
+                "anchor": anchor,
+                "match_count": count,
+            }
+        )
+    return failures
+
+
+def build_gpu_diff_patch_retry_prompt(
+    original_prompt: str,
+    failures: Iterable[Mapping[str, object]],
+) -> str:
+    lines = [
+        original_prompt,
+        "",
+        "DETERMINISTIC VERIFIER REJECTION:",
+        "Your previous GPU delta edit list was rejected before the worker applied it.",
+        "Return a corrected JSON object using the same schema.",
+        "",
+        "Anchor rules:",
+        "- Every anchor must be copied verbatim from the CURRENT FILES blocks above.",
+        "- For module \"device\", the anchor must come from the CURRENT generated device role.",
+        "- Do not use a line that appears only in USER DIFF or the original user source.",
+        "- Every anchor must appear exactly once in its target module.",
+        "",
+        "Rejected edits:",
+    ]
+    for failure in failures:
+        anchor = str(failure.get("anchor") or "")
+        if len(anchor) > 240:
+            anchor = anchor[:237] + "..."
+        lines.append(
+            "- edit #{index} module={module} reason={reason} match_count={count} anchor={anchor!r}".format(
+                index=failure.get("index"),
+                module=failure.get("module"),
+                reason=failure.get("reason"),
+                count=failure.get("match_count", "n/a"),
+                anchor=anchor,
+            )
+        )
+    lines += [
+        "",
+        "Return ONLY the corrected JSON object. No markdown fences, no prose.",
+    ]
+    return "\n".join(lines)
+
+
 def _json_block(value: object) -> str:
     if value is None:
         return ""

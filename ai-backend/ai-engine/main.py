@@ -2084,7 +2084,9 @@ from agents.kernel_splitter import (  # noqa: E402
 from agents.gpu_device_mapping import build_device_mapping_report  # noqa: E402
 from agents.gpu_mod_delta import (  # noqa: E402
     GpuDiffPatchRequest,
+    build_gpu_diff_patch_retry_prompt as _build_gpu_diff_patch_retry_prompt,
     build_gpu_diff_patch_prompt as _build_gpu_diff_patch_prompt,
+    gpu_diff_patch_anchor_failures as _gpu_diff_patch_anchor_failures,
     parse_gpu_diff_response as _parse_gpu_diff_response,
 )
 from agents.gpu_healer import (  # noqa: E402
@@ -2433,22 +2435,49 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
         if provider_name == "openai"
         else "gemini-3.1-flash-lite-preview"
     )
+    max_delta_attempts = 2
     try:
-        ai_response = await provider.ask_llm(
-            prompt,
-            "cpp",
-            None,
-            mode="delta",
-            model=req.model or default_model,
-            api_key=req.api_key,
-        )
-        parsed = _parse_gpu_diff_response(ai_response)
+        last_parsed = None
+        last_failures = []
+        for attempt in range(1, max_delta_attempts + 1):
+            ai_response = await provider.ask_llm(
+                prompt,
+                "cpp",
+                None,
+                mode="delta",
+                model=req.model or default_model,
+                api_key=req.api_key,
+            )
+            parsed = _parse_gpu_diff_response(ai_response)
+            failures = _gpu_diff_patch_anchor_failures(req, parsed["edits"])
+            if not failures:
+                elapsed = time.time() - start_time
+                print(
+                    f"[GpuDiffPatch] plan={parsed['reload_plan']} "
+                    f"edits={len(parsed['edits'])} attempt={attempt}/{max_delta_attempts} "
+                    f"elapsed={elapsed:.2f}s"
+                )
+                return {**parsed, "elapsed_seconds": elapsed, "attempt_count": attempt}
+
+            last_parsed = parsed
+            last_failures = failures
+            print(
+                f"[GpuDiffPatch] verifier rejected attempt={attempt}/{max_delta_attempts} "
+                f"failures={failures}"
+            )
+            if attempt < max_delta_attempts:
+                prompt = _build_gpu_diff_patch_retry_prompt(prompt, failures)
+
         elapsed = time.time() - start_time
-        print(
-            f"[GpuDiffPatch] plan={parsed['reload_plan']} "
-            f"edits={len(parsed['edits'])} elapsed={elapsed:.2f}s"
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "GPU diff patch verifier rejected AI edits after retries",
+                "reload_plan": (last_parsed or {}).get("reload_plan"),
+                "failures": last_failures,
+                "elapsed_seconds": elapsed,
+            },
         )
-        return {**parsed, "elapsed_seconds": elapsed}
     except HTTPException:
         raise
     except json.JSONDecodeError as e:

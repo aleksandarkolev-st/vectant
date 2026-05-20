@@ -4512,6 +4512,12 @@ Rules:
   unchanged, set `reload_plan` to `device_only`.
 - If both host and device files change without ABI drift, set
   `reload_plan` to `mixed`.
+- Edits are applied to the CURRENT generated role files below, not to the
+  original user source. Every `anchor` must be copied verbatim from the
+  matching CURRENT FILES block and must appear exactly once there. For
+  `module: "device"`, use an anchor from the CURRENT generated `device`
+  block, even when the USER DIFF line has a different spelling in the
+  original `.cu` / `.hip` source.
 
 ARCHITECTURE CACHE:
 {ARCHITECTURE}
