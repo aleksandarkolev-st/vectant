@@ -629,6 +629,15 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         eprintln!("[AI Split] no manifest in response (fallback to sdl2 default downstream)");
     }
 
+    if let Some(agentic_report) = raw_response.get("agentic_report") {
+        if !agentic_report.is_null() {
+            eprintln!("[AI Split] agentic split report captured");
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert("_synthi_agentic_report".to_string(), agentic_report.clone());
+            }
+        }
+    }
+
     // ULTRAPLAN Phase 4: log host_runner presence. The parsed `res` Value
     // already carries `host_runner` as a sibling of `core`/`gui`/`shared`
     // (because the universal split prompt outputs all four fields inside

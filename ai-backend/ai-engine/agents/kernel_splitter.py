@@ -34,11 +34,12 @@ manifest, and the same call covers the GPU sub-block).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from agents.gpu_detect import GpuDetectionResult
 from llm.prompts import GPU_SPLIT_PROMPT
@@ -86,6 +87,72 @@ class KernelSplitterError(Exception):
 # ─────────────────────────────────────────────────────────────────────────────
 # Extraction
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def split_attempt_record(
+    *,
+    attempt: int,
+    max_attempts: int,
+    model: Optional[str],
+    prompt: Optional[str],
+    source_files: Iterable[str],
+    verification: Optional[SplitVerificationResult],
+    repair_prompt: bool = False,
+) -> dict:
+    """Return persisted metadata for one propose -> verify split attempt."""
+
+    prompt_hash = hashlib.sha256((prompt or "").encode("utf-8")).hexdigest()
+    ok = bool(verification.ok if verification else True)
+    reason_codes = [v.rule for v in verification.violations] if verification else []
+    violations = [v.to_dict() for v in verification.violations] if verification else []
+    return {
+        "attempt": attempt,
+        "maxAttempts": max_attempts,
+        "phase": "repair_verify" if repair_prompt else "propose_verify",
+        "model": model,
+        "promptHash": prompt_hash,
+        "sourceFiles": sorted({str(path).replace("\\", "/") for path in source_files}),
+        "repairScope": "generated_artifacts_only" if repair_prompt else None,
+        "accepted": ok,
+        "verifiers": [
+            {
+                "name": "generated_role_schema_mapping",
+                "status": "pass" if ok else "fail",
+                "reasonCodes": reason_codes,
+                "violations": violations,
+            },
+            {
+                "name": "compile",
+                "status": "pending_worker",
+                "reasonCodes": [],
+            },
+            {
+                "name": "runtime_screenshot",
+                "status": "pending_worker",
+                "reasonCodes": [],
+            },
+        ],
+    }
+
+
+def split_agentic_report(
+    *,
+    attempts: Sequence[Mapping[str, Any]],
+    accepted: bool,
+    max_attempts: int,
+) -> dict:
+    attempts_list = [dict(a) for a in attempts]
+    return {
+        "schemaVersion": "synthi.gpu.agentic_split.v1",
+        "mode": "full_split",
+        "attemptCount": len(attempts_list),
+        "maxAttempts": max_attempts,
+        "boundedRetries": True,
+        "accepted": bool(accepted),
+        "persistedAfterVerification": bool(accepted),
+        "repairScope": "generated_artifacts_only",
+        "attempts": attempts_list,
+    }
 
 
 _JSON_BLOCK_RE = re.compile(r"<JSON>(?P<body>.*?)</JSON>", re.DOTALL)

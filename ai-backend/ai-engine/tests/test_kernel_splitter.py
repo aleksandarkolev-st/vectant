@@ -13,7 +13,10 @@ from agents.kernel_splitter import (
     _project_source_context,
     build_prompt,
     parse_kernel_split_response,
+    split_agentic_report,
+    split_attempt_record,
 )
+from verifier_gpu import SplitVerificationResult, Violation
 
 
 SAMPLE_RAW = '''
@@ -177,6 +180,44 @@ def test_build_prompt_attaches_runtime_target_hint(monkeypatch):
     assert "RUNTIME GPU TARGET" in p
     assert "vendor=rocm" in p
     assert "arch=gfx1201" in p
+
+
+def test_split_attempt_record_hashes_prompt_and_reports_verifier_codes():
+    verification = SplitVerificationResult(
+        ok=False,
+        violations=[
+            Violation(
+                rule="split_missing_device_file",
+                message="device role missing",
+                offending_module="device",
+            )
+        ],
+    )
+
+    attempt = split_attempt_record(
+        attempt=2,
+        max_attempts=3,
+        model="gemini-test",
+        prompt="secret prompt text",
+        source_files=["src\\main.cpp", "src/gpu/k.hip"],
+        verification=verification,
+        repair_prompt=True,
+    )
+
+    assert attempt["phase"] == "repair_verify"
+    assert attempt["repairScope"] == "generated_artifacts_only"
+    assert attempt["sourceFiles"] == ["src/gpu/k.hip", "src/main.cpp"]
+    assert len(attempt["promptHash"]) == 64
+    assert "secret prompt text" not in str(attempt)
+    assert attempt["verifiers"][0]["status"] == "fail"
+    assert attempt["verifiers"][0]["reasonCodes"] == ["split_missing_device_file"]
+    assert attempt["verifiers"][1]["status"] == "pending_worker"
+
+    report = split_agentic_report(attempts=[attempt], accepted=False, max_attempts=3)
+    assert report["mode"] == "full_split"
+    assert report["attemptCount"] == 1
+    assert report["boundedRetries"] is True
+    assert report["persistedAfterVerification"] is False
 
 
 def test_build_prompt_attaches_extra_instructions():

@@ -84,9 +84,47 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
     let cache_report = root
         .get("cacheReport")
         .cloned()
+        .filter(|v| !v.is_null())
         .or_else(|| root.get("cache_report").cloned())
+        .filter(|v| !v.is_null())
         .unwrap_or_else(default_cache_report);
     root.insert("cacheReport".to_string(), cache_report.clone());
+
+    let agentic_report = root
+        .get("agenticReport")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| root.get("agentic_report").cloned())
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(default_agentic_report);
+    root.insert("agenticReport".to_string(), agentic_report.clone());
+    root.entry("agenticMode".to_string()).or_insert_with(|| {
+        agentic_report
+            .get("mode")
+            .cloned()
+            .unwrap_or_else(|| Value::String("not_reported".to_string()))
+    });
+    root.entry("agenticAttemptCount".to_string())
+        .or_insert_with(|| {
+            agentic_report
+                .get("attemptCount")
+                .cloned()
+                .unwrap_or_else(|| Value::Number(0.into()))
+        });
+    root.entry("agenticAttempts".to_string())
+        .or_insert_with(|| {
+            agentic_report
+                .get("attempts")
+                .cloned()
+                .unwrap_or_else(|| Value::Array(Vec::new()))
+        });
+    root.entry("generatedArtifactsPersistedAfterVerification".to_string())
+        .or_insert_with(|| {
+            agentic_report
+                .get("persistedAfterVerification")
+                .cloned()
+                .unwrap_or(Value::Bool(false))
+        });
 
     if !root.contains_key("arbiterDecision") || !root.contains_key("rankedReloadOptions") {
         let arbiter = decide_arbiter(&root, &toolchain_profile, &reload_plan);
@@ -596,6 +634,20 @@ fn default_cache_report() -> Value {
     })
 }
 
+fn default_agentic_report() -> Value {
+    json!({
+        "schemaVersion": "synthi.gpu.agentic_split.v1",
+        "mode": "not_reported",
+        "attemptCount": 0,
+        "maxAttempts": 0,
+        "boundedRetries": false,
+        "accepted": false,
+        "persistedAfterVerification": false,
+        "repairScope": null,
+        "attempts": [],
+    })
+}
+
 fn run_report(
     root: &Map<String, Value>,
     selected_compile_command: &Value,
@@ -634,8 +686,14 @@ fn run_report(
         "consentRequired": root.get("consentRequired").cloned().unwrap_or(Value::Null),
         "consentReason": root.get("consentReason").cloned().unwrap_or(Value::Null),
         "generatedRoles": root.get("generatedRoles").cloned().unwrap_or(Value::Null),
+        "agenticReport": root.get("agenticReport").cloned().unwrap_or(Value::Null),
         "agenticMode": root.get("agenticMode").cloned().unwrap_or(Value::Null),
         "agenticAttemptCount": root.get("agenticAttemptCount").cloned().unwrap_or(Value::Null),
+        "agenticAttempts": root.get("agenticAttempts").cloned().unwrap_or(Value::Null),
+        "generatedArtifactsPersistedAfterVerification": root
+            .get("generatedArtifactsPersistedAfterVerification")
+            .cloned()
+            .unwrap_or(Value::Null),
     })
 }
 
@@ -996,5 +1054,80 @@ mod tests {
             Some("multi_role_ai_delta_requires_consent")
         );
         assert!(has_reason(ai_delta, "multi_role_ai_delta_requires_consent"));
+    }
+
+    #[test]
+    fn agentic_split_report_is_promoted_into_run_report() {
+        let manifest = gpu_compile_manifest();
+        let agentic_report = json!({
+            "schemaVersion": "synthi.gpu.agentic_split.v1",
+            "mode": "full_split",
+            "attemptCount": 2,
+            "maxAttempts": 3,
+            "boundedRetries": true,
+            "accepted": true,
+            "persistedAfterVerification": true,
+            "repairScope": "generated_artifacts_only",
+            "attempts": [
+                {
+                    "attempt": 1,
+                    "accepted": false,
+                    "verifiers": [
+                        {
+                            "name": "generated_role_schema_mapping",
+                            "status": "fail",
+                            "reasonCodes": ["split_missing_device_file"]
+                        }
+                    ]
+                },
+                {
+                    "attempt": 2,
+                    "accepted": true,
+                    "verifiers": [
+                        {
+                            "name": "generated_role_schema_mapping",
+                            "status": "pass",
+                            "reasonCodes": []
+                        }
+                    ]
+                }
+            ]
+        });
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "agentic_report": agentic_report,
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+
+        assert_eq!(
+            migrated.pointer("/agenticMode").and_then(Value::as_str),
+            Some("full_split")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/agenticAttemptCount")
+                .and_then(Value::as_i64),
+            Some(2)
+        );
+        assert_eq!(
+            migrated
+                .pointer("/generatedArtifactsPersistedAfterVerification")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/agenticAttempts")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/agenticReport/repairScope")
+                .and_then(Value::as_str),
+            Some("generated_artifacts_only")
+        );
     }
 }

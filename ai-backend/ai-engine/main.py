@@ -2075,6 +2075,8 @@ from agents.gpu_detect import detect_project as _detect_gpu_project  # noqa: E40
 from agents.kernel_splitter import (  # noqa: E402
     KernelSplitterError as _KernelSplitterError,
     run_kernel_splitter as _run_kernel_splitter,
+    split_agentic_report as _split_agentic_report,
+    split_attempt_record as _split_attempt_record,
 )
 from agents.gpu_mod_delta import (  # noqa: E402
     GpuDiffPatchRequest,
@@ -2230,6 +2232,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     )
     split_prompt = req.prompt
     max_split_attempts = 3
+    split_attempts = []
     for attempt in range(1, max_split_attempts + 1):
         try:
             split = await _run_kernel_splitter(
@@ -2247,6 +2250,18 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
             raise HTTPException(status_code=422, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+        split_attempts.append(
+            _split_attempt_record(
+                attempt=attempt,
+                max_attempts=max_split_attempts,
+                model=split_model,
+                prompt=split_prompt,
+                source_files=file_map.keys(),
+                verification=split.verification,
+                repair_prompt=attempt > 1,
+            )
+        )
 
         if not (split.verification and not split.verification.ok):
             break
@@ -2284,6 +2299,11 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
             detail={
                 "message": "GPU split failed Synthi verifier after retries",
                 "verification": verification,
+                "agentic_report": _split_agentic_report(
+                    attempts=split_attempts,
+                    accepted=False,
+                    max_attempts=max_split_attempts,
+                ),
             },
         )
 
@@ -2325,6 +2345,11 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         "kernel_hashes": split.kernel_hashes,
         "launch_graph": split.launch_graph,
         "gpu_detection": detection.to_dict(),
+        "agentic_report": _split_agentic_report(
+            attempts=split_attempts,
+            accepted=True,
+            max_attempts=max_split_attempts,
+        ),
         "lang": req.lang,
         "verified": bool(split.verification.ok if split.verification else True),
         "verification": verification,

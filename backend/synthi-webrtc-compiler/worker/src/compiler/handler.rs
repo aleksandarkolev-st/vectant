@@ -186,6 +186,13 @@ async fn write_sidecar_logged(path: &std::path::Path, meta: &serde_json::Value) 
     }
 }
 
+fn split_agentic_report(result: &serde_json::Value) -> serde_json::Value {
+    result
+        .get("_synthi_agentic_report")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
 /// Thin handler-side wrapper around `edit_applier::apply_edit_list`
 /// that adds per-edit eprintln logging for operator observability.
 /// The actual dispatch logic lives in `hmr::edit_applier::apply_edit_list`
@@ -617,12 +624,14 @@ pub async fn handle_compile_request(
                 .get("_synthi_cache_report")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            let agentic_report = split_agentic_report(&result);
             let meta = serde_json::json!({
                 "split_hash": source_hash_str,
                 "original_source": req.source,
                 "architecture": architecture_md,
                 "compile_manifest": manifest_json,
                 "cache_report": cache_report,
+                "agentic_report": agentic_report,
             });
             write_sidecar_logged(&sidecar_path, &meta).await;
 
@@ -931,12 +940,15 @@ pub async fn handle_compile_request(
                                                         .get("_synthi_cache_report")
                                                         .cloned()
                                                         .unwrap_or(serde_json::Value::Null);
+                                                    let fresh_agentic_report =
+                                                        split_agentic_report(&result);
                                                     let meta = serde_json::json!({
                                                         "split_hash": source_hash_str,
                                                         "original_source": req.source,
                                                         "architecture": fresh_arch,
                                                         "compile_manifest": fresh_manifest,
                                                         "cache_report": fresh_cache_report,
+                                                        "agentic_report": fresh_agentic_report,
                                                     });
                                                     write_sidecar_logged(&sidecar_path, &meta)
                                                         .await;
@@ -959,12 +971,15 @@ pub async fn handle_compile_request(
                                                 .get("_synthi_cache_report")
                                                 .cloned()
                                                 .unwrap_or(serde_json::Value::Null);
+                                            let fresh_agentic_report =
+                                                split_agentic_report(&result);
                                             let meta = serde_json::json!({
                                                 "split_hash": source_hash_str,
                                                 "original_source": req.source,
                                                 "architecture": fresh_arch,
                                                 "compile_manifest": fresh_manifest,
                                                 "cache_report": fresh_cache_report,
+                                                "agentic_report": fresh_agentic_report,
                                             });
                                             write_sidecar_logged(&sidecar_path, &meta).await;
                                             return Ok(result);
@@ -1103,12 +1118,15 @@ pub async fn handle_compile_request(
                                                         .get("_synthi_cache_report")
                                                         .cloned()
                                                         .unwrap_or(serde_json::Value::Null);
+                                                    let fresh_agentic_report =
+                                                        split_agentic_report(&result);
                                                     let meta = serde_json::json!({
                                                         "split_hash": source_hash_str,
                                                         "original_source": req.source,
                                                         "architecture": fresh_arch,
                                                         "compile_manifest": fresh_manifest,
                                                         "cache_report": fresh_cache_report,
+                                                        "agentic_report": fresh_agentic_report,
                                                     });
                                                     write_sidecar_logged(&sidecar_path, &meta)
                                                         .await;
@@ -1134,12 +1152,15 @@ pub async fn handle_compile_request(
                                                 .get("_synthi_cache_report")
                                                 .cloned()
                                                 .unwrap_or(serde_json::Value::Null);
+                                            let fresh_agentic_report =
+                                                split_agentic_report(&result);
                                             let meta = serde_json::json!({
                                                 "split_hash": source_hash_str,
                                                 "original_source": req.source,
                                                 "architecture": fresh_arch,
                                                 "compile_manifest": fresh_manifest,
                                                 "cache_report": fresh_cache_report,
+                                                "agentic_report": fresh_agentic_report,
                                             });
                                             write_sidecar_logged(&sidecar_path, &meta).await;
                                             return Ok(result);
@@ -1211,12 +1232,14 @@ pub async fn handle_compile_request(
                         .get("_synthi_cache_report")
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
+                    let fresh_agentic_report = split_agentic_report(&result);
                     let meta = serde_json::json!({
                         "split_hash": source_hash_str,
                         "original_source": req.source,
                         "architecture": fresh_arch,
                         "compile_manifest": fresh_manifest,
                         "cache_report": fresh_cache_report,
+                        "agentic_report": fresh_agentic_report,
                     });
                     write_sidecar_logged(&sidecar_path, &meta).await;
                     result
