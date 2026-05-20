@@ -90,6 +90,7 @@ const report = {
   ai_engine_restarted_before_run: process.env.SYNTHI_AI_ENGINE_RESTARTED_BEFORE_RUN === '1',
   split_cache_bypassed_by_worker_restart: process.env.SYNTHI_WORKER_RESTARTED_BEFORE_RUN === '1',
   generated_roles: {},
+  launch_indirection: {},
   phases: [],
   screenshots: [],
   checks: [],
@@ -1249,6 +1250,70 @@ function validateGeneratedSplit(split, renderBackend) {
   record('generated split contains HMR ABI', 'pass', Object.values(split.roles).join(', '));
 }
 
+function launchIndirectionReport(sidecar) {
+  return sidecar?.launchIndirectionReport
+    || sidecar?.launch_indirection_report
+    || sidecar?.runReport?.launchIndirectionReport
+    || null;
+}
+
+function staleLaunchPointerChecks(sidecar) {
+  const launchReport = launchIndirectionReport(sidecar);
+  return sidecar?.staleLaunchPointerChecks
+    || sidecar?.runReport?.staleLaunchPointerChecks
+    || launchReport?.staleLaunchPointerChecks
+    || null;
+}
+
+function validateLaunchIndirectionContract(split) {
+  const launchReport = launchIndirectionReport(split.sidecar);
+  const staleChecks = staleLaunchPointerChecks(split.sidecar);
+  if (!launchReport) throw new Error('split sidecar missing launch indirection report');
+  if (!staleChecks) throw new Error('split sidecar missing stale launch pointer checks');
+  if (launchReport.schemaVersion !== 'synthi.gpu.launch_indirection.v1') {
+    throw new Error(`unexpected launch indirection schema: ${launchReport.schemaVersion ?? 'missing'}`);
+  }
+  if (launchReport.status !== 'pass') {
+    throw new Error(`launch indirection report did not pass: ${JSON.stringify(launchReport).slice(0, 500)}`);
+  }
+  if (staleChecks.status !== 'pass') {
+    throw new Error(`stale launch pointer check did not pass: ${JSON.stringify(staleChecks).slice(0, 500)}`);
+  }
+  if (staleChecks.failureReasonCode !== 'reload_failed.stale_launch_pointer') {
+    throw new Error(`unexpected stale launch failure reason: ${staleChecks.failureReasonCode ?? 'missing'}`);
+  }
+  const hostText = [
+    split.files[split.roles.core] || '',
+    split.files[split.roles.gui] || '',
+    split.files[split.roles.host_runner] || '',
+  ].join('\n');
+  const publicWrapperCalls = [...hostText.matchAll(/\bsynthi_gpu_launch\s*\(/g)];
+  const forbidden = hostText.match(/\bsynthi_gpu_(?:launch_raw(?:_checked)?|launch_table|launch_generation)\s*\(|\b[A-Za-z_][A-Za-z0-9_:]*\s*<<<|\b(?:cuModuleGetFunction|hipModuleGetFunction|cuLaunchKernel|hipModuleLaunchKernel)\s*\(/);
+  if (!publicWrapperCalls.length) {
+    throw new Error('generated host roles do not call synthi_gpu_launch public wrapper');
+  }
+  if (forbidden) {
+    throw new Error(`generated host role bypasses launch indirection: ${forbidden[0]}`);
+  }
+  if (Number(launchReport.directLaunchBypassCount || 0) !== 0 || Number(launchReport.vendorSymbolLookupBypassCount || 0) !== 0) {
+    throw new Error(`launch indirection report contains bypass counts: ${JSON.stringify(launchReport).slice(0, 500)}`);
+  }
+  report.launch_indirection = {
+    schemaVersion: launchReport.schemaVersion,
+    status: launchReport.status,
+    tableVersion: launchReport.tableVersion ?? null,
+    launchSiteCount: launchReport.launchSiteCount ?? publicWrapperCalls.length,
+    staleLaunchPointerCheckStatus: staleChecks.status,
+    failureReasonCode: staleChecks.failureReasonCode,
+  };
+  record(
+    'generated launch sites use indirection table',
+    'pass',
+    `launchSites=${report.launch_indirection.launchSiteCount} tableVersion=${report.launch_indirection.tableVersion ?? 'n/a'}`,
+  );
+  record('stale launch pointer check passed', 'pass', staleChecks.failureReasonCode);
+}
+
 function generatedWorkspaceArtifacts(split) {
   const artifacts = new Set(GENERATED_WORKSPACE_ARTIFACTS);
   for (const rel of Object.values(split?.roles ?? {})) {
@@ -1339,6 +1404,37 @@ function sidecarWithoutToolchain(rawSidecar) {
   return `${JSON.stringify(sidecar, null, 2)}\n`;
 }
 
+function sidecarWithStaleLaunchPointer(rawSidecar) {
+  const sidecar = JSON.parse(rawSidecar);
+  const baseReport = launchIndirectionReport(sidecar) || {};
+  const staleChecks = {
+    ...(baseReport.staleLaunchPointerChecks || {}),
+    schemaVersion: 'synthi.gpu.stale_launch_pointer_check.v1',
+    status: 'fail',
+    runtimeGenerationChecked: false,
+    failureReasonCode: 'reload_failed.stale_launch_pointer',
+    reasonCodes: ['stale_launch_pointer_detected', 'reload_failed.stale_launch_pointer'],
+  };
+  const staleReport = {
+    ...baseReport,
+    schemaVersion: 'synthi.gpu.launch_indirection.v1',
+    status: 'fail',
+    stalePointerRisk: 'detected',
+    generatedLaunchSitesUseIndirection: baseReport.generatedLaunchSitesUseIndirection ?? true,
+    directLaunchBypassCount: Number(baseReport.directLaunchBypassCount || 0),
+    staleLaunchPointerChecks: staleChecks,
+    reasonCodes: ['stale_launch_pointer_detected', 'reload_failed.stale_launch_pointer'],
+  };
+  sidecar.launch_indirection_report = staleReport;
+  sidecar.launchIndirectionReport = staleReport;
+  sidecar.staleLaunchPointerChecks = staleChecks;
+  if (sidecar.runReport && typeof sidecar.runReport === 'object') {
+    sidecar.runReport.launchIndirectionReport = staleReport;
+    sidecar.runReport.staleLaunchPointerChecks = staleChecks;
+  }
+  return `${JSON.stringify(sidecar, null, 2)}\n`;
+}
+
 async function compileUserDeviceDelta(project, editedDevice, vendor, checkpoint) {
   if (CFG.hmrDeltaMode !== 'ai_user_delta') {
     throw new Error(`unsupported SYNTHI_SCALE_HMR_DELTA_MODE=${CFG.hmrDeltaMode}; expected ai_user_delta`);
@@ -1378,6 +1474,14 @@ async function dispatchUserDeviceStaleToolchainNegative(project, editedDevice, v
 
 async function dispatchUserDeviceMissingToolchainNegative(project, editedDevice, vendor, checkpoint) {
   return dispatchUserDeviceNegative(project, editedDevice, vendor, checkpoint, 'negative_missing_toolchain_rejection');
+}
+
+async function dispatchUserDeviceStaleLaunchPointerNegative(project, editedDevice, vendor, checkpoint) {
+  return dispatchUserDeviceNegative(project, editedDevice, vendor, checkpoint, 'negative_stale_launch_pointer_rejection');
+}
+
+async function dispatchForcedAiDeltaStaleLaunchPointerNegative(project, editedDevice, vendor, checkpoint) {
+  return dispatchForcedAiDeltaNegative(project, editedDevice, vendor, checkpoint, 'negative_forced_ai_delta_stale_launch_pointer_rejection');
 }
 
 async function dispatchForcedAiDeltaStaleToolchainNegative(project, editedDevice, vendor, checkpoint) {
@@ -1571,6 +1675,7 @@ async function run() {
   const firstShot = await captureScreenshot('first-compile');
   const split = await readGeneratedSplit(vendor, firstCheckpoint);
   validateGeneratedSplit(split, CFG.renderBackend);
+  validateLaunchIndirectionContract(split);
   record('read generated split from worker', 'pass', `worker=${split.workspacePath}`);
   recordGeneratedSplitKeptInternal(split);
 
@@ -1619,6 +1724,8 @@ async function run() {
   const crashMatch = afterReload.match(/Runner process (?:has already )?exited[^\n]*|SIGSEGV|core dumped|Device reload result .*Failed/);
   record('runner stayed alive after GPU HMR', crashMatch ? 'fail' : 'pass', crashMatch?.[0] || 'no runner crash marker');
   if (crashMatch) throw new Error(`runner/device failure after HMR: ${crashMatch[0]}`);
+
+  const verifiedFastPathSidecarRaw = await readWorkerFile(split.workspacePath, '.synthi_split_meta.json');
 
   const layoutEditedDevice = editUserDeviceConstantGlobalLayout(editedDevice);
   await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: layoutEditedDevice }] });
@@ -1670,11 +1777,69 @@ async function run() {
   if (!signatureHardStop.matched) throw new Error('signature hard-stop evidence missing');
   await assertNoSidecarReloadAfterHardStop(signatureHardStop, negativeCheckpoint, 'signature edit does not reload sidecar');
 
+  const staleLaunchDevice = editUserDeviceSource(editedDevice);
+  await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: staleLaunchDevice }] });
+  await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: stale launch pointer rejection probe' });
+  const staleLaunchSidecar = sidecarWithStaleLaunchPointer(verifiedFastPathSidecarRaw);
+  await writeWorkerFile(split.workspacePath, '.synthi_split_meta.json', staleLaunchSidecar);
+  const staleLaunchCheckpoint = await workerCheckpoint();
+  await dispatchUserDeviceStaleLaunchPointerNegative(project, staleLaunchDevice, vendor, staleLaunchCheckpoint);
+  record('stale launch pointer edit compile dispatched via MCP', 'pass', project.devicePath);
+  const staleLaunchReject = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[gpu-hmr\] device_only fast path rejected: user=[^\n]*stale_launch_pointer_detected[^\n]*/,
+    10000,
+    staleLaunchCheckpoint,
+  );
+  record('stale launch pointer blocks device_only', staleLaunchReject.matched ? 'pass' : 'fail', staleLaunchReject.snippet || 'no stale_launch_pointer_detected rejection marker');
+  if (!staleLaunchReject.matched) throw new Error('stale launch pointer rejection evidence missing');
+
+  const staleLaunchHardStop = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[gpu-hmr\] device_only hard stop: user=[^\n]*stale_launch_pointer_detected[^\n]*/,
+    10000,
+    staleLaunchCheckpoint,
+  );
+  record('stale launch pointer stops unsafe fallback', staleLaunchHardStop.matched ? 'pass' : 'fail', staleLaunchHardStop.snippet || 'no stale launch pointer hard-stop marker');
+  if (!staleLaunchHardStop.matched) throw new Error('stale launch pointer hard-stop evidence missing');
+  await assertNoSidecarReloadAfterHardStop(staleLaunchHardStop, staleLaunchCheckpoint, 'stale launch pointer does not reload sidecar');
+
+  const staleLaunchAiDeltaCheckpoint = await workerCheckpoint();
+  await dispatchForcedAiDeltaStaleLaunchPointerNegative(project, staleLaunchDevice, vendor, staleLaunchAiDeltaCheckpoint);
+  record('stale launch pointer forced AI delta dispatched via MCP', 'pass', project.devicePath);
+  const staleLaunchAiDeltaWorker = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[GPU AI Delta\] Calling [^\n]*\/refactor\/diff_patch\/gpu[^\n]*/,
+    15000,
+    staleLaunchAiDeltaCheckpoint,
+  );
+  record('worker sent stale-launch-pointer delta to GPU AI endpoint', staleLaunchAiDeltaWorker.matched ? 'pass' : 'fail', staleLaunchAiDeltaWorker.snippet || 'no forced stale-launch-pointer GPU AI delta worker marker');
+  if (!staleLaunchAiDeltaWorker.matched) throw new Error('forced stale-launch-pointer GPU AI delta worker evidence missing');
+
+  const staleLaunchAiDeltaBackend = await awaitLogRegex(
+    CFG.aiEngineContainer,
+    /\[GpuDiffPatch\][^\n]*/,
+    15000,
+    staleLaunchAiDeltaCheckpoint,
+  );
+  record('ai-engine processed stale-launch-pointer GPU delta', staleLaunchAiDeltaBackend.matched ? 'pass' : 'fail', staleLaunchAiDeltaBackend.snippet || 'no stale-launch-pointer GpuDiffPatch marker');
+  if (!staleLaunchAiDeltaBackend.matched) throw new Error('forced stale-launch-pointer GPU AI delta backend evidence missing');
+
+  const staleLaunchAiDeltaReject = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[GPU AI Delta\] rejected: user=[^\n]*requested_plan=device_only[^\n]*stale_launch_pointer_detected[^\n]*/,
+    15000,
+    staleLaunchAiDeltaCheckpoint,
+  );
+  record('stale launch pointer AI delta rejected by verifier policy', staleLaunchAiDeltaReject.matched ? 'pass' : 'fail', staleLaunchAiDeltaReject.snippet || 'no stale-launch-pointer AI delta verifier rejection marker');
+  if (!staleLaunchAiDeltaReject.matched) throw new Error('forced stale-launch-pointer GPU AI delta verifier rejection evidence missing');
+  await assertNoSidecarReloadAfterHardStop(staleLaunchAiDeltaReject, staleLaunchAiDeltaCheckpoint, 'stale launch pointer AI delta does not reload sidecar');
+
   const staleCapabilityDevice = editUserDeviceSource(editedDevice);
   await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: staleCapabilityDevice }] });
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: stale toolchain rejection probe' });
   const staleToolchainSidecar = sidecarWithStaleToolchain(
-    await readWorkerFile(split.workspacePath, '.synthi_split_meta.json'),
+    verifiedFastPathSidecarRaw,
   );
   await writeWorkerFile(split.workspacePath, '.synthi_split_meta.json', staleToolchainSidecar);
   const staleToolchainCheckpoint = await workerCheckpoint();
@@ -1732,7 +1897,7 @@ async function run() {
 
   const missingCapabilityDevice = staleCapabilityDevice;
   const missingToolchainSidecar = sidecarWithoutToolchain(
-    await readWorkerFile(split.workspacePath, '.synthi_split_meta.json'),
+    verifiedFastPathSidecarRaw,
   );
   await writeWorkerFile(split.workspacePath, '.synthi_split_meta.json', missingToolchainSidecar);
   const missingToolchainCheckpoint = await workerCheckpoint();
