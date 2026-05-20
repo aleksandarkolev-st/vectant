@@ -193,6 +193,13 @@ fn split_agentic_report(result: &serde_json::Value) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+fn generated_artifact_report(result: &serde_json::Value) -> serde_json::Value {
+    result
+        .get("_synthi_generated_artifact_report")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
 /// Thin handler-side wrapper around `edit_applier::apply_edit_list`
 /// that adds per-edit eprintln logging for operator observability.
 /// The actual dispatch logic lives in `hmr::edit_applier::apply_edit_list`
@@ -625,6 +632,7 @@ pub async fn handle_compile_request(
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
             let agentic_report = split_agentic_report(&result);
+            let generated_report = generated_artifact_report(&result);
             let meta = serde_json::json!({
                 "split_hash": source_hash_str,
                 "original_source": req.source,
@@ -632,6 +640,7 @@ pub async fn handle_compile_request(
                 "compile_manifest": manifest_json,
                 "cache_report": cache_report,
                 "agentic_report": agentic_report,
+                "generated_artifact_report": generated_report,
             });
             write_sidecar_logged(&sidecar_path, &meta).await;
 
@@ -942,6 +951,8 @@ pub async fn handle_compile_request(
                                                         .unwrap_or(serde_json::Value::Null);
                                                     let fresh_agentic_report =
                                                         split_agentic_report(&result);
+                                                    let fresh_generated_report =
+                                                        generated_artifact_report(&result);
                                                     let meta = serde_json::json!({
                                                         "split_hash": source_hash_str,
                                                         "original_source": req.source,
@@ -949,6 +960,7 @@ pub async fn handle_compile_request(
                                                         "compile_manifest": fresh_manifest,
                                                         "cache_report": fresh_cache_report,
                                                         "agentic_report": fresh_agentic_report,
+                                                        "generated_artifact_report": fresh_generated_report,
                                                     });
                                                     write_sidecar_logged(&sidecar_path, &meta)
                                                         .await;
@@ -973,6 +985,8 @@ pub async fn handle_compile_request(
                                                 .unwrap_or(serde_json::Value::Null);
                                             let fresh_agentic_report =
                                                 split_agentic_report(&result);
+                                            let fresh_generated_report =
+                                                generated_artifact_report(&result);
                                             let meta = serde_json::json!({
                                                 "split_hash": source_hash_str,
                                                 "original_source": req.source,
@@ -980,6 +994,7 @@ pub async fn handle_compile_request(
                                                 "compile_manifest": fresh_manifest,
                                                 "cache_report": fresh_cache_report,
                                                 "agentic_report": fresh_agentic_report,
+                                                "generated_artifact_report": fresh_generated_report,
                                             });
                                             write_sidecar_logged(&sidecar_path, &meta).await;
                                             return Ok(result);
@@ -1120,6 +1135,8 @@ pub async fn handle_compile_request(
                                                         .unwrap_or(serde_json::Value::Null);
                                                     let fresh_agentic_report =
                                                         split_agentic_report(&result);
+                                                    let fresh_generated_report =
+                                                        generated_artifact_report(&result);
                                                     let meta = serde_json::json!({
                                                         "split_hash": source_hash_str,
                                                         "original_source": req.source,
@@ -1127,6 +1144,7 @@ pub async fn handle_compile_request(
                                                         "compile_manifest": fresh_manifest,
                                                         "cache_report": fresh_cache_report,
                                                         "agentic_report": fresh_agentic_report,
+                                                        "generated_artifact_report": fresh_generated_report,
                                                     });
                                                     write_sidecar_logged(&sidecar_path, &meta)
                                                         .await;
@@ -1154,6 +1172,8 @@ pub async fn handle_compile_request(
                                                 .unwrap_or(serde_json::Value::Null);
                                             let fresh_agentic_report =
                                                 split_agentic_report(&result);
+                                            let fresh_generated_report =
+                                                generated_artifact_report(&result);
                                             let meta = serde_json::json!({
                                                 "split_hash": source_hash_str,
                                                 "original_source": req.source,
@@ -1161,6 +1181,7 @@ pub async fn handle_compile_request(
                                                 "compile_manifest": fresh_manifest,
                                                 "cache_report": fresh_cache_report,
                                                 "agentic_report": fresh_agentic_report,
+                                                "generated_artifact_report": fresh_generated_report,
                                             });
                                             write_sidecar_logged(&sidecar_path, &meta).await;
                                             return Ok(result);
@@ -1233,6 +1254,7 @@ pub async fn handle_compile_request(
                         .cloned()
                         .unwrap_or(serde_json::Value::Null);
                     let fresh_agentic_report = split_agentic_report(&result);
+                    let fresh_generated_report = generated_artifact_report(&result);
                     let meta = serde_json::json!({
                         "split_hash": source_hash_str,
                         "original_source": req.source,
@@ -1240,6 +1262,7 @@ pub async fn handle_compile_request(
                         "compile_manifest": fresh_manifest,
                         "cache_report": fresh_cache_report,
                         "agentic_report": fresh_agentic_report,
+                        "generated_artifact_report": fresh_generated_report,
                     });
                     write_sidecar_logged(&sidecar_path, &meta).await;
                     result
@@ -1448,7 +1471,7 @@ pub async fn handle_compile_request(
             .get("shared")
             .and_then(|s| s["filename"].as_str())
             .unwrap_or("shared.h");
-        tokio::fs::write(ctx.workspace_path.join(shared_fname), &processed_shared).await?;
+        write_compile_request_file(&ctx.workspace_path, shared_fname, &processed_shared).await?;
     }
 
     // ULTRAPLAN Phase 3: resolve the compile manifest for this request.
@@ -1712,16 +1735,26 @@ pub async fn handle_compile_request(
             .filter(|s| !s.trim().is_empty())
             .map(|s| s.to_string());
         if let Some(content) = from_split {
-            // Persist to workspace so detect_adapted_project picks it up
-            // on the next compile and the user can see / edit the file.
-            let host_runner_disk_name = adapted_module_filename(
-                &enrichment.adapted_status,
-                &ctx.workspace_path,
-                ModuleKind::HostRunner,
-                HOST_RUNNER_FILENAME,
-            );
+            // Persist generated runner under the manifest-declared internal role
+            // path. Generated GPU roles must not materialize as normal user files.
+            let host_runner_disk_name = split_data
+                .get("host_runner")
+                .and_then(|v| v.get("filename"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    adapted_module_filename(
+                        &enrichment.adapted_status,
+                        &ctx.workspace_path,
+                        ModuleKind::HostRunner,
+                        HOST_RUNNER_FILENAME,
+                    )
+                });
             let host_runner_disk = ctx.workspace_path.join(&host_runner_disk_name);
-            match tokio::fs::write(&host_runner_disk, &content).await {
+            match write_compile_request_file(&ctx.workspace_path, &host_runner_disk_name, &content)
+                .await
+            {
                 Ok(()) => {
                     eprintln!(
                         "[HMR] host_runner: wrote {} bytes from split_data → {}",

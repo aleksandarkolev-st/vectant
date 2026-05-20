@@ -17,6 +17,7 @@ import pytest
 from build_manifest import (
     BuildManifest,
     ManifestRejection,
+    internalize_gpu_generated_artifacts,
     normalize_gpu_split_manifest,
     parse_manifest,
     validate_manifest_v1,
@@ -288,3 +289,42 @@ def test_runtime_arch_hint_overrides_ai_gpu_arch_guess():
     validate_manifest_v1(parsed)
     assert parsed.gpu is not None
     assert parsed.gpu.arch == ["gfx1201"]
+
+
+def test_internalizes_generated_gpu_roles_out_of_user_tree():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm"}},
+        split_files={
+            "include/flow_shared_x.h": "shared",
+            "src/flow_core_x.cpp": "core",
+            "src/flow_gui_x.cpp": "gui",
+            "run/flow_runner_x.cpp": "runner",
+            "gpu/flow_device_x.hip": "device",
+            "src/user_owned.hpp": "extra",
+        },
+        vendor_hint="rocm",
+        arch_hint="gfx1201",
+    )
+
+    files, manifest, report = internalize_gpu_generated_artifacts(
+        {
+            "include/flow_shared_x.h": "shared",
+            "src/flow_core_x.cpp": "core",
+            "src/flow_gui_x.cpp": "gui",
+            "run/flow_runner_x.cpp": "runner",
+            "gpu/flow_device_x.hip": "device",
+            "src/user_owned.hpp": "extra",
+        },
+        normalized,
+    )
+    parsed = parse_manifest(manifest)
+    validate_manifest_v1(parsed)
+
+    assert parsed.module_files.shared == ".synthi/generated/gpu/shared.h"
+    assert parsed.module_files.core == ".synthi/generated/gpu/core.cpp"
+    assert parsed.module_files.device == ".synthi/generated/gpu/device.hip"
+    assert set(files) == set(parsed.files)
+    assert files[".synthi/generated/gpu/device.hip"] == "device"
+    assert report["rolesAreInternal"] is True
+    assert report["internalRoot"] == ".synthi/generated/gpu"
+    assert "src/user_owned.hpp" in report["droppedExtraGeneratedFiles"]

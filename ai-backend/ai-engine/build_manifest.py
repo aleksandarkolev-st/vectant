@@ -322,6 +322,113 @@ def manifest_to_dict(manifest: BuildManifest) -> dict:
     return manifest.dict()  # type: ignore[attr-defined]
 
 
+GPU_GENERATED_ROLE_ROOT = ".synthi/generated/gpu"
+
+
+def _gpu_internal_role_paths(vendor: str) -> dict[str, str]:
+    device_ext = "hip" if vendor == "rocm" else "cu"
+    return {
+        "shared": f"{GPU_GENERATED_ROLE_ROOT}/shared.h",
+        "core": f"{GPU_GENERATED_ROLE_ROOT}/core.cpp",
+        "gui": f"{GPU_GENERATED_ROLE_ROOT}/gui.cpp",
+        "host_runner": f"{GPU_GENERATED_ROLE_ROOT}/host_runner.cpp",
+        "device": f"{GPU_GENERATED_ROLE_ROOT}/device.{device_ext}",
+    }
+
+
+def _lookup_generated_role_content(
+    split_files: Mapping[str, str],
+    *,
+    role: str,
+    declared_path: Optional[str],
+    vendor: str,
+) -> tuple[Optional[str], Optional[str]]:
+    normalized_files = {str(k).replace("\\", "/"): v for k, v in split_files.items()}
+    default_device = "device.hip" if vendor == "rocm" else "device.cu"
+    fallback_names = {
+        "shared": ["shared.h"],
+        "core": ["core.cpp"],
+        "gui": ["gui.cpp"],
+        "host_runner": ["host_runner.cpp"],
+        "device": [default_device, "device.cu", "device.hip"],
+    }
+    candidates = []
+    if declared_path:
+        normalized = str(declared_path).replace("\\", "/")
+        candidates.extend([normalized, normalized.rsplit("/", 1)[-1]])
+    candidates.extend([role, *fallback_names.get(role, [])])
+    if role == "device":
+        candidates.extend(
+            path
+            for path in normalized_files
+            if path.lower().endswith((".cu", ".hip"))
+        )
+    for candidate in candidates:
+        if candidate in normalized_files:
+            value = normalized_files[candidate]
+            return (value if isinstance(value, str) else str(value), candidate)
+    return None, None
+
+
+def internalize_gpu_generated_artifacts(
+    split_files: Mapping[str, str],
+    manifest: Mapping[str, Any],
+) -> tuple[dict[str, str], dict, dict]:
+    """Move generated GPU role filenames under Synthi-owned internal paths."""
+
+    manifest_out = dict(manifest)
+    gpu = dict(manifest_out.get("gpu") if isinstance(manifest_out.get("gpu"), dict) else {})
+    vendor = str(gpu.get("vendor") or "cuda").lower()
+    if vendor not in {"cuda", "rocm"}:
+        vendor = "cuda"
+    declared_roles = dict(
+        manifest_out.get("module_files")
+        if isinstance(manifest_out.get("module_files"), Mapping)
+        else {}
+    )
+    internal_roles = _gpu_internal_role_paths(vendor)
+    internal_files: dict[str, str] = {}
+    mappings = []
+    missing_roles = []
+
+    for role, internal_path in internal_roles.items():
+        content, source_path = _lookup_generated_role_content(
+            split_files,
+            role=role,
+            declared_path=declared_roles.get(role),
+            vendor=vendor,
+        )
+        if content is None:
+            content = ""
+            missing_roles.append(role)
+        internal_files[internal_path] = content
+        mappings.append(
+            {
+                "role": role,
+                "sourcePath": source_path,
+                "internalPath": internal_path,
+            }
+        )
+
+    manifest_out["module_files"] = internal_roles
+    manifest_out["files"] = list(internal_roles.values())
+    consumed_paths = {m["sourcePath"] for m in mappings if m["sourcePath"]}
+    report = {
+        "schemaVersion": "synthi.gpu.generated_artifact_purity.v1",
+        "rolesAreInternal": True,
+        "internalRoot": GPU_GENERATED_ROLE_ROOT,
+        "userWorkspaceMaterialization": "forbidden",
+        "mappings": mappings,
+        "missingRoles": missing_roles,
+        "droppedExtraGeneratedFiles": sorted(
+            str(path).replace("\\", "/")
+            for path in split_files
+            if str(path).replace("\\", "/") not in consumed_paths
+        ),
+    }
+    return internal_files, manifest_out, report
+
+
 def normalize_gpu_split_manifest(
     raw: Mapping[str, Any] | None,
     *,

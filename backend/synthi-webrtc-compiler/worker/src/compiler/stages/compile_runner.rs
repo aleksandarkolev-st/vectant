@@ -67,9 +67,8 @@ pub fn build_runner_flag_list(manifest: &CompileManifest) -> Vec<String> {
         .cloned()
         .collect();
 
-    let mut flags: Vec<String> = Vec::with_capacity(
-        runner_compile_flags.len() + manifest.runner_link_flags.len() + 4,
-    );
+    let mut flags: Vec<String> =
+        Vec::with_capacity(runner_compile_flags.len() + manifest.runner_link_flags.len() + 4);
     flags.push(std_flag);
     flags.extend(runner_compile_flags);
     flags.extend(manifest.runner_link_flags.iter().cloned());
@@ -138,6 +137,11 @@ pub async fn compile_runner(
     };
     let compiler_exe = effective_manifest.select_compiler(ModuleKind::HostRunner);
     let std_flag = format!("-std={}", effective_manifest.std);
+    let source_filename = effective_manifest
+        .module_files
+        .host_runner
+        .as_deref()
+        .unwrap_or(HOST_RUNNER_FILENAME);
 
     // Pure-function flag construction — see `build_runner_flag_list` for
     // the rules around stripping -shared/-fPIC and appending -ldl/-rdynamic.
@@ -157,11 +161,7 @@ pub async fn compile_runner(
         .cloned()
         .collect();
 
-    let cache_key = IncrementalCache::cache_key(
-        host_runner_content,
-        &effective_flag_refs,
-        &[],
-    );
+    let cache_key = IncrementalCache::cache_key(host_runner_content, &effective_flag_refs, &[]);
 
     // Runner binary is named `host_runner_<ts>` — no `lib` prefix, no
     // `.so` extension. Lives in the build/ directory like the other
@@ -208,7 +208,11 @@ pub async fn compile_runner(
     }
 
     // Cache miss — write the source file and compile.
-    tokio::fs::write(dir_path.join(HOST_RUNNER_FILENAME), host_runner_content).await?;
+    let source_path = dir_path.join(source_filename);
+    if let Some(parent) = source_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&source_path, host_runner_content).await?;
 
     // ULTRAPLAN Phase 9b: two-step split (see compile_core.rs for the
     // rationale). compile_runner produces an EXECUTABLE (not a .so),
@@ -226,13 +230,15 @@ pub async fn compile_runner(
     // This is library-agnostic (pthread is the reloader, not the
     // rendering backend) so we add it for every per-project runner
     // regardless of what the manifest says.
-    let mut link_flags: Vec<String> = Vec::with_capacity(
-        effective_manifest.runner_link_flags.len() + 3,
-    );
+    let mut link_flags: Vec<String> =
+        Vec::with_capacity(effective_manifest.runner_link_flags.len() + 3);
     link_flags.extend(effective_manifest.runner_link_flags.iter().cloned());
     // Dedup-on-push — same shape as build_runner_flag_list.
     push_if_absent(&mut link_flags, "-ldl");
-    if !link_flags.iter().any(|f| f == "-pthread" || f == "-lpthread") {
+    if !link_flags
+        .iter()
+        .any(|f| f == "-pthread" || f == "-lpthread")
+    {
         link_flags.push("-pthread".to_string());
     }
     push_if_absent(&mut link_flags, "-rdynamic");
@@ -242,7 +248,7 @@ pub async fn compile_runner(
     // Step 1: compile .cpp → .o (ccache caches this)
     let mut compile_cmd = compile_to_object_command(
         compiler_exe,
-        HOST_RUNNER_FILENAME,
+        source_filename,
         &runner_obj,
         &std_flag,
         &runner_compile_flags,
@@ -256,7 +262,8 @@ pub async fn compile_runner(
     let compile_child = compile_cmd
         .spawn()
         .context(format!("Failed to spawn {} compile step", compiler_exe))?;
-    let compile_out = match timeout(Duration::from_secs(30), compile_child.wait_with_output()).await {
+    let compile_out = match timeout(Duration::from_secs(30), compile_child.wait_with_output()).await
+    {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => return Err(e.into()),
         Err(_) => {
@@ -328,7 +335,12 @@ pub async fn compile_runner(
                         cmd.arg(f);
                     }
                 }
-                cmd.arg(HOST_RUNNER_FILENAME)
+                let healed_source_filename = m
+                    .module_files
+                    .host_runner
+                    .as_deref()
+                    .unwrap_or(source_filename);
+                cmd.arg(healed_source_filename)
                     .arg("-I.")
                     .arg("-o")
                     .arg(&runner_out);
@@ -348,128 +360,125 @@ pub async fn compile_runner(
         if manifest_healed {
             eprintln!("[CompileRunner] manifest heal SUCCEEDED — skipping source heal");
         } else {
+            // ── AI Heal Loop ──
+            // Same pattern as compile_core / compile_gui: feed the broken
+            // runner + g++ errors back to the AI for a repair, retry once.
+            // Unlike core/gui, we don't have a "shared.h" companion to send
+            // the heal endpoint — we send an empty string. The architecture
+            // cache from the sidecar is still injected so the heal prompt
+            // has the project-specific context.
+            let heal_arch_md: String = {
+                let sidecar = dir_path.join(".synthi_split_meta.json");
+                match tokio::fs::read_to_string(&sidecar).await {
+                    Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("architecture")
+                                .and_then(|a| a.as_str())
+                                .map(|s| s.to_string())
+                        })
+                        .unwrap_or_default(),
+                    Err(_) => String::new(),
+                }
+            };
+            let heal_arch_hint: Option<&str> = if heal_arch_md.is_empty() {
+                None
+            } else {
+                Some(heal_arch_md.as_str())
+            };
+            let mut heal_content = host_runner_content.to_string();
+            let mut heal_stderr = stderr_str.clone();
+            let mut healed = false;
 
-        // ── AI Heal Loop ──
-        // Same pattern as compile_core / compile_gui: feed the broken
-        // runner + g++ errors back to the AI for a repair, retry once.
-        // Unlike core/gui, we don't have a "shared.h" companion to send
-        // the heal endpoint — we send an empty string. The architecture
-        // cache from the sidecar is still injected so the heal prompt
-        // has the project-specific context.
-        let heal_arch_md: String = {
-            let sidecar = dir_path.join(".synthi_split_meta.json");
-            match tokio::fs::read_to_string(&sidecar).await {
-                Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("architecture")
-                            .and_then(|a| a.as_str())
-                            .map(|s| s.to_string())
-                    })
-                    .unwrap_or_default(),
-                Err(_) => String::new(),
-            }
-        };
-        let heal_arch_hint: Option<&str> = if heal_arch_md.is_empty() {
-            None
-        } else {
-            Some(heal_arch_md.as_str())
-        };
-        let mut heal_content = host_runner_content.to_string();
-        let mut heal_stderr = stderr_str.clone();
-        let mut healed = false;
-
-        for attempt in 0..2 {
-            eprintln!(
-                "[CompileRunner] AI heal attempt {} for host_runner",
-                attempt + 1
-            );
-            match crate::compiler::stages::ai_utils::perform_ai_heal(
-                "host_runner",
-                &heal_content,
-                &heal_stderr,
-                "", // no shared.h companion for the runner
-                heal_arch_hint,
-            )
-            .await
-            {
-                Ok(fixed) => {
-                    tokio::fs::write(dir_path.join(HOST_RUNNER_FILENAME), &fixed).await?;
-                    let mut retry_cmd = cpp_compile_command(compiler_exe);
-                    retry_cmd.arg(&std_flag);
-                    for f in &runner_compile_flags {
-                        retry_cmd.arg(f);
-                    }
-                    retry_cmd
-                        .arg(HOST_RUNNER_FILENAME)
-                        .arg("-I.")
-                        .arg("-o")
-                        .arg(&runner_out);
-                    for f in &effective_manifest.runner_link_flags {
-                        retry_cmd.arg(f);
-                    }
-                    // Phase 12.5: -pthread mirrors build_runner_flag_list.
-                    retry_cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
-                    retry_cmd.current_dir(dir_path);
-                    retry_cmd.kill_on_drop(true);
-                    if let Ok(retry_child) = retry_cmd.spawn() {
-                        if let Ok(Ok(retry_out)) =
-                            timeout(Duration::from_secs(30), retry_child.wait_with_output()).await
-                        {
-                            if retry_out.status.success() {
-                                eprintln!(
-                                    "[CompileRunner] AI heal succeeded on attempt {}",
-                                    attempt + 1
-                                );
-                                healed = true;
-                                break;
+            for attempt in 0..2 {
+                eprintln!(
+                    "[CompileRunner] AI heal attempt {} for host_runner",
+                    attempt + 1
+                );
+                match crate::compiler::stages::ai_utils::perform_ai_heal(
+                    "host_runner",
+                    &heal_content,
+                    &heal_stderr,
+                    "", // no shared.h companion for the runner
+                    heal_arch_hint,
+                )
+                .await
+                {
+                    Ok(fixed) => {
+                        tokio::fs::write(&source_path, &fixed).await?;
+                        let mut retry_cmd = cpp_compile_command(compiler_exe);
+                        retry_cmd.arg(&std_flag);
+                        for f in &runner_compile_flags {
+                            retry_cmd.arg(f);
+                        }
+                        retry_cmd
+                            .arg(source_filename)
+                            .arg("-I.")
+                            .arg("-o")
+                            .arg(&runner_out);
+                        for f in &effective_manifest.runner_link_flags {
+                            retry_cmd.arg(f);
+                        }
+                        // Phase 12.5: -pthread mirrors build_runner_flag_list.
+                        retry_cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
+                        retry_cmd.current_dir(dir_path);
+                        retry_cmd.kill_on_drop(true);
+                        if let Ok(retry_child) = retry_cmd.spawn() {
+                            if let Ok(Ok(retry_out)) =
+                                timeout(Duration::from_secs(30), retry_child.wait_with_output())
+                                    .await
+                            {
+                                if retry_out.status.success() {
+                                    eprintln!(
+                                        "[CompileRunner] AI heal succeeded on attempt {}",
+                                        attempt + 1
+                                    );
+                                    healed = true;
+                                    break;
+                                }
+                                heal_stderr =
+                                    String::from_utf8_lossy(&retry_out.stderr).to_string();
+                                heal_content = fixed;
                             }
-                            heal_stderr = String::from_utf8_lossy(&retry_out.stderr).to_string();
-                            heal_content = fixed;
                         }
                     }
-                }
-                Err(e) => {
-                    eprintln!("[CompileRunner] AI heal failed: {}", e);
-                    break;
+                    Err(e) => {
+                        eprintln!("[CompileRunner] AI heal failed: {}", e);
+                        break;
+                    }
                 }
             }
-        }
 
-        if !healed {
-            // Send diagnostics and fail. Same flow as compile_core / compile_gui:
-            // emit a `compile-diagnostics` payload tagged with stage so the
-            // frontend can render it, then return Err so the upstream pipeline
-            // sends a single authoritative {status:done, success:false}.
-            let report = parse_compiler_output(
-                &heal_stderr,
-                "host_runner",
-                CompilerType::Gcc,
-                true,
-            );
-            let diagnostics_json = report.to_json();
-            let diag_payload = serde_json::json!({
-                "sessionId": session_id.clone(),
-                "type": "compile-diagnostics",
-                "language": "cpp",
-                "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json)
-                    .unwrap_or_default(),
-                "error_count": report.error_count,
-                "warning_count": report.warning_count,
-                "stage": "compile_runner",
-            });
-            let _ = ctx
-                .log_dc
-                .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
-                .await;
+            if !healed {
+                // Send diagnostics and fail. Same flow as compile_core / compile_gui:
+                // emit a `compile-diagnostics` payload tagged with stage so the
+                // frontend can render it, then return Err so the upstream pipeline
+                // sends a single authoritative {status:done, success:false}.
+                let report =
+                    parse_compiler_output(&heal_stderr, "host_runner", CompilerType::Gcc, true);
+                let diagnostics_json = report.to_json();
+                let diag_payload = serde_json::json!({
+                    "sessionId": session_id.clone(),
+                    "type": "compile-diagnostics",
+                    "language": "cpp",
+                    "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json)
+                        .unwrap_or_default(),
+                    "error_count": report.error_count,
+                    "warning_count": report.warning_count,
+                    "stage": "compile_runner",
+                });
+                let _ = ctx
+                    .log_dc
+                    .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
+                    .await;
 
-            let truncated = if heal_stderr.len() > 500 {
-                format!("{}…", &heal_stderr[..500])
-            } else {
-                heal_stderr.clone()
-            };
-            anyhow::bail!("Host runner compilation failed: {}", truncated);
-        }
+                let truncated = if heal_stderr.len() > 500 {
+                    format!("{}…", &heal_stderr[..500])
+                } else {
+                    heal_stderr.clone()
+                };
+                anyhow::bail!("Host runner compilation failed: {}", truncated);
+            }
         } // end source-heal else-branch (Phase 6 manifest_healed=false)
     }
 

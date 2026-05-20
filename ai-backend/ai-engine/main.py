@@ -46,6 +46,7 @@ from llm.structural_prompts import format_heal_prompt
 from build_manifest import (
     BuildManifest,
     ManifestRejection,
+    internalize_gpu_generated_artifacts,
     normalize_gpu_split_manifest,
     parse_manifest,
     validate_manifest_v1,
@@ -2328,6 +2329,12 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         manifest_parsed = parse_manifest(manifest_raw)
         validate_manifest_v1(manifest_parsed)
         manifest_out = manifest_to_dict(manifest_parsed)
+        split_files_out, manifest_out, generated_artifact_report = (
+            internalize_gpu_generated_artifacts(split.files, manifest_out)
+        )
+        manifest_parsed = parse_manifest(manifest_out)
+        validate_manifest_v1(manifest_parsed)
+        manifest_out = manifest_to_dict(manifest_parsed)
     except ManifestRejection as e:
         raise HTTPException(status_code=422, detail=e.message)
     except Exception as e:
@@ -2339,12 +2346,13 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         logger.info("[split/gpu] verifier rejected GPU split: %s", verification)
 
     return {
-        "result": json.dumps(split.files),
+        "result": json.dumps(split_files_out),
         "architecture": split.architecture_md,
         "manifest": manifest_out,
         "kernel_hashes": split.kernel_hashes,
         "launch_graph": split.launch_graph,
         "gpu_detection": detection.to_dict(),
+        "generated_artifact_report": generated_artifact_report,
         "agentic_report": _split_agentic_report(
             attempts=split_attempts,
             accepted=True,

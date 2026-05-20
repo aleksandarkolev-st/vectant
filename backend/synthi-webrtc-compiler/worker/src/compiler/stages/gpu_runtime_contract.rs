@@ -134,10 +134,24 @@ pub async fn ensure_gpu_runtime_contract_header(
     workspace_dir: &Path,
     gpu: &GpuBuildBlock,
 ) -> Result<PathBuf> {
+    let body = render_gpu_runtime_header(gpu);
     let path = workspace_dir.join(SYNTHI_GPU_RUNTIME_HEADER);
-    tokio::fs::write(&path, render_gpu_runtime_header(gpu))
+    tokio::fs::write(&path, &body)
         .await
         .with_context(|| format!("writing {}", path.display()))?;
+    let internal_path = workspace_dir
+        .join(".synthi")
+        .join("generated")
+        .join("gpu")
+        .join(SYNTHI_GPU_RUNTIME_HEADER);
+    if let Some(parent) = internal_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    tokio::fs::write(&internal_path, &body)
+        .await
+        .with_context(|| format!("writing {}", internal_path.display()))?;
     Ok(path)
 }
 
@@ -193,7 +207,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let header_path = dir.path().join(SYNTHI_GPU_RUNTIME_HEADER);
         let smoke_path = dir.path().join("stream_token_smoke.cpp");
-        fs::write(&header_path, render_gpu_runtime_header(&gpu(DeviceVendor::Cuda))).unwrap();
+        fs::write(
+            &header_path,
+            render_gpu_runtime_header(&gpu(DeviceVendor::Cuda)),
+        )
+        .unwrap();
         fs::write(
             &smoke_path,
             r#"#include "synthi_gpu_runtime.h"

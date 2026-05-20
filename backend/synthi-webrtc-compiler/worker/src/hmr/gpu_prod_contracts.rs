@@ -70,6 +70,24 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
         .or_insert_with(|| json!(["template_evidence_missing"]));
     root.entry("generatedArtifactPolicy".to_string())
         .or_insert_with(generated_artifact_policy);
+    let generated_artifact_report = root
+        .get("generatedArtifactReport")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| root.get("generated_artifact_report").cloned())
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(default_generated_artifact_report);
+    root.insert(
+        "generatedArtifactReport".to_string(),
+        generated_artifact_report.clone(),
+    );
+    root.entry("noUserTreePollutionVerified".to_string())
+        .or_insert_with(|| {
+            generated_artifact_report
+                .get("rolesAreInternal")
+                .cloned()
+                .unwrap_or(Value::Bool(false))
+        });
 
     let fast_path_policy = fast_path_policy(&toolchain_profile, &root);
     root.insert("fastPathPolicy".to_string(), fast_path_policy);
@@ -321,6 +339,7 @@ fn generated_artifact_policy() -> Value {
     json!({
         "rolesAreInternal": true,
         "userWorkspaceMaterialization": "forbidden",
+        "internalRoot": ".synthi/generated/gpu",
         "forbiddenUserPaths": [
             "core.cpp",
             "gui.cpp",
@@ -329,6 +348,18 @@ fn generated_artifact_policy() -> Value {
             "device.cu",
             "device.hip"
         ],
+    })
+}
+
+fn default_generated_artifact_report() -> Value {
+    json!({
+        "schemaVersion": "synthi.gpu.generated_artifact_purity.v1",
+        "rolesAreInternal": false,
+        "internalRoot": null,
+        "userWorkspaceMaterialization": "unknown",
+        "mappings": [],
+        "missingRoles": [],
+        "droppedExtraGeneratedFiles": [],
     })
 }
 
@@ -686,6 +717,14 @@ fn run_report(
         "consentRequired": root.get("consentRequired").cloned().unwrap_or(Value::Null),
         "consentReason": root.get("consentReason").cloned().unwrap_or(Value::Null),
         "generatedRoles": root.get("generatedRoles").cloned().unwrap_or(Value::Null),
+        "generatedArtifactReport": root
+            .get("generatedArtifactReport")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "noUserTreePollutionVerified": root
+            .get("noUserTreePollutionVerified")
+            .cloned()
+            .unwrap_or(Value::Null),
         "agenticReport": root.get("agenticReport").cloned().unwrap_or(Value::Null),
         "agenticMode": root.get("agenticMode").cloned().unwrap_or(Value::Null),
         "agenticAttemptCount": root.get("agenticAttemptCount").cloned().unwrap_or(Value::Null),
@@ -1128,6 +1167,57 @@ mod tests {
                 .pointer("/runReport/agenticReport/repairScope")
                 .and_then(Value::as_str),
             Some("generated_artifacts_only")
+        );
+    }
+
+    #[test]
+    fn generated_artifact_purity_report_is_promoted_into_run_report() {
+        let manifest = gpu_compile_manifest();
+        let purity_report = json!({
+            "schemaVersion": "synthi.gpu.generated_artifact_purity.v1",
+            "rolesAreInternal": true,
+            "internalRoot": ".synthi/generated/gpu",
+            "userWorkspaceMaterialization": "forbidden",
+            "mappings": [
+                {
+                    "role": "device",
+                    "sourcePath": "gpu/flow_device_x.hip",
+                    "internalPath": ".synthi/generated/gpu/device.hip"
+                }
+            ],
+            "missingRoles": [],
+            "droppedExtraGeneratedFiles": ["src/user_owned.hpp"]
+        });
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "generated_artifact_report": purity_report,
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+
+        assert_eq!(
+            migrated
+                .pointer("/generatedArtifactPolicy/internalRoot")
+                .and_then(Value::as_str),
+            Some(".synthi/generated/gpu")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/noUserTreePollutionVerified")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/generatedArtifactReport/mappings/0/internalPath")
+                .and_then(Value::as_str),
+            Some(".synthi/generated/gpu/device.hip")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/noUserTreePollutionVerified")
+                .and_then(Value::as_bool),
+            Some(true)
         );
     }
 }
