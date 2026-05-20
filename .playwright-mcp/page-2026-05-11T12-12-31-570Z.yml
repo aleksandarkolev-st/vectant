@@ -1,0 +1,13 @@
+- generic [active] [ref=e1]:
+  - region "Notifications alt+T"
+  - generic [ref=e3]:
+    - heading "Sign In" [level=1] [ref=e4]
+    - paragraph [ref=e5]: Sign in to your account using one of the providers below.
+    - generic [ref=e6]:
+      - button "Continue with Google" [ref=e7]:
+        - img [ref=e8]
+        - generic [ref=e13]: Continue with Google
+      - button "Continue with GitHub" [ref=e14]:
+        - img [ref=e15]
+        - generic [ref=e17]: Continue with GitHub
+  - alert [ref=e18]

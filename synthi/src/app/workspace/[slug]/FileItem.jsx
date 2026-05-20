@@ -80,6 +80,12 @@ const FileItem = memo(({
     const BASE = 8;
     const xForCol = (colIndex) => BASE + colIndex * INDENT + INDENT / 2;
     const connectorX = xForCol(guideLevel - 1);
+    const connectorEndX = BASE + guideLevel * INDENT - 2;
+    const connectorWidth = Math.max(connectorEndX - connectorX, 6);
+    const guideColor = showAllGuides
+      ? 'color-mix(in srgb, var(--border-medium) 76%, var(--attention-purple) 24%)'
+      : 'color-mix(in srgb, var(--border-medium) 92%, transparent)';
+    const guideOpacity = showAllGuides ? 0.95 : 0.72;
 
     return (
       <div
@@ -91,21 +97,51 @@ const FileItem = memo(({
             draw ? (
               <div
                 key={`tree-v-${colIndex}`}
-                className="absolute top-0 bottom-0 w-px opacity-100"
-                style={{ left: `${xForCol(colIndex)}px`, background: 'var(--border-medium)' }}
+                data-tree-guide="ancestor-vertical"
+                className="absolute top-0 bottom-0 w-px"
+                style={{
+                  left: `${xForCol(colIndex)}px`,
+                  background: guideColor,
+                  opacity: guideOpacity,
+                }}
               />
             ) : null
           )}
 
         {drawCurrentLevel && (
           <>
-            {/* Current column vertical connector */}
             <div
-              className="absolute top-0 w-px opacity-100"
+              data-tree-guide="current-vertical-top"
+              className="absolute top-0 w-px"
               style={{
                 left: `${connectorX}px`,
-                bottom: guideHasNextSibling ? 0 : "50%",
-                background: 'var(--border-medium)',
+                height: '50%',
+                background: guideColor,
+                opacity: guideOpacity,
+              }}
+            />
+            {guideHasNextSibling && (
+              <div
+                data-tree-guide="current-vertical-bottom"
+                className="absolute bottom-0 w-px"
+                style={{
+                  left: `${connectorX}px`,
+                  top: '50%',
+                  background: guideColor,
+                  opacity: guideOpacity,
+                }}
+              />
+            )}
+            <div
+              data-tree-guide="current-horizontal"
+              className="absolute h-px"
+              style={{
+                left: `${connectorX}px`,
+                top: '50%',
+                width: `${connectorWidth}px`,
+                background: guideColor,
+                opacity: guideOpacity,
+                transform: 'translateY(-0.5px)',
               }}
             />
           </>
@@ -317,7 +353,7 @@ useEffect(() => {
 
   // Only show indicators for a container if it has 2+ items.
   // This flag controls the connector for the *current* nesting level.
-  const drawCurrentLevelGuides = guidesVisibleForRow && parentChildCount >= 2;
+  const drawCurrentLevelGuides = guidesVisibleForRow && level > 0 && (showAllGuides || parentChildCount >= 2);
 
   const maskedAncestorHasNext = (() => {
     if (showAllGuides) return ancestorHasNext;
@@ -359,7 +395,10 @@ useEffect(() => {
         
         // Create and store new spinner
         const spinner = document.createElement('div');
-        spinner.className = 'ml-2 h-3 w-3 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin';
+        spinner.className = 'ml-2 h-3 w-3 border-2 border-t-transparent rounded-full animate-spin';
+        spinner.style.borderRightColor = 'var(--brand-stop-3)';
+        spinner.style.borderBottomColor = 'var(--brand-stop-4)';
+        spinner.style.borderLeftColor = 'var(--brand-stop-3)';
         
         // Get the file content container
         const fileContent = fileItem.querySelector('.file-content');
@@ -466,16 +505,18 @@ useEffect(() => {
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
-        className={`file-item relative group flex items-center py-1.5 px-2 rounded-md cursor-pointer transition-all ${
-          isSelected ? 'border-l-[3px]' : 'border-l-[3px] border-transparent'
-        }`}
+        className={`file-item relative group flex items-center py-1 px-2 cursor-pointer transition-all ${isSelected ? 'rounded-none' : 'rounded-md'}`}
         style={{
           ...itemStyle,
           ...(isSelected
-            ? { background: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)', borderColor: 'var(--accent-tertiary)', boxShadow: '0 0 0 1px color-mix(in srgb, var(--accent-tertiary) 18%, transparent)' }
+            ? {
+                background: 'color-mix(in srgb, var(--attention-purple) 10%, transparent)',
+                borderRadius: 0,
+                boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--attention-purple) 28%, transparent), 0 0 14px -6px color-mix(in srgb, var(--attention-purple) 26%, transparent)',
+              }
             : {}),
           ...(isDropTarget
-            ? { background: 'color-mix(in srgb, var(--accent-primary) 22%, transparent)', outline: '1px solid var(--accent-tertiary)' }
+            ? { background: 'color-mix(in srgb, var(--attention-purple) 18%, transparent)', outline: '1px solid var(--attention-purple)' }
             : {}),
         }}
         onClick={handleClick}
@@ -483,6 +524,18 @@ useEffect(() => {
       >
         {guidesVisibleForRow &&
           renderTreeGuides(level, maskedAncestorHasNext, hasNextSibling, drawCurrentLevelGuides)}
+        {/* Brand-gradient bar on the active file's left edge.
+            Reserved for the literal current focus of the user — earns its colour. */}
+        {isSelected && (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute left-0 top-0 bottom-0 w-px"
+            style={{
+              background: 'var(--brand-gradient)',
+              boxShadow: '0 0 10px -2px color-mix(in srgb, var(--brand-stop-3) 55%, transparent)',
+            }}
+          />
+        )}
         {isExpandable && (
           <div
             onClick={(e) => {
@@ -493,7 +546,7 @@ useEffect(() => {
             <ChevronIcon isOpen={isOpen} isSelected={isSelected} />
           </div>
         )}
-        <div className={`w-3.5 h-3.5 mr-2.5 flex-shrink-0 flex items-center justify-center text-sm ${isSelected ? 'opacity-98' : 'opacity-95'}`}>
+        <div className={`w-3 h-3 mr-2 flex-shrink-0 flex items-center justify-center text-[13px] ${isSelected ? 'opacity-98' : 'opacity-95'}`}>
           {currentIcon}
         </div>
         {/* replaced the early return block, stopping files (children from showing during rename) */}
@@ -510,9 +563,9 @@ useEffect(() => {
             style={{ color: 'var(--text-primary)' }}
           />
         ) : (
-          <div className="file-content flex items-center gap-2">
+          <div className="file-content flex items-center gap-1.5">
             <span
-              className="text-[12px] truncate leading-relaxed"
+              className="text-[12px] truncate leading-snug"
               style={isSelected ? { color: 'var(--text-primary)', fontWeight: 600 } : { color: 'var(--text-primary)' }}
             >
               {item.name}
@@ -608,7 +661,7 @@ useEffect(() => {
         <div className="flex flex-col">
           {isParentForCreation && (
             <div
-              className="file-item relative flex items-center py-1 px-2"
+              className="file-item relative flex items-center py-0.5 px-2"
               style={{ paddingLeft: `${(level + 1) * 16 + 8}px`, '--indent-level': level + 1 }}
             >
               {guidesVisibleForRow &&
@@ -616,10 +669,10 @@ useEffect(() => {
                   level + 1,
                   [...ancestorHasNext, hasNextSibling && drawCurrentLevelGuides],
                   (item.children || []).length > 0,
-                  guidesVisibleForRow && (item.children || []).length >= 2
+                  guidesVisibleForRow && (showAllGuides || (item.children || []).length >= 2)
                 )}
               <div className="flex items-center">
-                <div className="w-4 h-4 mr-2 flex-shrink-0 flex items-center justify-center">
+                <div className="w-3 h-3 mr-2 flex-shrink-0 flex items-center justify-center text-[13px]">
                   {isCreatingFolder ? (
                     <FolderIcon />
                   ) : (

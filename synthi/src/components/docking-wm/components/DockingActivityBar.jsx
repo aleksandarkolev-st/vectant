@@ -7,7 +7,7 @@
  * a button toggles/opens the corresponding panel in the docking tree.
  */
 
-import { memo, useMemo, useCallback } from 'react';
+import { memo, useMemo, useCallback, useEffect, useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import {
   Files,
@@ -19,11 +19,25 @@ import {
   Sparkles,
   MessageSquare,
   Box,
+  ChevronRight,
 } from 'lucide-react';
 import { useActivityBarDocking } from '../hooks/use-activity-bar-docking';
 import { selectNodes, selectTabs, selectFocusedTabGroupId, openTab, activateTabAction, setFocusedTabGroup } from '../state/layout-slice';
 import { selectContributedContainers } from '@/redux/extensionSlice';
 import { IDE_PANEL } from '../panels/panel-types';
+
+const ACTIVITY_BAR_HOVER_EVENT = 'synthi:activitybar-hover';
+const SIDEBAR_HINT_SEEN_EVENT = 'synthi:sidebar-hover-hint-seen';
+const SIDEBAR_HINT_SEEN_KEY = 'synthi:sidebar-hover-hint-seen';
+
+function hasSeenSidebarHoverHint() {
+  if (typeof window === 'undefined' || !window.localStorage) return false;
+  try {
+    return window.localStorage.getItem(SIDEBAR_HINT_SEEN_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Determine which panel type is currently "active" — i.e. visible and
@@ -62,6 +76,25 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
   const dispatch = useDispatch();
   const nodes = useSelector(selectNodes);
   const tabs = useSelector(selectTabs);
+  const [showSidebarHoverHint, setShowSidebarHoverHint] = useState(false);
+
+  useEffect(() => {
+    setShowSidebarHoverHint(!hasSeenSidebarHoverHint());
+
+    if (typeof window === 'undefined') return undefined;
+
+    const hideHint = () => setShowSidebarHoverHint(false);
+    window.addEventListener(SIDEBAR_HINT_SEEN_EVENT, hideHint);
+    return () => {
+      window.removeEventListener(SIDEBAR_HINT_SEEN_EVENT, hideHint);
+      window.dispatchEvent(new CustomEvent(ACTIVITY_BAR_HOVER_EVENT, { detail: { hovered: false } }));
+    };
+  }, []);
+
+  const setActivityBarHover = useCallback((hovered) => {
+    if (typeof window === 'undefined') return;
+    window.dispatchEvent(new CustomEvent(ACTIVITY_BAR_HOVER_EVENT, { detail: { hovered } }));
+  }, []);
 
   // Build dynamic extension sidebar items from installed extensions
   const extensionItems = useMemo(() => {
@@ -146,6 +179,15 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
           style={isActive ? { background: 'linear-gradient(to bottom, var(--accent-primary), var(--accent-tertiary))', boxShadow: '0 0 10px color-mix(in srgb, var(--accent-primary) 60%, transparent)' } : {}}
         />
 
+        {id === 'explorer' && showSidebarHoverHint && (
+          <span
+            aria-hidden="true"
+            className="dock-activitybar__hover-hint"
+          >
+            <ChevronRight className="w-3.5 h-3.5" strokeWidth={2.25} />
+          </span>
+        )}
+
         {/* Extension image icon or Lucide fallback */}
         {hasImageIcon ? (
           <img
@@ -176,7 +218,12 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
   };
 
   return (
-    <div className="dock-activitybar-root w-12 h-full flex flex-col items-center border-r-2 flex-shrink-0" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
+    <div
+      className="dock-activitybar-root relative w-12 h-full flex flex-col items-center border-r-2 flex-shrink-0"
+      style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}
+      onMouseEnter={() => setActivityBarHover(true)}
+      onMouseLeave={() => setActivityBarHover(false)}
+    >
       {/* Top sidebar items */}
       <div className="dock-activitybar-top w-full flex flex-col pt-1">
         {TOP_ITEMS.map(renderButton)}
@@ -198,7 +245,7 @@ export const DockingActivityBar = memo(function DockingActivityBar() {
         <div
           className="w-7 h-7 rounded-lg border flex items-center justify-center cursor-pointer transition-all group mt-2"
           style={{ background: 'color-mix(in srgb, var(--accent-primary) 7%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-primary) 19%, transparent)' }}
-          title="Synthi AI"
+          title="Vectant AI"
         >
           <Sparkles className="w-3.5 h-3.5 opacity-70 group-hover:opacity-100" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
         </div>

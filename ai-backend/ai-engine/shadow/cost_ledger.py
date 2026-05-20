@@ -8,8 +8,11 @@ but the dashboard surfaces a warning the user can act on.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
+import tempfile
 import time
 from datetime import date, timedelta
 from pathlib import Path
@@ -24,9 +27,16 @@ LEDGER_HISTORY_DAYS = 30
 
 
 def _root(repo: Path) -> Path:
-    d = repo / ".shadow" / "cost"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    in_repo = repo / ".shadow" / "cost"
+    try:
+        in_repo.mkdir(parents=True, exist_ok=True)
+        return in_repo
+    except OSError:
+        base = os.environ.get("SHADOW_STATE_DIR") or os.path.join(tempfile.gettempdir(), "synthi-shadow")
+        key = hashlib.sha1(str(repo).encode("utf-8")).hexdigest()[:16]
+        d = Path(base) / key / "cost"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
 
 def _ledger_file(repo: Path) -> Path:

@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, startTransition, use
 import { use } from 'react';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
+import { toast } from 'sonner';
 import { useAppDispatch, useAppSelector, useAppStore } from '@/redux/hooks';
 import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, markFileSavedRemotely } from '@/redux/workspaceSlice';
 import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
@@ -16,7 +17,8 @@ import {
     selectTreeOnRight,
     toggleTerminal,
     setTreeOrientation,
-    setEmulatorPreviewVisible
+    setEmulatorPreviewVisible,
+    setSidebarPanelPinned,
 } from '@/redux/uiSlice';
 import TopNav from '../TopNav.jsx';
 import {
@@ -70,6 +72,7 @@ import { useRetryCompile } from '@/hooks/useRetryCompile';
 import { HMRStatusIndicator } from '@/components/HMRStatusIndicator';
 import { RuntimeHealingIndicator } from '@/components/healing/RuntimeHealingIndicator';
 import { installPreviewBridge } from '@/lib/preview-store-bridge';
+import { getWorkspaceDependencyInstallPlan } from '@/lib/workspaceInstallPlan';
 import ErrorOverlay from '@/components/ErrorOverlay';
 import { GitStatus } from '@/components/git/GitStatus';
 import { GitSummaryPanel } from '@/components/git/GitSummaryPanel';
@@ -94,6 +97,10 @@ import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 
 // ─── New Docking Window Manager ────────────────────────
 import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
+import { useActivityBarDocking } from '@/components/docking-wm/hooks/use-activity-bar-docking';
+import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
+import { DROP_ZONE } from '@/components/docking-wm/types';
+import { activateTabAction, openTab, setFocusedTabGroup, splitNodeAction } from '@/components/docking-wm/state/layout-slice';
 
 // ─── Responsive: viewport observer + breakpoint-driven CSS ─────────────
 import { useViewport } from '@/hooks/useViewport';
@@ -117,6 +124,111 @@ const normalizeWorkspacePath = (path = '') => String(path)
 // Feature flag: set to true to enable the new docking layout.
 // When false, the existing rigid ResizablePanelGroup layout is used.
 const USE_DOCKING_WM = true;
+
+const SIDEBAR_DOCK_PANEL_TYPES = new Set([
+    IDE_PANEL.EXPLORER,
+    IDE_PANEL.SEARCH,
+    IDE_PANEL.GIT,
+    IDE_PANEL.EXTENSIONS,
+    IDE_PANEL.EXTENSION_VIEW,
+    IDE_PANEL.CHAT,
+    IDE_PANEL.SETTINGS,
+    IDE_PANEL.PULL_REQUESTS,
+    IDE_PANEL.AI_HEALING,
+]);
+
+const BOTTOM_DOCK_PANEL_TYPES = new Set([
+    IDE_PANEL.TERMINAL,
+    IDE_PANEL.PROBLEMS,
+    IDE_PANEL.OUTPUT,
+]);
+
+function getDockGroupCategory(panelType) {
+    if (SIDEBAR_DOCK_PANEL_TYPES.has(panelType)) return 'sidebar';
+    if (BOTTOM_DOCK_PANEL_TYPES.has(panelType)) return 'bottom';
+    return 'editor';
+}
+
+function findDockPanel(layout, panelType) {
+    const nodes = layout?.nodes || {};
+    const tabs = layout?.tabs || {};
+    for (const [groupId, node] of Object.entries(nodes)) {
+        if (node?.type !== 'tabgroup') continue;
+        for (const tabId of node.tabs || []) {
+            const tab = tabs[tabId];
+            if (tab?.panelType === panelType) {
+                return { groupId, tabId, tab };
+            }
+        }
+    }
+    return null;
+}
+
+function findDockGroup(layout, category) {
+    const nodes = layout?.nodes || {};
+    const tabs = layout?.tabs || {};
+    for (const [groupId, node] of Object.entries(nodes)) {
+        if (node?.type !== 'tabgroup') continue;
+        for (const tabId of node.tabs || []) {
+            const tab = tabs[tabId];
+            if (tab && getDockGroupCategory(tab.panelType) === category) {
+                return groupId;
+            }
+        }
+    }
+    return null;
+}
+
+function findDockPanelInGroup(layout, groupId, panelType) {
+    const group = layout?.nodes?.[groupId];
+    if (!group || group.type !== 'tabgroup') return null;
+    for (const tabId of group.tabs || []) {
+        const tab = layout?.tabs?.[tabId];
+        if (tab?.panelType === panelType) {
+            return { groupId, tabId, tab };
+        }
+    }
+    return null;
+}
+
+function nodeContainsCategory(layout, nodeId, category) {
+    const node = layout?.nodes?.[nodeId];
+    if (!node) return false;
+
+    if (node.type === 'tabgroup') {
+        return (node.tabs || []).some((tabId) => {
+            const tab = layout?.tabs?.[tabId];
+            return tab && getDockGroupCategory(tab.panelType) === category;
+        });
+    }
+
+    return (node.children || []).some((childId) => nodeContainsCategory(layout, childId, category));
+}
+
+function findDockRightRailTarget(layout) {
+    const nodes = layout?.nodes || {};
+    const editorGroupId = findDockGroup(layout, 'editor');
+    if (!editorGroupId) return null;
+
+    let targetNodeId = editorGroupId;
+    let currentNodeId = editorGroupId;
+
+    while (currentNodeId) {
+        const parentId = nodes[currentNodeId]?.parentId;
+        const parent = parentId ? nodes[parentId] : null;
+        if (!parent || parent.type !== 'split') break;
+
+        const containsBottom = nodeContainsCategory(layout, parentId, 'bottom');
+        const containsSidebar = nodeContainsCategory(layout, parentId, 'sidebar');
+
+        if (!containsBottom || containsSidebar) break;
+
+        targetNodeId = parentId;
+        currentNodeId = parentId;
+    }
+
+    return targetNodeId;
+}
 
 export default function EditorPage({ params }) {
     const dispatch = useAppDispatch();
@@ -151,7 +263,7 @@ export default function EditorPage({ params }) {
     // 1. Consume the slug parameter first (needed by hooks below)
     const { slug } = use(params);
 
-    const [chatVisible, setChatVisible] = useState(false);
+    const [floatingChatVisible, setFloatingChatVisible] = useState(false);
 
     // AI Jumpstart — initial prompt/attachments from dashboard
     const [jumpstartPrompt, setJumpstartPrompt] = useState(null);
@@ -462,6 +574,27 @@ export default function EditorPage({ params }) {
     const [latestCompletion, setLatestCompletion] = useState(null);
     const [completionClearSignal, setCompletionClearSignal] = useState(0);
     const [buildLogs, setBuildLogs] = useState([]);
+    const [buildLogsCollapsed, setBuildLogsCollapsed] = useState(false);
+
+    // Friendly project name (from the DB) used as the terminal prompt label
+    // and anywhere else a human-readable workspace identifier is wanted.
+    // Falls back to the slug until the fetch resolves so the prompt never
+    // flashes empty. The route param `slug` is what /api/workspace/[slug]
+    // keys by (see app/api/workspace/[workspaceId]/route.js).
+    const [workspaceName, setWorkspaceName] = useState(slug);
+    useEffect(() => {
+        if (!slug) return undefined;
+        let cancelled = false;
+        fetch(`/api/workspace/${encodeURIComponent(slug)}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+                if (cancelled || !data) return;
+                const name = data?.workspace?.name || data?.name;
+                if (name && typeof name === 'string') setWorkspaceName(name);
+            })
+            .catch(() => { /* keep slug fallback */ });
+        return () => { cancelled = true; };
+    }, [slug]);
     const [hmrEnabled, setHmrEnabled] = useState(true);
     const [emulatorRunNonce, setEmulatorRunNonce] = useState(0);
     const [emulatorSessionId, setEmulatorSessionId] = useState(null);
@@ -714,6 +847,8 @@ export default function EditorPage({ params }) {
     const [workspaceMissingMessage, setWorkspaceMissingMessage] = useState('');
     const [activeSessionId, setActiveSessionId] = useState(collabSessionService?.isActive ? collabSessionService.sessionId : null);
     const [collabHostId, setCollabHostId] = useState(collabSessionService?.hostId || null);
+    const workspacePrepToastIdRef = useRef(null);
+    const workspacePrepStateRef = useRef(null);
 
     useEffect(() => {
         return collabSessionService.onChange(() => {
@@ -742,14 +877,44 @@ export default function EditorPage({ params }) {
     }, []);
 
     // ── AI Jumpstart: consume pending prompt from dashboard ──────────
+    // If the payload carries a projectType, prepend its systemPromptHint
+    // to the user prompt so the AI receives the project-context directive
+    // before the user's free-text request.
     useEffect(() => {
         const payload = consumeJumpstartPayload();
         if (!payload) return;
-        setChatVisible(true);
+        setFloatingChatVisible(true);
         setSidebarView(null);
         setTimeout(() => sidebarPanelRef.current?.collapse(), 50); // Collapse sidebar initially
-        setJumpstartPrompt(payload.prompt || null);
+        const pt = payload.projectType;
+        let prompt = payload.prompt || null;
+        if (prompt && pt?.systemPromptHint) {
+            prompt = `[PROJECT TYPE: ${pt.label}]\n${pt.systemPromptHint}\n\n${prompt}`;
+        }
+        setJumpstartPrompt(prompt);
         setJumpstartAttachments(payload.attachments?.length ? payload.attachments : null);
+    }, []);
+
+    // ── In-workspace "Other" → AI: listen for picker-dispatched event ─
+    // The NewProjectPicker's "Other → Describe" flow fires a
+    // `synthi:jumpstart-trigger` event with `{prompt, attachments}`. We
+    // route it through the same jumpstart state used for the dashboard
+    // flow so the AI chat picks it up via its updated re-armable ref.
+    useEffect(() => {
+        const handler = (e) => {
+            const detail = e?.detail || {};
+            if (typeof detail.prompt !== 'string' || !detail.prompt.trim()) return;
+            setFloatingChatVisible(true);
+            setSidebarView(null);
+            setTimeout(() => sidebarPanelRef.current?.collapse(), 50);
+            setJumpstartPrompt(detail.prompt);
+            setJumpstartAttachments(detail.attachments?.length ? detail.attachments : null);
+        };
+        if (typeof window !== 'undefined') {
+            window.addEventListener('synthi:jumpstart-trigger', handler);
+            return () => window.removeEventListener('synthi:jumpstart-trigger', handler);
+        }
+        return undefined;
     }, []);
 
     useEffect(() => {
@@ -843,6 +1008,69 @@ export default function EditorPage({ params }) {
             init();
         }
     }, [slug, dispatch]);
+
+    useEffect(() => {
+        if (!slug || workspaceMissing || authStatus === 'loading') return undefined;
+
+        let cancelled = false;
+        let timer = null;
+        const toastId = `workspace-prep-${slug}`;
+        workspacePrepToastIdRef.current = toastId;
+
+        const poll = async () => {
+            try {
+                const status = await api.getWorkspacePrepStatus(slug);
+                if (cancelled) return;
+
+                const nextState = String(status?.state || 'idle');
+                const previousState = workspacePrepStateRef.current;
+                const tasks = Array.isArray(status?.tasks) ? status.tasks : [];
+                const taskCount = tasks.length;
+                const failureMessage = status?.error || tasks.find((task) => task.status === 'failed' || task.status === 'blocked')?.message || 'Workspace preparation failed.';
+
+                if (nextState === 'queued' || nextState === 'running') {
+                    toast.loading(
+                        taskCount > 0
+                            ? `Preparing ${taskCount} workspace environment${taskCount === 1 ? '' : 's'}`
+                            : 'Preparing workspace environment',
+                        { id: toastId, duration: Infinity }
+                    );
+                } else if (nextState === 'ready' && (previousState === 'queued' || previousState === 'running')) {
+                    toast.success('Workspace environment is ready.', { id: toastId, duration: 4000 });
+                } else if (nextState === 'blocked' && previousState !== 'blocked') {
+                    toast.error('Workspace preparation is blocked.', {
+                        id: toastId,
+                        description: failureMessage,
+                        duration: 6000,
+                    });
+                } else if (nextState === 'failed' && previousState !== 'failed') {
+                    toast.error('Workspace preparation failed.', {
+                        id: toastId,
+                        description: failureMessage,
+                        duration: 6000,
+                    });
+                }
+
+                workspacePrepStateRef.current = nextState;
+
+                const nextPollMs = nextState === 'queued' || nextState === 'running' ? 3000 : 15000;
+                timer = window.setTimeout(poll, nextPollMs);
+            } catch (_) {
+                if (cancelled) return;
+                timer = window.setTimeout(poll, 15000);
+            }
+        };
+
+        poll();
+
+        return () => {
+            cancelled = true;
+            if (timer) window.clearTimeout(timer);
+            if (workspacePrepToastIdRef.current) toast.dismiss(workspacePrepToastIdRef.current);
+            workspacePrepToastIdRef.current = null;
+            workspacePrepStateRef.current = null;
+        };
+    }, [slug, workspaceMissing, authStatus]);
 
     // Subscribe to server-side file-tree-changed notifications so
     // all connected clients stay in sync when any teammate mutates the tree.
@@ -996,8 +1224,8 @@ export default function EditorPage({ params }) {
     // auto-close behaviour for chat / terminal at narrow widths.
     const viewport = useViewport();
     useEffect(() => {
-        if (viewport.isNarrow && chatVisible) setChatVisible(false);
-    }, [viewport.isNarrow, chatVisible]);
+        if (viewport.isNarrow && floatingChatVisible) setFloatingChatVisible(false);
+    }, [viewport.isNarrow, floatingChatVisible]);
     useEffect(() => {
         if (viewport.isMobile && showTerminal) {
             // Mobile: terminal eats most of the screen; close it on entering
@@ -1935,6 +2163,32 @@ export default function EditorPage({ params }) {
 
                     await dispatch(fetchFilesThunk(slug));
 
+                    const installPlan = getWorkspaceDependencyInstallPlan(files);
+                    if (installPlan) {
+                        try {
+                            const installResult = await api.execTerminalCommand(slug, installPlan.command, { timeout: 300000 });
+                            if (installResult.exitCode !== null && installResult.exitCode !== 0) {
+                                throw new Error(installResult.output || `${installPlan.label} failed with exit code ${installResult.exitCode}`);
+                            }
+                            if (installResult.sessionId && typeof window !== 'undefined') {
+                                window.dispatchEvent(new CustomEvent('terminal-session-open', {
+                                    detail: {
+                                        sessionId: installResult.sessionId,
+                                        command: installResult.command || installPlan.command,
+                                        label: `Install: ${installPlan.label}`,
+                                        isAi: false,
+                                    },
+                                }));
+                                appendBuildLog(`[sync] Started ${installPlan.label} in Terminal.`);
+                            } else {
+                                appendBuildLog(`[sync] Completed ${installPlan.label}.`);
+                            }
+                        } catch (installErr) {
+                            console.warn('Workspace dependency install did not start', installErr);
+                            appendBuildLog(`[sync] Could not start ${installPlan.label}: ${installErr?.message || String(installErr)}`);
+                        }
+                    }
+
                     const writtenCount = Array.isArray(result?.written) ? result.written.length : 0;
                     const skippedCount = Array.isArray(result?.skipped) ? result.skipped.length : 0;
                     const errorCount = Array.isArray(result?.errors) ? result.errors.length : 0;
@@ -2240,6 +2494,12 @@ export default function EditorPage({ params }) {
         if (!emulatorSessionId) {
             appendBuildLog('Stopped by user.');
         }
+        // Clear the GUI-running flag synchronously. The worker normally
+        // emits `synthi:gui-end` on runner shutdown, but the hard
+        // `client.reconnect()` below tears down the data channel that
+        // event rides on — so without this explicit clear the TopNav
+        // would still show Stop/Reload (via isRunning) after a stop.
+        setIsGuiRunning(false);
         if (client?.reconnect) {
             await client.reconnect();
         }
@@ -2259,6 +2519,10 @@ export default function EditorPage({ params }) {
                 return;
             }
         }
+        // Same rationale as handleStop: clear before the hard reconnect
+        // so isRunning reflects reality during the gap before handleRun
+        // sets it back via the new session's gui-start event.
+        setIsGuiRunning(false);
         if (client?.reconnect) {
             await client.reconnect();
         }
@@ -2434,7 +2698,7 @@ export default function EditorPage({ params }) {
     }, [activeFile, hasInitialSnapshot]);
 
     const handleToggleChat = useCallback(() => {
-        setChatVisible((v) => !v);
+        setFloatingChatVisible((v) => !v);
     }, []);
 
     const handleUndo = useCallback(() => {
@@ -2459,11 +2723,20 @@ export default function EditorPage({ params }) {
     const handleMoveLineDown = useCallback(() => editor?.getAction('editor.action.moveLinesDownAction')?.run(), [editor]);
     const handleDuplicateSelection = useCallback(() => editor?.getAction('editor.action.duplicateSelection')?.run(), [editor]);
 
+    const activityBarHandlers = useActivityBarDocking();
+    const onToggleTerminalCb = useCallback(() => {
+        if (USE_DOCKING_WM) {
+            activityBarHandlers.terminal();
+        } else {
+            dispatch(toggleTerminal());
+        }
+    }, [dispatch, activityBarHandlers]);
+
     const EditorPanelComponent = (
         <EditorPanel
             onRun={handleRun}
             onSave={handleSave}
-            onToggleTerminal={() => dispatch(toggleTerminal())}
+            onToggleTerminal={onToggleTerminalCb}
             onEditorMount={handleEditorMount}
             analysisResult={lastResult}
             diagnostics={mergedDiagnostics}
@@ -2472,7 +2745,7 @@ export default function EditorPage({ params }) {
             latestCompletion={latestCompletion}
             aiBusy={aiBusy}
             onClearCompletion={handleClearLatestCompletion}
-            chatVisible={chatVisible}
+            chatVisible={floatingChatVisible}
             collabHostId={collabHostId}
             selfEditFlagRef={selfEditFlagRef}
         />
@@ -2498,7 +2771,7 @@ export default function EditorPage({ params }) {
                     active={sidebarView}
                     onSelect={(id) => {
                         if (id === 'ai') {
-                            setChatVisible(v => !v);
+                            setFloatingChatVisible(v => !v);
                             return;
                         }
                         const nextView = id === sidebarView ? null : id;
@@ -2575,8 +2848,8 @@ export default function EditorPage({ params }) {
         <ResizablePanel defaultSize={24} minSize={20} maxSize={45} className="border-l border-[#1a1a1e] bg-[#09090b] min-w-0">
             <AIChatWindow
                 docked={true}
-                isVisible={chatVisible}
-                onClose={() => setChatVisible(false)}
+                isVisible={floatingChatVisible}
+                onClose={() => setFloatingChatVisible(false)}
                 activeFile={activeFile}
                 getCurrentCode={getLatestCurrentContent}
                 editor={editor}
@@ -2593,7 +2866,71 @@ export default function EditorPage({ params }) {
     const onBusyCb = useCallback((b) => setAiBusy(Boolean(b)), []);
     const onCloseProblemsCb = useCallback(() => setShowProblemsPanel(false), []);
     const onOpenScmCb = useCallback(() => setSidebarView('scm'), []);
-    const onToggleTerminalCb = useCallback(() => dispatch(toggleTerminal()), [dispatch]);
+    // The legacy boolean toggle only flipped a uiSlice flag — it never
+    // actually opened the terminal under the docking-wm layout. Route
+    // the TopNav terminal button through the same hook the ActivityBar
+    // uses so it actually opens / focuses the terminal panel.
+    const dockingHandlers = useActivityBarDocking();
+    const ensureDockedChatRight = useCallback(() => {
+        if (!USE_DOCKING_WM) return false;
+
+        let layout = store.getState()?.layout;
+        let chatPanel = findDockPanel(layout, IDE_PANEL.CHAT);
+
+        if (!chatPanel) {
+            dockingHandlers?.chat?.();
+            layout = store.getState()?.layout;
+            chatPanel = findDockPanel(layout, IDE_PANEL.CHAT);
+        }
+
+        if (!chatPanel) return false;
+
+        const sidebarGroupId = findDockGroup(layout, 'sidebar');
+        const dockRightTargetNodeId = findDockRightRailTarget(layout);
+
+        if (dockRightTargetNodeId && chatPanel.groupId === sidebarGroupId) {
+            dispatch(splitNodeAction({
+                targetNodeId: dockRightTargetNodeId,
+                tabId: chatPanel.tabId,
+                zone: DROP_ZONE.RIGHT,
+                ratio: 0.34,
+            }));
+            // When chat lands on the right rail it becomes the user's primary
+            // surface — pin it open by default so the auto-collapse hover
+            // behaviour does not eat it on every cursor excursion. The user
+            // can still toggle the pin off via the panel chrome.
+            dispatch(setSidebarPanelPinned({ panelType: IDE_PANEL.CHAT, pinned: true }));
+            layout = store.getState()?.layout;
+            chatPanel = findDockPanel(layout, IDE_PANEL.CHAT) || chatPanel;
+
+            let explorerPanel = findDockPanelInGroup(layout, sidebarGroupId, IDE_PANEL.EXPLORER);
+            if (!explorerPanel && sidebarGroupId) {
+                dispatch(openTab({
+                    panelType: IDE_PANEL.EXPLORER,
+                    title: 'Explorer',
+                    targetTabGroupId: sidebarGroupId,
+                }));
+                layout = store.getState()?.layout;
+                explorerPanel = findDockPanelInGroup(layout, sidebarGroupId, IDE_PANEL.EXPLORER);
+            }
+            if (explorerPanel) {
+                dispatch(activateTabAction({ tabGroupId: sidebarGroupId, tabId: explorerPanel.tabId }));
+            }
+        }
+
+        if (!chatPanel?.groupId) return false;
+
+        dispatch(setFocusedTabGroup(chatPanel.groupId));
+        dispatch(activateTabAction({ tabGroupId: chatPanel.groupId, tabId: chatPanel.tabId }));
+        return true;
+    }, [dispatch, dockingHandlers, store]);
+
+    const handleDockFloatingChatRight = useCallback(() => {
+        if (ensureDockedChatRight()) {
+            setFloatingChatVisible(false);
+        }
+    }, [ensureDockedChatRight]);
+
     const onProblemsClickCb = useCallback(() => setShowProblemsPanel(prev => !prev), []);
 
     // ── Floating emulator window (renders outside the panel layout)
@@ -2648,14 +2985,14 @@ export default function EditorPage({ params }) {
         removeDiagnosticByLocation,
         aiBusy,
         onClearCompletion: handleClearLatestCompletion,
-        chatVisible,
+        chatVisible: floatingChatVisible,
         collabHostId,
     }), [
         slug, showTerminal, analyzeCode, analyzeUnified, lastResult,
         isAnalyzingGateway, connectionMeta, latestCompletion, completionClearSignal,
         handleRun, handleSave, onToggleTerminalCb, handleEditorMount,
         mergedDiagnostics, handleAiDiagnosticsRecalibrated, removeDiagnosticByLocation,
-        aiBusy, handleClearLatestCompletion, chatVisible, collabHostId,
+        aiBusy, handleClearLatestCompletion, floatingChatVisible, collabHostId,
     ]);
 
     // ── Memoised panelProps (the mega-object passed to DockableWorkspace) ──────
@@ -2677,12 +3014,15 @@ export default function EditorPage({ params }) {
         editorProps: memoEditorProps,
         // AI healing surface so docked panels (HealingSettingsPanel) can consume it
         aiHealing,
+        // Friendly project name surfaced to the terminal panel for the
+        // prompt label (~/<workspaceName> $).
+        workspaceName,
     }), [
         editor, activeFile, mergedDiagnostics, diagnosticSummary,
         showAnalyzingSpinner, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
         getLatestCurrentContent, completionClearSignal, jumpstartPrompt, jumpstartAttachments,
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
-        aiHealing,
+        aiHealing, workspaceName,
     ]);
 
     if (workspaceMissing) {
@@ -2703,7 +3043,14 @@ export default function EditorPage({ params }) {
 
     return (
         <DockablePanelProvider workspaceId={slug}>
-            <div className={cn('workspace-root flex flex-col h-screen overflow-hidden', viewportClass)} style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}>
+            <div
+                className={cn('workspace-root relative flex flex-col h-screen overflow-hidden', viewportClass)}
+                style={{
+                    background: 'var(--bg-sidebar)',
+                    color: 'var(--text-primary)',
+                    '--workspace-statusbar-terminal-clearance': 'clamp(160px, 24vh, 260px)',
+                }}
+            >
                 <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'var(--bg-editor)', color: 'var(--text-primary)' }}>
                     {/* Hydrate workspace-specific tabs from localStorage */}
                     <WorkspaceHydrator slug={slug} />
@@ -2719,12 +3066,12 @@ export default function EditorPage({ params }) {
                         setGpuModeEnabled={setGpuModeEnabled}
                         onStop={handleStop}
                         onReload={handleRestart}
-                        isRunning={isCompiling}
+                        isRunning={isCompiling || isGuiRunning}
                         onToggleTerminal={onToggleTerminalCb}
                         onUndo={handleUndo}
                         onRedo={handleRedo}
                         onToggleChat={handleToggleChat}
-                        chatVisible={chatVisible}
+                        chatVisible={floatingChatVisible}
                         onCopyLineUp={handleCopyLineUp}
                         onCopyLineDown={handleCopyLineDown}
                         onMoveLineUp={handleMoveLineUp}
@@ -2736,12 +3083,35 @@ export default function EditorPage({ params }) {
                     <GuestBanner />
 
                     {buildLogs.length > 0 && (
-                        <div className="border-b border-[#1a1a1e] bg-[#09090b] px-3 py-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
-                            {buildLogs.map((line, idx) => (
-                                <div key={idx} className="leading-5 whitespace-pre-wrap">
-                                    {line}
+                        <div className="border-b border-[#1a1a1e] bg-[#09090b]">
+                            <div className="flex items-center justify-between px-3 py-1 text-[10px] uppercase tracking-wide text-[#7d7d85]">
+                                <button
+                                    type="button"
+                                    onClick={() => setBuildLogsCollapsed((v) => !v)}
+                                    className="flex items-center gap-1 hover:text-[#D7DAE0]"
+                                    title={buildLogsCollapsed ? 'Show build logs' : 'Hide build logs'}
+                                >
+                                    <span aria-hidden="true">{buildLogsCollapsed ? '▸' : '▾'}</span>
+                                    <span>Build logs</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setBuildLogs([])}
+                                    className="hover:text-[#D7DAE0]"
+                                    title="Clear build logs"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+                            {!buildLogsCollapsed && (
+                                <div className="px-3 pb-2 text-xs font-mono text-[#D7DAE0] max-h-28 overflow-auto">
+                                    {buildLogs.map((line, idx) => (
+                                        <div key={idx} className="leading-5 whitespace-pre-wrap">
+                                            {line}
+                                        </div>
+                                    ))}
                                 </div>
-                            ))}
+                            )}
                         </div>
                     )}
 
@@ -2754,6 +3124,27 @@ export default function EditorPage({ params }) {
                         mediaStream={mediaStream}
                         sendGuiEvent={sendGuiEvent}
                     />
+
+                    {/* AI Chat — floating overlay on the right when the TopNav chat
+                        button is toggled. Always lives here (independent of the
+                        docking-wm layout) so the button works regardless of which
+                        panel layout the user has open. */}
+                    {floatingChatVisible && (
+                        <AIChatWindow
+                            docked={false}
+                            isVisible={floatingChatVisible}
+                            onClose={() => setFloatingChatVisible(false)}
+                            onDockRight={handleDockFloatingChatRight}
+                            activeFile={activeFile}
+                            getCurrentCode={getLatestCurrentContent}
+                            editor={editor}
+                            onSuggest={(s) => setLatestCompletion(s)}
+                            onBusy={(b) => setAiBusy(Boolean(b))}
+                            clearSignal={completionClearSignal}
+                            initialPrompt={jumpstartPrompt}
+                            initialAttachments={jumpstartAttachments}
+                        />
+                    )}
 
                     {/* ─── Layout: outer vertical group (shared) → main content + bottom problems dock ─── */}
                     <ResizablePanelGroup direction="vertical" className="flex-1 min-h-0">
@@ -2778,7 +3169,7 @@ export default function EditorPage({ params }) {
 
                                             {FileTreePanel}
 
-                                            {chatVisible && (
+                                            {floatingChatVisible && (
                                                 <>
                                                     <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
                                                     {ChatPanel}
@@ -2793,7 +3184,7 @@ export default function EditorPage({ params }) {
 
                                             {EditorPanelComponent}
 
-                                            {chatVisible && (
+                                            {floatingChatVisible && (
                                                 <>
                                                     <ResizableHandle className="!pointer-events-auto bg-[#1a1a1e] hover:bg-[#327464] w-px z-50" />
                                                     {ChatPanel}
@@ -2925,6 +3316,20 @@ export default function EditorPage({ params }) {
                     onProblemsClick={onProblemsClickCb}
                     extensionStatusBarItems={extensionStatusBarItems}
                     vscodeServerState={vscodeServerState}
+                    isRunning={isCompiling || isGuiRunning}
+                    onStop={handleStop}
+                    onReload={handleRestart}
+                    /* The trusted source for "is the compile worker actually
+                       up" is the VS Code extension/worker indicator, not the
+                       WebRTC signaling status that compilerStatus tracks.
+                       Surface vscodeServerState through the compiler pill so
+                       the indicator matches reality. */
+                    compilerStatus={
+                        vscodeServerState === 'running' ? 'connected'
+                        : vscodeServerState === 'connecting' ? 'connecting'
+                        : vscodeServerState === 'error' ? 'error'
+                        : 'disconnected'
+                    }
                 />
 
                 {/* Error Overlay */}

@@ -161,19 +161,52 @@ pub async fn compile_runner(
         &[],
     );
 
-    if let Some(cached_bin) = ctx.incremental_cache.get(&cache_key).await {
-        let path = cached_bin.to_string_lossy().to_string();
-        eprintln!("[CompileRunner] Cache HIT (persistent cache)");
-        return Ok(Some(path));
-    }
-
-    // Cache miss — write the source file and compile.
-    tokio::fs::write(dir_path.join(HOST_RUNNER_FILENAME), host_runner_content).await?;
-
     // Runner binary is named `host_runner_<ts>` — no `lib` prefix, no
     // `.so` extension. Lives in the build/ directory like the other
     // artifacts so cleanup is uniform.
     let runner_out = output_dir.join(format!("host_runner_{}", timestamp));
+
+    if let Some(cached_bin) = ctx.incremental_cache.get(&cache_key).await {
+        // IncrementalCache is content-addressable storage for `.o` object
+        // files (compile inputs to the linker) — it writes every entry as
+        // `<key>.o` with default 0o644 perms. The host_runner case stores
+        // a LINKED EXECUTABLE here, so returning the cached path directly
+        // causes `exec()` to fail with EACCES (object files have no +x
+        // bit, and the linker drives subsequent builds, not exec). Copy
+        // the cached bytes to the timestamped `host_runner_<ts>` exec
+        // path and set the execute bit before handing the path upstream.
+        match tokio::fs::copy(&cached_bin, &runner_out).await {
+            Ok(_) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(md) = tokio::fs::metadata(&runner_out).await {
+                        let mut perms = md.permissions();
+                        perms.set_mode(perms.mode() | 0o111);
+                        let _ = tokio::fs::set_permissions(&runner_out, perms).await;
+                    }
+                }
+                eprintln!(
+                    "[CompileRunner] Cache HIT (persistent cache) — materialised {} → {}",
+                    cached_bin.display(),
+                    runner_out.display()
+                );
+                return Ok(Some(runner_out.to_string_lossy().to_string()));
+            }
+            Err(e) => {
+                eprintln!(
+                    "[CompileRunner] Cache HIT but copy {} → {} failed ({}); falling through to recompile",
+                    cached_bin.display(),
+                    runner_out.display(),
+                    e
+                );
+                // fall through to full compile+link path
+            }
+        }
+    }
+
+    // Cache miss — write the source file and compile.
+    tokio::fs::write(dir_path.join(HOST_RUNNER_FILENAME), host_runner_content).await?;
 
     // ULTRAPLAN Phase 9b: two-step split (see compile_core.rs for the
     // rationale). compile_runner produces an EXECUTABLE (not a .so),

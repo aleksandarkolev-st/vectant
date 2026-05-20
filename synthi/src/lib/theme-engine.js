@@ -128,16 +128,53 @@ export function generateDerivedVariables(ui) {
   const vars = new Map();
   if (!ui) return vars;
 
-  const p = ui.accentPrimary || '#327464';
-  const s = ui.accentSecondary || '#3d8b78';
-  const t = ui.accentTertiary || '#4a9e8a';
+  const p = ui.accentPrimary || '#6c6885';
+  const att = ui.attentionPurple || '#b545ff';
+  vars.set('--attention-purple', att);
+  const attRgb = hexToRgb(att);
+  if (attRgb) {
+    vars.set('--attention-glow', `0 0 22px rgba(${attRgb.r}, ${attRgb.g}, ${attRgb.b}, 0.38)`);
+    vars.set(
+      '--attention-rim',
+      `0 0 0 1px rgba(${attRgb.r}, ${attRgb.g}, ${attRgb.b}, 0.28), 0 0 16px -2px rgba(${attRgb.r}, ${attRgb.g}, ${attRgb.b}, 0.36)`
+    );
+  }
 
-  vars.set('--accent-gradient', `linear-gradient(135deg, ${p} 0%, ${s} 50%, ${t} 100%)`);
+  // ── Vectant brand gradient stops ──
+  // Brand identity is intentionally independent of the active theme:
+  // the gradient comes from the Vectant logo. A theme may override
+  // these via `brandStops: { p1, p2, p3, p4 }` if needed.
+  const brand = ui.brandStops || {};
+  const b1 = brand.p1 || '#ff3d8a';
+  const b2 = brand.p2 || '#ff3737';
+  const b3 = brand.p3 || '#a23dff';
+  const b4 = brand.p4 || '#3d6dff';
+  vars.set('--brand-stop-1', b1);
+  vars.set('--brand-stop-2', b2);
+  vars.set('--brand-stop-3', b3);
+  vars.set('--brand-stop-4', b4);
+  const brandGradient = `linear-gradient(135deg, ${b1} 17%, ${b2} 40%, ${b3} 71%, ${b4} 100%)`;
+  const brandGradientH = `linear-gradient(90deg, ${b1} 17%, ${b2} 40%, ${b3} 71%, ${b4} 100%)`;
+  vars.set('--brand-gradient', brandGradient);
+  vars.set('--brand-gradient-horizontal', brandGradientH);
 
-  // Parse hex to rgba for glow
+  // ── Accent gradient ──
+  // For "signature moments" (logo, run state, primary CTAs) we want
+  // the actual brand colors. For "calm" gradients (toggles, hovers)
+  // we want the desaturated accent. Default --accent-gradient to the
+  // brand gradient; themes that want a calmer accent gradient can
+  // set `ui.accentGradient` to override.
+  vars.set('--accent-gradient', ui.accentGradient || brandGradient);
+
+  // Parse hex to rgba for glow (accent-glow uses the calm accent,
+  // brand-glow uses the brand mid-stop)
   const rgb = hexToRgb(p);
   if (rgb) {
-    vars.set('--accent-glow', `0 0 20px rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.4)`);
+    vars.set('--accent-glow', `0 0 24px rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.28)`);
+  }
+  const bRgb = hexToRgb(b3);
+  if (bRgb) {
+    vars.set('--brand-glow', `0 0 22px rgba(${bRgb.r}, ${bRgb.g}, ${bRgb.b}, 0.32)`);
   }
 
   // ── Disabled text alias (used by several components) ──

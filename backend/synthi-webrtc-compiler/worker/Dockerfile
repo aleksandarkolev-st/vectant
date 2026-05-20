@@ -90,8 +90,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     # C/C++ — GCC 15 for C++26
     gcc-15 g++-15 clang make cmake \
-    # Java
-    openjdk-17-jdk-headless \
+    # Java — full JDK (NOT -headless): GUI apps (AWT/Swing) need
+    # libawt_xawt.so + its X11 runtime deps (libxrender1, libxtst6,
+    # fontconfig, …) which the -headless variant omits.
+    openjdk-17-jdk \
     # Python
     python3 python3-pip \
     # SDL2

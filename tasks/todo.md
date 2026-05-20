@@ -1,3 +1,116 @@
+# Workspace Sidebar Collapse Polish 2026-05-18
+
+## Scope
+- Make sidebar auto-collapse work for docked sidebar groups even when multiple sidebar panels are open.
+- Animate the collapse as a real 200-300ms width resize so the editor fills the reclaimed space smoothly.
+- Constrain the top smart strip so it sits in a narrower lane instead of stretching across the whole top bar.
+
+## Checklist
+- [x] Fix sidebar-group classification so all sidebar panel variants can auto-collapse.
+- [x] Move collapse sizing to the split child wrapper so sibling panels reflow cleanly.
+- [x] Tune the collapse animation timing and splitter hiding for smoother motion.
+- [x] Narrow the top smart strip lane.
+- [x] Re-layout Monaco from the real editor viewport so collapsed sidebars reclaim space without leaving a stale right gutter.
+- [x] Rebuild and restart the frontend container after the UI fixes.
+- [x] Validate the touched frontend files.
+
+## Review
+- Sidebar auto-collapse now keys off the canonical panel constants, which fixes the previously-mismatched pull-request sidebar type and keeps multi-tab sidebar groups eligible to collapse.
+- The collapse animation now happens on the split child wrapper, so the editor and sibling panels reclaim the freed width instead of leaving a dead gutter while only the inner content fades.
+- Splitters next to collapsed sidebars now hide based on the split child wrapper state, and the collapse timing is tuned to a 260ms resize animation.
+- The top smart strip now sits inside a capped center lane instead of stretching edge to edge across the available top-nav space.
+- Validation: `get_errors` returned clean diagnostics for the touched frontend files. Browser-side visual verification was limited because the local `http://localhost:3000/` session lands on the sign-in screen in the shared browser context.
+- Live browser validation later confirmed the remaining dead-right-strip bug was the row split math itself: the collapsed sidebar was 8px wide, but the surviving sibling kept only `0.8` flex-grow and left the last 20% of the row empty. Scaling the split grow weights fixed the live layout, and the shared workspace now measures the editor column at the full remaining width.
+
+## Follow-up
+- Left sidebar hover now coordinates with the activity bar: hovering the activity bar clears collapse timers, re-expands the sidebar, and keeps it open while the cursor stays there.
+- First-use onboarding now starts with the left sidebar collapsed and shows a bouncing arrow on the Explorer activity-bar button until the user opens the sidebar with the cursor.
+- Single-tab side panes now render a compact close affordance when their tab bar is intentionally hidden; the close action force-hides singleton side panes, including default panels like Explorer.
+- The leftover editor header row under the navbar is now hidden so the old Solo/save chrome no longer leaves a second strip below the top nav.
+- The smart strip now restores the old custom tab-scrollbar pattern in a dedicated 3px lane below the navbar tabs, and its moving underline now defaults to gray with the same hover timing as the docked terminal tabs.
+- Monaco now observes the actual editor viewport with `ResizeObserver`, so sidebar collapse drives a real editor relayout instead of shifting the stale pre-collapse surface and leaving empty space on the right.
+- Split children now use scaled flex-grow weights, so collapsing a `0.2` sidebar no longer leaves the remaining `0.8` pane stranded at 80% width with a dead strip on the right.
+- Validation now also includes a successful `docker compose build frontend` and `docker compose up -d frontend` restart.
+
+# Workspace Chrome Tweaks 2026-05-17
+
+## Scope
+- Keep the floating status island on the bottom edge, only slightly lifted so it lines up with the bottom Vectant icon under Settings in the activity bar.
+- Remove docking chrome from the main editor surface so the editor stays fixed instead of looking like a docked tab.
+- Center the Vectant logo in the top nav and scale it up slightly.
+
+## Checklist
+- [x] Remove the docking tab strip / affordances from editor-only tab groups.
+- [x] Adjust the status island desktop offset so it sits lower and visually aligns with the activity bar footer icon.
+- [x] Increase the centered top-nav Vectant mark size without shifting side controls.
+- [x] Validate the touched frontend files for regressions.
+- [x] Prevent the language/framework pills from clipping inside the status island.
+- [x] Give the terminal extra bottom scroll clearance past the prompt line.
+- [x] Split floating navbar chat from docked chat and add a dock-right action in the popup header.
+- [x] Make activity-bar chat focus the docked right chat and restore the left sidebar to Explorer when moving chat right.
+
+## Review
+- Editor-only docking groups now render without the dock tab strip, drop overlay, or focus outline, so the main editor reads as a fixed surface instead of a docked panel.
+- The floating status island now sits 12px off the bottom edge to line up with the activity-bar footer icon under Settings.
+- The centered Vectant wordmark in the top nav is slightly larger.
+- The status island now lets the language/framework pills shrink and truncate cleanly instead of clipping on the right edge.
+- Terminal panes now keep extra bottom scroll clearance below the prompt so the active command line can be scrolled fully into view under the floating island.
+- The navbar AI chat popup now has its own visibility state plus a dock-right action that moves chat into the right editor column, focuses that docked tab, and switches the left sidebar back to Explorer.
+- Validation: `get_errors` returned clean results for the touched files. A follow-up targeted ESLint attempt on the chat files was ignored by the repo's flat-config matching, so the reliable validation signal for this pass was editor diagnostics plus the existing earlier lint spot-check.
+
+# C++ Compile / HMR Stress Test 2026-05-11
+
+## Workspace Dependency Prep Rollout 2026-05-14
+
+### Scope
+- Build an authoritative backend workspace-preparation system that auto-detects dependency manifests, auto-prepares environments on workspace load, and persists prep fingerprints/status.
+- Keep environments workspace-local while reusing native package-manager caches instead of sharing installed environments across users.
+- Support the repo's main ecosystems first: Node, Python, Rust, Java/Maven, Java/Gradle, and Dart/Flutter.
+
+### Checklist
+- [x] Add a collab-server workspace prep manager with manifest detection, fingerprints, queueing, and status persistence.
+- [x] Add collab-server APIs that trigger prep and report prep status.
+- [x] Trigger prep automatically from the workspace load path.
+- [x] Surface prep progress/results to the frontend without blocking workspace load.
+- [in-progress] Validate the flow end-to-end for representative ecosystems.
+
+## Scope
+- Stress test C++ compile + HMR in workspace nzl1wr9x via Playwright.
+- Find errors, fix them, redeploy to docker.
+
+## What was wrong
+1. **ai-engine `/data:ro` + uid mismatch** — `/code-intel/index` 500'd on every workspace load with "Read-only file system: '/data/repos/<slug>/.code_intel'". Even after dropping `:ro`, ai-engine ran as uid 999 while collab-server's `/data` tree is owned 1001:1001 → "Permission denied".
+2. **Worker LSP send-retry spam** — `dc_send_with_backpressure` would burn 20+40+80+160+320 ≈ 620 ms of exponential backoff per call even when the WebRTC DataChannel was permanently `Closed`. With LSP servers (cpp + java) producing diagnostics continuously after a peer disconnect, the worker log filled with `[lsp] send error (retry N/5): DataChannel is not opened`.
+
+## Fixes
+- `docker-compose.yml`: drop `:ro` on `ai-engine` `collab-data` mount; update comment.
+- `ai-backend/ai-engine/Dockerfile`: pin appuser to uid/gid 1001 to match the `/data/repos` ownership written by collab-server.
+- `backend/synthi-webrtc-compiler/worker/src/main.rs`: fast-fail `dc_send_with_backpressure` / `dc_send_text_with_backpressure` if `ready_state()` is not `Open` (both pre-send and after each transient error). Stops the retry loop the instant the channel goes closed.
+
+## Deploy
+- `docker compose build ai-engine && docker compose up -d ai-engine` ✅
+- `docker compose build worker && docker compose up -d worker` ✅
+- Verified: ai-engine `whoami` → uid 1001, `touch /data/wt` succeeds; worker logs free of `[lsp] send error (retry N/5)` spam; `/code-intel/index` no longer 500s on workspace load.
+
+## Known not-fixed (out of scope for this run)
+- Playwright Chromium ↔ Docker-network WebRTC ICE fails (browser host candidates not reachable from worker container). This silently hangs the "Run" button: clicks do nothing if the compile DataChannel never opened. Real users running Chrome on the host don't hit this, but the silent-hang UX is still a bug worth a follow-up (timeout + error toast in `compilerClient.compile()`).
+- `/git/<slug>/fetch` 400 — unauthenticated git fetch path; separate concern.
+- VS Code Server install fails (`tar: trailing garbage ignored`) — unrelated to C++ HMR.
+
+---
+
+# Docker Compose EOF Investigation
+
+## Scope
+- Determine whether the local `docker compose build frontend` failure is caused by the frontend app build or by Docker/BuildKit losing the session.
+- Confirm why the output references both `frontend` and `ai-engine` even when only `frontend` was requested.
+- Summarize the most likely root cause and the next minimal diagnostic or workaround.
+
+## Checklist
+- [in-progress] Trace the compose and Dockerfile path for `frontend` and `ai-engine`.
+- [not-started] Run minimal Docker daemon and buildx diagnostics around the EOF.
+- [not-started] Summarize the failure mode and next action.
+
 # Deployment Review Plan
 
 ## Scope
@@ -219,3 +332,20 @@
 - [ ] Restore the original `synthi-logo.svg` and `synthi-dark-logo.svg` files.
 - [ ] Rebuild and restart the frontend service.
 - [ ] Verify the updated navbar renders at `http://localhost:3000`.
+
+---
+
+# New-Workspace Project & File Picker — 2026-05-12
+
+Full plan: [new-project-picker-plan.md](new-project-picker-plan.md)
+
+## Checklist
+- [ ] Create `synthi/src/lib/project-templates/` registry + 9 template files
+- [ ] Create `synthi/src/components/NewProjectPicker.jsx` (Provider + Dialog + Files/Projects tabs)
+- [ ] Add `scaffoldProjectThunk` to `workspaceSlice.js` (writeFilesBatch + setCompileManifest + fetchFilesThunk)
+- [ ] Mount `NewProjectPickerProvider` in `app/layout.js`
+- [ ] Gate `FileTree.jsx` `handleTreeAction` on `files.length === 0` → open picker instead of inline rename
+- [ ] Smoke: empty workspace → new file → Python template → files appear → "Python" pill shows
+- [ ] Smoke: non-empty workspace → new file still uses inline rename
+- [ ] Smoke: RN-Android template → compile → worker auto-scaffolds `android/`
+

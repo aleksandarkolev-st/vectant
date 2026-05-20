@@ -1,0 +1,300 @@
+- generic:
+  - region "Notifications alt+T"
+  - alert
+  - generic:
+    - generic:
+      - generic:
+        - generic:
+          - img
+        - generic:
+          - img
+          - textbox:
+            - /placeholder: HelloWorldGUI.java
+        - generic:
+          - generic:
+            - button:
+              - img
+            - button:
+              - img
+            - generic:
+              - generic:
+                - generic:
+                  - generic: AG
+                - generic: Aleksandar Georgiev
+            - button:
+              - img
+              - text: Share
+        - generic:
+          - button:
+            - img
+          - button:
+            - img
+          - button:
+            - img
+          - button:
+            - img
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - button:
+                  - img
+                  - tooltip: Explorer
+                - button:
+                  - img
+                  - tooltip: Search
+                - button:
+                  - img
+                  - tooltip: Source Control
+                - button:
+                  - img
+                  - tooltip: Extensions
+                - button:
+                  - img
+                  - tooltip: AI Chat
+                - button:
+                  - img
+                  - tooltip: AI Healing
+                - button:
+                  - img
+                  - tooltip: Pull Requests
+              - generic:
+                - button:
+                  - img
+                  - tooltip: Settings
+                - generic:
+                  - img
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - generic:
+                      - generic:
+                        - tablist:
+                          - generic:
+                            - tab [selected]:
+                              - text: ⠿
+                              - generic: 
+                              - generic: Explorer
+                              - button:
+                                - img
+                            - tab:
+                              - text: ⠿
+                              - generic: 
+                              - generic: Search
+                              - button:
+                                - img
+                            - tab:
+                              - text: ⠿
+                              - generic: 
+                              - generic: Source Control
+                              - button:
+                                - img
+                            - tab:
+                              - text: ⠿
+                              - generic: Extensions
+                              - button:
+                                - img
+                          - generic:
+                            - button:
+                              - img
+                        - generic:
+                          - tabpanel:
+                            - generic:
+                              - generic:
+                                - generic:
+                                  - generic:
+                                    - img
+                                    - generic: Explorer
+                                    - generic:
+                                      - button:
+                                        - img
+                                - generic:
+                                  - generic:
+                                    - generic:
+                                      - generic:
+                                        - generic:
+                                          - generic:
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - generic: src
+                                        - generic:
+                                          - generic:
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - generic: com
+                                        - generic:
+                                          - generic:
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - generic: example
+                                        - generic:
+                                          - generic:
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - generic: app
+                                        - generic:
+                                          - generic:
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - generic: gui
+                                        - generic:
+                                          - generic:
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - generic: HelloWorldGUI.java
+                                        - generic:
+                                          - generic:
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - generic: HelloWorld.java
+                                        - generic:
+                                          - generic:
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - generic: HelloWorld.java
+                                        - generic:
+                                          - generic:
+                                            - generic:
+                                              - img
+                                            - generic:
+                                              - generic: README.md
+                    - separator
+                    - generic:
+                      - generic:
+                        - generic:
+                          - generic:
+                            - tablist:
+                              - generic:
+                                - tab [selected]:
+                                  - text: ⠿
+                                  - generic: 
+                                  - generic: Editor
+                              - generic:
+                                - button:
+                                  - img
+                            - generic:
+                              - tabpanel:
+                                - generic:
+                                  - generic:
+                                    - generic:
+                                      - generic:
+                                        - generic:
+                                          - generic:
+                                            - generic:
+                                              - generic:
+                                                - img
+                                              - generic:
+                                                - generic: HelloWorldGUI.java
+                                                - generic: src › com › example › gui
+                                      - generic:
+                                        - generic:
+                                          - button:
+                                            - generic: 👥
+                                          - generic:
+                                            - generic: Solo
+                                        - generic:
+                                          - img
+                                        - button:
+                                          - img
+                                    - generic:
+                                      - generic:
+                                        - generic:
+                                          - generic:
+                                            - generic:
+                                              - generic:
+                                                - code:
+                                                  - generic:
+                                                    - textbox
+                                                    - generic:
+                                                      - generic:
+                                                        - generic:
+                                                          - generic: "1"
+                        - separator
+                        - generic:
+                          - generic:
+                            - tablist:
+                              - generic:
+                                - tab [selected]:
+                                  - text: ⠿
+                                  - generic: 
+                                  - generic: Terminal
+                                  - button:
+                                    - img
+                                - tab:
+                                  - text: ⠿
+                                  - generic: Output
+                                  - button:
+                                    - img
+                              - generic:
+                                - button:
+                                  - img
+                            - generic:
+                              - tabpanel:
+                                - generic:
+                                  - generic:
+                                    - generic:
+                                      - generic:
+                                        - generic:
+                                          - img
+                                          - generic: Terminal
+                                          - button:
+                                            - img
+                                      - generic:
+                                        - button:
+                                          - img
+                                        - button:
+                                          - img
+                                        - button:
+                                          - img
+                                        - button:
+                                          - img
+                                    - textbox [ref=e401]
+        - separator [ref=e351]
+    - generic:
+      - generic:
+        - generic:
+          - combobox:
+            - img
+            - generic: main
+            - img
+        - generic:
+          - img
+          - generic: "0"
+          - img
+          - generic: "0"
+        - generic:
+          - img
+          - generic: Synced
+          - generic:
+            - img
+            - generic: "1"
+      - generic:
+        - generic:
+          - img
+          - generic: Heal Off
+  - menu [active] [ref=e402]:
+    - menuitem "New File" [ref=e403] [cursor=pointer]
+    - menuitem "New Folder" [ref=e404] [cursor=pointer]
+    - separator [ref=e405]
+    - menuitem "Rename" [ref=e406] [cursor=pointer]
+    - menuitem "Delete" [ref=e407] [cursor=pointer]

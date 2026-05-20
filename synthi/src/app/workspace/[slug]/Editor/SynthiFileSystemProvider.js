@@ -13,14 +13,49 @@
 let overlayDisposable = null;
 let fileProvider = null;
 let fileDisposables = new Map(); // path → IDisposable
+let currentSlug = null;          // for lazy-fetch from collab-server
+let inFlightFetches = new Map(); // path → Promise (dedupe concurrent fetches)
+
+// File extensions worth lazy-fetching as text. Binary blobs (images,
+// archives, fonts) would just produce garbage when treated as UTF-8 strings
+// and would also bloat the in-memory overlay; skip them.
+const TEXT_LAZY_FETCH_EXTS = new Set([
+    'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'hxx', 'ipp', 'inl',
+    'java', 'kt', 'kts', 'scala', 'groovy',
+    'cs', 'fs', 'vb',
+    'rs', 'go', 'swift', 'zig',
+    'py', 'pyi', 'pyx',
+    'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs',
+    'rb', 'php', 'pl', 'lua', 'r',
+    'html', 'htm', 'css', 'scss', 'sass', 'less',
+    'json', 'jsonc', 'yaml', 'yml', 'toml', 'ini', 'env',
+    'md', 'markdown', 'txt', 'rst',
+    'xml', 'svg', 'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd',
+    'dockerfile', 'gitignore', 'gitattributes',
+    'gradle', 'sbt', 'pom', 'cmake', 'makefile', 'mk',
+    'tex', 'bib',
+]);
+
+function isTextLikePath(path) {
+    if (!path) return false;
+    const lower = path.toLowerCase();
+    // Special-cased filenames without extensions
+    if (lower.endsWith('/dockerfile') || lower === 'dockerfile') return true;
+    if (lower.endsWith('/makefile') || lower === 'makefile') return true;
+    const dot = lower.lastIndexOf('.');
+    if (dot < 0) return false;
+    return TEXT_LAZY_FETCH_EXTS.has(lower.slice(dot + 1));
+}
 
 /**
  * Initialise (or re-initialise) the virtual filesystem overlay.
  *
  * @param {Array<[string, string]>} fileCacheEntries  — [[path, content], …]
  * @param {Array}                   rawFiles          — workspace file tree
+ * @param {string}                  [slug]            — workspace slug for lazy-fetch
  */
-export async function initSynthiFileSystem(fileCacheEntries, rawFiles) {
+export async function initSynthiFileSystem(fileCacheEntries, rawFiles, slug) {
+    if (slug) currentSlug = slug;
     const {
         registerFileSystemOverlay,
         RegisteredFileSystemProvider,
@@ -61,22 +96,57 @@ export async function initSynthiFileSystem(fileCacheEntries, rawFiles) {
     };
     walk(rawFiles);
 
-    // Register files that have cached content and aren't already registered
+    // Register files that have cached content and aren't already registered.
+    // For workspace files we know exist but have no cache entry yet, register
+    // an empty placeholder + kick off a lazy fetch from collab-server. This
+    // prevents Monaco's text-model resolver (e.g. createModelReference fired
+    // by go-to-definition, breadcrumbs, hover peek) from falling through to
+    // the default disk file service, which on Windows tries to read paths
+    // like `\synthi\src\com\example\gui\SnakeGame.java` from the local FS
+    // and surfaces a confusing "Unable to resolve nonexistent file" toast.
     for (const path of allPaths) {
-        const content = cacheMap.get(path);
-        if (!content) continue; // Skip files without cached content
         if (existingPaths.has(path)) {
             existingPaths.delete(path); // Mark as still present
-            continue; // Already registered — skip (updates handled by updateFile)
+            continue; // Already registered — updates handled by updateFile
         }
-        registerSingleFile(fileProvider, RegisteredMemoryFile, URI, path, content);
+        const content = cacheMap.get(path);
+        if (content != null) {
+            registerSingleFile(fileProvider, RegisteredMemoryFile, URI, path, content);
+        } else if (isTextLikePath(path)) {
+            // Register empty placeholder so the overlay claims the URI now.
+            registerSingleFile(fileProvider, RegisteredMemoryFile, URI, path, '');
+            // Fetch real content in the background; updateFile() will refresh
+            // the registration once it arrives.
+            scheduleLazyFetch(path);
+        }
     }
 
     // Also register any cache entries not in the tree (e.g. newly created files)
     for (const [path, content] of cacheMap) {
-        if (!content || fileDisposables.has(path)) continue;
+        if (content == null || fileDisposables.has(path)) continue;
         registerSingleFile(fileProvider, RegisteredMemoryFile, URI, path, content);
     }
+}
+
+function scheduleLazyFetch(path) {
+    if (!currentSlug || inFlightFetches.has(path)) return;
+    // Defer the import so we don't pull api.js into the critical init path.
+    const p = (async () => {
+        try {
+            const { default: api } = await import('@/services/api');
+            const content = await api.fetchFileContent(currentSlug, path);
+            if (typeof content === 'string') {
+                await updateFile(path, content);
+            }
+        } catch (e) {
+            // Non-fatal: the placeholder stays empty. Real-content load
+            // will still happen if/when the user opens the file directly.
+            console.debug('[SynthiFS] lazy fetch skipped for', path, e?.message);
+        } finally {
+            inFlightFetches.delete(path);
+        }
+    })();
+    inFlightFetches.set(path, p);
 }
 
 function registerSingleFile(provider, RegisteredMemoryFile, URI, path, content) {

@@ -74,6 +74,12 @@ export default function Dashboard() {
   const [aiJumpstart, setAiJumpstart] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiAttachments, setAiAttachments] = useState([]);
+  // Project-type pick from NewProjectPicker (in jumpstart mode).
+  // Required when aiJumpstart is enabled — the prompt textarea is
+  // locked until this is set. Persisted alongside the prompt in
+  // sessionStorage so the workspace can prepend its systemPromptHint
+  // to the AI chat invocation.
+  const [aiProjectType, setAiProjectType] = useState(null);
 
   // Active tab
   const [activeTab, setActiveTab] = useState("import");
@@ -188,7 +194,15 @@ export default function Dashboard() {
     e.preventDefault();
     if (!newRepoName.trim()) return;
 
-    // Validate AI Jumpstart prompt when enabled
+    // Validate AI Jumpstart prompt + project type when enabled
+    if (aiJumpstart && !aiProjectType) {
+      setFeedback({
+        type: "error",
+        message:
+          "Please choose a project type for AI Jumpstart, or disable it.",
+      });
+      return;
+    }
     if (aiJumpstart && !aiPrompt.trim()) {
       setFeedback({
         type: "error",
@@ -254,11 +268,14 @@ export default function Dashboard() {
           await fetchWorkspaces(session.user.email);
         }
 
-        // 3. If AI Jumpstart is enabled, persist prompt data for workspace
+        // 3. If AI Jumpstart is enabled, persist prompt data for workspace.
+        // The project-type hint is stored alongside the prompt so the
+        // workspace page can prepend it to the AI chat invocation.
         if (aiJumpstart && aiPrompt.trim()) {
           storeJumpstartPayload({
             prompt: aiPrompt.trim(),
             attachments: aiAttachments,
+            projectType: aiProjectType,
           });
         }
 
@@ -267,6 +284,7 @@ export default function Dashboard() {
         setAiJumpstart(false);
         setAiPrompt("");
         setAiAttachments([]);
+        setAiProjectType(null);
         router.push(`/workspace/${slug}`);
       } else {
         const errorMessage = await readResponseError(
@@ -649,11 +667,16 @@ export default function Dashboard() {
                   {/* AI Jumpstart */}
                   <AIJumpstartSection
                     enabled={aiJumpstart}
-                    onEnabledChange={setAiJumpstart}
+                    onEnabledChange={(v) => {
+                      setAiJumpstart(v);
+                      if (!v) setAiProjectType(null);
+                    }}
                     prompt={aiPrompt}
                     onPromptChange={setAiPrompt}
                     attachments={aiAttachments}
                     onAttachmentsChange={setAiAttachments}
+                    projectType={aiProjectType}
+                    onProjectTypeChange={setAiProjectType}
                     disabled={isActionLoading}
                   />
 
@@ -661,7 +684,7 @@ export default function Dashboard() {
                   <div className="flex justify-end pt-1">
                     <button
                       type="submit"
-                      disabled={creating || !newRepoName.trim() || (aiJumpstart && !aiPrompt.trim())}
+                      disabled={creating || !newRepoName.trim() || (aiJumpstart && (!aiProjectType || !aiPrompt.trim()))}
                       className="synthi-btn h-10 px-5 rounded-lg text-sm font-medium flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                     >
                       {creating ? (

@@ -42,12 +42,13 @@ export const EDITOR_OPTIONS = {
         horizontalSliderSize: 8,
     },
     renderLineHighlight: "all", // Highlight line number and gutter
-    // Gutter - massive breathing room
-    lineNumbersMinChars: 5,
+    // Gutter - tighter than the legacy chrome, while keeping room for
+    // glyph-margin diagnostics and fold controls.
+    lineNumbersMinChars: 2,
     glyphMargin: true,
     folding: true,
-    // Remove border between gutter and code - use space as divider
-    lineDecorationsWidth: 24, // 24px padding-right for gutter
+    // Keep glyph-based diagnostics, but reduce the dead space before code.
+    lineDecorationsWidth: 8,
     overviewRulerBorder: false,
     hideCursorInOverviewRuler: true,
     hover: {
