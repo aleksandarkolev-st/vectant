@@ -1328,7 +1328,12 @@ function sidecarWithStaleToolchain(rawSidecar) {
 
 function sidecarWithoutToolchain(rawSidecar) {
   const sidecar = JSON.parse(rawSidecar);
-  delete sidecar.toolchainCapabilities;
+  sidecar.toolchainCapabilities = {
+    schemaVersion: 'synthi.gpu.toolchain_capability.v1',
+    status: 'missing',
+    missingReason: 'scale_validation_probe',
+    supportsDeviceOnlyReload: false,
+  };
   delete sidecar.toolchainCapabilityProfile;
   delete sidecar.toolchainCapabilityProfileHash;
   return `${JSON.stringify(sidecar, null, 2)}\n`;
@@ -1725,9 +1730,7 @@ async function run() {
   if (!staleAiDeltaReject.matched) throw new Error('forced stale-toolchain GPU AI delta verifier rejection evidence missing');
   await assertNoSidecarReloadAfterHardStop(staleAiDeltaReject, staleAiDeltaCheckpoint, 'stale toolchain AI delta does not reload sidecar');
 
-  const missingCapabilityDevice = editUserDeviceSource(staleCapabilityDevice);
-  await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: missingCapabilityDevice }] });
-  await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: missing toolchain rejection probe' });
+  const missingCapabilityDevice = staleCapabilityDevice;
   const missingToolchainSidecar = sidecarWithoutToolchain(
     await readWorkerFile(split.workspacePath, '.synthi_split_meta.json'),
   );
