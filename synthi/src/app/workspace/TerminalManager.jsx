@@ -6,6 +6,7 @@ import { SplitSquareHorizontal, Plus, X, TerminalSquare, Bot, Settings } from 'l
 import { useDispatch } from 'react-redux';
 import { fetchFilesThunk } from '@/redux/workspaceSlice';
 import ShellSelector, { getShellMeta } from './ShellSelector';
+import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 
 const TerminalPane = dynamic(() => import('./TerminalPane.jsx'), { ssr: false });
 
@@ -183,17 +184,84 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
     setEditingName('');
   };
 
+  const closeOthers = useCallback((id) => {
+    setTerminals(prev => prev.filter(t => t.id === id));
+    setActiveId(id);
+  }, []);
+
+  const { menuState, openMenu, closeMenu } = useContextMenu();
+
+  const onTabContextMenu = useCallback((e, t) => {
+    const others = terminals.length - 1;
+    openMenu(e, [
+      {
+        id: 'rename',
+        label: 'Rename Terminal',
+        action: () => startRenaming(t.id, t.label),
+      },
+      {
+        id: 'split',
+        label: t.split ? 'Unsplit' : 'Split Terminal',
+        dividerAfter: true,
+        action: () => {
+          setTerminals(prev => prev.map(x => x.id === t.id ? { ...x, split: !x.split } : x));
+        },
+      },
+      {
+        id: 'close',
+        label: 'Close Terminal',
+        action: () => closeById(t.id),
+      },
+      {
+        id: 'close-others',
+        label: 'Close Others',
+        disabled: others <= 0,
+        action: () => closeOthers(t.id),
+      },
+      {
+        id: 'close-all',
+        label: 'Close All',
+        action: handleCloseAll,
+      },
+    ]);
+  }, [openMenu, terminals.length, closeOthers]);
+
+  const onStripContextMenu = useCallback((e) => {
+    // Only fire when right-click misses a tab (delegated to empty strip area)
+    if (e.target.closest('[data-terminal-tab]')) return;
+    openMenu(e, [
+      {
+        id: 'new',
+        label: 'New Terminal',
+        shortcut: 'Ctrl+Shift+`',
+        action: () => addTerminal(),
+      },
+      {
+        id: 'close-all',
+        label: 'Close All',
+        disabled: terminals.length === 0,
+        action: handleCloseAll,
+      },
+    ]);
+  }, [openMenu, terminals.length, defaultShellPref]);
+
   const header = (
-    <div className="h-9 flex items-center justify-between px-2 border-b select-none" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }} ref={dragRef}>
+    <div
+      className="h-9 flex items-center justify-between px-2 border-b select-none"
+      style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }}
+      ref={dragRef}
+      onContextMenu={onStripContextMenu}
+    >
       {/* Tabs */}
       <div className="flex items-center gap-0.5 overflow-x-auto">
         {terminals.map(t => {
           const shellMeta = t.shellType ? getShellMeta(t.shellType) : null;
           return (
-          <div 
-            key={t.id} 
+          <div
+            key={t.id}
+            data-terminal-tab={t.id}
             className="group relative flex items-center gap-1.5 h-7 px-2.5 cursor-pointer border-r transition-[background-color,color,opacity] duration-200"
-            style={t.id === activeId 
+            style={t.id === activeId
               ? {
                   color: 'var(--text-primary)',
                   background: 'color-mix(in srgb, var(--bg-elevated) 84%, transparent)',
@@ -204,9 +272,10 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
                   background: 'transparent',
                   borderRightColor: 'var(--border-subtle)',
                   opacity: 0.82,
-                }} 
+                }}
             onClick={() => setActiveId(t.id)}
             onDoubleClick={() => startRenaming(t.id, t.label)}
+            onContextMenu={(e) => onTabContextMenu(e, t)}
           >
             <span
               aria-hidden="true"
@@ -332,6 +401,7 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
     <div className="border-t h-full flex flex-col" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-sidebar)' }}>
       {header}
       {body}
+      {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
     </div>
   );
 });
