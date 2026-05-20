@@ -584,35 +584,12 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         </div>
       )}
 
-      {/* Connection status overlay */}
+      {/* Connection status — viewport-centred floating panel (portal to body) */}
       {(state === 'error' || state === 'closed') && (
-        <div className="absolute inset-0 backdrop-blur-sm flex items-center justify-center z-10" style={{ background: 'color-mix(in srgb, var(--bg-app) 95%, transparent)' }}>
-          <div className="flex flex-col items-center gap-4 p-8 max-w-sm text-center">
-            <div className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elevated)' }}>
-              <WifiOff className="w-5 h-5" style={{ color: 'var(--text-muted)' }} />
-            </div>
-
-            <h3 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
-              {state === 'closed' ? 'Session Ended' : 'Terminal Disconnected'}
-            </h3>
-
-            <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-              {state === 'closed'
-                ? 'The shell process has exited.'
-                : 'Unable to reach the terminal server. Make sure the collab-server is running.'}
-            </p>
-
-            <button
-              onClick={handleReconnect}
-              className="flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium
-                         text-white transition-colors"
-              style={{ background: 'var(--accent-primary)' }}
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              {state === 'closed' ? 'New Session' : 'Reconnect'}
-            </button>
-          </div>
-        </div>
+        <ConnectionStatusPanel
+          state={state}
+          onReconnect={handleReconnect}
+        />
       )}
 
       {/* Connecting indicator */}
@@ -981,6 +958,74 @@ function TerminalColorPanel({ baseTheme, overrides, onClose }) {
             );
           })}
         </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+/**
+ * ConnectionStatusPanel — viewport-centred floating panel (portal to body)
+ * shown when the terminal disconnects or the shell exits. No backdrop, so
+ * the rest of the IDE stays usable; draggable by the titlebar.
+ */
+function ConnectionStatusPanel({ state, onReconnect }) {
+  const { pos, panelRef, onTitleMouseDown } = useDraggableViewportPanel();
+
+  if (typeof document === 'undefined') return null;
+
+  const placement = pos
+    ? { left: pos.x, top: pos.y }
+    : { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' };
+
+  const title = state === 'closed' ? 'Session Ended' : 'Terminal Disconnected';
+  const body =
+    state === 'closed'
+      ? 'The shell process has exited.'
+      : 'Unable to reach the terminal server. Make sure the collab-server is running.';
+  const actionLabel = state === 'closed' ? 'New Session' : 'Reconnect';
+
+  return createPortal(
+    <div
+      ref={panelRef}
+      className="fixed rounded-lg border shadow-2xl flex flex-col"
+      style={{
+        ...placement,
+        width: 340,
+        maxWidth: 'calc(100vw - 16px)',
+        background: 'var(--bg-elevated, #18181b)',
+        borderColor: 'var(--border-medium, #3f3f46)',
+        zIndex: 2147483646,
+      }}
+    >
+      <div
+        onMouseDown={onTitleMouseDown}
+        className="flex items-center gap-2 px-3 py-2 border-b rounded-t-lg select-none"
+        style={{
+          borderColor: 'var(--border-subtle, #2a2b38)',
+          background: 'var(--bg-app, #0a0b10)',
+          cursor: 'move',
+        }}
+      >
+        <WifiOff className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--text-muted, #6b7089)' }} />
+        <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
+          {title}
+        </span>
+      </div>
+
+      <div className="p-4 flex flex-col items-center gap-3 text-center">
+        <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted, #6b7089)' }}>
+          {body}
+        </p>
+        <button
+          type="button"
+          onClick={onReconnect}
+          className="flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium text-white transition-colors"
+          style={{ background: 'var(--accent-primary, #b545ff)' }}
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          {actionLabel}
+        </button>
       </div>
     </div>,
     document.body
