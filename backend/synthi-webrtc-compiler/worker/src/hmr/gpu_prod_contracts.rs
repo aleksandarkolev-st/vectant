@@ -91,6 +91,14 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
         .filter(|v| !v.is_null())
         .unwrap_or_else(default_device_tu_topology);
     root.insert("deviceTuTopology".to_string(), device_tu_topology);
+    let isolation_report = root
+        .get("isolationReport")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| root.get("isolation_report").cloned())
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(default_isolation_report);
+    root.insert("isolationReport".to_string(), isolation_report);
     promote_template_evidence(&mut root, &effective_flags_hash);
     root.entry("generatedArtifactPolicy".to_string())
         .or_insert_with(generated_artifact_policy);
@@ -645,6 +653,32 @@ fn default_device_tu_topology() -> Value {
     })
 }
 
+fn default_isolation_report() -> Value {
+    let unsafe_inprocess = std::env::var("SYNTHI_UNSAFE_INPROCESS")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    json!({
+        "schemaVersion": "synthi.gpu.runner_isolation.v1",
+        "platform": std::env::consts::OS,
+        "isolationBackend": if unsafe_inprocess { "unsafe_inprocess" } else { "process_isolated" },
+        "executionMode": if unsafe_inprocess { "unsafe_inprocess" } else { "process_isolated" },
+        "unsafeDebugMode": unsafe_inprocess,
+        "processTreeCleanup": !unsafe_inprocess,
+        "filesystemIsolation": "not_reported",
+        "networkPolicy": "not_reported",
+        "seccomp": if cfg!(target_os = "linux") { "not_reported" } else { "platform_unsupported" },
+        "cgroups": if cfg!(target_os = "linux") { "not_reported" } else { "platform_unsupported" },
+        "windowsJobObject": if cfg!(target_os = "windows") { "not_reported" } else { "platform_unsupported" },
+        "gpuFaultDomain": "driver_not_fully_sandboxed",
+        "gpuKernelKillGuaranteed": false,
+        "reasonCodes": if unsafe_inprocess {
+            json!(["unsafe_inprocess_enabled", "arbiter_user_consent_required"])
+        } else {
+            json!([])
+        },
+    })
+}
+
 fn default_generated_artifact_report() -> Value {
     json!({
         "schemaVersion": "synthi.gpu.generated_artifact_purity.v1",
@@ -856,6 +890,11 @@ fn ranked_reload_options(
         .and_then(Value::as_array)
         .map(|roles| roles.len())
         .unwrap_or(0);
+    let unsafe_debug_mode = root
+        .get("isolationReport")
+        .and_then(|v| v.get("unsafeDebugMode"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let multi_device_tu = root
         .get("deviceTuTopology")
         .and_then(|v| v.get("multiDeviceTu"))
@@ -864,7 +903,9 @@ fn ranked_reload_options(
 
     let device_only_safety = profile_current && supports_device_only && !multi_device_tu;
     let warm_safety = profile_current && template_fresh;
-    let warm_requires_consent = warm_safety && (requires_rdc || rdc_over_budget);
+    let device_only_requires_consent = device_only_safety && unsafe_debug_mode;
+    let warm_requires_consent =
+        warm_safety && (requires_rdc || rdc_over_budget || unsafe_debug_mode);
     let mut device_only_reasons: Vec<String> = Vec::new();
     if device_only_safety {
         device_only_reasons.extend([
@@ -872,6 +913,10 @@ fn ranked_reload_options(
             "arbiter.under_latency_budget".to_string(),
             "arbiter.no_state_loss".to_string(),
         ]);
+        if device_only_requires_consent {
+            device_only_reasons.push("unsafe_debug_mode".to_string());
+            device_only_reasons.push("arbiter_user_consent_required".to_string());
+        }
     } else {
         if !profile_current {
             device_only_reasons.push(profile_reason.to_string());
@@ -900,6 +945,9 @@ fn ranked_reload_options(
             if rdc_over_budget {
                 warm_reasons.push("rdc_link_over_budget".to_string());
             }
+            if unsafe_debug_mode {
+                warm_reasons.push("unsafe_debug_mode".to_string());
+            }
             warm_reasons.push("arbiter_user_consent_required".to_string());
         }
     } else {
@@ -924,8 +972,15 @@ fn ranked_reload_options(
     } else {
         json!(["arbiter.verifier_required"])
     };
+    let device_only_consent_reason = if device_only_requires_consent {
+        Value::String("unsafe_debug_mode".to_string())
+    } else {
+        Value::Null
+    };
     let warm_consent_reason = if warm_requires_consent && rdc_over_budget {
         Value::String("rdc_link_over_budget".to_string())
+    } else if warm_requires_consent && unsafe_debug_mode {
+        Value::String("unsafe_debug_mode".to_string())
     } else if warm_requires_consent {
         Value::String("device_linker_bound".to_string())
     } else {
@@ -943,8 +998,8 @@ fn ranked_reload_options(
             "safety": if device_only_safety { "pass" } else { "fail" },
             "estimatedMs": 1000,
             "stateLoss": false,
-            "requiresConsent": false,
-            "consentReason": null,
+            "requiresConsent": device_only_requires_consent,
+            "consentReason": device_only_consent_reason,
             "reasonCodes": device_only_reasons,
         },
         {
@@ -1088,6 +1143,7 @@ fn run_report(
             .get("deviceTuTopology")
             .cloned()
             .unwrap_or(Value::Null),
+        "isolationReport": root.get("isolationReport").cloned().unwrap_or(Value::Null),
         "templateEvidenceHash": root
             .get("templateEvidenceHash")
             .cloned()
@@ -1474,6 +1530,47 @@ mod tests {
             Some("pass")
         );
         assert!(has_reason(device_only, "arbiter.safe"));
+    }
+
+    #[test]
+    fn unsafe_isolation_mode_requires_consent_for_device_only() {
+        let manifest = gpu_compile_manifest();
+        let plan = reload_plan("device_only", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "isolation_report": {
+                "schemaVersion": "synthi.gpu.runner_isolation.v1",
+                "platform": "linux",
+                "isolationBackend": "unsafe_inprocess",
+                "executionMode": "unsafe_inprocess",
+                "unsafeDebugMode": true,
+                "reasonCodes": ["unsafe_inprocess_enabled", "arbiter_user_consent_required"]
+            }
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let device_only = ranked_option(&migrated, "device_only");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("ask_developer")
+        );
+        assert_eq!(
+            migrated.pointer("/consentReason").and_then(Value::as_str),
+            Some("unsafe_debug_mode")
+        );
+        assert_eq!(
+            device_only.get("requiresConsent").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(has_reason(device_only, "unsafe_debug_mode"));
+        assert_eq!(
+            migrated
+                .pointer("/runReport/isolationReport/isolationBackend")
+                .and_then(Value::as_str),
+            Some("unsafe_inprocess")
+        );
     }
 
     #[test]
