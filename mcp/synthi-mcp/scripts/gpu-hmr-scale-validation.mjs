@@ -107,6 +107,7 @@ const report = {
   split_cache_bypassed_by_worker_restart: process.env.SYNTHI_WORKER_RESTARTED_BEFORE_RUN === '1',
   generated_roles: {},
   launch_indirection: {},
+  warm_rebuild: {},
   phases: [],
   screenshots: [],
   checks: [],
@@ -1134,6 +1135,7 @@ constexpr int kValue = ${i};
     relevantFiles: files.filter((f) => f.relevant),
     primaryPath: 'src/app/main.cpp',
     devicePath: `src/gpu/particle_kernels.${deviceExt}`,
+    templateHeaderPath: useTemplateFixture ? 'src/gpu/particle_template_math.hpp' : null,
   };
 }
 
@@ -1313,6 +1315,7 @@ function collectWorkerMarkers(text) {
     /GPU markers detected; calling GPU split endpoint[^\n]*/g,
     /GPU split endpoint returned a 5-file split/g,
     /\[GPU AI Delta\][^\n]*/g,
+    /\[gpu-hmr\] warm_rebuild[^\n]*/g,
     /\[compile-device\] (?:hipcc|nvcc)[^\n]*/g,
     /\[gpu-reload\] plan=[^\n]*/g,
     /Device sidecar reload vendor=[^\n]*result=Success[^\n]*/g,
@@ -1742,6 +1745,12 @@ function editUserDeviceConstantGlobalLayout(source) {
   throw new Error('user device source did not preserve an insertion point for a device-global layout probe');
 }
 
+function editTemplateHeaderSource(source) {
+  const edited = source.replace(/\b0\.00001f\b/, '0.00300f');
+  if (edited === source) throw new Error('template header did not preserve the arithmetic tuning literal');
+  return edited;
+}
+
 function sidecarWithStaleToolchain(rawSidecar) {
   const sidecar = JSON.parse(rawSidecar);
   sidecar.toolchainCapabilities = sidecar.toolchainCapabilities && typeof sidecar.toolchainCapabilities === 'object'
@@ -1819,6 +1828,101 @@ async function compileUserDeviceDelta(project, editedDevice, vendor, checkpoint)
     width: 800,
     height: 600,
   }, CFG.hotSwapTimeoutMs, 'ai_device_delta_hmr', checkpoint);
+}
+
+async function compileTemplateWarmRebuild(project, editedHeader, currentDevice, vendor, checkpoint) {
+  if (!project.templateHeaderPath) {
+    throw new Error('scale project has no template header path for warm rebuild validation');
+  }
+  const additionalFiles = project.files
+    .filter((f) => cleanRel(f.path) !== cleanRel(project.templateHeaderPath))
+    .map((f) => ({
+      name: f.path,
+      content: cleanRel(f.path) === cleanRel(project.devicePath) ? currentDevice : f.content,
+    }));
+  return compileViaMcp({
+    language: 'cpp',
+    filename: project.templateHeaderPath,
+    source: editedHeader,
+    files: additionalFiles,
+    is_gui: true,
+    use_ai_split: false,
+    user_requested_deterministic: true,
+    force_gpu_ai_delta: false,
+    prefer_gpu_pipeline: true,
+    gpu_mode: vendor,
+    gpu_arch: CFG.gpuArch,
+    slug: CFG.slug,
+    width: 800,
+    height: 600,
+  }, CFG.hotSwapTimeoutMs, 'template_warm_rebuild_hmr', checkpoint);
+}
+
+async function dispatchTemplateWarmRebuildNegative(project, editedHeader, currentDevice, vendor, checkpoint) {
+  if (!project.templateHeaderPath) {
+    throw new Error('scale project has no template header path for warm rebuild validation');
+  }
+  const additionalFiles = project.files
+    .filter((f) => cleanRel(f.path) !== cleanRel(project.templateHeaderPath))
+    .map((f) => ({
+      name: f.path,
+      content: cleanRel(f.path) === cleanRel(project.devicePath) ? currentDevice : f.content,
+    }));
+  return dispatchCompileViaMcp({
+    language: 'cpp',
+    filename: project.templateHeaderPath,
+    source: editedHeader,
+    files: additionalFiles,
+    is_gui: true,
+    use_ai_split: false,
+    user_requested_deterministic: true,
+    force_gpu_ai_delta: false,
+    prefer_gpu_pipeline: true,
+    gpu_mode: vendor,
+    gpu_arch: CFG.gpuArch,
+    slug: CFG.slug,
+    width: 800,
+    height: 600,
+  }, CFG.hotSwapTimeoutMs, 'negative_template_warm_rebuild_rejection', checkpoint);
+}
+
+function validateWarmRebuildSidecar(sidecar, project) {
+  const plan = sidecar.lastReloadPlanReport || sidecar.runReport?.reloadPlan;
+  const verifier = sidecar.lastWarmRebuildVerifierReport;
+  if (!plan || plan.plan !== 'warm_rebuild') {
+    throw new Error(`warm rebuild sidecar missing warm_rebuild plan: ${JSON.stringify(plan).slice(0, 500)}`);
+  }
+  const reasonCodes = Array.isArray(plan.reasonCodes) ? plan.reasonCodes : [];
+  for (const required of ['build.warm_rebuild', 'template_evidence_fresh', 'template_instantiation_bounded']) {
+    if (!reasonCodes.includes(required)) {
+      throw new Error(`warm rebuild plan missing ${required}: ${JSON.stringify(plan).slice(0, 500)}`);
+    }
+  }
+  if (!verifier || verifier.status !== 'accept') {
+    throw new Error(`warm rebuild verifier did not accept: ${JSON.stringify(verifier).slice(0, 500)}`);
+  }
+  if (sidecar.patchTier !== 'warm_rebuild') {
+    throw new Error(`warm rebuild sidecar patchTier mismatch: ${sidecar.patchTier ?? 'missing'}`);
+  }
+  const reportDoc = sidecar.runReport || {};
+  const selectedPlan = reportDoc.selectedPlan || sidecar.selectedPlan;
+  const arbiterDecision = reportDoc.arbiterDecision || sidecar.arbiterDecision;
+  if (selectedPlan !== 'warm_rebuild' || arbiterDecision !== 'auto_run') {
+    throw new Error(`warm rebuild run report did not auto-run: ${JSON.stringify({ selectedPlan, arbiterDecision }).slice(0, 300)}`);
+  }
+  const affected = plan.affectedUserFiles || [];
+  if (!affected.includes(project.templateHeaderPath)) {
+    throw new Error(`warm rebuild plan missing affected template header: ${JSON.stringify(affected).slice(0, 300)}`);
+  }
+  report.warm_rebuild = {
+    plan: plan.plan,
+    patchTier: sidecar.patchTier,
+    arbiterDecision,
+    selectedPlan,
+    reasonCodes,
+    verifierStatus: verifier.status,
+  };
+  record('warm rebuild report accepted bounded template edit', 'pass', reasonCodes.join(','));
 }
 
 async function dispatchUserDeviceSignatureNegative(project, signatureEditedDevice, vendor, checkpoint) {
@@ -2097,7 +2201,63 @@ async function run() {
   record('runner stayed alive after GPU HMR', crashMatch ? 'fail' : 'pass', crashMatch?.[0] || 'no runner crash marker');
   if (crashMatch) throw new Error(`runner/device failure after HMR: ${crashMatch[0]}`);
 
-  const verifiedFastPathSidecarRaw = await readWorkerFile(split.workspacePath, '.synthi_split_meta.json');
+  let verifiedFastPathSidecarRaw = await readWorkerFile(split.workspacePath, '.synthi_split_meta.json');
+
+  if (CFG.templateEvidenceMode === 'fresh') {
+    const headerFile = project.files.find((f) => f.path === project.templateHeaderPath);
+    if (!headerFile) throw new Error(`missing template header ${project.templateHeaderPath}`);
+    const editedHeader = editTemplateHeaderSource(headerFile.content);
+    await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.templateHeaderPath, content: editedHeader }] });
+    await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: bounded template warm rebuild' });
+    const warmCheckpoint = await workerCheckpoint();
+    await compileTemplateWarmRebuild(project, editedHeader, editedDevice, vendor, warmCheckpoint);
+    record('template header warm rebuild compile via MCP', 'pass', project.templateHeaderPath);
+    await assertNoGeneratedSplitWorkspaceArtifacts(split);
+
+    const escapedHeader = project.templateHeaderPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const warmAccepted = await awaitLogRegex(
+      CFG.workerContainer,
+      new RegExp(`\\[gpu-hmr\\] warm_rebuild accepted: user=${escapedHeader}[^\\n]*build\\.warm_rebuild`),
+      10000,
+      warmCheckpoint,
+    );
+    record('bounded template edit uses warm_rebuild', warmAccepted.matched ? 'pass' : 'fail', warmAccepted.snippet || 'no warm_rebuild accepted marker');
+    if (!warmAccepted.matched) throw new Error('warm rebuild acceptance evidence missing');
+
+    const warmCompile = await awaitLogRegex(
+      CFG.workerContainer,
+      new RegExp(`\\[compile-device\\] ${vendor === 'rocm' ? 'hipcc' : 'nvcc'} -> [^\\n]*`),
+      10000,
+      warmCheckpoint,
+    );
+    record('warm rebuild compiles device sidecar', warmCompile.matched ? 'pass' : 'fail', warmCompile.snippet || 'no device compile marker');
+    if (!warmCompile.matched) throw new Error('warm rebuild device compile evidence missing');
+
+    const warmReload = await awaitLogRegex(
+      CFG.workerContainer,
+      /\[gpu-reload\] plan=warm_rebuild[^\n]*|Device sidecar reload vendor=[^\n]*result=Success[^\n]*/,
+      10000,
+      warmCheckpoint,
+    );
+    record('warm rebuild reload observed', warmReload.matched ? 'pass' : 'fail', warmReload.snippet || 'no warm rebuild reload marker');
+    if (!warmReload.matched) throw new Error('warm rebuild reload evidence missing');
+
+    const warmLogs = await dockerLogs(CFG.workerContainer, warmCheckpoint);
+    const warmAiMarker = warmLogs.match(/\[AI Split\] ENTER[^\n]*|\[GPU AI Delta\] Calling[^\n]*/);
+    record('warm rebuild avoided AI split and AI delta', warmAiMarker ? 'fail' : 'pass', warmAiMarker?.[0] || 'no AI split/delta marker during warm rebuild');
+    if (warmAiMarker) throw new Error(`warm rebuild unexpectedly invoked AI: ${warmAiMarker[0]}`);
+
+    await sleep(1000);
+    const warmShot = await captureScreenshot('post-warm-rebuild', secondShot);
+    if (!warmShot.differs_from_first) {
+      throw new Error('post-warm-rebuild screenshot did not differ materially from post-HMR screenshot');
+    }
+
+    const warmSidecarRaw = await readWorkerFile(split.workspacePath, '.synthi_split_meta.json');
+    validateWarmRebuildSidecar(JSON.parse(warmSidecarRaw), project);
+    headerFile.content = editedHeader;
+    verifiedFastPathSidecarRaw = warmSidecarRaw;
+  }
 
   const layoutEditedDevice = editUserDeviceConstantGlobalLayout(editedDevice);
   await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: layoutEditedDevice }] });
@@ -2324,6 +2484,30 @@ async function run() {
   record('missing toolchain AI delta rejected by verifier policy', missingAiDeltaReject.matched ? 'pass' : 'fail', missingAiDeltaReject.snippet || 'no missing-toolchain AI delta verifier rejection marker');
   if (!missingAiDeltaReject.matched) throw new Error('forced missing-toolchain GPU AI delta verifier rejection evidence missing');
   await assertNoSidecarReloadAfterHardStop(missingAiDeltaReject, missingAiDeltaCheckpoint, 'missing toolchain AI delta does not reload sidecar');
+
+  if (CFG.templateEvidenceMode !== 'fresh' && project.templateHeaderPath) {
+    await writeWorkerFile(split.workspacePath, '.synthi_split_meta.json', verifiedFastPathSidecarRaw);
+    const headerFile = project.files.find((f) => f.path === project.templateHeaderPath);
+    if (!headerFile) throw new Error(`missing template header ${project.templateHeaderPath}`);
+    const rejectedHeader = editTemplateHeaderSource(headerFile.content);
+    await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.templateHeaderPath, content: rejectedHeader }] });
+    await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: template evidence rejection probe' });
+    const templateRejectCheckpoint = await workerCheckpoint();
+    await dispatchTemplateWarmRebuildNegative(project, rejectedHeader, editedDevice, vendor, templateRejectCheckpoint);
+    record('template warm rebuild rejection compile dispatched via MCP', 'pass', project.templateHeaderPath);
+    const expectedReason = CFG.templateEvidenceMode === 'stale'
+      ? 'template_evidence_stale'
+      : 'template_evidence_missing';
+    const templateReject = await awaitLogRegex(
+      CFG.workerContainer,
+      new RegExp(`\\[gpu-hmr\\] warm_rebuild rejected: user=[^\\n]*${expectedReason}[^\\n]*`),
+      10000,
+      templateRejectCheckpoint,
+    );
+    record(`${CFG.templateEvidenceMode} template evidence rejects warm rebuild execution`, templateReject.matched ? 'pass' : 'fail', templateReject.snippet || `no ${expectedReason} warm rejection marker`);
+    if (!templateReject.matched) throw new Error(`${expectedReason} warm rebuild rejection evidence missing`);
+    await assertNoSidecarReloadAfterHardStop(templateReject, templateRejectCheckpoint, `${expectedReason} warm rebuild does not reload sidecar`);
+  }
 
   await writeReport();
   const failures = report.checks.filter((r) => r.status === 'fail');
