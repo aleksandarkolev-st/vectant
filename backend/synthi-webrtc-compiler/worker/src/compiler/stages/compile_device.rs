@@ -153,17 +153,128 @@ async fn compile_device_inner(
             .await
             .context("creating device source parent dir")?;
     }
-    tokio::fs::write(&source_path, device_source)
-        .await
-        .context("writing device source")?;
     tokio::fs::create_dir_all(output_dir)
         .await
         .context("creating device output dir")?;
 
     let artifact_path = output_dir.join(format!("device_{}.{}", timestamp, artifact_ext));
+    let heal_allowed = is_internal_generated_device_source(source_filename);
+    let max_heal_attempts = if heal_allowed { 2 } else { 0 };
+    if !heal_allowed {
+        eprintln!(
+            "[compile-device] AI heal disabled - source is not an internal generated role: {}",
+            source_filename
+        );
+    }
 
+    let mut current_source = device_source.to_string();
+    for attempt in 0..=max_heal_attempts {
+        tokio::fs::write(&source_path, &current_source)
+            .await
+            .context("writing device source")?;
+
+        let compile = run_device_compile_once(
+            compiler_exe,
+            workspace_dir,
+            gpu,
+            source_filename,
+            &artifact_path,
+        )
+        .await?;
+
+        if compile.status.success() {
+            if gpu.vendor == DeviceVendor::Rocm {
+                normalize_rocm_artifact_if_bundled(&artifact_path).await?;
+            }
+
+            eprintln!(
+                "[compile-device] {} ok  artifact={}  diagnostics_kernels={}",
+                compiler_exe,
+                artifact_path.display(),
+                compile.diagnostics.register_pressure.len()
+            );
+
+            return Ok(Some(DeviceCompileOutcome {
+                artifact_path,
+                diagnostics: compile.diagnostics,
+                stderr: compile.stderr,
+            }));
+        }
+
+        eprintln!(
+            "[compile-device] {} FAILED status={}\n{}",
+            compiler_exe, compile.status, compile.stderr
+        );
+
+        if attempt >= max_heal_attempts {
+            anyhow::bail!(
+                "device compile failed (exit {}): {}",
+                compile.status,
+                compile.stderr.trim()
+            );
+        }
+
+        let (shared_for_heal, heal_arch_md) =
+            read_device_heal_context(workspace_dir, &source_path).await;
+        let heal_arch_hint = heal_arch_md.as_deref().filter(|s| !s.trim().is_empty());
+
+        eprintln!(
+            "[compile-device] AI heal attempt {} for device",
+            attempt + 1
+        );
+        let fixed = match crate::compiler::stages::ai_utils::perform_ai_heal(
+            "device",
+            &current_source,
+            &compile.stderr,
+            &shared_for_heal,
+            heal_arch_hint,
+        )
+        .await
+        {
+            Ok(fixed) if !fixed.trim().is_empty() => fixed,
+            Ok(_) => {
+                anyhow::bail!(
+                    "device compile AI heal returned empty source after compiler error (exit {}): {}",
+                    compile.status,
+                    compile.stderr.trim()
+                );
+            }
+            Err(e) => {
+                anyhow::bail!(
+                    "device compile AI heal failed after compiler error (exit {}): {}; original compiler stderr: {}",
+                    compile.status,
+                    e,
+                    compile.stderr.trim()
+                );
+            }
+        };
+
+        tokio::fs::write(&source_path, &fixed)
+            .await
+            .context("writing healed device source")?;
+        current_source = fixed;
+    }
+
+    unreachable!("device compile loop always returns or bails")
+}
+
+#[cfg(feature = "gpu-hmr")]
+struct DeviceCompileAttempt {
+    status: std::process::ExitStatus,
+    diagnostics: GpuToolchainDiagnostics,
+    stderr: String,
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn run_device_compile_once(
+    compiler_exe: &str,
+    workspace_dir: &std::path::Path,
+    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+    source_filename: &str,
+    artifact_path: &Path,
+) -> Result<DeviceCompileAttempt> {
     let mut cmd = crate::infra::utils::system_command(compiler_exe);
-    populate_device_command(&mut cmd, gpu, source_filename, &artifact_path);
+    populate_device_command(&mut cmd, gpu, source_filename, artifact_path);
     cmd.current_dir(workspace_dir);
     cmd.kill_on_drop(true);
 
@@ -189,34 +300,58 @@ async fn compile_device_inner(
         DeviceVendor::Rocm => GpuToolchainDiagnostics::default(),
     };
 
-    if !out.status.success() {
-        eprintln!(
-            "[compile-device] {} FAILED status={}\n{}",
-            compiler_exe, out.status, stderr_str
-        );
-        anyhow::bail!(
-            "device compile failed (exit {}): {}",
-            out.status,
-            stderr_str.trim()
-        );
-    }
-
-    if gpu.vendor == DeviceVendor::Rocm {
-        normalize_rocm_artifact_if_bundled(&artifact_path).await?;
-    }
-
-    eprintln!(
-        "[compile-device] {} ok  artifact={}  diagnostics_kernels={}",
-        compiler_exe,
-        artifact_path.display(),
-        diagnostics.register_pressure.len()
-    );
-
-    Ok(Some(DeviceCompileOutcome {
-        artifact_path,
+    Ok(DeviceCompileAttempt {
+        status: out.status,
         diagnostics,
         stderr: stderr_str,
-    }))
+    })
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn is_internal_generated_device_source(source_filename: &str) -> bool {
+    let normalized = source_filename
+        .replace('\\', "/")
+        .trim()
+        .trim_start_matches("./")
+        .to_string();
+    normalized.starts_with(".synthi/generated/") || normalized.contains("/.synthi/generated/")
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn read_device_heal_context(
+    workspace_dir: &std::path::Path,
+    source_path: &std::path::Path,
+) -> (String, Option<String>) {
+    let mut shared_candidates: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = source_path.parent() {
+        shared_candidates.push(parent.join("shared.h"));
+    }
+    shared_candidates.push(workspace_dir.join(".synthi/generated/gpu/shared.h"));
+    shared_candidates.push(workspace_dir.join("shared.h"));
+
+    let mut shared_content = String::new();
+    for candidate in shared_candidates {
+        match tokio::fs::read_to_string(&candidate).await {
+            Ok(content) if !content.trim().is_empty() => {
+                shared_content = content;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let architecture = tokio::fs::read_to_string(workspace_dir.join(".synthi_split_meta.json"))
+        .await
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| {
+            value
+                .get("architecture")
+                .and_then(|architecture| architecture.as_str())
+                .map(|architecture| architecture.to_string())
+        });
+
+    (shared_content, architecture)
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -469,6 +604,19 @@ mod tests {
         assert!(args.iter().any(|a| a == "--offload-arch=gfx90a"));
         assert!(args.iter().any(|a| a.ends_with("device_42.hsaco")));
         assert!(args.iter().any(|a| a == "device.hip"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn device_heal_only_targets_internal_generated_roles() {
+        assert!(is_internal_generated_device_source(
+            ".synthi/generated/gpu/device.hip"
+        ));
+        assert!(is_internal_generated_device_source(
+            "/workspace/app/.synthi/generated/gpu/device.cu"
+        ));
+        assert!(!is_internal_generated_device_source("device.hip"));
+        assert!(!is_internal_generated_device_source("src/gpu/raster.hip"));
     }
 
     #[cfg(feature = "gpu-hmr")]
