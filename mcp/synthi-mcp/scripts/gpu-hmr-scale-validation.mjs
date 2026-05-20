@@ -1363,6 +1363,28 @@ async function dispatchUserDeviceStaleToolchainNegative(project, editedDevice, v
   return dispatchUserDeviceNegative(project, editedDevice, vendor, checkpoint, 'negative_stale_toolchain_rejection');
 }
 
+async function dispatchForcedAiDeltaStaleToolchainNegative(project, editedDevice, vendor, checkpoint) {
+  const additionalFiles = project.files
+    .filter((f) => cleanRel(f.path) !== cleanRel(project.devicePath))
+    .map((f) => ({ name: f.path, content: f.content }));
+  return dispatchCompileViaMcp({
+    language: 'cpp',
+    filename: project.devicePath,
+    source: editedDevice,
+    files: additionalFiles,
+    is_gui: true,
+    use_ai_split: false,
+    user_requested_deterministic: true,
+    force_gpu_ai_delta: true,
+    prefer_gpu_pipeline: true,
+    gpu_mode: vendor,
+    gpu_arch: CFG.gpuArch,
+    slug: CFG.slug,
+    width: 800,
+    height: 600,
+  }, CFG.hotSwapTimeoutMs, 'negative_forced_ai_delta_stale_toolchain_rejection', checkpoint);
+}
+
 async function dispatchUserDeviceNegative(project, deviceSource, vendor, checkpoint, phaseName) {
   const additionalFiles = project.files
     .filter((f) => cleanRel(f.path) !== cleanRel(project.devicePath))
@@ -1651,6 +1673,37 @@ async function run() {
   record('stale toolchain capability stops unsafe fallback', staleToolchainHardStop.matched ? 'pass' : 'fail', staleToolchainHardStop.snippet || 'no stale toolchain hard-stop marker');
   if (!staleToolchainHardStop.matched) throw new Error('stale toolchain hard-stop evidence missing');
   await assertNoSidecarReloadAfterHardStop(staleToolchainHardStop, staleToolchainCheckpoint, 'stale toolchain capability does not reload sidecar');
+
+  const staleAiDeltaCheckpoint = await workerCheckpoint();
+  await dispatchForcedAiDeltaStaleToolchainNegative(project, staleCapabilityDevice, vendor, staleAiDeltaCheckpoint);
+  record('stale toolchain forced AI delta dispatched via MCP', 'pass', project.devicePath);
+  const staleAiDeltaWorker = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[GPU AI Delta\] Calling [^\n]*\/refactor\/diff_patch\/gpu[^\n]*/,
+    15000,
+    staleAiDeltaCheckpoint,
+  );
+  record('worker sent stale-toolchain delta to GPU AI endpoint', staleAiDeltaWorker.matched ? 'pass' : 'fail', staleAiDeltaWorker.snippet || 'no forced GPU AI delta worker marker');
+  if (!staleAiDeltaWorker.matched) throw new Error('forced stale-toolchain GPU AI delta worker evidence missing');
+
+  const staleAiDeltaBackend = await awaitLogRegex(
+    CFG.aiEngineContainer,
+    /\[GpuDiffPatch\][^\n]*/,
+    15000,
+    staleAiDeltaCheckpoint,
+  );
+  record('ai-engine processed stale-toolchain GPU delta', staleAiDeltaBackend.matched ? 'pass' : 'fail', staleAiDeltaBackend.snippet || 'no stale-toolchain GpuDiffPatch marker');
+  if (!staleAiDeltaBackend.matched) throw new Error('forced stale-toolchain GPU AI delta backend evidence missing');
+
+  const staleAiDeltaReject = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[GPU AI Delta\] rejected: user=[^\n]*requested_plan=device_only[^\n]*toolchain_capability_stale[^\n]*/,
+    15000,
+    staleAiDeltaCheckpoint,
+  );
+  record('stale toolchain AI delta rejected by verifier policy', staleAiDeltaReject.matched ? 'pass' : 'fail', staleAiDeltaReject.snippet || 'no stale-toolchain AI delta verifier rejection marker');
+  if (!staleAiDeltaReject.matched) throw new Error('forced stale-toolchain GPU AI delta verifier rejection evidence missing');
+  await assertNoSidecarReloadAfterHardStop(staleAiDeltaReject, staleAiDeltaCheckpoint, 'stale toolchain AI delta does not reload sidecar');
 
   await writeReport();
   const failures = report.checks.filter((r) => r.status === 'fail');
