@@ -422,6 +422,37 @@ _SYNTHI_LAUNCH_BYPASS_RE = re.compile(
     r"\bsynthi_gpu_(?:launch_raw(?:_checked)?|launch_table|launch_generation)\s*\(",
     re.DOTALL,
 )
+_CPP_CAST_RE = re.compile(
+    r"\b(?:reinterpret_cast|static_cast|const_cast)\s*<(?P<type>[^>]+)>\s*"
+    r"\(\s*(?P<expr>.*?)\s*\)\s*$",
+    re.DOTALL,
+)
+_CPP_C_STYLE_VOID_CAST_RE = re.compile(
+    r"^\(\s*(?:const\s+)?void\s*\*\s*\)\s*",
+    re.DOTALL,
+)
+_CPP_DECL_TYPE_TEMPLATE = (
+    r"(?:^|[;\n{{}}])\s*"
+    r"(?P<type>"
+    r"(?:(?:static|inline|thread_local|extern|const|constexpr|volatile|mutable)\s+)*"
+    r"(?:struct\s+|class\s+)?"
+    r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*"
+    r"(?:\s*<[^;{{}}()=]+>)?"
+    r"(?:\s*[*&])?"
+    r")\s+"
+    r"{name}\b\s*(?:\[[^\]]*\])?\s*(?:[=;{{,)]|\))"
+)
+_CPP_DECL_KEYWORDS = {
+    "return",
+    "if",
+    "for",
+    "while",
+    "switch",
+    "case",
+    "else",
+    "sizeof",
+    "alignof",
+}
 
 
 def _iter_call_bodies(source: str, name: str) -> Iterable[str]:
@@ -484,6 +515,123 @@ def _function_body(source: str, name: str) -> str:
     if depth != 0:
         return ""
     return source[match.end(): i - 1]
+
+
+def _function_param_names(source: str, name: str) -> List[str]:
+    match = re.search(rf"\b{name}\s*\((?P<params>[^)]*)\)", source, re.DOTALL)
+    if not match:
+        return []
+    names: List[str] = []
+    for param in _split_top_level_args(match.group("params")):
+        tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", param)
+        if tokens:
+            names.append(tokens[-1])
+    return names
+
+
+def _normalize_cpp_type_name(type_text: str) -> str:
+    value = re.sub(r"/\*.*?\*/", " ", type_text, flags=re.DOTALL)
+    value = re.sub(r"\b(?:const|volatile|static|inline|thread_local|extern|mutable)\b", " ", value)
+    value = re.sub(r"\b(?:struct|class)\b", " ", value)
+    value = value.replace("*", " ").replace("&", " ")
+    value = re.sub(r"\s+", "", value)
+    value = value.strip(":")
+    return value
+
+
+def _cpp_type_compatible(a: str, b: str) -> bool:
+    left = _normalize_cpp_type_name(a)
+    right = _normalize_cpp_type_name(b)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return left.rsplit("::", 1)[-1] == right.rsplit("::", 1)[-1]
+
+
+def _strip_cpp_casts(expr: str) -> str:
+    out = expr.strip()
+    changed = True
+    while changed:
+        changed = False
+        cast = _CPP_CAST_RE.match(out)
+        if cast:
+            out = cast.group("expr").strip()
+            changed = True
+        out2 = _CPP_C_STYLE_VOID_CAST_RE.sub("", out).strip()
+        if out2 != out:
+            out = out2
+            changed = True
+    return out.strip()
+
+
+def _return_state_variable(expr: str) -> Optional[str]:
+    value = _strip_cpp_casts(expr)
+    value = re.sub(r"^\s*&\s*", "", value)
+    value = value.strip()
+    while value.startswith("(") and value.endswith(")"):
+        value = value[1:-1].strip()
+    match = re.match(r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*$", value)
+    return match.group("name") if match else None
+
+
+def _declared_variable_type(source: str, name: str) -> Optional[str]:
+    pattern = re.compile(
+        _CPP_DECL_TYPE_TEMPLATE.format(name=re.escape(name)),
+        re.DOTALL,
+    )
+    for match in pattern.finditer(source):
+        type_name = _normalize_cpp_type_name(match.group("type"))
+        if not type_name or type_name in _CPP_DECL_KEYWORDS:
+            continue
+        return type_name
+    return None
+
+
+def _core_returned_state_types(core_source: str) -> Set[str]:
+    body = _function_body(core_source, "core_on_load")
+    if not body:
+        return set()
+    types: Set[str] = set()
+    search_blobs = (body, core_source)
+    for match in re.finditer(r"\breturn\s+(?P<expr>[^;]+);", body):
+        variable = _return_state_variable(match.group("expr"))
+        if not variable or variable in {"nullptr", "NULL", "null"}:
+            continue
+        for blob in search_blobs:
+            declared_type = _declared_variable_type(blob, variable)
+            if declared_type:
+                types.add(declared_type)
+                break
+    return types
+
+
+def _gui_render_state_cast_types(gui_source: str) -> Set[str]:
+    body = _function_body(gui_source, "gui_on_render")
+    if not body:
+        return set()
+    param_names = _function_param_names(gui_source, "gui_on_render")
+    if not param_names:
+        return set()
+    state_param = param_names[0]
+    cast_types: Set[str] = set()
+    escaped = re.escape(state_param)
+    cpp_cast_re = re.compile(
+        rf"\b(?:reinterpret_cast|static_cast|const_cast)\s*<(?P<type>[^>]+)>\s*"
+        rf"\(\s*{escaped}\s*\)",
+        re.DOTALL,
+    )
+    c_style_cast_re = re.compile(
+        rf"\(\s*(?P<type>[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*"
+        rf"(?:\s*<[^;{{}}()=]+>)?\s*[*&]?)\s*\)\s*{escaped}\b",
+        re.DOTALL,
+    )
+    for pattern in (cpp_cast_re, c_style_cast_re):
+        for match in pattern.finditer(body):
+            normalized = _normalize_cpp_type_name(match.group("type"))
+            if normalized and normalized not in {"void", "auto"}:
+                cast_types.add(normalized)
+    return cast_types
 
 
 def _device_kernel_params(source: str, name: str) -> List[str]:
@@ -1198,6 +1346,28 @@ def verify_split_output(
 
     gui_source = files.get(gui_path) or ""
     host_runner_source = files.get(host_runner_path) or ""
+    core_state_types = _core_returned_state_types(core_source)
+    gui_state_cast_types = _gui_render_state_cast_types(gui_source)
+    if core_state_types and gui_state_cast_types:
+        for gui_state_type in sorted(gui_state_cast_types):
+            if any(_cpp_type_compatible(core_type, gui_state_type) for core_type in core_state_types):
+                continue
+            core_type_list = ", ".join(sorted(core_state_types))
+            violations.append(
+                Violation(
+                    rule="generated.core_gui_state_abi_mismatch",
+                    message=(
+                        "core_on_load returns host-visible state object type "
+                        f"{core_type_list}, but gui_on_render casts the runner-provided "
+                        f"state pointer to {gui_state_type}. The Synthi runner passes "
+                        "the core state to gui_on_render; generated core and GUI roles "
+                        "must agree on one shared host-visible state layout before a "
+                        "split can be accepted."
+                    ),
+                    offending_module=gui_path,
+                    offending_symbol=f"{core_type_list}->{gui_state_type}",
+                )
+            )
     generated_render_backends = _render_backends_in_sources(
         (shared_source, core_source, gui_source, host_runner_source)
     )
