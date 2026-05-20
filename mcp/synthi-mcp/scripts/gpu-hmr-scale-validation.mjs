@@ -40,7 +40,7 @@ const CFG = {
   screenshotRetryDelayMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_FRESHNESS_MS ?? 5000),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
-  googleApiKey: process.env.GOOGLE_API_KEY ?? '',
+  googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
 };
 
 const LOG_DIR = path.resolve(__dirname, '../.gpu-hmr-test-logs');
@@ -375,6 +375,7 @@ async function startMcp() {
       '-e', `SYNTHI_SIGNALING_URL=${CFG.mcpSignalingUrl}`,
       '-e', 'SYNTHI_VISION_BACKEND=gemini_api',
       '-e', `GOOGLE_API_KEY=${CFG.googleApiKey}`,
+      '-e', `GEMINI_API_KEY=${CFG.googleApiKey}`,
       '-e', `SYNTHI_GEMINI_MODEL=${CFG.geminiModel}`,
       CFG.mcpContainer,
       'node',
@@ -390,6 +391,7 @@ async function startMcp() {
         SYNTHI_SIGNALING_URL: CFG.signalingUrl,
         SYNTHI_VISION_BACKEND: 'gemini_api',
         GOOGLE_API_KEY: CFG.googleApiKey,
+        GEMINI_API_KEY: CFG.googleApiKey,
         SYNTHI_GEMINI_MODEL: CFG.geminiModel,
       },
     });
