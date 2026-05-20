@@ -72,10 +72,7 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
         .filter(|v| !v.is_null())
         .unwrap_or_else(default_device_mapping_report);
     promote_device_mapping_report(&mut root, &device_mapping_report);
-    root.entry("templateEvidenceStatus".to_string())
-        .or_insert_with(|| Value::String("missing".to_string()));
-    root.entry("templateEvidenceInvalidationReasons".to_string())
-        .or_insert_with(|| json!(["template_evidence_missing"]));
+    promote_template_evidence(&mut root, &effective_flags_hash);
     root.entry("generatedArtifactPolicy".to_string())
         .or_insert_with(generated_artifact_policy);
     let generated_artifact_report = root
@@ -405,6 +402,142 @@ fn merge_object_field(root: &mut Map<String, Value>, key: &str, candidate: Optio
     }
 }
 
+fn promote_template_evidence(root: &mut Map<String, Value>, effective_flags_hash: &str) {
+    let evidence = root
+        .get("templateEvidence")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| root.get("template_evidence").cloned())
+        .filter(|v| !v.is_null());
+
+    let Some(evidence) = evidence else {
+        root.insert(
+            "templateEvidence".to_string(),
+            json!({
+                "schemaVersion": "synthi.gpu.template_evidence.v1",
+                "status": "missing",
+                "producer": null,
+                "entries": [],
+            }),
+        );
+        root.insert(
+            "templateEvidenceStatus".to_string(),
+            Value::String("missing".to_string()),
+        );
+        root.insert("templateEvidenceBounded".to_string(), Value::Bool(false));
+        root.insert(
+            "templateEvidenceHash".to_string(),
+            Value::String(stable_hash(&Value::Null)),
+        );
+        root.insert(
+            "affectedTemplateInstantiations".to_string(),
+            Value::Array(Vec::new()),
+        );
+        root.insert(
+            "templateEvidenceInvalidationReasons".to_string(),
+            json!(["template_evidence_missing"]),
+        );
+        return;
+    };
+
+    let status = evidence
+        .get("status")
+        .or_else(|| evidence.get("evidenceStatus"))
+        .and_then(Value::as_str)
+        .unwrap_or("missing");
+    let producer = evidence
+        .get("producer")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let evidence_flags_hash = evidence
+        .get("effectiveFlagsHash")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let entries = evidence
+        .get("entries")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let bounded = evidence
+        .get("bounded")
+        .or_else(|| evidence.get("impactBounded"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let mut invalidation = Vec::new();
+    if status != "fresh" {
+        invalidation.push(if status == "stale" {
+            "template_evidence_stale"
+        } else {
+            "template_evidence_missing"
+        });
+    }
+    if !is_compiler_derived_template_evidence(producer) {
+        invalidation.push("template_evidence_not_compiler_derived");
+    }
+    if evidence_flags_hash.is_empty() || evidence_flags_hash != effective_flags_hash {
+        invalidation.push("template_evidence_effective_flags_mismatch");
+    }
+    if !bounded {
+        invalidation.push("template_instantiation_unbounded");
+    }
+    if entries.as_array().map(Vec::is_empty).unwrap_or(true) {
+        invalidation.push("template_evidence_missing_entries");
+    }
+
+    invalidation.sort_unstable();
+    invalidation.dedup();
+    let accepted = invalidation.is_empty();
+    root.insert("templateEvidence".to_string(), evidence.clone());
+    root.insert(
+        "templateEvidenceStatus".to_string(),
+        Value::String(if accepted { "fresh" } else { "stale" }.to_string()),
+    );
+    root.insert("templateEvidenceBounded".to_string(), Value::Bool(bounded));
+    root.insert(
+        "templateEvidenceHash".to_string(),
+        Value::String(stable_hash(&evidence)),
+    );
+    root.insert("affectedTemplateInstantiations".to_string(), entries);
+    root.insert(
+        "templateEvidenceInvalidationReasons".to_string(),
+        Value::Array(
+            invalidation
+                .into_iter()
+                .map(|reason| Value::String(reason.to_string()))
+                .collect(),
+        ),
+    );
+}
+
+fn is_compiler_derived_template_evidence(producer: &str) -> bool {
+    let producer = producer.to_ascii_lowercase();
+    if producer.is_empty()
+        || ["llm", "ai", "agent", "manual", "heuristic"]
+            .iter()
+            .any(|token| producer.contains(token))
+    {
+        return false;
+    }
+
+    [
+        "compiler",
+        "clang",
+        "llvm",
+        "nvcc",
+        "hipcc",
+        "ptxas",
+        "gcc",
+        "msvc",
+        "linker",
+        "objdump",
+        "cuobjdump",
+        "rocobjdump",
+        "fatbin",
+    ]
+    .iter()
+    .any(|token| producer.contains(token))
+}
+
 fn generated_artifact_policy() -> Value {
     json!({
         "rolesAreInternal": true,
@@ -601,12 +734,23 @@ fn ranked_reload_options(
         .get("templateEvidenceStatus")
         .and_then(Value::as_str)
         .unwrap_or("missing");
-    let template_fresh = template_status == "fresh";
-    let template_reason = if template_status == "stale" {
-        "template_evidence_stale"
-    } else {
-        "template_evidence_missing"
-    };
+    let template_bounded = root
+        .get("templateEvidenceBounded")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let template_fresh = template_status == "fresh" && template_bounded;
+    let template_reasons = root
+        .get("templateEvidenceInvalidationReasons")
+        .and_then(Value::as_array)
+        .cloned()
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| {
+            if template_status == "stale" {
+                vec![Value::String("template_evidence_stale".to_string())]
+            } else {
+                vec![Value::String("template_evidence_missing".to_string())]
+            }
+        });
     let affected_roles = reload_plan
         .get("affectedGeneratedRoles")
         .and_then(Value::as_array)
@@ -616,34 +760,44 @@ fn ranked_reload_options(
     let device_only_safety = profile_current && supports_device_only;
     let warm_safety = profile_current && template_fresh;
     let warm_requires_consent = warm_safety && requires_rdc;
-    let mut device_only_reasons = Vec::new();
+    let mut device_only_reasons: Vec<String> = Vec::new();
     if device_only_safety {
         device_only_reasons.extend([
-            "arbiter.safe",
-            "arbiter.under_latency_budget",
-            "arbiter.no_state_loss",
+            "arbiter.safe".to_string(),
+            "arbiter.under_latency_budget".to_string(),
+            "arbiter.no_state_loss".to_string(),
         ]);
     } else {
         if !profile_current {
-            device_only_reasons.push(profile_reason);
+            device_only_reasons.push(profile_reason.to_string());
         }
         if profile_current && !supports_device_only {
-            device_only_reasons.push("toolchain_capability_no_device_only_reload");
+            device_only_reasons.push("toolchain_capability_no_device_only_reload".to_string());
         }
     }
 
-    let mut warm_reasons = Vec::new();
+    let mut warm_reasons: Vec<String> = Vec::new();
     if warm_safety {
-        warm_reasons.extend(["arbiter.safe", "arbiter.no_state_loss"]);
+        warm_reasons.extend([
+            "arbiter.safe".to_string(),
+            "arbiter.no_state_loss".to_string(),
+        ]);
         if warm_requires_consent {
-            warm_reasons.extend(["device_linker_bound", "arbiter_user_consent_required"]);
+            warm_reasons.extend([
+                "device_linker_bound".to_string(),
+                "arbiter_user_consent_required".to_string(),
+            ]);
         }
     } else {
         if !profile_current {
-            warm_reasons.push(profile_reason);
+            warm_reasons.push(profile_reason.to_string());
         }
         if !template_fresh {
-            warm_reasons.push(template_reason);
+            for reason in &template_reasons {
+                if let Some(reason) = reason.as_str() {
+                    warm_reasons.push(reason.to_string());
+                }
+            }
         }
     }
 
@@ -810,6 +964,26 @@ fn run_report(
             .cloned()
             .unwrap_or(Value::Null),
         "deviceMappings": root.get("deviceMappings").cloned().unwrap_or(Value::Null),
+        "templateEvidenceHash": root
+            .get("templateEvidenceHash")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "templateEvidenceStatus": root
+            .get("templateEvidenceStatus")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "templateEvidenceBounded": root
+            .get("templateEvidenceBounded")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "templateEvidenceInvalidationReasons": root
+            .get("templateEvidenceInvalidationReasons")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "affectedTemplateInstantiations": root
+            .get("affectedTemplateInstantiations")
+            .cloned()
+            .unwrap_or(Value::Null),
         "kernelSignatureHashes": root
             .get("kernelSignatureHashes")
             .cloned()
@@ -924,6 +1098,43 @@ mod tests {
             .and_then(Value::as_array)
             .map(|codes| codes.iter().any(|v| v.as_str() == Some(code)))
             .unwrap_or(false)
+    }
+
+    fn has_invalidation(value: &Value, code: &str) -> bool {
+        value
+            .pointer("/templateEvidenceInvalidationReasons")
+            .and_then(Value::as_array)
+            .map(|codes| codes.iter().any(|v| v.as_str() == Some(code)))
+            .unwrap_or(false)
+    }
+
+    fn effective_flags_hash_for(manifest: &Value) -> String {
+        normalize_split_sidecar(&json!({ "compile_manifest": manifest.clone() }))
+            .pointer("/effectiveFlagsHash")
+            .and_then(Value::as_str)
+            .expect("effective flags hash")
+            .to_string()
+    }
+
+    fn template_evidence(flags_hash: &str, bounded: bool, producer: &str) -> Value {
+        json!({
+            "schemaVersion": "synthi.gpu.template_evidence.v1",
+            "status": "fresh",
+            "producer": producer,
+            "effectiveFlagsHash": flags_hash,
+            "bounded": bounded,
+            "entries": [
+                {
+                    "templateName": "BlockReduce<T>",
+                    "templateArgs": ["float"],
+                    "owningTU": "src/gpu/reduce.hip",
+                    "generatedRole": "device",
+                    "abiFingerprint": "abi1",
+                    "layoutFingerprint": "layout1",
+                    "artifactFingerprint": "artifact1"
+                }
+            ]
+        })
     }
 
     #[test]
@@ -1136,6 +1347,175 @@ mod tests {
             .unwrap()
             .iter()
             .any(|v| v.as_str() == Some("toolchain_capability_stale")));
+    }
+
+    #[test]
+    fn warm_rebuild_rejects_missing_template_evidence() {
+        let manifest = gpu_compile_manifest();
+        let plan = reload_plan("warm_rebuild", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let warm_rebuild = ranked_option(&migrated, "warm_rebuild");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("fallback")
+        );
+        assert_eq!(
+            warm_rebuild.get("safety").and_then(Value::as_str),
+            Some("fail")
+        );
+        assert!(has_reason(warm_rebuild, "template_evidence_missing"));
+        assert_eq!(
+            migrated
+                .pointer("/runReport/templateEvidenceStatus")
+                .and_then(Value::as_str),
+            Some("missing")
+        );
+    }
+
+    #[test]
+    fn warm_rebuild_rejects_stale_template_evidence() {
+        let manifest = gpu_compile_manifest();
+        let plan = reload_plan("warm_rebuild", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "templateEvidence": template_evidence("stale-effective-flags", true, "clang-libtooling+vendor-artifacts"),
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let warm_rebuild = ranked_option(&migrated, "warm_rebuild");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("fallback")
+        );
+        assert_eq!(
+            warm_rebuild.get("safety").and_then(Value::as_str),
+            Some("fail")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/templateEvidenceStatus")
+                .and_then(Value::as_str),
+            Some("stale")
+        );
+        assert!(has_reason(
+            warm_rebuild,
+            "template_evidence_effective_flags_mismatch"
+        ));
+        assert!(has_invalidation(
+            &migrated,
+            "template_evidence_effective_flags_mismatch"
+        ));
+    }
+
+    #[test]
+    fn warm_rebuild_rejects_unbounded_template_evidence() {
+        let manifest = gpu_compile_manifest();
+        let flags_hash = effective_flags_hash_for(&manifest);
+        let plan = reload_plan("warm_rebuild", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "templateEvidence": template_evidence(&flags_hash, false, "clang-libtooling+vendor-artifacts"),
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let warm_rebuild = ranked_option(&migrated, "warm_rebuild");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("fallback")
+        );
+        assert_eq!(
+            warm_rebuild.get("safety").and_then(Value::as_str),
+            Some("fail")
+        );
+        assert!(has_reason(warm_rebuild, "template_instantiation_unbounded"));
+        assert!(has_invalidation(
+            &migrated,
+            "template_instantiation_unbounded"
+        ));
+    }
+
+    #[test]
+    fn warm_rebuild_rejects_agentic_template_evidence() {
+        let manifest = gpu_compile_manifest();
+        let flags_hash = effective_flags_hash_for(&manifest);
+        let plan = reload_plan("warm_rebuild", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "templateEvidence": template_evidence(&flags_hash, true, "template-triage-agent"),
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let warm_rebuild = ranked_option(&migrated, "warm_rebuild");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("fallback")
+        );
+        assert_eq!(
+            warm_rebuild.get("safety").and_then(Value::as_str),
+            Some("fail")
+        );
+        assert!(has_reason(
+            warm_rebuild,
+            "template_evidence_not_compiler_derived"
+        ));
+        assert!(has_invalidation(
+            &migrated,
+            "template_evidence_not_compiler_derived"
+        ));
+    }
+
+    #[test]
+    fn warm_rebuild_accepts_fresh_bounded_template_evidence() {
+        let manifest = gpu_compile_manifest();
+        let flags_hash = effective_flags_hash_for(&manifest);
+        let plan = reload_plan("warm_rebuild", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "templateEvidence": template_evidence(&flags_hash, true, "clang-libtooling+vendor-artifacts"),
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let warm_rebuild = ranked_option(&migrated, "warm_rebuild");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("auto_run")
+        );
+        assert_eq!(
+            migrated.pointer("/selectedPlan").and_then(Value::as_str),
+            Some("warm_rebuild")
+        );
+        assert_eq!(
+            warm_rebuild.get("safety").and_then(Value::as_str),
+            Some("pass")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/templateEvidenceStatus")
+                .and_then(Value::as_str),
+            Some("fresh")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/affectedTemplateInstantiations")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert!(has_reason(warm_rebuild, "arbiter.safe"));
     }
 
     #[test]
