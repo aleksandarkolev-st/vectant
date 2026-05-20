@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import PurePosixPath
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Set
 
 from agents.abi_stamper import constant_layout_hash, stamp_device_source
 
@@ -14,6 +15,7 @@ _GLOBAL_KERNEL_RE = re.compile(
     r'(?:extern\s+"C"\s+)?__global__\s+(?:void\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(',
     re.MULTILINE,
 )
+_LOCAL_INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"(?P<path>[^"]+)"', re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,21 @@ def build_device_mapping_report(
         _normalize_path(path): source
         for path, source in source_files.items()
         if _is_device_source_path(path) and ("__global__" in source or "__device__" in source)
+    }
+    normalized_sources = {
+        _normalize_path(path): source for path, source in source_files.items()
+    }
+    reachable_headers, include_graph, missing_includes = _collect_device_reachable_headers(
+        normalized_sources,
+        set(source_device_files),
+    )
+    baseline_sources = {
+        **source_device_files,
+        **{
+            path: normalized_sources[path]
+            for path in sorted(reachable_headers)
+            if path in normalized_sources
+        },
     }
 
     mappings = []
@@ -80,11 +97,9 @@ def build_device_mapping_report(
                 }
             )
 
-    source_hashes = {
-        path: _sha256(source) for path, source in sorted(source_device_files.items())
-    }
+    source_hashes = {path: _sha256(source) for path, source in sorted(baseline_sources.items())}
     source_baselines = {
-        path: source for path, source in sorted(source_device_files.items()) if path in source_hashes
+        path: source for path, source in sorted(baseline_sources.items()) if path in source_hashes
     }
     constant_layout_hashes = {
         "generated:device": constant_layout_hash(generated_source),
@@ -104,6 +119,18 @@ def build_device_mapping_report(
         "sourceBaselineContents": source_baselines,
         "kernelSignatureHashes": stamp_device_source(generated_source),
         "constantGlobalLayoutHashes": constant_layout_hashes,
+        "deviceIncludeGraph": {
+            "schemaVersion": "synthi.gpu.device_include_graph.v1",
+            "status": "bounded" if not missing_includes else "missing_includes",
+            "deviceTranslationUnits": sorted(source_device_files),
+            "reachableHeaders": sorted(reachable_headers),
+            "edges": [
+                {"source": source, "includes": includes}
+                for source, includes in sorted(include_graph.items())
+            ],
+            "missingIncludes": missing_includes,
+            "reasonCodes": [] if not missing_includes else ["include_not_found"],
+        },
     }
 
 
@@ -159,11 +186,72 @@ def _is_device_source_path(path: str) -> bool:
     return _normalize_path(path).lower().endswith((".cu", ".hip"))
 
 
+def _is_device_header_path(path: str) -> bool:
+    return _normalize_path(path).lower().endswith((".cuh", ".hpp", ".hh", ".h"))
+
+
 def _normalize_path(path: str) -> str:
     normalized = str(path).replace("\\", "/")
     while normalized.startswith("./"):
         normalized = normalized[2:]
-    return normalized
+    parts = []
+    for part in normalized.split("/"):
+        if not part or part == ".":
+            continue
+        if part == ".." and parts and parts[-1] != "..":
+            parts.pop()
+        elif part == "..":
+            parts.append(part)
+        else:
+            parts.append(part)
+    return "/".join(parts)
+
+
+def _resolve_local_include(source_path: str, include_path: str, files: Mapping[str, str]) -> Optional[str]:
+    include = _normalize_path(include_path)
+    candidates = []
+    if not include.startswith("/"):
+        parent = str(PurePosixPath(source_path).parent)
+        if parent == ".":
+            parent = ""
+        candidates.append(_normalize_path(f"{parent}/{include}" if parent else include))
+    candidates.append(include)
+    for candidate in candidates:
+        if candidate in files:
+            return candidate
+    return None
+
+
+def _collect_device_reachable_headers(
+    files: Mapping[str, str],
+    device_translation_units: Set[str],
+) -> tuple[Set[str], Dict[str, list[str]], list[dict[str, str]]]:
+    reachable: Set[str] = set()
+    include_graph: Dict[str, list[str]] = {}
+    missing: list[dict[str, str]] = []
+    stack = sorted(device_translation_units)
+    visited: Set[str] = set()
+
+    while stack:
+        current = stack.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        source = files.get(current, "")
+        includes: list[str] = []
+        for match in _LOCAL_INCLUDE_RE.finditer(source):
+            raw_include = match.group("path")
+            resolved = _resolve_local_include(current, raw_include, files)
+            if not resolved:
+                missing.append({"source": current, "include": _normalize_path(raw_include)})
+                continue
+            includes.append(resolved)
+            if _is_device_header_path(resolved) and resolved not in reachable:
+                reachable.add(resolved)
+                stack.append(resolved)
+        include_graph[current] = sorted(set(includes))
+
+    return reachable, include_graph, missing
 
 
 def _sha256(text: str) -> str:
