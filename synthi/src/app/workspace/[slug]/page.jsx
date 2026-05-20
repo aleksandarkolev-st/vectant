@@ -74,6 +74,7 @@ import { RuntimeHealingIndicator } from '@/components/healing/RuntimeHealingIndi
 import { installPreviewBridge } from '@/lib/preview-store-bridge';
 import { getWorkspaceDependencyInstallPlan } from '@/lib/workspaceInstallPlan';
 import ErrorOverlay from '@/components/ErrorOverlay';
+import NativeContextMenuGuard from '@/components/NativeContextMenuGuard';
 import { GitStatus } from '@/components/git/GitStatus';
 import { GitSummaryPanel } from '@/components/git/GitSummaryPanel';
 import { PullRequestsPanel } from '@/components/git/PullRequestsPanel';
@@ -3052,6 +3053,12 @@ export default function EditorPage({ params }) {
                 }}
             >
                 <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ background: 'var(--bg-editor)', color: 'var(--text-primary)' }}>
+                    {/* Suppress native right-click menu inside the workspace
+                        so the user can spam right-click to discover which
+                        surfaces ship a custom menu. Skips text inputs so
+                        paste / spellcheck still work where they matter. */}
+                    <NativeContextMenuGuard />
+
                     {/* Hydrate workspace-specific tabs from localStorage */}
                     <WorkspaceHydrator slug={slug} />
 
