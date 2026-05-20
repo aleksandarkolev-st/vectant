@@ -1,8 +1,7 @@
 'use client';
 import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
-import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
-import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste } from 'lucide-react';
+import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste, X } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { resolveCollabWsUrl } from '@/lib/collab-url';
@@ -573,16 +572,17 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 }, /* freeze — never re-render from parent */ () => true);
 
 /**
- * MultiLinePasteDialog — confirmation modal shown when the user right-clicks
- * to paste a multi-line clipboard payload into the terminal. Multi-line
- * pastes can immediately execute each line (newline = Enter), so we surface
- * the text and the line count before sending it to the PTY.
+ * MultiLinePasteDialog — a floating, draggable confirmation panel for
+ * multi-line right-click pastes into the terminal. It lives inside the
+ * terminal-pane-shell (parent has `position: relative`), so it shrinks
+ * proportionally when the user collapses the terminal pane. There is no
+ * backdrop — the terminal stays interactive behind it.
  *
- * Keyboard: Enter confirms, Escape cancels. The Cancel button autofocuses
- * so an accidental Enter doesn't paste a hostile clipboard payload.
+ * Drag: mousedown on the titlebar.
+ * Keyboard: Escape cancels, Ctrl/Cmd+Enter confirms. Cancel autofocuses so
+ * an accidental Enter doesn't accept a hostile clipboard payload.
  */
 function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel }) {
-  // Preview is truncated for very large pastes so the modal stays usable.
   const PREVIEW_LINE_LIMIT = 40;
   const PREVIEW_CHAR_LIMIT = 4000;
   const lines = text.split(/\r?\n/);
@@ -593,6 +593,76 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
   }
   const truncated =
     lines.length > PREVIEW_LINE_LIMIT || text.length > PREVIEW_CHAR_LIMIT;
+
+  // Default to centred inside the pane. `null` means "centre via CSS".
+  // Once the user drags, we switch to explicit pixel offsets.
+  const [pos, setPos] = useState(null); // { x, y } | null
+  const panelRef = useRef(null);
+  const dragRef = useRef(null); // { startX, startY, originX, originY, parentW, parentH }
+
+  // Keep the panel inside the parent on parent resize. If the parent shrinks
+  // below the panel's bounds, clamp the panel back into view so the whole
+  // floating window collapses proportionally with the terminal pane.
+  useEffect(() => {
+    if (!panelRef.current) return;
+    const parent = panelRef.current.parentElement;
+    if (!parent) return;
+    const observer = new ResizeObserver(() => {
+      const panel = panelRef.current;
+      if (!panel || !pos) return;
+      const pw = parent.clientWidth;
+      const ph = parent.clientHeight;
+      const w = panel.offsetWidth;
+      const h = panel.offsetHeight;
+      const clampedX = Math.max(8, Math.min(pos.x, pw - w - 8));
+      const clampedY = Math.max(8, Math.min(pos.y, ph - h - 8));
+      if (clampedX !== pos.x || clampedY !== pos.y) {
+        setPos({ x: clampedX, y: clampedY });
+      }
+    });
+    observer.observe(parent);
+    return () => observer.disconnect();
+  }, [pos]);
+
+  const onTitleMouseDown = (e) => {
+    if (e.button !== 0) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const parent = panel.parentElement;
+    if (!parent) return;
+    const panelRect = panel.getBoundingClientRect();
+    const parentRect = parent.getBoundingClientRect();
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: panelRect.left - parentRect.left,
+      originY: panelRect.top - parentRect.top,
+      parentW: parent.clientWidth,
+      parentH: parent.clientHeight,
+    };
+    e.preventDefault();
+  };
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = dragRef.current;
+      if (!d) return;
+      const panel = panelRef.current;
+      if (!panel) return;
+      const w = panel.offsetWidth;
+      const h = panel.offsetHeight;
+      const x = Math.max(8, Math.min(d.originX + (e.clientX - d.startX), d.parentW - w - 8));
+      const y = Math.max(8, Math.min(d.originY + (e.clientY - d.startY), d.parentH - h - 8));
+      setPos({ x, y });
+    };
+    const onUp = () => { dragRef.current = null; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -606,45 +676,75 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
     return () => window.removeEventListener('keydown', onKey);
   }, [onConfirm, onCancel]);
 
-  if (typeof document === 'undefined') return null;
+  // When centred (initial), use CSS transform; once dragged, switch to
+  // explicit offsets. `max-width`/`max-height` against the parent are what
+  // make the panel collapse proportionally as the terminal pane shrinks.
+  const placement = pos
+    ? { left: pos.x, top: pos.y }
+    : { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' };
 
-  return createPortal(
+  return (
     <div
-      className="fixed inset-0 flex items-center justify-center backdrop-blur-sm"
-      style={{ background: 'rgba(0,0,0,0.55)', zIndex: 2147483646 }}
-      onClick={onCancel}
+      ref={panelRef}
+      className="absolute rounded-lg border shadow-2xl flex flex-col"
+      style={{
+        ...placement,
+        width: 440,
+        maxWidth: 'calc(100% - 16px)',
+        maxHeight: 'calc(100% - 16px)',
+        background: 'var(--bg-elevated, #18181b)',
+        borderColor: 'var(--border-medium, #3f3f46)',
+        zIndex: 40,
+      }}
+      onMouseDown={(e) => e.stopPropagation()}
     >
+      {/* Title bar — drag handle */}
       <div
-        className="w-[440px] max-w-[92%] rounded-xl border shadow-2xl p-4"
-        style={{ background: 'var(--bg-elevated, #18181b)', borderColor: 'var(--border-medium, #3f3f46)' }}
-        onClick={(e) => e.stopPropagation()}
+        onMouseDown={onTitleMouseDown}
+        className="flex items-center gap-2 px-3 py-2 border-b rounded-t-lg select-none"
+        style={{
+          borderColor: 'var(--border-subtle, #2a2b38)',
+          background: 'var(--bg-app, #0a0b10)',
+          cursor: 'move',
+        }}
       >
-        <div className="flex items-start gap-2.5 mb-3">
-          <ClipboardPaste className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: 'var(--accent-warning, #fbbf24)' }} />
-          <div>
-            <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
-              Paste multi-line text?
-            </h3>
-            <p className="text-xs mt-1 leading-relaxed" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
-              This clipboard contains {lineCount} lines ({charCount} chars). Each newline
-              will be sent as Enter and may execute immediately.
-            </p>
-          </div>
-        </div>
+        <ClipboardPaste className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--accent-warning, #fbbf24)' }} />
+        <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
+          Paste multi-line text?
+        </span>
+        <button
+          type="button"
+          onClick={onCancel}
+          onMouseDown={(e) => e.stopPropagation()}
+          aria-label="Cancel paste"
+          className="rounded p-0.5 hover:bg-white/10"
+          style={{ color: 'var(--text-muted, #6b7089)' }}
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      {/* Body — scrolls if the parent is too short */}
+      <div className="p-3 overflow-auto flex-1 min-h-0">
+        <p className="text-xs mb-2 leading-relaxed" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+          {lineCount} lines ({charCount} chars). Each newline is sent as Enter
+          and may execute immediately.
+        </p>
 
         <pre
-          className="font-mono text-[11px] leading-snug whitespace-pre overflow-auto rounded-md p-2 mb-3 max-h-56"
+          className="font-mono text-[11px] leading-snug whitespace-pre overflow-auto rounded-md p-2 mb-2"
           style={{
             background: 'var(--bg-app, #0a0b10)',
             border: '1px solid var(--border-subtle, #2a2b38)',
             color: 'var(--text-primary, #e4e4e7)',
+            maxHeight: 200,
           }}
         >
           {preview}
         </pre>
 
         {truncated && (
-          <p className="text-[10px] mb-2 -mt-2" style={{ color: 'var(--text-muted, #6b7089)' }}>
+          <p className="text-[10px] mb-2" style={{ color: 'var(--text-muted, #6b7089)' }}>
             Preview truncated — full payload will still be pasted.
           </p>
         )}
@@ -671,8 +771,7 @@ function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel 
           </button>
         </div>
       </div>
-    </div>,
-    document.body
+    </div>
   );
 }
 
