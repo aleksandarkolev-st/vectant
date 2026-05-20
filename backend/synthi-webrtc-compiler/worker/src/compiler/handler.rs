@@ -543,6 +543,58 @@ fn ai_delta_reload_plan_report(
     })
 }
 
+fn gpu_ai_delta_rejection_reports(
+    requested_plan: &str,
+    user_path: &str,
+    generated_path: &str,
+    signature_before: &str,
+    signature_after: &str,
+    layout_before: &str,
+    layout_after: &str,
+) -> (serde_json::Value, serde_json::Value, Vec<String>) {
+    let signature_changed = signature_before != signature_after;
+    let layout_changed = layout_before != layout_after;
+    let mut reason_codes = vec!["verifier.ai_delta_rejected".to_string()];
+    if signature_changed {
+        reason_codes.push("abi.kernel_signature_changed".to_string());
+    }
+    if layout_changed {
+        reason_codes.push("abi.constant_global_layout_changed".to_string());
+    }
+    if reason_codes.len() == 1 {
+        reason_codes.push("verifier.ai_delta_unsafe".to_string());
+    }
+
+    let plan_report = ai_delta_reload_plan_report(
+        "abi_breaking",
+        user_path,
+        Some(generated_path),
+        reason_codes.clone(),
+    );
+    let verifier_report = serde_json::json!({
+        "schemaVersion": "synthi.gpu.ai_delta_verifier.v1",
+        "status": "reject",
+        "requestedReloadPlan": requested_plan,
+        "selectedFallback": "abi_breaking",
+        "reasonCodes": reason_codes,
+        "userFile": user_path,
+        "generatedRole": generated_path,
+        "evidence": {
+            "kernelSignature": {
+                "changed": signature_changed,
+                "before": signature_before,
+                "after": signature_after
+            },
+            "constantGlobalLayout": {
+                "changed": layout_changed,
+                "before": layout_before,
+                "after": layout_after
+            }
+        }
+    });
+    (plan_report, verifier_report, reason_codes)
+}
+
 fn upsert_object_field(
     root: &mut serde_json::Map<String, serde_json::Value>,
     object_key: &str,
@@ -1236,10 +1288,43 @@ pub async fn handle_compile_request(
                                 && (signature_before != signature_after
                                     || layout_before != layout_after)
                             {
+                                let (plan_report, verifier_report, reason_codes) =
+                                    gpu_ai_delta_rejection_reports(
+                                        &ai_delta.reload_plan,
+                                        &request_device_name,
+                                        &generated_device_path,
+                                        &signature_before,
+                                        &signature_after,
+                                        &layout_before,
+                                        &layout_after,
+                                    );
+                                let mut meta =
+                                    sidecar_meta.as_object().cloned().unwrap_or_default();
+                                meta.insert("lastReloadPlanReport".to_string(), plan_report);
+                                meta.insert(
+                                    "lastGpuAiDeltaVerifierReport".to_string(),
+                                    verifier_report,
+                                );
+                                meta.insert(
+                                    "patchTier".to_string(),
+                                    serde_json::Value::String("ai_delta_rejected".to_string()),
+                                );
+                                invalidate_derived_gpu_reports(&mut meta);
+                                write_sidecar_logged(
+                                    &sidecar_path,
+                                    &serde_json::Value::Object(meta),
+                                )
+                                .await;
+                                eprintln!(
+                                    "[GPU AI Delta] rejected: user={} generated={} requested_plan={} reasons={}",
+                                    request_device_name,
+                                    generated_device_path,
+                                    ai_delta.reload_plan,
+                                    reason_codes.join(",")
+                                );
                                 anyhow::bail!(
-                                    "GPU AI delta verifier rejected device_only: signature_changed={} constant_global_layout_changed={}",
-                                    signature_before != signature_after,
-                                    layout_before != layout_after
+                                    "GPU AI delta verifier rejected device_only: reason_codes={}",
+                                    reason_codes.join(",")
                                 );
                             }
 
@@ -3680,6 +3765,49 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
         assert_ne!(
             kernel_abi_fingerprint_source(before),
             kernel_abi_fingerprint_source(after)
+        );
+    }
+
+    #[test]
+    fn gpu_ai_delta_rejection_report_records_deterministic_evidence() {
+        let (plan, report, reasons) = gpu_ai_delta_rejection_reports(
+            "device_only",
+            "src/gpu/particle_kernels.hip",
+            ".synthi/generated/gpu/device.hip",
+            "advance(float*,int)",
+            "advance(float*,int,float)",
+            "layout-before",
+            "layout-after",
+        );
+
+        assert_eq!(
+            plan.get("plan").and_then(serde_json::Value::as_str),
+            Some("abi_breaking")
+        );
+        assert!(reasons
+            .iter()
+            .any(|code| code == "verifier.ai_delta_rejected"));
+        assert!(reasons
+            .iter()
+            .any(|code| code == "abi.kernel_signature_changed"));
+        assert!(reasons
+            .iter()
+            .any(|code| code == "abi.constant_global_layout_changed"));
+        assert_eq!(
+            report.get("status").and_then(serde_json::Value::as_str),
+            Some("reject")
+        );
+        assert_eq!(
+            report
+                .pointer("/evidence/kernelSignature/changed")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            report
+                .pointer("/evidence/constantGlobalLayout/changed")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
         );
     }
 }
