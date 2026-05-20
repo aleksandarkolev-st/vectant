@@ -8,6 +8,8 @@ import { PanelLeftClose, PanelRightClose, ChevronDown, ChevronRight, Search } fr
 import { selectTreeOnRight } from "@/redux/uiSlice";
 import { perfMeasureToConsole } from "@/services/perfMarkers";
 import { Virtuoso } from 'react-virtuoso';
+import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
+import { toast } from 'sonner';
 
 // Flat layout — results sit directly against the sidebar background
 // instead of being trapped inside a card. A single hairline divider
@@ -107,6 +109,65 @@ export default function SearchView({ slug, onToggleOrientation }) {
   const openFile = (file) => {
     dispatch(selectFileThunk(file));
   };
+
+  const { menuState, openMenu, closeMenu } = useContextMenu();
+
+  const copyToClipboard = useCallback((text, label) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(
+      () => toast.success(`Copied ${label}`),
+      () => toast.error('Copy failed'),
+    );
+  }, []);
+
+  const onFileContextMenu = useCallback((e, file, matchCount) => {
+    openMenu(e, [
+      {
+        id: 'open',
+        label: 'Open File',
+        action: () => openFile(file),
+      },
+      {
+        id: 'copy-path',
+        label: 'Copy Path',
+        action: () => copyToClipboard(file.path, file.path),
+      },
+      {
+        id: 'copy-name',
+        label: 'Copy File Name',
+        dividerAfter: true,
+        action: () => copyToClipboard(file.name, file.name),
+      },
+      {
+        id: 'collapse',
+        label: 'Collapse',
+        disabled: !expanded.has(file.path),
+        action: () => toggleExpanded(file.path),
+      },
+    ]);
+  }, [openMenu, copyToClipboard, expanded]);
+
+  const onMatchContextMenu = useCallback((e, file, match) => {
+    e.stopPropagation();
+    const lineRef = `${file.path}:${match.lineNumber}`;
+    openMenu(e, [
+      {
+        id: 'open',
+        label: 'Open File',
+        action: () => openFile(file),
+      },
+      {
+        id: 'copy-match',
+        label: 'Copy Match Line',
+        action: () => copyToClipboard(match.preview || '', 'match'),
+      },
+      {
+        id: 'copy-ref',
+        label: 'Copy path:line',
+        action: () => copyToClipboard(lineRef, lineRef),
+      },
+    ]);
+  }, [openMenu, copyToClipboard]);
 
   const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -217,6 +278,8 @@ export default function SearchView({ slug, onToggleOrientation }) {
           </Section>
         )}
 
+        {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
+
         {results.length > 0 && (
           <Section className="flex min-h-0 flex-1 flex-col overflow-hidden pb-1">
             <SectionHead label="Results" count={results.length} />
@@ -236,6 +299,7 @@ export default function SearchView({ slug, onToggleOrientation }) {
                       <button
                         type="button"
                         onClick={() => toggleExpanded(filePath)}
+                        onContextMenu={(e) => onFileContextMenu(e, r.file, r.matchCount)}
                         className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors"
                         title={filePath}
                       >
@@ -260,6 +324,7 @@ export default function SearchView({ slug, onToggleOrientation }) {
                               className="w-full px-8 py-1.5 text-left text-[11px] transition-colors hover:opacity-80"
                               style={{ color: 'var(--text-primary)' }}
                               onClick={() => openFile(r.file)}
+                              onContextMenu={(e) => onMatchContextMenu(e, r.file, m)}
                               title={`Line ${m.lineNumber}`}
                             >
                               <span className="inline-block w-14" style={{ color: 'var(--text-muted)' }}>{m.lineNumber}</span>
