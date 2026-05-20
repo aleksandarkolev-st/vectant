@@ -531,12 +531,13 @@ function buildScaleProject(vendor, arch, renderBackend) {
   const deviceExt = isRocm ? 'hip' : 'cu';
   const runtimeInclude = isRocm ? '#include <hip/hip_runtime.h>' : '#include <cuda_runtime.h>';
   const launchComment = isRocm ? 'hipLaunchKernelGGL' : 'cudaLaunchKernel';
-  const useTemplateEvidenceFixture = CFG.templateEvidenceMode === 'fresh';
-  const templateInclude = useTemplateEvidenceFixture ? '#include "particle_template_math.hpp"' : '';
-  const attractionGain = useTemplateEvidenceFixture
+  const useTemplateFixture = ['missing', 'fresh', 'stale'].includes(CFG.templateEvidenceMode);
+  const emitTemplateEvidence = ['fresh', 'stale'].includes(CFG.templateEvidenceMode);
+  const templateInclude = useTemplateFixture ? '#include "particle_template_math.hpp"' : '';
+  const attractionGain = useTemplateFixture
     ? '::scale_template::tuned_gain<float, 128>(0.42f)'
     : '0.42f';
-  const integrationScale = useTemplateEvidenceFixture
+  const integrationScale = useTemplateFixture
     ? '::scale_template::tuned_gain<float, 256>(44.0f)'
     : '44.0f';
   const renderSource = renderBackend === 'glfw' ? 'src/render/glfw_canvas.cpp' : 'src/render/sdl_canvas.cpp';
@@ -622,7 +623,7 @@ ${renderLink}
     ],
   }, null, 2) + '\n', true);
 
-  if (useTemplateEvidenceFixture) {
+  if (emitTemplateEvidence) {
     const templateEvidenceEntries = [
       {
         templateName: 'scale_template::tuned_gain<T, BLOCK_SIZE>',
@@ -654,7 +655,7 @@ ${renderLink}
     addFile(files, '.cmake/api/v1/reply/synthi-template-evidence.json', JSON.stringify({
       templateEvidence: {
         schemaVersion: 'synthi.gpu.template_evidence.v1',
-        status: 'fresh',
+        status: CFG.templateEvidenceMode,
         producer: 'clang-libtooling+vendor-artifacts',
         compileCommandHash: stableHash(deviceCompileArguments),
         effectiveFlagsHash: stableHash(deviceCompileArguments.slice(1)),
@@ -731,7 +732,7 @@ void launch_particle_field(ParticleBuffers buffers, LaunchParams params);
 }
 `, true);
 
-  if (useTemplateEvidenceFixture) {
+  if (useTemplateFixture) {
     addFile(files, 'src/gpu/particle_template_math.hpp', `
 #pragma once
 
@@ -1549,12 +1550,31 @@ function validateProdRunReportContract(split, project, vendor, arch) {
       `instantiations=${instantiations.length} warm=${warmOption.safety}`,
     );
   } else {
-    if (reportDoc.templateEvidenceStatus !== 'missing') {
-      throw new Error(`unexpected templateEvidenceStatus for non-template fixture: ${reportDoc.templateEvidenceStatus ?? 'missing'}`);
+    const expectedStatus = CFG.templateEvidenceMode === 'stale' ? 'stale' : 'missing';
+    const expectedReason = CFG.templateEvidenceMode === 'stale'
+      ? 'template_evidence_stale'
+      : 'template_evidence_missing';
+    if (!headerGraph.reachableHeaders?.includes('src/gpu/particle_template_math.hpp')) {
+      throw new Error(`device include graph missing reachable template header: ${JSON.stringify(headerGraph).slice(0, 500)}`);
     }
-    if (!reportDoc.templateEvidenceInvalidationReasons?.includes('template_evidence_missing')) {
-      throw new Error('run report missing template_evidence_missing invalidation reason');
+    if (reportDoc.templateEvidenceStatus !== expectedStatus) {
+      throw new Error(`unexpected templateEvidenceStatus: ${reportDoc.templateEvidenceStatus ?? 'missing'} !== ${expectedStatus}`);
     }
+    if (!reportDoc.templateEvidenceInvalidationReasons?.includes(expectedReason)) {
+      throw new Error(`run report missing ${expectedReason} invalidation reason`);
+    }
+    const warmOption = reportDoc.rankedReloadOptions.find((option) => option.plan === 'warm_rebuild');
+    if (!warmOption || warmOption.safety !== 'fail') {
+      throw new Error(`warm_rebuild was not blocked with ${expectedReason}: ${JSON.stringify(warmOption).slice(0, 500)}`);
+    }
+    if (!warmOption.reasonCodes?.includes(expectedReason)) {
+      throw new Error(`warm_rebuild missing ${expectedReason} reason code: ${JSON.stringify(warmOption).slice(0, 500)}`);
+    }
+    record(
+      `${expectedStatus} template evidence blocks warm rebuild`,
+      'pass',
+      `reason=${expectedReason} warm=${warmOption.safety}`,
+    );
   }
   report.prod_run_report = {
     schemaVersion: reportDoc.schemaVersion,
@@ -1855,8 +1875,8 @@ async function run() {
   if (!['sdl2', 'glfw'].includes(CFG.renderBackend)) {
     fail(`unsupported SYNTHI_SCALE_RENDER_BACKEND=${CFG.renderBackend}; expected sdl2 or glfw`);
   }
-  if (!['missing', 'fresh'].includes(CFG.templateEvidenceMode)) {
-    fail(`unsupported SYNTHI_SCALE_TEMPLATE_EVIDENCE=${CFG.templateEvidenceMode}; expected missing or fresh`);
+  if (!['missing', 'fresh', 'stale'].includes(CFG.templateEvidenceMode)) {
+    fail(`unsupported SYNTHI_SCALE_TEMPLATE_EVIDENCE=${CFG.templateEvidenceMode}; expected missing, fresh, or stale`);
   }
   await resolveDockerContainers();
   report.repo_commit = await execText('git', ['rev-parse', 'HEAD'], 10000, true);
