@@ -216,6 +216,13 @@ fn source_context_report(result: &serde_json::Value) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+fn launch_indirection_report(result: &serde_json::Value) -> serde_json::Value {
+    result
+        .get("_synthi_launch_indirection_report")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
 /// Thin handler-side wrapper around `edit_applier::apply_edit_list`
 /// that adds per-edit eprintln logging for operator observability.
 /// The actual dispatch logic lives in `hmr::edit_applier::apply_edit_list`
@@ -649,6 +656,10 @@ fn device_fast_path_rejection_blocks_fallback(reason_codes: &[String]) -> bool {
                 | "toolchain_capability_stale"
                 | "toolchain_capability_no_device_only_reload"
                 | "fast_path_policy_blocks_device_only"
+                | "stale_launch_pointer_detected"
+                | "stale_launch_pointer_check_missing"
+                | "launch_indirection_unverified"
+                | "multi_device_tu_requires_topology_verification"
         )
     })
 }
@@ -890,6 +901,7 @@ pub async fn handle_compile_request(
             let generated_report = generated_artifact_report(&result);
             let mapping_report = device_mapping_report(&result);
             let source_report = source_context_report(&result);
+            let launch_report = launch_indirection_report(&result);
             let meta = serde_json::json!({
                 "split_hash": source_hash_str,
                 "original_source": req.source,
@@ -900,6 +912,7 @@ pub async fn handle_compile_request(
                 "generated_artifact_report": generated_report,
                 "device_mapping_report": mapping_report,
                 "source_context_report": source_report,
+                "launch_indirection_report": launch_report,
             });
             write_sidecar_logged(&sidecar_path, &meta).await;
 
@@ -1690,6 +1703,8 @@ pub async fn handle_compile_request(
                                                             device_mapping_report(&result);
                                                         let fresh_source_report =
                                                             source_context_report(&result);
+                                                        let fresh_launch_report =
+                                                            launch_indirection_report(&result);
                                                         let meta = serde_json::json!({
                                                             "split_hash": source_hash_str,
                                                             "original_source": req.source,
@@ -1700,6 +1715,7 @@ pub async fn handle_compile_request(
                                                             "generated_artifact_report": fresh_generated_report,
                                                             "device_mapping_report": fresh_mapping_report,
                                                             "source_context_report": fresh_source_report,
+                                                            "launch_indirection_report": fresh_launch_report,
                                                         });
                                                         write_sidecar_logged(&sidecar_path, &meta)
                                                             .await;
@@ -1730,6 +1746,8 @@ pub async fn handle_compile_request(
                                                     device_mapping_report(&result);
                                                 let fresh_source_report =
                                                     source_context_report(&result);
+                                                let fresh_launch_report =
+                                                    launch_indirection_report(&result);
                                                 let meta = serde_json::json!({
                                                     "split_hash": source_hash_str,
                                                     "original_source": req.source,
@@ -1740,6 +1758,7 @@ pub async fn handle_compile_request(
                                                     "generated_artifact_report": fresh_generated_report,
                                                     "device_mapping_report": fresh_mapping_report,
                                                     "source_context_report": fresh_source_report,
+                                                    "launch_indirection_report": fresh_launch_report,
                                                 });
                                                 write_sidecar_logged(&sidecar_path, &meta).await;
                                                 return Ok(result);
@@ -1892,6 +1911,8 @@ pub async fn handle_compile_request(
                                                             device_mapping_report(&result);
                                                         let fresh_source_report =
                                                             source_context_report(&result);
+                                                        let fresh_launch_report =
+                                                            launch_indirection_report(&result);
                                                         let meta = serde_json::json!({
                                                             "split_hash": source_hash_str,
                                                             "original_source": req.source,
@@ -1902,6 +1923,7 @@ pub async fn handle_compile_request(
                                                             "generated_artifact_report": fresh_generated_report,
                                                             "device_mapping_report": fresh_mapping_report,
                                                             "source_context_report": fresh_source_report,
+                                                            "launch_indirection_report": fresh_launch_report,
                                                         });
                                                         write_sidecar_logged(&sidecar_path, &meta)
                                                             .await;
@@ -1935,6 +1957,8 @@ pub async fn handle_compile_request(
                                                     device_mapping_report(&result);
                                                 let fresh_source_report =
                                                     source_context_report(&result);
+                                                let fresh_launch_report =
+                                                    launch_indirection_report(&result);
                                                 let meta = serde_json::json!({
                                                     "split_hash": source_hash_str,
                                                     "original_source": req.source,
@@ -1945,6 +1969,7 @@ pub async fn handle_compile_request(
                                                     "generated_artifact_report": fresh_generated_report,
                                                     "device_mapping_report": fresh_mapping_report,
                                                     "source_context_report": fresh_source_report,
+                                                    "launch_indirection_report": fresh_launch_report,
                                                 });
                                                 write_sidecar_logged(&sidecar_path, &meta).await;
                                                 return Ok(result);
@@ -1989,12 +2014,18 @@ pub async fn handle_compile_request(
                                 .or_else(|| sidecar_meta.get("source_context_report"))
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null);
+                            let launch_report = sidecar_meta
+                                .get("launchIndirectionReport")
+                                .or_else(|| sidecar_meta.get("launch_indirection_report"))
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null);
                             let meta = serde_json::json!({
                                 "split_hash": source_hash_str,
                                 "original_source": req.source,
                                 "architecture": architecture_md,
                                 "compile_manifest": sidecar_manifest_json.clone(),
                                 "source_context_report": source_report.clone(),
+                                "launch_indirection_report": launch_report.clone(),
                             });
                             write_sidecar_logged(&sidecar_path, &meta).await;
 
@@ -2005,6 +2036,7 @@ pub async fn handle_compile_request(
                                 "host_runner": { "content": final_host_runner, "filename": host_runner_filename },
                                 "_synthi_manifest": sidecar_manifest_json.clone(),
                                 "_synthi_source_context_report": source_report,
+                                "_synthi_launch_indirection_report": launch_report,
                             })
                         }
                     }
@@ -2028,6 +2060,7 @@ pub async fn handle_compile_request(
                     let fresh_generated_report = generated_artifact_report(&result);
                     let fresh_mapping_report = device_mapping_report(&result);
                     let fresh_source_report = source_context_report(&result);
+                    let fresh_launch_report = launch_indirection_report(&result);
                     let meta = serde_json::json!({
                         "split_hash": source_hash_str,
                         "original_source": req.source,
@@ -2038,6 +2071,7 @@ pub async fn handle_compile_request(
                         "generated_artifact_report": fresh_generated_report,
                         "device_mapping_report": fresh_mapping_report,
                         "source_context_report": fresh_source_report,
+                        "launch_indirection_report": fresh_launch_report,
                     });
                     write_sidecar_logged(&sidecar_path, &meta).await;
                     result

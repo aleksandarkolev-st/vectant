@@ -120,6 +120,7 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
                 .cloned()
                 .unwrap_or(Value::Bool(false))
         });
+    promote_launch_indirection_report(&mut root);
 
     let fast_path_policy = fast_path_policy(&toolchain_profile, &root);
     root.insert("fastPathPolicy".to_string(), fast_path_policy);
@@ -691,6 +692,94 @@ fn default_generated_artifact_report() -> Value {
     })
 }
 
+fn promote_launch_indirection_report(root: &mut Map<String, Value>) {
+    let report = root
+        .get("launchIndirectionReport")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .or_else(|| root.get("launch_indirection_report").cloned())
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(default_launch_indirection_report);
+    let table_version = report
+        .get("tableVersion")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let stale_checks = report
+        .get("staleLaunchPointerChecks")
+        .cloned()
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(default_stale_launch_pointer_checks);
+
+    root.insert("launchIndirectionReport".to_string(), report);
+    root.insert("launchIndirectionTableVersion".to_string(), table_version);
+    root.insert("staleLaunchPointerChecks".to_string(), stale_checks);
+}
+
+fn default_launch_indirection_report() -> Value {
+    json!({
+        "schemaVersion": "synthi.gpu.launch_indirection.v1",
+        "status": "missing",
+        "tableVersion": null,
+        "launchSiteCount": 0,
+        "generatedLaunchSitesUseIndirection": false,
+        "directLaunchBypassCount": 0,
+        "loaderOwnsSymbolLookup": false,
+        "vendorSymbolLookupBypassCount": 0,
+        "stalePointerRisk": "unknown",
+        "staleLaunchPointerChecks": default_stale_launch_pointer_checks(),
+        "reasonCodes": ["stale_launch_pointer_check_missing"],
+    })
+}
+
+fn default_stale_launch_pointer_checks() -> Value {
+    json!({
+        "schemaVersion": "synthi.gpu.stale_launch_pointer_check.v1",
+        "status": "missing",
+        "runtimeGenerationChecked": false,
+        "failureReasonCode": "reload_failed.stale_launch_pointer",
+        "reasonCodes": ["stale_launch_pointer_check_missing"],
+    })
+}
+
+fn launch_indirection_ok(root: &Map<String, Value>) -> bool {
+    root
+        .get("launchIndirectionReport")
+        .and_then(|v| v.get("status"))
+        .and_then(Value::as_str)
+        == Some("pass")
+        && root
+            .get("staleLaunchPointerChecks")
+            .and_then(|v| v.get("status"))
+            .and_then(Value::as_str)
+            == Some("pass")
+}
+
+fn launch_indirection_block_reason(root: &Map<String, Value>) -> &'static str {
+    let report_status = root
+        .get("launchIndirectionReport")
+        .and_then(|v| v.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("missing");
+    let stale_status = root
+        .get("staleLaunchPointerChecks")
+        .and_then(|v| v.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("missing");
+    if report_status == "missing" || stale_status == "missing" {
+        "stale_launch_pointer_check_missing"
+    } else if root
+        .get("launchIndirectionReport")
+        .and_then(|v| v.get("stalePointerRisk"))
+        .and_then(Value::as_str)
+        == Some("detected")
+        || stale_status == "fail"
+    {
+        "stale_launch_pointer_detected"
+    } else {
+        "launch_indirection_unverified"
+    }
+}
+
 fn fast_path_policy(toolchain_profile: &Value, root: &Map<String, Value>) -> Value {
     let mut blocked = Vec::new();
     let profile_status = toolchain_profile
@@ -726,13 +815,17 @@ fn fast_path_policy(toolchain_profile: &Value, root: &Map<String, Value>) -> Val
     if multi_device_tu {
         blocked.push("multi_device_tu_requires_topology_verification");
     }
+    let launch_ok = launch_indirection_ok(root);
+    if !launch_ok {
+        blocked.push(launch_indirection_block_reason(root));
+    }
     if template_status != "fresh" {
         blocked.push("template_evidence_missing");
     }
 
     json!({
-        "deviceOnlyAllowed": profile_current && supports_device_only && !multi_device_tu,
-        "warmRebuildAllowed": profile_current && template_status == "fresh",
+        "deviceOnlyAllowed": profile_current && supports_device_only && !multi_device_tu && launch_ok,
+        "warmRebuildAllowed": profile_current && template_status == "fresh" && launch_ok,
         "blockedReasonCodes": blocked,
     })
 }
@@ -900,9 +993,11 @@ fn ranked_reload_options(
         .and_then(|v| v.get("multiDeviceTu"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let launch_ok = launch_indirection_ok(root);
+    let launch_block_reason = launch_indirection_block_reason(root);
 
-    let device_only_safety = profile_current && supports_device_only && !multi_device_tu;
-    let warm_safety = profile_current && template_fresh;
+    let device_only_safety = profile_current && supports_device_only && !multi_device_tu && launch_ok;
+    let warm_safety = profile_current && template_fresh && launch_ok;
     let device_only_requires_consent = device_only_safety && unsafe_debug_mode;
     let warm_requires_consent =
         warm_safety && (requires_rdc || rdc_over_budget || unsafe_debug_mode);
@@ -926,6 +1021,9 @@ fn ranked_reload_options(
         }
         if multi_device_tu {
             device_only_reasons.push("multi_device_tu_requires_topology_verification".to_string());
+        }
+        if !launch_ok {
+            device_only_reasons.push(launch_block_reason.to_string());
         }
     }
 
@@ -960,6 +1058,9 @@ fn ranked_reload_options(
                     warm_reasons.push(reason.to_string());
                 }
             }
+        }
+        if !launch_ok {
+            warm_reasons.push(launch_block_reason.to_string());
         }
     }
 
@@ -1188,6 +1289,18 @@ fn run_report(
             .get("generatedArtifactsPersistedAfterVerification")
             .cloned()
             .unwrap_or(Value::Null),
+        "launchIndirectionTableVersion": root
+            .get("launchIndirectionTableVersion")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "launchIndirectionReport": root
+            .get("launchIndirectionReport")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "staleLaunchPointerChecks": root
+            .get("staleLaunchPointerChecks")
+            .cloned()
+            .unwrap_or(Value::Null),
     })
 }
 
@@ -1317,6 +1430,28 @@ mod tests {
         })
     }
 
+    fn launch_indirection_report() -> Value {
+        json!({
+            "schemaVersion": "synthi.gpu.launch_indirection.v1",
+            "status": "pass",
+            "tableVersion": 1,
+            "launchSiteCount": 1,
+            "generatedLaunchSitesUseIndirection": true,
+            "directLaunchBypassCount": 0,
+            "loaderOwnsSymbolLookup": true,
+            "vendorSymbolLookupBypassCount": 0,
+            "stalePointerRisk": "none",
+            "staleLaunchPointerChecks": {
+                "schemaVersion": "synthi.gpu.stale_launch_pointer_check.v1",
+                "status": "pass",
+                "runtimeGenerationChecked": true,
+                "failureReasonCode": "reload_failed.stale_launch_pointer",
+                "reasonCodes": ["launch_indirection.runtime_generation_checked"]
+            },
+            "reasonCodes": ["launch_indirection.host_roles_use_public_wrapper"]
+        })
+    }
+
     #[test]
     fn old_sidecar_is_migrated_without_enabling_unsafe_fast_path() {
         let sidecar = json!({
@@ -1344,6 +1479,12 @@ mod tests {
             .unwrap()
             .iter()
             .any(|v| v.as_str() == Some("toolchain_capability_missing")));
+        assert!(migrated
+            .pointer("/fastPathPolicy/blockedReasonCodes")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some("stale_launch_pointer_check_missing")));
         assert_eq!(
             migrated
                 .pointer("/lastReloadPlanReport/schemaVersion")
@@ -1421,6 +1562,102 @@ mod tests {
     }
 
     #[test]
+    fn missing_launch_indirection_report_blocks_device_only_policy() {
+        let manifest = gpu_compile_manifest();
+        let plan = reload_plan("device_only", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let device_only = ranked_option(&migrated, "device_only");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("fallback")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/fastPathPolicy/deviceOnlyAllowed")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            device_only.get("safety").and_then(Value::as_str),
+            Some("fail")
+        );
+        assert!(has_reason(device_only, "stale_launch_pointer_check_missing"));
+        assert_eq!(
+            migrated
+                .pointer("/runReport/staleLaunchPointerChecks/status")
+                .and_then(Value::as_str),
+            Some("missing")
+        );
+    }
+
+    #[test]
+    fn launch_indirection_report_is_promoted_into_run_report() {
+        let manifest = gpu_compile_manifest();
+        let plan = reload_plan("device_only", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "launch_indirection_report": launch_indirection_report(),
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+
+        assert_eq!(
+            migrated
+                .pointer("/launchIndirectionTableVersion")
+                .and_then(Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/launchIndirectionReport/status")
+                .and_then(Value::as_str),
+            Some("pass")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/staleLaunchPointerChecks/failureReasonCode")
+                .and_then(Value::as_str),
+            Some("reload_failed.stale_launch_pointer")
+        );
+    }
+
+    #[test]
+    fn detected_stale_launch_pointer_risk_blocks_reload_options() {
+        let manifest = gpu_compile_manifest();
+        let flags_hash = effective_flags_hash_for(&manifest);
+        let plan = reload_plan("warm_rebuild", vec!["device"]);
+        let mut launch_report = launch_indirection_report();
+        launch_report["status"] = Value::String("fail".to_string());
+        launch_report["stalePointerRisk"] = Value::String("detected".to_string());
+        launch_report["staleLaunchPointerChecks"]["status"] =
+            Value::String("fail".to_string());
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "templateEvidence": template_evidence(&flags_hash, true, "clang-libtooling+vendor-artifacts"),
+            "launch_indirection_report": launch_report,
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let device_only = ranked_option(&migrated, "device_only");
+        let warm_rebuild = ranked_option(&migrated, "warm_rebuild");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("fallback")
+        );
+        assert!(has_reason(device_only, "stale_launch_pointer_detected"));
+        assert!(has_reason(warm_rebuild, "stale_launch_pointer_detected"));
+    }
+
+    #[test]
     fn rdc_manifest_blocks_direct_device_only_policy() {
         let sidecar = json!({
             "compile_manifest": {
@@ -1462,6 +1699,7 @@ mod tests {
             "compile_manifest": manifest,
             "lastReloadPlanReport": plan,
             "templateEvidence": template_evidence(&flags_hash, true, "clang-libtooling+vendor-artifacts"),
+            "launch_indirection_report": launch_indirection_report(),
         });
 
         let migrated = normalize_split_sidecar(&sidecar);
@@ -1500,6 +1738,7 @@ mod tests {
         let sidecar = json!({
             "compile_manifest": manifest,
             "lastReloadPlanReport": plan,
+            "launch_indirection_report": launch_indirection_report(),
         });
 
         let migrated = normalize_split_sidecar(&sidecar);
@@ -1539,6 +1778,7 @@ mod tests {
         let sidecar = json!({
             "compile_manifest": manifest,
             "lastReloadPlanReport": plan,
+            "launch_indirection_report": launch_indirection_report(),
             "isolation_report": {
                 "schemaVersion": "synthi.gpu.runner_isolation.v1",
                 "platform": "linux",
@@ -1747,6 +1987,7 @@ mod tests {
             "compile_manifest": manifest,
             "lastReloadPlanReport": plan,
             "templateEvidence": template_evidence(&flags_hash, true, "clang-libtooling+vendor-artifacts"),
+            "launch_indirection_report": launch_indirection_report(),
         });
 
         let migrated = normalize_split_sidecar(&sidecar);

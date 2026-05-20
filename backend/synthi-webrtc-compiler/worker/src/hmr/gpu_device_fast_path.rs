@@ -221,6 +221,29 @@ pub fn device_only_capability_rejection_reason(sidecar: &Value) -> Option<&'stat
         .and_then(Value::as_bool)
         .unwrap_or(false);
     if !fast_policy_allows {
+        if let Some(reason) = sidecar
+            .pointer("/fastPathPolicy/blockedReasonCodes")
+            .and_then(Value::as_array)
+            .and_then(|codes| {
+                codes.iter().find_map(|code| match code.as_str() {
+                    Some("stale_launch_pointer_detected") => {
+                        Some("stale_launch_pointer_detected")
+                    }
+                    Some("stale_launch_pointer_check_missing") => {
+                        Some("stale_launch_pointer_check_missing")
+                    }
+                    Some("launch_indirection_unverified") => {
+                        Some("launch_indirection_unverified")
+                    }
+                    Some("multi_device_tu_requires_topology_verification") => {
+                        Some("multi_device_tu_requires_topology_verification")
+                    }
+                    _ => None,
+                })
+            })
+        {
+            return Some(reason);
+        }
         return Some("fast_path_policy_blocks_device_only");
     }
 
@@ -593,6 +616,28 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "toolchain_capability_missing"));
+    }
+
+    #[test]
+    fn stale_launch_pointer_check_blocks_fast_path_with_specific_reason() {
+        let mut stale_launch = sidecar();
+        stale_launch["fastPathPolicy"] = json!({
+            "deviceOnlyAllowed": false,
+            "blockedReasonCodes": ["stale_launch_pointer_check_missing"]
+        });
+
+        let result = try_direct_device_body_patch(
+            &stale_launch,
+            "src/gpu/flow.hip",
+            generated_source(),
+            generated_source(),
+        );
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "stale_launch_pointer_check_missing"));
     }
 
     #[test]

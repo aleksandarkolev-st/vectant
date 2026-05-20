@@ -674,6 +674,18 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         }
     }
 
+    if let Some(launch_report) = raw_response.get("launch_indirection_report") {
+        if !launch_report.is_null() {
+            eprintln!("[AI Split] launch indirection report captured");
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert(
+                    "_synthi_launch_indirection_report".to_string(),
+                    launch_report.clone(),
+                );
+            }
+        }
+    }
+
     // ULTRAPLAN Phase 4: log host_runner presence. The parsed `res` Value
     // already carries `host_runner` as a sibling of `core`/`gui`/`shared`
     // (because the universal split prompt outputs all four fields inside

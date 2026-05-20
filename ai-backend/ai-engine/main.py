@@ -2082,6 +2082,7 @@ from agents.kernel_splitter import (  # noqa: E402
     split_attempt_record as _split_attempt_record,
 )
 from agents.gpu_device_mapping import build_device_mapping_report  # noqa: E402
+from agents.gpu_launch_indirection import build_launch_indirection_report  # noqa: E402
 from agents.gpu_mod_delta import (  # noqa: E402
     GpuDiffPatchRequest,
     build_gpu_diff_patch_retry_prompt as _build_gpu_diff_patch_retry_prompt,
@@ -2385,6 +2386,10 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
             generated_files=split_files_out,
             manifest=manifest_out,
         )
+        launch_indirection_report = build_launch_indirection_report(
+            generated_files=split_files_out,
+            verification=split.verification.to_dict() if split.verification else None,
+        )
     except ManifestRejection as e:
         raise HTTPException(status_code=422, detail=e.message)
     except Exception as e:
@@ -2405,6 +2410,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         "gpu_detection": detection.to_dict(),
         "generated_artifact_report": generated_artifact_report,
         "device_mapping_report": device_mapping_report,
+        "launch_indirection_report": launch_indirection_report,
         "agentic_report": _split_agentic_report(
             attempts=split_attempts,
             accepted=True,
