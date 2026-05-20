@@ -1,5 +1,5 @@
-slug: gpu-scale-validation-20260520143838
-repo_commit: 3dd31362be2fc65592f1c23625f2ae79f437832f
+slug: gpu-scale-validation-20260520152245
+repo_commit: 4772fca754c5fe161ed65579d9a15b56fae7275c
 model: gemini-3.1-flash-lite-preview
 vendor: rocm
 arch: gfx1201
@@ -12,30 +12,35 @@ generated_roles: {"shared":".synthi/generated/gpu/shared.h","core":".synthi/gene
 PASS gpu target - rocm arch=gfx1201 render_backend=glfw
 PASS source file mix - {"cpp":13,"hpp":17,"h":10,"hip":11,"cu":0,"total":51}
 PASS ordinary user project guard - 293 files, no Synthi ABI or generated role filenames
-PASS create workspace - id=cmpe6350v0002l201nph9hka7 slug=gpu-scale-validation-20260520143838
+PASS create workspace - id=cmpe7nvdq0006l201oppf1huv slug=gpu-scale-validation-20260520152245
 PASS seed scale workspace - 293 files
 PASS mcp tools/list - count=42
 PASS mcp attach - attached
 PASS first compile via MCP - files=293
 PASS worker saw full file set - [AI Split] ENTER (cache_key=623742474748146535, src_len=377, files=293, gpu_mode=rocm, gpu_arch=gfx1201
 PASS ai-engine saw full file set - [split/gpu] request file context count=293 focus=src/app/main.cpp names=['src/app/main.cpp
-WARN screenshot first-compile retry - 800x600 visible=0 luma=0.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520143838-first-compile.png attempt=1/6
-PASS screenshot first-compile - 800x600 visible=44388 luma=19.8 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520143838-first-compile-attempt-2.png attempt=2
+WARN screenshot first-compile retry - 800x600 visible=0 luma=0.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520152245-first-compile.png attempt=1/6
+PASS screenshot first-compile - 800x600 visible=43947 luma=19.8 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520152245-first-compile-attempt-2.png attempt=2
 PASS generated split preserved GLFW/OpenGL backend - no SDL markers in generated roles
 PASS generated split contains HMR ABI - .synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip
-PASS read generated split from worker - worker=/tmp/.tmpQ44fGk
+PASS read generated split from worker - worker=/tmp/.tmpts36A8
 PASS generated split kept internal - .synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip supplied inline to HMR compile only
 PASS user device-source AI delta compile via MCP - src/gpu/particle_kernels.hip
 PASS workspace visible tree remains user files only - 309 listed files; no generated split artifacts
-PASS worker forced GPU AI delta endpoint - [GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=1970 bytes arch=172 chars device=1900 bytes hint=device_only
-PASS ai-engine processed GPU delta - [GpuDiffPatch] plan=device_only edits=1 elapsed=15.25s
+PASS worker forced GPU AI delta endpoint - [GPU AI Delta] Calling http://ai-engine:8000/refactor/diff_patch/gpu with diff=1970 bytes arch=161 chars device=1934 bytes hint=device_only
+PASS ai-engine processed GPU delta - [GpuDiffPatch] plan=device_only edits=1 elapsed=1.11s
 PASS device-only GPU HMR observed - [gpu-reload] plan=device_only  reason=device-file-only-edit
-PASS screenshot post-hmr - 800x600 visible=39361 luma=18.5 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520143838-post-hmr.png
+PASS screenshot post-hmr - 800x600 visible=43617 luma=18.9 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520152245-post-hmr.png
 PASS runner stayed alive after GPU HMR - no runner crash marker
+PASS signature edit compile dispatched via MCP - src/gpu/particle_kernels.hip
+PASS signature edit blocks device_only - [gpu-hmr] device_only fast path rejected: user=src/gpu/particle_kernels.hip reasons=abi.kernel_signature_changed
+PASS signature edit stops unsafe fallback - [gpu-hmr] device_only hard stop: user=src/gpu/particle_kernels.hip reasons=abi.kernel_signature_changed
+PASS signature edit does not reload sidecar - no successful sidecar reload after signature rejection
 
-PHASE first_ai_split_compile wait=applied source=candidate_notification wait_ms=75747 terminal_wait_ms=75747 wall_ms=76219 detail={"preview_id":"gpu-scale-validation-20260520143838","generation":1,"total_reload_ms":1287} frame_gate={"status":"disabled","reason":"no_frame_advance_observed","pipeline_budget_ms":80}
-PHASE ai_device_delta_hmr wait=applied source=hmr_status wait_ms=16450 terminal_wait_ms=16288 wall_ms=15977 detail={"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true} frame_gate={"status":"satisfied","frame_seq":555,"ts_ms":1779288018760,"pipeline_budget_ms":80}
+PHASE first_ai_split_compile wait=applied source=candidate_notification wait_ms=33387 terminal_wait_ms=33387 wall_ms=33485 detail={"preview_id":"gpu-scale-validation-20260520152245","generation":1,"total_reload_ms":1261} frame_gate={"status":"disabled","reason":"no_frame_advance_observed","pipeline_budget_ms":80}
+PHASE ai_device_delta_hmr wait=applied source=hmr_status wait_ms=2035 terminal_wait_ms=1943 wall_ms=2125 detail={"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true} frame_gate={"status":"satisfied","frame_seq":144,"ts_ms":1779290608351,"pipeline_budget_ms":80}
+PHASE negative_signature_rejection wait=not_waited_expected_rejection source=negative_validation wait_ms=null terminal_wait_ms= wall_ms=72 detail={"ok":true,"session_id":"gpu-scale-validation-20260520152245","language":"cpp","filename":"src/gpu/particle_kernels.hip","dispatched_at":1779290609754,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."}
 
-SCREENSHOT first-compile 800x600 visible=0 luma=0.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520143838-first-compile.png differs=
-SCREENSHOT first-compile 800x600 visible=44388 luma=19.8 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520143838-first-compile-attempt-2.png differs=
-SCREENSHOT post-hmr 800x600 visible=39361 luma=18.5 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520143838-post-hmr.png differs=true
+SCREENSHOT first-compile 800x600 visible=0 luma=0.0 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520152245-first-compile.png differs=
+SCREENSHOT first-compile 800x600 visible=43947 luma=19.8 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520152245-first-compile-attempt-2.png differs=
+SCREENSHOT post-hmr 800x600 visible=43617 luma=18.9 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-validation-20260520152245-post-hmr.png differs=true
