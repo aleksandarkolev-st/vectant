@@ -1522,14 +1522,15 @@ async function run() {
   record('signature edit stops unsafe fallback', signatureHardStop.matched ? 'pass' : 'fail', signatureHardStop.snippet || 'no hard-stop rejection marker');
   if (!signatureHardStop.matched) throw new Error('signature hard-stop evidence missing');
 
-  const signatureReload = await awaitLogRegex(
-    CFG.workerContainer,
-    /Device sidecar reload vendor=[^\n]*result=Success[^\n]*/,
-    1500,
-    negativeCheckpoint,
-  );
-  record('signature edit does not reload sidecar', signatureReload.matched ? 'fail' : 'pass', signatureReload.snippet || 'no successful sidecar reload after signature rejection');
-  if (signatureReload.matched) throw new Error(`signature edit unexpectedly reloaded sidecar: ${signatureReload.snippet}`);
+  await sleep(1500);
+  const negativeTail = await dockerLogs(CFG.workerContainer, negativeCheckpoint);
+  const hardStopOffset = signatureHardStop.snippet ? negativeTail.indexOf(signatureHardStop.snippet) : -1;
+  const tailAfterHardStop = hardStopOffset >= 0
+    ? negativeTail.slice(hardStopOffset + signatureHardStop.snippet.length)
+    : negativeTail;
+  const signatureReload = tailAfterHardStop.match(/Device sidecar reload vendor=[^\n]*result=Success[^\n]*/);
+  record('signature edit does not reload sidecar', signatureReload ? 'fail' : 'pass', signatureReload?.[0] || 'no successful sidecar reload after signature rejection');
+  if (signatureReload) throw new Error(`signature edit unexpectedly reloaded sidecar: ${signatureReload[0]}`);
 
   await writeReport();
   const failures = report.checks.filter((r) => r.status === 'fail');
