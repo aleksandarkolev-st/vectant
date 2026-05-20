@@ -1835,7 +1835,7 @@ async function run() {
   if (!staleLaunchAiDeltaReject.matched) throw new Error('forced stale-launch-pointer GPU AI delta verifier rejection evidence missing');
   await assertNoSidecarReloadAfterHardStop(staleLaunchAiDeltaReject, staleLaunchAiDeltaCheckpoint, 'stale launch pointer AI delta does not reload sidecar');
 
-  const staleCapabilityDevice = editUserDeviceSource(editedDevice);
+  const staleCapabilityDevice = editUserDeviceSource(staleLaunchDevice);
   await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: staleCapabilityDevice }] });
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: stale toolchain rejection probe' });
   const staleToolchainSidecar = sidecarWithStaleToolchain(
