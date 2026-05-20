@@ -1037,6 +1037,31 @@ async function compileViaMcp(args, waitTimeoutMs, phaseName, checkpoint) {
   return { compile, wait, phase };
 }
 
+async function dispatchCompileViaMcp(args, timeoutMs, phaseName, checkpoint) {
+  const state = await ensureMcpAttached();
+  const wallStart = Date.now();
+  const compileDispatchedAt = new Date().toISOString();
+  const compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
+  const workerTail = await dockerLogs(CFG.workerContainer, checkpoint);
+  const phase = {
+    name: phaseName,
+    compile_dispatched_at: compileDispatchedAt,
+    wait_hmr_started_at: null,
+    wait_hmr_finished_at: null,
+    wait_hmr_elapsed_ms: null,
+    wait_hmr_terminal_elapsed_ms: null,
+    wait_hmr_status: compile?.ok ? 'not_waited_expected_rejection' : 'dispatch_failed',
+    wait_hmr_source: 'negative_validation',
+    wait_hmr_detail: compile ?? null,
+    frame_gate: null,
+    wall_elapsed_ms: Date.now() - wallStart,
+    worker_log_markers: collectWorkerMarkers(workerTail),
+  };
+  report.phases.push(phase);
+  if (!compile?.ok) throw new Error(`synthi_compile dispatch failed: ${JSON.stringify(compile).slice(0, 500)}`);
+  return { compile, phase };
+}
+
 function collectWorkerMarkers(text) {
   const patterns = [
     /\[AI Split\] ENTER[^\n]*/g,
@@ -1238,6 +1263,18 @@ function editUserDeviceSource(source) {
   throw new Error('user device source did not preserve an editable scale validation token');
 }
 
+function editUserDeviceSignature(source) {
+  const edited = source.replace(
+    /(__global__\s+void\s+[A-Za-z_][A-Za-z0-9_]*\s*\()([^)]*)(\)\s*\{)/,
+    (_match, prefix, params, suffix) => {
+      const extra = params.trim() ? ', float synthi_hmr_abi_probe' : 'float synthi_hmr_abi_probe';
+      return `${prefix}${params}${extra}${suffix}`;
+    },
+  );
+  if (edited === source) throw new Error('user device source did not preserve an editable kernel signature');
+  return edited;
+}
+
 async function compileUserDeviceDelta(project, editedDevice, vendor, checkpoint) {
   if (CFG.hmrDeltaMode !== 'ai_user_delta') {
     throw new Error(`unsupported SYNTHI_SCALE_HMR_DELTA_MODE=${CFG.hmrDeltaMode}; expected ai_user_delta`);
@@ -1261,6 +1298,27 @@ async function compileUserDeviceDelta(project, editedDevice, vendor, checkpoint)
     width: 800,
     height: 600,
   }, CFG.hotSwapTimeoutMs, 'ai_device_delta_hmr', checkpoint);
+}
+
+async function dispatchUserDeviceSignatureNegative(project, signatureEditedDevice, vendor, checkpoint) {
+  const additionalFiles = project.files
+    .filter((f) => cleanRel(f.path) !== cleanRel(project.devicePath))
+    .map((f) => ({ name: f.path, content: f.content }));
+  return dispatchCompileViaMcp({
+    language: 'cpp',
+    filename: project.devicePath,
+    source: signatureEditedDevice,
+    files: additionalFiles,
+    is_gui: true,
+    use_ai_split: false,
+    user_requested_deterministic: true,
+    prefer_gpu_pipeline: true,
+    gpu_mode: vendor,
+    gpu_arch: CFG.gpuArch,
+    slug: CFG.slug,
+    width: 800,
+    height: 600,
+  }, CFG.hotSwapTimeoutMs, 'negative_signature_rejection', checkpoint);
 }
 
 async function writeReport() {
@@ -1439,6 +1497,39 @@ async function run() {
   const crashMatch = afterReload.match(/Runner process (?:has already )?exited[^\n]*|SIGSEGV|core dumped|Device reload result .*Failed/);
   record('runner stayed alive after GPU HMR', crashMatch ? 'fail' : 'pass', crashMatch?.[0] || 'no runner crash marker');
   if (crashMatch) throw new Error(`runner/device failure after HMR: ${crashMatch[0]}`);
+
+  const signatureEditedDevice = editUserDeviceSignature(editedDevice);
+  await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: signatureEditedDevice }] });
+  await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: signature rejection probe' });
+  const negativeCheckpoint = await workerCheckpoint();
+  await dispatchUserDeviceSignatureNegative(project, signatureEditedDevice, vendor, negativeCheckpoint);
+  record('signature edit compile dispatched via MCP', 'pass', project.devicePath);
+  const signatureReject = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[gpu-hmr\] device_only fast path rejected: user=[^\n]*abi\.kernel_signature_changed[^\n]*/,
+    10000,
+    negativeCheckpoint,
+  );
+  record('signature edit blocks device_only', signatureReject.matched ? 'pass' : 'fail', signatureReject.snippet || 'no abi.kernel_signature_changed rejection marker');
+  if (!signatureReject.matched) throw new Error('signature rejection evidence missing');
+
+  const signatureHardStop = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[gpu-hmr\] device_only hard stop: user=[^\n]*abi\.kernel_signature_changed[^\n]*/,
+    10000,
+    negativeCheckpoint,
+  );
+  record('signature edit stops unsafe fallback', signatureHardStop.matched ? 'pass' : 'fail', signatureHardStop.snippet || 'no hard-stop rejection marker');
+  if (!signatureHardStop.matched) throw new Error('signature hard-stop evidence missing');
+
+  const signatureReload = await awaitLogRegex(
+    CFG.workerContainer,
+    /Device sidecar reload vendor=[^\n]*result=Success[^\n]*/,
+    1500,
+    negativeCheckpoint,
+  );
+  record('signature edit does not reload sidecar', signatureReload.matched ? 'fail' : 'pass', signatureReload.snippet || 'no successful sidecar reload after signature rejection');
+  if (signatureReload.matched) throw new Error(`signature edit unexpectedly reloaded sidecar: ${signatureReload.snippet}`);
 
   await writeReport();
   const failures = report.checks.filter((r) => r.status === 'fail');

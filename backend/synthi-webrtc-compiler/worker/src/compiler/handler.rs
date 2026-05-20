@@ -1161,6 +1161,11 @@ pub async fn handle_compile_request(
                             device_patch.reason_codes.join(",")
                         );
                         if device_fast_path_rejection_blocks_fallback(&device_patch.reason_codes) {
+                            eprintln!(
+                                "[gpu-hmr] device_only hard stop: user={} reasons={}",
+                                request_device_name,
+                                device_patch.reason_codes.join(",")
+                            );
                             anyhow::bail!(
                                 "GPU device-only reload rejected before fallback: reason_codes={}",
                                 device_patch.reason_codes.join(",")
