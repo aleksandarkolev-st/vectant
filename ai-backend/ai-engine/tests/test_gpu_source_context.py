@@ -257,3 +257,125 @@ def test_source_context_ingests_compiler_template_evidence():
     assert evidence["bounded"] is True
     assert [entry["templateArgs"][1] for entry in evidence["entries"]] == ["128", "256"]
     assert "Template evidence: status=fresh" in prompt
+
+
+def test_template_evidence_can_match_device_tu_compile_command_for_selected_target():
+    main_command = [
+        "clang++",
+        "-Iinclude",
+        "-DSCALE_ENTRY=1",
+        "-c",
+        "src/app/main.cpp",
+    ]
+    device_command = [
+        "hipcc",
+        "-Isrc",
+        "--offload-arch=gfx1201",
+        "-c",
+        "src/gpu/reduce.hip",
+    ]
+    device_flags_hash = stable_hash(device_command[1:])
+    files = {
+        "CMakeLists.txt": "add_executable(gpu_app src/app/main.cpp src/gpu/reduce.hip)",
+        "src/app/main.cpp": "int main(){ return 0; }",
+        "src/gpu/reduce.hip": """
+        template <typename T, int BLOCK_SIZE>
+        __device__ T BlockReduce(T value) { return value; }
+        __global__ void reduce_kernel(float* values) {
+            values[0] = BlockReduce<float, 128>(values[0]);
+            values[1] = BlockReduce<float, 256>(values[1]);
+        }
+        """,
+        "compile_commands.json": f"""
+        [
+          {{
+            "directory": "/repo/build",
+            "file": "/repo/src/app/main.cpp",
+            "arguments": {main_command!r}
+          }},
+          {{
+            "directory": "/repo/build",
+            "file": "/repo/src/gpu/reduce.hip",
+            "arguments": {device_command!r}
+          }}
+        ]
+        """.replace("'", '"'),
+        ".cmake/api/v1/reply/codemodel-v2-debug.json": """
+        {
+          "kind": "codemodel",
+          "configurations": [
+            {
+              "name": "Debug",
+              "targets": [
+                {"name": "gpu_app", "id": "gpu_app::@123", "jsonFile": "target-gpu_app-Debug.json"}
+              ]
+            }
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-gpu_app-Debug.json": """
+        {
+          "name": "gpu_app",
+          "id": "gpu_app::@123",
+          "type": "EXECUTABLE",
+          "sources": [
+            {"path": "src/app/main.cpp"},
+            {"path": "src/gpu/reduce.hip"}
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/synthi-template-evidence.json": f"""
+        {{
+          "templateEvidence": {{
+            "schemaVersion": "synthi.gpu.template_evidence.v1",
+            "status": "fresh",
+            "producer": "clang-libtooling+vendor-artifacts",
+            "compileCommandHash": "{stable_hash(device_command)}",
+            "effectiveFlagsHash": "{device_flags_hash}",
+            "gpuArch": "gfx1201",
+            "bounded": true,
+            "entries": [
+              {{
+                "templateName": "BlockReduce<T, BLOCK_SIZE>",
+                "templateArgs": ["float", "128"],
+                "owningTU": "src/gpu/reduce.hip",
+                "instantiationSite": "src/gpu/reduce.hip:5",
+                "reachableFromKernel": "reduce_kernel(float*)",
+                "sourceHeaders": ["src/gpu/reduce.hip"],
+                "generatedRole": "device.reduce",
+                "abiFingerprint": "abi-128",
+                "layoutFingerprint": "layout-128",
+                "artifactFingerprint": "artifact-128"
+              }},
+              {{
+                "templateName": "BlockReduce<T, BLOCK_SIZE>",
+                "templateArgs": ["float", "256"],
+                "owningTU": "src/gpu/reduce.hip",
+                "instantiationSite": "src/gpu/reduce.hip:6",
+                "reachableFromKernel": "reduce_kernel(float*)",
+                "sourceHeaders": ["src/gpu/reduce.hip"],
+                "generatedRole": "device.reduce",
+                "abiFingerprint": "abi-256",
+                "layoutFingerprint": "layout-256",
+                "artifactFingerprint": "artifact-256"
+              }}
+            ]
+          }}
+        }}
+        """,
+    }
+
+    _prompt, report = build_project_source_context(files, focus="src/app/main.cpp")
+    metadata = report["buildMetadata"]
+    evidence = metadata["templateEvidence"]
+
+    assert metadata["selectedCompileCommand"]["file"].endswith("src/app/main.cpp")
+    assert metadata["templateEvidenceStatus"] == "fresh"
+    assert metadata["templateEvidenceInvalidationReasons"] == []
+    assert evidence["effectiveFlagsHash"] == device_flags_hash
+    assert [entry["templateArgs"][1] for entry in evidence["entries"]] == ["128", "256"]
+    assert any(
+        item["file"].endswith("src/gpu/reduce.hip")
+        and item["effectiveFlagsHash"] == device_flags_hash
+        for item in metadata["templateEvidenceCompileCommands"]
+    )

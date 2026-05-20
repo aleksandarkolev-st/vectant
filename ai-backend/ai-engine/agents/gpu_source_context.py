@@ -154,9 +154,85 @@ def _is_template_evidence_path(path: str) -> bool:
     )
 
 
+def _target_compile_command_identities(
+    source_files: Mapping[str, str],
+    selected_command: Mapping[str, Any],
+    cmake_file_api: Mapping[str, Any],
+) -> list[dict]:
+    status, entries, _error = _parse_compile_commands(source_files)
+    if status != "available":
+        entries = []
+
+    target_resolution = cmake_file_api.get("targetResolution")
+    selected_target = (
+        target_resolution.get("selectedTarget")
+        if isinstance(target_resolution, Mapping)
+        else None
+    )
+    target_sources = set()
+    if isinstance(selected_target, Mapping):
+        raw_sources = selected_target.get("sourceFiles")
+        if isinstance(raw_sources, list):
+            target_sources = {
+                normalize_path(str(source))
+                for source in raw_sources
+                if str(source).strip()
+            }
+
+    identities: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        entry_path = _compile_command_file(entry)
+        if target_sources and not any(_path_matches(entry_path, source) for source in target_sources):
+            continue
+        args = _command_arguments(entry)
+        if not args:
+            continue
+        identity = {
+            "file": entry_path,
+            "compiler": args[0].rsplit("/", 1)[-1],
+            "argumentsHash": stable_hash(args),
+            "effectiveFlagsHash": stable_hash(args[1:] if len(args) > 1 else []),
+            "source": "compile_commands.json",
+            "targetOwned": bool(target_sources),
+        }
+        key = (identity["file"], identity["effectiveFlagsHash"])
+        if key in seen:
+            continue
+        seen.add(key)
+        identities.append(identity)
+
+    selected_hash = selected_command.get("effectiveFlagsHash")
+    selected_file = normalize_path(str(selected_command.get("file") or ""))
+    if selected_hash and all(identity.get("effectiveFlagsHash") != selected_hash for identity in identities):
+        identities.insert(
+            0,
+            {
+                "file": selected_file,
+                "compiler": selected_command.get("compiler"),
+                "argumentsHash": selected_command.get("argumentsHash"),
+                "effectiveFlagsHash": selected_hash,
+                "source": selected_command.get("source") or "selected_compile_command",
+                "targetOwned": any(_path_matches(selected_file, source) for source in target_sources)
+                if target_sources and selected_file
+                else False,
+            },
+        )
+
+    return sorted(
+        identities,
+        key=lambda item: (
+            0 if item.get("effectiveFlagsHash") == selected_hash else 1,
+            str(item.get("file") or ""),
+            str(item.get("effectiveFlagsHash") or ""),
+        ),
+    )
+
+
 def _template_evidence_report(
     source_files: Mapping[str, str],
     selected_command: Mapping[str, Any],
+    cmake_file_api: Mapping[str, Any],
 ) -> dict:
     candidates: list[tuple[str, str]] = [
         (normalize_path(path), content)
@@ -175,6 +251,18 @@ def _template_evidence_report(
     parsed_candidates: list[dict] = []
     parse_errors: list[str] = []
     selected_flags_hash = str(selected_command.get("effectiveFlagsHash") or "")
+    compile_identities = _target_compile_command_identities(
+        source_files,
+        selected_command,
+        cmake_file_api,
+    )
+    accepted_flags_hashes = {
+        str(identity.get("effectiveFlagsHash"))
+        for identity in compile_identities
+        if identity.get("effectiveFlagsHash")
+    }
+    if selected_flags_hash:
+        accepted_flags_hashes.add(selected_flags_hash)
     for path, content in candidates:
         parsed, error = _parse_json_file(path, content)
         if error:
@@ -226,6 +314,8 @@ def _template_evidence_report(
         bounded = bool(evidence.get("bounded"))
         score = 0
         if selected_flags_hash and flags == selected_flags_hash:
+            score -= 6
+        elif flags and flags in accepted_flags_hashes:
             score -= 4
         if status == "fresh":
             score -= 2
@@ -243,7 +333,10 @@ def _template_evidence_report(
         invalidation.append("template_evidence_stale")
     if not selected.get("effectiveFlagsHash"):
         invalidation.append("template_evidence_effective_flags_missing")
-    elif selected_flags_hash and selected.get("effectiveFlagsHash") != selected_flags_hash:
+    elif (
+        accepted_flags_hashes
+        and str(selected.get("effectiveFlagsHash") or "") not in accepted_flags_hashes
+    ):
         invalidation.append("template_evidence_effective_flags_mismatch")
     if not selected.get("bounded"):
         invalidation.append("template_instantiation_unbounded")
@@ -255,6 +348,7 @@ def _template_evidence_report(
         "evidence": selected,
         "evidenceHash": selected.get("evidenceHash") or stable_hash(selected),
         "candidateCount": len(candidates),
+        "acceptedCompileCommandIdentities": compile_identities,
         "selectedPath": selected.get("source", {}).get("path")
         if isinstance(selected.get("source"), dict)
         else None,
@@ -450,6 +544,10 @@ def _command_arguments(entry: Mapping[str, Any]) -> List[str]:
     return []
 
 
+def _compile_command_file(entry: Mapping[str, Any]) -> str:
+    return normalize_path(str(entry.get("file") or ""))
+
+
 def _selected_compile_command(
     source_files: Mapping[str, str],
     focus: Optional[str],
@@ -472,18 +570,15 @@ def _selected_compile_command(
     }
     ranked_sources = sorted(source_priorities.items(), key=lambda item: (item[1], item[0]))
 
-    def entry_file(entry: Mapping[str, Any]) -> str:
-        return normalize_path(str(entry.get("file") or ""))
-
-    def matches(candidate: str, target: str) -> bool:
-        return candidate == target or candidate.endswith("/" + target) or target.endswith("/" + candidate)
-
     selected: Optional[Mapping[str, Any]] = None
     if focus_path:
-        selected = next((entry for entry in entries if matches(entry_file(entry), focus_path)), None)
+        selected = next((entry for entry in entries if _path_matches(_compile_command_file(entry), focus_path)), None)
     if selected is None:
         for source_path, _priority in ranked_sources:
-            selected = next((entry for entry in entries if matches(entry_file(entry), source_path)), None)
+            selected = next(
+                (entry for entry in entries if _path_matches(_compile_command_file(entry), source_path)),
+                None,
+            )
             if selected is not None:
                 break
 
@@ -497,8 +592,8 @@ def _selected_compile_command(
         }
 
     args = _command_arguments(selected)
-    selected_file = entry_file(selected)
-    duplicate_count = sum(1 for entry in entries if entry_file(entry) == selected_file)
+    selected_file = _compile_command_file(selected)
+    duplicate_count = sum(1 for entry in entries if _compile_command_file(entry) == selected_file)
     return {
         "status": "selected",
         "source": "compile_commands.json",
@@ -588,7 +683,11 @@ def build_source_context_report(
     multi_device_tu = len(device_translation_units) > 1
     selected_command = _selected_compile_command(normalized_files, focus)
     cmake_file_api = _cmake_file_api_report(normalized_files, focus)
-    template_evidence = _template_evidence_report(normalized_files, selected_command)
+    template_evidence = _template_evidence_report(
+        normalized_files,
+        selected_command,
+        cmake_file_api,
+    )
     report = {
         "schemaVersion": SOURCE_CONTEXT_SCHEMA_VERSION,
         "focus": normalize_path(focus or ""),
@@ -632,6 +731,9 @@ def build_source_context_report(
             "templateEvidenceStatus": template_evidence.get("status"),
             "templateEvidenceHash": template_evidence.get("evidenceHash"),
             "templateEvidenceCandidateCount": template_evidence.get("candidateCount"),
+            "templateEvidenceCompileCommands": template_evidence.get(
+                "acceptedCompileCommandIdentities"
+            ),
             "templateEvidenceInvalidationReasons": template_evidence.get(
                 "invalidationReasons"
             ),
