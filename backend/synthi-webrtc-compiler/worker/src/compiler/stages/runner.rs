@@ -69,6 +69,22 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn runner_load_command(name: &str, path: &str) -> String {
+    if let Some(rest) = name.strip_prefix("__gpu_device:") {
+        let mut fields = rest.splitn(3, ':');
+        let vendor = fields.next().filter(|s| !s.is_empty()).unwrap_or("cuda");
+        let kernels = fields.next().filter(|s| !s.is_empty()).unwrap_or("-");
+        let abi = fields.next().filter(|s| !s.is_empty());
+        if let Some(abi) = abi {
+            format!("load_device {} {} {} {}\n", vendor, path, kernels, abi)
+        } else {
+            format!("load_device {} {} {}\n", vendor, path, kernels)
+        }
+    } else {
+        format!("load {} {}\n", name, path)
+    }
+}
+
 pub async fn handle_runner_execution(
     ctx: &CompileContext,
     req: &CompileRequest,
@@ -1043,14 +1059,7 @@ pub async fn handle_runner_execution(
                 if !send_failed {
                     // Send all load commands back-to-back (no sleep between them)
                     for (name, path) in &modules_to_load {
-                        let cmd = if let Some(rest) = name.strip_prefix("__gpu_device:") {
-                            let mut fields = rest.splitn(2, ':');
-                            let vendor = fields.next().unwrap_or("cuda");
-                            let kernels = fields.next().filter(|s| !s.is_empty()).unwrap_or("-");
-                            format!("load_device {} {} {}\n", vendor, path, kernels)
-                        } else {
-                            format!("load {} {}\n", name, path)
-                        };
+                        let cmd = runner_load_command(name, path);
                         debug_log!("[Main] Sending command to runner: {}", cmd.trim());
                         if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
                             eprintln!("[Main] Failed to write to runner stdin: {}", e);
@@ -1105,4 +1114,25 @@ pub async fn handle_runner_execution(
         .await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runner_load_command;
+
+    #[test]
+    fn gpu_device_load_command_preserves_legacy_shape_without_abi() {
+        assert_eq!(
+            runner_load_command("__gpu_device:rocm:advance,init", "/tmp/device.hsaco"),
+            "load_device rocm /tmp/device.hsaco advance,init\n"
+        );
+    }
+
+    #[test]
+    fn gpu_device_load_command_includes_signature_abi_when_present() {
+        assert_eq!(
+            runner_load_command("__gpu_device:rocm:advance,init:12345", "/tmp/device.hsaco"),
+            "load_device rocm /tmp/device.hsaco advance,init 12345\n"
+        );
+    }
 }

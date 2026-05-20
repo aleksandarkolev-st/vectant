@@ -78,6 +78,14 @@ use host_kv::{
     create_kv_api, // Removed module_slot_to_u32, read_schema_table, KV_STORE, HostKvSchemaEvent, SynthiHostContextV1
 };
 
+fn device_load_abi_version(kernels: &[String], abi_arg: Option<&str>) -> String {
+    abi_arg
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "-")
+        .map(str::to_string)
+        .unwrap_or_else(|| kernels.join("|"))
+}
+
 use loader::ModuleLoader; // Removed LoadResult
 
 use state_manager::StateManager;
@@ -1314,7 +1322,7 @@ fn main() {
                     skip_render_frames = 1;
                 }
                 "load_device" => {
-                    // usage: load_device <cuda|rocm|hip> <cubin|hsaco> <kernel1,kernel2,...|->
+                    // usage: load_device <cuda|rocm|hip> <cubin|hsaco> <kernel1,kernel2,...|-> [abi_fingerprint]
                     #[cfg(feature = "gpu-hmr")]
                     {
                         if parts.len() < 3 {
@@ -1330,6 +1338,7 @@ fn main() {
                             .filter(|s| !s.trim().is_empty() && *s != "-")
                             .map(|s| s.trim().to_string())
                             .collect();
+                        let abi_version = device_load_abi_version(&kernels, parts.get(4).copied());
 
                         let (language, vendor) = match vendor_raw {
                             "cuda" => ("cuda", GpuVendor::Cuda),
@@ -1351,7 +1360,7 @@ fn main() {
                         )
                         .with_slot(BuildSlot::Custom("device".into()))
                         .with_artifact(artifact_path, &artifact_hash)
-                        .with_abi_version(&kernels.join("|"))
+                        .with_abi_version(&abi_version)
                         .with_state_schema_hash(&artifact_hash)
                         .with_dirty_units(vec![if vendor == GpuVendor::Cuda {
                             "device.cu".to_string()
@@ -1833,3 +1842,26 @@ fn main() {
         }
     } // end of loop
 } // end of main
+
+#[cfg(test)]
+mod tests {
+    use super::device_load_abi_version;
+
+    #[test]
+    fn device_load_abi_version_prefers_protocol_fingerprint() {
+        let kernels = vec!["advance".to_string(), "init".to_string()];
+        assert_eq!(
+            device_load_abi_version(&kernels, Some("12345")),
+            "12345".to_string()
+        );
+    }
+
+    #[test]
+    fn device_load_abi_version_preserves_legacy_kernel_list() {
+        let kernels = vec!["advance".to_string(), "init".to_string()];
+        assert_eq!(
+            device_load_abi_version(&kernels, None),
+            "advance|init".to_string()
+        );
+    }
+}

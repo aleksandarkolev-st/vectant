@@ -501,7 +501,7 @@ impl GpuModuleAdapter {
         let report = plan_gpu_reload(&cfg, input);
         self.last_reload_log = report.log_lines.clone();
         for line in &self.last_reload_log {
-            println!("{line}");
+            eprintln!("{line}");
         }
     }
 

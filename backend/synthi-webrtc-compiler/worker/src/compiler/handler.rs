@@ -2958,10 +2958,15 @@ pub async fn handle_compile_request(
     ) {
         if let Some(gpu) = manifest.gpu.as_ref() {
             let kernel_symbols = extract_device_kernel_symbols(device_source);
+            let kernel_abi_hash = format!(
+                "{}",
+                hash_content(&kernel_abi_fingerprint_source(device_source))
+            );
             let device_cmd = format!(
-                "__gpu_device:{}:{}",
+                "__gpu_device:{}:{}:{}",
                 gpu.vendor.as_str(),
-                kernel_symbols.join(",")
+                kernel_symbols.join(","),
+                kernel_abi_hash
             );
             modules_to_load.insert(
                 0,
