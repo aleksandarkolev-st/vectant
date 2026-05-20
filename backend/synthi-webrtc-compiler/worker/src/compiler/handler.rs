@@ -646,6 +646,288 @@ fn gpu_ai_delta_touched_roles(edits: &[crate::hmr::edit_applier::Edit]) -> Vec<S
     roles.into_iter().collect()
 }
 
+#[derive(Debug, Clone)]
+struct WarmRebuildDecision {
+    accepted: bool,
+    reload_plan: serde_json::Value,
+    verifier_report: serde_json::Value,
+    reason_codes: Vec<String>,
+    generated_device_path: Option<String>,
+}
+
+fn is_device_header_request(filename: &str) -> bool {
+    normalized_request_filename(filename)
+        .map(|name| {
+            let lower = name.to_ascii_lowercase();
+            [".cuh", ".h", ".hh", ".hpp", ".hxx"]
+                .iter()
+                .any(|suffix| lower.ends_with(suffix))
+        })
+        .unwrap_or(false)
+}
+
+fn sidecar_array_contains_path(sidecar: &serde_json::Value, pointer: &str, path: &str) -> bool {
+    let normalized = normalized_request_filename(path).unwrap_or_else(|| path.replace('\\', "/"));
+    sidecar
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items.iter().any(|item| {
+                item.as_str()
+                    .map(|candidate| {
+                        normalized_request_filename(candidate).as_deref()
+                            == Some(normalized.as_str())
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn template_evidence_mentions_source(sidecar: &serde_json::Value, path: &str) -> bool {
+    let normalized = normalized_request_filename(path).unwrap_or_else(|| path.replace('\\', "/"));
+    sidecar
+        .get("affectedTemplateInstantiations")
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| {
+            entries.iter().any(|entry| {
+                entry
+                    .get("sourceHeaders")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|headers| {
+                        headers.iter().any(|header| {
+                            header
+                                .as_str()
+                                .map(|candidate| {
+                                    normalized_request_filename(candidate).as_deref()
+                                        == Some(normalized.as_str())
+                                })
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn device_include_graph_mentions_source(sidecar: &serde_json::Value, path: &str) -> bool {
+    sidecar_array_contains_path(sidecar, "/affectedHeaderGraph/reachableHeaders", path)
+        || sidecar_array_contains_path(
+            sidecar,
+            "/deviceMappingReport/deviceIncludeGraph/reachableHeaders",
+            path,
+        )
+        || template_evidence_mentions_source(sidecar, path)
+}
+
+fn ranked_option_reason_codes(sidecar: &serde_json::Value, plan: &str) -> Vec<String> {
+    sidecar
+        .get("rankedReloadOptions")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|options| {
+            options
+                .iter()
+                .find(|option| option.get("plan").and_then(serde_json::Value::as_str) == Some(plan))
+        })
+        .and_then(|option| option.get("reasonCodes"))
+        .and_then(serde_json::Value::as_array)
+        .map(|codes| {
+            codes
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn ranked_option_estimate_ms(sidecar: &serde_json::Value, plan: &str) -> Option<u64> {
+    sidecar
+        .get("rankedReloadOptions")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|options| {
+            options
+                .iter()
+                .find(|option| option.get("plan").and_then(serde_json::Value::as_str) == Some(plan))
+        })
+        .and_then(|option| option.get("estimatedMs"))
+        .and_then(serde_json::Value::as_u64)
+}
+
+fn warm_rebuild_reload_plan(
+    plan: &str,
+    user_path: &str,
+    generated_path: Option<&str>,
+    reason_codes: Vec<String>,
+    estimated_ms: Option<u64>,
+) -> serde_json::Value {
+    let mut timings = serde_json::Map::new();
+    if let Some(ms) = estimated_ms {
+        timings.insert(
+            "warmEstimate".to_string(),
+            serde_json::Value::Number(ms.into()),
+        );
+    }
+    serde_json::json!({
+        "schemaVersion": RELOAD_PLAN_SCHEMA_VERSION,
+        "plan": plan,
+        "reasonCodes": reason_codes,
+        "fallbacksAvailable": ["ai_delta", "full_resplit", "cold_restart"],
+        "affectedUserFiles": [user_path],
+        "affectedGeneratedRoles": generated_path.map(|p| vec![p.to_string()]).unwrap_or_default(),
+        "timingsMs": serde_json::Value::Object(timings),
+    })
+}
+
+fn warm_rebuild_verifier_report(
+    status: &str,
+    user_path: &str,
+    generated_path: Option<&str>,
+    reason_codes: &[String],
+    normalized_candidate: &serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": "synthi.gpu.warm_rebuild_verifier.v1",
+        "status": status,
+        "userFile": user_path,
+        "generatedRole": generated_path,
+        "reasonCodes": reason_codes,
+        "evidence": {
+            "deviceIncludeGraphStatus": normalized_candidate
+                .pointer("/affectedHeaderGraph/status")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            "templateEvidenceStatus": normalized_candidate
+                .get("templateEvidenceStatus")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            "templateEvidenceBounded": normalized_candidate
+                .get("templateEvidenceBounded")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            "templateEvidenceInvalidationReasons": normalized_candidate
+                .get("templateEvidenceInvalidationReasons")
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+            "affectedTemplateInstantiations": normalized_candidate
+                .get("affectedTemplateInstantiations")
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::Array(Vec::new())),
+            "arbiterDecision": normalized_candidate
+                .get("arbiterDecision")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            "selectedPlan": normalized_candidate
+                .get("selectedPlan")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+            "rankedWarmRebuildReasonCodes": ranked_option_reason_codes(
+                normalized_candidate,
+                "warm_rebuild"
+            ),
+        }
+    })
+}
+
+fn try_warm_rebuild_header_plan(
+    sidecar_meta: &serde_json::Value,
+    user_path: &str,
+    old_source: &str,
+    new_source: &str,
+    generated_device_path: Option<&str>,
+) -> Option<WarmRebuildDecision> {
+    if !is_device_header_request(user_path) || old_source == new_source {
+        return None;
+    }
+
+    let mut preflight_reasons = Vec::new();
+    if !device_include_graph_mentions_source(sidecar_meta, user_path) {
+        preflight_reasons.push("header_dependency_unbounded".to_string());
+    }
+    if generated_device_path.is_none() {
+        preflight_reasons.push("mapping_missing".to_string());
+    }
+
+    let candidate_plan = warm_rebuild_reload_plan(
+        "warm_rebuild",
+        user_path,
+        generated_device_path,
+        vec![
+            "edit.device_reachable_header".to_string(),
+            "build.warm_rebuild_candidate".to_string(),
+        ],
+        None,
+    );
+    let mut candidate_meta = sidecar_meta.as_object().cloned().unwrap_or_default();
+    candidate_meta.insert("lastReloadPlanReport".to_string(), candidate_plan);
+    invalidate_derived_gpu_reports(&mut candidate_meta);
+    let normalized_candidate =
+        normalize_split_sidecar(&serde_json::Value::Object(candidate_meta));
+
+    let arbiter_decision = normalized_candidate
+        .get("arbiterDecision")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unsupported");
+    let selected_plan = normalized_candidate
+        .get("selectedPlan")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let mut reason_codes = if preflight_reasons.is_empty()
+        && arbiter_decision == "auto_run"
+        && selected_plan == "warm_rebuild"
+    {
+        vec![
+            "edit.device_reachable_header".to_string(),
+            "template_evidence_fresh".to_string(),
+            "template_instantiation_bounded".to_string(),
+            "build.warm_rebuild".to_string(),
+            "build.device_sidecar_rebuild".to_string(),
+        ]
+    } else {
+        let mut reasons = preflight_reasons;
+        reasons.extend(ranked_option_reason_codes(
+            &normalized_candidate,
+            "warm_rebuild",
+        ));
+        if arbiter_decision != "auto_run" {
+            reasons.push("arbiter_path_not_worth_running".to_string());
+        }
+        reasons
+    };
+    reason_codes.sort_unstable();
+    reason_codes.dedup();
+
+    let accepted = reason_codes
+        .iter()
+        .any(|code| code == "build.warm_rebuild")
+        && arbiter_decision == "auto_run"
+        && selected_plan == "warm_rebuild";
+    let estimated_ms = ranked_option_estimate_ms(&normalized_candidate, "warm_rebuild");
+    let plan = warm_rebuild_reload_plan(
+        if accepted { "warm_rebuild" } else { "unsupported" },
+        user_path,
+        generated_device_path,
+        reason_codes.clone(),
+        estimated_ms,
+    );
+    let verifier = warm_rebuild_verifier_report(
+        if accepted { "accept" } else { "reject" },
+        user_path,
+        generated_device_path,
+        &reason_codes,
+        &normalized_candidate,
+    );
+
+    Some(WarmRebuildDecision {
+        accepted,
+        reload_plan: plan,
+        verifier_report: verifier,
+        reason_codes,
+        generated_device_path: generated_device_path.map(str::to_string),
+    })
+}
+
 fn device_fast_path_rejection_blocks_fallback(reason_codes: &[String]) -> bool {
     reason_codes.iter().any(|code| {
         matches!(
@@ -1249,19 +1531,148 @@ pub async fn handle_compile_request(
 
                 if let Some(split) = direct_device_split {
                     split
+                } else if let Some(split) = 'warm_candidate: {
+                    let request_name = normalized_request_filename(&req.filename)
+                        .unwrap_or_else(|| req.filename.replace('\\', "/"));
+                    let old_source = sidecar_string_for_path(
+                        &sidecar_meta,
+                        "sourceBaselineContents",
+                        &request_name,
+                    );
+                    if req.force_gpu_ai_delta || old_source.is_none() {
+                        None
+                    } else {
+                        let generated_device_path =
+                            mapped_generated_device_path(&sidecar_meta, &request_name).or_else(
+                                || {
+                                    CompileManifest::from_json_value(&sidecar_manifest_json)
+                                        .and_then(|manifest| {
+                                            manifest
+                                                .device_source_filename()
+                                                .map(|s| s.replace('\\', "/"))
+                                        })
+                                },
+                            );
+                        let Some(warm) = try_warm_rebuild_header_plan(
+                            &sidecar_meta,
+                            &request_name,
+                            old_source.as_deref().unwrap_or_default(),
+                            &req.source,
+                            generated_device_path.as_deref(),
+                        ) else {
+                            break 'warm_candidate None;
+                        };
+
+                        let mut meta = sidecar_meta.as_object().cloned().unwrap_or_default();
+                        meta.insert("lastReloadPlanReport".to_string(), warm.reload_plan.clone());
+                        meta.insert(
+                            "lastWarmRebuildVerifierReport".to_string(),
+                            warm.verifier_report.clone(),
+                        );
+                        meta.insert(
+                            "patchTier".to_string(),
+                            serde_json::Value::String(if warm.accepted {
+                                "warm_rebuild".to_string()
+                            } else {
+                                "warm_rebuild_rejected".to_string()
+                            }),
+                        );
+
+                        if warm.accepted {
+                            let baseline_hash = device_source_hash(&req.source);
+                            upsert_object_field(
+                                &mut meta,
+                                "sourceBaselineContents",
+                                &request_name,
+                                serde_json::Value::String(req.source.clone()),
+                            );
+                            upsert_object_field(
+                                &mut meta,
+                                "sourceBaselineHashes",
+                                &request_name,
+                                serde_json::Value::String(baseline_hash.clone()),
+                            );
+                            upsert_device_mapping_report_field(
+                                &mut meta,
+                                "sourceBaselineContents",
+                                &request_name,
+                                serde_json::Value::String(req.source.clone()),
+                            );
+                            upsert_device_mapping_report_field(
+                                &mut meta,
+                                "sourceBaselineHashes",
+                                &request_name,
+                                serde_json::Value::String(baseline_hash.clone()),
+                            );
+                            meta.insert(
+                                "cacheReport".to_string(),
+                                serde_json::json!({
+                                    "splitCacheHit": false,
+                                    "splitCacheReason": "not_applicable_warm_rebuild",
+                                    "splitCacheKey": format!("warm:{}:{}", request_name, baseline_hash),
+                                }),
+                            );
+                            meta.entry("warmPathBudgetResult".to_string())
+                                .or_insert_with(|| {
+                                    serde_json::Value::String("within_budget".to_string())
+                                });
+                        }
+
+                        invalidate_derived_gpu_reports(&mut meta);
+                        write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta))
+                            .await;
+
+                        if !warm.accepted {
+                            eprintln!(
+                                "[gpu-hmr] warm_rebuild rejected: user={} reasons={}",
+                                request_name,
+                                warm.reason_codes.join(",")
+                            );
+                            anyhow::bail!(
+                                "GPU warm rebuild rejected before fallback: reason_codes={}",
+                                warm.reason_codes.join(",")
+                            );
+                        }
+
+                        let generated_path = warm.generated_device_path.ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "GPU warm rebuild accepted without a generated device path"
+                            )
+                        })?;
+                        let generated_device_source = {
+                            let rel = compile_request_relpath(&generated_path)?;
+                            tokio::fs::read_to_string(ctx.workspace_path.join(rel))
+                                .await
+                                .with_context(|| {
+                                    format!(
+                                        "reading generated device role {} for GPU warm rebuild",
+                                        generated_path
+                                    )
+                                })?
+                        };
+                        eprintln!(
+                            "[gpu-hmr] warm_rebuild accepted: user={} generated={} reasons={}",
+                            request_name,
+                            generated_path,
+                            warm.reason_codes.join(",")
+                        );
+                        Some(serde_json::json!({
+                            "shared": { "content": shared_content, "filename": shared_filename },
+                            "core": { "content": core_content, "filename": core_filename },
+                            "gui": { "content": gui_content, "filename": gui_filename },
+                            "host_runner": { "content": host_runner_content, "filename": host_runner_filename },
+                            "device": { "content": generated_device_source, "filename": generated_path },
+                            "_synthi_manifest": sidecar_manifest_json.clone(),
+                            "_synthi_reload_plan": warm.reload_plan.clone(),
+                        }))
+                    }
+                } {
+                    split
                 } else if let Some(old_source) = {
                     let request_name = normalized_request_filename(&req.filename)
                         .unwrap_or_else(|| req.filename.replace('\\', "/"));
-                    if is_device_source_request(&req.filename) {
-                        sidecar_string_for_path(
-                            &sidecar_meta,
-                            "sourceBaselineContents",
-                            &request_name,
-                        )
-                        .or(original_source)
-                    } else {
-                        original_source
-                    }
+                    sidecar_string_for_path(&sidecar_meta, "sourceBaselineContents", &request_name)
+                        .or(original_source.clone())
                 } {
                     let diff = build_simple_diff(&old_source, &req.source);
 
@@ -3926,6 +4337,198 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
             kernel_abi_fingerprint_source(before),
             kernel_abi_fingerprint_source(after)
         );
+    }
+
+    fn warm_launch_indirection_report() -> serde_json::Value {
+        serde_json::json!({
+            "schemaVersion": "synthi.gpu.launch_indirection.v1",
+            "status": "pass",
+            "tableVersion": 1,
+            "launchSiteCount": 1,
+            "generatedLaunchSitesUseIndirection": true,
+            "directLaunchBypassCount": 0,
+            "loaderOwnsSymbolLookup": true,
+            "vendorSymbolLookupBypassCount": 0,
+            "stalePointerRisk": "none",
+            "staleLaunchPointerChecks": {
+                "schemaVersion": "synthi.gpu.stale_launch_pointer_check.v1",
+                "status": "pass",
+                "runtimeGenerationChecked": true,
+                "failureReasonCode": "reload_failed.stale_launch_pointer",
+                "reasonCodes": ["launch_indirection.runtime_generation_checked"]
+            },
+            "reasonCodes": ["launch_indirection.host_roles_use_public_wrapper"]
+        })
+    }
+
+    fn warm_rebuild_sidecar(template_status: &str) -> serde_json::Value {
+        let header = "#pragma once\nnamespace scale_template {\ntemplate <typename T, int BLOCK_SIZE>\n__device__ T tuned_gain(T value) {\n  constexpr T adjustment = static_cast<T>(BLOCK_SIZE) * static_cast<T>(0.00001f);\n  return value + adjustment;\n}\n}\n";
+        let evidence = serde_json::json!({
+            "schemaVersion": "synthi.gpu.template_evidence.v1",
+            "status": template_status,
+            "producer": "clang-libtooling+vendor-artifacts",
+            "effectiveFlagsHash": "flags-hash",
+            "gpuArch": "gfx1201",
+            "bounded": true,
+            "entries": [
+                {
+                    "templateName": "scale_template::tuned_gain<T, BLOCK_SIZE>",
+                    "templateArgs": ["float", "128"],
+                    "owningTU": "src/gpu/flow.hip",
+                    "instantiationSite": "src/gpu/flow_template.hpp:4",
+                    "reachableFromKernel": "flow(float*, int)",
+                    "changedInputs": ["BLOCK_SIZE"],
+                    "sourceHeaders": ["src/gpu/flow_template.hpp"],
+                    "generatedRole": "device.flow",
+                    "abiFingerprint": "abi",
+                    "layoutFingerprint": "layout",
+                    "artifactFingerprint": "artifact"
+                }
+            ]
+        });
+        normalize_split_sidecar(&serde_json::json!({
+            "selectedCompileCommand": {
+                "schemaVersion": "synthi.gpu.selected_compile_command.v1",
+                "identity": "compile-command-id",
+                "effectiveFlagsHash": "flags-hash"
+            },
+            "effectiveFlagsHash": "flags-hash",
+            "toolchainCapabilities": {
+                "schemaVersion": "synthi.gpu.toolchain_capability.v1",
+                "status": "current",
+                "compilerId": "hipcc",
+                "gpuVendor": "rocm",
+                "gpuArch": "gfx1201",
+                "requiresRdc": false,
+                "supportsDeviceOnlyReload": true
+            },
+            "sourceBaselineContents": {
+                "src/gpu/flow_template.hpp": header
+            },
+            "sourceBaselineHashes": {
+                "src/gpu/flow_template.hpp": device_source_hash(header)
+            },
+            "deviceMappingReport": {
+                "schemaVersion": "synthi.gpu.device_mapping.v1",
+                "generatedDevicePath": ".synthi/generated/gpu/device.hip",
+                "deviceIncludeGraph": {
+                    "schemaVersion": "synthi.gpu.device_include_graph.v1",
+                    "status": "bounded",
+                    "deviceTranslationUnits": ["src/gpu/flow.hip"],
+                    "reachableHeaders": ["src/gpu/flow_template.hpp"],
+                    "edges": [],
+                    "missingIncludes": [],
+                    "reasonCodes": []
+                }
+            },
+            "templateEvidence": evidence,
+            "launch_indirection_report": warm_launch_indirection_report()
+        }))
+    }
+
+    #[test]
+    fn warm_rebuild_header_edit_requires_fresh_bounded_template_evidence() {
+        let sidecar = warm_rebuild_sidecar("fresh");
+        let old_header = sidecar
+            .pointer("/sourceBaselineContents/src~1gpu~1flow_template.hpp")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        let new_header = old_header.replace("0.00001f", "0.00002f");
+
+        let decision = try_warm_rebuild_header_plan(
+            &sidecar,
+            "src/gpu/flow_template.hpp",
+            old_header,
+            &new_header,
+            Some(".synthi/generated/gpu/device.hip"),
+        )
+        .expect("warm decision");
+
+        assert!(
+            decision.accepted,
+            "reason_codes={:?} verifier={}",
+            decision.reason_codes,
+            decision.verifier_report
+        );
+        assert_eq!(
+            decision
+                .reload_plan
+                .get("plan")
+                .and_then(serde_json::Value::as_str),
+            Some("warm_rebuild")
+        );
+        assert!(decision
+            .reason_codes
+            .iter()
+            .any(|code| code == "template_evidence_fresh"));
+        assert_eq!(
+            decision
+                .verifier_report
+                .get("status")
+                .and_then(serde_json::Value::as_str),
+            Some("accept")
+        );
+    }
+
+    #[test]
+    fn warm_rebuild_header_edit_rejects_stale_template_evidence() {
+        let sidecar = warm_rebuild_sidecar("stale");
+        let old_header = sidecar
+            .pointer("/sourceBaselineContents/src~1gpu~1flow_template.hpp")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        let new_header = old_header.replace("0.00001f", "0.00002f");
+
+        let decision = try_warm_rebuild_header_plan(
+            &sidecar,
+            "src/gpu/flow_template.hpp",
+            old_header,
+            &new_header,
+            Some(".synthi/generated/gpu/device.hip"),
+        )
+        .expect("warm decision");
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision
+                .reload_plan
+                .get("plan")
+                .and_then(serde_json::Value::as_str),
+            Some("unsupported")
+        );
+        assert!(decision
+            .reason_codes
+            .iter()
+            .any(|code| code == "template_evidence_stale"));
+    }
+
+    #[test]
+    fn warm_rebuild_header_edit_rejects_unbounded_header_graph() {
+        let mut sidecar = warm_rebuild_sidecar("fresh");
+        sidecar["affectedHeaderGraph"]["reachableHeaders"] = serde_json::json!([]);
+        sidecar["deviceMappingReport"]["deviceIncludeGraph"]["reachableHeaders"] =
+            serde_json::json!([]);
+        sidecar["affectedTemplateInstantiations"][0]["sourceHeaders"] = serde_json::json!([]);
+        let old_header = sidecar
+            .pointer("/sourceBaselineContents/src~1gpu~1flow_template.hpp")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        let new_header = old_header.replace("0.00001f", "0.00002f");
+
+        let decision = try_warm_rebuild_header_plan(
+            &sidecar,
+            "src/gpu/flow_template.hpp",
+            old_header,
+            &new_header,
+            Some(".synthi/generated/gpu/device.hip"),
+        )
+        .expect("warm decision");
+
+        assert!(!decision.accepted);
+        assert!(decision
+            .reason_codes
+            .iter()
+            .any(|code| code == "header_dependency_unbounded"));
     }
 
     #[test]
