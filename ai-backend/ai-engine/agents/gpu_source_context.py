@@ -20,6 +20,14 @@ _RENDER_RE = re.compile(
     re.I,
 )
 _KERNEL_DECL_RE = re.compile(r"\b__(?:global|device|constant|managed)__\b")
+_TEMPLATE_EVIDENCE_BASENAMES = {
+    "template-evidence.json",
+    "template_evidence.json",
+    "gpu-template-evidence.json",
+    "gpu_template_evidence.json",
+    "synthi-template-evidence.json",
+    "synthi_template_evidence.json",
+}
 
 
 def normalize_path(path: str) -> str:
@@ -130,6 +138,128 @@ def _cmake_reply_files(source_files: Mapping[str, str]) -> Dict[str, str]:
         for path, content in source_files.items()
         if normalize_path(path).startswith(".cmake/api/v1/reply/")
         and normalize_path(path).lower().endswith(".json")
+    }
+
+
+def _is_template_evidence_path(path: str) -> bool:
+    normalized = normalize_path(path)
+    base = normalized.rsplit("/", 1)[-1].lower()
+    if base in _TEMPLATE_EVIDENCE_BASENAMES:
+        return True
+    return (
+        normalized.startswith(".cmake/api/v1/reply/")
+        and base.endswith(".json")
+        and "template" in base
+        and "evidence" in base
+    )
+
+
+def _template_evidence_report(
+    source_files: Mapping[str, str],
+    selected_command: Mapping[str, Any],
+) -> dict:
+    candidates: list[tuple[str, str]] = [
+        (normalize_path(path), content)
+        for path, content in sorted(source_files.items())
+        if _is_template_evidence_path(path)
+    ]
+    if not candidates:
+        return {
+            "status": "missing",
+            "evidence": None,
+            "evidenceHash": stable_hash(None),
+            "candidateCount": 0,
+            "invalidationReasons": ["template_evidence_missing"],
+        }
+
+    parsed_candidates: list[dict] = []
+    parse_errors: list[str] = []
+    selected_flags_hash = str(selected_command.get("effectiveFlagsHash") or "")
+    for path, content in candidates:
+        parsed, error = _parse_json_file(path, content)
+        if error:
+            parse_errors.append(error)
+            continue
+        raw = parsed.get("templateEvidence") if isinstance(parsed, dict) else None
+        if raw is None:
+            raw = parsed
+        if not isinstance(raw, dict):
+            parse_errors.append(f"{path}: template evidence root is not an object")
+            continue
+
+        entries = raw.get("entries")
+        if not isinstance(entries, list):
+            entries = []
+        bounded = raw.get("bounded")
+        if bounded is None:
+            bounded = raw.get("impactBounded")
+        evidence = {
+            "schemaVersion": raw.get("schemaVersion") or "synthi.gpu.template_evidence.v1",
+            "status": raw.get("status") or raw.get("evidenceStatus") or "fresh",
+            "producer": raw.get("producer"),
+            "compileCommandHash": raw.get("compileCommandHash"),
+            "effectiveFlagsHash": raw.get("effectiveFlagsHash"),
+            "gpuArch": raw.get("gpuArch"),
+            "bounded": bool(bounded),
+            "entries": entries,
+            "source": {
+                "path": path,
+                "kind": "compiler_template_evidence_artifact",
+            },
+        }
+        evidence["evidenceHash"] = stable_hash(evidence)
+        parsed_candidates.append(evidence)
+
+    if not parsed_candidates:
+        return {
+            "status": "parse_failed",
+            "evidence": None,
+            "evidenceHash": stable_hash({"errors": parse_errors}),
+            "candidateCount": len(candidates),
+            "invalidationReasons": ["template_evidence_parse_failed"],
+            "errors": parse_errors,
+        }
+
+    def candidate_rank(evidence: Mapping[str, Any]) -> tuple[int, str]:
+        flags = str(evidence.get("effectiveFlagsHash") or "")
+        status = str(evidence.get("status") or "")
+        bounded = bool(evidence.get("bounded"))
+        score = 0
+        if selected_flags_hash and flags == selected_flags_hash:
+            score -= 4
+        if status == "fresh":
+            score -= 2
+        if bounded:
+            score -= 1
+        path = ""
+        source = evidence.get("source")
+        if isinstance(source, dict):
+            path = str(source.get("path") or "")
+        return score, path
+
+    selected = sorted(parsed_candidates, key=candidate_rank)[0]
+    invalidation: list[str] = []
+    if selected.get("status") != "fresh":
+        invalidation.append("template_evidence_stale")
+    if not selected.get("effectiveFlagsHash"):
+        invalidation.append("template_evidence_effective_flags_missing")
+    elif selected_flags_hash and selected.get("effectiveFlagsHash") != selected_flags_hash:
+        invalidation.append("template_evidence_effective_flags_mismatch")
+    if not selected.get("bounded"):
+        invalidation.append("template_instantiation_unbounded")
+    if not selected.get("entries"):
+        invalidation.append("template_evidence_missing_entries")
+
+    return {
+        "status": "fresh" if not invalidation else "stale",
+        "evidence": selected,
+        "evidenceHash": selected.get("evidenceHash") or stable_hash(selected),
+        "candidateCount": len(candidates),
+        "selectedPath": selected.get("source", {}).get("path")
+        if isinstance(selected.get("source"), dict)
+        else None,
+        "invalidationReasons": invalidation,
+        "parseErrors": parse_errors,
     }
 
 
@@ -458,6 +588,7 @@ def build_source_context_report(
     multi_device_tu = len(device_translation_units) > 1
     selected_command = _selected_compile_command(normalized_files, focus)
     cmake_file_api = _cmake_file_api_report(normalized_files, focus)
+    template_evidence = _template_evidence_report(normalized_files, selected_command)
     report = {
         "schemaVersion": SOURCE_CONTEXT_SCHEMA_VERSION,
         "focus": normalize_path(focus or ""),
@@ -497,6 +628,13 @@ def build_source_context_report(
             "cmakeFileApi": cmake_file_api,
             "cmakeCodemodelHash": cmake_file_api.get("codemodelHash"),
             "targetResolution": cmake_file_api.get("targetResolution"),
+            "templateEvidence": template_evidence.get("evidence"),
+            "templateEvidenceStatus": template_evidence.get("status"),
+            "templateEvidenceHash": template_evidence.get("evidenceHash"),
+            "templateEvidenceCandidateCount": template_evidence.get("candidateCount"),
+            "templateEvidenceInvalidationReasons": template_evidence.get(
+                "invalidationReasons"
+            ),
         },
     }
     report["sourceContextHash"] = stable_hash(
@@ -568,6 +706,19 @@ def format_source_context_prompt(report: Mapping[str, Any], source_files: Mappin
             lines.append(
                 "CMake target resolution is ambiguous; do not guess target-specific flags or sources."
             )
+    template_evidence = (
+        report.get("buildMetadata", {})
+        if isinstance(report.get("buildMetadata"), dict)
+        else {}
+    ).get("templateEvidence")
+    if isinstance(template_evidence, dict):
+        lines.append(
+            "Template evidence: "
+            f"status={template_evidence.get('status')} "
+            f"producer={template_evidence.get('producer')} "
+            f"entries={len(template_evidence.get('entries') or [])}. "
+            "Use it only as deterministic metadata; verifier policy owns safety."
+        )
 
     for item in included:
         if not isinstance(item, dict):

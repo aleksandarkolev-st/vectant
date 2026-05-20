@@ -1,4 +1,4 @@
-from agents.gpu_source_context import build_project_source_context
+from agents.gpu_source_context import build_project_source_context, stable_hash
 
 
 def test_source_context_records_included_and_dropped_reasons():
@@ -176,3 +176,84 @@ def test_source_context_reports_ambiguous_cmake_file_api_target():
     assert resolution["method"] == "ambiguous_executable_targets_containing_focus"
     assert "target_resolution_ambiguous" in resolution["reasonCodes"]
     assert "CMake target resolution is ambiguous" in prompt
+
+
+def test_source_context_ingests_compiler_template_evidence():
+    command = [
+        "hipcc",
+        "-Iinclude",
+        "--offload-arch=gfx1201",
+        "-c",
+        "src/gpu/reduce.hip",
+    ]
+    flags_hash = stable_hash(command[1:])
+    files = {
+        "src/app/main.cpp": "int main(){ return 0; }",
+        "src/gpu/reduce.hip": """
+        template <typename T, int BLOCK_SIZE>
+        __device__ T BlockReduce(T value) { return value; }
+        __global__ void reduce_kernel(float* values) {
+            values[0] = BlockReduce<float, 128>(values[0]);
+            values[1] = BlockReduce<float, 256>(values[1]);
+        }
+        """,
+        "compile_commands.json": f"""
+        [
+          {{
+            "directory": "/repo/build",
+            "file": "/repo/src/gpu/reduce.hip",
+            "arguments": {command!r}
+          }}
+        ]
+        """.replace("'", '"'),
+        ".synthi/template-evidence.json": f"""
+        {{
+          "schemaVersion": "synthi.gpu.template_evidence.v1",
+          "status": "fresh",
+          "producer": "clang-libtooling+vendor-artifacts",
+          "compileCommandHash": "{stable_hash(command)}",
+          "effectiveFlagsHash": "{flags_hash}",
+          "gpuArch": "gfx1201",
+          "bounded": true,
+          "entries": [
+            {{
+              "templateName": "BlockReduce<T, BLOCK_SIZE>",
+              "templateArgs": ["float", "128"],
+              "owningTU": "src/gpu/reduce.hip",
+              "instantiationSite": "src/gpu/reduce.hip:5",
+              "reachableFromKernel": "reduce_kernel(float*)",
+              "sourceHeaders": ["src/gpu/reduce.hip"],
+              "generatedRole": "device.reduce",
+              "abiFingerprint": "abi-128",
+              "layoutFingerprint": "layout-128",
+              "artifactFingerprint": "artifact-128"
+            }},
+            {{
+              "templateName": "BlockReduce<T, BLOCK_SIZE>",
+              "templateArgs": ["float", "256"],
+              "owningTU": "src/gpu/reduce.hip",
+              "instantiationSite": "src/gpu/reduce.hip:6",
+              "reachableFromKernel": "reduce_kernel(float*)",
+              "sourceHeaders": ["src/gpu/reduce.hip"],
+              "generatedRole": "device.reduce",
+              "abiFingerprint": "abi-256",
+              "layoutFingerprint": "layout-256",
+              "artifactFingerprint": "artifact-256"
+            }}
+          ]
+        }}
+        """,
+    }
+
+    prompt, report = build_project_source_context(files, focus="src/gpu/reduce.hip")
+    metadata = report["buildMetadata"]
+    evidence = metadata["templateEvidence"]
+
+    assert metadata["templateEvidenceStatus"] == "fresh"
+    assert metadata["templateEvidenceCandidateCount"] == 1
+    assert metadata["templateEvidenceInvalidationReasons"] == []
+    assert evidence["producer"] == "clang-libtooling+vendor-artifacts"
+    assert evidence["effectiveFlagsHash"] == flags_hash
+    assert evidence["bounded"] is True
+    assert [entry["templateArgs"][1] for entry in evidence["entries"]] == ["128", "256"]
+    assert "Template evidence: status=fresh" in prompt

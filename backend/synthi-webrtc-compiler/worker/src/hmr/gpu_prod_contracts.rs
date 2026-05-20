@@ -436,6 +436,36 @@ fn promote_build_metadata(root: &mut Map<String, Value>, source_context_report: 
     let build_metadata = source_context_report.get("buildMetadata");
     insert_if_missing_or_null(
         root,
+        "templateEvidence",
+        build_metadata
+            .and_then(|m| m.get("templateEvidence"))
+            .cloned(),
+    );
+    if let Some(metadata) = build_metadata {
+        insert_if_missing_or_null(
+            root,
+            "templateEvidenceCollectorReport",
+            Some(json!({
+                "schemaVersion": "synthi.gpu.template_evidence_collector.v1",
+                "status": metadata
+                    .get("templateEvidenceStatus")
+                    .cloned()
+                    .unwrap_or_else(|| Value::String("missing".to_string())),
+                "evidenceHash": metadata.get("templateEvidenceHash").cloned().unwrap_or(Value::Null),
+                "candidateCount": metadata
+                    .get("templateEvidenceCandidateCount")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                "invalidationReasons": metadata
+                    .get("templateEvidenceInvalidationReasons")
+                    .cloned()
+                    .unwrap_or_else(|| json!(["template_evidence_missing"])),
+                "source": "source_context_report",
+            })),
+        );
+    }
+    insert_if_missing_or_null(
+        root,
         "compileDbHash",
         build_metadata
             .and_then(|m| m.get("compileDbHash"))
@@ -2363,6 +2393,59 @@ mod tests {
                 .and_then(Value::as_array)
                 .map(Vec::len),
             Some(1)
+        );
+        assert!(has_reason(warm_rebuild, "arbiter.safe"));
+    }
+
+    #[test]
+    fn source_context_template_evidence_enables_bounded_warm_rebuild() {
+        let manifest = gpu_compile_manifest();
+        let flags_hash = effective_flags_hash_for(&manifest);
+        let plan = reload_plan("warm_rebuild", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "launch_indirection_report": launch_indirection_report(),
+            "sourceContextReport": {
+                "schemaVersion": "synthi.gpu.source_context.v1",
+                "buildMetadata": {
+                    "templateEvidenceStatus": "fresh",
+                    "templateEvidenceHash": "template-hash",
+                    "templateEvidenceCandidateCount": 1,
+                    "templateEvidenceInvalidationReasons": [],
+                    "templateEvidence": template_evidence(
+                        &flags_hash,
+                        true,
+                        "clang-libtooling+vendor-artifacts"
+                    )
+                }
+            }
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let warm_rebuild = ranked_option(&migrated, "warm_rebuild");
+
+        assert_eq!(
+            migrated
+                .pointer("/templateEvidenceStatus")
+                .and_then(Value::as_str),
+            Some("fresh")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/templateEvidenceCollectorReport/status")
+                .and_then(Value::as_str),
+            Some("fresh")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/templateEvidenceStatus")
+                .and_then(Value::as_str),
+            Some("fresh")
+        );
+        assert_eq!(
+            warm_rebuild.get("safety").and_then(Value::as_str),
+            Some("pass")
         );
         assert!(has_reason(warm_rebuild, "arbiter.safe"));
     }
