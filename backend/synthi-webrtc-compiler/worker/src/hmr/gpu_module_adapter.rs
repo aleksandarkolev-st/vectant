@@ -847,11 +847,11 @@ mod tests {
     };
     use crate::runtime::gpu_runtime_boundary::{
         reset_for_test, synthi_gpu_launch_raw, synthi_gpu_register_buffer,
+        test_guard_for_test as runtime_boundary_test_guard,
     };
     use std::ffi::{c_void, CString};
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     fn dummy_request() -> AdapterReloadRequest {
         AdapterReloadRequest {
@@ -868,15 +868,6 @@ mod tests {
     static LAUNCH_CALLS: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_GRID_X: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_BLOCK_X: AtomicUsize = AtomicUsize::new(0);
-    static RUNTIME_BOUNDARY_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn runtime_boundary_test_guard() -> MutexGuard<'static, ()> {
-        RUNTIME_BOUNDARY_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("gpu runtime boundary adapter-test mutex poisoned")
-    }
-
     unsafe extern "C" fn ok_init(_flags: u32) -> CuResult {
         0
     }

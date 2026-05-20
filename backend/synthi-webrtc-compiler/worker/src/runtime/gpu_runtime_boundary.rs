@@ -74,6 +74,8 @@ struct BoundaryState {
 static STATE: OnceLock<Mutex<BoundaryState>> = OnceLock::new();
 static DISPATCHER: OnceLock<Mutex<Option<Arc<dyn GpuLaunchDispatcher>>>> = OnceLock::new();
 static LAUNCH_GENERATION: AtomicU64 = AtomicU64::new(1);
+#[cfg(test)]
+static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn state() -> &'static Mutex<BoundaryState> {
     STATE.get_or_init(|| Mutex::new(BoundaryState::default()))
@@ -433,23 +435,22 @@ pub fn reset_for_test() {
 }
 
 #[cfg(test)]
+pub fn test_guard_for_test() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("gpu runtime boundary test mutex poisoned")
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::ffi::CString;
-    use std::sync::{Arc, MutexGuard, OnceLock};
-
-    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn test_guard() -> MutexGuard<'static, ()> {
-        TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("gpu runtime boundary test mutex poisoned")
-    }
+    use std::sync::Arc;
 
     #[test]
     fn register_pack_and_restore_managed_buffer() {
-        let _guard = test_guard();
+        let _guard = test_guard_for_test();
         reset_for_test();
         let mut value = 42_u32;
         let name = CString::new("positions").unwrap();
@@ -484,7 +485,7 @@ mod tests {
 
     #[test]
     fn launch_records_boundary_call_and_dirties_buffers() {
-        let _guard = test_guard();
+        let _guard = test_guard_for_test();
         reset_for_test();
         let mut value = 7_u32;
         let name = CString::new("velocities").unwrap();
@@ -549,7 +550,7 @@ mod tests {
 
     #[test]
     fn launch_dispatcher_receives_decoded_dimensions() {
-        let _guard = test_guard();
+        let _guard = test_guard_for_test();
         reset_for_test();
         let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
         let before = synthi_gpu_launch_generation();
@@ -594,7 +595,7 @@ mod tests {
 
     #[test]
     fn launch_dispatcher_failure_returns_false_and_records_error() {
-        let _guard = test_guard();
+        let _guard = test_guard_for_test();
         reset_for_test();
         install_launch_dispatcher(Arc::new(TestDispatcher {
             should_fail: true,
@@ -627,7 +628,7 @@ mod tests {
 
     #[test]
     fn checked_launch_rejects_stale_generation() {
-        let _guard = test_guard();
+        let _guard = test_guard_for_test();
         reset_for_test();
         let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
         install_launch_dispatcher(Arc::new(TestDispatcher {
