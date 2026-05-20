@@ -20,6 +20,7 @@ use worker::webrtc::{
 };
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use bytes::Bytes;
 use futures::{FutureExt, SinkExt, StreamExt};
 
@@ -389,6 +390,90 @@ struct CancelBuildRequest {
     msg_type: String, // Should be "cancel-build"
     #[serde(default)]
     session_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompileRequestChunk {
+    #[serde(rename = "type")]
+    msg_type: String,
+    chunk_id: String,
+    seq: usize,
+    total: usize,
+    encoding: String,
+    data: String,
+}
+
+#[derive(Debug)]
+struct CompileRequestChunkAssembly {
+    total: usize,
+    encoding: String,
+    chunks: Vec<Option<String>>,
+}
+
+async fn assemble_compile_request_chunk(
+    data: &[u8],
+    buffers: &Arc<Mutex<HashMap<String, CompileRequestChunkAssembly>>>,
+) -> Option<Vec<u8>> {
+    let Ok(chunk) = serde_json::from_slice::<CompileRequestChunk>(data) else {
+        return None;
+    };
+    if chunk.msg_type != "compile-request-chunk" {
+        return None;
+    }
+    if chunk.total == 0 || chunk.seq >= chunk.total || chunk.encoding != "base64" {
+        eprintln!(
+            "[Main] Invalid compile request chunk: id={} seq={} total={} encoding={}",
+            chunk.chunk_id, chunk.seq, chunk.total, chunk.encoding
+        );
+        return Some(Vec::new());
+    }
+
+    let mut guard = buffers.lock().await;
+    let entry = guard
+        .entry(chunk.chunk_id.clone())
+        .or_insert_with(|| CompileRequestChunkAssembly {
+            total: chunk.total,
+            encoding: chunk.encoding.clone(),
+            chunks: vec![None; chunk.total],
+        });
+    if entry.total != chunk.total || entry.encoding != chunk.encoding {
+        eprintln!(
+            "[Main] Inconsistent compile request chunk metadata: id={}",
+            chunk.chunk_id
+        );
+        guard.remove(&chunk.chunk_id);
+        return Some(Vec::new());
+    }
+    entry.chunks[chunk.seq] = Some(chunk.data);
+    if entry.chunks.iter().any(|part| part.is_none()) {
+        return Some(Vec::new());
+    }
+
+    let encoded = entry
+        .chunks
+        .iter()
+        .filter_map(|part| part.as_ref())
+        .cloned()
+        .collect::<String>();
+    guard.remove(&chunk.chunk_id);
+    match base64::engine::general_purpose::STANDARD.decode(encoded.as_bytes()) {
+        Ok(decoded) => {
+            debug_log!(
+                "[Main] Reassembled compile request chunks: id={} total={} decoded_len={}",
+                chunk.chunk_id,
+                chunk.total,
+                decoded.len()
+            );
+            Some(decoded)
+        }
+        Err(err) => {
+            eprintln!(
+                "[Main] Failed to decode compile request chunks: id={} err={}",
+                chunk.chunk_id, err
+            );
+            Some(Vec::new())
+        }
+    }
 }
 
 fn get_signaling_url() -> String {
@@ -1916,6 +2001,8 @@ async fn wire_peer_channels(
                     // Clone terminal store out of the FnMut closure into a local
                     // that can be moved into the async block below without
                     // consuming the captured `term_store`.
+                    let compile_chunk_buffers: Arc<Mutex<HashMap<String, CompileRequestChunkAssembly>>> =
+                        Arc::new(Mutex::new(HashMap::new()));
                     dc.on_message(Box::new(move |msg| {
                         let term_store_for_msg = term_store.clone();
                         let pc_for_compile = pc_for_callback.clone();
@@ -1931,6 +2018,7 @@ async fn wire_peer_channels(
                         let peer_id_for_msg = peer_id_outer.clone();
                         let video_fanout_for_msg = video_fanout_outer.clone();
                         let audio_fanout_for_msg = audio_fanout_outer.clone();
+                        let compile_chunk_buffers_for_msg = compile_chunk_buffers.clone();
                         // v2.1 inner clones
                         let hmr_orchestrator = hmr_orchestrator_outer.clone();
                         let structured_logger = structured_logger_outer.clone();
@@ -1939,9 +2027,21 @@ async fn wire_peer_channels(
                         let ipc_config = ipc_config_outer.clone();
                         async move {
                             if msg.is_string {
-                                debug_log!("[Main] Received message on 'compile' channel. Length: {}", msg.data.len());
+                                let mut message_data = msg.data.to_vec();
+                                if let Some(assembled) = assemble_compile_request_chunk(
+                                    &message_data,
+                                    &compile_chunk_buffers_for_msg,
+                                )
+                                .await
+                                {
+                                    if assembled.is_empty() {
+                                        return;
+                                    }
+                                    message_data = assembled;
+                                }
+                                debug_log!("[Main] Received message on 'compile' channel. Length: {}", message_data.len());
                                 // Try to parse as a CancelBuildRequest first
-                                if let Ok(cancel_req) = serde_json::from_slice::<CancelBuildRequest>(&msg.data) {
+                                if let Ok(cancel_req) = serde_json::from_slice::<CancelBuildRequest>(&message_data) {
                                     if cancel_req.msg_type == "cancel-build" {
                                         let target_session = cancel_req.session_id.clone();
                                         debug_log!(
@@ -2032,7 +2132,7 @@ async fn wire_peer_channels(
                                 }
 
                                 // Try to parse as a CancelMobileJobRequest next
-                                if let Ok(cancel_req) = serde_json::from_slice::<CancelMobileJobRequest>(&msg.data) {
+                                if let Ok(cancel_req) = serde_json::from_slice::<CancelMobileJobRequest>(&message_data) {
                                     if cancel_req.msg_type == "cancel-mobile-job" {
                                         debug_log!("[Main] Received cancel-mobile-job for session: {}", cancel_req.session_id);
                                         // Mark the session as cancelled
@@ -2044,7 +2144,7 @@ async fn wire_peer_channels(
                                 }
                                 
                                 // Try to parse as a CompileRequest
-                                if let Ok(req) = serde_json::from_slice::<CompileRequest>(&msg.data) {
+                                if let Ok(req) = serde_json::from_slice::<CompileRequest>(&message_data) {
                                     debug_log!("[Main] Received CompileRequest: is_gui={}, use_ai_split={}, lang={}, target={:?}",
                                         req.is_gui, req.use_ai_split, req.language, req.target);
                                     // Reply path: use the REQUESTING peer's own build-log DC

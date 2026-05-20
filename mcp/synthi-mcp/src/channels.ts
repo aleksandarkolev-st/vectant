@@ -2,6 +2,8 @@ import type { RTCDataChannel } from "werift";
 import { HmrNormalizer } from "./hmr.js";
 import { sendFrames, type SendOptions } from "./wire/input.js";
 
+const DEFAULT_COMPILE_CHUNK_BYTES = 48_000;
+
 /**
  * Thin wrapper around a session's data channels.
  *
@@ -43,7 +45,29 @@ export class SessionChannels {
     if (this.compileDC.readyState !== "open") {
       throw new Error(`compile_channel_not_open:${this.compileDC.readyState}`);
     }
-    this.compileDC.send(JSON.stringify(payload));
+    const body = JSON.stringify(payload);
+    const maxBytes = Number(process.env.SYNTHI_MCP_COMPILE_CHUNK_BYTES ?? DEFAULT_COMPILE_CHUNK_BYTES);
+    if (Buffer.byteLength(body, "utf8") <= maxBytes) {
+      this.compileDC.send(body);
+      return;
+    }
+
+    const encoded = Buffer.from(body, "utf8").toString("base64");
+    const chunkChars = Math.max(1024, Math.floor(maxBytes * 0.75));
+    const total = Math.ceil(encoded.length / chunkChars);
+    const chunkId = `compile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    for (let seq = 0; seq < total; seq += 1) {
+      const data = encoded.slice(seq * chunkChars, (seq + 1) * chunkChars);
+      this.compileDC.send(JSON.stringify({
+        type: "compile-request-chunk",
+        chunk_id: chunkId,
+        seq,
+        total,
+        encoding: "base64",
+        data,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
   }
 
   compileChannelReadyState(): "connecting" | "open" | "closing" | "closed" {
