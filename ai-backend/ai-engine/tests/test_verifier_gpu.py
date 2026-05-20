@@ -896,6 +896,93 @@ def test_split_allows_core_gui_state_type_alias_match():
     assert not any(v.rule == "generated.core_gui_state_abi_mismatch" for v in r.violations)
 
 
+def test_split_rejects_private_core_state_type_crossing_gui_boundary():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct SharedOnly { int n; };',
+        "core.cpp": (
+            '#include "shared.h"\n'
+            "struct AppState { float x[64]; int n; };\n"
+            "static AppState g_state{};\n"
+            'extern "C" void* core_on_load(void*, void*) { g_state.n = 64; return &g_state; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 64, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "auto* s = reinterpret_cast<AppState*>(state_ptr); "
+            "for (int i = 0; i < s->n; ++i) { (void)s->x[i]; } }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void step(int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "generated.host_state_type_not_shared" for v in r.violations)
+
+
+def test_split_rejects_unqualified_namespaced_shared_constants():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "namespace scale { struct AppState { int n; }; constexpr int kParticleCount = 512; }"
+        ),
+        "core.cpp": (
+            '#include "shared.h"\n'
+            "static scale::AppState g_state{};\n"
+            'extern "C" void* core_on_load(void*, void*) { g_state.n = kParticleCount; return &g_state; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 64, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "auto* s = reinterpret_cast<scale::AppState*>(state_ptr); (void)s; }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void step(int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(
+        v.rule == "generated.shared_namespace_symbol_unqualified"
+        and v.offending_symbol == "scale::kParticleCount"
+        for v in r.violations
+    )
+
+
+def test_split_allows_qualified_namespaced_shared_constants():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "namespace scale { struct AppState { int n; }; constexpr int kParticleCount = 512; }"
+        ),
+        "core.cpp": (
+            '#include "shared.h"\n'
+            "static scale::AppState g_state{};\n"
+            'extern "C" void* core_on_load(void*, void*) { g_state.n = scale::kParticleCount; return &g_state; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 64, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "auto* s = reinterpret_cast<scale::AppState*>(state_ptr); (void)s; }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void step(int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert not any(v.rule == "generated.shared_namespace_symbol_unqualified" for v in r.violations)
+
+
 def test_split_rejects_invalid_device_descriptor_initializer():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',

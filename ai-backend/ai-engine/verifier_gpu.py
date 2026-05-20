@@ -45,7 +45,7 @@ import re
 import posixpath
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Iterable, List, Mapping, Optional, Set
+from typing import Dict, Iterable, List, Mapping, Optional, Set
 
 
 HealTier = str  # "compile_hard" | "compile_soft" | "runtime"
@@ -547,6 +547,65 @@ def _cpp_type_compatible(a: str, b: str) -> bool:
     if left == right:
         return True
     return left.rsplit("::", 1)[-1] == right.rsplit("::", 1)[-1]
+
+
+def _cpp_type_basename(type_text: str) -> str:
+    normalized = _normalize_cpp_type_name(type_text)
+    return normalized.rsplit("::", 1)[-1] if normalized else ""
+
+
+def _declared_record_type_basenames(source: str) -> Set[str]:
+    return {
+        match.group("name")
+        for match in re.finditer(
+            r"\b(?:struct|class)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b",
+            source,
+        )
+    }
+
+
+def _iter_namespace_bodies(source: str) -> Iterable[tuple[str, str]]:
+    namespace_re = re.compile(r"\bnamespace\s+(?P<namespace>[A-Za-z_][A-Za-z0-9_]*)\s*\{")
+    for match in namespace_re.finditer(source):
+        body_start = match.end()
+        depth = 1
+        cursor = body_start
+        while cursor < len(source) and depth:
+            if source[cursor] == "{":
+                depth += 1
+            elif source[cursor] == "}":
+                depth -= 1
+            cursor += 1
+        if depth == 0:
+            yield match.group("namespace"), source[body_start : cursor - 1]
+
+
+def _namespaced_shared_symbols(shared_source: str) -> Dict[str, Set[str]]:
+    symbols: Dict[str, Set[str]] = {}
+    symbol_re = re.compile(
+        r"\b(?:constexpr|const)\s+"
+        r"(?:[A-Za-z_][A-Za-z0-9_:<>]*\s+)+"
+        r"(?P<name>k[A-Z][A-Za-z0-9_]*)\b"
+    )
+    for namespace, body in _iter_namespace_bodies(shared_source):
+        names = {match.group("name") for match in symbol_re.finditer(body)}
+        if names:
+            symbols.setdefault(namespace, set()).update(names)
+    return symbols
+
+
+def _uses_shared_symbol_unqualified(source: str, namespace: str, symbol: str) -> bool:
+    if re.search(rf"\busing\s+namespace\s+{re.escape(namespace)}\s*;", source):
+        return False
+    if re.search(rf"\busing\s+{re.escape(namespace)}::{re.escape(symbol)}\s*;", source):
+        return False
+    bare_re = re.compile(rf"(?<![:.\w]){re.escape(symbol)}\b")
+    for match in bare_re.finditer(source):
+        prefix_start = max(0, match.start() - len(namespace) - 2)
+        if source[prefix_start:match.start()] == f"{namespace}::":
+            continue
+        return True
+    return False
 
 
 def _strip_cpp_casts(expr: str) -> str:
@@ -1348,6 +1407,24 @@ def verify_split_output(
     host_runner_source = files.get(host_runner_path) or ""
     core_state_types = _core_returned_state_types(core_source)
     gui_state_cast_types = _gui_render_state_cast_types(gui_source)
+    shared_record_types = _declared_record_type_basenames(shared_source)
+    for core_state_type in sorted(core_state_types):
+        core_state_basename = _cpp_type_basename(core_state_type)
+        if core_state_basename and core_state_basename not in shared_record_types:
+            violations.append(
+                Violation(
+                    rule="generated.host_state_type_not_shared",
+                    message=(
+                        "core_on_load returns host-visible state type "
+                        f"{core_state_type}, but that record type is not declared "
+                        "in shared.h. Core and GUI are separate generated roles; "
+                        "any state layout passed across that boundary must be in "
+                        "the shared role before a split can be accepted."
+                    ),
+                    offending_module=core_path,
+                    offending_symbol=core_state_type,
+                )
+            )
     if core_state_types and gui_state_cast_types:
         for gui_state_type in sorted(gui_state_cast_types):
             if any(_cpp_type_compatible(core_type, gui_state_type) for core_type in core_state_types):
@@ -1368,6 +1445,31 @@ def verify_split_output(
                     offending_symbol=f"{core_type_list}->{gui_state_type}",
                 )
             )
+    for namespace, symbols in sorted(_namespaced_shared_symbols(shared_source).items()):
+        for role_path, role_source in (
+            (core_path, core_source),
+            (gui_path, gui_source),
+            (host_runner_path, host_runner_source),
+        ):
+            if not role_path or not role_source:
+                continue
+            for symbol in sorted(symbols):
+                if _uses_shared_symbol_unqualified(role_source, namespace, symbol):
+                    violations.append(
+                        Violation(
+                            rule="generated.shared_namespace_symbol_unqualified",
+                            message=(
+                                "shared.h declares "
+                                f"{namespace}::{symbol}, but generated role "
+                                f"{role_path} uses {symbol} without qualifying it "
+                                "or importing it with a using declaration. Generated "
+                                "roles must preserve shared namespace boundaries so "
+                                "compile repair is not required to guess symbol scope."
+                            ),
+                            offending_module=role_path,
+                            offending_symbol=f"{namespace}::{symbol}",
+                        )
+                    )
     generated_render_backends = _render_backends_in_sources(
         (shared_source, core_source, gui_source, host_runner_source)
     )
