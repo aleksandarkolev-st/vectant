@@ -288,6 +288,15 @@ fn toolchain_capabilities_from_manifest(manifest: &Value, flags_hash: &str) -> V
             || f.contains("-rdc=true")
             || f == "--device-c"
     });
+    let device_link_budget_ms = gpu
+        .and_then(|g| g.get("device_link_budget_ms"))
+        .and_then(Value::as_u64)
+        .unwrap_or(5_000);
+    let estimated_device_link_ms = gpu
+        .and_then(|g| g.get("device_link_estimated_ms"))
+        .and_then(Value::as_u64)
+        .unwrap_or(if requires_rdc { 8_000 } else { 0 });
+    let rdc_over_budget = requires_rdc && estimated_device_link_ms > device_link_budget_ms;
     let has_gpu = gpu.is_some();
     let supports_device_only = has_gpu && !requires_rdc;
 
@@ -302,6 +311,21 @@ fn toolchain_capabilities_from_manifest(manifest: &Value, flags_hash: &str) -> V
         "requiresRdc": requires_rdc,
         "supportsDeviceOnlyReload": supports_device_only,
         "supportsIncrementalDeviceLink": false,
+        "rdcDeviceLink": {
+            "required": requires_rdc,
+            "linkerBound": requires_rdc,
+            "estimatedMs": estimated_device_link_ms,
+            "budgetMs": device_link_budget_ms,
+            "overBudget": rdc_over_budget,
+            "costSource": if requires_rdc { "default_policy" } else { "not_required" },
+            "reasonCodes": if rdc_over_budget {
+                json!(["rdc_device_link_required", "rdc_link_over_budget"])
+            } else if requires_rdc {
+                json!(["rdc_device_link_required"])
+            } else {
+                json!([])
+            },
+        },
         "supportsSymbolInspection": has_gpu,
         "supportsSafeModuleUnload": has_gpu,
         "supportsGpuTimeoutDetection": if has_gpu { "partial" } else { "none" },
@@ -765,6 +789,21 @@ fn ranked_reload_options(
         .get("requiresRdc")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let rdc_device_link = toolchain_profile
+        .get("rdcDeviceLink")
+        .and_then(Value::as_object);
+    let rdc_linker_bound = rdc_device_link
+        .and_then(|profile| profile.get("linkerBound"))
+        .and_then(Value::as_bool)
+        .unwrap_or(requires_rdc);
+    let rdc_over_budget = rdc_device_link
+        .and_then(|profile| profile.get("overBudget"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let estimated_rdc_ms = rdc_device_link
+        .and_then(|profile| profile.get("estimatedMs"))
+        .and_then(Value::as_u64)
+        .unwrap_or(if requires_rdc { 8_000 } else { 5_000 });
     let template_status = root
         .get("templateEvidenceStatus")
         .and_then(Value::as_str)
@@ -794,7 +833,7 @@ fn ranked_reload_options(
 
     let device_only_safety = profile_current && supports_device_only;
     let warm_safety = profile_current && template_fresh;
-    let warm_requires_consent = warm_safety && requires_rdc;
+    let warm_requires_consent = warm_safety && (requires_rdc || rdc_over_budget);
     let mut device_only_reasons: Vec<String> = Vec::new();
     if device_only_safety {
         device_only_reasons.extend([
@@ -818,10 +857,16 @@ fn ranked_reload_options(
             "arbiter.no_state_loss".to_string(),
         ]);
         if warm_requires_consent {
-            warm_reasons.extend([
-                "device_linker_bound".to_string(),
-                "arbiter_user_consent_required".to_string(),
-            ]);
+            if requires_rdc {
+                warm_reasons.push("rdc_device_link_required".to_string());
+            }
+            if rdc_linker_bound {
+                warm_reasons.push("device_linker_bound".to_string());
+            }
+            if rdc_over_budget {
+                warm_reasons.push("rdc_link_over_budget".to_string());
+            }
+            warm_reasons.push("arbiter_user_consent_required".to_string());
         }
     } else {
         if !profile_current {
@@ -845,7 +890,9 @@ fn ranked_reload_options(
     } else {
         json!(["arbiter.verifier_required"])
     };
-    let warm_consent_reason = if warm_requires_consent {
+    let warm_consent_reason = if warm_requires_consent && rdc_over_budget {
+        Value::String("rdc_link_over_budget".to_string())
+    } else if warm_requires_consent {
         Value::String("device_linker_bound".to_string())
     } else {
         Value::Null
@@ -869,7 +916,7 @@ fn ranked_reload_options(
         {
             "plan": "warm_rebuild",
             "safety": if warm_safety { "pass" } else { "fail" },
-            "estimatedMs": if requires_rdc { 8000 } else { 5000 },
+            "estimatedMs": if requires_rdc { estimated_rdc_ms } else { 5000 },
             "stateLoss": false,
             "requiresConsent": warm_requires_consent,
             "consentReason": warm_consent_reason,
@@ -1308,6 +1355,47 @@ mod tests {
                 .pointer("/fastPathPolicy/deviceOnlyAllowed")
                 .and_then(Value::as_bool),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn rdc_warm_rebuild_reports_link_cost_and_requires_consent() {
+        let mut manifest = gpu_compile_manifest();
+        manifest["gpu"]["device_flags"] = json!(["-O3", "-fgpu-rdc"]);
+        let flags_hash = effective_flags_hash_for(&manifest);
+        let plan = reload_plan("warm_rebuild", vec!["device"]);
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastReloadPlanReport": plan,
+            "templateEvidence": template_evidence(&flags_hash, true, "clang-libtooling+vendor-artifacts"),
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+        let warm_rebuild = ranked_option(&migrated, "warm_rebuild");
+
+        assert_eq!(
+            migrated.pointer("/arbiterDecision").and_then(Value::as_str),
+            Some("ask_developer")
+        );
+        assert_eq!(
+            migrated.pointer("/consentReason").and_then(Value::as_str),
+            Some("rdc_link_over_budget")
+        );
+        assert_eq!(
+            warm_rebuild.get("safety").and_then(Value::as_str),
+            Some("pass")
+        );
+        assert_eq!(
+            warm_rebuild.get("requiresConsent").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(has_reason(warm_rebuild, "rdc_device_link_required"));
+        assert!(has_reason(warm_rebuild, "rdc_link_over_budget"));
+        assert_eq!(
+            migrated
+                .pointer("/runReport/toolchainCapabilityProfile/rdcDeviceLink/overBudget")
+                .and_then(Value::as_bool),
+            Some(true)
         );
     }
 
