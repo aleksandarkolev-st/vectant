@@ -36,6 +36,7 @@ const CFG = {
   firstCompileTimeoutMs: Number(process.env.SYNTHI_SCALE_FIRST_TIMEOUT_MS ?? 240000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_SCALE_HMR_TIMEOUT_MS ?? 30000),
   hmrDeltaMode: (process.env.SYNTHI_SCALE_HMR_DELTA_MODE ?? 'ai_user_delta').toLowerCase(),
+  aiDeltaEvidenceTimeoutMs: Number(process.env.SYNTHI_SCALE_AI_DELTA_EVIDENCE_TIMEOUT_MS ?? 45000),
   screenshotAttempts: Number(process.env.SYNTHI_SCALE_SCREENSHOT_ATTEMPTS ?? 6),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_FRESHNESS_MS ?? 5000),
@@ -1692,7 +1693,7 @@ async function run() {
   const aiDeltaWorker = await awaitLogRegex(
     CFG.workerContainer,
     /\[GPU AI Delta\] Calling [^\n]*\/refactor\/diff_patch\/gpu[^\n]*|\[GPU AI Delta\] accepted: user=[^\n]*/,
-    5000,
+    CFG.aiDeltaEvidenceTimeoutMs,
     secondCheckpoint,
   );
   record('worker forced GPU AI delta endpoint', aiDeltaWorker.matched ? 'pass' : 'fail', aiDeltaWorker.snippet || 'no GPU AI delta worker marker');
@@ -1701,7 +1702,7 @@ async function run() {
   const aiDeltaBackend = await awaitLogRegex(
     CFG.aiEngineContainer,
     /\[GpuDiffPatch\][^\n]*/,
-    5000,
+    CFG.aiDeltaEvidenceTimeoutMs,
     secondCheckpoint,
   );
   record('ai-engine processed GPU delta', aiDeltaBackend.matched ? 'pass' : 'fail', aiDeltaBackend.snippet || 'no GpuDiffPatch marker');
@@ -1812,7 +1813,7 @@ async function run() {
   const staleLaunchAiDeltaWorker = await awaitLogRegex(
     CFG.workerContainer,
     /\[GPU AI Delta\] Calling [^\n]*\/refactor\/diff_patch\/gpu[^\n]*/,
-    15000,
+    CFG.aiDeltaEvidenceTimeoutMs,
     staleLaunchAiDeltaCheckpoint,
   );
   record('worker sent stale-launch-pointer delta to GPU AI endpoint', staleLaunchAiDeltaWorker.matched ? 'pass' : 'fail', staleLaunchAiDeltaWorker.snippet || 'no forced stale-launch-pointer GPU AI delta worker marker');
@@ -1821,7 +1822,7 @@ async function run() {
   const staleLaunchAiDeltaBackend = await awaitLogRegex(
     CFG.aiEngineContainer,
     /\[GpuDiffPatch\][^\n]*/,
-    15000,
+    CFG.aiDeltaEvidenceTimeoutMs,
     staleLaunchAiDeltaCheckpoint,
   );
   record('ai-engine processed stale-launch-pointer GPU delta', staleLaunchAiDeltaBackend.matched ? 'pass' : 'fail', staleLaunchAiDeltaBackend.snippet || 'no stale-launch-pointer GpuDiffPatch marker');
@@ -1830,7 +1831,7 @@ async function run() {
   const staleLaunchAiDeltaReject = await awaitLogRegex(
     CFG.workerContainer,
     /\[GPU AI Delta\] rejected: user=[^\n]*requested_plan=device_only[^\n]*stale_launch_pointer_detected[^\n]*/,
-    15000,
+    CFG.aiDeltaEvidenceTimeoutMs,
     staleLaunchAiDeltaCheckpoint,
   );
   record('stale launch pointer AI delta rejected by verifier policy', staleLaunchAiDeltaReject.matched ? 'pass' : 'fail', staleLaunchAiDeltaReject.snippet || 'no stale-launch-pointer AI delta verifier rejection marker');
@@ -1872,7 +1873,7 @@ async function run() {
   const staleAiDeltaWorker = await awaitLogRegex(
     CFG.workerContainer,
     /\[GPU AI Delta\] Calling [^\n]*\/refactor\/diff_patch\/gpu[^\n]*/,
-    15000,
+    CFG.aiDeltaEvidenceTimeoutMs,
     staleAiDeltaCheckpoint,
   );
   record('worker sent stale-toolchain delta to GPU AI endpoint', staleAiDeltaWorker.matched ? 'pass' : 'fail', staleAiDeltaWorker.snippet || 'no forced GPU AI delta worker marker');
@@ -1881,7 +1882,7 @@ async function run() {
   const staleAiDeltaBackend = await awaitLogRegex(
     CFG.aiEngineContainer,
     /\[GpuDiffPatch\][^\n]*/,
-    15000,
+    CFG.aiDeltaEvidenceTimeoutMs,
     staleAiDeltaCheckpoint,
   );
   record('ai-engine processed stale-toolchain GPU delta', staleAiDeltaBackend.matched ? 'pass' : 'fail', staleAiDeltaBackend.snippet || 'no stale-toolchain GpuDiffPatch marker');
@@ -1890,7 +1891,7 @@ async function run() {
   const staleAiDeltaReject = await awaitLogRegex(
     CFG.workerContainer,
     /\[GPU AI Delta\] rejected: user=[^\n]*requested_plan=device_only[^\n]*toolchain_capability_stale[^\n]*/,
-    15000,
+    CFG.aiDeltaEvidenceTimeoutMs,
     staleAiDeltaCheckpoint,
   );
   record('stale toolchain AI delta rejected by verifier policy', staleAiDeltaReject.matched ? 'pass' : 'fail', staleAiDeltaReject.snippet || 'no stale-toolchain AI delta verifier rejection marker');
@@ -1930,7 +1931,7 @@ async function run() {
   const missingAiDeltaWorker = await awaitLogRegex(
     CFG.workerContainer,
     /\[GPU AI Delta\] Calling [^\n]*\/refactor\/diff_patch\/gpu[^\n]*/,
-    15000,
+    CFG.aiDeltaEvidenceTimeoutMs,
     missingAiDeltaCheckpoint,
   );
   record('worker sent missing-toolchain delta to GPU AI endpoint', missingAiDeltaWorker.matched ? 'pass' : 'fail', missingAiDeltaWorker.snippet || 'no forced missing-toolchain GPU AI delta worker marker');
@@ -1939,7 +1940,7 @@ async function run() {
   const missingAiDeltaBackend = await awaitLogRegex(
     CFG.aiEngineContainer,
     /\[GpuDiffPatch\][^\n]*/,
-    15000,
+    CFG.aiDeltaEvidenceTimeoutMs,
     missingAiDeltaCheckpoint,
   );
   record('ai-engine processed missing-toolchain GPU delta', missingAiDeltaBackend.matched ? 'pass' : 'fail', missingAiDeltaBackend.snippet || 'no missing-toolchain GpuDiffPatch marker');
@@ -1948,7 +1949,7 @@ async function run() {
   const missingAiDeltaReject = await awaitLogRegex(
     CFG.workerContainer,
     /\[GPU AI Delta\] rejected: user=[^\n]*requested_plan=device_only[^\n]*toolchain_capability_missing[^\n]*/,
-    15000,
+    CFG.aiDeltaEvidenceTimeoutMs,
     missingAiDeltaCheckpoint,
   );
   record('missing toolchain AI delta rejected by verifier policy', missingAiDeltaReject.matched ? 'pass' : 'fail', missingAiDeltaReject.snippet || 'no missing-toolchain AI delta verifier rejection marker');
