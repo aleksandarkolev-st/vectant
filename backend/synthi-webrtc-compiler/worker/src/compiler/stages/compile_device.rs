@@ -56,6 +56,9 @@ pub const DEVICE_HIP_FILENAME: &str = "device.hip";
 pub struct DeviceCompileOutcome {
     /// Absolute path to the produced cubin (CUDA) or hsaco (ROCm).
     pub artifact_path: PathBuf,
+    /// Device source that was actually compiled after any internal generated
+    /// role heal attempts.
+    pub compiled_source: String,
     /// Parsed ptxas/nvlink diagnostics — empty for ROCm (Phase 0).
     pub diagnostics: GpuToolchainDiagnostics,
     /// Raw stderr from the device compiler — preserved verbatim for the
@@ -196,6 +199,7 @@ async fn compile_device_inner(
 
             return Ok(Some(DeviceCompileOutcome {
                 artifact_path,
+                compiled_source: current_source,
                 diagnostics: compile.diagnostics,
                 stderr: compile.stderr,
             }));

@@ -3284,12 +3284,12 @@ pub async fn handle_compile_request(
         debug_log!(
             "[GPU HMR] Skipping worker-side device reload; shipped runner will load sidecar"
         );
-    } else if let (Some(device_outcome), Some(manifest), Some(device_source)) = (
+    } else if let (Some(device_outcome), Some(manifest)) = (
         device_compile_outcome.as_ref(),
         compile_manifest.as_ref(),
-        device_source_content.as_ref(),
     ) {
         if let Some(gpu) = manifest.gpu.as_ref() {
+            let device_source = device_outcome.compiled_source.as_str();
             let gpu_language = gpu.vendor.as_str();
             let device_filename = device_filename_for_vendor(gpu.vendor);
             let mut device_dirty_units = dirty_units.clone();
@@ -3480,12 +3480,12 @@ pub async fn handle_compile_request(
         }
     }
 
-    if let (Some(device_outcome), Some(manifest), Some(device_source)) = (
+    if let (Some(device_outcome), Some(manifest)) = (
         device_compile_outcome.as_ref(),
         compile_manifest.as_ref(),
-        device_source_content.as_ref(),
     ) {
         if let Some(gpu) = manifest.gpu.as_ref() {
+            let device_source = device_outcome.compiled_source.as_str();
             let kernel_symbols = extract_device_kernel_symbols(device_source);
             let kernel_abi_hash = format!(
                 "{}",
