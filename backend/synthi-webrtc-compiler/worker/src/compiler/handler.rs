@@ -599,7 +599,9 @@ fn device_fast_path_rejection_blocks_fallback(reason_codes: &[String]) -> bool {
     reason_codes.iter().any(|code| {
         matches!(
             code.as_str(),
-            "abi.kernel_signature_changed" | "abi.constant_global_layout_changed"
+            "abi.kernel_signature_changed"
+                | "abi.constant_global_layout_changed"
+                | "toolchain_capability_stale"
         )
     })
 }

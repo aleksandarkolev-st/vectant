@@ -51,11 +51,8 @@ pub fn try_direct_device_body_patch(
     if !is_device_source_path(&user_path) {
         return DeviceFastPathResult::rejected(vec!["edit.not_device_source"], &user_path);
     }
-    if !toolchain_allows_device_only(sidecar) {
-        return DeviceFastPathResult::rejected(
-            vec!["toolchain_capability_missing_or_stale"],
-            &user_path,
-        );
+    if let Some(reason) = device_only_capability_rejection_reason(sidecar) {
+        return DeviceFastPathResult::rejected(vec![reason], &user_path);
     }
 
     let Some(old_user_source) = source_baseline(sidecar, &user_path) else {
@@ -199,20 +196,35 @@ pub fn device_source_hash(source: &str) -> String {
     sha256_hex(source)
 }
 
-fn toolchain_allows_device_only(sidecar: &Value) -> bool {
-    let profile_current = sidecar
+fn device_only_capability_rejection_reason(sidecar: &Value) -> Option<&'static str> {
+    let profile_status = sidecar
         .pointer("/toolchainCapabilities/status")
-        .and_then(Value::as_str)
-        == Some("current");
+        .and_then(Value::as_str);
+    if profile_status != Some("current") {
+        return Some(if profile_status == Some("stale") {
+            "toolchain_capability_stale"
+        } else {
+            "toolchain_capability_missing"
+        });
+    }
+
     let supports = sidecar
         .pointer("/toolchainCapabilities/supportsDeviceOnlyReload")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    if !supports {
+        return Some("toolchain_capability_no_device_only_reload");
+    }
+
     let fast_policy_allows = sidecar
         .pointer("/fastPathPolicy/deviceOnlyAllowed")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    profile_current && supports && fast_policy_allows
+    if !fast_policy_allows {
+        return Some("fast_path_policy_blocks_device_only");
+    }
+
+    None
 }
 
 fn source_baseline(sidecar: &Value, path: &str) -> Option<String> {
@@ -543,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_capability_blocks_fast_path() {
+    fn stale_capability_blocks_fast_path() {
         let mut stale = sidecar();
         stale["toolchainCapabilities"]["status"] = Value::String("stale".to_string());
 
@@ -558,7 +570,26 @@ mod tests {
         assert!(result
             .reason_codes
             .iter()
-            .any(|code| code == "toolchain_capability_missing_or_stale"));
+            .any(|code| code == "toolchain_capability_stale"));
+    }
+
+    #[test]
+    fn missing_capability_blocks_fast_path() {
+        let mut missing = sidecar();
+        missing.as_object_mut().unwrap().remove("toolchainCapabilities");
+
+        let result = try_direct_device_body_patch(
+            &missing,
+            "src/gpu/flow.hip",
+            generated_source(),
+            generated_source(),
+        );
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "toolchain_capability_missing"));
     }
 
     #[test]
