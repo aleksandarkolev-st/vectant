@@ -1,7 +1,7 @@
 'use client';
 import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { useSession } from 'next-auth/react';
-import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff } from 'lucide-react';
+import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste } from 'lucide-react';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { resolveCollabWsUrl } from '@/lib/collab-url';
@@ -90,6 +90,9 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
   const [state, setState] = useState('connecting'); // connecting | connected | error | closed
   const [shellInfo, setShellInfo] = useState('');
+  // Multi-line paste confirmation: null when no pending paste, otherwise
+  // { text, lineCount, charCount } describing the clipboard payload.
+  const [pasteConfirm, setPasteConfirm] = useState(null);
 
   // Stable session key: survives re-renders, unique per terminal tab + pane side
   const sessionKey = `${terminalId}-${paneSide}`;
@@ -201,6 +204,41 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       terminalRef.current = { term, fitAddon, webglAddon };
 
+      // ── Right-click → paste from clipboard ────────────────────────
+      // Mirrors the VS Code / Windows Terminal convention: a single
+      // right-click drops the OS clipboard text into the PTY. We route
+      // through term.paste() so bracketed-paste mode (zsh, fish, etc.)
+      // works correctly.
+      //
+      // Safety: a multi-line clipboard payload typically executes every
+      // line the moment it lands in the PTY (newline = Enter). We pop a
+      // confirmation modal in that case so the user sees what is about
+      // to run. A single trailing newline is fine — that's just `cmd\n`,
+      // which is what the user means when they copy a one-liner from a
+      // README.
+      const handleContextMenu = async (e) => {
+        e.preventDefault();
+        if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
+          return; // View-only guest
+        }
+        try {
+          const text = await navigator.clipboard.readText();
+          if (!text) return;
+          const hasEmbeddedNewline = text.replace(/\r?\n$/, '').includes('\n');
+          if (hasEmbeddedNewline) {
+            const lineCount = text.split(/\r?\n/).length;
+            setPasteConfirm({ text, lineCount, charCount: text.length });
+          } else {
+            term.paste(text);
+          }
+        } catch (_) {
+          // Clipboard read can fail (permission denied, insecure context,
+          // user gesture lost). Stay silent — the user can fall back to
+          // Ctrl/Cmd+V.
+        }
+      };
+      containerRef.current.addEventListener('contextmenu', handleContextMenu);
+
       // ── Connect WebSocket ─────────────────────────────────────────
       connectWS(term, fitAddon);
 
@@ -226,10 +264,16 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       if (containerRef.current) resizeObserver.observe(containerRef.current);
       window.addEventListener('resize', scheduleResize);
 
+      // Capture for teardown: containerRef may be nulled before dispose runs.
+      const containerEl = containerRef.current;
+
       // Store teardown
       terminalRef.current.dispose = () => {
         resizeObserver.disconnect();
         window.removeEventListener('resize', scheduleResize);
+        if (containerEl) {
+          containerEl.removeEventListener('contextmenu', handleContextMenu);
+        }
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         if (webglAddon) try { webglAddon.dispose(); } catch (_) {}
         linksAddon.dispose();
@@ -435,10 +479,37 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     window.location.reload();
   }, [cleanup]);
 
+  // ─── Multi-line paste confirmation actions ────────────────────────────
+  const confirmPaste = useCallback(() => {
+    const pending = pasteConfirm;
+    setPasteConfirm(null);
+    if (!pending) return;
+    const term = terminalRef.current?.term;
+    if (!term) return;
+    try { term.paste(pending.text); } catch (_) {}
+    // Hand focus back to the PTY — the dialog stole it on mount.
+    try { term.focus(); } catch (_) {}
+  }, [pasteConfirm]);
+
+  const cancelPaste = useCallback(() => {
+    setPasteConfirm(null);
+    try { terminalRef.current?.term?.focus(); } catch (_) {}
+  }, []);
+
   // ─── Render ───────────────────────────────────────────────────────────
   return (
     <div className="terminal-pane-shell h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
       <div ref={containerRef} className="h-full w-full" />
+
+      {pasteConfirm && (
+        <MultiLinePasteDialog
+          text={pasteConfirm.text}
+          lineCount={pasteConfirm.lineCount}
+          charCount={pasteConfirm.charCount}
+          onConfirm={confirmPaste}
+          onCancel={cancelPaste}
+        />
+      )}
 
       {/* Session: View-only terminal overlay for guests without canTerminal */}
       {isGuest && !canTerminal && state === 'connected' && (
@@ -499,5 +570,106 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     </div>
   );
 }, /* freeze — never re-render from parent */ () => true);
+
+/**
+ * MultiLinePasteDialog — confirmation modal shown when the user right-clicks
+ * to paste a multi-line clipboard payload into the terminal. Multi-line
+ * pastes can immediately execute each line (newline = Enter), so we surface
+ * the text and the line count before sending it to the PTY.
+ *
+ * Keyboard: Enter confirms, Escape cancels. The Cancel button autofocuses
+ * so an accidental Enter doesn't paste a hostile clipboard payload.
+ */
+function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel }) {
+  // Preview is truncated for very large pastes so the modal stays usable.
+  const PREVIEW_LINE_LIMIT = 40;
+  const PREVIEW_CHAR_LIMIT = 4000;
+  const lines = text.split(/\r?\n/);
+  const previewLines = lines.slice(0, PREVIEW_LINE_LIMIT);
+  let preview = previewLines.join('\n');
+  if (preview.length > PREVIEW_CHAR_LIMIT) {
+    preview = preview.slice(0, PREVIEW_CHAR_LIMIT) + '…';
+  }
+  const truncated =
+    lines.length > PREVIEW_LINE_LIMIT || text.length > PREVIEW_CHAR_LIMIT;
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+      else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        onConfirm();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onConfirm, onCancel]);
+
+  return (
+    <div
+      className="absolute inset-0 z-30 flex items-center justify-center backdrop-blur-sm"
+      style={{ background: 'rgba(0,0,0,0.55)' }}
+      onClick={onCancel}
+    >
+      <div
+        className="w-[440px] max-w-[92%] rounded-xl border shadow-2xl p-4"
+        style={{ background: 'var(--bg-elevated, #18181b)', borderColor: 'var(--border-medium, #3f3f46)' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-2.5 mb-3">
+          <ClipboardPaste className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: 'var(--accent-warning, #fbbf24)' }} />
+          <div>
+            <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
+              Paste multi-line text?
+            </h3>
+            <p className="text-xs mt-1 leading-relaxed" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+              This clipboard contains {lineCount} lines ({charCount} chars). Each newline
+              will be sent as Enter and may execute immediately.
+            </p>
+          </div>
+        </div>
+
+        <pre
+          className="font-mono text-[11px] leading-snug whitespace-pre overflow-auto rounded-md p-2 mb-3 max-h-56"
+          style={{
+            background: 'var(--bg-app, #0a0b10)',
+            border: '1px solid var(--border-subtle, #2a2b38)',
+            color: 'var(--text-primary, #e4e4e7)',
+          }}
+        >
+          {preview}
+        </pre>
+
+        {truncated && (
+          <p className="text-[10px] mb-2 -mt-2" style={{ color: 'var(--text-muted, #6b7089)' }}>
+            Preview truncated — full payload will still be pasted.
+          </p>
+        )}
+
+        <div className="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            autoFocus
+            className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors border"
+            style={{ borderColor: 'var(--border-medium, #3f3f46)', color: 'var(--text-secondary, #a1a1aa)' }}
+          >
+            Cancel
+            <span className="ml-1.5 text-[10px] opacity-60">Esc</span>
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="px-3 py-1.5 rounded-md text-xs font-semibold transition-colors text-white"
+            style={{ background: 'var(--accent-warning, #d97706)' }}
+          >
+            Paste
+            <span className="ml-1.5 text-[10px] opacity-80">Ctrl+Enter</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default TerminalPane;
