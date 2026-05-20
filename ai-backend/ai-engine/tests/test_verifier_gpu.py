@@ -62,6 +62,63 @@ def test_accepts_edit_to_existing_module():
     assert r.ok, r.violations
 
 
+def test_split_rejects_placeholder_opengl_drawing_loop_comment():
+    source_files = {
+        "src/render/glfw_canvas.cpp": (
+            "#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n"
+            "void render() { glMatrixMode(GL_PROJECTION); glOrtho(0, 800, 600, 0, -1, 1); }"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) { glClear(GL_COLOR_BUFFER_BIT); // ... drawing loop ...\n }'
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void step() {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    assert any(v.rule == "gui_render_placeholder" for v in r.violations)
+
+
+def test_split_rejects_glfw_opengl_clear_only_renderer():
+    source_files = {
+        "src/render/glfw_canvas.cpp": (
+            "#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n"
+            "void render() { glMatrixMode(GL_PROJECTION); glOrtho(0, 800, 600, 0, -1, 1); "
+            "glBegin(GL_POINTS); glVertex2f(10, 10); glEnd(); }"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) { glClearColor(0.02f, 0.03f, 0.04f, 1.0f); glClear(GL_COLOR_BUFFER_BIT); }'
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void step() {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    assert any(v.rule == "gui_render_too_sparse" for v in r.violations)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Heal verifier — rule 2 (no wrapper kernels)
 # ─────────────────────────────────────────────────────────────────────────────

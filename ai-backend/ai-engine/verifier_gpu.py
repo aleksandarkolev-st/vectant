@@ -104,7 +104,8 @@ _FORBIDDEN_GPU_RUNTIME_ACCESSOR_RE = re.compile(
 )
 _PLACEHOLDER_RENDER_RE = re.compile(
     r"\b(?:TODO|stub|placeholder|rendering logic|draw(?:ing)?\s+code\s+here|"
-    r"render(?:ing)?\s+code\s+here|omitted)\b",
+    r"render(?:ing)?\s+code\s+here|drawing\s+loop|real\s+implementation|omitted)\b"
+    r"|\.{3}\s*(?:draw(?:ing)?|render(?:ing)?)",
     re.IGNORECASE,
 )
 _GUI_BACKEND_PRESENT_RE = re.compile(
@@ -140,6 +141,10 @@ _SDL_SUBSTANTIAL_DRAW_RE = re.compile(
 )
 _OPENGL_RENDER_API_RE = re.compile(
     r"\b(?:glBegin|glDrawArrays|glDrawElements|glDrawPixels|glVertex[234][a-zA-Z]*)\s*\("
+)
+_OPENGL_SURFACE_API_RE = re.compile(
+    r"\b(?:glClear|glClearColor|glViewport|glMatrixMode|glOrtho|gluOrtho2D|"
+    r"glBegin|glDrawArrays|glDrawElements|glDrawPixels|glVertex[234][a-zA-Z]*)\s*\("
 )
 _OPENGL_PROJECTION_RE = re.compile(
     r"\b(?:glOrtho|gluOrtho2D|glFrustum|glMatrixMode\s*\(\s*GL_PROJECTION|glm::ortho)\b"
@@ -1286,6 +1291,26 @@ def verify_split_output(
                     "remain black under screenshot validation; render filled "
                     "rects, lines, geometry, textures, or another visible "
                     "backend-specific representation from preserved state."
+                ),
+                offending_module=gui_path,
+            )
+        )
+    if (
+        "glfw" in source_render_backends
+        and _OPENGL_SURFACE_API_RE.search(gui_source)
+        and not _OPENGL_RENDER_API_RE.search(gui_source)
+    ):
+        violations.append(
+            Violation(
+                rule="gui_render_too_sparse",
+                message=(
+                    "The gui role uses GLFW/OpenGL APIs but only clears or "
+                    "sets up the surface without drawing any substantial "
+                    "visible primitive. A first frame that only clears can "
+                    "compile yet remain black under screenshot validation; "
+                    "draw filled geometry, points, lines, textured quads, or "
+                    "another visible OpenGL representation from preserved "
+                    "state."
                 ),
                 offending_module=gui_path,
             )
