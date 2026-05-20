@@ -10,6 +10,7 @@ pub struct DeviceFastPathResult {
     pub generated_path: Option<String>,
     pub patched_device_source: Option<String>,
     pub reload_plan: Value,
+    pub verifier_report: Value,
     pub reason_codes: Vec<String>,
 }
 
@@ -19,13 +20,26 @@ impl DeviceFastPathResult {
     }
 
     fn rejected_strings(reason_codes: Vec<String>, user_path: &str) -> Self {
+        Self::rejected_strings_with_evidence(reason_codes, user_path, None, Value::Null)
+    }
+
+    fn rejected_strings_with_evidence(
+        reason_codes: Vec<String>,
+        user_path: &str,
+        generated_path: Option<&str>,
+        evidence: Value,
+    ) -> Self {
         let codes = reason_codes;
         let plan = rejection_plan(&codes);
+        let reload_plan = reload_plan(plan, &codes, user_path, generated_path);
+        let verifier_report =
+            fast_path_verifier_report("reject", plan, &codes, user_path, generated_path, evidence);
         Self {
             accepted: false,
             generated_path: None,
             patched_device_source: None,
-            reload_plan: reload_plan(plan, &codes, user_path, None),
+            reload_plan,
+            verifier_report,
             reason_codes: codes,
         }
     }
@@ -74,41 +88,116 @@ pub fn try_direct_device_body_patch(
             );
         }
     }
-    if let Err(reason_codes) =
-        validate_device_ast_gate(&old_user_source, new_user_source, generated_device_source)
-    {
-        return DeviceFastPathResult::rejected_strings(reason_codes, &user_path);
+    let parser_status =
+        device_ast_status_report(&old_user_source, new_user_source, generated_device_source);
+    if !parser_status.failures.is_empty() {
+        let mut reason_codes = vec!["parser.device_ast_parse_failed".to_string()];
+        reason_codes.extend(parser_status.failures.clone());
+        let evidence = fast_path_verifier_evidence(
+            sidecar,
+            Some(&old_user_source),
+            Some(new_user_source),
+            Some(generated_device_source),
+            Some(parser_status.report),
+            changed_span(&old_user_source, new_user_source).as_ref(),
+            None,
+            Some("parser.device_ast_parse_failed"),
+        );
+        return DeviceFastPathResult::rejected_strings_with_evidence(
+            reason_codes,
+            &user_path,
+            mapped_generated_device_path(sidecar, &user_path).as_deref(),
+            evidence,
+        );
     }
 
     let old_signatures = kernel_signatures(&old_user_source);
     let new_signatures = kernel_signatures(new_user_source);
     if old_signatures != new_signatures {
-        return DeviceFastPathResult::rejected(vec!["abi.kernel_signature_changed"], &user_path);
+        let evidence = fast_path_verifier_evidence(
+            sidecar,
+            Some(&old_user_source),
+            Some(new_user_source),
+            Some(generated_device_source),
+            Some(parser_status.report.clone()),
+            changed_span(&old_user_source, new_user_source).as_ref(),
+            None,
+            Some("abi.kernel_signature_changed"),
+        );
+        return DeviceFastPathResult::rejected_strings_with_evidence(
+            vec!["abi.kernel_signature_changed".to_string()],
+            &user_path,
+            mapped_generated_device_path(sidecar, &user_path).as_deref(),
+            evidence,
+        );
     }
     let old_layout = constant_global_layout_hash(&old_user_source);
     let new_layout = constant_global_layout_hash(new_user_source);
     if old_layout != new_layout {
-        return DeviceFastPathResult::rejected(
-            vec!["abi.constant_global_layout_changed"],
+        let evidence = fast_path_verifier_evidence(
+            sidecar,
+            Some(&old_user_source),
+            Some(new_user_source),
+            Some(generated_device_source),
+            Some(parser_status.report.clone()),
+            changed_span(&old_user_source, new_user_source).as_ref(),
+            None,
+            Some("abi.constant_global_layout_changed"),
+        );
+        return DeviceFastPathResult::rejected_strings_with_evidence(
+            vec!["abi.constant_global_layout_changed".to_string()],
             &user_path,
+            mapped_generated_device_path(sidecar, &user_path).as_deref(),
+            evidence,
         );
     }
 
     let mappings = mappings_for_source(sidecar, &user_path);
     if mappings.is_empty() {
-        return DeviceFastPathResult::rejected(vec!["mapping.device_mapping_missing"], &user_path);
+        let evidence = fast_path_verifier_evidence(
+            sidecar,
+            Some(&old_user_source),
+            Some(new_user_source),
+            Some(generated_device_source),
+            Some(parser_status.report.clone()),
+            changed_span(&old_user_source, new_user_source).as_ref(),
+            None,
+            Some("mapping.device_mapping_missing"),
+        );
+        return DeviceFastPathResult::rejected_strings_with_evidence(
+            vec!["mapping.device_mapping_missing".to_string()],
+            &user_path,
+            None,
+            evidence,
+        );
     }
 
     let old_regions = kernel_regions(&old_user_source);
     let new_regions = kernel_regions(new_user_source);
     let generated_regions = kernel_regions(generated_device_source);
     let Some(delta) = changed_span(&old_user_source, new_user_source) else {
-        return DeviceFastPathResult::rejected(vec!["edit.no_change"], &user_path);
+        let evidence = fast_path_verifier_evidence(
+            sidecar,
+            Some(&old_user_source),
+            Some(new_user_source),
+            Some(generated_device_source),
+            Some(parser_status.report.clone()),
+            None,
+            None,
+            Some("edit.no_change"),
+        );
+        return DeviceFastPathResult::rejected_strings_with_evidence(
+            vec!["edit.no_change".to_string()],
+            &user_path,
+            mapped_generated_device_path(sidecar, &user_path).as_deref(),
+            evidence,
+        );
     };
 
     let mut patched = generated_device_source.to_string();
     let mut patched_any = false;
     let mut affected_symbols = Vec::new();
+    let mut generated_patch_span = None;
     for mapping in mappings {
         let symbol = mapping
             .get("symbol")
@@ -121,12 +210,39 @@ pub fn try_direct_device_body_patch(
             continue;
         }
         if !new_regions.contains_key(symbol) {
-            return DeviceFastPathResult::rejected(vec!["mapping.new_kernel_missing"], &user_path);
+            let evidence = fast_path_verifier_evidence(
+                sidecar,
+                Some(&old_user_source),
+                Some(new_user_source),
+                Some(generated_device_source),
+                Some(parser_status.report.clone()),
+                Some(&delta),
+                mapping_generated_range(mapping),
+                Some("mapping.new_kernel_missing"),
+            );
+            return DeviceFastPathResult::rejected_strings_with_evidence(
+                vec!["mapping.new_kernel_missing".to_string()],
+                &user_path,
+                mapped_generated_device_path(sidecar, &user_path).as_deref(),
+                evidence,
+            );
         };
         let Some(generated_region) = generated_regions.get(symbol) else {
-            return DeviceFastPathResult::rejected(
-                vec!["mapping.generated_kernel_missing"],
+            let evidence = fast_path_verifier_evidence(
+                sidecar,
+                Some(&old_user_source),
+                Some(new_user_source),
+                Some(generated_device_source),
+                Some(parser_status.report.clone()),
+                Some(&delta),
+                mapping_generated_range(mapping),
+                Some("mapping.generated_kernel_missing"),
+            );
+            return DeviceFastPathResult::rejected_strings_with_evidence(
+                vec!["mapping.generated_kernel_missing".to_string()],
                 &user_path,
+                mapped_generated_device_path(sidecar, &user_path).as_deref(),
+                evidence,
             );
         };
         let body_offset = delta.old_start.saturating_sub(old_region.body_start);
@@ -142,24 +258,67 @@ pub fn try_direct_device_body_patch(
             None
         };
         let Some(relative) = generated_relative else {
-            return DeviceFastPathResult::rejected(
-                vec!["mapping.patch_anchor_missing"],
+            let evidence = fast_path_verifier_evidence(
+                sidecar,
+                Some(&old_user_source),
+                Some(new_user_source),
+                Some(generated_device_source),
+                Some(parser_status.report.clone()),
+                Some(&delta),
+                mapping_generated_range(mapping),
+                Some("mapping.patch_anchor_missing"),
+            );
+            return DeviceFastPathResult::rejected_strings_with_evidence(
+                vec!["mapping.patch_anchor_missing".to_string()],
                 &user_path,
+                mapped_generated_device_path(sidecar, &user_path).as_deref(),
+                evidence,
             );
         };
         let start = generated_region.body_start + relative;
         let end = start + old_segment.len();
         if start > patched.len() || end > patched.len() || start > end {
-            return DeviceFastPathResult::rejected(vec!["mapping.patch_range_invalid"], &user_path);
+            let evidence = fast_path_verifier_evidence(
+                sidecar,
+                Some(&old_user_source),
+                Some(new_user_source),
+                Some(generated_device_source),
+                Some(parser_status.report.clone()),
+                Some(&delta),
+                Some(byte_range_json(start, end)),
+                Some("mapping.patch_range_invalid"),
+            );
+            return DeviceFastPathResult::rejected_strings_with_evidence(
+                vec!["mapping.patch_range_invalid".to_string()],
+                &user_path,
+                mapped_generated_device_path(sidecar, &user_path).as_deref(),
+                evidence,
+            );
         }
         patched.replace_range(start..end, new_segment);
         patched_any = true;
         affected_symbols.push(symbol.to_string());
+        generated_patch_span = Some(byte_range_json(start, end));
         break;
     }
 
     if !patched_any {
-        return DeviceFastPathResult::rejected(vec!["edit.not_mapped_kernel_body"], &user_path);
+        let evidence = fast_path_verifier_evidence(
+            sidecar,
+            Some(&old_user_source),
+            Some(new_user_source),
+            Some(generated_device_source),
+            Some(parser_status.report.clone()),
+            Some(&delta),
+            None,
+            Some("edit.not_mapped_kernel_body"),
+        );
+        return DeviceFastPathResult::rejected_strings_with_evidence(
+            vec!["edit.not_mapped_kernel_body".to_string()],
+            &user_path,
+            mapped_generated_device_path(sidecar, &user_path).as_deref(),
+            evidence,
+        );
     }
     let generated_path = mapped_generated_device_path(sidecar, &user_path);
     let mut codes = vec![
@@ -180,11 +339,30 @@ pub fn try_direct_device_body_patch(
             .map(|symbol| format!("mapping.kernel.{symbol}")),
     );
     let plan = reload_plan("device_only", &codes, &user_path, generated_path.as_deref());
+    let evidence = fast_path_verifier_evidence(
+        sidecar,
+        Some(&old_user_source),
+        Some(new_user_source),
+        Some(&patched),
+        Some(parser_status.report),
+        Some(&delta),
+        generated_patch_span,
+        None,
+    );
+    let verifier_report = fast_path_verifier_report(
+        "pass",
+        "device_only",
+        &codes,
+        &user_path,
+        generated_path.as_deref(),
+        evidence,
+    );
     DeviceFastPathResult {
         accepted: true,
         generated_path,
         patched_device_source: Some(patched),
         reload_plan: plan,
+        verifier_report,
         reason_codes: codes,
     }
 }
@@ -301,28 +479,63 @@ fn device_compile_metadata_rejection_reason(sidecar: &Value) -> Option<&'static 
     None
 }
 
-fn validate_device_ast_gate(
+#[derive(Debug, Clone)]
+struct DeviceAstStatus {
+    report: Value,
+    failures: Vec<String>,
+}
+
+fn device_ast_status_report(
     old_user_source: &str,
     new_user_source: &str,
     generated_device_source: &str,
-) -> Result<(), Vec<String>> {
+) -> DeviceAstStatus {
     let inputs = [
-        ("parser.user_baseline_ast_failed", old_user_source),
-        ("parser.user_candidate_ast_failed", new_user_source),
-        ("parser.generated_device_ast_failed", generated_device_source),
+        (
+            "userBaseline",
+            "parser.user_baseline_ast_failed",
+            old_user_source,
+        ),
+        (
+            "userCandidate",
+            "parser.user_candidate_ast_failed",
+            new_user_source,
+        ),
+        (
+            "generatedDevice",
+            "parser.generated_device_ast_failed",
+            generated_device_source,
+        ),
     ];
     let mut failures = Vec::new();
-    for (reason, source) in inputs {
-        if parse_device_cpp_ast(source).is_err() {
-            failures.push(reason.to_string());
+    let mut report = serde_json::Map::new();
+    for (key, reason, source) in inputs {
+        match parse_device_cpp_ast(source) {
+            Ok(()) => {
+                report.insert(
+                    key.to_string(),
+                    json!({
+                        "status": "pass",
+                        "reasonCode": null,
+                    }),
+                );
+            }
+            Err(message) => {
+                failures.push(reason.to_string());
+                report.insert(
+                    key.to_string(),
+                    json!({
+                        "status": "fail",
+                        "reasonCode": reason,
+                        "detail": message,
+                    }),
+                );
+            }
         }
     }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        let mut reason_codes = vec!["parser.device_ast_parse_failed".to_string()];
-        reason_codes.extend(failures);
-        Err(reason_codes)
+    DeviceAstStatus {
+        report: Value::Object(report),
+        failures,
     }
 }
 
@@ -359,6 +572,147 @@ fn sanitize_gpu_annotations_for_cpp_parser(source: &str) -> String {
         out = out.replace(token, "");
     }
     out
+}
+
+fn fast_path_verifier_report(
+    status: &str,
+    selected_plan: &str,
+    reason_codes: &[String],
+    user_path: &str,
+    generated_path: Option<&str>,
+    evidence: Value,
+) -> Value {
+    json!({
+        "schemaVersion": "synthi.gpu.device_fast_path_verifier.v1",
+        "status": status,
+        "selectedPlan": if status == "pass" { Value::String(selected_plan.to_string()) } else { Value::Null },
+        "selectedFallback": if status == "reject" { Value::String(selected_plan.to_string()) } else { Value::Null },
+        "reasonCodes": reason_codes,
+        "userFile": user_path,
+        "generatedRole": generated_path,
+        "evidence": evidence,
+    })
+}
+
+fn fast_path_verifier_evidence(
+    sidecar: &Value,
+    old_user_source: Option<&str>,
+    new_user_source: Option<&str>,
+    generated_device_source: Option<&str>,
+    parser_status: Option<Value>,
+    changed_user_span: Option<&BodyDelta>,
+    mapped_generated_span: Option<Value>,
+    rejection_rule: Option<&str>,
+) -> Value {
+    json!({
+        "kernelSignature": kernel_signature_evidence(old_user_source, new_user_source),
+        "constantGlobalLayout": constant_global_layout_evidence(old_user_source, new_user_source),
+        "generatedDeviceSourceHash": generated_device_source.map(sha256_hex),
+        "changedUserSpan": changed_user_span.map(body_delta_json).unwrap_or(Value::Null),
+        "mappedGeneratedSpan": mapped_generated_span.unwrap_or(Value::Null),
+        "parserStatus": parser_status.unwrap_or(Value::Null),
+        "compileMetadata": compile_metadata_evidence(sidecar),
+        "rejectionRule": rejection_rule,
+    })
+}
+
+fn kernel_signature_evidence(before: Option<&str>, after: Option<&str>) -> Value {
+    let before_value = before.map(kernel_signature_snapshot).unwrap_or(Value::Null);
+    let after_value = after.map(kernel_signature_snapshot).unwrap_or(Value::Null);
+    let changed = match (before, after) {
+        (Some(before), Some(after)) => {
+            Value::Bool(kernel_signature_hash(before) != kernel_signature_hash(after))
+        }
+        _ => Value::Null,
+    };
+    json!({
+        "changed": changed,
+        "before": before_value,
+        "after": after_value,
+    })
+}
+
+fn kernel_signature_snapshot(source: &str) -> Value {
+    let signatures = kernel_signatures(source);
+    json!({
+        "hash": kernel_signature_hash(source),
+        "signatures": signatures,
+    })
+}
+
+fn kernel_signature_hash(source: &str) -> String {
+    let material = kernel_signatures(source)
+        .into_iter()
+        .map(|(symbol, signature)| format!("{symbol}:{signature}"))
+        .collect::<Vec<_>>()
+        .join("|");
+    sha256_hex(&material)
+}
+
+fn constant_global_layout_evidence(before: Option<&str>, after: Option<&str>) -> Value {
+    let before_hash = before.map(constant_global_layout_hash);
+    let after_hash = after.map(constant_global_layout_hash);
+    let changed = match (&before_hash, &after_hash) {
+        (Some(before), Some(after)) => Value::Bool(before != after),
+        _ => Value::Null,
+    };
+    json!({
+        "changed": changed,
+        "beforeHash": before_hash,
+        "afterHash": after_hash,
+    })
+}
+
+fn compile_metadata_evidence(sidecar: &Value) -> Value {
+    let selected_command = sidecar
+        .get("selectedCompileCommand")
+        .or_else(|| sidecar.get("selected_compile_command"));
+    let identity = selected_command
+        .and_then(|command| {
+            command
+                .get("identity")
+                .or_else(|| command.get("argumentsHash"))
+                .or_else(|| command.get("effectiveFlagsHash"))
+        })
+        .and_then(Value::as_str);
+    let arguments_count = selected_command
+        .and_then(|command| command.get("arguments"))
+        .and_then(Value::as_array)
+        .map(Vec::len);
+    let effective_flags_hash = sidecar
+        .get("effectiveFlagsHash")
+        .or_else(|| selected_command.and_then(|command| command.get("effectiveFlagsHash")))
+        .and_then(Value::as_str);
+    json!({
+        "selectedCompileCommandPresent": selected_command.is_some(),
+        "selectedCompileCommandIdentity": identity,
+        "selectedCompileCommandArgumentsCount": arguments_count,
+        "effectiveFlagsHashPresent": effective_flags_hash.is_some(),
+        "effectiveFlagsHash": effective_flags_hash,
+    })
+}
+
+fn body_delta_json(delta: &BodyDelta) -> Value {
+    json!({
+        "oldStartByte": delta.old_start,
+        "oldEndByte": delta.old_end,
+        "newStartByte": delta.new_start,
+        "newEndByte": delta.new_end,
+    })
+}
+
+fn mapping_generated_range(mapping: &Value) -> Option<Value> {
+    mapping
+        .get("generatedRange")
+        .cloned()
+        .or_else(|| mapping.get("generatedBodyRange").cloned())
+}
+
+fn byte_range_json(start: usize, end: usize) -> Value {
+    json!({
+        "startByte": start,
+        "endByte": end,
+    })
 }
 
 fn source_baseline(sidecar: &Value, path: &str) -> Option<String> {
@@ -665,6 +1019,34 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "build.device_sidecar_only"));
+        assert_eq!(
+            result.verifier_report.get("status").and_then(Value::as_str),
+            Some("pass")
+        );
+        assert_eq!(
+            result
+                .verifier_report
+                .pointer("/selectedPlan")
+                .and_then(Value::as_str),
+            Some("device_only")
+        );
+        assert_eq!(
+            result
+                .verifier_report
+                .pointer("/evidence/parserStatus/userCandidate/status")
+                .and_then(Value::as_str),
+            Some("pass")
+        );
+        assert!(result
+            .verifier_report
+            .pointer("/evidence/changedUserSpan/oldStartByte")
+            .and_then(Value::as_u64)
+            .is_some());
+        assert!(result
+            .verifier_report
+            .pointer("/evidence/mappedGeneratedSpan/startByte")
+            .and_then(Value::as_u64)
+            .is_some());
     }
 
     #[test]
@@ -683,6 +1065,31 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "abi.kernel_signature_changed"));
+        assert_eq!(
+            result.verifier_report.get("status").and_then(Value::as_str),
+            Some("reject")
+        );
+        assert_eq!(
+            result
+                .verifier_report
+                .pointer("/selectedFallback")
+                .and_then(Value::as_str),
+            Some("abi_breaking")
+        );
+        assert_eq!(
+            result
+                .verifier_report
+                .pointer("/evidence/kernelSignature/changed")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            result
+                .verifier_report
+                .pointer("/evidence/rejectionRule")
+                .and_then(Value::as_str),
+            Some("abi.kernel_signature_changed")
+        );
     }
 
     #[test]
@@ -701,6 +1108,13 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "abi.constant_global_layout_changed"));
+        assert_eq!(
+            result
+                .verifier_report
+                .pointer("/evidence/constantGlobalLayout/changed")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]
@@ -826,6 +1240,13 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "parser.user_candidate_ast_failed"));
+        assert_eq!(
+            result
+                .verifier_report
+                .pointer("/evidence/parserStatus/userCandidate/status")
+                .and_then(Value::as_str),
+            Some("fail")
+        );
     }
 
     #[test]

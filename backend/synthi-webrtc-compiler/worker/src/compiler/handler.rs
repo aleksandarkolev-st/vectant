@@ -1173,6 +1173,10 @@ pub async fn handle_compile_request(
                             device_patch.reload_plan.clone(),
                         );
                         meta.insert(
+                            "lastDeviceFastPathVerifierReport".to_string(),
+                            device_patch.verifier_report.clone(),
+                        );
+                        meta.insert(
                             "patchTier".to_string(),
                             serde_json::Value::String("device_only".to_string()),
                         );
@@ -1210,6 +1214,10 @@ pub async fn handle_compile_request(
                         meta.insert(
                             "lastDeviceFastPathReport".to_string(),
                             device_patch.reload_plan.clone(),
+                        );
+                        meta.insert(
+                            "lastDeviceFastPathVerifierReport".to_string(),
+                            device_patch.verifier_report.clone(),
                         );
                         meta.insert(
                             "patchTier".to_string(),

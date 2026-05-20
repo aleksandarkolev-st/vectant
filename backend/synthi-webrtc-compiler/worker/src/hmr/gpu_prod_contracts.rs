@@ -211,8 +211,16 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
             .or_insert_with(|| arbiter.get("consentReason").cloned().unwrap_or(Value::Null));
     }
 
+    let device_fast_path_verifier_report = root
+        .get("lastDeviceFastPathVerifierReport")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let gpu_ai_delta_verifier_report = root
+        .get("lastGpuAiDeltaVerifierReport")
+        .cloned()
+        .unwrap_or(Value::Null);
     if !root.contains_key("runReport") {
-        let report = run_report(
+        let mut report = run_report(
             &root,
             &selected_compile_command,
             &toolchain_profile,
@@ -220,7 +228,18 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
             &reload_plan,
             &cache_report,
         );
+        promote_verifier_reports_into_run_report(
+            &mut report,
+            device_fast_path_verifier_report,
+            gpu_ai_delta_verifier_report,
+        );
         root.insert("runReport".to_string(), report);
+    } else if let Some(report) = root.get_mut("runReport") {
+        promote_verifier_reports_into_run_report(
+            report,
+            device_fast_path_verifier_report,
+            gpu_ai_delta_verifier_report,
+        );
     }
 
     Value::Object(root)
@@ -1645,6 +1664,24 @@ fn run_report(
     })
 }
 
+fn promote_verifier_reports_into_run_report(
+    report: &mut Value,
+    device_fast_path_verifier_report: Value,
+    gpu_ai_delta_verifier_report: Value,
+) {
+    let Some(report) = report.as_object_mut() else {
+        return;
+    };
+    report.insert(
+        "deviceFastPathVerifierReport".to_string(),
+        device_fast_path_verifier_report,
+    );
+    report.insert(
+        "gpuAiDeltaVerifierReport".to_string(),
+        gpu_ai_delta_verifier_report,
+    );
+}
+
 fn ranked_plan_option<'a>(ranked_options: &'a Value, plan: &str) -> Option<&'a Value> {
     ranked_options.as_array().and_then(|items| {
         items
@@ -2805,6 +2842,43 @@ mod tests {
                 .pointer("/runReport/affectedHeaderGraph/reachableHeaders/0")
                 .and_then(Value::as_str),
             Some("src/gpu/flow.cuh")
+        );
+    }
+
+    #[test]
+    fn fast_path_verifier_report_is_promoted_into_run_report() {
+        let manifest = gpu_compile_manifest();
+        let verifier_report = json!({
+            "schemaVersion": "synthi.gpu.device_fast_path_verifier.v1",
+            "status": "reject",
+            "selectedFallback": "abi_breaking",
+            "reasonCodes": ["abi.kernel_signature_changed"],
+            "evidence": {
+                "kernelSignature": {
+                    "changed": true,
+                    "before": {"hash": "before"},
+                    "after": {"hash": "after"}
+                }
+            }
+        });
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastDeviceFastPathVerifierReport": verifier_report,
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+
+        assert_eq!(
+            migrated
+                .pointer("/runReport/deviceFastPathVerifierReport/status")
+                .and_then(Value::as_str),
+            Some("reject")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/deviceFastPathVerifierReport/evidence/kernelSignature/changed")
+                .and_then(Value::as_bool),
+            Some(true)
         );
     }
 
