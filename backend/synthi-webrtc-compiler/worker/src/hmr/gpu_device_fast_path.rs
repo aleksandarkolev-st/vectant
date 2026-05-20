@@ -434,6 +434,12 @@ pub fn device_only_capability_rejection_reason(sidecar: &Value) -> Option<&'stat
                     Some("multi_device_tu_requires_topology_verification") => {
                         Some("multi_device_tu_requires_topology_verification")
                     }
+                    Some("gpu_device_tainted") => Some("gpu_device_tainted"),
+                    Some("gpu_driver_tdr") => Some("gpu_driver_tdr"),
+                    Some("vram_session_refresh_required") => {
+                        Some("vram_session_refresh_required")
+                    }
+                    Some("vram_fragmented") => Some("vram_fragmented"),
                     _ => None,
                 })
             })
@@ -1269,6 +1275,50 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "stale_launch_pointer_check_missing"));
+    }
+
+    #[test]
+    fn tainted_gpu_blocks_fast_path_with_specific_reason() {
+        let mut tainted = sidecar();
+        tainted["fastPathPolicy"] = json!({
+            "deviceOnlyAllowed": false,
+            "blockedReasonCodes": ["gpu_device_tainted"]
+        });
+
+        let result = try_direct_device_body_patch(
+            &tainted,
+            "src/gpu/flow.hip",
+            generated_source(),
+            generated_source(),
+        );
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "gpu_device_tainted"));
+    }
+
+    #[test]
+    fn fragmented_vram_blocks_fast_path_with_specific_reason() {
+        let mut fragmented = sidecar();
+        fragmented["fastPathPolicy"] = json!({
+            "deviceOnlyAllowed": false,
+            "blockedReasonCodes": ["vram_session_refresh_required", "vram_fragmented"]
+        });
+
+        let result = try_direct_device_body_patch(
+            &fragmented,
+            "src/gpu/flow.hip",
+            generated_source(),
+            generated_source(),
+        );
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "vram_session_refresh_required"));
     }
 
     #[test]
