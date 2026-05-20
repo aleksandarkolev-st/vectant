@@ -1012,7 +1012,7 @@ async function compileViaMcp(args, waitTimeoutMs, phaseName, checkpoint) {
   const compile = await state.client.toolCall('synthi_compile', args, waitTimeoutMs);
   if (!compile?.ok) throw new Error(`synthi_compile failed: ${JSON.stringify(compile).slice(0, 500)}`);
   const waitStartedAt = new Date().toISOString();
-  const wait = await state.client.toolCall('synthi_wait_hmr', { timeoutMs: waitTimeoutMs }, waitTimeoutMs + 5000);
+  const wait = await waitHmrForCurrentWorkspace(state, waitTimeoutMs, phaseName);
   const waitFinishedAt = new Date().toISOString();
   const wallElapsed = Date.now() - wallStart;
   const workerTail = await dockerLogs(CFG.workerContainer, checkpoint);
@@ -1035,6 +1035,23 @@ async function compileViaMcp(args, waitTimeoutMs, phaseName, checkpoint) {
     throw new Error(`${phaseName} wait_hmr status=${wait?.status ?? 'missing'} detail=${JSON.stringify(wait).slice(0, 500)}`);
   }
   return { compile, wait, phase };
+}
+
+async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName) {
+  const startedAt = Date.now();
+  let last = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    const remaining = Math.max(1000, timeoutMs - (Date.now() - startedAt));
+    const wait = await state.client.toolCall('synthi_wait_hmr', { timeoutMs: remaining }, remaining + 5000);
+    last = wait;
+    const previewId = wait?.detail?.preview_id;
+    if (previewId && previewId !== CFG.slug) {
+      record(`${phaseName} ignored stale wait_hmr`, 'warn', `preview_id=${previewId} status=${wait?.status ?? 'unknown'}`);
+      continue;
+    }
+    return wait;
+  }
+  return last ?? { status: 'timeout', elapsedMs: timeoutMs, source: 'validation_harness' };
 }
 
 async function dispatchCompileViaMcp(args, timeoutMs, phaseName, checkpoint) {
