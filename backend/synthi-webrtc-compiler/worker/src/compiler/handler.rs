@@ -242,6 +242,9 @@ use crate::hmr::deterministic_compile::{
     determine_deterministic_scope, validate_deterministic_input, DeterministicCompileInput,
     DeterministicRebuildScope,
 };
+use crate::hmr::gpu_device_fast_path::{
+    device_source_hash, mapped_generated_device_path, try_direct_device_body_patch,
+};
 use crate::hmr::gpu_prod_contracts::normalize_split_sidecar;
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
 
@@ -458,6 +461,71 @@ fn device_filename_for_vendor(vendor: DeviceVendor) -> &'static str {
     match vendor {
         DeviceVendor::Cuda => "device.cu",
         DeviceVendor::Rocm => "device.hip",
+    }
+}
+
+fn is_device_source_request(filename: &str) -> bool {
+    normalized_request_filename(filename)
+        .map(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower.ends_with(".cu") || lower.ends_with(".hip")
+        })
+        .unwrap_or(false)
+}
+
+fn upsert_object_field(
+    root: &mut serde_json::Map<String, serde_json::Value>,
+    object_key: &str,
+    field_key: &str,
+    value: serde_json::Value,
+) {
+    let entry = root
+        .entry(object_key.to_string())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if !entry.is_object() {
+        *entry = serde_json::Value::Object(serde_json::Map::new());
+    }
+    if let Some(map) = entry.as_object_mut() {
+        map.insert(field_key.to_string(), value);
+    }
+}
+
+fn upsert_device_mapping_report_field(
+    root: &mut serde_json::Map<String, serde_json::Value>,
+    object_key: &str,
+    field_key: &str,
+    value: serde_json::Value,
+) {
+    let report = root
+        .entry("deviceMappingReport".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !report.is_object() {
+        *report = serde_json::json!({});
+    }
+    if let Some(report_obj) = report.as_object_mut() {
+        let entry = report_obj
+            .entry(object_key.to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !entry.is_object() {
+            *entry = serde_json::Value::Object(serde_json::Map::new());
+        }
+        if let Some(map) = entry.as_object_mut() {
+            map.insert(field_key.to_string(), value);
+        }
+    }
+}
+
+fn invalidate_derived_gpu_reports(root: &mut serde_json::Map<String, serde_json::Value>) {
+    for key in [
+        "arbiterDecision",
+        "selectedPlan",
+        "arbiterReasonCodes",
+        "rankedReloadOptions",
+        "consentRequired",
+        "consentReason",
+        "runReport",
+    ] {
+        root.remove(key);
     }
 }
 
@@ -774,29 +842,40 @@ pub async fn handle_compile_request(
                 // universal split prompt — may be null on pre-Phase-3 sidecars,
                 // in which case downstream falls back to sdl2_default()) from
                 // the same sidecar file in one pass.
-                let (original_source, architecture_md, sidecar_manifest_json) = {
+                let (sidecar_meta, original_source, architecture_md, sidecar_manifest_json) = {
                     if let Ok(meta_raw) = tokio::fs::read_to_string(&sidecar_path).await {
                         match serde_json::from_str::<serde_json::Value>(&meta_raw) {
                             Ok(meta) => {
-                                let src = meta
+                                let normalized_meta = normalize_split_sidecar(&meta);
+                                let src = normalized_meta
                                     .get("original_source")
                                     .and_then(|s| s.as_str())
                                     .map(|s| s.to_string());
-                                let arch = meta
+                                let arch = normalized_meta
                                     .get("architecture")
                                     .and_then(|s| s.as_str())
                                     .unwrap_or("")
                                     .to_string();
-                                let manifest = meta
+                                let manifest = normalized_meta
                                     .get("compile_manifest")
                                     .cloned()
                                     .unwrap_or(serde_json::Value::Null);
-                                (src, arch, manifest)
+                                (normalized_meta, src, arch, manifest)
                             }
-                            Err(_) => (None, String::new(), serde_json::Value::Null),
+                            Err(_) => (
+                                serde_json::Value::Null,
+                                None,
+                                String::new(),
+                                serde_json::Value::Null,
+                            ),
                         }
                     } else {
-                        (None, String::new(), serde_json::Value::Null)
+                        (
+                            serde_json::Value::Null,
+                            None,
+                            String::new(),
+                            serde_json::Value::Null,
+                        )
                     }
                 };
                 // Log what came back so the user can verify the cache is
@@ -810,7 +889,152 @@ pub async fn handle_compile_request(
                     if sidecar_manifest_json.is_null() { "no" } else { "yes" },
                 );
 
-                if let Some(old_source) = original_source {
+                let direct_device_split = if is_device_source_request(&req.filename) {
+                    let request_device_name = normalized_request_filename(&req.filename)
+                        .unwrap_or_else(|| req.filename.replace('\\', "/"));
+                    let generated_device_path =
+                        mapped_generated_device_path(&sidecar_meta, &request_device_name)
+                            .or_else(|| mapped_generated_device_path(&sidecar_meta, &req.filename));
+                    let generated_device_source = if let Some(path) =
+                        generated_device_path.as_deref()
+                    {
+                        match compile_request_relpath(path) {
+                            Ok(rel) => tokio::fs::read_to_string(ctx.workspace_path.join(rel))
+                                .await
+                                .unwrap_or_default(),
+                            Err(e) => {
+                                eprintln!(
+                                    "[gpu-hmr] device fast path: generated role path rejected: {}",
+                                    e
+                                );
+                                String::new()
+                            }
+                        }
+                    } else {
+                        String::new()
+                    };
+                    let device_patch = try_direct_device_body_patch(
+                        &sidecar_meta,
+                        &request_device_name,
+                        &req.source,
+                        &generated_device_source,
+                    );
+                    if device_patch.accepted {
+                        let generated_path = device_patch
+                            .generated_path
+                            .clone()
+                            .or(generated_device_path)
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "GPU device fast path accepted without a generated device path"
+                                )
+                            })?;
+                        let patched_device_source =
+                            device_patch.patched_device_source.clone().ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "GPU device fast path accepted without patched source"
+                                )
+                            })?;
+                        write_compile_request_file(
+                            &ctx.workspace_path,
+                            &generated_path,
+                            &patched_device_source,
+                        )
+                        .await?;
+
+                        let mut meta = sidecar_meta.as_object().cloned().unwrap_or_default();
+                        let baseline_hash = device_source_hash(&req.source);
+                        upsert_object_field(
+                            &mut meta,
+                            "sourceBaselineContents",
+                            &request_device_name,
+                            serde_json::Value::String(req.source.clone()),
+                        );
+                        upsert_object_field(
+                            &mut meta,
+                            "sourceBaselineHashes",
+                            &request_device_name,
+                            serde_json::Value::String(baseline_hash.clone()),
+                        );
+                        upsert_device_mapping_report_field(
+                            &mut meta,
+                            "sourceBaselineContents",
+                            &request_device_name,
+                            serde_json::Value::String(req.source.clone()),
+                        );
+                        upsert_device_mapping_report_field(
+                            &mut meta,
+                            "sourceBaselineHashes",
+                            &request_device_name,
+                            serde_json::Value::String(baseline_hash.clone()),
+                        );
+                        meta.insert(
+                            "lastReloadPlanReport".to_string(),
+                            device_patch.reload_plan.clone(),
+                        );
+                        meta.insert(
+                            "lastDeviceFastPathReport".to_string(),
+                            device_patch.reload_plan.clone(),
+                        );
+                        meta.insert(
+                            "patchTier".to_string(),
+                            serde_json::Value::String("device_only".to_string()),
+                        );
+                        meta.insert(
+                            "cacheReport".to_string(),
+                            serde_json::json!({
+                                "splitCacheHit": false,
+                                "splitCacheReason": "not_applicable_device_only_fast_path",
+                                "splitCacheKey": format!("device:{}:{}", request_device_name, baseline_hash),
+                            }),
+                        );
+                        invalidate_derived_gpu_reports(&mut meta);
+                        write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta)).await;
+                        eprintln!(
+                            "[gpu-hmr] device_only fast path accepted: user={} generated={} reasons={}",
+                            request_device_name,
+                            generated_path,
+                            device_patch.reason_codes.join(",")
+                        );
+                        Some(serde_json::json!({
+                            "shared": { "content": shared_content, "filename": shared_filename },
+                            "core": { "content": core_content, "filename": core_filename },
+                            "gui": { "content": gui_content, "filename": gui_filename },
+                            "host_runner": { "content": host_runner_content, "filename": host_runner_filename },
+                            "device": { "content": patched_device_source, "filename": generated_path },
+                            "_synthi_manifest": sidecar_manifest_json.clone(),
+                            "_synthi_reload_plan": device_patch.reload_plan.clone(),
+                        }))
+                    } else {
+                        let mut meta = sidecar_meta.as_object().cloned().unwrap_or_default();
+                        meta.insert(
+                            "lastReloadPlanReport".to_string(),
+                            device_patch.reload_plan.clone(),
+                        );
+                        meta.insert(
+                            "lastDeviceFastPathReport".to_string(),
+                            device_patch.reload_plan.clone(),
+                        );
+                        meta.insert(
+                            "patchTier".to_string(),
+                            serde_json::Value::String("device_only_rejected".to_string()),
+                        );
+                        invalidate_derived_gpu_reports(&mut meta);
+                        write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta)).await;
+                        eprintln!(
+                            "[gpu-hmr] device_only fast path rejected: user={} reasons={}",
+                            request_device_name,
+                            device_patch.reason_codes.join(",")
+                        );
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(split) = direct_device_split {
+                    split
+                } else if let Some(old_source) = original_source {
                     let diff = build_simple_diff(&old_source, &req.source);
 
                     if diff.is_empty() {
