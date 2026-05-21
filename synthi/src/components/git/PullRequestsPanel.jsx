@@ -16,10 +16,42 @@ import {
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function prStatePill(pr) {
-  if (pr.merged) return { label: 'Merged', style: { background: 'rgba(139,92,246,0.14)', color: '#a78bfa' }, icon: GitMerge };
-  if (pr.state === 'closed') return { label: 'Closed', style: { background: 'rgba(239,68,68,0.12)', color: '#f87171' }, icon: XCircle };
-  if (pr.draft) return { label: 'Draft', style: { background: 'rgba(161,161,170,0.12)', color: '#a1a1aa' }, icon: Circle };
-  return { label: 'Open', style: { background: 'rgba(52,211,153,0.12)', color: '#34d399' }, icon: GitPullRequest };
+  // PR state pills use a calm slate-violet baseline with semantic
+  // accents.  Merged earns the brand-purple stop (this is the
+  // "shipped" moment, the signature outcome).  Closed → danger.
+  // Draft → calm muted.  Open → accent-success ring.
+  if (pr.merged) return {
+    label: 'Merged',
+    style: {
+      background: 'color-mix(in srgb, var(--brand-stop-3) 14%, transparent)',
+      color: 'var(--brand-stop-3)',
+    },
+    icon: GitMerge,
+  };
+  if (pr.state === 'closed') return {
+    label: 'Closed',
+    style: {
+      background: 'color-mix(in srgb, var(--accent-danger) 12%, transparent)',
+      color: 'var(--accent-danger)',
+    },
+    icon: XCircle,
+  };
+  if (pr.draft) return {
+    label: 'Draft',
+    style: {
+      background: 'color-mix(in srgb, var(--text-muted) 12%, transparent)',
+      color: 'var(--text-muted)',
+    },
+    icon: Circle,
+  };
+  return {
+    label: 'Open',
+    style: {
+      background: 'color-mix(in srgb, var(--accent-success) 12%, transparent)',
+      color: 'var(--accent-success)',
+    },
+    icon: GitPullRequest,
+  };
 }
 
 function relativeTime(dateStr) {
@@ -149,7 +181,7 @@ function NoRemoteState() {
         className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
         style={{ background: 'rgba(239,68,68,0.1)' }}
       >
-        <AlertCircle className="w-5 h-5 text-red-400" />
+        <AlertCircle className="w-5 h-5" style={{ color: 'var(--accent-danger)' }} />
       </div>
       <h3 className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
         No GitHub Remote
@@ -169,7 +201,13 @@ function ProviderBadge({ provider, owner, repo, htmlUrl }) {
   if (!provider || provider === 'unknown') return null;
   if (provider !== 'github') {
     return (
-      <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold" style={{ background: 'rgba(239,68,68,0.1)', color: '#f87171' }}>
+      <span
+        className="text-[9px] px-1.5 py-0.5 rounded font-semibold"
+        style={{
+          background: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)',
+          color: 'var(--accent-danger)',
+        }}
+      >
         {provider} — PRs for GitHub only
       </span>
     );
@@ -452,7 +490,13 @@ export function PullRequestsPanel({ slug }) {
                 ))}
               </div>
             ) : prListError ? (
-              <div className="mx-3 mt-3 p-3 rounded-lg text-xs text-red-400" style={{ background: 'rgba(239,68,68,0.08)' }}>
+              <div
+                className="mx-3 mt-3 p-3 rounded-lg text-xs"
+                style={{
+                  background: 'color-mix(in srgb, var(--accent-danger) 8%, transparent)',
+                  color: 'var(--accent-danger)',
+                }}
+              >
                 <AlertCircle className="w-3.5 h-3.5 inline mr-1" />{prListError}
               </div>
             ) : filteredPRs.length === 0 ? (
