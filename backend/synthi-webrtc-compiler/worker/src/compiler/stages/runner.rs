@@ -6,6 +6,7 @@ use gstreamer_app as gst_app;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -104,6 +105,98 @@ fn runner_session_matches(current: Option<&str>, requested: Option<&str>) -> boo
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct RunnerReloadPolicy {
+    pub allow_existing_runner_reload: bool,
+    pub reason_codes: Vec<String>,
+}
+
+impl Default for RunnerReloadPolicy {
+    fn default() -> Self {
+        Self {
+            allow_existing_runner_reload: true,
+            reason_codes: Vec::new(),
+        }
+    }
+}
+
+impl RunnerReloadPolicy {
+    pub fn require_runner_restart(reason_codes: Vec<String>) -> Self {
+        Self {
+            allow_existing_runner_reload: false,
+            reason_codes,
+        }
+    }
+
+    fn reason_summary(&self) -> String {
+        if self.reason_codes.is_empty() {
+            "reload_policy".to_string()
+        } else {
+            self.reason_codes.join(",")
+        }
+    }
+}
+
+fn runner_reuse_allowed(
+    policy: &RunnerReloadPolicy,
+    runner_alive: bool,
+    gui_mode_same: bool,
+    resolution_same: bool,
+    session_same: bool,
+) -> bool {
+    policy.allow_existing_runner_reload
+        && runner_alive
+        && gui_mode_same
+        && resolution_same
+        && session_same
+}
+
+fn post_reload_crash_probe_duration() -> Duration {
+    const DEFAULT_MS: u64 = 1_000;
+    const MAX_MS: u64 = 10_000;
+    std::env::var("SYNTHI_RUNNER_POST_RELOAD_CRASH_PROBE_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map(|ms| ms.min(MAX_MS))
+        .filter(|ms| *ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(DEFAULT_MS))
+}
+
+fn exit_status_repr(status: std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        match (status.code(), status.signal()) {
+            (Some(code), _) => format!("code={}", code),
+            (None, Some(sig)) => format!("signal={}", sig),
+            _ => format!("{}", status),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        format!("{}", status)
+    }
+}
+
+async fn probe_runner_exit_after_reload(
+    child: &mut tokio::process::Child,
+    timeout: Duration,
+) -> Option<String> {
+    let started = tokio::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(exit_status_repr(status)),
+            Ok(None) => {}
+            Err(e) => return Some(format!("status_probe_failed={}", e)),
+        }
+        if started.elapsed() >= timeout {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 pub async fn handle_runner_execution(
     ctx: &CompileContext,
     req: &CompileRequest,
@@ -121,6 +214,7 @@ pub async fn handle_runner_execution(
     // main loop. Worker still manages Xvfb + GStreamer + WebRTC around
     // it (frame capture via ximagesrc on DISPLAY=:99 is unchanged).
     host_runner_bin_path: Option<String>,
+    reload_policy: RunnerReloadPolicy,
 ) -> Result<()> {
     // Unified Runner Logic
     if modules_to_load.is_empty() {
@@ -189,13 +283,19 @@ pub async fn handle_runner_execution(
         let resolution_same = state.width == req_width && state.height == req_height;
         let session_same =
             runner_session_matches(state.session_id.as_deref(), session_id.as_deref());
-        debug_log!("[Main] Existing runner: alive={}, is_gui={}, gui_mode_same={}, resolution_same={}, session_same={}, current_session={:?}, requested_session={:?}, has_on_update={}",
-            runner_alive, state.is_gui, gui_mode_same, resolution_same, session_same, state.session_id.as_deref(), session_id.as_deref(), has_on_update);
+        debug_log!("[Main] Existing runner: alive={}, is_gui={}, gui_mode_same={}, resolution_same={}, session_same={}, current_session={:?}, requested_session={:?}, has_on_update={}, reload_policy_allow_existing={}, reload_policy_reasons={}",
+            runner_alive, state.is_gui, gui_mode_same, resolution_same, session_same, state.session_id.as_deref(), session_id.as_deref(), has_on_update, reload_policy.allow_existing_runner_reload, reload_policy.reason_summary());
 
         // HMR enabled: reuse running process when alive AND GUI mode and
         // resolution/session identity match. Reusing a runner across
         // sessions can send HMR commands into the previous workspace.
-        runner_alive && gui_mode_same && resolution_same && session_same
+        runner_reuse_allowed(
+            &reload_policy,
+            runner_alive,
+            gui_mode_same,
+            resolution_same,
+            session_same,
+        )
     } else {
         false
     };
@@ -212,9 +312,10 @@ pub async fn handle_runner_execution(
         // We have an existing runner but can't do HMR - need to restart
         let gui_mode_changed = state.is_gui != req.is_gui;
         debug_log!(
-            "[Main] Restarting runner: gui_mode_changed={}, use_ai_split={}",
+            "[Main] Restarting runner: gui_mode_changed={}, use_ai_split={}, reload_policy_reasons={}",
             gui_mode_changed,
-            use_ai_split
+            use_ai_split,
+            reload_policy.reason_summary()
         );
 
         // If resolution matches and is_gui matches, we can reuse Xvfb/GStreamer
@@ -1013,29 +1114,15 @@ pub async fn handle_runner_execution(
             // is useless for telling a SIGSEGV apart from a normal exit
             // apart from a SIGKILL from an OOM killer.
             let mut process_alive = true;
-            let mut exit_status_repr: Option<String> = None;
+            let mut exit_status_text: Option<String> = None;
             if let Some(child) = state.process.as_mut() {
                 if let Ok(Some(status)) = child.try_wait() {
-                    let repr = {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::process::ExitStatusExt;
-                            match (status.code(), status.signal()) {
-                                (Some(code), _) => format!("code={}", code),
-                                (None, Some(sig)) => format!("signal={}", sig),
-                                _ => format!("{}", status),
-                            }
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            format!("{}", status)
-                        }
-                    };
+                    let repr = exit_status_repr(status);
                     debug_log!(
                         "[Main] Runner process has already exited ({})",
                         repr
                     );
-                    exit_status_repr = Some(repr);
+                    exit_status_text = Some(repr);
                     process_alive = false;
                 }
             }
@@ -1103,10 +1190,22 @@ pub async fn handle_runner_execution(
                     // Runner process likely crashed - report error to frontend
                     anyhow::bail!("Runner process stdin write failed (process may have crashed)");
                 }
+
+                if let Some(child) = state.process.as_mut() {
+                    if let Some(status) =
+                        probe_runner_exit_after_reload(child, post_reload_crash_probe_duration())
+                            .await
+                    {
+                        anyhow::bail!(
+                            "Runner process exited while applying reload commands ({})",
+                            status
+                        );
+                    }
+                }
             } else {
                 anyhow::bail!(
                     "Runner process exited before module loading could begin ({})",
-                    exit_status_repr.as_deref().unwrap_or("status unknown")
+                    exit_status_text.as_deref().unwrap_or("status unknown")
                 );
             }
         }
@@ -1140,7 +1239,7 @@ pub async fn handle_runner_execution(
 
 #[cfg(test)]
 mod tests {
-    use super::{runner_load_command, runner_session_matches};
+    use super::{runner_load_command, runner_reuse_allowed, runner_session_matches, RunnerReloadPolicy};
 
     #[test]
     fn gpu_device_load_command_preserves_legacy_shape_without_abi() {
@@ -1186,5 +1285,22 @@ mod tests {
     #[test]
     fn runner_session_match_preserves_sessionless_compatibility() {
         assert!(runner_session_matches(None, None));
+    }
+
+    #[test]
+    fn runner_reuse_policy_allows_matching_warm_reload() {
+        assert!(runner_reuse_allowed(
+            &RunnerReloadPolicy::default(),
+            true,
+            true,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn runner_reuse_policy_blocks_non_inprocess_plan() {
+        let policy = RunnerReloadPolicy::require_runner_restart(vec!["process_swap".to_string()]);
+        assert!(!runner_reuse_allowed(&policy, true, true, true, true));
     }
 }

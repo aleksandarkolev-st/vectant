@@ -21,21 +21,60 @@ import sharp from 'sharp';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../../..');
+const DEFAULT_REAL_REPO_URL = 'https://github.com/ROCm/rocm-examples.git';
+
+function cleanIdentifier(value) {
+  return String(value || 'repo').replace(/[^a-zA-Z0-9_.-]+/g, '-').replace(/^-+|-+$/g, '') || 'repo';
+}
+
+function repoNameFromUrl(repoUrl) {
+  const raw = String(repoUrl || DEFAULT_REAL_REPO_URL).split('/').filter(Boolean).at(-1) ?? 'repo';
+  return cleanIdentifier(raw.replace(/\.git$/i, ''));
+}
+
+const configuredRepoUrl = process.env.SYNTHI_REAL_ROCM_REPO_URL ?? DEFAULT_REAL_REPO_URL;
+const configuredRepoName = cleanIdentifier(
+  process.env.SYNTHI_REAL_ROCM_REPO_NAME ?? repoNameFromUrl(configuredRepoUrl),
+);
+const configuredWorkspaceRoot =
+  process.env.SYNTHI_REAL_ROCM_WORKSPACE_ROOT ?? `/workspace/${configuredRepoName}`;
+const configuredWorkerTempDir =
+  process.env.SYNTHI_REAL_ROCM_WORKER_TMP ?? '/tmp/synthi-real-rocm';
 
 const CFG = {
-  repoUrl: process.env.SYNTHI_REAL_ROCM_REPO_URL ?? 'https://github.com/ROCm/rocm-examples.git',
-  repoPath: path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_REPO_PATH ?? 'tmp/real-rocm/rocm-examples'),
+  repoUrl: configuredRepoUrl,
+  repoName: configuredRepoName,
+  repoPath: path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_REPO_PATH ?? `tmp/real-rocm/${configuredRepoName}`),
   entryFile: process.env.SYNTHI_REAL_ROCM_ENTRY ?? 'HIP-Basic/saxpy/main.hip',
   targetName: process.env.SYNTHI_REAL_ROCM_TARGET ?? 'hip_saxpy',
   buildSubdir: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? 'HIP-Basic/saxpy',
-  workerRepoPath: process.env.SYNTHI_REAL_ROCM_WORKER_PATH ?? '/tmp/synthi-real-rocm/rocm-examples',
+  workerRepoPath: process.env.SYNTHI_REAL_ROCM_WORKER_PATH ?? `${configuredWorkerTempDir}/${configuredRepoName}`,
+  workerTempDir: configuredWorkerTempDir,
+  workspaceRoot: configuredWorkspaceRoot,
+  workspaceName: process.env.SYNTHI_REAL_ROCM_WORKSPACE_NAME ?? `Synthi Real ROCm Repo Validation - ${configuredRepoName}`,
+  seedCommitMessage:
+    process.env.SYNTHI_REAL_ROCM_SEED_COMMIT_MESSAGE ??
+    `real-rocm-validation: seed ${configuredRepoName} ${process.env.SYNTHI_REAL_ROCM_TARGET ?? 'target'}`,
+  cmakeConfigName: process.env.SYNTHI_REAL_ROCM_CMAKE_CONFIG ?? 'Release',
+  cmakeTargetType: process.env.SYNTHI_REAL_ROCM_TARGET_TYPE ?? 'EXECUTABLE',
+  cmakeTargetIdNamespace: process.env.SYNTHI_REAL_ROCM_TARGET_ID_NAMESPACE ?? 'real-rocm',
+  gpuMode: process.env.SYNTHI_REAL_ROCM_GPU_MODE ?? 'rocm',
+  width: Number(process.env.SYNTHI_REAL_ROCM_WIDTH ?? 800),
+  height: Number(process.env.SYNTHI_REAL_ROCM_HEIGHT ?? 600),
+  deltaBefore:
+    process.env.SYNTHI_REAL_ROCM_DELTA_BEFORE ??
+    'd_y[global_idx] = a * d_x[global_idx] + d_y[global_idx];',
+  deltaAfter:
+    process.env.SYNTHI_REAL_ROCM_DELTA_AFTER ??
+    'd_y[global_idx] = (a + 0.25f) * d_x[global_idx] + d_y[global_idx];',
   maxFileBytes: Number(process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? 512 * 1024),
   writeBatchSize: Number(process.env.SYNTHI_REAL_ROCM_WRITE_BATCH_SIZE ?? 200),
-  slug: process.env.SLUG ?? `gpu-real-rocm-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`,
+  slug: process.env.SLUG ?? `gpu-real-rocm-${configuredRepoName}-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`,
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
   signalingUrl: process.env.SIGNALING_URL ?? 'ws://localhost:9000',
   hostId: process.env.HOST_ID ?? 'gpu-hmr-real-rocm-validation',
+  mcpClientName: process.env.SYNTHI_REAL_ROCM_MCP_CLIENT_NAME ?? 'real-rocm-validation',
   mcpContainer: process.env.MCP_CONTAINER ?? 'vectant-ade-mcp-1',
   workerContainer: process.env.WORKER_CONTAINER ?? 'vectant-ade-worker-1',
   aiEngineContainer: process.env.AI_ENGINE_CONTAINER ?? 'vectant-ade-ai-engine-1',
@@ -48,7 +87,7 @@ const CFG = {
   hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 90000),
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
-  gpuArch: process.env.SYNTHI_GPU_ARCH ?? 'gfx1201',
+  gpuArch: process.env.SYNTHI_REAL_ROCM_GPU_ARCH ?? process.env.SYNTHI_GPU_ARCH ?? 'gfx1201',
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.1-flash-lite-preview',
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS === '1',
@@ -74,6 +113,7 @@ const report = {
   phases: [],
   screenshots: [],
   logs: {},
+  evidence: {},
   started_at: new Date().toISOString(),
   finished_at: null,
 };
@@ -128,8 +168,8 @@ async function prepareUpstreamBuild() {
   const buildPath = `${CFG.workerRepoPath}/${CFG.buildSubdir}/build`;
   const shell = [
     'set -e',
-    `rm -rf ${shQuote(path.posix.dirname(CFG.workerRepoPath))}`,
-    `mkdir -p ${shQuote(path.posix.dirname(CFG.workerRepoPath))}`,
+    `rm -rf ${shQuote(CFG.workerTempDir)}`,
+    `mkdir -p ${shQuote(CFG.workerTempDir)}`,
   ].join('; ');
   await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', shell], 30000, true);
   await execText('docker', ['cp', CFG.repoPath, `${CFG.workerContainer}:${CFG.workerRepoPath}`], 180000, true);
@@ -141,20 +181,20 @@ rm -rf build
 mkdir -p build/.cmake/api/v1/query
 touch build/.cmake/api/v1/query/codemodel-v2
 start=$(date +%s%3N)
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)} > /tmp/synthi-real-rocm-configure.log 2>&1
+cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)} > ${shQuote(`${CFG.workerTempDir}/configure.log`)} 2>&1
 configured=$(date +%s%3N)
-cmake --build build -j2 > /tmp/synthi-real-rocm-build.log 2>&1
+cmake --build build -j2 > ${shQuote(`${CFG.workerTempDir}/build.log`)} 2>&1
 built=$(date +%s%3N)
-./build/${shQuote(CFG.targetName)} > /tmp/synthi-real-rocm-run.log 2>&1
+./build/${shQuote(CFG.targetName)} > ${shQuote(`${CFG.workerTempDir}/run.log`)} 2>&1
 ran=$(date +%s%3N)
 printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\n' "$((configured-start))" "$((built-configured))" "$((ran-built))"
 `;
   const timings = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', command], 240000, true);
-  const runLog = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', 'cat /tmp/synthi-real-rocm-run.log'], 30000, true);
+  const runLog = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(`${CFG.workerTempDir}/run.log`)}`], 30000, true);
   report.logs.upstream_run = runLog;
-  const phase = { name: 'upstream_rocm_build_run', timings, output: runLog.slice(0, 1000) };
+  const phase = { name: 'upstream_gpu_build_run', timings, output: runLog.slice(0, 1000) };
   report.phases.push(phase);
-  record('upstream ROCm target builds and runs', 'pass', `${timings.replace(/\s+/g, ' ')} output=${runLog.split(/\r?\n/).at(-1) ?? ''}`);
+  record('upstream GPU target builds and runs', 'pass', `${timings.replace(/\s+/g, ' ')} output=${runLog.split(/\r?\n/).at(-1) ?? ''}`);
 
   const compileCommands = await execText(
     'docker',
@@ -171,7 +211,7 @@ function normalizeCompileCommands(raw) {
   const selected = entries.find((entry) => String(entry.file || '').replace(/\\/g, '/').endsWith(sourceSuffix));
   if (!selected) throw new Error(`compile_commands.json did not include ${CFG.entryFile}`);
   const workerRoot = CFG.workerRepoPath.replace(/\\/g, '/');
-  const workspaceRoot = '/workspace/rocm-examples';
+  const workspaceRoot = CFG.workspaceRoot.replace(/\\/g, '/');
   const normalized = {
     ...selected,
     directory: String(selected.directory || '').replace(workerRoot, workspaceRoot),
@@ -210,18 +250,25 @@ async function collectRepoFiles(compileCommandsJson) {
 
   files.push({ path: 'compile_commands.json', content: compileCommandsJson });
   files.push({
-    path: '.cmake/api/v1/reply/codemodel-v2-release.json',
+    path: `.cmake/api/v1/reply/codemodel-v2-${CFG.cmakeConfigName.toLowerCase()}.json`,
     content: JSON.stringify({
       kind: 'codemodel',
-      configurations: [{ name: 'Release', targets: [{ name: CFG.targetName, id: `${CFG.targetName}::@real-rocm`, jsonFile: `target-${CFG.targetName}-Release.json` }] }],
+      configurations: [{
+        name: CFG.cmakeConfigName,
+        targets: [{
+          name: CFG.targetName,
+          id: `${CFG.targetName}::@${CFG.cmakeTargetIdNamespace}`,
+          jsonFile: `target-${CFG.targetName}-${CFG.cmakeConfigName}.json`,
+        }],
+      }],
     }, null, 2) + '\n',
   });
   files.push({
-    path: `.cmake/api/v1/reply/target-${CFG.targetName}-Release.json`,
+    path: `.cmake/api/v1/reply/target-${CFG.targetName}-${CFG.cmakeConfigName}.json`,
     content: JSON.stringify({
       name: CFG.targetName,
-      id: `${CFG.targetName}::@real-rocm`,
-      type: 'EXECUTABLE',
+      id: `${CFG.targetName}::@${CFG.cmakeTargetIdNamespace}`,
+      type: CFG.cmakeTargetType,
       sources: [{ path: CFG.entryFile }],
     }, null, 2) + '\n',
   });
@@ -235,7 +282,7 @@ async function collectRepoFiles(compileCommandsJson) {
 
 async function createWorkspace() {
   const workspace = await httpJson('POST', `${CFG.frontendUrl}/api/workspace`, {
-    name: 'Synthi Real ROCm Repo Validation',
+    name: CFG.workspaceName,
     slug: CFG.slug,
   });
   record('create workspace', 'pass', `id=${workspace.id ?? 'n/a'} slug=${CFG.slug}`);
@@ -256,7 +303,7 @@ async function writeFilesBatch(files) {
     record('seed workspace batch', 'pass', `${Math.min(i + chunk.length, files.length)}/${files.length}`);
   }
   await httpJson('POST', `${CFG.collabUrl}/git/${CFG.slug}/stage-all`, {}, { 'x-user-id': CFG.hostId });
-  await httpJson('POST', `${CFG.collabUrl}/git/${CFG.slug}/commit`, { message: 'real-rocm-validation: seed ROCm examples saxpy target' }, { 'x-user-id': CFG.hostId });
+  await httpJson('POST', `${CFG.collabUrl}/git/${CFG.slug}/commit`, { message: CFG.seedCommitMessage }, { 'x-user-id': CFG.hostId });
   record('workspace commit seed', 'pass', `${files.length} files`);
 }
 
@@ -347,7 +394,7 @@ async function ensureMcpAttached() {
       });
     }
     const client = new McpClient(proc);
-    await client.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'real-rocm-validation', version: '0.0.1' } }, 20000);
+    await client.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: CFG.mcpClientName, version: '0.0.1' } }, 20000);
     await client.request('notifications/initialized', {}, 5000).catch(() => {});
     const tools = await client.request('tools/list', {}, 20000);
     const names = tools.tools?.map((tool) => tool.name) ?? [];
@@ -510,11 +557,65 @@ async function captureScreenshot(label) {
   return null;
 }
 
-function editSaxpySource(source) {
-  const before = 'd_y[global_idx] = a * d_x[global_idx] + d_y[global_idx];';
-  const after = 'd_y[global_idx] = (a + 0.25f) * d_x[global_idx] + d_y[global_idx];';
-  if (!source.includes(before)) throw new Error('expected saxpy kernel assignment not found');
+function editConfiguredSource(source) {
+  const before = CFG.deltaBefore;
+  const after = CFG.deltaAfter;
+  if (!before || before === after) throw new Error('configured source delta must be non-empty and change the source');
+  if (!source.includes(before)) throw new Error('configured source delta did not match the selected entry file');
   return source.replace(before, after);
+}
+
+function evidenceLines(text, pattern) {
+  return String(text ?? '')
+    .split(/\r?\n/)
+    .filter((line) => pattern.test(line))
+    .slice(-300);
+}
+
+function countMatches(lines, pattern) {
+  return lines.filter((line) => pattern.test(line)).length;
+}
+
+async function collectRuntimeEvidence() {
+  if (CFG.mcpTransport !== 'docker') return;
+  const workerLogs = await execText(
+    'docker',
+    ['logs', '--timestamps', '--since', report.started_at, CFG.workerContainer],
+    120000,
+    false,
+  );
+  const aiLogs = await execText(
+    'docker',
+    ['logs', '--timestamps', '--since', report.started_at, CFG.aiEngineContainer],
+    120000,
+    false,
+  );
+  const workerEvidence = evidenceLines(
+    workerLogs,
+    /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|Runner process exited|fatal|Rust cannot catch/i,
+  );
+  const aiEvidence = evidenceLines(
+    aiLogs,
+    /Calling API|mode=delta|mode=split|verifier rejected|POST \/refactor\/split\/gpu/i,
+  );
+  report.evidence = {
+    worker_log_lines: workerEvidence,
+    ai_engine_log_lines: aiEvidence,
+    ai_call_counts: {
+      split: countMatches(aiEvidence, /mode=split/i),
+      delta: countMatches(aiEvidence, /mode=delta/i),
+    },
+    runner_policy_counts: {
+      existing_reload_blocked: countMatches(workerEvidence, /reload_policy_allow_existing=false/i),
+      runner_restarts: countMatches(workerEvidence, /Restarting runner/i),
+      runner_exit_errors: countMatches(workerEvidence, /Runner process exited|Rust cannot catch|fatal runtime/i),
+    },
+  };
+  record(
+    'runtime evidence collected',
+    'pass',
+    `ai_split=${report.evidence.ai_call_counts.split} ai_delta=${report.evidence.ai_call_counts.delta} restart_policy_blocks=${report.evidence.runner_policy_counts.existing_reload_blocked}`,
+  );
 }
 
 async function writeResults() {
@@ -536,6 +637,8 @@ async function writeResults() {
     ...report.phases.map((phase) => `PHASE ${phase.name} ${JSON.stringify(phase)}`),
     '',
     ...report.screenshots.map((shot) => `SCREENSHOT ${shot.label} visible=${shot.visible_pixels} luma=${shot.mean_luma.toFixed(1)} path=${shot.path}`),
+    '',
+    `EVIDENCE ${JSON.stringify(report.evidence)}`,
   ];
   await writeFile(RESULTS_TXT, lines.join('\n') + '\n');
   console.log(`results: ${RESULTS_TXT}`);
@@ -563,15 +666,15 @@ async function run() {
     use_ai_split: true,
     user_requested_ai: true,
     prefer_gpu_pipeline: true,
-    gpu_mode: 'rocm',
+    gpu_mode: CFG.gpuMode,
     gpu_arch: CFG.gpuArch,
     slug: CFG.slug,
-    width: 800,
-    height: 600,
+    width: CFG.width,
+    height: CFG.height,
   }, CFG.firstCompileTimeoutMs, 'first_real_repo_ai_split_compile');
   await captureScreenshot('first-compile');
 
-  const edited = editSaxpySource(primary.content);
+  const edited = editConfiguredSource(primary.content);
   await httpJson(
     'POST',
     `${CFG.collabUrl}/git/${CFG.slug}/write-files-batch`,
@@ -587,11 +690,11 @@ async function run() {
     use_ai_split: true,
     user_requested_ai: true,
     prefer_gpu_pipeline: true,
-    gpu_mode: 'rocm',
+    gpu_mode: CFG.gpuMode,
     gpu_arch: CFG.gpuArch,
     slug: CFG.slug,
-    width: 800,
-    height: 600,
+    width: CFG.width,
+    height: CFG.height,
   }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr');
   await captureScreenshot('post-hmr');
 }
@@ -605,5 +708,8 @@ run()
     if (mcpState?.proc) {
       try { mcpState.proc.kill('SIGTERM'); } catch { /* ignore */ }
     }
+    await collectRuntimeEvidence().catch((err) => {
+      record('runtime evidence collected', 'warn', err.stack || err.message);
+    });
     await writeResults().catch((err) => console.error(err));
   });

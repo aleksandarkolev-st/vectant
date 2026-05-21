@@ -27,7 +27,8 @@ use crate::compiler::stages::gpu_runtime_contract::ensure_gpu_runtime_contract_h
 use crate::compiler::stages::guardrails::{
     apply_core_guardrails, apply_gui_guardrails, apply_shared_guardrails,
 };
-use crate::compiler::stages::runner::handle_runner_execution;
+use crate::compiler::stages::runner::{handle_runner_execution, RunnerReloadPolicy};
+use crate::runtime::capability::HmrStatus;
 
 fn compile_request_relpath(path: &str) -> Result<PathBuf> {
     if path.trim().is_empty() {
@@ -4000,6 +4001,14 @@ pub async fn handle_compile_request(
             .iter()
             .all(|(name, _)| name.starts_with("__gpu_device:"));
 
+    let runner_reload_policy = if planner_output.decision.is_in_process() {
+        RunnerReloadPolicy::default()
+    } else {
+        RunnerReloadPolicy::require_runner_restart(vec![
+            planner_output.reason.decision_code.clone(),
+        ])
+    };
+
     let runtime_reload_start = std::time::Instant::now();
     let runner_result = if use_supervisor {
         use crate::runtime::path_c::supervisor::spawn_supervised;
@@ -4009,6 +4018,15 @@ pub async fn handle_compile_request(
         let req_height = req.height.unwrap_or(600);
 
         let mut sup_guard = ctx.supervisor_store.lock().await;
+        if !runner_reload_policy.allow_existing_runner_reload && sup_guard.is_some() {
+            eprintln!(
+                "[HMR] Phase 12.6: restarting supervised session for reload policy reasons: {}",
+                runner_reload_policy.reason_codes.join(",")
+            );
+            if let Some(mut session) = sup_guard.take() {
+                let _ = session.shutdown().await;
+            }
+        }
         let result = if let Some(ref mut session) = *sup_guard {
             // Existing supervisor session — send reload commands via IPC
             eprintln!("[HMR] Phase 12.6: reusing supervised session (IPC reload)");
@@ -4075,6 +4093,7 @@ pub async fn handle_compile_request(
                         gui_lib_path.clone(),
                         Some(session_id.clone()),
                         runtime_host_runner_bin_path.clone(),
+                        runner_reload_policy.clone(),
                     )
                     .await
                     .map_err(|e| e.into())
@@ -4094,6 +4113,7 @@ pub async fn handle_compile_request(
             gui_lib_path,
             Some(session_id.clone()),
             runtime_host_runner_bin_path.clone(),
+            runner_reload_policy.clone(),
         )
         .await
     };
@@ -4120,6 +4140,8 @@ pub async fn handle_compile_request(
             }
         }
         Err(error) => {
+            let status = HmrStatus::compile_error("runner", vec![error.to_string()]);
+            let _ = ctx.log_dc.send_text(status.to_json()).await;
             let candidate_messages = {
                 let mut orchestrator = ctx.hmr_orchestrator.lock().await;
                 orchestrator
