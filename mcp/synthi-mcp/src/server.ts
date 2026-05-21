@@ -138,6 +138,10 @@ const TOOLS = [
           description: "Maximum wait in milliseconds. Default 60000 (accommodates Tier 3 AI-split + compile latency).",
           default: 60000,
         },
+        module: {
+          type: "string",
+          description: "Optional terminal HMR module filter, for example 'device' to wait for GPU sidecar HMR instead of the first core/gui status.",
+        },
       },
       required: [],
     },

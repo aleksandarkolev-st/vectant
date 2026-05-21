@@ -250,8 +250,24 @@ pub fn try_direct_device_body_patch(
         let new_segment = &new_user_source[delta.new_start..delta.new_end];
         let generated_body =
             &generated_device_source[generated_region.body_start..generated_region.body_end];
+        let mut replacement_text = new_segment.to_string();
+        let mut replaced_len = old_segment.len();
         let generated_relative = if !old_segment.is_empty() {
-            unique_substr_offset(generated_body, old_segment)
+            unique_substr_offset(generated_body, old_segment).or_else(|| {
+                statement_patch_anchor(
+                    &old_user_source,
+                    new_user_source,
+                    generated_body,
+                    old_region,
+                    new_regions.get(symbol)?,
+                    &delta,
+                )
+                .map(|anchor| {
+                    replacement_text = anchor.replacement;
+                    replaced_len = anchor.old_len;
+                    anchor.relative_start
+                })
+            })
         } else if body_offset <= generated_body.len() {
             Some(body_offset)
         } else {
@@ -276,7 +292,7 @@ pub fn try_direct_device_body_patch(
             );
         };
         let start = generated_region.body_start + relative;
-        let end = start + old_segment.len();
+        let end = start + replaced_len;
         if start > patched.len() || end > patched.len() || start > end {
             let evidence = fast_path_verifier_evidence(
                 sidecar,
@@ -295,7 +311,7 @@ pub fn try_direct_device_body_patch(
                 evidence,
             );
         }
-        patched.replace_range(start..end, new_segment);
+        patched.replace_range(start..end, &replacement_text);
         patched_any = true;
         affected_symbols.push(symbol.to_string());
         generated_patch_span = Some(byte_range_json(start, end));
@@ -566,6 +582,9 @@ fn sanitize_gpu_annotations_for_cpp_parser(source: &str) -> String {
     let launch_bounds = Regex::new(r"__launch_bounds__\s*\([^)]*\)")
         .expect("launch bounds sanitizer regex");
     let mut out = launch_bounds.replace_all(source, "").into_owned();
+    let launch_config =
+        Regex::new(r"(?s)<<<.*?>>>").expect("CUDA/HIP launch config sanitizer regex");
+    out = launch_config.replace_all(&out, "").into_owned();
     for token in [
         "__global__",
         "__device__",
@@ -854,12 +873,173 @@ fn changed_span(old: &str, new: &str) -> Option<BodyDelta> {
 }
 
 fn unique_substr_offset(haystack: &str, needle: &str) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
     let first = haystack.find(needle)?;
     let rest = &haystack[first + needle.len()..];
     if rest.contains(needle) {
         None
     } else {
         Some(first)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StatementPatchAnchor {
+    relative_start: usize,
+    old_len: usize,
+    replacement: String,
+}
+
+fn statement_patch_anchor(
+    old_source: &str,
+    new_source: &str,
+    generated_body: &str,
+    old_region: &KernelRegion,
+    new_region: &KernelRegion,
+    delta: &BodyDelta,
+) -> Option<StatementPatchAnchor> {
+    let old_spans = enclosing_patch_spans(
+        old_source,
+        delta.old_start,
+        delta.old_end,
+        old_region.body_start,
+        old_region.body_end,
+    );
+    let new_spans = enclosing_patch_spans(
+        new_source,
+        delta.new_start,
+        delta.new_end,
+        new_region.body_start,
+        new_region.body_end,
+    );
+
+    for (kind, old_start, old_end) in old_spans {
+        let old_text = old_source.get(old_start..old_end)?;
+        if old_text.trim().is_empty() {
+            continue;
+        }
+        let Some((_, new_start, new_end)) = new_spans
+            .iter()
+            .find(|(new_kind, _, _)| new_kind == &kind)
+        else {
+            continue;
+        };
+        let new_text = new_source.get(*new_start..*new_end)?;
+        let relative = unique_substr_offset(generated_body, old_text)?;
+        return Some(StatementPatchAnchor {
+            relative_start: relative,
+            old_len: old_text.len(),
+            replacement: new_text.to_string(),
+        });
+    }
+
+    None
+}
+
+fn enclosing_patch_spans(
+    source: &str,
+    start: usize,
+    end: usize,
+    lower_bound: usize,
+    upper_bound: usize,
+) -> Vec<(&'static str, usize, usize)> {
+    let mut spans = Vec::new();
+    if let Some((statement_start, statement_end)) =
+        enclosing_statement_span(source, start, end, lower_bound, upper_bound)
+    {
+        spans.push(("statement", statement_start, statement_end));
+    }
+    if let Some((line_start, line_end)) =
+        enclosing_line_span(source, start, end, lower_bound, upper_bound)
+    {
+        spans.push(("line", line_start, line_end));
+    }
+    spans.dedup_by(|a, b| a.1 == b.1 && a.2 == b.2);
+    spans
+}
+
+fn enclosing_statement_span(
+    source: &str,
+    start: usize,
+    end: usize,
+    lower_bound: usize,
+    upper_bound: usize,
+) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    if start >= bytes.len() || start > end || lower_bound > upper_bound || upper_bound > bytes.len()
+    {
+        return None;
+    }
+
+    let mut left = start.min(upper_bound);
+    while left > lower_bound {
+        let prev = bytes[left - 1];
+        if matches!(prev, b';' | b'{' | b'}') {
+            break;
+        }
+        left -= 1;
+    }
+
+    let mut right = end.min(upper_bound);
+    while right < upper_bound {
+        let byte = bytes[right];
+        right += 1;
+        if byte == b';' {
+            break;
+        }
+        if matches!(byte, b'{' | b'}') {
+            return None;
+        }
+    }
+
+    trim_ascii_span(source, left, right)
+}
+
+fn enclosing_line_span(
+    source: &str,
+    start: usize,
+    end: usize,
+    lower_bound: usize,
+    upper_bound: usize,
+) -> Option<(usize, usize)> {
+    let bytes = source.as_bytes();
+    if start >= bytes.len() || start > end || lower_bound > upper_bound || upper_bound > bytes.len()
+    {
+        return None;
+    }
+
+    let mut left = start.min(upper_bound);
+    while left > lower_bound && bytes[left - 1] != b'\n' && bytes[left - 1] != b'\r' {
+        left -= 1;
+    }
+
+    let mut right = end.min(upper_bound);
+    while right < upper_bound && bytes[right] != b'\n' && bytes[right] != b'\r' {
+        right += 1;
+    }
+
+    trim_ascii_span(source, left, right)
+}
+
+fn trim_ascii_span(source: &str, start: usize, end: usize) -> Option<(usize, usize)> {
+    if start > end || end > source.len() {
+        return None;
+    }
+    let bytes = source.as_bytes();
+    let mut left = start;
+    let mut right = end;
+    while left < right && bytes[left].is_ascii_whitespace() {
+        left += 1;
+    }
+    while right > left && bytes[right - 1].is_ascii_whitespace() {
+        right -= 1;
+    }
+    if left < right {
+        Some((left, right))
+    } else {
+        None
     }
 }
 
@@ -1053,6 +1233,48 @@ mod tests {
             .pointer("/evidence/mappedGeneratedSpan/startByte")
             .and_then(Value::as_u64)
             .is_some());
+    }
+
+    #[test]
+    fn hip_translation_unit_with_launch_syntax_can_use_body_fast_path() {
+        let source = "#include <hip/hip_runtime.h>\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\nint main() {\n  flow<<<dim3(1), dim3(64), 0, hipStreamDefault>>>(nullptr, 1);\n}\n";
+        let next = "#include <hip/hip_runtime.h>\n__global__ void flow(float* x, int n) {\n  x[0] += 2.0f;\n}\nint main() {\n  flow<<<dim3(1), dim3(64), 0, hipStreamDefault>>>(nullptr, 1);\n}\n";
+        let mut meta = sidecar();
+        meta["sourceBaselineContents"]["src/gpu/flow.hip"] = Value::String(source.to_string());
+        meta["sourceBaselineHashes"]["src/gpu/flow.hip"] = Value::String(sha256_hex(source));
+        let generated = "extern \"C\" __global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n";
+
+        let result = try_direct_device_body_patch(&meta, "src/gpu/flow.hip", next, generated);
+
+        assert!(result.accepted, "{:?}", result.reason_codes);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "parser.user_candidate_ast_passed"));
+        assert!(result
+            .patched_device_source
+            .as_deref()
+            .unwrap_or_default()
+            .contains("2.0f"));
+    }
+
+    #[test]
+    fn ambiguous_small_delta_uses_statement_anchor() {
+        let source = "__global__ void flow(float a, const float* x, float* y, int i) {\n  y[i] = a * x[i] + y[i];\n}\n";
+        let next = "__global__ void flow(float a, const float* x, float* y, int i) {\n  y[i] = (a + 0.25f) * x[i] + y[i];\n}\n";
+        let generated = "extern \"C\" __global__ void flow(float a, const float* x, float* y, int i) {\n  y[i] = a * x[i] + y[i];\n}\n";
+        let mut meta = sidecar();
+        meta["sourceBaselineContents"]["src/gpu/flow.hip"] = Value::String(source.to_string());
+        meta["sourceBaselineHashes"]["src/gpu/flow.hip"] = Value::String(sha256_hex(source));
+
+        let result = try_direct_device_body_patch(&meta, "src/gpu/flow.hip", next, generated);
+
+        assert!(result.accepted, "{:?}", result.reason_codes);
+        assert!(result
+            .patched_device_source
+            .as_deref()
+            .unwrap_or_default()
+            .contains("(a + 0.25f) * x[i]"));
     }
 
     #[test]

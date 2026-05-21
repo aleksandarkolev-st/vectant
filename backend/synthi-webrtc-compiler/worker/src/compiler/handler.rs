@@ -155,8 +155,14 @@ async fn sync_compile_request_workspace(ctx: &CompileContext, req: &CompileReque
 /// Uses `eprintln!` (not `debug_log!`) so it surfaces without the
 /// `SYNTHI_WORKER_VERBOSE=1` env var. Operator observability trumps log
 /// noise here; four call sites total.
-async fn write_sidecar_logged(path: &std::path::Path, meta: &serde_json::Value) {
-    let enriched_meta = normalize_split_sidecar(meta);
+async fn write_sidecar_logged(path: &std::path::Path, meta: &serde_json::Value, session_id: &str) {
+    let mut enriched_meta = normalize_split_sidecar(meta);
+    if let Some(obj) = enriched_meta.as_object_mut() {
+        obj.insert(
+            "sessionId".to_string(),
+            serde_json::Value::String(session_id.to_string()),
+        );
+    }
     let body = match serde_json::to_string(&enriched_meta) {
         Ok(s) => s,
         Err(e) => {
@@ -187,6 +193,58 @@ async fn write_sidecar_logged(path: &std::path::Path, meta: &serde_json::Value) 
             eprintln!("[HMR] sidecar WRITE FAILED: {} → {}", path.display(), e);
         }
     }
+}
+
+fn sidecar_session_id(meta: &serde_json::Value) -> Option<&str> {
+    meta.get("sessionId")
+        .or_else(|| meta.get("session_id"))
+        .and_then(|v| v.as_str())
+}
+
+async fn purge_stale_split_state_for_session(
+    workspace: &Path,
+    sidecar_path: &Path,
+    session_id: &str,
+    active_runner_session: Option<String>,
+) -> Result<()> {
+    let Ok(meta_raw) = tokio::fs::read_to_string(sidecar_path).await else {
+        return Ok(());
+    };
+    let Ok(meta) = serde_json::from_str::<serde_json::Value>(&meta_raw) else {
+        return Ok(());
+    };
+    let sidecar_session = sidecar_session_id(&meta);
+    let explicit_mismatch = sidecar_session
+        .map(|cached| cached != session_id)
+        .unwrap_or(false);
+    let legacy_cross_session = sidecar_session.is_none()
+        && active_runner_session
+            .as_deref()
+            .map(|active| active != session_id)
+            .unwrap_or(false);
+
+    if !(explicit_mismatch || legacy_cross_session) {
+        return Ok(());
+    }
+
+    eprintln!(
+        "[HMR] purging stale split sidecar for session mismatch: cached={:?} active_runner={:?} requested={}",
+        sidecar_session,
+        active_runner_session.as_deref(),
+        session_id
+    );
+    match tokio::fs::remove_file(sidecar_path).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("removing stale {}", sidecar_path.display())),
+    }
+    let synthi_dir = workspace.join(".synthi");
+    match tokio::fs::remove_dir_all(&synthi_dir).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("removing stale {}", synthi_dir.display())),
+    }
+    Ok(())
 }
 
 fn split_agentic_report(result: &serde_json::Value) -> serde_json::Value {
@@ -1072,11 +1130,23 @@ pub async fn handle_compile_request(
     let source_hash_value = hash_content(&req.source);
     let source_hash_str = format!("{}", source_hash_value);
 
+    let sidecar_path = ctx.workspace_path.join(".synthi_split_meta.json");
+    let active_runner_session = {
+        let guard = ctx.runner_store.lock().await;
+        guard.as_ref().and_then(|state| state.session_id.clone())
+    };
+    purge_stale_split_state_for_session(
+        &ctx.workspace_path,
+        &sidecar_path,
+        &session_id,
+        active_runner_session,
+    )
+    .await?;
+
     // ── Detect adapted-project status ──
     let mut adapted_status = detect_adapted_project(&ctx.workspace_path);
 
     // Try to read persisted split hash from sidecar
-    let sidecar_path = ctx.workspace_path.join(".synthi_split_meta.json");
     let request_compile_manifest = req
         .compile_manifest
         .as_ref()
@@ -1093,13 +1163,19 @@ pub async fn handle_compile_request(
     }
 
     // ── Build LoopClassifierInput with rich context ──
+    let prefer_deterministic_device_edit = adapted_status.is_adapted
+        && req.prefer_gpu_pipeline
+        && is_device_source_request(&req.filename)
+        && !req.force_gpu_ai_delta;
+    let classifier_user_requested_ai = req.user_requested_ai && !prefer_deterministic_device_edit;
+
     let classifier_input = LoopClassifierInput {
         adapted_status: &adapted_status,
         current_source_hash: Some(&source_hash_str),
         rollout_flags: &rollout_flags,
         consecutive_failures,
         failure_rescue_threshold: 2,
-        user_requested_ai: req.user_requested_ai,
+        user_requested_ai: classifier_user_requested_ai,
         user_requested_deterministic: req.user_requested_deterministic,
     };
 
@@ -1201,7 +1277,7 @@ pub async fn handle_compile_request(
                 "source_context_report": source_report,
                 "launch_indirection_report": launch_report,
             });
-            write_sidecar_logged(&sidecar_path, &meta).await;
+            write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
 
             // Cache the result for future Loop A lookups
             split_cache.put(crate::hmr::ai_bypass::CachedSplitResult {
@@ -1477,7 +1553,7 @@ pub async fn handle_compile_request(
                             }),
                         );
                         invalidate_derived_gpu_reports(&mut meta);
-                        write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta)).await;
+                        write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta), &session_id).await;
                         eprintln!(
                             "[gpu-hmr] device_only fast path accepted: user={} generated={} reasons={}",
                             request_device_name,
@@ -1512,7 +1588,7 @@ pub async fn handle_compile_request(
                             serde_json::Value::String("device_only_rejected".to_string()),
                         );
                         invalidate_derived_gpu_reports(&mut meta);
-                        write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta)).await;
+                        write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta), &session_id).await;
                         eprintln!(
                             "[gpu-hmr] device_only fast path rejected: user={} reasons={}",
                             request_device_name,
@@ -1631,7 +1707,7 @@ pub async fn handle_compile_request(
                         }
 
                         invalidate_derived_gpu_reports(&mut meta);
-                        write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta))
+                        write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta), &session_id)
                             .await;
 
                         if !warm.accepted {
@@ -1809,6 +1885,7 @@ pub async fn handle_compile_request(
                                 write_sidecar_logged(
                                     &sidecar_path,
                                     &serde_json::Value::Object(meta),
+                                    &session_id,
                                 )
                                 .await;
                                 eprintln!(
@@ -1875,6 +1952,7 @@ pub async fn handle_compile_request(
                                 write_sidecar_logged(
                                     &sidecar_path,
                                     &serde_json::Value::Object(meta),
+                                    &session_id,
                                 )
                                 .await;
                                 eprintln!(
@@ -1973,7 +2051,7 @@ pub async fn handle_compile_request(
                                 }),
                             );
                             invalidate_derived_gpu_reports(&mut meta);
-                            write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta))
+                            write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta), &session_id)
                                 .await;
                             eprintln!(
                                 "[GPU AI Delta] accepted: user={} generated={} plan={} edits={}",
@@ -2153,7 +2231,7 @@ pub async fn handle_compile_request(
                                                             "source_context_report": fresh_source_report,
                                                             "launch_indirection_report": fresh_launch_report,
                                                         });
-                                                        write_sidecar_logged(&sidecar_path, &meta)
+                                                        write_sidecar_logged(&sidecar_path, &meta, &session_id)
                                                             .await;
                                                         return Ok(result);
                                                     }
@@ -2196,7 +2274,7 @@ pub async fn handle_compile_request(
                                                     "source_context_report": fresh_source_report,
                                                     "launch_indirection_report": fresh_launch_report,
                                                 });
-                                                write_sidecar_logged(&sidecar_path, &meta).await;
+                                                write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
                                                 return Ok(result);
                                             }
                                         }
@@ -2361,7 +2439,7 @@ pub async fn handle_compile_request(
                                                             "source_context_report": fresh_source_report,
                                                             "launch_indirection_report": fresh_launch_report,
                                                         });
-                                                        write_sidecar_logged(&sidecar_path, &meta)
+                                                        write_sidecar_logged(&sidecar_path, &meta, &session_id)
                                                             .await;
                                                         return Ok(result);
                                                     }
@@ -2407,7 +2485,7 @@ pub async fn handle_compile_request(
                                                     "source_context_report": fresh_source_report,
                                                     "launch_indirection_report": fresh_launch_report,
                                                 });
-                                                write_sidecar_logged(&sidecar_path, &meta).await;
+                                                write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
                                                 return Ok(result);
                                             }
                                         }
@@ -2463,7 +2541,7 @@ pub async fn handle_compile_request(
                                 "source_context_report": source_report.clone(),
                                 "launch_indirection_report": launch_report.clone(),
                             });
-                            write_sidecar_logged(&sidecar_path, &meta).await;
+                            write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
 
                             serde_json::json!({
                                 "shared": { "content": final_shared, "filename": shared_filename },
@@ -2509,7 +2587,7 @@ pub async fn handle_compile_request(
                         "source_context_report": fresh_source_report,
                         "launch_indirection_report": fresh_launch_report,
                     });
-                    write_sidecar_logged(&sidecar_path, &meta).await;
+                    write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
                     result
                 }
             } else {
@@ -2574,11 +2652,21 @@ pub async fn handle_compile_request(
     let (prev_hashes, prev_core_path, prev_gui_path) = {
         let guard = ctx.runner_store.lock().await;
         if let Some(state) = guard.as_ref() {
-            (
-                state.module_hashes.clone(),
-                state.loaded_core_path.clone(),
-                state.loaded_gui_path.clone(),
-            )
+            let same_session = state.session_id.as_deref() == Some(session_id.as_str());
+            if same_session {
+                (
+                    state.module_hashes.clone(),
+                    state.loaded_core_path.clone(),
+                    state.loaded_gui_path.clone(),
+                )
+            } else {
+                debug_log!(
+                    "[HMR Planner] Ignoring previous module hashes from another session: current={:?} requested={}",
+                    state.session_id.as_deref(),
+                    session_id
+                );
+                (ModuleHashes::new(), None, None)
+            }
         } else {
             (ModuleHashes::new(), None, None)
         }

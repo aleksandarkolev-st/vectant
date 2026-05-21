@@ -87,6 +87,8 @@ const CFG = {
   hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 90000),
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
+  expectScreenshot: process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT === '1',
+  hmrWaitModule: process.env.SYNTHI_REAL_ROCM_HMR_WAIT_MODULE ?? 'device',
   gpuArch: process.env.SYNTHI_REAL_ROCM_GPU_ARCH ?? process.env.SYNTHI_GPU_ARCH ?? 'gfx1201',
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.1-flash-lite-preview',
@@ -442,9 +444,11 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName) {
     const sliceTimeoutMs = Math.min(remaining, 30000);
     let wait;
     try {
+      const waitArgs = { timeoutMs: sliceTimeoutMs };
+      if (CFG.hmrWaitModule) waitArgs.module = CFG.hmrWaitModule;
       wait = await state.client.toolCall(
         'synthi_wait_hmr',
-        { timeoutMs: sliceTimeoutMs },
+        waitArgs,
         sliceTimeoutMs + 7000,
       );
     } catch (err) {
@@ -554,6 +558,11 @@ async function captureScreenshot(label) {
     record(`screenshot ${label}`, 'warn', `attempt=${attempt} ${shot?.error ?? 'no data'}`);
     await sleep(1000);
   }
+  if (!CFG.expectScreenshot) {
+    record(`screenshot ${label}`, 'info', 'not_applicable_for_non_visual_target');
+    return null;
+  }
+  throw new Error(`screenshot ${label} was expected but no frame was captured`);
   return null;
 }
 
@@ -596,14 +605,18 @@ async function collectRuntimeEvidence() {
   );
   const aiEvidence = evidenceLines(
     aiLogs,
-    /Calling API|mode=delta|mode=split|verifier rejected|POST \/refactor\/split\/gpu/i,
+    /Calling API|mode=delta|mode=split|verifier rejected|POST \/refactor\/(?:split\/gpu|diff_patch\/gpu|heal)/i,
   );
+  const gpuDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch\/gpu/i);
+  const compileHealCalls = countMatches(aiEvidence, /POST \/refactor\/heal/i);
   report.evidence = {
     worker_log_lines: workerEvidence,
     ai_engine_log_lines: aiEvidence,
     ai_call_counts: {
       split: countMatches(aiEvidence, /mode=split/i),
-      delta: countMatches(aiEvidence, /mode=delta/i),
+      gpu_delta: gpuDeltaCalls,
+      compile_heal: compileHealCalls,
+      model_delta_mode: countMatches(aiEvidence, /mode=delta/i),
     },
     runner_policy_counts: {
       existing_reload_blocked: countMatches(workerEvidence, /reload_policy_allow_existing=false/i),
@@ -614,7 +627,7 @@ async function collectRuntimeEvidence() {
   record(
     'runtime evidence collected',
     'pass',
-    `ai_split=${report.evidence.ai_call_counts.split} ai_delta=${report.evidence.ai_call_counts.delta} restart_policy_blocks=${report.evidence.runner_policy_counts.existing_reload_blocked}`,
+    `ai_split=${report.evidence.ai_call_counts.split} ai_gpu_delta=${report.evidence.ai_call_counts.gpu_delta} ai_compile_heal=${report.evidence.ai_call_counts.compile_heal} restart_policy_blocks=${report.evidence.runner_policy_counts.existing_reload_blocked}`,
   );
 }
 
@@ -662,7 +675,7 @@ async function run() {
     filename: CFG.entryFile,
     source: primary.content,
     files: additionalFiles,
-    is_gui: true,
+    is_gui: CFG.expectScreenshot,
     use_ai_split: true,
     user_requested_ai: true,
     prefer_gpu_pipeline: true,
@@ -686,7 +699,7 @@ async function run() {
     filename: CFG.entryFile,
     source: edited,
     files: additionalFiles,
-    is_gui: true,
+    is_gui: CFG.expectScreenshot,
     use_ai_split: true,
     user_requested_ai: true,
     prefer_gpu_pipeline: true,
