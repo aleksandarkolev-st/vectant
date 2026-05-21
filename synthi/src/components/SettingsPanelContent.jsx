@@ -24,6 +24,7 @@ import {
   selectSidebarAutoCollapseDelay,
 } from '@/redux/uiSlice';
 import { useThemePicker } from '@/components/ThemePicker';
+import StatusIslandPresetDialog from '@/components/StatusIslandPresetDialog';
 import { toast } from 'sonner';
 import { Key, Eye, EyeOff, Check, Trash2, AlertCircle, FlaskConical, Loader2, X } from 'lucide-react';
 import {
@@ -210,6 +211,8 @@ export function SettingsPanelContent() {
   const [testRunning, setTestRunning] = useState(false);
   const [testResults, setTestResults] = useState(null); // null | array of step results
   const [statusIslandPreferences, setStatusIslandPreferences] = useState(() => readStatusIslandPreferences());
+  const [isStatusIslandPresetDialogOpen, setIsStatusIslandPresetDialogOpen] = useState(false);
+  const [statusIslandPresetInitialName, setStatusIslandPresetInitialName] = useState('');
 
   // Whether the user has a server-side PAT configured
   const hasStoredToken = session?.githubTokenSource === 'pat';
@@ -279,11 +282,13 @@ export function SettingsPanelContent() {
     toast(`Applied status island preset: ${preset.label}`, { duration: 1800 });
   }, [statusIslandPreferences.savedPresets]);
 
-  const handleSaveStatusIslandPreset = useCallback(() => {
-    const defaultLabel = activeSavedStatusIslandPreset?.label || `Preset ${(statusIslandPreferences.savedPresets || []).length + 1}`;
-    const rawLabel = window.prompt('Save status island preset as:', defaultLabel);
-    if (rawLabel === null) return;
+  const openStatusIslandPresetDialog = useCallback(() => {
+    const nextDefaultLabel = activeSavedStatusIslandPreset?.label || `Preset ${(statusIslandPreferences.savedPresets || []).length + 1}`;
+    setStatusIslandPresetInitialName(nextDefaultLabel);
+    setIsStatusIslandPresetDialogOpen(true);
+  }, [activeSavedStatusIslandPreset, statusIslandPreferences.savedPresets]);
 
+  const handleSaveStatusIslandPreset = useCallback((rawLabel) => {
     const result = upsertStatusIslandSavedPreset({
       label: rawLabel,
       state: currentStatusIslandState,
@@ -291,7 +296,7 @@ export function SettingsPanelContent() {
     });
     if (result.error) {
       toast('Preset name cannot be empty', { duration: 1800 });
-      return;
+      return false;
     }
 
     setStatusIslandPreferences((prev) => ({
@@ -301,7 +306,8 @@ export function SettingsPanelContent() {
     toast(result.updated ? 'Status island preset updated' : 'Status island preset saved', {
       duration: 1800,
     });
-  }, [activeSavedStatusIslandPreset, currentStatusIslandState, statusIslandPreferences.savedPresets]);
+    return true;
+  }, [activeSavedStatusIslandPreset, currentStatusIslandState]);
 
   const handleDeleteStatusIslandPreset = useCallback((presetId) => {
     const preset = (statusIslandPreferences.savedPresets || []).find((entry) => entry.id === presetId);
@@ -478,7 +484,7 @@ export function SettingsPanelContent() {
             </span>
           </div>
           <button
-            onClick={handleSaveStatusIslandPreset}
+            onClick={openStatusIslandPresetDialog}
             className="px-2.5 py-1.5 text-xs rounded border transition-colors"
             style={{ borderColor: 'var(--accent-primary)', color: 'var(--accent-primary)' }}
           >
@@ -811,6 +817,13 @@ export function SettingsPanelContent() {
           github.com/settings/tokens
         </button>.
       </p>
+
+      <StatusIslandPresetDialog
+        open={isStatusIslandPresetDialogOpen}
+        initialValue={statusIslandPresetInitialName}
+        onOpenChange={setIsStatusIslandPresetDialogOpen}
+        onSubmit={handleSaveStatusIslandPreset}
+      />
     </div>
   );
 }

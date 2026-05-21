@@ -14,6 +14,7 @@ import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
 import { getCurrentUser } from '@/services/userIdentity';
 import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw, GripVertical, X, Minimize2, Maximize2, Boxes } from 'lucide-react';
 import { HealingIndicator } from '@/components/healing/HealingIndicator';
+import StatusIslandPresetDialog from '@/components/StatusIslandPresetDialog';
 import OperatorStatusBarButton from './OperatorStatusBarButton';
 import VectantLogoCollapsed from './VectantLogoCollapsed';
 import {
@@ -144,6 +145,8 @@ function StatusBarInner({
   const [isPositionLocked, setIsPositionLocked] = useState(false);
   const [dockPreset, setDockPreset] = useState('center');
   const [savedPresets, setSavedPresets] = useState([]);
+  const [isPresetDialogOpen, setIsPresetDialogOpen] = useState(false);
+  const [presetDialogInitialName, setPresetDialogInitialName] = useState('');
 
   useEffect(() => {
     if (typeof window === 'undefined' || !rootRef.current) return;
@@ -556,6 +559,18 @@ function StatusBarInner({
 
   const activeSavedPreset = savedPresets.find((preset) => doesPresetMatchState(preset, currentPresetState)) || null;
 
+  const openSavePresetDialog = useCallback(() => {
+    const nextDefaultLabel = activeSavedPreset?.label || `Preset ${savedPresets.length + 1}`;
+    setPresetDialogInitialName(nextDefaultLabel);
+
+    if (typeof window !== 'undefined') {
+      window.setTimeout(() => setIsPresetDialogOpen(true), 0);
+      return;
+    }
+
+    setIsPresetDialogOpen(true);
+  }, [activeSavedPreset, savedPresets.length]);
+
   const applyMenuPreset = useCallback((presetId) => {
     const preset = STATUS_ISLAND_MENU_PRESETS[presetId];
     if (!preset) return;
@@ -572,13 +587,7 @@ function StatusBarInner({
     setPositionLocked(preset.isPositionLocked);
   }, [applyDockPreset, savedPresets, setCompactMode, setPositionLocked]);
 
-  const saveCurrentAsPreset = useCallback(() => {
-    if (typeof window === 'undefined') return;
-
-    const defaultLabel = activeSavedPreset?.label || `Preset ${savedPresets.length + 1}`;
-    const rawLabel = window.prompt('Save status island preset as:', defaultLabel);
-    if (rawLabel === null) return;
-
+  const saveCurrentAsPreset = useCallback((rawLabel) => {
     const result = upsertStatusIslandSavedPreset({
       label: rawLabel,
       state: currentPresetState,
@@ -586,7 +595,7 @@ function StatusBarInner({
     });
     if (result.error) {
       toast('Preset name cannot be empty', { duration: 1800 });
-      return;
+      return false;
     }
 
     setSavedPresets(result.presets);
@@ -594,7 +603,8 @@ function StatusBarInner({
     toast(result.updated ? 'Status island preset updated' : 'Status island preset saved', {
       duration: 1800,
     });
-  }, [activeSavedPreset, currentPresetState, savedPresets.length]);
+    return true;
+  }, [activeSavedPreset, currentPresetState]);
 
   const deleteActiveSavedPreset = useCallback(() => {
     if (!activeSavedPreset) return;
@@ -791,7 +801,7 @@ function StatusBarInner({
               activeSavedPresetId={activeSavedPreset?.id || ''}
               activeSavedPresetLabel={activeSavedPreset?.label || ''}
               onApplySavedPreset={applySavedPreset}
-              onSaveCurrentPreset={saveCurrentAsPreset}
+              onSaveCurrentPreset={openSavePresetDialog}
               onDeleteSavedPreset={deleteActiveSavedPreset}
               canResetPosition={hasOffset}
               onResetPosition={resetOffset}
@@ -1110,6 +1120,13 @@ function StatusBarInner({
           </div>
         </div>
       </div>
+
+      <StatusIslandPresetDialog
+        open={isPresetDialogOpen}
+        initialValue={presetDialogInitialName}
+        onOpenChange={setIsPresetDialogOpen}
+        onSubmit={saveCurrentAsPreset}
+      />
     </div>
   );
 }
