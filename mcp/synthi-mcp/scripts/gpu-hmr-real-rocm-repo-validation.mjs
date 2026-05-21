@@ -369,7 +369,7 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
   const compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
   if (!compile?.ok) throw new Error(`${phaseName} synthi_compile failed: ${JSON.stringify(compile).slice(0, 1000)}`);
   const waitStart = Date.now();
-  const wait = await state.client.toolCall('synthi_wait_hmr', { timeoutMs }, timeoutMs + 10000);
+  const wait = await waitHmrForCurrentWorkspace(state, timeoutMs, phaseName);
   const phase = {
     name: phaseName,
     compile_wall_ms: Date.now() - start,
@@ -384,6 +384,100 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
   record(phaseName, wait?.status === 'applied' ? 'pass' : 'fail', JSON.stringify(phase).slice(0, 1000));
   if (wait?.status !== 'applied') throw new Error(`${phaseName} wait_hmr status=${wait?.status}`);
   return { compile, wait, phase };
+}
+
+async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName) {
+  const startedAt = Date.now();
+  const eventLogSinceTs = startedAt - 2000;
+  let last = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    const remaining = Math.max(1000, timeoutMs - (Date.now() - startedAt));
+    const sliceTimeoutMs = Math.min(remaining, 30000);
+    let wait;
+    try {
+      wait = await state.client.toolCall(
+        'synthi_wait_hmr',
+        { timeoutMs: sliceTimeoutMs },
+        sliceTimeoutMs + 7000,
+      );
+    } catch (err) {
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+      if (recovered) return recovered;
+      throw err;
+    }
+    last = wait;
+    const previewId = hmrPreviewId(wait?.detail);
+    if (previewId && previewId !== CFG.slug) {
+      record(`${phaseName} ignored stale wait_hmr`, 'warn', `preview_id=${previewId} status=${wait?.status ?? 'unknown'}`);
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+      if (recovered) return recovered;
+      continue;
+    }
+    if (wait?.status === 'timeout') {
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+      if (recovered) return recovered;
+      continue;
+    }
+    return wait;
+  }
+  const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+  if (recovered) return recovered;
+  return last ?? { status: 'timeout', elapsedMs: timeoutMs, source: 'real_rocm_validation_harness' };
+}
+
+function hmrPreviewId(detail) {
+  if (!detail || typeof detail !== 'object') return null;
+  if (typeof detail.preview_id === 'string') return detail.preview_id;
+  if (detail.data && typeof detail.data === 'object' && typeof detail.data.preview_id === 'string') {
+    return detail.data.preview_id;
+  }
+  if (detail.detail && typeof detail.detail === 'object' && typeof detail.detail.preview_id === 'string') {
+    return detail.detail.preview_id;
+  }
+  return null;
+}
+
+function hmrStatusFromEvent(entry) {
+  const raw = entry?.raw && typeof entry.raw === 'object' ? entry.raw : {};
+  if (entry?.status && entry.status !== 'intermediate') return entry.status;
+  if (typeof raw.status === 'string') {
+    if (raw.status === 'state-migrated') return 'applied';
+    return raw.status;
+  }
+  if (raw.event === 'Promoted') return 'applied';
+  if (raw.event === 'RolledBack') return 'rejected';
+  if (raw.event === 'Discarded') return 'discarded';
+  return null;
+}
+
+async function currentHmrFromEventLog(state, sinceTs, startedAt) {
+  const log = await state.client.toolCall(
+    'synthi_get_event_log',
+    { kind: 'hmr', since_ts: sinceTs, limit: 200 },
+    10000,
+  ).catch(() => null);
+  const entries = Array.isArray(log?.entries) ? log.entries : [];
+  for (const entry of entries.slice().reverse()) {
+    const raw = entry?.raw && typeof entry.raw === 'object' ? entry.raw : {};
+    const previewId = hmrPreviewId(raw);
+    if (previewId !== CFG.slug) continue;
+    const status = hmrStatusFromEvent(entry);
+    if (!['applied', 'rejected', 'compile-error', 'full-reload-required', 'discarded'].includes(status)) {
+      continue;
+    }
+    return {
+      status,
+      elapsedMs: Date.now() - startedAt,
+      hmrElapsedMs: typeof entry.ts === 'number' ? entry.ts - startedAt : null,
+      source: 'event_log',
+      detail: raw.data && typeof raw.data === 'object' ? raw.data : raw,
+      frame_gate: {
+        status: 'event_log_recovered',
+        note: 'terminal HMR event was recovered after ignoring a stale wait_hmr event',
+      },
+    };
+  }
+  return null;
 }
 
 async function captureScreenshot(label) {
