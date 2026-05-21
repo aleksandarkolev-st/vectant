@@ -45,20 +45,11 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
         onClick={() => onSelect?.(id)}
         className="group relative w-full h-9 flex items-center justify-center transition-all duration-150"
       >
-        {/* Rounded floating pill — the icon container IS the active
-            indicator. Brand-gradient hairline at the left edge marks
-            the current view. */}
-        <span
-          aria-hidden="true"
-          className="absolute inset-x-1.5 inset-y-1 rounded-md transition-all duration-200"
-          style={isActive
-            ? {
-                background: 'var(--bg-elevated)',
-                boxShadow: '0 0 0 1px color-mix(in srgb, var(--attention-purple) 22%, transparent), 0 0 14px -4px color-mix(in srgb, var(--attention-purple) 32%, transparent)',
-              }
-            : { background: 'transparent' }}
-        />
-        {/* Active edge marker — 2px brand-gradient bar */}
+        {/* Active edge marker — 2px brand-gradient bar. Single
+            source-of-truth for the active state; the icon also tints
+            to attention-purple below. We deliberately do NOT also
+            render an elevated pill background — doubling indicators
+            for the same state reads as visual noise. */}
         {isActive && (
           <span
             aria-hidden="true"
@@ -69,6 +60,12 @@ export default function ActivityBar({ active = "explorer", onSelect, badges = {}
             }}
           />
         )}
+        {/* Subtle hover wash so non-active items still feel interactive
+            without competing with the active marker. */}
+        <span
+          aria-hidden="true"
+          className="absolute inset-x-1.5 inset-y-1 rounded-md transition-colors duration-150 bg-transparent group-hover:bg-[color-mix(in_srgb,var(--text-primary)_5%,transparent)]"
+        />
 
         {/* Extension icon (image URL) or Lucide fallback */}
         {extensionIcon && typeof extensionIcon === 'string' && (extensionIcon.startsWith('http') || extensionIcon.startsWith('data:')) ? (

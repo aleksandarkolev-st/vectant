@@ -1318,7 +1318,13 @@ function GitStatusInner({ slug }) {
                           </div>
                           {/* Hover actions */}
                           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 pr-1">
-                            <button onClick={() => { navigator.clipboard.writeText(c.hash); toast.success('Commit hash copied'); }}
+                            <button
+                              onClick={() => {
+                                navigator.clipboard.writeText(c.hash).catch(() =>
+                                  toast.error('Could not copy hash to clipboard')
+                                );
+                              }}
+                              aria-label="Copy commit hash"
                               title={`Copy full hash: ${c.hash}`}
                               className="p-0.5 rounded hover:bg-[#3f3f46] text-[#71717a] hover:text-[#e4e4e7]">
                               <Copy className="w-2.5 h-2.5" />

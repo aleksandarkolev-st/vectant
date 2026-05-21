@@ -111,7 +111,12 @@ function TopNav({
       </div>
       <div
         className="topnav-search relative transition-all duration-200 hidden sm:block min-w-0"
-        style={{ width: searchOpen ? '420px' : '240px', maxWidth: '100%' }}
+        // Width is driven by a CSS var so the xl+ media query in globals.css
+        // can override it without an inline-style specificity fight. Below xl,
+        // the var animates 240→420px on focus (preserved); at xl+, the rule
+        // pins the bar at 380px so the EditorTabStrip sibling stops jittering
+        // when the user focuses search.
+        style={{ '--topnav-search-w': searchOpen ? '420px' : '240px', maxWidth: '100%' }}
       >
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} strokeWidth={1.5} />
         <input
@@ -188,6 +193,7 @@ function TopNav({
           size="sm"
           className="hidden sm:inline-flex h-7 w-7 p-0 th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 transition-all rounded-md"
           onClick={onToggleTerminal}
+          aria-label="Toggle terminal"
           title="Toggle Terminal"
         >
           <TerminalSquare className="w-4 h-4" strokeWidth={2} />
@@ -212,15 +218,30 @@ function TopNav({
             live in the build-controls island next to the status bar.
             Mobile (< sm): Stop + Restart replace the run button here. */}
             
-        {/* GPU Pipeline Toggle - desktop only */}
+        {/* GPU Pipeline Toggle - desktop only.
+            Persistent "GPU" label + on/off dot. Earlier we flipped the
+            label between "GPU" and "No GPU" — readable enough, but you
+            had to scan the text to know the state. A coloured dot is
+            parseable at a glance and matches how status is signalled
+            elsewhere in the chrome (status island, collab pill). */}
         <Button
           variant="ghost"
           size="sm"
-          className={`hidden xl:inline-flex h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${gpuModeEnabled ? 'th-btn-active' : ''}`}
+          aria-label={gpuModeEnabled ? "Disable GPU pipeline" : "Enable GPU pipeline"}
+          aria-pressed={gpuModeEnabled}
+          className={`hidden xl:inline-flex items-center gap-1.5 h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${gpuModeEnabled ? 'th-btn-active' : ''}`}
           onClick={() => setGpuModeEnabled(!gpuModeEnabled)}
           title={gpuModeEnabled ? "GPU pipeline enabled — compile requests may use CUDA/ROCm HMR" : "GPU pipeline disabled — compile requests stay on the host path"}
         >
-          {gpuModeEnabled ? "GPU" : "No GPU"}
+          <span
+            aria-hidden="true"
+            className="inline-block w-1.5 h-1.5 rounded-full transition-colors"
+            style={{
+              background: gpuModeEnabled ? 'var(--accent-success)' : 'var(--text-muted)',
+              boxShadow: gpuModeEnabled ? '0 0 6px color-mix(in srgb, var(--accent-success) 60%, transparent)' : 'none',
+            }}
+          />
+          <span>GPU</span>
         </Button>
         {isRunning ? (
             <>
@@ -229,6 +250,7 @@ function TopNav({
                     size="sm"
                     className="sm:hidden h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 text-red-500 hover:text-red-400"
                     onClick={onStop}
+                    aria-label="Stop running app"
                     title="Stop"
                 >
                     <Square className="w-3.5 h-3.5 fill-current" strokeWidth={2} />
@@ -238,6 +260,7 @@ function TopNav({
                     className="sm:hidden h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5"
                     onClick={onReload}
                     style={{ color: '#3d6dff' }}
+                    aria-label="Restart running app"
                     title="Restart"
                 >
                     <RotateCw className="w-3.5 h-3.5" strokeWidth={2} />
@@ -247,6 +270,7 @@ function TopNav({
                     size="sm"
                     disabled
                     aria-disabled="true"
+                    aria-label="App is running"
                     className="hidden sm:inline-flex h-7 w-7 p-0 rounded-md th-bg-app cursor-not-allowed opacity-40"
                     title="Running — use the stop/restart controls"
                 >
@@ -258,6 +282,7 @@ function TopNav({
                 size="sm"
                 className="h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5"
                 onClick={onRun}
+                aria-label="Run code"
                 title="Run Code"
             >
                 <Play className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
@@ -268,6 +293,8 @@ function TopNav({
             <Button
               variant="ghost"
               size="sm"
+              aria-label="Open settings"
+              title="Settings"
               className="h-7 w-7 p-0 th-btn-ghost duration-200 hover:-translate-y-0.5 transition-all cursor-pointer rounded-md"
             >
               <Settings className="w-3.5 h-3.5" strokeWidth={2} />

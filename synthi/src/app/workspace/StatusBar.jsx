@@ -11,7 +11,7 @@ import { useCollabStatus } from '@/hooks/useCollabStatus';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
 import { getCurrentUser } from '@/services/userIdentity';
-import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw, GripVertical, X, Minimize2, Maximize2 } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw, GripVertical, X, Minimize2, Maximize2, Boxes } from 'lucide-react';
 import { HealingIndicator } from '@/components/healing/HealingIndicator';
 import OperatorStatusBarButton from './OperatorStatusBarButton';
 import VectantLogoCollapsed from './VectantLogoCollapsed';
@@ -478,6 +478,7 @@ function StatusBarInner({
                 <button
                   type="button"
                   onClick={onStop}
+                  aria-label="Stop running app"
                   title="Stop"
                   className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer"
                   style={{ color: 'var(--accent-danger)', '--hover-bg': 'color-mix(in srgb, var(--accent-danger) 14%, transparent)' }}
@@ -487,6 +488,7 @@ function StatusBarInner({
                 <button
                   type="button"
                   onClick={onReload}
+                  aria-label="Restart running app"
                   title="Restart"
                   className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer"
                   style={{ color: 'var(--brand-stop-4)', '--hover-bg': 'color-mix(in srgb, var(--brand-stop-4) 14%, transparent)' }}
@@ -730,13 +732,15 @@ function StatusBarInner({
           <span className="status-island-label font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
         </div>
 
-        {/* AI-detected framework pill — also at the tail; full readout */}
+        {/* AI-detected framework pill — also at the tail; full readout.
+            Uses `Boxes` (not `Cpu`) to disambiguate from the Compiler
+            pill in the left zone, which already owns the Cpu glyph. */}
         {languageAndFramework && (
           <div
             className="flex shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-all"
             title={`Framework: ${languageAndFramework}`}
           >
-            <Cpu className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
+            <Boxes className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
             <span className="status-island-label font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
           </div>
         )}

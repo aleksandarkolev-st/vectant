@@ -426,13 +426,18 @@ export default function CommitHistoryPanel({ slug }) {
 
   const handleContextAction = useCallback(async (action, commit) => {
     switch (action) {
+      // Clipboard copies: silent on success — the action is immediate
+      // and contextual, so a toast confirmation is redundant noise.
+      // Failure path (rejected promise) still surfaces an error toast.
       case 'copy-hash':
-        navigator.clipboard.writeText(commit.hash);
-        toast.success('Commit hash copied');
+        navigator.clipboard.writeText(commit.hash).catch(() =>
+          toast.error('Could not copy hash to clipboard')
+        );
         break;
       case 'copy-message':
-        navigator.clipboard.writeText(commit.message);
-        toast.success('Commit message copied');
+        navigator.clipboard.writeText(commit.message).catch(() =>
+          toast.error('Could not copy message to clipboard')
+        );
         break;
       case 'view-detail':
         setSelectedHash(commit.hash);
@@ -666,8 +671,14 @@ export default function CommitHistoryPanel({ slug }) {
                       <div className="flex items-center gap-0.5 pr-2 opacity-0 hover:opacity-100 transition-opacity flex-shrink-0"
                         style={{ opacity: isSelected ? 1 : undefined }}>
                         <button
-                          onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(commit.hash); toast.success('Hash copied'); }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigator.clipboard.writeText(commit.hash).catch(() =>
+                              toast.error('Could not copy hash to clipboard')
+                            );
+                          }}
                           className="p-0.5 rounded hover:bg-[#3f3f46] text-[#52525b] hover:text-[#e4e4e7]"
+                          aria-label="Copy commit hash"
                           title="Copy hash"
                         >
                           <Copy className="w-2.5 h-2.5" />

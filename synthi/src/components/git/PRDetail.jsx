@@ -591,8 +591,10 @@ export function PRDetail({ slug, onBack }) {
       return;
     }
     const result = await dispatch(updatePR({ owner, repo, prNumber: pr.number, slug, updates: { title: newTitle.trim() } }));
-    if (updatePR.fulfilled.match(result)) {
-      toast.success('Title updated');
+    // Silent on success — the title in the header updates inline so the
+    // user can see it took. We only toast on failure.
+    if (!updatePR.fulfilled.match(result)) {
+      toast.error(result.payload?.error || 'Could not update title');
     }
     setEditingTitle(false);
   };
@@ -613,17 +615,21 @@ export function PRDetail({ slug, onBack }) {
 
   const handleComment = async (body) => {
     const result = await dispatch(postComment({ owner, repo, prNumber: pr.number, slug, body }));
-    if (postComment.fulfilled.match(result)) {
-      toast.success('Comment posted');
-    } else {
+    // Silent on success — the new comment appears in the list. Toast
+    // only on failure since the optimistic UI doesn't roll back.
+    if (!postComment.fulfilled.match(result)) {
       toast.error(result.payload?.error || 'Comment failed');
     }
   };
 
   const handleDeleteComment = async (commentId) => {
     if (!confirm('Delete this comment?')) return;
-    await dispatch(deleteComment({ owner, repo, commentId, slug }));
-    toast.success('Comment deleted');
+    const result = await dispatch(deleteComment({ owner, repo, commentId, slug }));
+    // Silent on success — the comment disappears from the list. Toast
+    // only on failure.
+    if (!deleteComment.fulfilled.match(result)) {
+      toast.error(result.payload?.error || 'Could not delete comment');
+    }
   };
 
   if (!pr && !prDetailLoading) return null;
@@ -783,8 +789,9 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
       return;
     }
     const result = await dispatch(updatePR({ owner, repo, prNumber: pr.number, slug, updates: { body: newBody } }));
-    if (updatePR.fulfilled.match(result)) {
-      toast.success('Description updated');
+    // Silent on success — the rendered description swaps in inline.
+    if (!updatePR.fulfilled.match(result)) {
+      toast.error(result.payload?.error || 'Could not update description');
     }
     setEditingBody(false);
   };

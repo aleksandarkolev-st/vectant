@@ -695,11 +695,16 @@
     color-mix(in srgb, var(--attention-purple) 32%, transparent) !important;
 }
 
-/* Custom focus ring for Synthi */
-.synthi-focus-ring:focus {
+/* Custom focus ring for Synthi.
+   Bumped from accent-primary 50% (slate-violet, ~1.6:1 contrast on
+   --bg-elevated) to attention-purple so keyboard users can actually see
+   where focus landed. Uses :focus-visible so mouse clicks don't leave a
+   lingering ring. */
+.synthi-focus-ring:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px
-    color-mix(in srgb, var(--accent-primary) 50%, transparent);
+  box-shadow:
+    0 0 0 2px var(--bg-app),
+    0 0 0 3px color-mix(in srgb, var(--attention-purple) 70%, transparent);
 }
 
 /* Synthi loading animation */
@@ -1676,6 +1681,22 @@
     0 0 0 3px color-mix(in srgb, var(--attention-purple) 18%, transparent);
 }
 
+/* Baseline keyboard-focus indicator. Applies to any interactive
+   element that hasn't opted into one of the .*-focus-ring classes,
+   so keyboard users always see where focus is. Uses outline (not
+   box-shadow) so it never collides with custom box-shadow rings,
+   and :focus-visible so mouse clicks don't leave a lingering ring. */
+button:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring):not(.th-focus-ring-inset),
+a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
+[role="button"]:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
+[role="menuitem"]:focus-visible,
+[role="option"]:focus-visible,
+[role="tab"]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--attention-purple) 65%, transparent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 /* ─── Status Island entrance animation ───────────────────────────────
    First-load reveal for the floating status pill. The stage scales
    horizontally from a small circular seed into the full pill width.
@@ -2361,6 +2382,22 @@
   .vectant-logo--healing .vectant-logo-halo {
     transition: none !important;
     animation: none !important;
+  }
+}
+
+/* ─── TopNav search bar width ───────────────────────────────────────
+   The wrapper exposes its width via --topnav-search-w (set inline from
+   React based on focus). At xl+ we pin the width to 380px so focusing
+   the search bar no longer triggers a 240→420px width animation that
+   compresses the EditorTabStrip sibling. Below xl, the var still
+   drives the focus expand. */
+.topnav-search {
+  width: var(--topnav-search-w, 240px);
+}
+@media (min-width: 1280px) {
+  .topnav-search {
+    width: 380px !important;
+    transition: none !important;
   }
 }
 
