@@ -3,9 +3,11 @@ import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
 import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw } from 'lucide-react';
+import { toast } from 'sonner';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { resolveCollabWsUrl } from '@/lib/collab-url';
+import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 import {
   TERMINAL_COLOR_KEYS,
   getTerminalOverrides,
@@ -101,6 +103,13 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
   // Live theme from ThemeProvider
   const { terminalTheme } = useTheme();
+
+  // Selection-mode context menu. Captured in a ref so the DOM-level
+  // contextmenu listener (registered inside the imperative init() effect)
+  // can reach the latest openMenu without going through props/re-render.
+  const { menuState, openMenu, closeMenu } = useContextMenu();
+  const openMenuRef = useRef(openMenu);
+  openMenuRef.current = openMenu;
 
   const [state, setState] = useState('connecting'); // connecting | connected | error | closed
   const [shellInfo, setShellInfo] = useState('');
@@ -261,16 +270,44 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         }, 50);
       };
 
-      const handleContextMenu = async (e) => {
-        e.preventDefault();
-        if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
-          return; // View-only guest
+      // Selection-mode helpers used by the context menu.
+      const copySelection = async () => {
+        const sel = (term.getSelection && term.getSelection()) || '';
+        if (!sel) return;
+        try {
+          await navigator.clipboard.writeText(sel);
+          toast.success('Copied to clipboard');
+        } catch {
+          toast.error('Copy failed');
         }
+        clearSelectionAggressive();
+      };
+
+      const copySelectionAsSingleLine = async () => {
+        const sel = (term.getSelection && term.getSelection()) || '';
+        if (!sel) return;
+        const joined = sel.replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
+        try {
+          await navigator.clipboard.writeText(joined);
+          toast.success('Copied as single line');
+        } catch {
+          toast.error('Copy failed');
+        }
+        clearSelectionAggressive();
+      };
+
+      const openSearch = (urlBuilder) => {
+        const sel = (term.getSelection && term.getSelection()) || '';
+        if (!sel) return;
+        const url = urlBuilder(sel);
+        try { window.open(url, '_blank', 'noopener,noreferrer'); } catch {}
+      };
+
+      const pasteFromClipboard = async () => {
         try {
           const text = await navigator.clipboard.readText();
           if (!text) return;
           const hasEmbeddedNewline = text.replace(/\r?\n$/, '').includes('\n');
-          // Session auto-approve skips the confirmation modal entirely.
           if (hasEmbeddedNewline && !sessionAutoApprovePaste) {
             setPasteConfirm({ text, lineCount: text.split(/\r?\n/).length, charCount: text.length });
           } else {
@@ -278,25 +315,47 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             term.paste(text);
             clearSelectionAggressive();
           }
-        } catch (_) {
-          // Clipboard read can fail (permission denied, insecure context,
-          // user gesture lost). Stay silent — the user can fall back to
-          // Ctrl/Cmd+V.
-        }
+        } catch {}
       };
 
-      // Also wipe any selection produced by the right-mousedown itself,
-      // before the contextmenu event even fires. xterm reacts to the
-      // mousedown by extending/starting a selection under the cursor.
-      const handleRightMouseDown = (e) => {
-        if (e.button !== 2) return;
-        // Defer to after xterm's own mousedown handler runs so our clear
-        // wins the race against its selection update.
-        setTimeout(() => {
-          try { term.clearSelection(); } catch (_) {}
-        }, 0);
+      const handleContextMenu = (e) => {
+        e.preventDefault();
+        if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
+          return; // View-only guest
+        }
+        const hasSelection = !!(term.hasSelection && term.hasSelection());
+        // Selection present → custom context menu. No selection → fall
+        // through to the existing right-click-to-paste behavior.
+        if (hasSelection) {
+          openMenuRef.current(e, [
+            { id: 'copy', label: 'Copy', shortcut: 'Ctrl+Shift+C', action: copySelection },
+            { id: 'copy-line', label: 'Copy as Single Line', dividerAfter: true, action: copySelectionAsSingleLine },
+            {
+              id: 'google',
+              label: 'Search on Google',
+              action: () => openSearch((s) => `https://www.google.com/search?q=${encodeURIComponent(s)}`),
+            },
+            {
+              id: 'so',
+              label: 'Search on Stack Overflow',
+              dividerAfter: true,
+              action: () => openSearch((s) => `https://stackoverflow.com/search?q=${encodeURIComponent(s)}`),
+            },
+            { id: 'select-all', label: 'Select All', action: () => { try { term.selectAll(); } catch {} } },
+            { id: 'clear-sel', label: 'Clear Selection', dividerAfter: true, action: () => clearSelectionAggressive() },
+            { id: 'paste', label: 'Paste', shortcut: 'Ctrl+Shift+V', action: pasteFromClipboard },
+          ]);
+          return;
+        }
+        // No selection — preserve existing paste-on-right-click behavior.
+        pasteFromClipboard();
       };
-      containerRef.current.addEventListener('mousedown', handleRightMouseDown);
+
+      // NB: no longer clear-on-mousedown — that would wipe the user's
+      // existing selection before our contextmenu handler could read it
+      // for the new selection-mode menu. The clear-aggressive call inside
+      // pasteFromClipboard still handles the "prior selection lingers
+      // after paste" case.
       containerRef.current.addEventListener('contextmenu', handleContextMenu);
 
       // ── Connect WebSocket ─────────────────────────────────────────
@@ -333,7 +392,6 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         window.removeEventListener('resize', scheduleResize);
         if (containerEl) {
           containerEl.removeEventListener('contextmenu', handleContextMenu);
-          containerEl.removeEventListener('mousedown', handleRightMouseDown);
         }
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         if (webglAddon) try { webglAddon.dispose(); } catch (_) {}
@@ -600,6 +658,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           onClose={() => setColorPickerOpen(false)}
         />
       )}
+
+      {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
 
       {/* Session: View-only terminal overlay for guests without canTerminal */}
       {isGuest && !canTerminal && state === 'connected' && (
