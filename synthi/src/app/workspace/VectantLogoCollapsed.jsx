@@ -22,6 +22,15 @@
  */
 
 import { useCallback } from 'react';
+import {
+  ContextMenu,
+  ContextMenuCheckboxItem,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
 
 export default function VectantLogoCollapsed({
   state = 'normal',
@@ -29,6 +38,10 @@ export default function VectantLogoCollapsed({
   pendingCount = 0,
   onActivate,
   onSecondaryDragStart,
+  isCompact = false,
+  onSetCompact,
+  canResetPosition = false,
+  onResetPosition,
   isDragging = false,
 }) {
   const handleClick = useCallback(() => onActivate?.(), [onActivate]);
@@ -36,22 +49,17 @@ export default function VectantLogoCollapsed({
     if (phase !== 'logo' || event.button !== 2) return;
     onSecondaryDragStart?.(event);
   }, [onSecondaryDragStart, phase]);
-  const handleContextMenu = useCallback((event) => {
-    if (phase !== 'logo') return;
-    event.preventDefault();
-  }, [phase]);
   // is-v-fading drives the V fade-out. Active during expanding only.
   const isVFading = phase === 'expanding';
 
-  return (
+  const button = (
     <button
       type="button"
       aria-label={phase === 'logo' ? 'Open status island' : 'Vectant'}
       onClick={phase === 'logo' ? handleClick : undefined}
       onMouseDown={handleMouseDown}
-      onContextMenu={handleContextMenu}
       tabIndex={phase === 'logo' ? 0 : -1}
-      title={phase === 'logo' ? 'Left click to open. Right-drag to move.' : undefined}
+      title={phase === 'logo' ? 'Left click to open. Right click for actions. Right-drag to move.' : undefined}
       className={[
         'vectant-logo-button th-focus-ring',
         phase === 'logo' ? 'vectant-logo-button--movable' : '',
@@ -81,5 +89,41 @@ export default function VectantLogoCollapsed({
         </span>
       )}
     </button>
+  );
+
+  if (phase !== 'logo') return button;
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        {button}
+      </ContextMenuTrigger>
+      <ContextMenuContent
+        className="w-52"
+        style={{
+          background: 'var(--bg-elevated)',
+          borderColor: 'var(--border-medium)',
+          color: 'var(--text-primary)',
+        }}
+      >
+        <ContextMenuLabel inset>Status island</ContextMenuLabel>
+        <ContextMenuItem onSelect={() => onActivate?.()}>
+          Open island
+        </ContextMenuItem>
+        <ContextMenuCheckboxItem
+          checked={isCompact}
+          onCheckedChange={(checked) => onSetCompact?.(Boolean(checked))}
+        >
+          Compact labels
+        </ContextMenuCheckboxItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          disabled={!canResetPosition}
+          onSelect={() => onResetPosition?.()}
+        >
+          Reset position
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }

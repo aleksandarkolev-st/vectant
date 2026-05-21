@@ -238,6 +238,17 @@ function StatusBarInner({
     persistOffset(clampedOffset);
   }, [clampOffsetToViewport, persistOffset, viewportSize.height, viewportSize.width]);
 
+  const resetOffset = useCallback(() => {
+    setOffset({ x: 0, y: 0 });
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage?.removeItem(STATUS_ISLAND_OFFSET_KEY);
+      } catch {
+        // Ignore — the in-memory reset already happened.
+      }
+    }
+  }, []);
+
   const startIslandDrag = useCallback((event, button) => {
     if (event.button !== button) return;
     event.preventDefault();
@@ -248,9 +259,14 @@ function StatusBarInner({
     const startOffset = clampOffsetToViewport(offsetRef.current);
     let promoted = false;
     let pendingOffset = startOffset;
+    let contextMenuBlocked = false;
 
     const suppressContextMenu = (contextEvent) => {
       contextEvent.preventDefault();
+      contextEvent.stopPropagation();
+      if (typeof contextEvent.stopImmediatePropagation === 'function') {
+        contextEvent.stopImmediatePropagation();
+      }
     };
 
     const handleMouseMove = (moveEvent) => {
@@ -264,6 +280,8 @@ function StatusBarInner({
         setIsDragging(true);
         document.body.style.cursor = 'grabbing';
         document.body.style.userSelect = 'none';
+        document.addEventListener('contextmenu', suppressContextMenu, true);
+        contextMenuBlocked = true;
       }
       pendingOffset = clampOffsetToViewport({ x: startOffset.x + dx, y: startOffset.y + dy });
       setOffset(pendingOffset);
@@ -272,9 +290,11 @@ function StatusBarInner({
     const handleMouseUp = () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
-      window.setTimeout(() => {
-        document.removeEventListener('contextmenu', suppressContextMenu, true);
-      }, 0);
+      if (contextMenuBlocked) {
+        window.setTimeout(() => {
+          document.removeEventListener('contextmenu', suppressContextMenu, true);
+        }, 0);
+      }
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       if (promoted) {
@@ -283,7 +303,6 @@ function StatusBarInner({
       }
     };
 
-    document.addEventListener('contextmenu', suppressContextMenu, true);
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
   }, [clampOffsetToViewport, persistOffset]);
@@ -299,15 +318,8 @@ function StatusBarInner({
   const handleDragDoubleClick = useCallback((event) => {
     event.preventDefault();
     event.stopPropagation();
-    setOffset({ x: 0, y: 0 });
-    if (typeof window !== 'undefined') {
-      try {
-        window.localStorage?.removeItem(STATUS_ISLAND_OFFSET_KEY);
-      } catch {
-        // Ignore — the in-memory reset already happened.
-      }
-    }
-  }, []);
+    resetOffset();
+  }, [resetOffset]);
 
   const clampedOffset = viewportSize.width && viewportSize.height
     ? clampOffsetToViewport(offset)
@@ -422,9 +434,11 @@ function StatusBarInner({
       // Ignore
     }
   }, []);
-  const toggleCompact = useCallback(() => {
+  const setCompactMode = useCallback((valueOrUpdater) => {
     setIsCompact((prev) => {
-      const next = !prev;
+      const next = typeof valueOrUpdater === 'function'
+        ? Boolean(valueOrUpdater(prev))
+        : Boolean(valueOrUpdater);
       try {
         window.localStorage?.setItem(STATUS_ISLAND_COMPACT_KEY, next ? '1' : '0');
       } catch {
@@ -433,6 +447,9 @@ function StatusBarInner({
       return next;
     });
   }, []);
+  const toggleCompact = useCallback(() => {
+    setCompactMode((prev) => !prev);
+  }, [setCompactMode]);
 
   // PERF: Defer all Redux reads so StatusBar never blocks the editor
   const currentBranchRaw = useSelector(state => state.git?.currentBranch);
@@ -606,6 +623,10 @@ function StatusBarInner({
               pendingCount={healingPending}
               onActivate={triggerExpand}
               onSecondaryDragStart={handleLogoRightMouseDown}
+              isCompact={isCompact}
+              onSetCompact={setCompactMode}
+              canResetPosition={hasOffset}
+              onResetPosition={resetOffset}
               isDragging={isDragging}
             />
           </div>
