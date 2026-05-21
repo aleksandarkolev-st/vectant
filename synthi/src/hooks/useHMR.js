@@ -5,6 +5,9 @@ import { subscribeAdapterStatus, getAdapterStatus, handleAdapterStatusNotificati
 import { subscribeRestoreStatus, getRestoreStatus, installRestoreListener } from '@/lib/state-restore-status';
 import { subscribeCandidateTracker, getCurrentCandidate, installCandidateListener } from '@/lib/candidate-tracker';
 import { subscribeHealthPanel, getHealthPanel, updateAdapterHealth, setLifecycleState, setAiActive, pushError } from '@/lib/adapter-health-panel';
+import { subscribeGpuHmrStatus, getGpuHmrStatus, installGpuHmrStatusListener } from '@/lib/gpu-hmr-status';
+import { useAppDispatch, useAppSelector } from '@/redux/hooks';
+import { selectGpuModeEnabled, setGpuModeEnabled, toggleGpuMode } from '@/redux/uiSlice';
 
 /**
  * Enhanced HMR Hook
@@ -21,6 +24,26 @@ import { subscribeHealthPanel, getHealthPanel, updateAdapterHealth, setLifecycle
 
 // Maximum number of history entries to keep (prevents memory leaks)
 const MAX_HMR_HISTORY_SIZE = 50;
+
+export function useGpuMode() {
+    const dispatch = useAppDispatch();
+    const gpuModeEnabled = useAppSelector(selectGpuModeEnabled);
+
+    const setEnabled = useCallback((enabled) => {
+        dispatch(setGpuModeEnabled(!!enabled));
+    }, [dispatch]);
+
+    const toggle = useCallback(() => {
+        dispatch(toggleGpuMode());
+    }, [dispatch]);
+
+    return {
+        gpuModeEnabled,
+        setGpuModeEnabled: setEnabled,
+        toggleGpuMode: toggle,
+        preferGpuPipeline: gpuModeEnabled,
+    };
+}
 
 export function useHMR() {
     const runtimeRef = useRef(null);
@@ -42,6 +65,7 @@ export function useHMR() {
     const [restoreStatus, setRestoreStatus] = useState(getRestoreStatus);
     const [candidateState, setCandidateState] = useState(getCurrentCandidate);
     const [healthPanel, setHealthPanel] = useState(getHealthPanel);
+    const [gpuHmrStatus, setGpuHmrStatus] = useState(getGpuHmrStatus);
 
     // Dispatch HMR status event for UI components
     const dispatchHMRStatus = useCallback((statusData) => {
@@ -257,11 +281,15 @@ export function useHMR() {
         const unsubHealth = subscribeHealthPanel((s) => {
             if (isMountedRef.current) setHealthPanel(s);
         });
+        const unsubGpu = subscribeGpuHmrStatus((s) => {
+            if (isMountedRef.current) setGpuHmrStatus(s);
+        });
 
         // Install window event listeners that feed the stores
         const cleanupAiListener = installAiStatusListener();
         const cleanupRestoreListener = installRestoreListener();
         const cleanupCandidateListener = installCandidateListener();
+        const cleanupGpuListener = installGpuHmrStatusListener();
 
         // Adapter status events: feed into the adapter-status store
         const handleAdapterEvent = (e) => {
@@ -301,9 +329,11 @@ export function useHMR() {
             unsubRestore();
             unsubCandidate();
             unsubHealth();
+            unsubGpu();
             cleanupAiListener();
             cleanupRestoreListener();
             cleanupCandidateListener();
+            cleanupGpuListener();
         };
     }, [dispatchHMRStatus]);
 
@@ -318,5 +348,6 @@ export function useHMR() {
         restoreStatus,
         candidateState,
         healthPanel,
+        gpuHmrStatus,
     };
 }

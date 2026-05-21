@@ -82,7 +82,8 @@ fn gcc_multiple_symbols_same_stderr_dedups_and_orders() {
 #[test]
 fn gcc_cpp_mangled_symbols_preserved_verbatim() {
     // C++ mangled names are kept as-is; the AI can visually demangle.
-    let stderr = "/usr/bin/ld: foo.o: undefined reference to `_ZN4FMOD6System9setOutputENS_10OUTPUTTYPEE'\n";
+    let stderr =
+        "/usr/bin/ld: foo.o: undefined reference to `_ZN4FMOD6System9setOutputENS_10OUTPUTTYPEE'\n";
     let syms = extract_undefined_symbols(stderr);
     assert_eq!(syms.len(), 1);
     assert_eq!(syms[0].name, "_ZN4FMOD6System9setOutputENS_10OUTPUTTYPEE");

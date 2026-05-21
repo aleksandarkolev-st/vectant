@@ -7,7 +7,6 @@
 // error-recovery semantics.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -94,12 +93,8 @@ fn hash_json_value(val: &serde_json::Value) -> u64 {
 /// Check JSON depth.
 fn json_depth(val: &serde_json::Value) -> usize {
     match val {
-        serde_json::Value::Object(map) => {
-            1 + map.values().map(json_depth).max().unwrap_or(0)
-        }
-        serde_json::Value::Array(arr) => {
-            1 + arr.iter().map(json_depth).max().unwrap_or(0)
-        }
+        serde_json::Value::Object(map) => 1 + map.values().map(json_depth).max().unwrap_or(0),
+        serde_json::Value::Array(arr) => 1 + arr.iter().map(json_depth).max().unwrap_or(0),
         _ => 1,
     }
 }

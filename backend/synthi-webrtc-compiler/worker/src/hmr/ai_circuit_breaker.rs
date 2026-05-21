@@ -6,7 +6,6 @@
 // Half-Open, with configurable thresholds and cooldowns.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Circuit breaker state.

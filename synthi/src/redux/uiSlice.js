@@ -13,6 +13,7 @@ export const initialUiState = {
     treeOnRight: false,
     autoSaveEnabled: true,
     autoCompletionEnabled: true,
+    gpuModeEnabled: true,
     // ULTRAPLAN Phase 8: Bring Your Own Runner mode. When true, the
     // next AI split preserves any existing host_runner.cpp on disk
     // that starts with the `// SYNTHI_USER_RUNNER` sentinel instead
@@ -26,6 +27,17 @@ export const initialUiState = {
     presenceGranularity: 'line', // options: 'line' | 'file' | 'workspace'
     // Cursor position for status bar
     cursorPosition: { lineNumber: 1, column: 1 },
+    // ── Sidebar auto-collapse ────────────────────────────────────────
+    // When the cursor leaves a sidebar tab group for `delay` ms, the
+    // group collapses to a 0-width slot. Hover re-expands. This is a
+    // pure UI affordance — the underlying docking-wm layout is not
+    // mutated, so the group's size is restored when the user returns.
+    sidebarAutoCollapseEnabled: true,
+    sidebarAutoCollapseDelay: 2500,
+    // Panel types pinned open against auto-collapse. Indexed by panelType
+    // (e.g. 'chat', 'explorer'). When a sidebar group's active tab is in
+    // this set, the auto-collapse hook leaves the group expanded.
+    pinnedSidebarPanelTypes: [],
 };
 
 const uiSlice = createSlice({
@@ -54,6 +66,12 @@ const uiSlice = createSlice({
         toggleAutoCompletion: (state) => {
             state.autoCompletionEnabled = !state.autoCompletionEnabled;
         },
+        setGpuModeEnabled: (state, action) => {
+            state.gpuModeEnabled = !!action.payload;
+        },
+        toggleGpuMode: (state) => {
+            state.gpuModeEnabled = !state.gpuModeEnabled;
+        },
         // ULTRAPLAN Phase 8
         toggleBringYourOwnRunner: (state) => {
             state.bringYourOwnRunnerEnabled = !state.bringYourOwnRunnerEnabled;
@@ -81,6 +99,41 @@ const uiSlice = createSlice({
         },
         setCursorPosition: (state, action) => {
             state.cursorPosition = action.payload;
+        },
+        toggleSidebarAutoCollapse: (state) => {
+            state.sidebarAutoCollapseEnabled = !state.sidebarAutoCollapseEnabled;
+        },
+        setSidebarAutoCollapseDelay: (state, action) => {
+            const v = Number(action.payload);
+            if (Number.isFinite(v) && v >= 500 && v <= 10000) {
+                state.sidebarAutoCollapseDelay = v;
+            }
+        },
+        toggleSidebarPanelPin: (state, action) => {
+            const panelType = action.payload;
+            if (!panelType) return;
+            if (!Array.isArray(state.pinnedSidebarPanelTypes)) {
+                state.pinnedSidebarPanelTypes = [];
+            }
+            const idx = state.pinnedSidebarPanelTypes.indexOf(panelType);
+            if (idx === -1) {
+                state.pinnedSidebarPanelTypes.push(panelType);
+            } else {
+                state.pinnedSidebarPanelTypes.splice(idx, 1);
+            }
+        },
+        setSidebarPanelPinned: (state, action) => {
+            const { panelType, pinned } = action.payload || {};
+            if (!panelType) return;
+            if (!Array.isArray(state.pinnedSidebarPanelTypes)) {
+                state.pinnedSidebarPanelTypes = [];
+            }
+            const idx = state.pinnedSidebarPanelTypes.indexOf(panelType);
+            if (pinned && idx === -1) {
+                state.pinnedSidebarPanelTypes.push(panelType);
+            } else if (!pinned && idx !== -1) {
+                state.pinnedSidebarPanelTypes.splice(idx, 1);
+            }
         },
         
         // UI Action State Machine Reducers
@@ -117,6 +170,8 @@ export const {
     setTreeOrientation,
     toggleAutoSave,
     toggleAutoCompletion,
+    setGpuModeEnabled,
+    toggleGpuMode,
     toggleBringYourOwnRunner,
     startCreate,
     startRename,
@@ -128,6 +183,10 @@ export const {
     hydrateUi,
     toggleFolderExpansion,
     setExpandedFolders,
+    toggleSidebarAutoCollapse,
+    setSidebarAutoCollapseDelay,
+    toggleSidebarPanelPin,
+    setSidebarPanelPinned,
 } = uiSlice.actions;
 
 // Selectors
@@ -136,11 +195,17 @@ export const selectShowEmulatorPreview = (state) => state.ui.showEmulatorPreview
 export const selectTreeOnRight = (state) => state.ui.treeOnRight;
 export const selectAutoSaveEnabled = (state) => state.ui.autoSaveEnabled;
 export const selectAutoCompletionEnabled = (state) => state.ui.autoCompletionEnabled;
+export const selectGpuModeEnabled = (state) => state.ui.gpuModeEnabled !== false;
 export const selectBringYourOwnRunnerEnabled = (state) => state.ui.bringYourOwnRunnerEnabled;
 export const selectUiActionState = (state) => state.ui.uiActionState;
 export const selectExpandedFolders = (state) => state.ui.expandedFolders || [];
 export const selectShowAnonymousPresence = (state) => state.ui.showAnonymousPresence;
 export const selectPresenceGranularity = (state) => state.ui.presenceGranularity;
 export const selectCursorPosition = (state) => state.ui.cursorPosition;
+export const selectSidebarAutoCollapseEnabled = (state) => state.ui.sidebarAutoCollapseEnabled ?? true;
+export const selectSidebarAutoCollapseDelay = (state) => state.ui.sidebarAutoCollapseDelay ?? 2500;
+export const selectPinnedSidebarPanelTypes = (state) => state.ui.pinnedSidebarPanelTypes ?? [];
+export const selectIsSidebarPanelPinned = (panelType) => (state) =>
+    (state.ui.pinnedSidebarPanelTypes ?? []).includes(panelType);
 
 export default uiSlice.reducer;

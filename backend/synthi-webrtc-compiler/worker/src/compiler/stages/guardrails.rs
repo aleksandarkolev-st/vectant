@@ -22,13 +22,19 @@ fn apply_core_user_adapters(content: &str) -> String {
 
         let mut handled = false;
         if re_main_no_args.is_match(&result) {
-            result = re_main_no_args.replace(&result, "int user_main()").to_string();
+            result = re_main_no_args
+                .replace(&result, "int user_main()")
+                .to_string();
             result.push_str("\n\n#include <pthread.h>\nint user_main();\nextern \"C\" {\n");
-            result.push_str("    static void* main_thread_func(void* arg) { user_main(); return NULL; }\n");
+            result.push_str(
+                "    static void* main_thread_func(void* arg) { user_main(); return NULL; }\n",
+            );
             handled = true;
         } else if re_main_args.is_match(&result) {
             result = re_main_args.replace(&result, "int user_main(").to_string();
-            result.push_str("\n\n#include <pthread.h>\nint user_main(int argc, char** argv);\nextern \"C\" {\n");
+            result.push_str(
+                "\n\n#include <pthread.h>\nint user_main(int argc, char** argv);\nextern \"C\" {\n",
+            );
             result.push_str("    static void* main_thread_func(void* arg) { char* app_name = (char*)\"app\"; char* argv[] = {app_name, NULL}; user_main(1, argv); return NULL; }\n");
             handled = true;
         }

@@ -7,7 +7,6 @@
 // restarting the entire process.
 // ============================================================
 
-
 use std::collections::HashMap;
 
 use crate::hmr::adapter_matrix::{AdapterFamily, CapabilityTier};
@@ -212,7 +211,15 @@ mod tests {
     use crate::hmr::build_manifest::{BuildManifest, BuildSlot};
 
     fn jvm_manifest(artifact: &str) -> BuildManifest {
-        BuildManifest::new("p1", "java", "managed_runtime", 1, BuildSlot::Full, artifact, "def456")
+        BuildManifest::new(
+            "p1",
+            "java",
+            "managed_runtime",
+            1,
+            BuildSlot::Full,
+            artifact,
+            "def456",
+        )
     }
 
     #[test]

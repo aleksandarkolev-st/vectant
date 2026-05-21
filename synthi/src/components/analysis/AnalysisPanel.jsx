@@ -11,6 +11,8 @@ import {
 } from 'lucide-react';
 import { GatewayStatus } from '@/services/analyzerGatewayClient';
 import { cn } from '@/lib/utils';
+import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
+import { toast } from 'sonner';
 
 /*const severityStyles = {
   error: 'bg-red-500/15 text-red-300 border border-red-600/40',
@@ -73,6 +75,39 @@ export function AnalysisPanel({
   const lang = result?.lang;
 
   const statusInfo = statusMeta[status] ?? statusMeta[GatewayStatus.IDLE];
+
+  const { menuState, openMenu, closeMenu } = useContextMenu();
+
+  const copyText = (text, label) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(
+      () => toast.success(`Copied ${label}`),
+      () => toast.error('Copy failed'),
+    );
+  };
+
+  const handleSuggestionContextMenu = (e) => {
+    if (!aiSuggestion) return;
+    const markdown = `### AI Suggestion${lang ? ` (${lang})` : ''}\n\n${aiSuggestion}`;
+    openMenu(e, [
+      {
+        id: 'copy',
+        label: 'Copy Suggestion',
+        action: () => copyText(aiSuggestion, 'suggestion'),
+      },
+      {
+        id: 'copy-md',
+        label: 'Copy as Markdown',
+        dividerAfter: !!onRetry,
+        action: () => copyText(markdown, 'markdown'),
+      },
+      ...(onRetry ? [{
+        id: 'retry',
+        label: 'Re-run Analysis',
+        action: onRetry,
+      }] : []),
+    ]);
+  };
 
   return (
     <section className="mx-3 mt-3 rounded-md border border-[#1a1b24] bg-[#0d0e14] text-sm shadow-lg shadow-black/40">
@@ -146,7 +181,7 @@ export function AnalysisPanel({
         )}
 
         {!isAnalyzing && !error && aiSuggestion && (
-          <div>
+          <div onContextMenu={handleSuggestionContextMenu}>
             <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-[#9ba2b8]">
               AI Suggestion
             </p>
@@ -156,6 +191,8 @@ export function AnalysisPanel({
           </div>
         )}
       </div>
+
+      {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
     </section>
   );
 }

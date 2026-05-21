@@ -22,9 +22,15 @@ __pycache__/
 
 # ── Build artifacts ─────────────────────────────────────────────────────────
 *.log
+mcp/synthi-mcp/.gpu-hmr-test-artifacts/
 
 # Vitest cache inside the vendored root node_modules (phase-3 soak + live-
 # test harnesses drive vitest at the repo root).
 node_modules/.vite/
 
 CLAUDE.md
+
+.claude/
+.playwright-mcp/
+.scratch-playwright/
+.agents/

@@ -5,12 +5,14 @@ import { Search, TerminalSquare, Play, Settings, MessageSquare, Square, RotateCw
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useAppDispatch, useAppSelector } from '@/redux/hooks';
+import { splitEditorPanel } from '@/components/docking-wm/state/layout-slice';
 import { toggleAutoSave, selectAutoSaveEnabled, toggleAutoCompletion, selectAutoCompletionEnabled } from '@/redux/uiSlice';
 import { selectActiveFile, selectFilesTree, selectFileThunk } from '@/redux/workspaceSlice';
 import { getFileIcon } from '@/utils/fileIcons';
 import { toast } from 'sonner';
 import CollabToolbar from '@/components/collaboration/CollabToolbar';
 import { useTheme } from '@/components/ThemeProvider';
+import { EditorTabStrip } from '@/components/EditorTabStrip';
 
 function TopNav({ 
   title, 
@@ -19,6 +21,8 @@ function TopNav({
   setRunInGuiMode,
   hmrEnabled,
   setHmrEnabled,
+  gpuModeEnabled,
+  setGpuModeEnabled,
   onStop,
   onReload,
   isRunning,
@@ -79,22 +83,45 @@ function TopNav({
     setSearchOpen(false);
   };
 
+  const handleSplitEditor = () => {
+    dispatch(splitEditorPanel());
+  };
+
+  // Compact placeholder for the search field. When idle, prefer the
+  // active filename; only fall back to the wordy workspace title when
+  // there's nothing else to surface — and even then keep it short so
+  // it doesn't truncate at 200px width.
+  const idlePlaceholder = activeFile?.name || 'Search files, symbols…';
+
   return (
-    <div className="topnav-root flex items-center h-9 px-2 border-b space-x-4 shadow-sm font-[var(--font-ui)]" style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}>
-      <div className="flex items-center justify-center h-full flex-shrink-0">
-          <img src={isLightTheme ? '/vectant-light-theme.png' : '/vectant-dark-theme.png'} alt="Vectant" className="block h-5 w-auto object-contain" />
+    <div
+      className="topnav-root vt-ambient-bottom relative flex items-center h-10 px-2 border-b space-x-2 font-[var(--font-ui)]"
+      style={{ background: 'var(--bg-app)', borderColor: 'var(--border-subtle)' }}
+    >
+      {/* Vectant wordmark — left-anchored so the centered slot can host
+          the lifted file-tab strip without collision. Dark theme is +2px
+          because its strokes are visibly thinner than the light variant. */}
+      <div className="flex items-center justify-center h-full flex-shrink-0 pl-1 pr-2 select-none">
+        <img
+          src={isLightTheme ? '/vectant-light-theme.png' : '/vectant-dark-theme.png'}
+          alt="Vectant"
+          className={`block w-auto object-contain ${isLightTheme ? 'h-[22px]' : 'h-[24px]'}`}
+          draggable={false}
+        />
       </div>
-      <div className="topnav-search relative transition-all duration-200 hidden sm:block min-w-0"
-           style={{ width: searchOpen ? '400px' : '200px', maxWidth: '100%' }}>
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4" style={{ color: 'var(--text-muted)' }} strokeWidth={1.5} />
+      <div
+        className="topnav-search relative transition-all duration-200 hidden sm:block min-w-0"
+        style={{ width: searchOpen ? '420px' : '240px', maxWidth: '100%' }}
+      >
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} strokeWidth={1.5} />
         <input
           type="text"
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
           onFocus={() => setSearchOpen(true)}
           onBlur={() => setTimeout(() => setSearchOpen(false), 200)}
-          placeholder={searchOpen ? "Search files, symbols, commands…" : title}
-          className="w-full h-7 th-input text-sm rounded-lg pl-8 pr-3 py-1.5 outline-none border transition-all duration-200"
+          placeholder={searchOpen ? "Search files, symbols, commands…" : idlePlaceholder}
+          className="w-full h-6 th-input text-[12px] rounded-md pl-8 pr-3 outline-none border transition-all duration-200"
         />
         {/* Search Results Dropdown */}
         {searchOpen && searchText && (
@@ -119,7 +146,18 @@ function TopNav({
           </div>
         )}
       </div>
-      <div className="flex-1" />
+
+      {/* Smart strip — open file tabs lifted into the TopNav row.
+          Click-only, edge-fades into the surrounding chrome at both ends,
+          horizontally scrollable when there are more tabs than fit. The
+          outer flex-1 lets the strip soak up the remaining row width so
+          the search bar's focus-expand animation is visible (the strip
+          shrinks smoothly as the search bar grows). */}
+      <div className="topnav-tabs flex-1 min-w-0 h-full flex items-center justify-center px-2 lg:px-3">
+        <div className="w-full max-w-[760px] xl:max-w-[860px] h-full flex items-center min-w-0">
+          <EditorTabStrip />
+        </div>
+      </div>
 
         {/* Collaboration — avatars, inbox, history, session share, knocks.
             Hidden on narrow widths to keep the run controls reachable. */}
@@ -130,11 +168,25 @@ function TopNav({
         )}
 
         <div className="flex items-center gap-2 flex-shrink-0">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="hidden sm:inline-flex h-7 w-7 p-0 th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 transition-all rounded-md"
+          onClick={handleSplitEditor}
+          title="Split editor in two"
+          aria-label="Split editor in two"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <rect x="1.25" y="2" width="11.5" height="10" rx="1.25" stroke="currentColor" strokeWidth="1.2" />
+            <path d="M7 2.6V11.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+          </svg>
+        </Button>
+
         {/* Terminal Toggle - Icon Only */}
         <Button
           variant="ghost"
           size="sm"
-          className="hidden sm:inline-flex h-8 w-8 p-0 th-btn-ghost cursor-pointer duration-300 hover:-translate-y-0.5 transition-all rounded-lg"
+          className="hidden sm:inline-flex h-7 w-7 p-0 th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 transition-all rounded-md"
           onClick={onToggleTerminal}
           title="Toggle Terminal"
         >
@@ -146,7 +198,7 @@ function TopNav({
         <Button 
           variant="ghost" 
           size="sm" 
-          className={`h-8 w-8 p-0 th-btn-ghost cursor-pointer transition-colors duration-300 hover:-translate-y-0.5 transition-all rounded-lg ${chatVisible ? 'th-btn-active' : ''}`} 
+          className={`h-7 w-7 p-0 th-btn-ghost cursor-pointer transition-all duration-200 hover:-translate-y-0.5 rounded-md ${chatVisible ? 'th-btn-active' : ''}`}
           onClick={onToggleChat}
           aria-label="Toggle Chat"
           title="Toggle Chat"
@@ -154,69 +206,101 @@ function TopNav({
           <MessageSquare className="w-4 h-4" strokeWidth={2} />
         </Button>
 
-        {/* GUI Mode Toggle — desktop only (xl: ≥ 1280px) */}
+        {/* Run / Stop / Reload — primary moment.
+            Desktop (sm:+): only the Run button lives here. While running
+            it greys out and is non-clickable; the actual Stop + Restart
+            live in the build-controls island next to the status bar.
+            Mobile (< sm): Stop + Restart replace the run button here. */}
+            
+        {/* GPU Pipeline Toggle - desktop only */}
         <Button
           variant="ghost"
           size="sm"
-          className={`hidden xl:inline-flex h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${runInGuiMode ? 'th-btn-active' : ''}`}
-          onClick={() => setRunInGuiMode(!runInGuiMode)}
-          title={runInGuiMode ? "Run in GUI Mode" : "Run in Console Mode"}
+          className={`hidden xl:inline-flex h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${gpuModeEnabled ? 'th-btn-active' : ''}`}
+          onClick={() => setGpuModeEnabled(!gpuModeEnabled)}
+          title={gpuModeEnabled ? "GPU pipeline enabled — compile requests may use CUDA/ROCm HMR" : "GPU pipeline disabled — compile requests stay on the host path"}
         >
-          {runInGuiMode ? "GUI" : "Console"}
+          {gpuModeEnabled ? "GPU" : "No GPU"}
         </Button>
-
-        {/* HMR Toggle - auto-recompile on save — desktop only */}
-        <Button
-          variant="ghost"
-          size="sm"
-          className={`hidden xl:inline-flex h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${hmrEnabled ? 'th-btn-active' : ''}`}
-          onClick={() => setHmrEnabled(!hmrEnabled)}
-          title={hmrEnabled ? "HMR Enabled — app restarts on save" : "HMR Disabled — save does not restart app"}
-        >
-          {hmrEnabled ? "HMR" : "No HMR"}
-        </Button>
-
         {isRunning ? (
             <>
+                {/* Mobile-only: stop + restart in topnav */}
                 <Button
-                    size="sm" 
-                    className="h-8 w-8 p-0 transition-colors rounded-lg th-bg-app th-btn-ghost cursor-pointer duration-300 hover:-translate-y-0.5 transition-all text-red-500 hover:text-red-400" 
+                    size="sm"
+                    className="sm:hidden h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 text-red-500 hover:text-red-400"
                     onClick={onStop}
-                    title="Stop Code"
+                    title="Stop"
                 >
-                    <Square className="w-4 h-4 fill-current" strokeWidth={2} />
+                    <Square className="w-3.5 h-3.5 fill-current" strokeWidth={2} />
                 </Button>
                 <Button
-                    size="sm" 
-                    className="h-8 w-8 p-0 transition-colors rounded-lg th-bg-app th-btn-ghost cursor-pointer duration-300 hover:-translate-y-0.5 transition-all" 
+                    size="sm"
+                    className="sm:hidden h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5"
                     onClick={onReload}
-                    style={{ color: 'var(--accent-primary)' }}
-                    title="Reload Code"
+                    style={{ color: '#3d6dff' }}
+                    title="Restart"
                 >
-                    <RotateCw className="w-4 h-4" strokeWidth={2} />
+                    <RotateCw className="w-3.5 h-3.5" strokeWidth={2} />
+                </Button>
+                {/* Desktop-only: disabled, greyed-out run button */}
+                <Button
+                    size="sm"
+                    disabled
+                    aria-disabled="true"
+                    className="hidden sm:inline-flex h-7 w-7 p-0 rounded-md th-bg-app cursor-not-allowed opacity-40"
+                    title="Running — use the stop/restart controls"
+                >
+                    <Play className="w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} strokeWidth={2} />
                 </Button>
             </>
         ) : (
             <Button
-                size="sm" 
-                className="h-8 w-8 p-0 transition-colors rounded-lg th-bg-app th-btn-ghost cursor-pointer duration-300 hover:-translate-y-0.5 transition-all" 
+                size="sm"
+                className="h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5"
                 onClick={onRun}
                 title="Run Code"
             >
-                <Play className="w-4 h-4" style={{ color: 'var(--accent-primary)' }} strokeWidth={2} />
+                <Play className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
             </Button>
         )}
         <Popover>
           <PopoverTrigger asChild>
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              className="h-8 th-btn-ghost duration-300 hover:-translate-y-0.5 transition-all cursor-pointer rounded-lg"
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0 th-btn-ghost duration-200 hover:-translate-y-0.5 transition-all cursor-pointer rounded-md"
             >
-              <Settings className="w-4 h-4" strokeWidth={2} />
+              <Settings className="w-3.5 h-3.5" strokeWidth={2} />
             </Button>
           </PopoverTrigger>
           <PopoverContent className="min-w-[320px] th-surface-dropdown p-1 shadow-xl rounded-lg border">
+            {/* Run mode + HMR moved here: secondary controls, not primary chrome */}
+            <div className="text-xs font-semibold p-2" style={{ color: 'var(--text-muted)' }}>Run options</div>
+            <div className="flex flex-col">
+              <div className="flex items-center justify-between py-1.5 px-2">
+                <span className="text-[12px]" style={{ color: 'var(--text-primary)' }}>Run mode</span>
+                <button
+                  onClick={() => setRunInGuiMode(!runInGuiMode)}
+                  className="text-[11px] font-semibold px-2 py-0.5 rounded transition-colors"
+                  style={{
+                    background: runInGuiMode ? 'color-mix(in srgb, var(--attention-purple) 12%, transparent)' : 'var(--bg-elevated)',
+                    color: runInGuiMode ? 'var(--attention-purple)' : 'var(--text-secondary)',
+                    border: runInGuiMode ? '1px solid color-mix(in srgb, var(--attention-purple) 30%, transparent)' : '1px solid var(--border-subtle)',
+                  }}
+                >
+                  {runInGuiMode ? 'GUI' : 'Console'}
+                </button>
+              </div>
+              <div className="flex items-center justify-between py-1.5 px-2">
+                <span className="text-[12px]" style={{ color: 'var(--text-primary)' }}>Hot reload</span>
+                <button
+                  onClick={() => setHmrEnabled(!hmrEnabled)}
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-all ${hmrEnabled ? 'th-toggle-on' : 'th-toggle-off'}`}
+                >
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm ${hmrEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                </button>
+              </div>
+              <div className="border-t my-1" style={{ borderColor: 'var(--border-subtle)' }}></div>
             <div className="text-xs font-semibold p-2" style={{ color: 'var(--text-muted)' }}>Settings</div>
             <div className="flex flex-col">
               {/* Auto-save toggle */}
@@ -263,9 +347,10 @@ function TopNav({
                 <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Ctrl+`</span>
               </button>
             </div>
+            </div>
           </PopoverContent>
         </Popover>
-      </div>
+        </div>
     </div>
   );
 }

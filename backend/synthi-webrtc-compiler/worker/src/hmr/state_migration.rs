@@ -51,7 +51,10 @@ pub struct MigrationPath {
 /// Error when no valid path exists.
 #[derive(Debug, Clone)]
 pub enum MigrationPathError {
-    NoPath { from: SchemaVersion, to: SchemaVersion },
+    NoPath {
+        from: SchemaVersion,
+        to: SchemaVersion,
+    },
 }
 
 impl std::fmt::Display for MigrationPathError {
@@ -92,7 +95,11 @@ impl MigrationRegistry {
                 reversible: true,
                 added_fields: step.removed_fields.clone(),
                 removed_fields: step.added_fields.clone(),
-                renamed_fields: step.renamed_fields.iter().map(|(a, b)| (b.clone(), a.clone())).collect(),
+                renamed_fields: step
+                    .renamed_fields
+                    .iter()
+                    .map(|(a, b)| (b.clone(), a.clone()))
+                    .collect(),
                 defaults: HashMap::new(),
             };
             self.reverse.insert((to, from), reverse);
@@ -117,7 +124,8 @@ impl MigrationRegistry {
         }
 
         // BFS over forward edges
-        let mut queue: VecDeque<(SchemaVersion, Vec<MigrationStep>)> = VecDeque::from([(from, vec![])]);
+        let mut queue: VecDeque<(SchemaVersion, Vec<MigrationStep>)> =
+            VecDeque::from([(from, vec![])]);
         let mut visited: HashSet<SchemaVersion> = HashSet::new();
         visited.insert(from);
 
@@ -163,7 +171,8 @@ impl MigrationRegistry {
         }
 
         // BFS over reverse edges
-        let mut queue: VecDeque<(SchemaVersion, Vec<MigrationStep>)> = VecDeque::from([(from, vec![])]);
+        let mut queue: VecDeque<(SchemaVersion, Vec<MigrationStep>)> =
+            VecDeque::from([(from, vec![])]);
         let mut visited: HashSet<SchemaVersion> = HashSet::new();
         visited.insert(from);
 

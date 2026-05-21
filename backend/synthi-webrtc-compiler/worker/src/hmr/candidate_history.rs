@@ -6,7 +6,6 @@
 // and provides aggregate statistics for telemetry.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -80,7 +79,10 @@ impl CandidateHistory {
     }
 
     /// Entries for a specific preview session.
-    pub fn for_preview<'a>(&'a self, preview_id: &'a str) -> impl Iterator<Item = &'a HistoryEntry> + 'a {
+    pub fn for_preview<'a>(
+        &'a self,
+        preview_id: &'a str,
+    ) -> impl Iterator<Item = &'a HistoryEntry> + 'a {
         self.entries
             .iter()
             .filter(move |e| e.summary.preview_id == preview_id)
@@ -88,15 +90,13 @@ impl CandidateHistory {
 
     /// Entries that ended in a specific state.
     pub fn by_state(&self, state: CandidateState) -> impl Iterator<Item = &HistoryEntry> + '_ {
-        self.entries.iter().filter(move |e| e.summary.state == state)
+        self.entries
+            .iter()
+            .filter(move |e| e.summary.state == state)
     }
 
     /// Entries within a time range.
-    pub fn in_range(
-        &self,
-        start_ms: u64,
-        end_ms: u64,
-    ) -> impl Iterator<Item = &HistoryEntry> + '_ {
+    pub fn in_range(&self, start_ms: u64, end_ms: u64) -> impl Iterator<Item = &HistoryEntry> + '_ {
         self.entries
             .iter()
             .filter(move |e| e.timestamp_epoch_ms >= start_ms && e.timestamp_epoch_ms <= end_ms)

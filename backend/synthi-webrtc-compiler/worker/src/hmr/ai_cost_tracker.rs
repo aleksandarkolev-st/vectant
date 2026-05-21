@@ -5,7 +5,6 @@
 // Enforces per-session budgets to prevent runaway AI spending.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -151,8 +150,7 @@ impl CostTracker {
 
     /// Estimated cost so far.
     pub fn estimated_cost(&self) -> f64 {
-        let prompt_cost =
-            self.total_prompt_tokens as f64 * self.model.prompt_cost_per_1k / 1000.0;
+        let prompt_cost = self.total_prompt_tokens as f64 * self.model.prompt_cost_per_1k / 1000.0;
         let completion_cost =
             self.total_completion_tokens as f64 * self.model.completion_cost_per_1k / 1000.0;
         prompt_cost + completion_cost

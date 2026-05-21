@@ -278,7 +278,7 @@ export class CompilerClient {
 
     _mapLanguage(filename = '') {
         const ext = filename.split('.').pop().toLowerCase();
-        if (['c', 'cpp', 'cc', 'cxx', 'hpp', 'h'].includes(ext)) return 'cpp';
+        if (['c', 'cpp', 'cc', 'cxx', 'hpp', 'h', 'cu', 'cuh', 'hip'].includes(ext)) return 'cpp';
         if (ext === 'java') return 'java';
         if (ext === 'rs') return 'rust';
         if (ext === 'ts' || ext === 'tsx') return 'ts';
@@ -344,6 +344,22 @@ export class CompilerClient {
             } else {
                 console.log('[CompilerClient] Received log:', text);
             }
+        }
+
+        if (
+            typeof text === 'string' &&
+            typeof window !== 'undefined' &&
+            window.dispatchEvent &&
+            (
+                text.includes('[gpu-reload]') ||
+                text.includes('gpu_snapshot_telemetry') ||
+                text.includes('[ptxas]') ||
+                text.includes('gpu_runtime_error')
+            )
+        ) {
+            window.dispatchEvent(new CustomEvent('synthi:gpu-hmr-status', {
+                detail: { line: text }
+            }));
         }
 
         // Check for GUI control messages
@@ -795,6 +811,8 @@ export class CompilerClient {
                 if (this.ws === ws) {
                     this.ws = null;
 
+                    const keepPeerConnection = this.pc && (this.pc.connectionState === 'connected' || this.pc.connectionState === 'connecting');
+
                     // If the WebRTC PeerConnection is still connected, DON'T
                     // tear everything down.  The signaling WS is only needed
                     // for SDP exchange and ICE candidates — once the PC is
@@ -802,7 +820,7 @@ export class CompilerClient {
                     // work independently.  Tearing down a healthy PC would
                     // kill the LSP, vscode-server, etc. for no reason and trigger
                     // an unnecessary reconnect cycle.
-                    if (this.pc && (this.pc.connectionState === 'connected' || this.pc.connectionState === 'connecting')) {
+                    if (keepPeerConnection) {
                         console.log('[CompilerClient] Signaling WS closed but WebRTC PC still alive (' + this.pc.connectionState + '), keeping channels');
                         return;
                     }
@@ -1492,7 +1510,7 @@ export class CompilerClient {
         return this.connect();
     }
 
-    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, userRequestedAi = false, userRequestedDeterministic = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null } = {}) {
+    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, userRequestedAi = false, userRequestedDeterministic = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null, preferGpuPipeline = true } = {}) {
         // Auto-detect React Native from source if no target specified and file is JS/JSX/TSX
         const ext = (filename || '').split('.').pop().toLowerCase();
         const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
@@ -1783,6 +1801,22 @@ export class CompilerClient {
                 };
                 this.logHandlers.add(handleLog);
 
+                const compileManifest = (() => {
+                    for (const file of files || []) {
+                        const name = String(file?.name || file?.path || '')
+                            .replace(/\\/g, '/')
+                            .replace(/^\/+/, '')
+                            .replace(/^\.\//, '');
+                        if (name !== '.synthi/build_manifest.json' && name !== 'synthi/build_manifest.json') continue;
+                        try {
+                            return JSON.parse(file.content);
+                        } catch (_) {
+                            return null;
+                        }
+                    }
+                    return null;
+                })();
+
                 this.compileChannel.send(JSON.stringify({
                     language: lang,
                     filename: filename || `main.${lang}`,
@@ -1796,6 +1830,9 @@ export class CompilerClient {
                     use_ai_split: useAiSplit,
                     user_requested_ai: userRequestedAi,
                     user_requested_deterministic: userRequestedDeterministic,
+                    prefer_gpu_pipeline: preferGpuPipeline !== false,
+                    gpu_mode: preferGpuPipeline === false ? 'disabled' : 'auto',
+                    compile_manifest: compileManifest,
                     target: effectiveTarget,
                     project_root: projectRoot,
                     slug: slug || this.slug

@@ -171,10 +171,14 @@ fn strip_literals(line: &str) -> String {
             result.push_str("\"STR\"");
             i += 1;
             while i < chars.len() && chars[i] != '"' {
-                if chars[i] == '\\' { i += 1; }
+                if chars[i] == '\\' {
+                    i += 1;
+                }
                 i += 1;
             }
-            if i < chars.len() { i += 1; } // skip closing "
+            if i < chars.len() {
+                i += 1;
+            } // skip closing "
             continue;
         }
 
@@ -186,7 +190,9 @@ fn strip_literals(line: &str) -> String {
                 && (i == 0 || !chars[i.wrapping_sub(1)].is_ascii_alphanumeric()))
         {
             result.push_str("NUM");
-            if chars[i] == '-' { i += 1; }
+            if chars[i] == '-' {
+                i += 1;
+            }
             while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {
                 i += 1;
             }
@@ -234,14 +240,10 @@ fn extract_hunks<'a>(old: &[&'a str], new: &[&'a str]) -> Vec<RawHunk<'a>> {
             }
 
             let old_ahead = (1..=5).find(|&skip| {
-                oi + skip < old.len()
-                    && ni < new.len()
-                    && old[oi + skip].trim() == new[ni].trim()
+                oi + skip < old.len() && ni < new.len() && old[oi + skip].trim() == new[ni].trim()
             });
             let new_ahead = (1..=5).find(|&skip| {
-                ni + skip < new.len()
-                    && oi < old.len()
-                    && old[oi].trim() == new[ni + skip].trim()
+                ni + skip < new.len() && oi < old.len() && old[oi].trim() == new[ni + skip].trim()
             });
 
             match (old_ahead, new_ahead) {
@@ -345,10 +347,7 @@ mod tests {
             strip_literals("SDL_SetRenderDrawColor(r, 0, 120, 255, 255);"),
             strip_literals("SDL_SetRenderDrawColor(r, 255, 0, 0, 255);")
         );
-        assert_ne!(
-            strip_literals("x += vx;"),
-            strip_literals("x += vx * 2;")
-        );
+        assert_ne!(strip_literals("x += vx;"), strip_literals("x += vx * 2;"));
     }
 
     #[test]

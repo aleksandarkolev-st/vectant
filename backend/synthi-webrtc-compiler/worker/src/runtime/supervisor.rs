@@ -171,11 +171,7 @@ impl CrashSupervisor {
         if self.config.detailed_logging {
             eprintln!(
                 "[Supervisor] Crash in {:?}: {} (consecutive: {}, action: {:?}, protection: {:?})",
-                module,
-                crash_info.signal_name,
-                consecutive,
-                action,
-                self.config.protection_mode
+                module, crash_info.signal_name, consecutive, action, self.config.protection_mode
             );
             if let Some(loc) = &crash_info.source_location_str() {
                 eprintln!("[Supervisor] Location: {}", loc);

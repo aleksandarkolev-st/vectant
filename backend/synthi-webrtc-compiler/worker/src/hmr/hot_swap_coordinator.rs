@@ -7,7 +7,6 @@
 // and health checks into a single coordinated operation.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

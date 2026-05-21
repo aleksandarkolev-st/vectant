@@ -9,7 +9,7 @@ import React, { memo } from 'react';
 import { useSelector } from 'react-redux';
 import { selectNode } from '../state/layout-slice';
 import { SplitterHandle } from './SplitterHandle';
-import { DIRECTION, SPLITTER_SIZE } from '../types';
+import { DIRECTION } from '../types';
 
 /**
  * Split container — renders children side-by-side (row) or stacked (column)
@@ -29,10 +29,6 @@ export const SplitContainer = memo(function SplitContainer({ nodeId, renderNode 
   const { direction, children, sizes } = node;
   const isRow = direction === DIRECTION.ROW;
 
-  // Calculate total splitter space
-  const splitterCount = Math.max(0, children.length - 1);
-  const totalSplitterSize = splitterCount * SPLITTER_SIZE;
-
   return (
     <div
       data-split-node-id={nodeId}
@@ -48,15 +44,19 @@ export const SplitContainer = memo(function SplitContainer({ nodeId, renderNode 
     >
       {children.map((childId, index) => {
         const size = sizes[index] || 1 / children.length;
+        const growWeight = Math.max(size * 1000, 0);
 
         return (
           <React.Fragment key={childId}>
             {/* Child panel with calculated flex size */}
             <div
+              className="dock-split__child"
               data-layout-child={childId}
               style={{
-                // Use calc to account for splitter space
-                flex: `0 0 calc(${size * 100}% - ${(totalSplitterSize * size)}px)`,
+                '--dock-split-grow': growWeight,
+                flexGrow: 'var(--dock-split-grow)',
+                flexShrink: 1,
+                flexBasis: '0px',
                 overflow: 'hidden',
                 minWidth: 0,
                 minHeight: 0,

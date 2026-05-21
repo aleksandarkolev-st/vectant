@@ -124,15 +124,23 @@ pub async fn run_java(
             // TCP probe is the most reliable check — abstract UNIX sockets
             // don't leave a file in /tmp/.X11-unix/ so we can't stat them.
             let display_ok = {
-                let num = state.wsl_display_str.trim_start_matches("127.0.0.1:").trim_start_matches(':');
+                let num = state
+                    .wsl_display_str
+                    .trim_start_matches("127.0.0.1:")
+                    .trim_start_matches(':');
                 let port: u16 = 6000 + num.parse::<u16>().unwrap_or(99);
                 // Try file socket first (cheapest), then TCP
                 std::path::Path::new(&format!("/tmp/.X11-unix/X{}", num)).exists()
-                    || tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok()
+                    || tokio::net::TcpStream::connect(("127.0.0.1", port))
+                        .await
+                        .is_ok()
             };
 
             if display_ok {
-                eprintln!("[JavaRunner] Reusing Xvfb (display={} OK)", state.wsl_display_str);
+                eprintln!(
+                    "[JavaRunner] Reusing Xvfb (display={} OK)",
+                    state.wsl_display_str
+                );
                 reused_xvfb = state.xvfb_process;
                 reused_wsl_display = state.wsl_display_str;
                 _reused_gst_display = state.gst_display_str;
@@ -147,7 +155,10 @@ pub async fn run_java(
                     reused_pipeline = state.gst_pipeline;
                 }
             } else {
-                eprintln!("[JavaRunner] Reuse requested but display {} is dead — full teardown", state.wsl_display_str);
+                eprintln!(
+                    "[JavaRunner] Reuse requested but display {} is dead — full teardown",
+                    state.wsl_display_str
+                );
                 if let Some(pipeline) = state.gst_pipeline {
                     let _ = pipeline.set_state(gst::State::Null);
                 }
@@ -207,9 +218,9 @@ pub async fn run_java(
     // from creating visible windows on X11.
     if req.is_gui {
         cmd.arg("-Djava.awt.headless=false");
-        cmd.arg("-Dsun.java2d.xrender=false");     // avoid XRender bugs over TCP
-        cmd.arg("-Dsun.java2d.pmoffscreen=false");  // paint directly to X window (not offscreen pixmap)
-        cmd.arg("-Dsun.java2d.opengl=false");       // disable OpenGL pipeline
+        cmd.arg("-Dsun.java2d.xrender=false"); // avoid XRender bugs over TCP
+        cmd.arg("-Dsun.java2d.pmoffscreen=false"); // paint directly to X window (not offscreen pixmap)
+        cmd.arg("-Dsun.java2d.opengl=false"); // disable OpenGL pipeline
         cmd.arg("-Dsun.awt.noerasebackground=true"); // reduce white-flash flicker
     }
 
@@ -217,13 +228,15 @@ pub async fn run_java(
 
     if req.is_gui {
         cmd.env("DISPLAY", &wsl_display_str);
-        cmd.env("AWT_TOOLKIT", "XToolkit");     // force X11 toolkit
-        cmd.env("GDK_BACKEND", "x11");           // GTK fallback
-        // WM reparenting compat — some WMs break AWT without this
+        cmd.env("AWT_TOOLKIT", "XToolkit"); // force X11 toolkit
+        cmd.env("GDK_BACKEND", "x11"); // GTK fallback
+                                       // WM reparenting compat — some WMs break AWT without this
         cmd.env("_JAVA_AWT_WM_NONREPARENTING", "1");
         // Reinforce Java2D flags via env (in case cmd args have ordering issues)
-        cmd.env("JAVA_TOOL_OPTIONS",
-            "-Dsun.java2d.pmoffscreen=false -Dsun.java2d.opengl=false -Dsun.java2d.xrender=false");
+        cmd.env(
+            "JAVA_TOOL_OPTIONS",
+            "-Dsun.java2d.pmoffscreen=false -Dsun.java2d.opengl=false -Dsun.java2d.xrender=false",
+        );
     }
 
     cmd.stdin(Stdio::piped())
@@ -234,13 +247,23 @@ pub async fn run_java(
     eprintln!(
         "[JavaRunner] Spawning: java -cp {:?} {} {} (GUI={}, DISPLAY={})",
         classes_dir,
-        if req.is_gui { "-Djava.awt.headless=false -Dsun.java2d.xrender=false" } else { "" },
+        if req.is_gui {
+            "-Djava.awt.headless=false -Dsun.java2d.xrender=false"
+        } else {
+            ""
+        },
         main_class,
         req.is_gui,
-        if req.is_gui { wsl_display_str.as_str() } else { "" }
+        if req.is_gui {
+            wsl_display_str.as_str()
+        } else {
+            ""
+        }
     );
 
-    let mut child = cmd.spawn().context("Failed to spawn java — is openjdk installed?")?;
+    let mut child = cmd
+        .spawn()
+        .context("Failed to spawn java — is openjdk installed?")?;
 
     // ── GStreamer start — ROOT capture ─────────────────────────────
     // We defer GStreamer start until after the Java window is visible
@@ -258,7 +281,10 @@ pub async fn run_java(
         let xid = find_gui_window(&wsl_display_str, req_width, req_height, 8000).await;
 
         if let Some(xid) = xid {
-            eprintln!("[JavaRunner] Window 0x{:x} mapped and visible, forcing fullscreen...", xid);
+            eprintln!(
+                "[JavaRunner] Window 0x{:x} mapped and visible, forcing fullscreen...",
+                xid
+            );
 
             // Force-resize the window to fill the screen.
             // matchbox-wm should do this automatically, but sometimes the
@@ -319,7 +345,10 @@ pub async fn run_java(
                 .await
             {
                 let geo_text = String::from_utf8_lossy(&geo_out.stdout);
-                eprintln!("[JavaRunner] Window geometry after resize: {}", geo_text.trim());
+                eprintln!(
+                    "[JavaRunner] Window geometry after resize: {}",
+                    geo_text.trim()
+                );
             }
 
             // Force a Swing repaint by sending Expose event
@@ -346,16 +375,25 @@ pub async fn run_java(
                         bytes[100..].iter().step_by(97).copied().collect();
                     eprintln!(
                         "[JavaRunner] xwd root: {} bytes, {} unique values (>4 = real content)",
-                        bytes.len(), sample.len()
+                        bytes.len(),
+                        sample.len()
                     );
                 } else {
-                    eprintln!("[JavaRunner] xwd root: only {} bytes (too small)", bytes.len());
+                    eprintln!(
+                        "[JavaRunner] xwd root: only {} bytes (too small)",
+                        bytes.len()
+                    );
                 }
             }
 
-            eprintln!("[JavaRunner] Starting ROOT capture (window 0x{:x} fills {}x{} screen)", xid, req_width, req_height);
+            eprintln!(
+                "[JavaRunner] Starting ROOT capture (window 0x{:x} fills {}x{} screen)",
+                xid, req_width, req_height
+            );
         } else {
-            eprintln!("[JavaRunner] WARNING: No window found, root capture may show only background");
+            eprintln!(
+                "[JavaRunner] WARNING: No window found, root capture may show only background"
+            );
         }
 
         // Root capture — no XID, same approach as the C++ runner.
@@ -381,15 +419,25 @@ pub async fn run_java(
                     tokio::time::sleep(tokio::time::Duration::from_millis(500 + i * 1000)).await;
                     // Send xdotool key to trigger repaint
                     let _ = Command::new("xdotool")
-                        .arg("windowminimize").arg("--sync").arg(format!("0x{:x}", xid))
+                        .arg("windowminimize")
+                        .arg("--sync")
+                        .arg(format!("0x{:x}", xid))
                         .env("DISPLAY", &repaint_display)
-                        .output().await;
+                        .output()
+                        .await;
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     let _ = Command::new("xdotool")
-                        .arg("windowactivate").arg("--sync").arg(format!("0x{:x}", xid))
+                        .arg("windowactivate")
+                        .arg("--sync")
+                        .arg(format!("0x{:x}", xid))
                         .env("DISPLAY", &repaint_display)
-                        .output().await;
-                    eprintln!("[JavaRunner] Forced repaint cycle {} for window 0x{:x}", i + 1, xid);
+                        .output()
+                        .await;
+                    eprintln!(
+                        "[JavaRunner] Forced repaint cycle {} for window 0x{:x}",
+                        i + 1,
+                        xid
+                    );
                 }
             });
         }
@@ -435,7 +483,8 @@ pub async fn run_java(
             if let Ok(xwd_out) = Command::new("xwd")
                 .arg("-root")
                 .arg("-silent")
-                .arg("-out").arg(screenshot_path)
+                .arg("-out")
+                .arg(screenshot_path)
                 .env("DISPLAY", &diag_display)
                 .output()
                 .await
@@ -449,7 +498,11 @@ pub async fn run_java(
                         eprintln!(
                             "[JavaRunner] Screenshot (xwd): {} bytes — {}",
                             size,
-                            if size > 100_000 { "has content" } else { "suspiciously small" }
+                            if size > 100_000 {
+                                "has content"
+                            } else {
+                                "suspiciously small"
+                            }
                         );
                     }
                     // Sample a few bytes from the pixel area to check color
@@ -498,9 +551,13 @@ pub async fn run_java(
                     let trimmed = line.trim();
                     if trimmed.starts_with("0x") && trimmed.contains("800x600") {
                         if let Some(xid_str) = trimmed.split_whitespace().next() {
-                            eprintln!("[JavaRunner] Inspecting matchbox frame {} children:", xid_str);
+                            eprintln!(
+                                "[JavaRunner] Inspecting matchbox frame {} children:",
+                                xid_str
+                            );
                             if let Ok(sub) = Command::new("xwininfo")
-                                .arg("-id").arg(xid_str)
+                                .arg("-id")
+                                .arg(xid_str)
                                 .arg("-children")
                                 .env("DISPLAY", &diag_display)
                                 .output()
@@ -786,7 +843,9 @@ async fn start_xvfb(
     let mut xvfb_cmd = Command::new("Xvfb");
     xvfb_cmd
         .arg(format!(":{}", display_num))
-        .arg("-screen").arg("0").arg(format!("{}x{}x24", width, height))
+        .arg("-screen")
+        .arg("0")
+        .arg(format!("{}x{}x24", width, height))
         .arg("-ac")
         .kill_on_drop(true);
 
@@ -852,7 +911,9 @@ async fn start_xvfb(
         .arg("no")
         .env("DISPLAY", &display_str);
     // WM must outlive this scope — intentionally not setting kill_on_drop
-    let _wm = wm_cmd.spawn().context("Failed to spawn matchbox-window-manager")?;
+    let _wm = wm_cmd
+        .spawn()
+        .context("Failed to spawn matchbox-window-manager")?;
 
     // NOTE: We do NOT start a compositor (xcompmgr, picom, compton).
     // Without a compositor, Xvfb manages compositing natively — child
@@ -862,7 +923,8 @@ async fn start_xvfb(
     // Set root window to a dark color (looks like "loading" in the video widget).
     // If only this color is visible, the app window isn't mapped/painted yet.
     let _ = Command::new("xsetroot")
-        .arg("-solid").arg("#1a1a2e")
+        .arg("-solid")
+        .arg("#1a1a2e")
         .env("DISPLAY", &display_str)
         .output()
         .await;
@@ -870,7 +932,10 @@ async fn start_xvfb(
     // Give the WM a moment to register with X
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
-    eprintln!("[JavaRunner] Xvfb + WM started (no compositor), DISPLAY={}", display_str);
+    eprintln!(
+        "[JavaRunner] Xvfb + WM started (no compositor), DISPLAY={}",
+        display_str
+    );
 
     Ok((child, display_str))
 }
@@ -948,7 +1013,8 @@ async fn find_gui_window(
 
             // List children of the matchbox frame
             if let Ok(children_out) = Command::new("xwininfo")
-                .arg("-id").arg(format!("0x{:x}", frame_xid))
+                .arg("-id")
+                .arg(format!("0x{:x}", frame_xid))
                 .arg("-children")
                 .env("DISPLAY", display)
                 .output()
@@ -1001,15 +1067,15 @@ async fn find_gui_window(
                 if let Some(child_xid) = best_child_xid {
                     eprintln!(
                         "[JavaRunner] Found JFrame inside matchbox: xid=0x{:x} ({}x? area={})",
-                        child_xid, best_child_area / expected_height as u64, best_child_area
+                        child_xid,
+                        best_child_area / expected_height as u64,
+                        best_child_area
                     );
                     return Some(child_xid);
                 }
 
                 // No sizeable child yet — JFrame may not be reparented yet
-                eprintln!(
-                    "[JavaRunner] Matchbox frame found but no JFrame child yet, retrying..."
-                );
+                eprintln!("[JavaRunner] Matchbox frame found but no JFrame child yet, retrying...");
             }
         }
 
@@ -1022,7 +1088,10 @@ async fn find_gui_window(
                 );
                 return Some(frame_xid);
             }
-            eprintln!("[JavaRunner] find_gui_window: no suitable window found within {}ms", timeout_ms);
+            eprintln!(
+                "[JavaRunner] find_gui_window: no suitable window found within {}ms",
+                timeout_ms
+            );
             return None;
         }
 
@@ -1100,7 +1169,11 @@ async fn start_gstreamer(
                             continue;
                         }
                     }
-                    let mode_str = if window_xid.is_some() { "XID+XGetImage" } else { "root" };
+                    let mode_str = if window_xid.is_some() {
+                        "XID+XGetImage"
+                    } else {
+                        "root"
+                    };
                     eprintln!(
                         "[JavaRunner] Encoder {} started ({} capture on {})",
                         encoder, mode_str, tcp_display
@@ -1137,12 +1210,19 @@ async fn start_gstreamer(
                         let bus = pipe.bus().unwrap();
                         if let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(500)) {
                             if let gst::MessageView::Error(err) = msg.view() {
-                                eprintln!("[JavaRunner] Encoder {} failed (fallback): {}", encoder, err.error());
+                                eprintln!(
+                                    "[JavaRunner] Encoder {} failed (fallback): {}",
+                                    encoder,
+                                    err.error()
+                                );
                                 let _ = pipe.set_state(gst::State::Null);
                                 continue;
                             }
                         }
-                        eprintln!("[JavaRunner] Encoder {} started (root fallback on {})", encoder, tcp_display);
+                        eprintln!(
+                            "[JavaRunner] Encoder {} started (root fallback on {})",
+                            encoder, tcp_display
+                        );
                         pipeline_opt = Some(pipe);
                         selected_mime = mime.to_string();
                         break;
@@ -1196,19 +1276,30 @@ async fn start_gstreamer(
         let mut frame_count: u64 = 0;
         while let Some(data) = v_rx.recv().await {
             frame_count += 1;
-            if frame_count <= 10 || frame_count == 30 || frame_count == 100 || frame_count % 500 == 0 {
+            if frame_count <= 10
+                || frame_count == 30
+                || frame_count == 100
+                || frame_count % 500 == 0
+            {
                 eprintln!(
                     "[JavaRunner] Video RTP packet #{}, size={} bytes",
-                    frame_count, data.len()
+                    frame_count,
+                    data.len()
                 );
             }
             if let Ok(packet) = Packet::unmarshal(&mut &data[..]) {
                 video_fanout_dispatch.dispatch(packet);
             } else if frame_count <= 5 {
-                eprintln!("[JavaRunner] Failed to unmarshal RTP packet #{}", frame_count);
+                eprintln!(
+                    "[JavaRunner] Failed to unmarshal RTP packet #{}",
+                    frame_count
+                );
             }
         }
-        eprintln!("[JavaRunner] Video dispatch task ended, total packets: {}", frame_count);
+        eprintln!(
+            "[JavaRunner] Video dispatch task ended, total packets: {}",
+            frame_count
+        );
     });
 
     let (a_tx, mut a_rx) = mpsc::unbounded_channel::<Vec<u8>>();

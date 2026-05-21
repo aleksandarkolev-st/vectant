@@ -6,7 +6,6 @@
 // state by discarding the standby slot and resuming the old lib.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 use crate::hmr::dynlib_swap::SwapPhase;
@@ -16,40 +15,25 @@ use crate::hmr::slot_manager::LibSlot;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SwapRollbackReason {
     /// Symbol validation failed.
-    SymbolValidationFailed {
-        missing: Vec<String>,
-    },
+    SymbolValidationFailed { missing: Vec<String> },
 
     /// Health check failed after swap.
-    HealthCheckFailed {
-        message: String,
-    },
+    HealthCheckFailed { message: String },
 
     /// Quiescence timeout — worker didn't stop in time.
-    QuiescenceTimeout {
-        timeout_ms: u64,
-    },
+    QuiescenceTimeout { timeout_ms: u64 },
 
     /// Snapshot failed.
-    SnapshotFailed {
-        message: String,
-    },
+    SnapshotFailed { message: String },
 
     /// Library load failed (dlopen error).
-    LoadFailed {
-        lib_path: String,
-        message: String,
-    },
+    LoadFailed { lib_path: String, message: String },
 
     /// State restore failed.
-    RestoreFailed {
-        message: String,
-    },
+    RestoreFailed { message: String },
 
     /// Explicit abort by supervisor.
-    Aborted {
-        reason: String,
-    },
+    Aborted { reason: String },
 }
 
 impl SwapRollbackReason {

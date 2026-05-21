@@ -1,3 +1,63 @@
+# Workspace Sidebar Collapse Polish 2026-05-18
+
+## Scope
+- Make sidebar auto-collapse work for docked sidebar groups even when multiple sidebar panels are open.
+- Animate the collapse as a real 200-300ms width resize so the editor fills the reclaimed space smoothly.
+- Constrain the top smart strip so it sits in a narrower lane instead of stretching across the whole top bar.
+
+## Checklist
+- [x] Fix sidebar-group classification so all sidebar panel variants can auto-collapse.
+- [x] Move collapse sizing to the split child wrapper so sibling panels reflow cleanly.
+- [x] Tune the collapse animation timing and splitter hiding for smoother motion.
+- [x] Narrow the top smart strip lane.
+- [x] Re-layout Monaco from the real editor viewport so collapsed sidebars reclaim space without leaving a stale right gutter.
+- [x] Rebuild and restart the frontend container after the UI fixes.
+- [x] Validate the touched frontend files.
+
+## Review
+- Sidebar auto-collapse now keys off the canonical panel constants, which fixes the previously-mismatched pull-request sidebar type and keeps multi-tab sidebar groups eligible to collapse.
+- The collapse animation now happens on the split child wrapper, so the editor and sibling panels reclaim the freed width instead of leaving a dead gutter while only the inner content fades.
+- Splitters next to collapsed sidebars now hide based on the split child wrapper state, and the collapse timing is tuned to a 260ms resize animation.
+- The top smart strip now sits inside a capped center lane instead of stretching edge to edge across the available top-nav space.
+- Validation: `get_errors` returned clean diagnostics for the touched frontend files. Browser-side visual verification was limited because the local `http://localhost:3000/` session lands on the sign-in screen in the shared browser context.
+- Live browser validation later confirmed the remaining dead-right-strip bug was the row split math itself: the collapsed sidebar was 8px wide, but the surviving sibling kept only `0.8` flex-grow and left the last 20% of the row empty. Scaling the split grow weights fixed the live layout, and the shared workspace now measures the editor column at the full remaining width.
+
+## Follow-up
+- Left sidebar hover now coordinates with the activity bar: hovering the activity bar clears collapse timers, re-expands the sidebar, and keeps it open while the cursor stays there.
+- First-use onboarding now starts with the left sidebar collapsed and shows a bouncing arrow on the Explorer activity-bar button until the user opens the sidebar with the cursor.
+- Single-tab side panes now render a compact close affordance when their tab bar is intentionally hidden; the close action force-hides singleton side panes, including default panels like Explorer.
+- The leftover editor header row under the navbar is now hidden so the old Solo/save chrome no longer leaves a second strip below the top nav.
+- The smart strip now restores the old custom tab-scrollbar pattern in a dedicated 3px lane below the navbar tabs, and its moving underline now defaults to gray with the same hover timing as the docked terminal tabs.
+- Monaco now observes the actual editor viewport with `ResizeObserver`, so sidebar collapse drives a real editor relayout instead of shifting the stale pre-collapse surface and leaving empty space on the right.
+- Split children now use scaled flex-grow weights, so collapsing a `0.2` sidebar no longer leaves the remaining `0.8` pane stranded at 80% width with a dead strip on the right.
+- Validation now also includes a successful `docker compose build frontend` and `docker compose up -d frontend` restart.
+
+# Workspace Chrome Tweaks 2026-05-17
+
+## Scope
+- Keep the floating status island on the bottom edge, only slightly lifted so it lines up with the bottom Vectant icon under Settings in the activity bar.
+- Remove docking chrome from the main editor surface so the editor stays fixed instead of looking like a docked tab.
+- Center the Vectant logo in the top nav and scale it up slightly.
+
+## Checklist
+- [x] Remove the docking tab strip / affordances from editor-only tab groups.
+- [x] Adjust the status island desktop offset so it sits lower and visually aligns with the activity bar footer icon.
+- [x] Increase the centered top-nav Vectant mark size without shifting side controls.
+- [x] Validate the touched frontend files for regressions.
+- [x] Prevent the language/framework pills from clipping inside the status island.
+- [x] Give the terminal extra bottom scroll clearance past the prompt line.
+- [x] Split floating navbar chat from docked chat and add a dock-right action in the popup header.
+- [x] Make activity-bar chat focus the docked right chat and restore the left sidebar to Explorer when moving chat right.
+
+## Review
+- Editor-only docking groups now render without the dock tab strip, drop overlay, or focus outline, so the main editor reads as a fixed surface instead of a docked panel.
+- The floating status island now sits 12px off the bottom edge to line up with the activity-bar footer icon under Settings.
+- The centered Vectant wordmark in the top nav is slightly larger.
+- The status island now lets the language/framework pills shrink and truncate cleanly instead of clipping on the right edge.
+- Terminal panes now keep extra bottom scroll clearance below the prompt so the active command line can be scrolled fully into view under the floating island.
+- The navbar AI chat popup now has its own visibility state plus a dock-right action that moves chat into the right editor column, focuses that docked tab, and switches the left sidebar back to Explorer.
+- Validation: `get_errors` returned clean results for the touched files. A follow-up targeted ESLint attempt on the chat files was ignored by the repo's flat-config matching, so the reliable validation signal for this pass was editor diagnostics plus the existing earlier lint spot-check.
+
 # C++ Compile / HMR Stress Test 2026-05-11
 
 ## Workspace Dependency Prep Rollout 2026-05-14

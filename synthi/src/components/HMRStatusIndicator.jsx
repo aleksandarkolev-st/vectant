@@ -172,6 +172,7 @@ export function HMRStatusIndicator({ className, pipelineState = null }) {
     const [visible, setVisible] = useState(false);
     const [expanded, setExpanded] = useState(false);
     const hideTimerRef = useRef(null);
+    const gpuHmrStatus = pipelineState?.gpuHmrStatus;
 
     const scheduleAutoHide = useCallback((delay) => {
         if (hideTimerRef.current) {
@@ -226,6 +227,43 @@ export function HMRStatusIndicator({ className, pipelineState = null }) {
             }
         };
     }, []);
+
+    useEffect(() => {
+        const gpuStatus = gpuHmrStatus;
+        if (!gpuStatus?.lastUpdatedAt) return;
+
+        if (gpuStatus.lastEvent === 'runtime' && gpuStatus.runtimeError) {
+            setStatus('compile-error');
+            setDetails({
+                status: 'compile-error',
+                message: `GPU runtime: ${gpuStatus.runtimeError.kind || 'unknown'}`,
+            });
+            setVisible(true);
+            scheduleAutoHide(null);
+            return;
+        }
+
+        if (gpuStatus.lastEvent === 'ptxas' && gpuStatus.ptxas) {
+            setStatus('compile-warning');
+            setDetails({
+                status: 'compile-warning',
+                message: 'GPU toolchain diagnostics',
+            });
+            setVisible(true);
+            scheduleAutoHide(STATUS_CONFIGS['compile-warning'].autoHide);
+            return;
+        }
+
+        if (gpuStatus.lastEvent === 'reload' || gpuStatus.lastEvent === 'snapshot') {
+            setStatus('reload-planned');
+            setDetails({
+                status: 'reload-planned',
+                reason: gpuStatus.reloadReason || gpuStatus.reloadPlan || 'gpu-reload',
+            });
+            setVisible(true);
+            scheduleAutoHide(STATUS_CONFIGS['reload-planned'].autoHide);
+        }
+    }, [gpuHmrStatus, scheduleAutoHide]);
 
     // Subscribe to preview store for compiled-preview lifecycle states.
     // This drives the indicator for native compiled previews alongside
@@ -315,6 +353,7 @@ export function HMRStatusIndicator({ className, pipelineState = null }) {
         aiRequestPhase: pipelineState.aiLoopStatus?.requestPhase,
         overallHealth: pipelineState.healthPanel?.overallHealth,
         healthErrors: pipelineState.healthPanel?.errors || [],
+        gpuHmrStatus,
         historyCount: pipelineState.hmrHistory?.length || 0,
         lastUpdateAt: pipelineState.lastUpdate?.timestamp || null,
     } : null;
@@ -373,6 +412,30 @@ export function HMRStatusIndicator({ className, pipelineState = null }) {
                     )}
                     {pipelineDetails?.restorePhase && pipelineDetails.restorePhase !== 'idle' && (
                         <div>Restore: <span className="text-[#a1a1aa]">{pipelineDetails.restorePhase}{pipelineDetails.restoreStrategy ? ` (${pipelineDetails.restoreStrategy})` : ''}</span></div>
+                    )}
+                    {pipelineDetails?.gpuHmrStatus?.reloadPlan && (
+                        <div>GPU Reload: <span className="text-[#a1a1aa]">{pipelineDetails.gpuHmrStatus.reloadPlan}{pipelineDetails.gpuHmrStatus.reloadReason ? ` (${pipelineDetails.gpuHmrStatus.reloadReason})` : ''}</span></div>
+                    )}
+                    {pipelineDetails?.gpuHmrStatus?.snapshotTier && (
+                        <div>
+                            GPU Snapshot: <span className="text-[#a1a1aa]">
+                                tier {pipelineDetails.gpuHmrStatus.snapshotTier}
+                                {pipelineDetails.gpuHmrStatus.snapshotMs != null ? `, ${pipelineDetails.gpuHmrStatus.snapshotMs} ms` : ''}
+                                {pipelineDetails.gpuHmrStatus.snapshotBytes != null ? `, ${pipelineDetails.gpuHmrStatus.snapshotBytes} bytes` : ''}
+                                {pipelineDetails.gpuHmrStatus.snapshotBudgetMs != null ? `, budget ${pipelineDetails.gpuHmrStatus.snapshotBudgetMs} ms` : ''}
+                            </span>
+                        </div>
+                    )}
+                    {pipelineDetails?.gpuHmrStatus?.ptxas && (
+                        <div>
+                            PTXAS: <span className="text-[#a1a1aa]">
+                                {pipelineDetails.gpuHmrStatus.ptxas.registers != null ? `${pipelineDetails.gpuHmrStatus.ptxas.registers} regs` : 'registers unknown'}
+                                {pipelineDetails.gpuHmrStatus.ptxas.spillBytes != null ? `, ${pipelineDetails.gpuHmrStatus.ptxas.spillBytes} B spill` : ''}
+                            </span>
+                        </div>
+                    )}
+                    {pipelineDetails?.gpuHmrStatus?.runtimeError && (
+                        <div>GPU Runtime: <span className="text-[#ef4444]">{pipelineDetails.gpuHmrStatus.runtimeError.kind || 'unknown'}</span></div>
                     )}
                     {pipelineDetails?.candidatePhase && pipelineDetails.candidateGeneration > 0 && (
                         <div>Candidate: <span className="text-[#a1a1aa]">g{pipelineDetails.candidateGeneration} {pipelineDetails.candidatePhase}</span></div>

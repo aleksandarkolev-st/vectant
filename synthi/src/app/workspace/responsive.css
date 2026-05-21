@@ -118,15 +118,94 @@
 /* Floating widgets / overlays — keep clear of the bottom activity bar. */
 .vp-mobile .runtime-healing-indicator,
 .vp-mobile .hmr-status-indicator {
-    bottom: 80px !important;
+    bottom: 110px !important;
 }
 
-/* StatusBar: tighter padding on mobile. */
-.vp-mobile .status-bar-root {
+/* ── Status island on mobile ──────────────────────────────────────────────
+ * The island floats just above the bottom activity bar (which is 48px tall
+ * on mobile). Everything that has a text label collapses to icon-only at
+ * this width — the icons are tappable and the title attrs surface labels
+ * on tap-and-hold / hover. The whole island stays fully on screen and
+ * cannot be pushed below the activity bar because it's position: fixed.
+ *
+ * Tablet (640–1023px) also lifts the island above the activity bar — it's
+ * still on the left there but the editor benefits from the extra room. */
+.vp-mobile .status-bar-root,
+.vp-tablet .status-bar-root {
     padding-left: 6px !important;
     padding-right: 6px !important;
-    gap: 4px !important;
-    overflow-x: auto;
+}
+
+/* Pin BOTH the status island and the activity bar to the bottom of the
+ * viewport so they live in the same stacking context regardless of what
+ * the dock area is doing (open Problems panel, terminal, etc.). The bar
+ * order from screen bottom upward: activity bar → status island → editor. */
+.vp-mobile .dock-activitybar-root {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    z-index: 30 !important;
+}
+
+.vp-mobile .status-bar-root {
+    position: fixed !important;
+    left: 0 !important;
+    right: 0 !important;
+    /* Sit just above the 48px activity bar with a 6px breathing gap */
+    bottom: 54px !important;
+    top: auto !important;
+    z-index: 35 !important;
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+    pointer-events: none; /* let interaction pass to island below */
+}
+
+/* The JSX wrapper around the island uses w-1/2 + min-w-[640px] on
+ * desktop. On mobile we override both so the pill fits within the
+ * viewport (with side insets) and its rounded ends are fully on-screen. */
+.vp-mobile .status-bar-root > div {
+    pointer-events: auto;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+}
+
+.vp-mobile .status-island {
+    min-width: 0 !important;
+    width: 100% !important;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+    column-gap: 4px;
+}
+
+/* Mobile: zones get tighter gaps and labels disappear so only icons remain.
+ * Each pill keeps its title attr so a long-press / hover reveals the name.
+ * The `\32 xl` escape is how Tailwind's `2xl:` variant compiles — leading
+ * digits in CSS identifiers must be hex-escaped. */
+.vp-mobile .status-island .hidden.xl\:inline,
+.vp-mobile .status-island .hidden.\32 xl\:inline {
+    display: none !important;
+}
+
+/* The compact cursor form ("6:29") was hidden above 2xl on desktop; make
+ * sure it's visible on mobile (it's our only readout for line:col). */
+.vp-mobile .status-island .\32 xl\:hidden {
+    display: inline !important;
+}
+
+/* On mobile the island hovers OVER the editor (user-requested) — no bottom
+ * padding is reserved for it. The activity bar (also fixed) does need its
+ * 48px of clearance so its taps don't fight with editor content under it. */
+.vp-mobile .dock-workspace-root {
+    padding-bottom: 48px !important; /* activity bar only */
+}
+
+/* Tablet: keep the island where it is (above the bottom edge of the
+ * editor pane on tablet the activity bar is still on the LEFT). */
+.vp-tablet .status-island {
+    width: 60% !important;
+    min-width: 460px !important;
 }
 
 /* DockingContainer scroll guard for mobile so very narrow viewports don't

@@ -5,7 +5,6 @@
 // snapshot → serialize → validate → migrate → restore.
 // ============================================================
 
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -28,7 +27,15 @@ mod tests {
         let v1 = SchemaVersion::new(1, 0, 0);
 
         // Capture
-        let result = mgr.capture("mod_a", &state, v1, 1, 0xdead, 1000, SnapshotReason::PreReload);
+        let result = mgr.capture(
+            "mod_a",
+            &state,
+            v1,
+            1,
+            0xdead,
+            1000,
+            SnapshotReason::PreReload,
+        );
         assert!(matches!(result, CheckpointResult::Captured { .. }));
 
         // Retrieve
@@ -128,7 +135,9 @@ mod tests {
             "mod_a",
             &big_state,
             SchemaVersion::new(1, 0, 0),
-            1, 0, 1000,
+            1,
+            0,
+            1000,
             SnapshotReason::PreReload,
         );
         // Should fail at serialization or size check

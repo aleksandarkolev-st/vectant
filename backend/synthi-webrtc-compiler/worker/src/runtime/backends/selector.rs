@@ -294,9 +294,7 @@ fn dispatch_by_framework_substring(text: &str) -> Option<Box<dyn WindowBackend>>
 // Layer 2: link-flag substring scan
 // ────────────────────────────────────────────────────────────
 
-fn dispatch_by_link_flags(
-    link_flags: &[String],
-) -> Option<(Box<dyn WindowBackend>, String)> {
+fn dispatch_by_link_flags(link_flags: &[String]) -> Option<(Box<dyn WindowBackend>, String)> {
     for flag in link_flags {
         let lower = flag.to_lowercase();
         if lower.contains("sdl") {
@@ -316,10 +314,7 @@ fn dispatch_by_link_flags(
         // who link against the SFML C++ libs directly (we'll still
         // pick the SFMLBackend which goes through CSFML at runtime).
         if lower.contains("csfml") || lower.contains("sfml") {
-            return Some((
-                Box::new(SFMLBackend::new()),
-                "SFML (link-flag)".to_string(),
-            ));
+            return Some((Box::new(SFMLBackend::new()), "SFML (link-flag)".to_string()));
         }
     }
     None
@@ -381,7 +376,8 @@ mod tests {
 
     #[test]
     fn extract_framework_stops_at_next_header() {
-        let cache = "## Language & Framework\nC++ with SDL2\n## Module Contract\nshould not be in result\n";
+        let cache =
+            "## Language & Framework\nC++ with SDL2\n## Module Contract\nshould not be in result\n";
         let extracted = extract_framework_from_markdown(cache).unwrap();
         assert!(extracted.contains("SDL2"));
         assert!(!extracted.contains("Module"));

@@ -59,8 +59,11 @@ pub fn detect_abi_changes(
     // 3. Compute symbol diff
     let prev_syms: std::collections::HashSet<&str> =
         prev.exported_symbols.iter().map(|s| s.as_str()).collect();
-    let curr_syms: std::collections::HashSet<&str> =
-        current.exported_symbols.iter().map(|s| s.as_str()).collect();
+    let curr_syms: std::collections::HashSet<&str> = current
+        .exported_symbols
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
 
     let added: Vec<String> = curr_syms
         .difference(&prev_syms)
@@ -96,11 +99,7 @@ mod tests {
     use super::*;
     use crate::hmr::build_manifest::{BuildSlot, HealthcheckStrategy, PreviewPreservationMode};
 
-    fn make(
-        abi: &str,
-        schema: &str,
-        symbols: Vec<&str>,
-    ) -> BuildManifest {
+    fn make(abi: &str, schema: &str, symbols: Vec<&str>) -> BuildManifest {
         BuildManifest {
             preview_id: "p1".into(),
             language: "rust".into(),

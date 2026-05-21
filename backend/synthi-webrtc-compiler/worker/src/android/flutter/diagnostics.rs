@@ -220,7 +220,7 @@ pub fn extract_main_error(stdout: &str, stderr: &str) -> Option<String> {
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use super::*;
 

@@ -58,12 +58,7 @@ mod tests {
             cached_at: 1000,
         });
 
-        let bypass = check_ai_bypass(
-            &gate,
-            &cache,
-            classification.loop_type,
-            "source_hash_1",
-        );
+        let bypass = check_ai_bypass(&gate, &cache, classification.loop_type, "source_hash_1");
         assert!(matches!(bypass, AiBypassResult::UseCached(_)));
 
         // 4. Enrichment reflects deterministic path
@@ -97,12 +92,7 @@ mod tests {
         // AI gate allows
         let gate = AiGate::new();
         let cache = SplitCache::new(10);
-        let bypass = check_ai_bypass(
-            &gate,
-            &cache,
-            classification.loop_type,
-            "any_hash",
-        );
+        let bypass = check_ai_bypass(&gate, &cache, classification.loop_type, "any_hash");
         assert!(matches!(bypass, AiBypassResult::Proceed));
 
         // Trigger conditions confirm
@@ -133,11 +123,8 @@ mod tests {
         let classification = classify_loop(&input);
         assert_eq!(classification.loop_type, CompileLoop::LoopB);
 
-        let enrichment = CompileEnrichment::from_classification(
-            classification,
-            adapted,
-            Some("h1".into()),
-        );
+        let enrichment =
+            CompileEnrichment::from_classification(classification, adapted, Some("h1".into()));
         assert!(enrichment.is_ai_assisted());
         assert!(enrichment.use_ai_split);
     }

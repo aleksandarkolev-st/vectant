@@ -7,7 +7,6 @@
 // architecture described in the HMR recovery plan.
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 use crate::hmr::adapted_project::AdaptedProjectStatus;
@@ -157,12 +156,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn adapted_fresh() -> AdaptedProjectStatus {
-        AdaptedProjectStatus::adapted(
-            PathBuf::from("core.cpp"),
-            PathBuf::from("gui.cpp"),
-            None,
-        )
-        .with_split_hash("hash1".into())
+        AdaptedProjectStatus::adapted(PathBuf::from("core.cpp"), PathBuf::from("gui.cpp"), None)
+            .with_split_hash("hash1".into())
     }
 
     fn flags() -> RolloutFlags {

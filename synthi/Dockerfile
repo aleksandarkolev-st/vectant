@@ -62,7 +62,10 @@ RUN rm -f .env.production.local && \
 RUN npx prisma generate
 
 # Polyfills → then Next.js production build (uses `output: 'standalone'`)
-RUN npm run build
+# Bump the V8 heap so the workspace bundle (Monaco + Yjs + collab) doesn't
+# OOM during the static optimisation pass — the default 2GB limit lands
+# right on the edge for this build.
+RUN NODE_OPTIONS="--max-old-space-size=4096" npm run build
 
 # ── Stage 3: Production runner ──────────────────────────────────────────────
 FROM node:20-alpine AS runner

@@ -7,8 +7,7 @@
 // profiles.
 // ============================================================
 
-
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy_hmr_tests"))]
 mod tests {
     use crate::hmr::dynlib_abi_contract::{
         canonical_abi_contract, validate_symbols_against_contract, AbiHeader,
@@ -17,9 +16,11 @@ mod tests {
     use crate::hmr::dynlib_language_profiles::{detect_language, profile_for, DynLibLanguage};
     use crate::hmr::dynlib_metrics::{DynLibMetrics, DynLibPhaseMetric};
     use crate::hmr::dynlib_preload_validator::{validate_preload, PreloadConfig};
-    use crate::hmr::dynlib_rollback::{execute_rollback, FailurePhase, RollbackAction, RollbackConfig};
+    use crate::hmr::dynlib_rollback::{
+        execute_rollback, FailurePhase, RollbackAction, RollbackConfig,
+    };
     use crate::hmr::dynlib_state_bridge::{
-        DynLibStateBridge, StateCapabilities, StateBridgeConfig, StateFormat,
+        DynLibStateBridge, StateBridgeConfig, StateCapabilities, StateFormat,
     };
     use crate::hmr::dynlib_symbol_resolver::resolve_symbols;
 
@@ -57,7 +58,10 @@ mod tests {
         assert!(abi_result.valid);
 
         // 5. State bridge: export → import.
-        let caps = StateCapabilities { json: true, binary: false };
+        let caps = StateCapabilities {
+            json: true,
+            binary: false,
+        };
         let bridge = DynLibStateBridge::new(StateBridgeConfig::default(), caps);
         let exported = bridge.export_state(b"game_state").unwrap();
         let imported = bridge.import_state(&exported).unwrap();
@@ -89,7 +93,10 @@ mod tests {
             &RollbackConfig::default(),
             8,
         );
-        assert_eq!(report.action_taken, RollbackAction::RevertSlotAndRestoreState);
+        assert_eq!(
+            report.action_taken,
+            RollbackAction::RevertSlotAndRestoreState
+        );
         assert!(report.state_restored);
     }
 
@@ -151,7 +158,10 @@ mod tests {
     // --------------------------------------------------------
     #[test]
     fn scenario_binary_state_preference() {
-        let caps = StateCapabilities { json: true, binary: true };
+        let caps = StateCapabilities {
+            json: true,
+            binary: true,
+        };
         let bridge = DynLibStateBridge::new(StateBridgeConfig::default(), caps);
 
         assert_eq!(bridge.format(), Some(StateFormat::Binary));

@@ -185,10 +185,7 @@ impl BuildManifest {
     }
 
     /// Shorthand constructor: infers adapter family from language.
-    pub fn for_language(
-        preview_id: impl Into<String>,
-        language: impl Into<String>,
-    ) -> Self {
+    pub fn for_language(preview_id: impl Into<String>, language: impl Into<String>) -> Self {
         let lang: String = language.into();
         let (family, tier) = match lang.as_str() {
             "c" | "cpp" | "rust" | "zig" => ("DynamicLibrary".to_string(), 2u8),
@@ -256,8 +253,13 @@ mod tests {
     #[test]
     fn manifest_serde_roundtrip() {
         let mut m = BuildManifest::new(
-            "p1", "cpp", "dynamic_library", 3,
-            BuildSlot::Gui, "/tmp/gui.so", "abc123",
+            "p1",
+            "cpp",
+            "dynamic_library",
+            3,
+            BuildSlot::Gui,
+            "/tmp/gui.so",
+            "abc123",
         );
         m.build_time_ms = 150;
         m.exported_symbols = vec!["on_render".into(), "on_update".into()];
@@ -274,10 +276,18 @@ mod tests {
     #[test]
     fn manifest_minimal() {
         let m = BuildManifest::new(
-            "p2", "java", "managed_runtime", 2,
-            BuildSlot::Full, "/tmp/app.jar", "def456",
+            "p2",
+            "java",
+            "managed_runtime",
+            2,
+            BuildSlot::Full,
+            "/tmp/app.jar",
+            "def456",
         );
         assert_eq!(m.healthcheck_strategy, HealthcheckStrategy::None);
-        assert_eq!(m.preview_preservation_mode, PreviewPreservationMode::Restart);
+        assert_eq!(
+            m.preview_preservation_mode,
+            PreviewPreservationMode::Restart
+        );
     }
 }

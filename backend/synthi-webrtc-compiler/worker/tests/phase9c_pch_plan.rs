@@ -158,29 +158,21 @@ int main() { return 0; }"#;
 
 #[test]
 fn pch_path_sanitizes_slashes() {
-    let path = pch_output_path(
-        std::path::Path::new("/tmp/pch"),
-        "SDL2/SDL.h",
-        0xdeadbeef,
-    );
+    let path = pch_output_path(std::path::Path::new("/tmp/pch"), "SDL2/SDL.h", 0xdeadbeef);
     let s = path.to_string_lossy();
-    assert!(s.contains("SDL2_SDL_h"), "slashes should be replaced: {}", s);
+    assert!(
+        s.contains("SDL2_SDL_h"),
+        "slashes should be replaced: {}",
+        s
+    );
     assert!(!s.contains("SDL2/SDL.h"));
     assert!(s.ends_with(".gch"));
 }
 
 #[test]
 fn pch_path_embeds_flags_hash() {
-    let path_a = pch_output_path(
-        std::path::Path::new("/tmp/pch"),
-        "GLFW/glfw3.h",
-        0x1111,
-    );
-    let path_b = pch_output_path(
-        std::path::Path::new("/tmp/pch"),
-        "GLFW/glfw3.h",
-        0x2222,
-    );
+    let path_a = pch_output_path(std::path::Path::new("/tmp/pch"), "GLFW/glfw3.h", 0x1111);
+    let path_b = pch_output_path(std::path::Path::new("/tmp/pch"), "GLFW/glfw3.h", 0x2222);
     assert_ne!(
         path_a, path_b,
         "different flag hashes must produce different PCH paths"
@@ -189,16 +181,8 @@ fn pch_path_embeds_flags_hash() {
 
 #[test]
 fn pch_path_isolates_different_candidate_headers() {
-    let sdl2 = pch_output_path(
-        std::path::Path::new("/tmp/pch"),
-        "SDL2/SDL.h",
-        0xdead,
-    );
-    let glfw = pch_output_path(
-        std::path::Path::new("/tmp/pch"),
-        "GLFW/glfw3.h",
-        0xdead,
-    );
+    let sdl2 = pch_output_path(std::path::Path::new("/tmp/pch"), "SDL2/SDL.h", 0xdead);
+    let glfw = pch_output_path(std::path::Path::new("/tmp/pch"), "GLFW/glfw3.h", 0xdead);
     assert_ne!(
         sdl2, glfw,
         "different headers must produce different PCH paths"

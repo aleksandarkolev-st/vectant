@@ -76,8 +76,10 @@ const DEFAULT_AUTO_HEAL_CATEGORIES = [
 
 // ── Initial state ─────────────────────────────────────────────────────────
 export const initialHealingState = {
-  // Master toggle
-  enabled: false,
+  // Master toggle — on by default so healing works out of the box. The
+  // user can disable it via the HealingIndicator (heart icon in the
+  // status island).
+  enabled: true,
 
   // Configuration
   config: {
@@ -88,9 +90,15 @@ export const initialHealingState = {
     // "When should it run?"
     triggers: {
       onSave: true,
-      onDiagnosticsStable: false,
+      // Fire after the proactive analysis stabilizes (≈ user stopped
+      // typing for ~2s). Without this, healing only runs on Ctrl+S
+      // which makes it feel broken when users just type and wait.
+      onDiagnosticsStable: true,
       onKeystroke: false,         // advanced / legacy
-      useAIForHard: false,        // escalate ambiguous fixes to /heal/ai/hybrid
+      // Route ambiguous / non-syntax fixes (typos, missing tokens, logic
+      // smells) to the AI backend. Without this, only obvious regex
+      // fixes (missing semicolons, brackets, unused imports) work.
+      useAIForHard: true,
     },
 
     // User-authored rules — evaluated top-to-bottom, first match wins.

@@ -207,6 +207,7 @@ services:
       - "3478:3478"
       - "3478:3478/udp"
       - "49152-49200:49152-49200/udp"
+
     command: >
       --no-tls
       --no-dtls
@@ -218,22 +219,9 @@ services:
       --min-port=49152
       --max-port=49200
       --listening-ip=0.0.0.0
-      --external-ip=192.168.100.107
-      --allowed-peer-ip=10.0.0.0-10.255.255.255
-      --allowed-peer-ip=127.0.0.0-127.255.255.255
-      --allowed-peer-ip=172.16.0.0-172.31.255.255
-      --allowed-peer-ip=192.168.0.0-192.168.255.255
-      --allowed-peer-ip=1.0.0.0-9.255.255.255
-      --allowed-peer-ip=11.0.0.0-126.255.255.255
-      --allowed-peer-ip=128.0.0.0-172.15.255.255
-      --allowed-peer-ip=172.32.0.0-192.167.255.255
-      --allowed-peer-ip=192.169.0.0-223.255.255.255
-      --allowed-peer-ip=::1-::1
-      --allowed-peer-ip=2000::-3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-      --allowed-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
-      --allowed-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
       --verbose
       --log-file=stdout
+
     restart: unless-stopped
 
   # Synthi MCP — sleeper container on the default compose network.
@@ -260,6 +248,8 @@ services:
     build:
       context: ./backend/synthi-webrtc-compiler/worker
       dockerfile: Dockerfile
+      args:
+        WORKER_CARGO_FEATURES: "gpu-hmr"
     # If the worker process dies (e.g. an unhandled panic, or an X11 IO
     # handler trip during reset tear-down) we want the container to come
     # back up automatically, the same way every other service in this
@@ -286,6 +276,22 @@ services:
       # Turn on debug_log! output so the new force-key-unit + candidate
       # buffer log lines are visible during this debugging session.
       SYNTHI_WORKER_VERBOSE: "1"
+      # Build-time gpu-hmr enables the Rust modules; this runtime flag keeps
+      # the local stack explicit for harnesses and diagnostics.
+      SYNTHI_GPU_HMR: "1"
+      # Docker Desktop / WSL2 ROCm path. ROCDXG tells the HSA runtime to use
+      # the /dev/dxg device exposed by Windows instead of native /dev/kfd.
+      HSA_ENABLE_DXG_DETECTION: "1"
+    devices:
+      - "/dev/dxg:/dev/dxg"
+    volumes:
+      - /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so:ro
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp=unconfined
+    ipc: host
+    shm_size: "8gb"
     depends_on:
       - signaling-server
       - collab-server

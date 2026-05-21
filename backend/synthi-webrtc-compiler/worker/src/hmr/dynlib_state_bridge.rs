@@ -7,7 +7,6 @@
 // variants).
 // ============================================================
 
-
 use serde::{Deserialize, Serialize};
 
 /// Format for state transfer through the dynlib ABI.
@@ -196,7 +195,10 @@ mod tests {
 
     #[test]
     fn export_import_roundtrip() {
-        let caps = StateCapabilities { json: true, binary: false };
+        let caps = StateCapabilities {
+            json: true,
+            binary: false,
+        };
         let bridge = DynLibStateBridge::new(StateBridgeConfig::default(), caps);
 
         let export = bridge.export_state(b"test state data").unwrap();
@@ -210,7 +212,10 @@ mod tests {
 
     #[test]
     fn rejects_oversized_state() {
-        let caps = StateCapabilities { json: true, binary: false };
+        let caps = StateCapabilities {
+            json: true,
+            binary: false,
+        };
         let config = StateBridgeConfig {
             max_state_bytes: 10,
             ..Default::default()

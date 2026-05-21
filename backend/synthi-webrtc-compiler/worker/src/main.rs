@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use worker::android;
 use worker::compiler;
+use worker::debug_log;
 use worker::hmr;
 use worker::infra;
 use worker::runtime;
 use worker::safety;
-use worker::debug_log;
 use worker::webrtc::{
     broadcast_build_log_text, PeerHandle, PeerRegistry, PeerRole, DEFAULT_BROWSER_PEER_ID,
 };
@@ -83,21 +83,21 @@ use webrtc::data_channel::data_channel_init::RTCDataChannelInit;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::interceptor::registry::Registry;
 // use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
+use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::sdp_type::RTCSdpType;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 // use webrtc::rtp::packet::Packet;
+use serde::{Deserialize, Serialize};
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpHeaderExtensionCapability, RTPCodecType,
 };
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
 use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
-use serde::{Deserialize, Serialize};
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::TrackLocal;
 use webrtc::track::track_local::TrackLocalWriter;
@@ -180,11 +180,17 @@ async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCI
                             ..Default::default()
                         });
                     }
-                    debug_log!("[ICE] Fetched {} ICE server(s) from collab-server", servers.len());
+                    debug_log!(
+                        "[ICE] Fetched {} ICE server(s) from collab-server",
+                        servers.len()
+                    );
                     servers
                 }
                 Err(e) => {
-                    eprintln!("[ICE] Failed to parse TURN response: {} — using default STUN", e);
+                    eprintln!(
+                        "[ICE] Failed to parse TURN response: {} — using default STUN",
+                        e
+                    );
                     vec![webrtc::ice_transport::ice_server::RTCIceServer {
                         urls: vec!["stun:stun.l.google.com:19302".to_string()],
                         ..Default::default()
@@ -193,14 +199,20 @@ async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCI
             }
         }
         Ok(resp) => {
-            debug_log!("[ICE] TURN endpoint returned {} — using default STUN", resp.status());
+            debug_log!(
+                "[ICE] TURN endpoint returned {} — using default STUN",
+                resp.status()
+            );
             vec![webrtc::ice_transport::ice_server::RTCIceServer {
                 urls: vec!["stun:stun.l.google.com:19302".to_string()],
                 ..Default::default()
             }]
         }
         Err(e) => {
-            eprintln!("[ICE] TURN credential fetch error: {} — using default STUN", e);
+            eprintln!(
+                "[ICE] TURN credential fetch error: {} — using default STUN",
+                e
+            );
             vec![webrtc::ice_transport::ice_server::RTCIceServer {
                 urls: vec!["stun:stun.l.google.com:19302".to_string()],
                 ..Default::default()
@@ -272,20 +284,51 @@ fn js_key_to_x11_keysym(key: &str) -> u32 {
 fn js_key_to_sdl_keycode(key: &str) -> i32 {
     match key {
         // ASCII-compatible keys
-        " " => 32,  // SDLK_SPACE
-        "!" => 33, "\"" => 34, "#" => 35, "$" => 36, "%" => 37, "&" => 38,
-        "'" => 39, "(" => 40, ")" => 41, "*" => 42, "+" => 43, "," => 44,
-        "-" => 45, "." => 46, "/" => 47,
-        "0" => 48, "1" => 49, "2" => 50, "3" => 51, "4" => 52,
-        "5" => 53, "6" => 54, "7" => 55, "8" => 56, "9" => 57,
-        ":" => 58, ";" => 59, "<" => 60, "=" => 61, ">" => 62, "?" => 63, "@" => 64,
-        "[" => 91, "\\" => 92, "]" => 93, "^" => 94, "_" => 95, "`" => 96,
+        " " => 32, // SDLK_SPACE
+        "!" => 33,
+        "\"" => 34,
+        "#" => 35,
+        "$" => 36,
+        "%" => 37,
+        "&" => 38,
+        "'" => 39,
+        "(" => 40,
+        ")" => 41,
+        "*" => 42,
+        "+" => 43,
+        "," => 44,
+        "-" => 45,
+        "." => 46,
+        "/" => 47,
+        "0" => 48,
+        "1" => 49,
+        "2" => 50,
+        "3" => 51,
+        "4" => 52,
+        "5" => 53,
+        "6" => 54,
+        "7" => 55,
+        "8" => 56,
+        "9" => 57,
+        ":" => 58,
+        ";" => 59,
+        "<" => 60,
+        "=" => 61,
+        ">" => 62,
+        "?" => 63,
+        "@" => 64,
+        "[" => 91,
+        "\\" => 92,
+        "]" => 93,
+        "^" => 94,
+        "_" => 95,
+        "`" => 96,
         // Navigation / editing keys
-        "Enter" | "Return" => 13,   // SDLK_RETURN
-        "Escape" => 27,             // SDLK_ESCAPE
-        "Backspace" => 8,           // SDLK_BACKSPACE
-        "Tab" => 9,                 // SDLK_TAB
-        "Delete" => 127,            // SDLK_DELETE
+        "Enter" | "Return" => 13, // SDLK_RETURN
+        "Escape" => 27,           // SDLK_ESCAPE
+        "Backspace" => 8,         // SDLK_BACKSPACE
+        "Tab" => 9,               // SDLK_TAB
+        "Delete" => 127,          // SDLK_DELETE
         "Insert" => 0x40000049_u32 as i32,
         "Home" => 0x4000004A_u32 as i32,
         "End" => 0x4000004D_u32 as i32,
@@ -429,13 +472,18 @@ async fn dc_send_with_backpressure(
                 if retries > DC_SEND_MAX_RETRIES {
                     debug_log!(
                         "[{}] send failed after {} retries: {}",
-                        label, DC_SEND_MAX_RETRIES, e
+                        label,
+                        DC_SEND_MAX_RETRIES,
+                        e
                     );
                     return Err(anyhow::anyhow!("{}", e));
                 }
                 debug_log!(
                     "[{}] send error (retry {}/{}): {}",
-                    label, retries, DC_SEND_MAX_RETRIES, e
+                    label,
+                    retries,
+                    DC_SEND_MAX_RETRIES,
+                    e
                 );
                 // Exponential backoff: 20ms, 40ms, 80ms, 160ms, 320ms
                 tokio::time::sleep(std::time::Duration::from_millis(20 * (1 << (retries - 1))))
@@ -486,13 +534,18 @@ async fn dc_send_text_with_backpressure(
                 if retries > DC_SEND_MAX_RETRIES {
                     debug_log!(
                         "[{}] send_text failed after {} retries: {}",
-                        label, DC_SEND_MAX_RETRIES, e
+                        label,
+                        DC_SEND_MAX_RETRIES,
+                        e
                     );
                     return Err(anyhow::anyhow!("{}", e));
                 }
                 debug_log!(
                     "[{}] send_text error (retry {}/{}): {}",
-                    label, retries, DC_SEND_MAX_RETRIES, e
+                    label,
+                    retries,
+                    DC_SEND_MAX_RETRIES,
+                    e
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(20 * (1 << (retries - 1))))
                     .await;
@@ -912,7 +965,8 @@ async fn main() -> Result<()> {
                 } => {
                     debug_log!(
                         "[Build] Starting speculative compile for scope '{}': {:?}",
-                        scope, paths
+                        scope,
+                        paths
                     );
 
                     // Check cancellation flag periodically during compile
@@ -934,9 +988,7 @@ async fn main() -> Result<()> {
 
                         // Check for cancellation between files
                         if build_cancel_flag.load(Ordering::SeqCst) {
-                            debug_log!(
-                                "[Build] Speculative compile cancelled during compilation"
-                            );
+                            debug_log!("[Build] Speculative compile cancelled during compilation");
                             break;
                         }
 
@@ -946,8 +998,7 @@ async fn main() -> Result<()> {
                         {
                             // Cache the speculative result
                             let _content_hash = {
-                                let mut hasher =
-                                    std::collections::hash_map::DefaultHasher::new();
+                                let mut hasher = std::collections::hash_map::DefaultHasher::new();
                                 relative_path.hash(&mut hasher);
                                 hasher.finish()
                             };
@@ -970,7 +1021,8 @@ async fn main() -> Result<()> {
                 PreemptiveMessage::CommitSpeculative { paths, scope } => {
                     debug_log!(
                         "[Build] Committing speculative compile for scope '{}': {:?}",
-                        scope, paths
+                        scope,
+                        paths
                     );
 
                     // Send the cached result to frontend
@@ -992,7 +1044,8 @@ async fn main() -> Result<()> {
                     // Standard (non-speculative) change - compile immediately
                     debug_log!(
                         "[Build] Standard compile for scope '{}': {:?}",
-                        scope, paths
+                        scope,
+                        paths
                     );
 
                     for path_str in paths {
@@ -1243,9 +1296,7 @@ async fn main() -> Result<()> {
                 }
             }
             "reset" => {
-                debug_log!(
-                    "[WebRTC-signal] Received reset command, closing all peers..."
-                );
+                debug_log!("[WebRTC-signal] Received reset command, closing all peers...");
 
                 // Close every registered PC. Dropping the handle also
                 // drops its FanoutSubscriptions, aborting per-peer
@@ -1285,7 +1336,9 @@ async fn main() -> Result<()> {
                         let _ = tx.send(());
                     }
                 }
-                debug_log!("[WebRTC-signal] Reset complete — awaiting next offer to re-spawn peers");
+                debug_log!(
+                    "[WebRTC-signal] Reset complete — awaiting next offer to re-spawn peers"
+                );
             }
             _ => {}
         }
@@ -1324,7 +1377,9 @@ fn request_video_keyframe(runner_store: Arc<Mutex<Option<RunnerState>>>, reason:
         let encoder = {
             let guard = runner_store.lock().await;
             let Some(state) = guard.as_ref() else { return };
-            let Some(pipeline) = state.gst_pipeline.as_ref() else { return };
+            let Some(pipeline) = state.gst_pipeline.as_ref() else {
+                return;
+            };
             match pipeline.by_name("video_enc") {
                 Some(e) => e,
                 None => return,
@@ -1409,9 +1464,18 @@ async fn create_peer(
     // arrival). `transport-cc` matches the browser's default feedback set
     // and plays nicely with congestion-control interceptors downstream.
     let vp8_feedback = vec![
-        RTCPFeedback { typ: "nack".to_owned(), parameter: "".to_owned() },
-        RTCPFeedback { typ: "nack".to_owned(), parameter: "pli".to_owned() },
-        RTCPFeedback { typ: "transport-cc".to_owned(), parameter: "".to_owned() },
+        RTCPFeedback {
+            typ: "nack".to_owned(),
+            parameter: "".to_owned(),
+        },
+        RTCPFeedback {
+            typ: "nack".to_owned(),
+            parameter: "pli".to_owned(),
+        },
+        RTCPFeedback {
+            typ: "transport-cc".to_owned(),
+            parameter: "".to_owned(),
+        },
     ];
     let per_peer_video = Arc::new(TrackLocalStaticRTP::new(
         RTCRtpCodecCapability {
@@ -1430,9 +1494,10 @@ async fn create_peer(
             clock_rate: 48_000,
             channels: 2,
             sdp_fmtp_line: "minptime=10;useinbandfec=1".to_owned(),
-            rtcp_feedback: vec![
-                RTCPFeedback { typ: "transport-cc".to_owned(), parameter: "".to_owned() },
-            ],
+            rtcp_feedback: vec![RTCPFeedback {
+                typ: "transport-cc".to_owned(),
+                parameter: "".to_owned(),
+            }],
         },
         "audio".to_owned(),
         format!("synthi-peer-{peer_id}"),
@@ -1449,7 +1514,10 @@ async fn create_peer(
                     ))
                     .await
                 {
-                    eprintln!("[WebRTC] Failed to attach video track for {peer_id}: {:?}", e);
+                    eprintln!(
+                        "[WebRTC] Failed to attach video track for {peer_id}: {:?}",
+                        e
+                    );
                 }
             } else if kind == RTPCodecType::Audio {
                 let sender = t.sender().await;
@@ -1459,7 +1527,10 @@ async fn create_peer(
                     ))
                     .await
                 {
-                    eprintln!("[WebRTC] Failed to attach audio track for {peer_id}: {:?}", e);
+                    eprintln!(
+                        "[WebRTC] Failed to attach audio track for {peer_id}: {:?}",
+                        e
+                    );
                 }
             }
         }
@@ -1631,6 +1702,129 @@ async fn create_peer(
     }
 
     Ok(pc)
+}
+
+fn directory_has_entries(path: &std::path::Path) -> bool {
+    match std::fs::read_dir(path) {
+        Ok(mut entries) => entries.next().is_some(),
+        Err(_) => false,
+    }
+}
+
+async fn copy_workspace_tree(
+    src_root: &std::path::Path,
+    dst_root: &std::path::Path,
+) -> Result<()> {
+    tokio::fs::create_dir_all(dst_root)
+        .await
+        .with_context(|| format!("Failed to create {}", dst_root.display()))?;
+
+    let mut stack: Vec<(std::path::PathBuf, std::path::PathBuf)> =
+        vec![(src_root.to_path_buf(), dst_root.to_path_buf())];
+
+    while let Some((src_dir, dst_dir)) = stack.pop() {
+        let mut rd = tokio::fs::read_dir(&src_dir)
+            .await
+            .with_context(|| format!("Failed to read dir {}", src_dir.display()))?;
+
+        while let Some(ent) = rd.next_entry().await? {
+            let src_path = ent.path();
+            let dst_path = dst_dir.join(ent.file_name());
+            let ft = ent.file_type().await?;
+
+            if ft.is_dir() {
+                tokio::fs::create_dir_all(&dst_path).await.ok();
+                stack.push((src_path, dst_path));
+            } else if ft.is_file() {
+                if let Some(parent) = dst_path.parent() {
+                    tokio::fs::create_dir_all(parent).await.ok();
+                }
+                tokio::fs::copy(&src_path, &dst_path).await.with_context(|| {
+                    format!(
+                        "Failed to copy {} -> {}",
+                        src_path.display(),
+                        dst_path.display()
+                    )
+                })?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn resolve_mobile_workspace_path(
+    slug: &str,
+    session_workspace_path: &std::path::Path,
+    platform: &str,
+) -> Result<std::path::PathBuf> {
+    let local_dir = std::path::PathBuf::from("/synthi").join(slug);
+    let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
+        .ok()
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
+        })
+        .unwrap_or(false);
+
+    if force_redownload && local_dir.exists() {
+        if let Err(e) = tokio::fs::remove_dir_all(&local_dir).await {
+            debug_log!(
+                "[{}] Failed to clear existing workspace {}: {}",
+                platform,
+                local_dir.display(),
+                e
+            );
+        } else {
+            debug_log!(
+                "[{}] Cleared existing workspace {} (force redownload)",
+                platform,
+                local_dir.display()
+            );
+        }
+    }
+
+    let session_has_files = directory_has_entries(session_workspace_path);
+
+    match storage::download(slug, None).await {
+        Ok(path) => {
+            if session_has_files {
+                copy_workspace_tree(session_workspace_path, &path).await?;
+                debug_log!(
+                    "[{}] Overlaid active session workspace onto {}",
+                    platform,
+                    path.display()
+                );
+            }
+            Ok(path)
+        }
+        Err(download_err) => {
+            if session_has_files {
+                copy_workspace_tree(session_workspace_path, &local_dir).await?;
+                debug_log!(
+                    "[{}] GCS workspace unavailable; seeded {} from active session workspace {}",
+                    platform,
+                    local_dir.display(),
+                    session_workspace_path.display()
+                );
+                return Ok(local_dir);
+            }
+
+            if directory_has_entries(&local_dir) {
+                debug_log!(
+                    "[{}] GCS workspace unavailable; reusing existing local workspace {}",
+                    platform,
+                    local_dir.display()
+                );
+                return Ok(local_dir);
+            }
+
+            Err(anyhow::anyhow!(
+                "Failed to download workspace: {}",
+                download_err
+            ))
+        }
+    }
 }
 
 async fn wire_peer_channels(
@@ -1871,6 +2065,7 @@ async fn wire_peer_channels(
                                                 });
                                                 let project_root = req.project_root.clone();
                                                 let slug = req.slug.clone();
+                                                let session_workspace_path = workspace_path_for_compile.as_ref().clone();
                                                 let log_clone = log.clone();
                                                 let rn_video_fanout = video_fanout_for_msg.clone();
                                                 tokio::spawn(async move {
@@ -1880,31 +2075,11 @@ async fn wire_peer_channels(
                                                     // dramatically speeding up subsequent mobile builds.
                                                     // To force a clean slate, set SYNTHI_MOBILE_FORCE_REDOWNLOAD=1.
                                                     let workspace_path = if let Some(s) = &slug {
-                                                        let local_dir = std::path::PathBuf::from("/synthi").join(s);
-                                                        let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
-                                                            .ok()
-                                                            .map(|v| {
-                                                                let v = v.trim().to_ascii_lowercase();
-                                                                matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
-                                                            })
-                                                            .unwrap_or(false);
-
-                                                        if force_redownload && local_dir.exists() {
-                                                            if let Err(e) = std::fs::remove_dir_all(&local_dir) {
-                                                                debug_log!(
-                                                                    "[Mobile] Failed to clear existing workspace {}: {}",
-                                                                    local_dir.display(),
-                                                                    e
-                                                                );
-                                                            } else {
-                                                                debug_log!(
-                                                                    "[Mobile] Cleared existing workspace {} (force redownload)",
-                                                                    local_dir.display()
-                                                                );
-                                                            }
-                                                        }
-
-                                                        match storage::download(&s, None).await {
+                                                        match resolve_mobile_workspace_path(
+                                                            s,
+                                                            session_workspace_path.as_path(),
+                                                            "Mobile",
+                                                        ).await {
                                                             Ok(path) => {
                                                                 debug_log!("[Mobile] Workspace ready at: {}", path.display());
                                                                 path
@@ -1955,30 +2130,16 @@ async fn wire_peer_channels(
                                                 });
                                                 let project_root = req.project_root.clone();
                                                 let slug = req.slug.clone();
+                                                let session_workspace_path = workspace_path_for_compile.as_ref().clone();
                                                 let log_clone = log.clone();
                                                 let flutter_video_fanout = video_fanout_for_msg.clone();
                                                 tokio::spawn(async move {
                                                     let workspace_path = if let Some(s) = &slug {
-                                                        let local_dir = std::path::PathBuf::from("/synthi").join(s);
-                                                        let force_redownload = std::env::var("SYNTHI_MOBILE_FORCE_REDOWNLOAD")
-                                                            .ok()
-                                                            .map(|v| {
-                                                                let v = v.trim().to_ascii_lowercase();
-                                                                matches!(v.as_str(), "1" | "true" | "yes" | "y" | "on")
-                                                            })
-                                                            .unwrap_or(false);
-
-                                                        if force_redownload && local_dir.exists() {
-                                                            if let Err(e) = std::fs::remove_dir_all(&local_dir) {
-                                                                debug_log!(
-                                                                    "[Flutter] Failed to clear existing workspace {}: {}",
-                                                                    local_dir.display(),
-                                                                    e
-                                                                );
-                                                            }
-                                                        }
-
-                                                        match storage::download(&s, None).await {
+                                                        match resolve_mobile_workspace_path(
+                                                            s,
+                                                            session_workspace_path.as_path(),
+                                                            "Flutter",
+                                                        ).await {
                                                             Ok(path) => {
                                                                 debug_log!("[Flutter] Workspace ready at: {}", path.display());
                                                                 path
@@ -4185,8 +4346,13 @@ async fn handle_compile(
         .session_id
         .clone()
         .unwrap_or_else(|| "default_session".to_string());
-    if let Err(e) = crate::compiler::handler::handle_compile_request(&ctx, req, session_id.clone()).await {
-        eprintln!("[Main] handle_compile_request error for {}: {:?}", session_id, e);
+    if let Err(e) =
+        crate::compiler::handler::handle_compile_request(&ctx, req, session_id.clone()).await
+    {
+        eprintln!(
+            "[Main] handle_compile_request error for {}: {:?}",
+            session_id, e
+        );
         // Resolve the frontend compile() promise as a failure so the IDE doesn't
         // hang on "Compiling..." forever when the pipeline returns an error
         // (e.g. AI split timeout, verifier bail-out, missing tooling).
@@ -4199,7 +4365,10 @@ async fn handle_compile(
             "message": format!("Compile pipeline error: {}", e),
             "stage": "pipeline",
         });
-        let _ = ctx.log_dc.send_text(serde_json::to_string(&payload).unwrap_or_default()).await;
+        let _ = ctx
+            .log_dc
+            .send_text(serde_json::to_string(&payload).unwrap_or_default())
+            .await;
         return Err(e);
     }
 
@@ -4593,7 +4762,9 @@ path = "{}"
                             .status();
                         match meta_status {
                             Ok(s) if s.success() => {
-                                debug_log!("[LSP-CONFIG] cargo metadata succeeded — Cargo.lock ready")
+                                debug_log!(
+                                    "[LSP-CONFIG] cargo metadata succeeded — Cargo.lock ready"
+                                )
                             }
                             Ok(s) => debug_log!("[LSP-CONFIG] cargo metadata exited with {}", s),
                             Err(e) => eprintln!("[LSP-CONFIG] cargo metadata failed: {}", e),
@@ -4866,4 +5037,3 @@ path = "{}"
         _ => {}
     }
 }
-

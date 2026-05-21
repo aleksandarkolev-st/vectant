@@ -661,6 +661,42 @@ export function useAnalyzerGateway({
     }
   }, []);
 
+  /**
+   * Runtime healing — used by RuntimeErrorInterceptor when a compile
+   * or HMR error fires. Wraps the client's /heal/ai/runtime endpoint.
+   * Must be exposed here because consumers receive this hook's return
+   * object as `gateway` — not the raw client instance.
+   */
+  const aiRuntimeHeal = useCallback(async (payload = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.aiRuntimeHeal(payload);
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[aiRuntimeHeal] Error:', error);
+      throw error;
+    }
+  }, []);
+
+  /**
+   * Record an HMR failure for the agentic observability pipeline.
+   * Same wrapping rationale as aiRuntimeHeal.
+   */
+  const agenticRecordHmrFailure = useCallback(async (payload = {}) => {
+    if (!clientRef.current) {
+      throw new SynthiException('Gateway client is not ready yet');
+    }
+    try {
+      const response = await clientRef.current.agenticRecordHmrFailure(payload);
+      return response?.data ?? response;
+    } catch (error) {
+      console.error('[agenticRecordHmrFailure] Error:', error);
+      throw error;
+    }
+  }, []);
+
   const ruleTranslate = useCallback(async (payload) => {
     if (!clientRef.current) {
       throw new SynthiException('Gateway client is not ready yet');
@@ -704,6 +740,9 @@ export function useAnalyzerGateway({
     aiFeedback,
     aiMemory,
     aiMemoryClear,
+    // Runtime healing (HMR / compile-error driven)
+    aiRuntimeHeal,
+    agenticRecordHmrFailure,
     // Plain-English rule translator (healing rules panel)
     ruleTranslate,
     resetResult,

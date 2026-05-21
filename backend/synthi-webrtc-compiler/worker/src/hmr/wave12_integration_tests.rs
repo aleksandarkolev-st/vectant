@@ -7,7 +7,6 @@
 // swap handoff chain, and the unified lifecycle FSM.
 // ============================================================
 
-
 #[cfg(test)]
 mod tests {
     use crate::hmr::adapter_lifecycle_fsm::{
@@ -34,8 +33,7 @@ mod tests {
         SocketKind,
     };
     use crate::hmr::process_swap_state_transfer::{
-        execute_state_transfer, select_transport, StatePayload, StateTransferConfig,
-        StateTransport,
+        execute_state_transfer, select_transport, StatePayload, StateTransferConfig, StateTransport,
     };
 
     // --------------------------------------------------------
@@ -94,7 +92,10 @@ mod tests {
             kind: AssemblyChangeKind::NewReference,
         }];
         let decision = decide_dotnet_strategy(&changes, &DotNetStrategyConfig::default());
-        assert_eq!(decision.strategy, DotNetReloadStrategy::AssemblyContextReload);
+        assert_eq!(
+            decision.strategy,
+            DotNetReloadStrategy::AssemblyContextReload
+        );
     }
 
     // --------------------------------------------------------
