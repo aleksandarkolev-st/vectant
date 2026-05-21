@@ -341,6 +341,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       };
 
       const handleContextMenu = (e) => {
+        console.log('[TerminalPane] contextmenu fired', { target: e.target, hasOpenMenu: !!openMenuRef.current });
         e.preventDefault();
         e.stopPropagation();
         if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
@@ -399,6 +400,19 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       // selection-mode menu silently never opened on some xterm builds.
       containerRef.current.addEventListener('contextmenu', handleContextMenu, true);
 
+      // Belt + braces: also listen at document level in capture phase.
+      // If some descendant inside the container manages to stopPropagation
+      // before our container-capture handler runs (unlikely but possible
+      // with bizarre extension code), the document handler still fires
+      // because document is hit even earlier in capture phase.
+      const handleDocContextMenu = (e) => {
+        const containerEl2 = containerRef.current;
+        if (!containerEl2 || !containerEl2.contains(e.target)) return;
+        console.log('[TerminalPane] doc-level fallback contextmenu fired');
+        handleContextMenu(e);
+      };
+      document.addEventListener('contextmenu', handleDocContextMenu, true);
+
       // ── Connect WebSocket ─────────────────────────────────────────
       connectWS(term, fitAddon);
 
@@ -435,6 +449,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           containerEl.removeEventListener('contextmenu', handleContextMenu, true);
           containerEl.removeEventListener('mousedown', handleMouseDownCapture, true);
         }
+        document.removeEventListener('contextmenu', handleDocContextMenu, true);
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         if (webglAddon) try { webglAddon.dispose(); } catch (_) {}
         linksAddon.dispose();
