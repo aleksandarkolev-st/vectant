@@ -1,99 +1,128 @@
 {
-  "slug": "gpu-scale-validation-glfw-userfiles-20260519233656",
-  "repo_commit": "e11d4d8494ccc65b23b31696725aa28b5af6e540",
-  "model": "gemini-3.1-flash-lite-preview",
+  "slug": "gpu-gemini35-smoke-20260521232503",
+  "repo_commit": "05636e17e93204287de6dda4ed925c2c2ee261e6",
+  "model": "gemini-3.5-flash",
   "vendor": "rocm",
   "arch": "gfx1201",
-  "render_backend": "glfw",
+  "render_backend": "sdl2",
+  "cmake_target_mode": "single",
+  "hmr_delta_mode": "natural_user_delta",
+  "validation_profile": "natural",
   "source_file_mix": {
     "cpp": 13,
-    "hpp": 17,
+    "hpp": 18,
     "h": 10,
     "hip": 11,
     "cu": 0,
-    "total": 51
+    "total": 52
   },
-  "workspace_file_count": 293,
-  "relevant_file_count": 53,
-  "started_at": "2026-05-19T20:36:56.338Z",
-  "finished_at": "2026-05-19T20:37:20.453Z",
+  "template_evidence_mode": "missing",
+  "workspace_file_count": 297,
+  "relevant_file_count": 57,
+  "framework_dependency": {
+    "backend": "sdl2",
+    "label": "SDL2",
+    "packages": [
+      "libsdl2-dev"
+    ],
+    "status": "available"
+  },
+  "started_at": "2026-05-21T20:25:03.608Z",
+  "finished_at": "2026-05-21T20:26:36.477Z",
   "compose_files": [
     "docker-compose.yml",
     "docker-compose.gpu-amd.yml"
   ],
   "containers": {
     "worker": {
-      "id": "31879e24d7edde373b3b60f8da7344ed81c8af9d5195ae7f5b6c83fa718aa212",
-      "image_id": "sha256:424db90ffa5dc2ed3654a0f45ade396f0946beaf1a0018432914264f0c8812a5",
+      "id": "f9602ce246cbf00d370fece12ee94b02f99debd5cd0842563e4160781f8d7505",
+      "image_id": "sha256:61ba0ffe8edd4733d448feba439b1a6c3f545cce4758224e18b6afd4d19f664d",
       "image": "vectant-ade-worker-gpu:local",
-      "created": "2026-05-19T20:36:10.75038694Z"
+      "created": "2026-05-21T20:24:22.74257152Z"
     },
     "ai_engine": {
-      "id": "fe1d5e4e67742a60c83cd8460ba6ec31d6a74bbb1c79ae29bd5de2ec6a4732a7",
-      "image_id": "sha256:c853a600c060d96fa7b24758857c179ff2567c9f84566ea40238c790fbd3dae9",
+      "id": "8848b6537de591ba44dac2174f8e74e650b4b10f7ff3ed89c6b6408722577e3f",
+      "image_id": "sha256:3121a0f23e5f29d3a3d6b1d80919e12226c6a1a20472032a2c9ee8b69d23e81c",
       "image": "vectant-ade-ai-engine",
-      "created": "2026-05-19T20:36:10.739939961Z"
+      "created": "2026-05-21T20:24:21.48069795Z"
     },
     "mcp": {
-      "id": "d70c2617823f0663b7eb8ff3e04740497c2ced001e68c7c8e263392d3a52afdd",
-      "image_id": "sha256:3ff448f728c67aed80e87a98f2ea807e27b7db5397a86b3a1b9744d56a5f0ba2",
+      "id": "298b9f5ded8a6e4e99195c05bfa11f5a6715a6e7204b437fdcb0423c4eac1a08",
+      "image_id": "sha256:cc89dee7a754ba6b1ec226a81e4ce48c208033219a0eab2046b3658aa55a3567",
       "image": "vectant-ade-mcp",
-      "created": "2026-05-19T20:36:21.50325871Z"
+      "created": "2026-05-21T16:56:08.00127707Z"
     }
   },
   "env": {
-    "SYNTHI_GEMINI_MODEL": "gemini-3.1-flash-lite-preview",
-    "SYNTHI_GPU_VENDOR": "auto",
+    "SYNTHI_GEMINI_MODEL": "gemini-3.5-flash",
+    "SYNTHI_GPU_VENDOR": "rocm",
     "SYNTHI_GPU_ARCH": "gfx1201",
-    "SYNTHI_SCALE_RENDER_BACKEND": "glfw",
+    "SYNTHI_SCALE_RENDER_BACKEND": "sdl2",
+    "SYNTHI_SCALE_CMAKE_TARGET_MODE": "single",
+    "SYNTHI_SCALE_HMR_DELTA_MODE": "natural_user_delta",
+    "SYNTHI_SCALE_VALIDATION_PROFILE": "natural",
+    "SYNTHI_SCALE_TEMPLATE_EVIDENCE": "missing",
+    "SYNTHI_SCALE_TARGET_FILE_COUNT": "200",
     "SYNTHI_SYNC_TO_GCS": "0"
   },
-  "worker_restarted_before_run": true,
-  "ai_engine_restarted_before_run": true,
-  "split_cache_bypassed_by_worker_restart": true,
+  "worker_restarted_before_run": false,
+  "ai_engine_restarted_before_run": false,
+  "split_cache_bypassed_by_worker_restart": false,
   "generated_roles": {
-    "shared": "shared.h",
-    "core": "core.cpp",
-    "gui": "gui.cpp",
-    "host_runner": "host_runner.cpp",
-    "device": "device.hip"
+    "shared": ".synthi/generated/gpu/shared.h",
+    "core": ".synthi/generated/gpu/core.cpp",
+    "gui": ".synthi/generated/gpu/gui.cpp",
+    "host_runner": ".synthi/generated/gpu/host_runner.cpp",
+    "device": ".synthi/generated/gpu/device.hip"
   },
+  "launch_indirection": {
+    "schemaVersion": "synthi.gpu.launch_indirection.v1",
+    "status": "pass",
+    "tableVersion": 1,
+    "launchSiteCount": 2,
+    "staleLaunchPointerCheckStatus": "pass",
+    "failureReasonCode": "reload_failed.stale_launch_pointer"
+  },
+  "warm_rebuild": {},
+  "runtime_policy": {},
+  "direct_device_fast_path": {
+    "plan": "device_only",
+    "patchTier": "device_only",
+    "verifierStatus": "pass",
+    "reasonCodes": [
+      "edit.kernel_body_only",
+      "abi.kernel_signature_unchanged",
+      "abi.constant_global_layout_unchanged",
+      "mapping.device_role_valid",
+      "parser.user_baseline_ast_passed",
+      "parser.user_candidate_ast_passed",
+      "parser.generated_device_ast_passed",
+      "build.selected_compile_command_present",
+      "build.effective_flags_hash_present",
+      "build.device_sidecar_only",
+      "mapping.kernel.advance_particle_field"
+    ]
+  },
+  "ai_delta_observations": [
+    {
+      "phase": "user_device_delta",
+      "hmrDeltaMode": "natural_user_delta",
+      "validationProfile": "natural",
+      "workerCalled": false,
+      "backendCalled": false,
+      "workerMarkers": [],
+      "backendMarkers": []
+    }
+  ],
   "phases": [
     {
       "name": "first_ai_split_compile",
-      "compile_dispatched_at": "2026-05-19T20:37:01.285Z",
-      "wait_hmr_started_at": "2026-05-19T20:37:01.290Z",
-      "wait_hmr_finished_at": "2026-05-19T20:37:15.300Z",
-      "wait_hmr_elapsed_ms": 14015,
-      "wait_hmr_terminal_elapsed_ms": 14015,
-      "wait_hmr_status": "applied",
-      "wait_hmr_source": "candidate_notification",
-      "wait_hmr_detail": {
-        "preview_id": "gpu-scale-validation-glfw-userfiles-20260519233656",
-        "generation": 1,
-        "total_reload_ms": 1256
-      },
-      "frame_gate": {
-        "status": "disabled",
-        "reason": "no_frame_advance_observed",
-        "pipeline_budget_ms": 80
-      },
-      "wall_elapsed_ms": 14015,
-      "worker_log_markers": [
-        "[AI Split] ENTER (cache_key=623742474748146535, src_len=377, files=293, gpu_mode=rocm, gpu_arch=gfx1201, gpu_markers=true)",
-        "GPU markers detected; calling GPU split endpoint: http://ai-engine:8000/refactor/split/gpu",
-        "GPU split endpoint returned a 5-file split",
-        "[compile-device] hipcc -> /tmp/.tmpZyLKNg/build/device_1779223032.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmpZyLKNg/build/device_1779223032.hsaco\", \"device.hip\"] }",
-        "[compile-device] hipcc ok  artifact=/tmp/.tmpZyLKNg/build/device_1779223032.hsaco  diagnostics_kernels=0"
-      ]
-    },
-    {
-      "name": "device_only_hmr",
-      "compile_dispatched_at": "2026-05-19T20:37:18.088Z",
-      "wait_hmr_started_at": "2026-05-19T20:37:18.093Z",
-      "wait_hmr_finished_at": "2026-05-19T20:37:19.143Z",
-      "wait_hmr_elapsed_ms": 1046,
-      "wait_hmr_terminal_elapsed_ms": 921,
+      "expected_hmr_module": "device",
+      "compile_dispatched_at": "2026-05-21T20:25:09.261Z",
+      "wait_hmr_started_at": "2026-05-21T20:25:09.274Z",
+      "wait_hmr_finished_at": "2026-05-21T20:26:30.887Z",
+      "wait_hmr_elapsed_ms": 21606,
+      "wait_hmr_terminal_elapsed_ms": 21524,
       "wait_hmr_status": "applied",
       "wait_hmr_source": "hmr_status",
       "wait_hmr_detail": {
@@ -104,48 +133,73 @@
       },
       "frame_gate": {
         "status": "satisfied",
-        "frame_seq": 117,
-        "ts_ms": 1779223039147,
+        "frame_seq": 12,
+        "ts_ms": 1779395190885,
         "pipeline_budget_ms": 80
       },
-      "wall_elapsed_ms": 1055,
+      "wall_elapsed_ms": 81626,
       "worker_log_markers": [
-        "[compile-device] hipcc -> /tmp/.tmpZyLKNg/build/device_1779223038.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmpZyLKNg/build/device_1779223038.hsaco\", \"device.hip\"] }",
-        "[compile-device] hipcc ok  artifact=/tmp/.tmpZyLKNg/build/device_1779223038.hsaco  diagnostics_kernels=0",
-        "Device sidecar reload vendor=rocm artifact=/tmp/.tmpZyLKNg/build/device_1779223038.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 5, state_preserved: true }"
+        "[AI Split] ENTER (cache_key=6523892863318836657, src_len=375, files=297, gpu_mode=rocm, gpu_arch=gfx1201, gpu_markers=true)",
+        "GPU markers detected; calling GPU split endpoint: http://ai-engine:8000/refactor/split/gpu",
+        "GPU split endpoint returned a 5-file split",
+        "[compile-device] hipcc -> /tmp/.tmpuNaZEW/build/device_1779395185.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmpuNaZEW/build/device_1779395185.hsaco\", \".synthi/generated/gpu/device.hip\"] }",
+        "[compile-device] hipcc ok  artifact=/tmp/.tmpuNaZEW/build/device_1779395185.hsaco  diagnostics_kernels=0",
+        "[gpu-reload] plan=device_only  reason=device-file-only-edit",
+        "Device sidecar reload vendor=rocm artifact=/tmp/.tmpuNaZEW/build/device_1779395185.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 76, state_preserved: true }"
+      ]
+    },
+    {
+      "name": "natural_device_body_hmr",
+      "expected_hmr_module": "device",
+      "compile_dispatched_at": "2026-05-21T20:26:33.807Z",
+      "wait_hmr_started_at": "2026-05-21T20:26:33.820Z",
+      "wait_hmr_finished_at": "2026-05-21T20:26:34.894Z",
+      "wait_hmr_elapsed_ms": 1072,
+      "wait_hmr_terminal_elapsed_ms": 893,
+      "wait_hmr_status": "applied",
+      "wait_hmr_source": "hmr_status",
+      "wait_hmr_detail": {
+        "status": "applied",
+        "module": "device",
+        "capability": "GPU sidecar HMR",
+        "state_preserved": true
+      },
+      "frame_gate": {
+        "status": "satisfied",
+        "frame_seq": 132,
+        "ts_ms": 1779395194892,
+        "pipeline_budget_ms": 80
+      },
+      "wall_elapsed_ms": 1087,
+      "worker_log_markers": [
+        "[gpu-hmr] device_only fast path accepted: user=src/gpu/particle_kernels.hip generated=.synthi/generated/gpu/device.hip reasons=edit.kernel_body_only,abi.kernel_signature_unchanged,abi.constant_global_layout_unchanged,mapping.device_role_valid,parser.user_baseline_ast_passed,parser.user_candidate_ast_passed,parser.generated_device_ast_passed,build.selected_compile_command_present,build.effective_flags_hash_present,build.device_sidecar_only,mapping.kernel.advance_particle_field",
+        "[compile-device] hipcc -> /tmp/.tmpuNaZEW/build/device_1779395193.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmpuNaZEW/build/device_1779395193.hsaco\", \".synthi/generated/gpu/device.hip\"] }",
+        "[compile-device] hipcc ok  artifact=/tmp/.tmpuNaZEW/build/device_1779395193.hsaco  diagnostics_kernels=0",
+        "[gpu-reload] plan=device_only  reason=device-file-only-edit",
+        "Device sidecar reload vendor=rocm artifact=/tmp/.tmpuNaZEW/build/device_1779395193.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 4, state_preserved: true }"
       ]
     }
   ],
   "screenshots": [
     {
-      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-glfw-userfiles-20260519233656-first-compile.png",
+      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-gemini35-smoke-20260521232503-first-compile.png",
       "width": 800,
       "height": 600,
-      "visible_pixels": 0,
-      "mean_luma": 0,
+      "visible_pixels": 35456,
+      "mean_luma": 17.114634799081617,
       "captured_after_phase": "first-compile",
       "attempt": 1,
-      "seq": 2
+      "seq": 47
     },
     {
-      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-glfw-userfiles-20260519233656-first-compile-attempt-2.png",
+      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-gemini35-smoke-20260521232503-post-hmr.png",
       "width": 800,
       "height": 600,
-      "visible_pixels": 41090,
-      "mean_luma": 20.117791298796128,
-      "captured_after_phase": "first-compile",
-      "attempt": 2,
-      "seq": 32
-    },
-    {
-      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-glfw-userfiles-20260519233656-post-hmr.png",
-      "width": 800,
-      "height": 600,
-      "visible_pixels": 41001,
-      "mean_luma": 18.82518082867473,
+      "visible_pixels": 32731,
+      "mean_luma": 16.48877316781915,
       "captured_after_phase": "post-hmr",
       "attempt": 1,
-      "seq": 132,
+      "seq": 155,
       "differs_from_first": true
     }
   ],
@@ -153,128 +207,196 @@
     {
       "name": "gpu target",
       "status": "pass",
-      "detail": "rocm arch=gfx1201 render_backend=glfw",
-      "ts": "2026-05-19T20:36:57.353Z"
+      "detail": "rocm arch=gfx1201 render_backend=sdl2 cmake_target_mode=single template_evidence=missing hmr_delta_mode=natural_user_delta validation_profile=natural",
+      "ts": "2026-05-21T20:25:04.658Z"
     },
     {
       "name": "source file mix",
       "status": "pass",
-      "detail": "{\"cpp\":13,\"hpp\":17,\"h\":10,\"hip\":11,\"cu\":0,\"total\":51}",
-      "ts": "2026-05-19T20:36:57.355Z"
+      "detail": "{\"cpp\":13,\"hpp\":18,\"h\":10,\"hip\":11,\"cu\":0,\"total\":52}",
+      "ts": "2026-05-21T20:25:04.661Z"
     },
     {
       "name": "ordinary user project guard",
       "status": "pass",
-      "detail": "293 files, no Synthi ABI or generated role filenames",
-      "ts": "2026-05-19T20:36:57.356Z"
+      "detail": "297 files, no Synthi ABI or generated role filenames",
+      "ts": "2026-05-21T20:25:04.661Z"
+    },
+    {
+      "name": "render backend dependency preflight",
+      "status": "pass",
+      "detail": "SDL2: libsdl2-dev",
+      "ts": "2026-05-21T20:25:05.540Z"
     },
     {
       "name": "create workspace",
       "status": "pass",
-      "detail": "id=cmpd3g2q8000dpt01uedmgj99 slug=gpu-scale-validation-glfw-userfiles-20260519233656",
-      "ts": "2026-05-19T20:36:58.158Z"
+      "detail": "id=cmpfxwiup000dp601yj79wwj6 slug=gpu-gemini35-smoke-20260521232503",
+      "ts": "2026-05-21T20:25:06.015Z"
     },
     {
       "name": "seed scale workspace",
       "status": "pass",
-      "detail": "293 files",
-      "ts": "2026-05-19T20:36:59.580Z"
+      "detail": "297 files",
+      "ts": "2026-05-21T20:25:07.596Z"
     },
     {
       "name": "mcp tools/list",
       "status": "pass",
       "detail": "count=42",
-      "ts": "2026-05-19T20:37:00.096Z"
+      "ts": "2026-05-21T20:25:08.062Z"
     },
     {
       "name": "mcp attach",
       "status": "pass",
       "detail": "attached",
-      "ts": "2026-05-19T20:37:01.285Z"
+      "ts": "2026-05-21T20:25:09.261Z"
     },
     {
       "name": "first compile via MCP",
       "status": "pass",
-      "detail": "files=293",
-      "ts": "2026-05-19T20:37:15.362Z"
+      "detail": "files=297",
+      "ts": "2026-05-21T20:26:30.949Z"
     },
     {
       "name": "worker saw full file set",
       "status": "pass",
-      "detail": "[AI Split] ENTER (cache_key=623742474748146535, src_len=377, files=293, gpu_mode=rocm, gpu_arch=gfx1201",
-      "ts": "2026-05-19T20:37:15.431Z"
+      "detail": "[AI Split] ENTER (cache_key=6523892863318836657, src_len=375, files=297, gpu_mode=rocm, gpu_arch=gfx1201",
+      "ts": "2026-05-21T20:26:31.016Z"
     },
     {
-      "name": "ai-engine saw full file set",
+      "name": "ai-engine saw full file set or split cache hit",
       "status": "pass",
-      "detail": "[split/gpu] request file context count=293 focus=src/app/main.cpp names=['src/app/main.cpp",
-      "ts": "2026-05-19T20:37:15.508Z"
-    },
-    {
-      "name": "screenshot first-compile retry",
-      "status": "warn",
-      "detail": "800x600 visible=0 luma=0.0 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-glfw-userfiles-20260519233656-first-compile.png attempt=1/6",
-      "ts": "2026-05-19T20:37:16.033Z"
+      "detail": "[split/gpu] request file context count=297",
+      "ts": "2026-05-21T20:26:32.665Z"
     },
     {
       "name": "screenshot first-compile",
       "status": "pass",
-      "detail": "800x600 visible=41090 luma=20.1 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-glfw-userfiles-20260519233656-first-compile-attempt-2.png attempt=2",
-      "ts": "2026-05-19T20:37:17.081Z"
+      "detail": "800x600 visible=35456 luma=17.1 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-gemini35-smoke-20260521232503-first-compile.png",
+      "ts": "2026-05-21T20:26:32.715Z"
     },
     {
-      "name": "generated split preserved GLFW/OpenGL backend",
+      "name": "generated split preserved SDL2 backend",
       "status": "pass",
-      "detail": "no SDL markers in generated roles",
-      "ts": "2026-05-19T20:37:18.087Z"
+      "detail": "framework markers present",
+      "ts": "2026-05-21T20:26:33.695Z"
     },
     {
       "name": "generated split contains HMR ABI",
       "status": "pass",
-      "detail": "shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip",
-      "ts": "2026-05-19T20:37:18.087Z"
+      "detail": ".synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip",
+      "ts": "2026-05-21T20:26:33.695Z"
+    },
+    {
+      "name": "generated launch sites use indirection table",
+      "status": "pass",
+      "detail": "launchSites=2 tableVersion=1",
+      "ts": "2026-05-21T20:26:33.696Z"
+    },
+    {
+      "name": "stale launch pointer check passed",
+      "status": "pass",
+      "detail": "reload_failed.stale_launch_pointer",
+      "ts": "2026-05-21T20:26:33.696Z"
+    },
+    {
+      "name": "missing template evidence blocks warm rebuild",
+      "status": "pass",
+      "detail": "reason=template_evidence_missing warm=fail",
+      "ts": "2026-05-21T20:26:33.696Z"
+    },
+    {
+      "name": "production run report records target, capability, cache, and header graph",
+      "status": "pass",
+      "detail": "target=particle_field arbiter=skip headers=3",
+      "ts": "2026-05-21T20:26:33.696Z"
     },
     {
       "name": "read generated split from worker",
       "status": "pass",
-      "detail": "worker=/tmp/.tmpZyLKNg",
-      "ts": "2026-05-19T20:37:18.087Z"
+      "detail": "worker=/tmp/.tmpuNaZEW",
+      "ts": "2026-05-21T20:26:33.696Z"
     },
     {
       "name": "generated split kept internal",
       "status": "pass",
-      "detail": "shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip supplied inline to HMR compile only",
-      "ts": "2026-05-19T20:37:18.087Z"
+      "detail": ".synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip supplied inline to HMR compile only",
+      "ts": "2026-05-21T20:26:33.696Z"
     },
     {
-      "name": "device edit compile via MCP",
+      "name": "user device-source natural compile via MCP",
       "status": "pass",
-      "detail": "device.hip",
-      "ts": "2026-05-19T20:37:19.205Z"
+      "detail": "src/gpu/particle_kernels.hip",
+      "ts": "2026-05-21T20:26:34.956Z"
     },
     {
       "name": "workspace visible tree remains user files only",
       "status": "pass",
-      "detail": "309 listed files; no generated split artifacts",
-      "ts": "2026-05-19T20:37:19.243Z"
+      "detail": "317 listed files; no generated split artifacts",
+      "ts": "2026-05-21T20:26:34.997Z"
+    },
+    {
+      "name": "natural body edit avoided full AI re-split",
+      "status": "pass",
+      "detail": "no full AI split marker after body edit",
+      "ts": "2026-05-21T20:26:35.061Z"
+    },
+    {
+      "name": "user_device_delta GPU AI delta worker not called",
+      "status": "pass",
+      "detail": "no GPU AI delta worker marker",
+      "ts": "2026-05-21T20:26:35.182Z"
+    },
+    {
+      "name": "user_device_delta GPU AI delta backend not called",
+      "status": "pass",
+      "detail": "no GpuDiffPatch marker",
+      "ts": "2026-05-21T20:26:35.182Z"
     },
     {
       "name": "device-only GPU HMR observed",
       "status": "pass",
-      "detail": "Device sidecar reload vendor=rocm artifact=/tmp/.tmpZyLKNg/build/device_1779223038.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 5, state_preserved: true }",
-      "ts": "2026-05-19T20:37:19.338Z"
+      "detail": "[gpu-reload] plan=device_only  reason=device-file-only-edit",
+      "ts": "2026-05-21T20:26:35.250Z"
     },
     {
       "name": "screenshot post-hmr",
       "status": "pass",
-      "detail": "800x600 visible=41001 luma=18.8 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-glfw-userfiles-20260519233656-post-hmr.png",
-      "ts": "2026-05-19T20:37:20.390Z"
+      "detail": "800x600 visible=32731 luma=16.5 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-gemini35-smoke-20260521232503-post-hmr.png",
+      "ts": "2026-05-21T20:26:36.297Z"
     },
     {
       "name": "runner stayed alive after GPU HMR",
       "status": "pass",
       "detail": "no runner crash marker",
-      "ts": "2026-05-19T20:37:20.453Z"
+      "ts": "2026-05-21T20:26:36.352Z"
+    },
+    {
+      "name": "direct device-only sidecar report accepted body edit",
+      "status": "pass",
+      "detail": "edit.kernel_body_only,abi.kernel_signature_unchanged,abi.constant_global_layout_unchanged,mapping.device_role_valid,parser.user_baseline_ast_passed,parser.user_candidate_ast_passed,parser.generated_device_ast_passed,build.selected_compile_command_present,build.effective_flags_hash_present,build.device_sidecar_only,mapping.kernel.advance_particle_field",
+      "ts": "2026-05-21T20:26:36.476Z"
+    },
+    {
+      "name": "natural validation skipped forced negative gates",
+      "status": "pass",
+      "detail": "ordinary first split, device body edit, and bounded header edit completed without forced AI delta",
+      "ts": "2026-05-21T20:26:36.477Z"
     }
-  ]
+  ],
+  "prod_run_report": {
+    "schemaVersion": "synthi.gpu.run_report.v1",
+    "arbiterDecision": "skip",
+    "selectedPlan": null,
+    "compileDbHash": "74da1bb7537dce11d2c43813f3d1416c7cc8a361f898a07cea22c3657166aa7d",
+    "cmakeCodemodelHash": "11be3590f1b45b6dd50abb3af99b8dba23858a9370a3e1afbcd6dc3061a95356",
+    "targetResolutionMethod": "single_executable_target_containing_focus",
+    "cmakeTargetCount": 1,
+    "targetName": "particle_field",
+    "toolchainCapabilityProfileHash": "88c6e2071639dc994f38c117f057261c19e3aab56ec0d502320f8b96246d3cfa",
+    "templateEvidenceStatus": "missing",
+    "affectedTemplateInstantiationCount": 0,
+    "affectedHeaderGraphStatus": "bounded"
+  }
 }

@@ -23,3 +23,9 @@ def test_constant_layout_hash_changes_on_constant_edit():
     before = constant_layout_hash(DEVICE_SOURCE)
     after = constant_layout_hash(DEVICE_SOURCE.replace("float alpha[1]", "float2 alpha[1]"))
     assert before != after
+
+
+def test_constant_layout_hash_includes_device_globals():
+    before = constant_layout_hash("__device__ int counter;\n__global__ void k() {}")
+    after = constant_layout_hash("__device__ long counter;\n__global__ void k() {}")
+    assert before != after

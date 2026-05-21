@@ -381,15 +381,7 @@ impl GpuModuleAdapter {
     /// resolved. Exposed so the adapter test can prove the table is
     /// complete without poking private state.
     pub fn required_driver_symbols(&self) -> Vec<&'static str> {
-        let v = self.config.vendor;
-        vec![
-            v.module_load_symbol(),
-            v.module_unload_symbol(),
-            v.module_get_function_symbol(),
-            v.launch_kernel_symbol(),
-            v.ctx_synchronize_symbol(),
-            v.stream_synchronize_symbol(),
-        ]
+        gpu_driver_loader::required_symbol_names(self.config.vendor).to_vec()
     }
 
     pub fn last_reload_log(&self) -> &[String] {
@@ -501,7 +493,7 @@ impl GpuModuleAdapter {
         let report = plan_gpu_reload(&cfg, input);
         self.last_reload_log = report.log_lines.clone();
         for line in &self.last_reload_log {
-            println!("{line}");
+            eprintln!("{line}");
         }
     }
 
@@ -855,11 +847,11 @@ mod tests {
     };
     use crate::runtime::gpu_runtime_boundary::{
         reset_for_test, synthi_gpu_launch_raw, synthi_gpu_register_buffer,
+        test_guard_for_test as runtime_boundary_test_guard,
     };
     use std::ffi::{c_void, CString};
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     fn dummy_request() -> AdapterReloadRequest {
         AdapterReloadRequest {
@@ -876,15 +868,6 @@ mod tests {
     static LAUNCH_CALLS: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_GRID_X: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_BLOCK_X: AtomicUsize = AtomicUsize::new(0);
-    static RUNTIME_BOUNDARY_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn runtime_boundary_test_guard() -> MutexGuard<'static, ()> {
-        RUNTIME_BOUNDARY_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("gpu runtime boundary adapter-test mutex poisoned")
-    }
-
     unsafe extern "C" fn ok_init(_flags: u32) -> CuResult {
         0
     }
@@ -1089,13 +1072,22 @@ mod tests {
     fn required_symbol_table_is_complete_cuda() {
         let a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
         let syms = a.required_driver_symbols();
+        let expected = gpu_driver_loader::required_symbol_names(GpuVendor::Cuda);
+        assert_eq!(syms.as_slice(), expected.as_slice());
+        assert!(syms.contains(&"cuInit"));
+        assert!(syms.contains(&"cuDeviceGet"));
+        assert!(syms.contains(&"cuCtxGetCurrent"));
         assert!(syms.contains(&"cuModuleLoadData"));
+        assert!(syms.contains(&"cuModuleLoad"));
         assert!(syms.contains(&"cuModuleUnload"));
         assert!(syms.contains(&"cuModuleGetFunction"));
         assert!(syms.contains(&"cuLaunchKernel"));
         assert!(syms.contains(&"cuCtxSynchronize"));
         assert!(syms.contains(&"cuStreamSynchronize"));
-        assert_eq!(syms.len(), 6);
+        assert!(syms.contains(&"cuMemAlloc_v2"));
+        assert!(syms.contains(&"cuMemFree_v2"));
+        assert!(syms.contains(&"cuMemcpyDtoD_v2"));
+        assert_eq!(syms.len(), expected.len());
     }
 
     #[test]
@@ -1106,13 +1098,22 @@ mod tests {
         };
         let a = GpuModuleAdapter::new(cfg);
         let syms = a.required_driver_symbols();
+        let expected = gpu_driver_loader::required_symbol_names(GpuVendor::Rocm);
+        assert_eq!(syms.as_slice(), expected.as_slice());
+        assert!(syms.contains(&"hipInit"));
+        assert!(syms.contains(&"hipDeviceGet"));
+        assert!(syms.contains(&"hipCtxGetCurrent"));
         assert!(syms.contains(&"hipModuleLoadData"));
+        assert!(syms.contains(&"hipModuleLoad"));
         assert!(syms.contains(&"hipModuleUnload"));
         assert!(syms.contains(&"hipModuleGetFunction"));
         assert!(syms.contains(&"hipModuleLaunchKernel"));
         assert!(syms.contains(&"hipDeviceSynchronize"));
         assert!(syms.contains(&"hipStreamSynchronize"));
-        assert_eq!(syms.len(), 6);
+        assert!(syms.contains(&"hipMalloc"));
+        assert!(syms.contains(&"hipFree"));
+        assert!(syms.contains(&"hipMemcpyDtoD"));
+        assert_eq!(syms.len(), expected.len());
     }
 
     #[test]

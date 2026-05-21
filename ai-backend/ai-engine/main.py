@@ -46,6 +46,7 @@ from llm.structural_prompts import format_heal_prompt
 from build_manifest import (
     BuildManifest,
     ManifestRejection,
+    internalize_gpu_generated_artifacts,
     normalize_gpu_split_manifest,
     parse_manifest,
     validate_manifest_v1,
@@ -1788,8 +1789,8 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             )
 
         # Parse + validate the manifest (Phase 2). If malformed, log and
-        # return `manifest=None` so the Rust worker falls back to hardcoded
-        # SDL2 defaults (backward compat with pre-universal sidecars).
+        # return `manifest=None` so the Rust worker uses a generic fallback
+        # without inferring framework link flags.
         manifest_parsed: Optional[BuildManifest] = None
         manifest_out: Optional[dict] = None
         if manifest_dict is not None:
@@ -1823,13 +1824,13 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             except Exception as e:
                 logger.warning(
                     f"[split/verified] manifest validation failed: {e}. "
-                    "Proceeding with None (worker will fall back to SDL2 default)."
+                    "Proceeding with None (worker will use generic fallback)."
                 )
                 manifest_out = None
         else:
             logger.info(
                 "[split/verified] no <synthi_build_manifest> in response "
-                "(pre-universal prompt? worker falls back to SDL2 default)"
+                "(pre-universal prompt? worker uses generic fallback)"
             )
 
         # Clean up markdown if present
@@ -1890,8 +1891,8 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             # hot_reload_mode, and confidence fields — emitted by the AI
             # inside <synthi_build_manifest>...</synthi_build_manifest>. May
             # be None if the response didn't contain one (pre-universal
-            # prompt, or model failed to emit the block) — worker falls
-            # back to hardcoded SDL2 defaults.
+            # prompt, or model failed to emit the block) — worker uses
+            # a generic fallback and does not infer framework link flags.
             "manifest": manifest_out,
             "lang": req.lang,
             "verified": True,
@@ -2073,12 +2074,24 @@ from diff_patch_helpers import (  # noqa: E402 — late import is intentional
 )
 from agents.gpu_detect import detect_project as _detect_gpu_project  # noqa: E402
 from agents.kernel_splitter import (  # noqa: E402
+    KernelSplitProviderError as _KernelSplitProviderError,
     KernelSplitterError as _KernelSplitterError,
+    KernelSplitterUnsupportedProjectError as _KernelSplitterUnsupportedProjectError,
+    build_split_retry_prompt as _build_split_retry_prompt,
     run_kernel_splitter as _run_kernel_splitter,
+    split_failure_verification as _split_failure_verification,
+    split_provider_failure_verification as _split_provider_failure_verification,
+    split_agentic_report as _split_agentic_report,
+    split_attempt_record as _split_attempt_record,
 )
+from agents.gpu_device_mapping import build_device_mapping_report  # noqa: E402
+from agents.gpu_launch_indirection import build_launch_indirection_report  # noqa: E402
 from agents.gpu_mod_delta import (  # noqa: E402
     GpuDiffPatchRequest,
+    build_gpu_diff_patch_retry_prompt as _build_gpu_diff_patch_retry_prompt,
     build_gpu_diff_patch_prompt as _build_gpu_diff_patch_prompt,
+    gpu_diff_patch_anchor_failures as _gpu_diff_patch_anchor_failures,
+    gpu_diff_patch_content_failures as _gpu_diff_patch_content_failures,
     parse_gpu_diff_response as _parse_gpu_diff_response,
 )
 from agents.gpu_healer import (  # noqa: E402
@@ -2093,8 +2106,8 @@ def _file_map_from_request(req: AnalyzeAiRequest) -> dict[str, str]:
     for f in req.files or []:
         path = getattr(f, "path", None) or getattr(f, "name", None) or "input.cpp"
         files[path] = f.content
-    if not files and req.code:
-        files[req.focus or "input.cpp"] = req.code
+    if req.code:
+        files.setdefault(req.focus or "input.cpp", req.code)
     return files
 
 
@@ -2230,6 +2243,8 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     )
     split_prompt = req.prompt
     max_split_attempts = 3
+    split_attempts = []
+    rejection_notes_history: list[str] = []
     for attempt in range(1, max_split_attempts + 1):
         try:
             split = await _run_kernel_splitter(
@@ -2243,10 +2258,152 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 files=req.files,
                 focus=req.focus,
             )
+        except _KernelSplitterUnsupportedProjectError as e:
+            verification = _split_failure_verification(
+                e.reason_code,
+                str(e),
+            )
+            logger.info("[split/gpu] deterministic unsupported project rejection: %s", e)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "GPU split unsupported for this project shape",
+                    "verification": verification.to_dict(),
+                    "source_context_report": e.source_context_report,
+                    "agentic_report": _split_agentic_report(
+                        attempts=[],
+                        accepted=False,
+                        max_attempts=0,
+                    ),
+                },
+            )
         except _KernelSplitterError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+            verification = _split_failure_verification(
+                "split_response_unparseable",
+                str(e),
+            )
+            split_attempts.append(
+                _split_attempt_record(
+                    attempt=attempt,
+                    max_attempts=max_split_attempts,
+                    model=split_model,
+                    prompt=split_prompt,
+                    source_files=file_map.keys(),
+                    verification=verification,
+                    repair_prompt=attempt > 1,
+                    repair_report={
+                        "schemaVersion": "synthi.gpu.split_repair.v1",
+                        "repaired": False,
+                        "inputReasonCodes": [v.rule for v in verification.violations],
+                        "repairRules": [],
+                        "changedFiles": [],
+                        "scope": "generated_artifacts_only",
+                    },
+                )
+            )
+            notes = "\n".join(
+                f"- {v.rule}: {v.message}" for v in verification.violations
+            )
+            logger.info(
+                "[split/gpu] splitter rejected split attempt %s/%s before verifier: %s",
+                attempt,
+                max_split_attempts,
+                notes,
+            )
+            if attempt == max_split_attempts:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": "GPU split failed before verification after retries",
+                        "verification": verification.to_dict(),
+                        "agentic_report": _split_agentic_report(
+                            attempts=split_attempts,
+                            accepted=False,
+                            max_attempts=max_split_attempts,
+                        ),
+                    },
+                )
+            rejection_notes_history.append(notes)
+            split_prompt = _build_split_retry_prompt(req.prompt, rejection_notes_history)
+            continue
+        except _KernelSplitProviderError as e:
+            verification = _split_provider_failure_verification(e)
+            split_attempts.append(
+                _split_attempt_record(
+                    attempt=attempt,
+                    max_attempts=max_split_attempts,
+                    model=split_model,
+                    prompt=split_prompt,
+                    source_files=file_map.keys(),
+                    verification=verification,
+                    repair_prompt=attempt > 1,
+                    repair_report={
+                        "schemaVersion": "synthi.gpu.split_repair.v1",
+                        "repaired": False,
+                        "inputReasonCodes": [v.rule for v in verification.violations],
+                        "repairRules": [],
+                        "changedFiles": [],
+                        "scope": "generated_artifacts_only",
+                    },
+                )
+            )
+            notes = "\n".join(
+                f"- {v.rule}: {v.message}" for v in verification.violations
+            )
+            logger.info(
+                "[split/gpu] provider failed split attempt %s/%s before verifier: %s",
+                attempt,
+                max_split_attempts,
+                notes,
+            )
+            rule = (
+                verification.violations[0].rule
+                if verification.violations
+                else "ai_provider_error"
+            )
+            raise HTTPException(
+                status_code=504 if rule == "ai_provider_timeout" else 503,
+                detail={
+                    "message": "GPU split AI provider failed before verification",
+                    "verification": verification.to_dict(),
+                    "agentic_report": _split_agentic_report(
+                        attempts=split_attempts,
+                        accepted=False,
+                        max_attempts=max_split_attempts,
+                    ),
+                },
+            )
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+        if split.repair_report and split.repair_report.get("inputReasonCodes"):
+            post_repair_codes = (
+                [v.rule for v in split.verification.violations]
+                if split.verification
+                else []
+            )
+            logger.info(
+                "[split/gpu] split attempt %s/%s deterministic repair: repaired=%s rules=%s changed=%s remaining=%s",
+                attempt,
+                max_split_attempts,
+                split.repair_report.get("repaired"),
+                split.repair_report.get("repairRules", []),
+                split.repair_report.get("changedFiles", []),
+                post_repair_codes,
+            )
+
+        split_attempts.append(
+            _split_attempt_record(
+                attempt=attempt,
+                max_attempts=max_split_attempts,
+                model=split_model,
+                prompt=split_prompt,
+                source_files=file_map.keys(),
+                verification=split.verification,
+                repair_prompt=attempt > 1,
+                repair_report=split.repair_report,
+            )
+        )
 
         if not (split.verification and not split.verification.ok):
             break
@@ -2262,17 +2419,8 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         )
         if attempt == max_split_attempts:
             break
-        split_prompt = "\n\n".join(
-            p for p in [
-                req.prompt,
-                (
-                    "The previous GPU split failed Synthi's verifier. "
-                    "Regenerate the complete GPU role split and fix all "
-                    "violations exactly. Do not repeat any rejected pattern:\n"
-                    f"{notes}"
-                ),
-            ] if p
-        )
+        rejection_notes_history.append(notes)
+        split_prompt = _build_split_retry_prompt(req.prompt, rejection_notes_history)
 
     if split is None:
         raise HTTPException(status_code=400, detail="GPU split did not produce a result")
@@ -2284,6 +2432,11 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
             detail={
                 "message": "GPU split failed Synthi verifier after retries",
                 "verification": verification,
+                "agentic_report": _split_agentic_report(
+                    attempts=split_attempts,
+                    accepted=False,
+                    max_attempts=max_split_attempts,
+                ),
             },
         )
 
@@ -2292,22 +2445,37 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         if req.gpu_arch and req.gpu_arch.strip().lower() != "auto"
         else None
     )
-    manifest_raw = normalize_gpu_split_manifest(
-        split.manifest if isinstance(split.manifest, dict) else {},
-        split_files=split.files,
-        vendor_hint=detection.vendor_hint,
-        arch_hint=(
-            request_arch_hint
-            or os.getenv("SYNTHI_GPU_ARCH_HINT")
-            or os.getenv("SYNTHI_GPU_ARCH")
-            or None
-        ),
-    )
-
     try:
+        manifest_raw = normalize_gpu_split_manifest(
+            split.manifest if isinstance(split.manifest, dict) else {},
+            split_files=split.files,
+            link_hint_sources=file_map,
+            vendor_hint=detection.vendor_hint,
+            arch_hint=(
+                request_arch_hint
+                or os.getenv("SYNTHI_GPU_ARCH_HINT")
+                or os.getenv("SYNTHI_GPU_ARCH")
+                or None
+            ),
+        )
         manifest_parsed = parse_manifest(manifest_raw)
         validate_manifest_v1(manifest_parsed)
         manifest_out = manifest_to_dict(manifest_parsed)
+        split_files_out, manifest_out, generated_artifact_report = (
+            internalize_gpu_generated_artifacts(split.files, manifest_out)
+        )
+        manifest_parsed = parse_manifest(manifest_out)
+        validate_manifest_v1(manifest_parsed)
+        manifest_out = manifest_to_dict(manifest_parsed)
+        device_mapping_report = build_device_mapping_report(
+            source_files=file_map,
+            generated_files=split_files_out,
+            manifest=manifest_out,
+        )
+        launch_indirection_report = build_launch_indirection_report(
+            generated_files=split_files_out,
+            verification=split.verification.to_dict() if split.verification else None,
+        )
     except ManifestRejection as e:
         raise HTTPException(status_code=422, detail=e.message)
     except Exception as e:
@@ -2319,12 +2487,22 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         logger.info("[split/gpu] verifier rejected GPU split: %s", verification)
 
     return {
-        "result": json.dumps(split.files),
+        "result": json.dumps(split_files_out),
         "architecture": split.architecture_md,
         "manifest": manifest_out,
         "kernel_hashes": split.kernel_hashes,
         "launch_graph": split.launch_graph,
+        "source_context_report": split.source_context_report,
         "gpu_detection": detection.to_dict(),
+        "generated_artifact_report": generated_artifact_report,
+        "device_mapping_report": device_mapping_report,
+        "launch_indirection_report": launch_indirection_report,
+        "agentic_report": _split_agentic_report(
+            attempts=split_attempts,
+            accepted=True,
+            max_attempts=max_split_attempts,
+        ),
+        "split_repair_report": split.repair_report,
         "lang": req.lang,
         "verified": bool(split.verification.ok if split.verification else True),
         "verification": verification,
@@ -2349,22 +2527,50 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
         if provider_name == "openai"
         else "gemini-3.1-flash-lite-preview"
     )
+    max_delta_attempts = 2
     try:
-        ai_response = await provider.ask_llm(
-            prompt,
-            "cpp",
-            None,
-            mode="delta",
-            model=req.model or default_model,
-            api_key=req.api_key,
-        )
-        parsed = _parse_gpu_diff_response(ai_response)
+        last_parsed = None
+        last_failures = []
+        for attempt in range(1, max_delta_attempts + 1):
+            ai_response = await provider.ask_llm(
+                prompt,
+                "cpp",
+                None,
+                mode="delta",
+                model=req.model or default_model,
+                api_key=req.api_key,
+            )
+            parsed = _parse_gpu_diff_response(ai_response)
+            failures = _gpu_diff_patch_anchor_failures(req, parsed["edits"])
+            failures.extend(_gpu_diff_patch_content_failures(req, parsed["edits"]))
+            if not failures:
+                elapsed = time.time() - start_time
+                print(
+                    f"[GpuDiffPatch] plan={parsed['reload_plan']} "
+                    f"edits={len(parsed['edits'])} attempt={attempt}/{max_delta_attempts} "
+                    f"elapsed={elapsed:.2f}s"
+                )
+                return {**parsed, "elapsed_seconds": elapsed, "attempt_count": attempt}
+
+            last_parsed = parsed
+            last_failures = failures
+            print(
+                f"[GpuDiffPatch] verifier rejected attempt={attempt}/{max_delta_attempts} "
+                f"failures={failures}"
+            )
+            if attempt < max_delta_attempts:
+                prompt = _build_gpu_diff_patch_retry_prompt(prompt, failures)
+
         elapsed = time.time() - start_time
-        print(
-            f"[GpuDiffPatch] plan={parsed['reload_plan']} "
-            f"edits={len(parsed['edits'])} elapsed={elapsed:.2f}s"
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "GPU diff patch verifier rejected AI edits after retries",
+                "reload_plan": (last_parsed or {}).get("reload_plan"),
+                "failures": last_failures,
+                "elapsed_seconds": elapsed,
+            },
         )
-        return {**parsed, "elapsed_seconds": elapsed}
     except HTTPException:
         raise
     except json.JSONDecodeError as e:

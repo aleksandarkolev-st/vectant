@@ -7,6 +7,7 @@ import {
 
 interface WaitHmrArgs {
   timeoutMs?: unknown;
+  module?: unknown;
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -17,11 +18,12 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     typeof a.timeoutMs === "number" && a.timeoutMs > 0
       ? a.timeoutMs
       : DEFAULT_TIMEOUT_MS;
+  const module = typeof a.module === "string" && a.module.trim() ? a.module.trim() : undefined;
 
   try {
     const start = Date.now();
     const attached = session.require();
-    const result = await attached.channels.hmr.waitForTerminal({ timeoutMs });
+    const result = await attached.channels.hmr.waitForTerminal({ timeoutMs, module });
     let frameGate: Record<string, unknown> | undefined;
 
     if (result.status === "applied") {

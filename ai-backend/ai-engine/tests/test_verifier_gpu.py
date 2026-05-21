@@ -25,6 +25,13 @@ __global__ void scale(float* x, float s, int n) {
 
 EXISTING_KERNELS = ["vec_add", "scale"]
 
+VALID_HOST_RUNNER = (
+    'using gui_on_render_fn = void (*)(void*);\n'
+    'int main() { void* libgui = 0; void* core_state = 0; '
+    'auto render = (gui_on_render_fn)dlsym(libgui, "gui_on_render"); '
+    'if (render) render(core_state); return 0; }'
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Heal verifier — rule 1 (no file creation)
@@ -60,6 +67,92 @@ def test_accepts_edit_to_existing_module():
         existing_device_source=EXISTING_DEVICE,
     )
     assert r.ok, r.violations
+
+
+def test_split_rejects_placeholder_opengl_drawing_loop_comment():
+    source_files = {
+        "src/render/glfw_canvas.cpp": (
+            "#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n"
+            "void render() { glMatrixMode(GL_PROJECTION); glOrtho(0, 800, 600, 0, -1, 1); }"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) { glClear(GL_COLOR_BUFFER_BIT); // ... drawing loop ...\n }'
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void step() {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    assert any(v.rule == "gui_render_placeholder" for v in r.violations)
+
+
+def test_split_rejects_gui_render_with_comment_but_no_drawing_effect():
+    source_files = {
+        "src/render/glfw_canvas.cpp": (
+            "#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n"
+            "void render() { glBegin(GL_POINTS); glVertex2f(10, 10); glEnd(); }"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { void* renderer; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { AppState* state = reinterpret_cast<AppState*>(state_ptr); '
+            '// Concrete backend drawing code using state->renderer\n }'
+        ),
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": 'extern "C" __global__ void step() {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    assert any(v.rule == "gui_render_no_effect" for v in r.violations)
+
+
+def test_split_rejects_glfw_opengl_clear_only_renderer():
+    source_files = {
+        "src/render/glfw_canvas.cpp": (
+            "#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n"
+            "void render() { glMatrixMode(GL_PROJECTION); glOrtho(0, 800, 600, 0, -1, 1); "
+            "glBegin(GL_POINTS); glVertex2f(10, 10); glEnd(); }"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) { glClearColor(0.02f, 0.03f, 0.04f, 1.0f); glClear(GL_COLOR_BUFFER_BIT); }'
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void step() {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    assert any(v.rule == "gui_render_too_sparse" for v in r.violations)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -254,7 +347,7 @@ def test_split_clean_output_passes():
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
         "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, { &a, &b, &c, &n }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
         "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
-        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "host_runner.cpp": VALID_HOST_RUNNER,
         "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
     }
     r = verify_split_output(files=files, manifest_arch=["sm_80"])
@@ -266,7 +359,7 @@ def test_split_clean_output_with_manifest_dynamic_paths_passes():
         "src/state/shared_runtime_abc123.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
         "host/core_loop_abc123.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, { &a, &b, &c, &n }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
         "render/gui_surface_abc123.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
-        "run/flow_runner_abc123.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "run/flow_runner_abc123.cpp": VALID_HOST_RUNNER,
         "gpu/kernels/particle_kernel_abc123.hip": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
     }
     manifest = {
@@ -288,7 +381,7 @@ def test_split_allows_quoted_includes_of_generated_role_paths():
         "src/state/shared_runtime_abc123.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
         "host/core_loop_abc123.cpp": '#include "../src/state/shared_runtime_abc123.h"\nextern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, { &a, &b, &c, &n }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
         "render/gui_surface_abc123.cpp": '#include "shared_runtime_abc123.h"\nextern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
-        "run/flow_runner_abc123.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "run/flow_runner_abc123.cpp": VALID_HOST_RUNNER,
         "gpu/kernels/particle_kernel_abc123.hip": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
     }
     manifest = {
@@ -303,6 +396,18 @@ def test_split_allows_quoted_includes_of_generated_role_paths():
     }
     r = verify_split_output(files=files, manifest_arch=["gfx1201"], manifest=manifest)
     assert r.ok, r.violations
+
+
+def test_split_rejects_marker_only_host_runner_gui_reference():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": 'extern "C" void* core_on_load(void*, void*) { return 0; }\nextern "C" void core_on_update(void*, double) { synthi_gpu_launch(gpu, "vec_add", 1, 256, 0, stream, { &a, &b, &c, &n }); }\nextern "C" const DeviceDescriptor* device_descriptor() { return 0; }\nextern "C" void device_on_load(const unsigned char*, size_t) {}\nextern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }',
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert any(v.rule == "host_runner_omits_gui_module" for v in r.violations)
 
 
 def test_split_rejects_generated_role_including_project_header():
@@ -784,6 +889,148 @@ def test_split_rejects_uninitialized_gui_render_surface():
     assert any(v.rule == "gui_render_surface_not_initialized" for v in r.violations)
 
 
+def test_split_rejects_core_gui_state_type_mismatch():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "namespace draw { struct ParticleBuffers { float* x; float* y; unsigned int* rgba; int n; }; }"
+        ),
+        "core.cpp": (
+            "struct RuntimeState { float x[64]; float y[64]; unsigned int rgba[64]; int n; };\n"
+            "static RuntimeState g_state{};\n"
+            'extern "C" void* core_on_load(void*, void*) { g_state.n = 64; return &g_state; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 64, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "auto* s = reinterpret_cast<draw::ParticleBuffers*>(state_ptr); "
+            "for (int i = 0; i < s->n; ++i) { (void)s->rgba[i]; } }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void step(int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "generated.core_gui_state_abi_mismatch" for v in r.violations)
+
+
+def test_split_allows_core_gui_state_type_alias_match():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nnamespace sim { struct RuntimeState { float x[64]; int n; }; }',
+        "core.cpp": (
+            '#include "shared.h"\n'
+            "static sim::RuntimeState g_state{};\n"
+            'extern "C" void* core_on_load(void*, void*) { g_state.n = 64; return static_cast<void*>(&g_state); }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 64, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "auto* s = reinterpret_cast<RuntimeState*>(state_ptr); "
+            "for (int i = 0; i < s->n; ++i) { (void)s->x[i]; } }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void step(int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert not any(v.rule == "generated.core_gui_state_abi_mismatch" for v in r.violations)
+
+
+def test_split_rejects_private_core_state_type_crossing_gui_boundary():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct SharedOnly { int n; };',
+        "core.cpp": (
+            '#include "shared.h"\n'
+            "struct AppState { float x[64]; int n; };\n"
+            "static AppState g_state{};\n"
+            'extern "C" void* core_on_load(void*, void*) { g_state.n = 64; return &g_state; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 64, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "auto* s = reinterpret_cast<AppState*>(state_ptr); "
+            "for (int i = 0; i < s->n; ++i) { (void)s->x[i]; } }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void step(int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "generated.host_state_type_not_shared" for v in r.violations)
+
+
+def test_split_rejects_unqualified_namespaced_shared_constants():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "namespace scale { struct AppState { int n; }; constexpr int kParticleCount = 512; }"
+        ),
+        "core.cpp": (
+            '#include "shared.h"\n'
+            "static scale::AppState g_state{};\n"
+            'extern "C" void* core_on_load(void*, void*) { g_state.n = kParticleCount; return &g_state; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 64, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "auto* s = reinterpret_cast<scale::AppState*>(state_ptr); (void)s; }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void step(int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(
+        v.rule == "generated.shared_namespace_symbol_unqualified"
+        and v.offending_symbol == "scale::kParticleCount"
+        for v in r.violations
+    )
+
+
+def test_split_allows_qualified_namespaced_shared_constants():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "namespace scale { struct AppState { int n; }; constexpr int kParticleCount = 512; }"
+        ),
+        "core.cpp": (
+            '#include "shared.h"\n'
+            "static scale::AppState g_state{};\n"
+            'extern "C" void* core_on_load(void*, void*) { g_state.n = scale::kParticleCount; return &g_state; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 64, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "auto* s = reinterpret_cast<scale::AppState*>(state_ptr); (void)s; }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void step(int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert not any(v.rule == "generated.shared_namespace_symbol_unqualified" for v in r.violations)
+
+
 def test_split_rejects_invalid_device_descriptor_initializer():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
@@ -940,6 +1187,27 @@ def test_split_rejects_non_address_launch_arguments():
     r = verify_split_output(files=files, manifest_arch=["sm_80"])
     rules = {v.rule for v in r.violations}
     assert "launch_arg_not_address" in rules
+
+
+def test_split_rejects_kernel_launch_abi_argument_count_mismatch():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct LaunchParams { float dt; float cx; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'float* x = 0; int n = 1; float dt = 0.1f; float cx = 400.0f; '
+            'synthi_gpu_launch(gpu, "advance", 1, 256, 0, stream, { &x, &n, &dt, &cx }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": 'extern "C" __global__ void advance(float* x, int n, LaunchParams params) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    rules = {v.rule for v in r.violations}
+    assert "kernel_launch_abi_mismatch" in rules
 
 
 def test_split_rejects_runtime_unsafe_gpu_buffer_split():
@@ -1102,6 +1370,22 @@ def test_split_rejects_unresolved_synthi_launch_site():
         v.rule == "launch_site_unresolved" and v.offending_symbol == "ghost_kernel"
         for v in r.violations
     )
+
+
+def test_split_rejects_direct_launch_table_bypass():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": (
+            "void l() { auto t = synthi_gpu_launch_table(); "
+            "synthi_gpu_launch_raw_checked(gpu, \"vec_add\", 0, 0, 0, 0, 0, 0, 0, 0, t.generation); }"
+        ),
+        "gui.cpp": "",
+        "host_runner.cpp": "",
+        "device.cu": "__global__ void vec_add(float*) {}",
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert not r.ok
+    assert any(v.rule == "launch_indirection_bypassed" for v in r.violations)
 
 
 def test_split_rejects_missing_device_file():

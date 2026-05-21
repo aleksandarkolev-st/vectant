@@ -89,7 +89,7 @@ ARG ROCDXG_VERSION=1.2.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     # C/C++ — GCC 15 for C++26
-    gcc-15 g++-15 clang make cmake \
+    gcc-15 g++-15 clang make cmake git pkg-config \
     # Java — full JDK (NOT -headless): GUI apps (AWT/Swing) need
     # libawt_xawt.so + its X11 runtime deps (libxrender1, libxtst6,
     # fontconfig, …) which the -headless variant omits.
@@ -98,6 +98,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip \
     # SDL2
     libsdl2-2.0-0 libsdl2-dev \
+    libgl1-mesa-dev libglu1-mesa-dev libglfw3-dev libglew-dev libomp-dev libpng-dev \
     # Runtime utilities used by language runtimes, downloads, and ROCm lld
     curl xz-utils gnupg libxml2-16 \
     && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-15 100 \

@@ -2720,6 +2720,27 @@ def _needs_code_changes(prompt: str) -> bool:
     return _detect_query_intent(prompt) == "change"
 
 
+def build_split_mode_prompt(
+    code: str,
+    lang: str,
+    split_prompt: str = "",
+) -> str:
+    """Build the transport wrapper for split prompts.
+
+    Split prompts define their own strict response format. Do not reuse the
+    general JSON-only suffix here: GPU splits must return both the generated
+    role file block and the architecture cache block.
+    """
+
+    return (
+        (split_prompt or "")
+        + f"\n\nHere is the code to split (language: {lang}):\n```{lang}\n{code}\n```"
+        + "\n\nRespond exactly in the split prompt's required format: "
+        + "<JSON>...</JSON> first, followed by <synthi_arch_cache>...</synthi_arch_cache>. "
+        + "No prose before, between, or after those blocks."
+    )
+
+
 def build_prompt(
     code: str,
     lang: str,
@@ -3603,19 +3624,22 @@ shared.h:
 host_runner.cpp:
   - Owns EVERYTHING the split modules are forbidden from.
 
-# BUILD HINT SCANNING (read user source before guessing flags)
+# BUILD METADATA SCANNING (do not force source annotations)
 
-Before synthesizing link flags, SCAN the user's source for explicit build
-hints. If present, copy them VERBATIM into the manifest rather than guessing:
+Before synthesizing link flags, read project build metadata first:
+CMakeLists.txt, compile_commands.json, presets, package config output already
+present in the request, and any explicit compile/link command the user project
+already owns. Copy those flags into the manifest rather than guessing.
+
+Optional source hints are accepted for compatibility, but they are not required
+from users and must never be the only production path:
 
   #pragma comment(lib, "X")          -> add "-lX" to gui_link_flags
-  // LINK: -lX -L/path -I/path       -> parse, copy verbatim into gui_link_flags
+  // LINK: -lX -L/path -I/path       -> parse only when already present
   // REQUIRES: libx-dev              -> add to system_packages
   // BUILD: g++ main.cpp -lfoo       -> treat as authoritative
 
-User hints ALWAYS override your inference. Copy them VERBATIM.
-If a hint is present, set confidence.link_flags = "high" because the user
-told you what they need.
+Never invent framework link flags from include names alone.
 
 # INCLUDE → LINK RULE (mandatory, generic — applies to ALL libraries)
 
@@ -3688,9 +3712,9 @@ confidence.runner_synthesis:
              pattern that prevents a clean rewrite
 
 confidence.link_flags:
-  "high"   - well-known library OR user provided explicit // LINK: hint
-  "medium" - library identified but standard flags vary by distro
-  "low"    - couldn't identify library; guessed from header names
+  "high"   - link flags came from build metadata or existing explicit hints
+  "medium" - library identified but build metadata is partial
+  "low"    - link flags could not be proven; request manifest repair or fallback
 
 confidence.overall: minimum of the two above
 confidence.notes: free-form explanation of any low confidences
@@ -4363,7 +4387,7 @@ fields, emit a `files` array plus a `gpu` sub-object:
     "gpu": {
       "vendor": "cuda",                       // or "rocm"
       "device_compiler": "nvcc",              // or "clang-cuda" or "hipcc"
-      "arch": ["sm_80"],                      // ["gfx90a"] for ROCm
+      "arch": ["<selected-target-arch>"],
       "device_flags": ["-O3", "-lineinfo", "--use_fast_math"],
       "runtime_libs": ["cudart", "cuda"],     // ["amdhip64"] for ROCm
       "snapshot_mode": "auto",
@@ -4371,12 +4395,39 @@ fields, emit a `files` array plus a `gpu` sub-object:
     }
 
 `fatbin_strategy` must be `"sidecar_module"` — embedded fatbins are
-not HMR-compatible. Pick `arch` from the source's targeting hints
-(comments, `#pragma`, etc.) or default to `sm_80` (CUDA) /
-`gfx90a` (ROCm) when the source doesn't specify.
+not HMR-compatible. Pick `arch` only from selected-target build
+metadata, explicit request metadata, or source targeting hints. Do not
+invent a CUDA or ROCm default when the target architecture is missing;
+emit a verifier-readable manifest failure instead.
 Use vendor-correct device flags: CUDA may use `--use_fast_math`, but
 ROCm/HIP must not. A ROCm `device_flags` list should usually be
 `["-O3", "-lineinfo"]`.
+
+# GENERATED-MODULE LINK MANIFEST SCOPE
+
+Build metadata describes the user's original target; the generated hot
+modules are smaller adapter modules. Do not blindly copy every transitive
+CMake target library into `core_link_flags`, `gui_link_flags`, or
+`runner_link_flags`.
+
+Only include link flags that are required by the generated role source you
+emit:
+
+  - `core_link_flags`: libraries directly referenced by generated core.cpp.
+  - `gui_link_flags`: libraries directly referenced by generated gui.cpp.
+  - `runner_link_flags`: libraries directly referenced by generated
+    host_runner.cpp.
+  - `gpu.runtime_libs`: GPU runtime libraries needed by the selected vendor
+    loader path.
+
+If a dependency appears only in the original application but your generated
+role source does not include its headers or call its symbols, omit it from the
+generated module manifest. If build metadata contains semantic CMake imported
+target names such as `Pkg::Target`, `OpenGL::GL`, or package component names,
+do not convert those names into guessed `-l...` flags. Use concrete linker
+flags already present in the metadata, package-config output, or explicit
+toolchain evidence. Otherwise leave the role flag out and set
+`confidence.link_flags` below high with an explanation.
 
 # NO-SHIM CONTRACT
 
@@ -4512,9 +4563,35 @@ Rules:
   unchanged, set `reload_plan` to `device_only`.
 - If both host and device files change without ABI drift, set
   `reload_plan` to `mixed`.
+- Edits are applied to the CURRENT generated role files below, not to the
+  original user source. Every `anchor` must be copied verbatim from the
+  matching CURRENT FILES block and must appear exactly once there. For
+  `module: "device"`, use an anchor from the CURRENT generated `device`
+  block, even when the USER DIFF line has a different spelling in the
+  original `.cu` / `.hip` source.
+- Generated role files must stay self-contained. Do not add quoted
+  `#include "..."` lines for original workspace or project headers. Quoted
+  includes may only target emitted Synthi role files such as `shared.h` or
+  `synthi_gpu_runtime.h`. Copy or adapt required structs, constants, and
+  helpers into the generated roles instead.
 
 ARCHITECTURE CACHE:
 {ARCHITECTURE}
+
+USER-TO-GENERATED DEVICE MAPPING REPORT:
+```json
+{MAPPING_REPORT}
+```
+
+COMPILE MANIFEST:
+```json
+{COMPILE_MANIFEST}
+```
+
+CURRENT RELOAD PLAN REPORT:
+```json
+{RELOAD_PLAN_REPORT}
+```
 
 CURRENT FILES:
 shared.h:
