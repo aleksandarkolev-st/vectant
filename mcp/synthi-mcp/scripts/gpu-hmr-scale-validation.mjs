@@ -21,6 +21,21 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 
+function normalizeHmrDeltaMode(value) {
+  const normalized = String(value ?? 'ai_user_delta').toLowerCase().replace(/[-\s]+/g, '_');
+  const aliases = {
+    forced: 'ai_user_delta',
+    forced_ai_delta: 'ai_user_delta',
+    ai_delta: 'ai_user_delta',
+    direct: 'natural_user_delta',
+    direct_device: 'natural_user_delta',
+    no_force: 'natural_user_delta',
+    no_forced_delta: 'natural_user_delta',
+    natural: 'natural_user_delta',
+  };
+  return aliases[normalized] ?? normalized;
+}
+
 const CFG = {
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
@@ -49,7 +64,8 @@ const CFG = {
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_SCALE_FIRST_TIMEOUT_MS ?? 240000),
   hotSwapTimeoutMs: Number(process.env.SYNTHI_SCALE_HMR_TIMEOUT_MS ?? 30000),
-  hmrDeltaMode: (process.env.SYNTHI_SCALE_HMR_DELTA_MODE ?? 'ai_user_delta').toLowerCase(),
+  hmrDeltaMode: normalizeHmrDeltaMode(process.env.SYNTHI_SCALE_HMR_DELTA_MODE ?? 'ai_user_delta'),
+  validationProfile: (process.env.SYNTHI_SCALE_VALIDATION_PROFILE ?? 'full').toLowerCase().replace(/[-\s]+/g, '_'),
   aiDeltaEvidenceTimeoutMs: Number(process.env.SYNTHI_SCALE_AI_DELTA_EVIDENCE_TIMEOUT_MS ?? 45000),
   templateEvidenceMode: (process.env.SYNTHI_SCALE_TEMPLATE_EVIDENCE ?? 'missing').toLowerCase(),
   screenshotAttempts: Number(process.env.SYNTHI_SCALE_SCREENSHOT_ATTEMPTS ?? 6),
@@ -71,6 +87,10 @@ const MODE_RESULTS_JSON = path.join(LOG_DIR, `scale-validation-${CFG.renderBacke
 const MODE_RESULTS_TXT = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-results.txt`);
 const TARGET_MODE_RESULTS_JSON = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-${CFG.cmakeTargetMode}-results.json`);
 const TARGET_MODE_RESULTS_TXT = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-${CFG.cmakeTargetMode}-results.txt`);
+const HMR_MODE_RESULTS_JSON = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-${CFG.hmrDeltaMode}-results.json`);
+const HMR_MODE_RESULTS_TXT = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-${CFG.hmrDeltaMode}-results.txt`);
+const NATURAL_PROFILE_RESULTS_JSON = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-${CFG.cmakeTargetMode}-${CFG.validationProfile}-${CFG.hmrDeltaMode}-results.json`);
+const NATURAL_PROFILE_RESULTS_TXT = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-${CFG.cmakeTargetMode}-${CFG.validationProfile}-${CFG.hmrDeltaMode}-results.txt`);
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
@@ -114,6 +134,8 @@ const SUPPORTED_RENDER_FIXTURES = new Set([
   'vulkan',
 ]);
 const SUPPORTED_CMAKE_TARGET_MODES = new Set(['single', 'multi', 'ambiguous']);
+const SUPPORTED_HMR_DELTA_MODES = new Set(['ai_user_delta', 'natural_user_delta']);
+const SUPPORTED_VALIDATION_PROFILES = new Set(['full', 'natural']);
 
 function renderBackendProfile(renderBackend) {
   const profiles = {
@@ -211,6 +233,8 @@ const report = {
   arch: '',
   render_backend: CFG.renderBackend,
   cmake_target_mode: CFG.cmakeTargetMode,
+  hmr_delta_mode: CFG.hmrDeltaMode,
+  validation_profile: CFG.validationProfile,
   source_file_mix: {},
   template_evidence_mode: CFG.templateEvidenceMode,
   workspace_file_count: 0,
@@ -228,6 +252,8 @@ const report = {
   launch_indirection: {},
   warm_rebuild: {},
   runtime_policy: {},
+  direct_device_fast_path: {},
+  ai_delta_observations: [],
   phases: [],
   screenshots: [],
   checks: [],
@@ -2599,28 +2625,30 @@ function validateMemoryRefreshPolicySidecar(rawSidecar) {
 }
 
 async function compileUserDeviceDelta(project, editedDevice, vendor, checkpoint) {
-  if (CFG.hmrDeltaMode !== 'ai_user_delta') {
-    throw new Error(`unsupported SYNTHI_SCALE_HMR_DELTA_MODE=${CFG.hmrDeltaMode}; expected ai_user_delta`);
-  }
   const additionalFiles = project.files
     .filter((f) => cleanRel(f.path) !== cleanRel(project.devicePath))
     .map((f) => ({ name: f.path, content: f.content }));
-  return compileViaMcp({
+  const args = {
     language: 'cpp',
     filename: project.devicePath,
     source: editedDevice,
     files: additionalFiles,
     is_gui: true,
     use_ai_split: false,
-    user_requested_deterministic: true,
-    force_gpu_ai_delta: true,
     prefer_gpu_pipeline: true,
     gpu_mode: vendor,
     gpu_arch: CFG.gpuArch,
     slug: CFG.slug,
     width: 800,
     height: 600,
-  }, CFG.hotSwapTimeoutMs, 'ai_device_delta_hmr', checkpoint);
+  };
+  let phaseName = 'natural_device_body_hmr';
+  if (CFG.hmrDeltaMode === 'ai_user_delta') {
+    args.user_requested_deterministic = true;
+    args.force_gpu_ai_delta = true;
+    phaseName = 'ai_device_delta_hmr';
+  }
+  return compileViaMcp(args, CFG.hotSwapTimeoutMs, phaseName, checkpoint);
 }
 
 async function compileTemplateWarmRebuild(project, editedHeader, currentDevice, vendor, checkpoint) {
@@ -2633,22 +2661,25 @@ async function compileTemplateWarmRebuild(project, editedHeader, currentDevice, 
       name: f.path,
       content: cleanRel(f.path) === cleanRel(project.devicePath) ? currentDevice : f.content,
     }));
-  return compileViaMcp({
+  const args = {
     language: 'cpp',
     filename: project.templateHeaderPath,
     source: editedHeader,
     files: additionalFiles,
     is_gui: true,
     use_ai_split: false,
-    user_requested_deterministic: true,
-    force_gpu_ai_delta: false,
     prefer_gpu_pipeline: true,
     gpu_mode: vendor,
     gpu_arch: CFG.gpuArch,
     slug: CFG.slug,
     width: 800,
     height: 600,
-  }, CFG.hotSwapTimeoutMs, 'template_warm_rebuild_hmr', checkpoint);
+  };
+  if (CFG.validationProfile !== 'natural') {
+    args.user_requested_deterministic = true;
+    args.force_gpu_ai_delta = false;
+  }
+  return compileViaMcp(args, CFG.hotSwapTimeoutMs, 'template_warm_rebuild_hmr', checkpoint);
 }
 
 async function dispatchTemplateWarmRebuildNegative(project, editedHeader, currentDevice, vendor, checkpoint) {
@@ -2716,6 +2747,116 @@ function validateWarmRebuildSidecar(sidecar, project) {
     verifierStatus: verifier.status,
   };
   record('warm rebuild report accepted bounded template edit', 'pass', reasonCodes.join(','));
+}
+
+function validateDirectDeviceFastPathSidecar(rawSidecar, project) {
+  const sidecar = typeof rawSidecar === 'string' ? JSON.parse(rawSidecar) : rawSidecar;
+  const plan = sidecar.lastReloadPlanReport || sidecar.runReport?.reloadPlan;
+  const verifier = sidecar.lastDeviceFastPathVerifierReport;
+  if (!plan || plan.plan !== 'device_only') {
+    throw new Error(`direct device sidecar missing device_only plan: ${JSON.stringify(plan).slice(0, 500)}`);
+  }
+  if (!verifier || verifier.status !== 'pass') {
+    throw new Error(`direct device verifier did not pass: ${JSON.stringify(verifier).slice(0, 500)}`);
+  }
+  if (sidecar.patchTier !== 'device_only') {
+    throw new Error(`direct device sidecar patchTier mismatch: ${sidecar.patchTier ?? 'missing'}`);
+  }
+  const reasonCodes = Array.isArray(plan.reasonCodes) ? plan.reasonCodes : [];
+  for (const required of [
+    'edit.kernel_body_only',
+    'abi.kernel_signature_unchanged',
+    'abi.constant_global_layout_unchanged',
+    'build.device_sidecar_only',
+  ]) {
+    if (!reasonCodes.includes(required)) {
+      throw new Error(`direct device plan missing ${required}: ${JSON.stringify(plan).slice(0, 500)}`);
+    }
+  }
+  const affected = plan.affectedUserFiles || [];
+  if (!affected.includes(project.devicePath)) {
+    throw new Error(`direct device plan missing affected device file: ${JSON.stringify(affected).slice(0, 300)}`);
+  }
+  report.direct_device_fast_path = {
+    plan: plan.plan,
+    patchTier: sidecar.patchTier,
+    verifierStatus: verifier.status,
+    reasonCodes,
+  };
+  record('direct device-only sidecar report accepted body edit', 'pass', reasonCodes.join(','));
+}
+
+function validateNaturalAiDeltaFallbackSidecar(rawSidecar, project) {
+  const sidecar = typeof rawSidecar === 'string' ? JSON.parse(rawSidecar) : rawSidecar;
+  const plan = sidecar.lastReloadPlanReport || sidecar.runReport?.reloadPlan;
+  if (!plan || plan.plan !== 'device_only') {
+    throw new Error(`natural AI delta fallback missing device_only plan: ${JSON.stringify(plan).slice(0, 500)}`);
+  }
+  if (sidecar.patchTier !== 'ai_delta') {
+    throw new Error(`natural AI delta fallback patchTier mismatch: ${sidecar.patchTier ?? 'missing'}`);
+  }
+  const reasonCodes = Array.isArray(plan.reasonCodes) ? plan.reasonCodes : [];
+  for (const required of [
+    'ai_delta.generated_role_patch',
+    'ai_delta.reload_plan.device_only',
+    'ai_delta.local_proof_failed',
+    'verifier.ai_delta_edits_applied',
+  ]) {
+    if (!reasonCodes.includes(required)) {
+      throw new Error(`natural AI delta fallback plan missing ${required}: ${JSON.stringify(plan).slice(0, 500)}`);
+    }
+  }
+  const affected = plan.affectedUserFiles || [];
+  if (!affected.includes(project.devicePath)) {
+    throw new Error(`natural AI delta fallback plan missing affected device file: ${JSON.stringify(affected).slice(0, 300)}`);
+  }
+  report.direct_device_fast_path = {
+    plan: plan.plan,
+    patchTier: sidecar.patchTier,
+    verifierStatus: 'ai_delta_applied',
+    reasonCodes,
+  };
+  record('natural AI delta fallback was verifier-gated', 'pass', reasonCodes.join(','));
+}
+
+async function recordAiDeltaObservation(phase, workerCheckpointValue, aiCheckpointValue, expectedCalled) {
+  const workerTail = await dockerLogs(CFG.workerContainer, workerCheckpointValue);
+  const aiTail = await dockerLogs(CFG.aiEngineContainer, aiCheckpointValue);
+  const workerMarkers = [...workerTail.matchAll(/\[GPU AI Delta\][^\n]*/g)]
+    .map((match) => match[0].slice(0, 500));
+  const backendMarkers = [...aiTail.matchAll(/\[GpuDiffPatch\][^\n]*/g)]
+    .map((match) => match[0].slice(0, 500));
+  const observation = {
+    phase,
+    hmrDeltaMode: CFG.hmrDeltaMode,
+    validationProfile: CFG.validationProfile,
+    workerCalled: workerMarkers.length > 0,
+    backendCalled: backendMarkers.length > 0,
+    workerMarkers: [...new Set(workerMarkers)],
+    backendMarkers: [...new Set(backendMarkers)],
+  };
+  report.ai_delta_observations.push(observation);
+
+  const workerStatus = observation.workerCalled === expectedCalled ? 'pass' : 'fail';
+  const backendStatus = observation.backendCalled === expectedCalled ? 'pass' : 'fail';
+  const expectedText = expectedCalled ? 'called' : 'not called';
+  record(
+    `${phase} GPU AI delta worker ${expectedText}`,
+    workerStatus,
+    observation.workerMarkers[0] || 'no GPU AI delta worker marker',
+  );
+  record(
+    `${phase} GPU AI delta backend ${expectedText}`,
+    backendStatus,
+    observation.backendMarkers[0] || 'no GpuDiffPatch marker',
+  );
+  if (workerStatus === 'fail' || backendStatus === 'fail') {
+    throw new Error(
+      `${phase} GPU AI delta expectation failed: expected_called=${expectedCalled} `
+        + `worker_called=${observation.workerCalled} backend_called=${observation.backendCalled}`,
+    );
+  }
+  return observation;
 }
 
 async function dispatchUserDeviceSignatureNegative(project, signatureEditedDevice, vendor, checkpoint) {
@@ -2822,6 +2963,8 @@ async function writeReport() {
   await writeFile(BACKEND_RESULTS_JSON, json);
   await writeFile(MODE_RESULTS_JSON, json);
   await writeFile(TARGET_MODE_RESULTS_JSON, json);
+  await writeFile(HMR_MODE_RESULTS_JSON, json);
+  await writeFile(NATURAL_PROFILE_RESULTS_JSON, json);
   const lines = [
     `slug: ${report.slug}`,
     `repo_commit: ${report.repo_commit}`,
@@ -2831,6 +2974,8 @@ async function writeReport() {
     `render_backend: ${report.render_backend}`,
     `template_evidence_mode: ${report.template_evidence_mode}`,
     `cmake_target_mode: ${report.cmake_target_mode}`,
+    `hmr_delta_mode: ${report.hmr_delta_mode}`,
+    `validation_profile: ${report.validation_profile}`,
     `source_file_mix: ${JSON.stringify(report.source_file_mix)}`,
     `workspace_file_count: ${report.workspace_file_count}`,
     `relevant_file_count: ${report.relevant_file_count}`,
@@ -2845,6 +2990,8 @@ async function writeReport() {
       return `PHASE ${p.name} wait=${p.wait_hmr_status} source=${p.wait_hmr_source ?? ''} wait_ms=${p.wait_hmr_elapsed_ms} terminal_wait_ms=${p.wait_hmr_terminal_elapsed_ms ?? ''} wall_ms=${p.wall_elapsed_ms}${detail}${frameGate}`;
     }),
     '',
+    ...report.ai_delta_observations.map((o) => `AI_DELTA ${o.phase} mode=${o.hmrDeltaMode} profile=${o.validationProfile} worker_called=${o.workerCalled} backend_called=${o.backendCalled} worker_marker=${o.workerMarkers?.[0] ?? ''} backend_marker=${o.backendMarkers?.[0] ?? ''}`),
+    '',
     ...report.screenshots.map((s) => `SCREENSHOT ${s.captured_after_phase} ${s.width}x${s.height} visible=${s.visible_pixels} luma=${s.mean_luma.toFixed(1)} path=${s.path} differs=${s.differs_from_first ?? ''}`),
   ];
   const text = lines.join('\n') + '\n';
@@ -2852,10 +2999,14 @@ async function writeReport() {
   await writeFile(BACKEND_RESULTS_TXT, text);
   await writeFile(MODE_RESULTS_TXT, text);
   await writeFile(TARGET_MODE_RESULTS_TXT, text);
+  await writeFile(HMR_MODE_RESULTS_TXT, text);
+  await writeFile(NATURAL_PROFILE_RESULTS_TXT, text);
   console.log(`results: ${RESULTS_TXT}`);
   console.log(`backend_results: ${BACKEND_RESULTS_TXT}`);
   console.log(`mode_results: ${MODE_RESULTS_TXT}`);
   console.log(`target_mode_results: ${TARGET_MODE_RESULTS_TXT}`);
+  console.log(`hmr_mode_results: ${HMR_MODE_RESULTS_TXT}`);
+  console.log(`profile_results: ${NATURAL_PROFILE_RESULTS_TXT}`);
 }
 
 async function run() {
@@ -2869,6 +3020,12 @@ async function run() {
   }
   if (!SUPPORTED_CMAKE_TARGET_MODES.has(CFG.cmakeTargetMode)) {
     fail(`unsupported SYNTHI_SCALE_CMAKE_TARGET_MODE=${CFG.cmakeTargetMode}; expected ${[...SUPPORTED_CMAKE_TARGET_MODES].join(', ')}`);
+  }
+  if (!SUPPORTED_HMR_DELTA_MODES.has(CFG.hmrDeltaMode)) {
+    fail(`unsupported SYNTHI_SCALE_HMR_DELTA_MODE=${CFG.hmrDeltaMode}; expected ${[...SUPPORTED_HMR_DELTA_MODES].join(', ')}`);
+  }
+  if (!SUPPORTED_VALIDATION_PROFILES.has(CFG.validationProfile)) {
+    fail(`unsupported SYNTHI_SCALE_VALIDATION_PROFILE=${CFG.validationProfile}; expected ${[...SUPPORTED_VALIDATION_PROFILES].join(', ')}`);
   }
   await resolveDockerContainers();
   report.repo_commit = await execText('git', ['rev-parse', 'HEAD'], 10000, true);
@@ -2884,6 +3041,7 @@ async function run() {
     SYNTHI_SCALE_RENDER_BACKEND: CFG.renderBackend,
     SYNTHI_SCALE_CMAKE_TARGET_MODE: CFG.cmakeTargetMode,
     SYNTHI_SCALE_HMR_DELTA_MODE: CFG.hmrDeltaMode,
+    SYNTHI_SCALE_VALIDATION_PROFILE: CFG.validationProfile,
     SYNTHI_SCALE_TEMPLATE_EVIDENCE: CFG.templateEvidenceMode,
     SYNTHI_SYNC_TO_GCS: process.env.SYNTHI_SYNC_TO_GCS ?? '',
   };
@@ -2895,7 +3053,7 @@ async function run() {
   record(
     'gpu target',
     'pass',
-    `${vendor} arch=${arch} render_backend=${CFG.renderBackend} cmake_target_mode=${CFG.cmakeTargetMode} template_evidence=${CFG.templateEvidenceMode}`,
+    `${vendor} arch=${arch} render_backend=${CFG.renderBackend} cmake_target_mode=${CFG.cmakeTargetMode} template_evidence=${CFG.templateEvidenceMode} hmr_delta_mode=${CFG.hmrDeltaMode} validation_profile=${CFG.validationProfile}`,
   );
 
   const project = buildScaleProject(vendor, arch, CFG.renderBackend, CFG.cmakeTargetMode);
@@ -3038,27 +3196,59 @@ async function run() {
   await writeFilesBatch({ slug: CFG.slug, files: [{ path: project.devicePath, content: editedDevice }] });
   await stageAndCommit({ slug: CFG.slug, message: 'gpu-hmr-scale-validation: user device delta' });
   const secondCheckpoint = await workerCheckpoint();
-  await compileUserDeviceDelta(project, editedDevice, vendor, secondCheckpoint);
-  record('user device-source AI delta compile via MCP', 'pass', project.devicePath);
+  const secondAiCheckpoint = { ...secondCheckpoint };
+  const deviceDeltaResult = await compileUserDeviceDelta(project, editedDevice, vendor, secondCheckpoint);
+  record(
+    CFG.hmrDeltaMode === 'ai_user_delta'
+      ? 'user device-source AI delta compile via MCP'
+      : 'user device-source natural compile via MCP',
+    'pass',
+    project.devicePath,
+  );
   await assertNoGeneratedSplitWorkspaceArtifacts(split);
 
-  const aiDeltaWorker = await awaitLogRegex(
-    CFG.workerContainer,
-    /\[GPU AI Delta\] Calling [^\n]*\/refactor\/diff_patch\/gpu[^\n]*|\[GPU AI Delta\] accepted: user=[^\n]*/,
-    CFG.aiDeltaEvidenceTimeoutMs,
-    secondCheckpoint,
-  );
-  record('worker forced GPU AI delta endpoint', aiDeltaWorker.matched ? 'pass' : 'fail', aiDeltaWorker.snippet || 'no GPU AI delta worker marker');
-  if (!aiDeltaWorker.matched) throw new Error('GPU AI delta worker evidence missing');
+  let naturalAiDeltaFallback = false;
+  if (CFG.hmrDeltaMode === 'ai_user_delta') {
+    const aiDeltaWorker = await awaitLogRegex(
+      CFG.workerContainer,
+      /\[GPU AI Delta\] Calling [^\n]*\/refactor\/diff_patch\/gpu[^\n]*|\[GPU AI Delta\] accepted: user=[^\n]*/,
+      CFG.aiDeltaEvidenceTimeoutMs,
+      secondCheckpoint,
+    );
+    record('worker forced GPU AI delta endpoint', aiDeltaWorker.matched ? 'pass' : 'fail', aiDeltaWorker.snippet || 'no GPU AI delta worker marker');
+    if (!aiDeltaWorker.matched) throw new Error('GPU AI delta worker evidence missing');
 
-  const aiDeltaBackend = await awaitLogRegex(
-    CFG.aiEngineContainer,
-    /\[GpuDiffPatch\][^\n]*/,
-    CFG.aiDeltaEvidenceTimeoutMs,
-    secondCheckpoint,
-  );
-  record('ai-engine processed GPU delta', aiDeltaBackend.matched ? 'pass' : 'fail', aiDeltaBackend.snippet || 'no GpuDiffPatch marker');
-  if (!aiDeltaBackend.matched) throw new Error('GPU AI delta backend evidence missing');
+    const aiDeltaBackend = await awaitLogRegex(
+      CFG.aiEngineContainer,
+      /\[GpuDiffPatch\][^\n]*/,
+      CFG.aiDeltaEvidenceTimeoutMs,
+      secondAiCheckpoint,
+    );
+    record('ai-engine processed GPU delta', aiDeltaBackend.matched ? 'pass' : 'fail', aiDeltaBackend.snippet || 'no GpuDiffPatch marker');
+    if (!aiDeltaBackend.matched) throw new Error('GPU AI delta backend evidence missing');
+    await recordAiDeltaObservation('user_device_delta', secondCheckpoint, secondAiCheckpoint, true);
+  } else {
+    const naturalLogs = await dockerLogs(CFG.workerContainer, secondCheckpoint);
+    const naturalFullSplit = naturalLogs.match(/\[AI Split\] ENTER[^\n]*/);
+    record(
+      'natural body edit avoided full AI re-split',
+      naturalFullSplit ? 'fail' : 'pass',
+      naturalFullSplit?.[0] || 'no full AI split marker after body edit',
+    );
+    if (naturalFullSplit) throw new Error(`natural body edit unexpectedly performed full AI re-split: ${naturalFullSplit[0]}`);
+    naturalAiDeltaFallback = /\[GPU AI Delta\]/.test(naturalLogs);
+    if (naturalAiDeltaFallback) {
+      const aiDeltaBackend = await awaitLogRegex(
+        CFG.aiEngineContainer,
+        /\[GpuDiffPatch\][^\n]*/,
+        CFG.aiDeltaEvidenceTimeoutMs,
+        secondAiCheckpoint,
+      );
+      record('natural fallback processed GPU delta', aiDeltaBackend.matched ? 'pass' : 'fail', aiDeltaBackend.snippet || 'no GpuDiffPatch marker');
+      if (!aiDeltaBackend.matched) throw new Error('natural GPU AI delta backend evidence missing');
+    }
+    await recordAiDeltaObservation('user_device_delta', secondCheckpoint, secondAiCheckpoint, naturalAiDeltaFallback);
+  }
 
   const hotSwap = await awaitLogRegex(
     CFG.workerContainer,
@@ -3081,6 +3271,13 @@ async function run() {
   if (crashMatch) throw new Error(`runner/device failure after HMR: ${crashMatch[0]}`);
 
   let verifiedFastPathSidecarRaw = await readWorkerFile(split.workspacePath, '.synthi_split_meta.json');
+  if (CFG.hmrDeltaMode === 'natural_user_delta') {
+    if (naturalAiDeltaFallback) {
+      validateNaturalAiDeltaFallbackSidecar(verifiedFastPathSidecarRaw, project);
+    } else {
+      validateDirectDeviceFastPathSidecar(verifiedFastPathSidecarRaw, project);
+    }
+  }
 
   if (CFG.templateEvidenceMode === 'fresh') {
     const headerFile = project.files.find((f) => f.path === project.templateHeaderPath);
@@ -3136,6 +3333,17 @@ async function run() {
     validateWarmRebuildSidecar(JSON.parse(warmSidecarRaw), project);
     headerFile.content = editedHeader;
     verifiedFastPathSidecarRaw = warmSidecarRaw;
+  }
+
+  if (CFG.validationProfile === 'natural') {
+    record(
+      'natural validation skipped forced negative gates',
+      'pass',
+      'ordinary first split, device body edit, and bounded header edit completed without forced AI delta',
+    );
+    await writeReport();
+    console.log(`url: ${CFG.frontendUrl}/workspace/${CFG.slug}`);
+    return;
   }
 
   const layoutEditedDevice = editUserDeviceConstantGlobalLayout(editedDevice);
