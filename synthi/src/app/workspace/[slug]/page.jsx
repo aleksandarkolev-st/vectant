@@ -579,21 +579,28 @@ export default function EditorPage({ params }) {
 
     // Friendly project name (from the DB) used as the terminal prompt label
     // and anywhere else a human-readable workspace identifier is wanted.
-    // Falls back to the slug until the fetch resolves so the prompt never
-    // flashes empty. The route param `slug` is what /api/workspace/[slug]
-    // keys by (see app/api/workspace/[workspaceId]/route.js).
-    const [workspaceName, setWorkspaceName] = useState(slug);
+    //
+    // Stays null until the workspace fetch settles, then resolves to either
+    // the real DB name or the slug as a fallback. TerminalPane is frozen
+    // (memo with always-equal comparator) and its WS connect effect runs
+    // once at mount, so we must not give it a placeholder name to connect
+    // with — TerminalManager gates the pane render on this value being
+    // non-null so the PTY prompt is correct on the very first frame.
+    const [workspaceName, setWorkspaceName] = useState(null);
     useEffect(() => {
         if (!slug) return undefined;
         let cancelled = false;
+        const resolveTo = (name) => {
+            if (cancelled) return;
+            setWorkspaceName(name && typeof name === 'string' ? name : slug);
+        };
         fetch(`/api/workspace/${encodeURIComponent(slug)}`)
             .then((r) => (r.ok ? r.json() : null))
             .then((data) => {
-                if (cancelled || !data) return;
                 const name = data?.workspace?.name || data?.name;
-                if (name && typeof name === 'string') setWorkspaceName(name);
+                resolveTo(name);
             })
-            .catch(() => { /* keep slug fallback */ });
+            .catch(() => resolveTo(null));
         return () => { cancelled = true; };
     }, [slug]);
     const [hmrEnabled, setHmrEnabled] = useState(true);
