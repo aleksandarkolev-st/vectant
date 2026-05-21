@@ -2,11 +2,12 @@
 
 Draft date: 2026-05-22
 
-Status: implementation specification for the next GPU HMR branch. This version
-is intentionally stricter than the previous architecture draft. It defines the
-state machine, identity model, retrieval identity, API semantics, broker
-packages, verifier contracts, and promotion rules tightly enough that two
-engineers should implement the same system.
+Status: ready to start the next GPU HMR branch through Milestones 1-3, but not
+frozen as the final implementation spec. This version is intentionally stricter
+than the previous architecture draft. It defines the state machine, identity
+model, retrieval identity, API semantics, broker packages, verifier contracts,
+and promotion rules tightly enough to begin implementation while later
+milestones continue to harden verifier detail and real validation.
 
 ## 1. Recommendation
 
@@ -23,6 +24,40 @@ path. This plan changes the split pipeline itself.
 
 Do not call GPU HMR production ready until `docs/GPU_HMR_PROD_NEXT.md` has
 current reproducible validation artifacts for every claimed backend/path.
+
+## Architecture Intent
+
+GPU HMR should become a transactional split-and-reload pipeline over a real
+build target, not a prompt that happens to emit compilable files.
+
+The intended architecture is:
+
+```text
+CodeIntel index + build metadata authority
+  -> target-scoped projection
+  -> phased readiness
+  -> broker-issued role scope packages
+  -> deterministic RAG-backed role context packages
+  -> AI proposals inside explicit scope
+  -> immutable candidate artifacts
+  -> deterministic verifier promotion
+  -> direct non-agentic HMR where locally provable
+```
+
+The key design choice is authority separation:
+
+- CodeIntel and build metadata decide what source and target facts exist.
+- The broker decides what each generated role may see, include, adapt, and
+  write.
+- RAG provides cited context and explanations, not safety decisions.
+- AI proposes generated artifacts only inside a role generation package.
+- Verifiers and the Arbiter decide whether a candidate can compile, run,
+  reload, and be promoted.
+
+This means the system can do background preparation for large projects without
+touching active state, and it can reject unsafe or underspecified cases with
+actionable reason codes instead of discovering scope errors through failed
+compiles.
 
 ## 2. Non-Negotiable Design Rules
 
@@ -102,13 +137,16 @@ POST /gpu-hmr/readiness
 POST /gpu-hmr/projections
 GET  /gpu-hmr/projections/{hash}
 POST /gpu-hmr/prepare-candidate
-GET  /gpu-hmr/candidates?target=...
+GET  /gpu-hmr/candidates?selectedTargetIdentityHash=...
 GET  /gpu-hmr/candidates/{id}
 GET  /gpu-hmr/candidates/{id}/trace
 POST /gpu-hmr/candidates/{id}/verify
 POST /gpu-hmr/candidates/{id}/promote
 POST /gpu-hmr/candidates/{id}/cancel
 POST /gpu-hmr/candidates/{id}/diagnose
+GET  /gpu-hmr/jobs/{id}
+GET  /gpu-hmr/jobs/{id}/trace
+POST /gpu-hmr/jobs/{id}/cancel
 GET  /gpu-hmr/accepted/current
 ```
 
@@ -136,6 +174,25 @@ GET  /gpu-hmr/accepted/current
 - resumable only if all referenced generations still match
 - returns candidate ID and current state
 
+`GET /gpu-hmr/jobs/{id}`
+
+- returns status for asynchronous projection, preparation, verification, or
+  diagnostic jobs
+- includes linked resource identity when the job created a projection or
+  candidate
+- idempotent and safe to poll
+
+`GET /gpu-hmr/jobs/{id}/trace`
+
+- returns bounded trace events, reason codes, and phase timings
+- redacts raw source unless debug capture is explicitly enabled
+
+`POST /gpu-hmr/jobs/{id}/cancel`
+
+- marks cancellable jobs as cancelled
+- does not delete immutable candidates or verified artifacts
+- verification/promotion must fail closed if a dependent job is cancelled
+
 `POST /gpu-hmr/candidates/{id}/verify`
 
 - asynchronous when compile/runtime verification is requested
@@ -147,6 +204,10 @@ GET  /gpu-hmr/accepted/current
 - synchronous atomic pointer update
 - requires promotion readiness
 - rejects if another promotion transaction is active
+
+Candidate list queries must use identity hashes, not display target names.
+Target names collide across build roots, configurations, and manually selected
+profiles.
 
 Compatibility rule:
 
@@ -163,7 +224,8 @@ changes, and runtime-sensitive work is not reused unsafely.
 ### 5.1 Source Split Identity
 
 Used for projection, broker scoping, source-to-role mapping, and AI source
-generation.
+generation. It contains target-level input identity only; broker-selected role
+spans are recorded later as `roleSourceSpanHash`.
 
 ```json
 {
@@ -171,10 +233,10 @@ generation.
   "workspaceRootDigest": "...",
   "gitCommit": "...",
   "dirtyTreeHash": "...",
-  "sourceInputHash": "...",
+  "targetInputFileHash": "...",
   "buildConfigInputHash": "...",
   "generatedHeaderContentHash": "...",
-  "environmentProbeHash": "...",
+  "buildSelectionEnvironmentHash": "...",
   "selectedTargetIdentityHash": "...",
   "codeIntelGeneration": "...",
   "splitSchemaVersion": "...",
@@ -208,6 +270,7 @@ Used for runtime/frame verification validity.
 {
   "schemaVersion": "gpu-hmr-runtime-verification-identity-v1",
   "compileCandidateIdentityHash": "...",
+  "runtimeVerificationEnvironmentHash": "...",
   "verificationRuntimeEnvironmentHash": "...",
   "deploymentRuntimeEnvironmentHash": "...",
   "gpuRuntimeDriverHash": "...",
@@ -233,7 +296,11 @@ Used for AI stage cache validity.
   "retrievalProfileHash": "...",
   "queryHash": "...",
   "rankerVersion": "...",
-  "contextBudgetHash": "..."
+  "rrfMmrSettingsHash": "...",
+  "contextBudgetHash": "...",
+  "citationFilterHash": "...",
+  "hydeQueryRewriteSettingHash": "...",
+  "topKAndCandidateBudgetHash": "..."
 }
 ```
 
@@ -255,8 +322,12 @@ Used to decide whether a verified candidate may become active.
 
 ### 5.6 Hash Definitions
 
-- `sourceInputHash`: selected user source files and source spans. Excludes
-  `.synthi/`, generated roles, candidate directories, build outputs, and logs.
+- `targetInputFileHash`: target-owned user input files known from build
+  metadata before projection. Excludes `.synthi/`, generated roles, candidate
+  directories, build outputs, and logs.
+- `roleSourceSpanHash`: broker-selected source spans after role scoping. This
+  is not part of `sourceSplitIdentityHash`, because projection is created
+  before broker role spans exist.
 - `buildConfigInputHash`: `CMakeLists.txt`, `CMakePresets.json`, toolchain
   files, manually selected target config, build-system project files, and
   environment inputs used by configuration.
@@ -266,8 +337,13 @@ Used to decide whether a verified candidate may become active.
   include roots, system include roots, generated header roots, link flags, and
   runtime paths for the selected target.
 - `toolchainProbeHash`: compiler/toolkit/runtime probe results.
-- `environmentProbeHash`: environment variables that affect build selection or
-  runtime verification.
+- `buildSelectionEnvironmentHash`: environment variables that affect target
+  selection, build configuration, compile commands, generated headers, or
+  toolchain selection.
+- `runtimeVerificationEnvironmentHash`: environment variables that affect
+  display, GPU visibility, runtime libraries, capture, or driver/session
+  verification. Runtime-only changes invalidate runtime verification, not
+  source split work.
 - `compilerToolchainIdentityHash`: canonical compiler, toolkit, runtime, and
   language-mode identity derived from selected target metadata and toolchain
   probes.
@@ -281,14 +357,21 @@ Used to decide whether a verified candidate may become active.
 
 Manual config is high-priority when explicit, but must be validated.
 
-Resolution order:
+Target resolution order:
 
 1. explicit user/project target config
 2. CMake File API
 3. `compile_commands.json`
-4. compiler dependency scan
-5. inferred fallback
-6. unsupported
+4. inferred fallback
+5. unsupported
+
+Metadata enrichment order after a target or compile command is known:
+
+1. compiler dependency scan
+2. toolchain probe
+3. runtime probe
+4. generated header content scan
+5. link/runtime library resolution
 
 Reason codes:
 
@@ -296,8 +379,12 @@ Reason codes:
 target.explicit_project_config
 target.cmake_file_api_selected
 target.compile_commands_only
-target.compiler_dependency_scan
 target.inferred_fallback
+metadata.compiler_dependency_scan
+metadata.toolchain_probe
+metadata.runtime_probe
+metadata.generated_header_scan
+metadata.link_runtime_resolution
 target_resolution_ambiguous
 target_resolution_unmatched
 target_config_invalid
@@ -357,6 +444,36 @@ manual_config
 
 Only compiler-derived or verified build metadata evidence can participate in
 ABI/layout safety. RAG and regex evidence can route or explain only.
+
+Minimum evidence by operation:
+
+```text
+preflight/projection:
+  selected target identity or blocking ambiguity reason
+  targetInputFileHash
+  CodeIntel generation
+  build metadata identity
+
+scope/generation:
+  codeintel_structural evidence
+  selected target metadata
+  compile_commands-backed include/link roots
+  no regex-only ownership decisions
+
+compile:
+  selected compile command
+  compiler_dep_scan or compile_commands-backed include resolution
+  generated header content hash
+  toolchain probe hash
+
+promotion for ABI-sensitive paths:
+  compiler_ast or compiler-generated ABI probe
+  vendor compiler artifact evidence where available
+  launch-mode-specific ABI verifier report
+```
+
+If the minimum evidence for an operation is missing, that operation is blocked
+with a precise reason code. The system may still produce diagnostics.
 
 ## 8. Target-Scoped Projection
 
@@ -534,6 +651,7 @@ It defines what may be touched, referenced, adapted, or generated.
   "roleId": "device.main",
   "roleKind": "device",
   "sourceSplitIdentityHash": "...",
+  "roleSourceSpanHash": "...",
   "allowedSourceFiles": [],
   "allowedSourceSpans": [],
   "sourceSpanAnchors": [],
@@ -573,8 +691,17 @@ Created after retrieval fills the role context.
   "retrievalProfileHash": "...",
   "queryHash": "...",
   "rankerVersion": "...",
+  "rrfMmrSettingsHash": "...",
   "contextBudgetHash": "...",
+  "citationFilterHash": "...",
+  "hydeQueryRewriteSettingHash": "...",
+  "topKAndCandidateBudgetHash": "...",
   "citationSpanIds": [],
+  "orderedContextSpanRefs": [],
+  "contextAssemblyHash": "...",
+  "contextSanitizerVersion": "...",
+  "promptTemplateVersion": "...",
+  "renderedPromptHash": "...",
   "retrievalContextSufficiency": "retrieval_context_sufficient",
   "promptInputsHash": "...",
   "modelCapabilityProfileHash": "..."
@@ -665,6 +792,50 @@ Active promotion is a single pointer file:
 ```text
 .synthi/gpu_hmr/accepted/current.json
 ```
+
+Minimum candidate manifest:
+
+```json
+{
+  "schemaVersion": "gpu-hmr-candidate-manifest-v1",
+  "candidateId": "...",
+  "sourceSplitIdentityHash": "...",
+  "compileCandidateIdentityHash": "...",
+  "runtimeVerificationIdentityHash": null,
+  "roleArtifacts": [
+    {
+      "roleId": "device.main",
+      "path": ".synthi/gpu_hmr/candidates/<id>/device/main.hip",
+      "sha256": "..."
+    }
+  ],
+  "roleScopePackageHashes": [],
+  "roleGenerationPackageHashes": [],
+  "aiGenerationIdentityHashes": [],
+  "sourceToGeneratedMappingHash": "...",
+  "verifierReportHashes": [],
+  "createdAt": "...",
+  "createdBy": "gpu-hmr-prepare-candidate",
+  "state": "prepared_candidate"
+}
+```
+
+Verifier state transitions:
+
+| From | To | Required proof |
+| --- | --- | --- |
+| `prepared_candidate` | `schema_verified_candidate` | `schemaVerifierReport.pass` |
+| `schema_verified_candidate` | `scope_verified_candidate` | `roleScopeVerifierReport.pass` |
+| `scope_verified_candidate` | `dependency_verified_candidate` | `dependencyVerifierReport.pass` |
+| `dependency_verified_candidate` | `mapping_verified_candidate` | `mappingVerifierReport.pass` or `mappingNotRequiredReason` |
+| `mapping_verified_candidate` | `abi_verified_candidate` | `abiVerifierReport.pass` or `abiProofNotRequiredReason` |
+| `abi_verified_candidate` | `compile_verified_candidate` | `compileVerifierReport.pass` |
+| `compile_verified_candidate` | `runtime_verified_candidate` | `runtimeVerifierReport.pass` or `runtimeProofNotRequiredReason` |
+| `runtime_verified_candidate` | `active_promoted_candidate` | `promotionVerifierReport.pass` and atomic pointer update |
+
+Any verifier failure moves the candidate to `rejected_candidate` with the
+verifier report hash and reason code. Any identity/generation mismatch moves it
+to `stale_candidate`.
 
 ## 13. Atomic Promotion Details
 
@@ -1027,6 +1198,10 @@ budget.stage_cache_miss
 ```
 
 ## 23. Revised Milestones
+
+This order is intentional. Projection must exist before readiness can be
+meaningful. Full promotion-affecting verifiers need broker packages and
+candidate manifests, although verifier stubs and schemas can start earlier.
 
 ### Milestone 1: Schemas And Identity
 
