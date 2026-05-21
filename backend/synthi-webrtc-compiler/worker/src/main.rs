@@ -408,6 +408,32 @@ struct CompileRequestChunkAssembly {
     total: usize,
     encoding: String,
     chunks: Vec<Option<String>>,
+    received_bytes: usize,
+    updated_at: std::time::Instant,
+}
+
+const MAX_COMPILE_CHUNK_TOTAL: usize = 4096;
+const MAX_COMPILE_CHUNK_DATA_BYTES: usize = 128 * 1024;
+const MAX_COMPILE_CHUNK_ASSEMBLY_BYTES: usize = 64 * 1024 * 1024;
+const MAX_COMPILE_CHUNK_ASSEMBLIES: usize = 64;
+const COMPILE_CHUNK_ASSEMBLY_TTL_SECS: u64 = 60;
+
+fn prune_compile_chunk_buffers(
+    buffers: &mut HashMap<String, CompileRequestChunkAssembly>,
+    now: std::time::Instant,
+) {
+    let ttl = std::time::Duration::from_secs(COMPILE_CHUNK_ASSEMBLY_TTL_SECS);
+    buffers.retain(|_, entry| now.duration_since(entry.updated_at) <= ttl);
+}
+
+fn evict_oldest_compile_chunk_buffer(buffers: &mut HashMap<String, CompileRequestChunkAssembly>) {
+    if let Some(oldest_key) = buffers
+        .iter()
+        .min_by_key(|(_, entry)| entry.updated_at)
+        .map(|(key, _)| key.clone())
+    {
+        buffers.remove(&oldest_key);
+    }
 }
 
 async fn assemble_compile_request_chunk(
@@ -427,15 +453,39 @@ async fn assemble_compile_request_chunk(
         );
         return Some(Vec::new());
     }
+    if chunk.total > MAX_COMPILE_CHUNK_TOTAL {
+        eprintln!(
+            "[Main] Compile request chunk total exceeds limit: id={} total={} max={}",
+            chunk.chunk_id, chunk.total, MAX_COMPILE_CHUNK_TOTAL
+        );
+        return Some(Vec::new());
+    }
+    if chunk.data.len() > MAX_COMPILE_CHUNK_DATA_BYTES {
+        eprintln!(
+            "[Main] Compile request chunk payload exceeds limit: id={} bytes={} max={}",
+            chunk.chunk_id,
+            chunk.data.len(),
+            MAX_COMPILE_CHUNK_DATA_BYTES
+        );
+        return Some(Vec::new());
+    }
 
     let mut guard = buffers.lock().await;
-    let entry = guard
-        .entry(chunk.chunk_id.clone())
-        .or_insert_with(|| CompileRequestChunkAssembly {
-            total: chunk.total,
-            encoding: chunk.encoding.clone(),
-            chunks: vec![None; chunk.total],
-        });
+    let now = std::time::Instant::now();
+    prune_compile_chunk_buffers(&mut guard, now);
+    if !guard.contains_key(&chunk.chunk_id) && guard.len() >= MAX_COMPILE_CHUNK_ASSEMBLIES {
+        evict_oldest_compile_chunk_buffer(&mut guard);
+    }
+    let entry =
+        guard
+            .entry(chunk.chunk_id.clone())
+            .or_insert_with(|| CompileRequestChunkAssembly {
+                total: chunk.total,
+                encoding: chunk.encoding.clone(),
+                chunks: vec![None; chunk.total],
+                received_bytes: 0,
+                updated_at: now,
+            });
     if entry.total != chunk.total || entry.encoding != chunk.encoding {
         eprintln!(
             "[Main] Inconsistent compile request chunk metadata: id={}",
@@ -444,6 +494,24 @@ async fn assemble_compile_request_chunk(
         guard.remove(&chunk.chunk_id);
         return Some(Vec::new());
     }
+    let previous_len = entry.chunks[chunk.seq]
+        .as_ref()
+        .map(|part| part.len())
+        .unwrap_or(0);
+    let next_received_bytes = entry
+        .received_bytes
+        .saturating_sub(previous_len)
+        .saturating_add(chunk.data.len());
+    if next_received_bytes > MAX_COMPILE_CHUNK_ASSEMBLY_BYTES {
+        eprintln!(
+            "[Main] Compile request chunk assembly exceeds limit: id={} bytes={} max={}",
+            chunk.chunk_id, next_received_bytes, MAX_COMPILE_CHUNK_ASSEMBLY_BYTES
+        );
+        guard.remove(&chunk.chunk_id);
+        return Some(Vec::new());
+    }
+    entry.received_bytes = next_received_bytes;
+    entry.updated_at = now;
     entry.chunks[chunk.seq] = Some(chunk.data);
     if entry.chunks.iter().any(|part| part.is_none()) {
         return Some(Vec::new());
@@ -473,6 +541,74 @@ async fn assemble_compile_request_chunk(
             );
             Some(Vec::new())
         }
+    }
+}
+
+#[cfg(test)]
+mod compile_request_chunk_tests {
+    use super::*;
+
+    fn chunk_payload(chunk_id: &str, seq: usize, total: usize, data: String) -> Vec<u8> {
+        serde_json::json!({
+            "type": "compile-request-chunk",
+            "chunk_id": chunk_id,
+            "seq": seq,
+            "total": total,
+            "encoding": "base64",
+            "data": data,
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    #[tokio::test]
+    async fn rejects_excessive_chunk_total_before_buffer_allocation() {
+        let buffers: Arc<Mutex<HashMap<String, CompileRequestChunkAssembly>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let result = assemble_compile_request_chunk(
+            &chunk_payload("too-many", 0, MAX_COMPILE_CHUNK_TOTAL + 1, "a".to_string()),
+            &buffers,
+        )
+        .await;
+
+        assert_eq!(result, Some(Vec::new()));
+        assert!(buffers.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_oversize_chunk_data_before_storing() {
+        let buffers: Arc<Mutex<HashMap<String, CompileRequestChunkAssembly>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let result = assemble_compile_request_chunk(
+            &chunk_payload(
+                "too-large",
+                0,
+                1,
+                "a".repeat(MAX_COMPILE_CHUNK_DATA_BYTES + 1),
+            ),
+            &buffers,
+        )
+        .await;
+
+        assert_eq!(result, Some(Vec::new()));
+        assert!(buffers.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn caps_incomplete_chunk_assemblies() {
+        let buffers: Arc<Mutex<HashMap<String, CompileRequestChunkAssembly>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        for index in 0..(MAX_COMPILE_CHUNK_ASSEMBLIES + 1) {
+            let result = assemble_compile_request_chunk(
+                &chunk_payload(&format!("partial-{index}"), 0, 2, "aa".to_string()),
+                &buffers,
+            )
+            .await;
+            assert_eq!(result, Some(Vec::new()));
+        }
+
+        assert!(buffers.lock().await.len() <= MAX_COMPILE_CHUNK_ASSEMBLIES);
     }
 }
 

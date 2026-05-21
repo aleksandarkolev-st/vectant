@@ -4,6 +4,66 @@ import { sendFrames, type SendOptions } from "./wire/input.js";
 
 const DEFAULT_COMPILE_CHUNK_BYTES = 48_000;
 
+function compileChunkMaxBytes(): number {
+  const raw = process.env.SYNTHI_MCP_COMPILE_CHUNK_BYTES;
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_COMPILE_CHUNK_BYTES;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    throw new Error(`invalid_compile_chunk_bytes:${raw}`);
+  }
+  return Math.floor(parsed);
+}
+
+function serializedChunkBytes(
+  chunkId: string,
+  seq: number,
+  total: number,
+  data: string,
+): number {
+  return Buffer.byteLength(
+    JSON.stringify({
+      type: "compile-request-chunk",
+      chunk_id: chunkId,
+      seq,
+      total,
+      encoding: "base64",
+      data,
+    }),
+    "utf8",
+  );
+}
+
+function chunkDataCharsForLimit(
+  encodedLength: number,
+  chunkId: string,
+  maxBytes: number,
+): {
+  chunkChars: number;
+  total: number;
+} {
+  let total = 1;
+  for (let attempts = 0; attempts < 8; attempts += 1) {
+    const overheadBytes = serializedChunkBytes(
+      chunkId,
+      Math.max(0, total - 1),
+      total,
+      "",
+    );
+    const chunkChars = maxBytes - overheadBytes;
+    if (chunkChars < 1) {
+      throw new Error(`compile_chunk_bytes_too_small:${maxBytes}`);
+    }
+    const nextTotal = Math.ceil(encodedLength / chunkChars);
+    if (nextTotal === total) {
+      return { chunkChars, total };
+    }
+    total = nextTotal;
+  }
+  throw new Error(`compile_chunk_bytes_unstable:${maxBytes}`);
+}
+
 /**
  * Thin wrapper around a session's data channels.
  *
@@ -25,7 +85,7 @@ export class SessionChannels {
   constructor(
     private readonly terminalDC: RTCDataChannel,
     buildLogDC: RTCDataChannel,
-    private readonly compileDC: RTCDataChannel
+    private readonly compileDC: RTCDataChannel,
   ) {
     this.hmr = new HmrNormalizer(buildLogDC);
   }
@@ -46,32 +106,40 @@ export class SessionChannels {
       throw new Error(`compile_channel_not_open:${this.compileDC.readyState}`);
     }
     const body = JSON.stringify(payload);
-    const maxBytes = Number(process.env.SYNTHI_MCP_COMPILE_CHUNK_BYTES ?? DEFAULT_COMPILE_CHUNK_BYTES);
+    const maxBytes = compileChunkMaxBytes();
     if (Buffer.byteLength(body, "utf8") <= maxBytes) {
       this.compileDC.send(body);
       return;
     }
 
     const encoded = Buffer.from(body, "utf8").toString("base64");
-    const chunkChars = Math.max(1024, Math.floor(maxBytes * 0.75));
-    const total = Math.ceil(encoded.length / chunkChars);
     const chunkId = `compile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const { chunkChars, total } = chunkDataCharsForLimit(
+      encoded.length,
+      chunkId,
+      maxBytes,
+    );
     for (let seq = 0; seq < total; seq += 1) {
       const data = encoded.slice(seq * chunkChars, (seq + 1) * chunkChars);
-      this.compileDC.send(JSON.stringify({
+      const frame = JSON.stringify({
         type: "compile-request-chunk",
         chunk_id: chunkId,
         seq,
         total,
         encoding: "base64",
         data,
-      }));
+      });
+      this.compileDC.send(frame);
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
   }
 
   compileChannelReadyState(): "connecting" | "open" | "closing" | "closed" {
-    return this.compileDC.readyState as "connecting" | "open" | "closing" | "closed";
+    return this.compileDC.readyState as
+      | "connecting"
+      | "open"
+      | "closing"
+      | "closed";
   }
 
   dispose(): void {

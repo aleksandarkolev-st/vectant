@@ -50,7 +50,7 @@ See HMR_AGNOSTIC_ULTRAPLAN.md §5.3 for the full Point 3 design.
 from __future__ import annotations
 
 import re
-from typing import Any, List, Literal, Mapping, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Set, Tuple
 
 try:
     from pydantic import BaseModel, Field, field_validator, ConfigDict
@@ -515,8 +515,8 @@ def internalize_gpu_generated_artifacts(
             vendor=vendor,
         )
         if content is None:
-            content = ""
             missing_roles.append(role)
+            continue
         internal_files[internal_path] = content
         mappings.append(
             {
@@ -524,6 +524,12 @@ def internalize_gpu_generated_artifacts(
                 "sourcePath": source_path,
                 "internalPath": internal_path,
             }
+        )
+
+    if missing_roles:
+        raise ManifestRejection(
+            "GPU split is missing required generated role content: "
+            + ", ".join(sorted(missing_roles))
         )
 
     manifest_out["module_files"] = internal_roles
@@ -729,8 +735,10 @@ def _link_token_to_flag(token: str) -> Optional[str]:
         return None
     if token in {"PRIVATE", "PUBLIC", "INTERFACE", "debug", "optimized", "general"}:
         return None
-    if token.startswith(("$<", "${")):
+    if token.startswith("$<"):
         return None
+    if token.startswith("${"):
+        return token
     if token.startswith(("-", "/LIBPATH:")):
         return token
     if token.endswith((".a", ".so", ".dylib", ".lib")) or "/" in token or "\\" in token:
@@ -740,6 +748,36 @@ def _link_token_to_flag(token: str) -> Optional[str]:
     if re.match(r"^[A-Za-z0-9_.+-]+$", token):
         return f"-l{token}"
     return None
+
+
+def _extract_cmake_set_variables(text: str) -> Dict[str, List[str]]:
+    variables: Dict[str, List[str]] = {}
+    for match in re.finditer(
+        r"\bset\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s+([^)]+)\)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        name = match.group(1)
+        body = re.sub(r"#.*", " ", match.group(2))
+        values = [token for token in re.split(r"[\s\r\n]+", body) if token]
+        if values:
+            variables[name] = values
+    return variables
+
+
+def _expand_cmake_link_token(token: str, variables: Mapping[str, List[str]]) -> List[str]:
+    token = token.strip()
+    if not (token.startswith("${") and token.endswith("}")):
+        return [token]
+    name = token[2:-1].strip()
+    if not name:
+        return []
+    if name in variables:
+        return variables[name]
+    for suffix in ("_LIBRARIES", "_LIBRARY", "_LIBS", "_LIB"):
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return [name[: -len(suffix)]]
+    return [token]
 
 
 def _extract_build_metadata_link_flags(source_files: Mapping[str, str]) -> List[str]:
@@ -762,6 +800,7 @@ def _extract_build_metadata_link_flags(source_files: Mapping[str, str]) -> List[
         normalized = str(path).replace("\\", "/")
         if normalized.rsplit("/", 1)[-1] != "CMakeLists.txt":
             continue
+        variables = _extract_cmake_set_variables(str(text))
         for match in re.finditer(
             r"target_link_libraries\s*\(\s*([A-Za-z0-9_.:+-]+)\s+([^)]+)\)",
             str(text),
@@ -769,7 +808,8 @@ def _extract_build_metadata_link_flags(source_files: Mapping[str, str]) -> List[
         ):
             body = re.sub(r"#.*", " ", match.group(2))
             for token in re.split(r"[\s\r\n]+", body):
-                add(_link_token_to_flag(token))
+                for expanded in _expand_cmake_link_token(token, variables):
+                    add(_link_token_to_flag(expanded))
     return flags
 
 

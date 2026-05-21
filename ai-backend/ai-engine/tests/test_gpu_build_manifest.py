@@ -367,6 +367,31 @@ def test_gpu_manifest_uses_cmake_target_link_libraries_without_framework_catalog
     assert "-lSDL2" in normalized["runner_link_flags"]
 
 
+def test_gpu_manifest_resolves_cmake_variable_link_items():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        link_hint_sources={
+            "CMakeLists.txt": """
+                find_package(SDL2 REQUIRED)
+                set(EXTRA_RENDER_LIBS glfw GL)
+                target_link_libraries(particle_field PRIVATE ${SDL2_LIBRARIES} ${EXTRA_RENDER_LIBS})
+            """,
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+    )
+    for flag in ("-lSDL2", "-lglfw", "-lGL"):
+        assert flag in normalized["gui_link_flags"]
+        assert flag in normalized["runner_link_flags"]
+
+
 def test_gpu_manifest_accepts_optional_source_link_hints_but_does_not_require_them():
     normalized = normalize_gpu_split_manifest(
         {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
@@ -385,6 +410,31 @@ def test_gpu_manifest_accepts_optional_source_link_hints_but_does_not_require_th
     )
     assert "-lcustom_engine" in normalized["gui_link_flags"]
     assert "-lcustom_engine" in normalized["runner_link_flags"]
+
+
+def test_internalize_rejects_missing_generated_gpu_role_content():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm"}},
+        split_files={
+            "shared.h": "shared",
+            "core.cpp": "core",
+            "gui.cpp": "gui",
+            "device.hip": "device",
+        },
+        vendor_hint="rocm",
+        arch_hint="gfx1201",
+    )
+
+    with pytest.raises(ManifestRejection, match="host_runner"):
+        internalize_gpu_generated_artifacts(
+            {
+                "shared.h": "shared",
+                "core.cpp": "core",
+                "gui.cpp": "gui",
+                "device.hip": "device",
+            },
+            normalized,
+        )
 
 
 def test_internalizes_generated_gpu_roles_out_of_user_tree():
