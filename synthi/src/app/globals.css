@@ -1706,6 +1706,11 @@
   transform: translateZ(0);
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
+  /* Width morph means the rendered box actually changes size, so the
+     internal flex row would overflow during the narrow phase. Clipping
+     it keeps the silhouette clean — box-shadow renders on the border
+     edge and is unaffected by overflow:hidden. */
+  overflow: hidden;
 }
 
 /* Single combined ring (halo + shadow merged). Driven by its own
@@ -1732,30 +1737,38 @@
 }
 
 @keyframes status-island-shell {
-  /* Seed pulse — visible as a glowing dot that grows quickly into the
-     pill. Opacity ramp is part of the same ease (no hold), and the seed
-     keeps a slight vertical scale so it reads as a soft pill rather than
-     a sliver. */
+  /* Seed → pill morph via real max-width + border-radius animation.
+     Opacity is RAMPED ACROSS THE WHOLE TIMELINE rather than spiking to
+     1 in the first 130ms — that earlier behavior read as a hard pop in
+     front of the still-fading V. Five intermediate opacity stops keep
+     the curve close to linear so the pill cross-dissolves with the V
+     instead of replacing it abruptly.
+
+     Note: no transform: scale overshoot here. Transform doesn't affect
+     layout, so the brackets (positioned at right:100%+2px / left:100%+2px
+     on the layout box) wouldn't follow the scale and would briefly read
+     as if they're INSIDE the visual pill edge. The cubic-bezier easing
+     alone carries the motion. */
   0% {
-    transform: scale3d(0.06, 0.62, 1);
+    max-width: 28px;
+    border-radius: 14px;
     opacity: 0;
   }
-  18% {
-    transform: scale3d(0.08, 0.78, 1);
-    opacity: 1;
+  20% {
+    opacity: 0.2;
   }
-  /* Unfurl — gradient brand colour carries the silhouette outward.
-     The unfurl owns the majority of the timeline so the eye reads it
-     as the primary motion. */
-  72% {
-    transform: scale3d(1.012, 1.008, 1);
-    opacity: 1;
+  40% {
+    opacity: 0.45;
   }
-  /* Settle — tiny overshoot resolves to identity. backdrop-filter is
-     still suppressed here; the .status-island-entering class is removed
-     by the JS timer ~60ms after this lands. */
+  60% {
+    opacity: 0.7;
+  }
+  80% {
+    opacity: 0.9;
+  }
   100% {
-    transform: scale3d(1, 1, 1);
+    max-width: 1100px;
+    border-radius: 6px;
     opacity: 1;
   }
 }
@@ -1936,10 +1949,13 @@
 }
 
 .vectant-logo-v {
-  /* The V is the focal point — full height, centered. The source PNG
-     is squarish so width: auto preserves aspect ratio. */
+  /* The V is the focal point — sized to fill the bracket interior
+     (44px outer × 68.5% inner ≈ 30px) so the mark sits snugly between
+     the bracket arms. Source PNG is squarish; width: auto preserves
+     aspect ratio. Slightly overflows the 28px button container, which
+     is fine since the button has no overflow clip. */
   position: relative;
-  height: 26px;
+  height: 30px;
   width: auto;
   z-index: 2;
   user-select: none;
@@ -1947,35 +1963,10 @@
   transition: opacity 160ms ease-out, filter 200ms ease-out;
 }
 
-.vectant-logo-bracket {
-  /* Brackets flank the V. Tall thin elements; we render at full island
-     height so they read like the eventual L/R edges of the pill.
-     During expand, they translateX outward to their final island-edge
-     positions. */
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  height: 28px;
-  width: auto;
-  z-index: 1;
-  user-select: none;
-  pointer-events: none;
-  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1), opacity 200ms ease-out;
-}
-
-.vectant-logo-bracket--left {
-  /* Sits flush against the left side of the V. The V is ~30px wide at
-     this size; halve that and offset by the bracket's own width.
-     left:50% + translateX(-100%-15px) places the bracket's right edge
-     against the V's left edge. */
-  left: 50%;
-  transform: translateX(calc(-100% - 15px));
-}
-
-.vectant-logo-bracket--right {
-  right: 50%;
-  transform: translateX(calc(100% + 15px));
-}
+/* Brackets are no longer rendered inside the logo button. They live as
+   absolute siblings of the pill inside .stage so they auto-track the
+   pill's width during the expand/collapse morph — see .island-bracket
+   below. */
 
 /* ── Status signals on the collapsed logo ─────────────────────────── */
 
@@ -2035,48 +2026,93 @@
   position: relative;
 }
 
-/* Hide the pill cleanly when in logo phase. We use visibility (not
-   display:none) so layout width stays consistent during the morph. */
+/* Hide the pill cleanly when in logo phase. We hide pill + halo + the
+   content row individually rather than blanking the whole pill-wrapper,
+   so the brackets (siblings of the pill inside the stage) remain
+   visible without needing to fight inherited visibility. The stage
+   shrinks to a 28px box via max-width on the pill, which centers
+   the brackets at ± 16px of the wrapper center. */
 .status-island-phase--logo .status-island-pill-wrapper {
-  visibility: hidden;
   pointer-events: none;
+}
+.status-island-phase--logo .status-island {
+  max-width: 28px;
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+}
+.status-island-phase--logo .status-island-halo-bg {
+  opacity: 0 !important;
+  visibility: hidden;
+}
+.status-island-phase--logo .status-island-row {
+  opacity: 0;
 }
 .status-island-phase--logo .vectant-logo-wrapper {
   visibility: visible;
 }
 
-/* Conversely, hide the logo when in expanded/expanding/collapsing. */
-.status-island-phase--expanded .vectant-logo-wrapper,
-.status-island-phase--expanding .vectant-logo-wrapper,
-.status-island-phase--collapsing .vectant-logo-wrapper {
+/* Hide the V only in the steady 'expanded' state. During 'expanding'
+   we keep it mounted so the .is-fading class can run the opacity
+   transition out; during 'collapsing' the later .status-island-phase--
+   collapsing .vectant-logo-wrapper rule (opacity:0 → fade-in keyframes)
+   handles the inverse fade. */
+.status-island-phase--expanded .vectant-logo-wrapper {
   display: none;
 }
 
-/* The V fades out at the start of expansion and fades back in at the
-   end of collapse. JS toggles .is-fading. */
+/* The V fades out at the start of expansion. We slow this from 140ms
+   to 380ms so the V is still partly visible while the pill is fading
+   in — together they read as a cross-dissolve rather than a fast swap
+   followed by a slow morph. */
 .vectant-logo-v.is-fading {
   opacity: 0;
   transform: scale(0.92);
-  transition: opacity 140ms ease-out, transform 220ms ease-out;
+  transition: opacity 380ms ease-out, transform 380ms ease-out;
 }
 
-/* During expand, the brackets fly outward. Distance is fixed to the
-   island's centered min-w (640px) — half that minus a few px so the
-   brackets read as the island's L/R edges. */
-.vectant-logo-button.is-spreading .vectant-logo-bracket--left {
-  transform: translateX(-310px);
-  opacity: 0;
-  /* Slightly longer than the V-fade so the brackets are still mid-flight
-     when the V is gone — reads as the brackets pulling the pill outward
-     rather than two unrelated motions. */
-  transition: transform 480ms cubic-bezier(0.32, 0.72, 0, 1),
-              opacity 360ms ease-out 180ms;
+/* ── Island brackets ────────────────────────────────────────────────
+   Two PNG marks that flank the pill at all times once hasCollapsedOnce.
+   They live as absolute siblings of the pill inside .stage. The stage
+   is inline-block (sizes to pill's outer box), so positioning the
+   brackets at right:calc(100% + 2px) / left:calc(100% + 2px) keeps a
+   constant 2px gap between bracket and pill — and as the pill's
+   max-width animates from 28px → ~700px, the stage shrinks/grows with
+   it and the brackets follow without needing their own keyframes.
+
+   Height is 44px so the bracket's INTERIOR gap (the y=95→510 portion of
+   the 606px-tall source PNG = 68.5%) renders at ~30px — that's the
+   28px pill plus a 2px overhang above and below. This makes the pill
+   visually sit inside the brackets with a 1px breathing strip on top
+   and bottom, and gives the collapsed V logo the same framed look.
+
+   The wrapper-level `visibility: hidden` we use in the logo phase to
+   blank the pill DOES inherit here, so we explicitly set
+   `visibility: visible` to opt the brackets back in. */
+.island-bracket {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%) translateZ(0);
+  height: 44px;
+  width: auto;
+  z-index: 5;
+  user-select: none;
+  pointer-events: none;
+  visibility: visible;
 }
-.vectant-logo-button.is-spreading .vectant-logo-bracket--right {
-  transform: translateX(calc(100% + 310px - 15px));
-  opacity: 0;
-  transition: transform 480ms cubic-bezier(0.32, 0.72, 0, 1),
-              opacity 360ms ease-out 180ms;
+
+.island-bracket--left {
+  right: calc(100% + 2px);
+}
+
+.island-bracket--right {
+  left: calc(100% + 2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .island-bracket {
+    transition: none !important;
+  }
 }
 
 /* ── Collapse animation ─────────────────────────────────────────────
@@ -2092,16 +2128,31 @@
                  away, not after a visible empty frame). */
 
 @keyframes status-island-collapse {
+  /* Mirror of the entrance — max-width and border-radius interpolate
+     back from the rounded-rect resting shape to the 28×28 circle seed.
+     Opacity ramps across the WHOLE timeline (not just the last 30% as
+     before) so the pill gradually fades while the V fades back in,
+     producing a cross-dissolve instead of a hard disappear. */
   0% {
-    transform: scale3d(1, 1, 1);
+    max-width: 1100px;
+    border-radius: 6px;
     opacity: 1;
   }
-  70% {
-    transform: scale3d(0.08, 0.78, 1);
-    opacity: 1;
+  20% {
+    opacity: 0.9;
+  }
+  40% {
+    opacity: 0.7;
+  }
+  60% {
+    opacity: 0.45;
+  }
+  80% {
+    opacity: 0.2;
   }
   100% {
-    transform: scale3d(0.06, 0.62, 1);
+    max-width: 28px;
+    border-radius: 14px;
     opacity: 0;
   }
 }
@@ -2114,6 +2165,8 @@
   transform: translateZ(0);
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
+  /* Width morph clips the row content as the box shrinks. */
+  overflow: hidden;
 }
 
 @keyframes status-island-collapse-content {
@@ -2153,17 +2206,14 @@
 }
 
 /* Hide the pill entirely in 'logo' phase so it never intercepts clicks
-   beneath the logo. opacity:0 is the safety net for the brief frame at
-   the collapsing→logo transition where the content's CSS animation
-   class drops (animation end-state was opacity 0 via fill:both, but
-   the moment the class drops the opacity reverts to its computed
-   default of 1 — and if the visibility:hidden hasn't applied yet in
-   the same frame, the icons flash visible). opacity:0 ensures the
-   content can never repaint visible during the logo phase regardless
-   of paint-order races. */
+   beneath the logo. We DON'T hide the wrapper itself (visibility +
+   opacity moved off here) because the brackets — siblings of the
+   pill inside .stage — need to stay visible to permanently frame the
+   collapsed V logo, and opacity creates a stacking context children
+   cannot opt back out of. The pill and its row each carry their own
+   visibility:hidden + opacity:0 in logo phase, which is enough to
+   prevent any flash at the collapsing→logo handoff. */
 .status-island-phase--logo .status-island-pill-wrapper {
-  visibility: hidden;
-  opacity: 0;
   pointer-events: none;
 }
 .status-island-phase--logo .status-island-pill-wrapper * {
@@ -2174,8 +2224,11 @@
    after the shell has done most of its work. This is the fix for
    "logo appears while pill is still full size and content is visible". */
 .status-island-phase--collapsing .vectant-logo-wrapper {
+  /* Start the V fade-in earlier (200ms instead of 340ms) and run it
+     longer (320ms instead of 200ms) so it overlaps with the pill's
+     gradual opacity ramp-down — clean cross-dissolve between the two. */
   opacity: 0;
-  animation: vectant-logo-collapse-fade-in 200ms ease-out 340ms both;
+  animation: vectant-logo-collapse-fade-in 320ms ease-out 200ms both;
 }
 @keyframes vectant-logo-collapse-fade-in {
   from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
@@ -2303,7 +2356,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .vectant-logo-bracket,
   .vectant-logo-v,
   .vectant-logo-halo,
   .vectant-logo--healing .vectant-logo-halo {

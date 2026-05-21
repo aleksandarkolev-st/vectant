@@ -496,18 +496,38 @@ function StatusBarInner({
               </div>
             </div>
           )}
-          {/* Stage — owns the entrance scaleX. Wraps halo + pill so they
-              morph together and the gradient on the pill scales with its
-              silhouette (so the rounded ends carry brand colour at every
-              frame, instead of being cut off by a clip-path). */}
+          {/* Stage — owns the entrance scaleX. Wraps halo + pill + the
+              two brackets so they morph together. The stage is inline-
+              block (sizes to the pill's outer box), so positioning the
+              brackets at right:100%+2px / left:100%+2px keeps a constant
+              2px gap that auto-tracks the pill's animating max-width
+              without per-bracket keyframes. */}
           <div className={stageClassName}>
+            {hasCollapsedOnce && (
+              <>
+                <img
+                  src="/vectant/left_bracket_full.png"
+                  alt=""
+                  aria-hidden="true"
+                  className="island-bracket island-bracket--left"
+                  draggable={false}
+                />
+                <img
+                  src="/vectant/right_bracket_full.png"
+                  alt=""
+                  aria-hidden="true"
+                  className="island-bracket island-bracket--right"
+                  draggable={false}
+                />
+              </>
+            )}
             {/* Combined glow ring — opacity-only animated via
                 .status-island-entrance-halo. We let CSS own the entrance
                 opacity here; the post-entrance steady-state value also
                 lives in the keyframes' 100% (fill-mode: both). */}
             <div
               aria-hidden="true"
-              className={`status-island-halo-bg pointer-events-none absolute inset-[-1px] rounded-full ${isEntering ? 'status-island-entrance-halo' : ''}`}
+              className={`status-island-halo-bg pointer-events-none absolute inset-[-1px] rounded-[8px] ${isEntering ? 'status-island-entrance-halo' : ''}`}
               style={{
                 background: 'var(--brand-gradient-horizontal)',
                 filter: 'blur(5px)',
@@ -516,7 +536,7 @@ function StatusBarInner({
               }}
             />
             <div
-              className={`status-island relative z-10 h-7 rounded-full text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap ${isEntering ? 'status-island-entrance-shell status-island-entering' : ''} ${phase === 'collapsing' ? 'status-island-collapsing-shell' : ''} ${isCompact ? 'is-compact' : ''}`}
+              className={`status-island relative z-10 h-7 rounded-[6px] text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap ${isEntering ? 'status-island-entrance-shell status-island-entering' : ''} ${phase === 'collapsing' ? 'status-island-collapsing-shell' : ''} ${isCompact ? 'is-compact' : ''}`}
               style={{
                 background:
                   'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, var(--brand-gradient-horizontal) border-box',
