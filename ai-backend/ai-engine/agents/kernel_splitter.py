@@ -246,6 +246,10 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
         guidance.append(
             "- The init/seed kernel launch and signature must include every device pointer passed to update kernels, and the init body must write each pointer."
         )
+    if "kernel_launch_abi_mismatch" in joined:
+        guidance.append(
+            "- For each synthi_gpu_launch call, make the host initializer-list match the generated kernel parameter list exactly. If the kernel takes a LaunchParams-style struct, create one host variable and pass its address as a single argument; otherwise flatten the kernel signature to match the host launch ABI."
+        )
     if "generated.host_state_type_not_shared" in joined:
         guidance.append(
             "- Define the host-visible state record exactly once in shared.h; core.cpp, gui.cpp, and host_runner.cpp must include shared.h and use that type."

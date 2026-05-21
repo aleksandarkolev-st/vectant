@@ -1368,6 +1368,7 @@ def verify_split_output(
             )
             continue
 
+        kernel_name = _launch_kernel_name(args[1])
         launch_args = args[-1].strip()
         if "(uintptr_t)" in launch_args or "reinterpret_cast" in launch_args or re.search(
             r"\(\s*const\s+void\s*\*\s*\)", launch_args
@@ -1387,6 +1388,25 @@ def verify_split_output(
 
         if launch_args.endswith("}"):
             entries = _split_top_level_args(launch_args[1:-1])
+            if kernel_name:
+                kernel_params = _device_kernel_params(device_source, kernel_name)
+                if kernel_params and len(entries) != len(kernel_params):
+                    violations.append(
+                        Violation(
+                            rule="kernel_launch_abi_mismatch",
+                            message=(
+                                "synthi_gpu_launch argument count must match "
+                                "the generated kernel parameter list exactly. "
+                                f"Kernel {kernel_name} declares {len(kernel_params)} "
+                                f"parameters but the host launch passes {len(entries)} "
+                                "arguments. Pass aggregate launch parameters as one "
+                                "host variable, or flatten the generated kernel "
+                                "signature to match the host launch ABI."
+                            ),
+                            offending_module=core_path,
+                            offending_symbol=kernel_name,
+                        )
+                    )
             for entry in entries:
                 stripped = entry.strip()
                 if stripped and not stripped.startswith("&"):

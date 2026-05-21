@@ -1141,6 +1141,27 @@ def test_split_rejects_non_address_launch_arguments():
     assert "launch_arg_not_address" in rules
 
 
+def test_split_rejects_kernel_launch_abi_argument_count_mismatch():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct LaunchParams { float dt; float cx; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'float* x = 0; int n = 1; float dt = 0.1f; float cx = 400.0f; '
+            'synthi_gpu_launch(gpu, "advance", 1, 256, 0, stream, { &x, &n, &dt, &cx }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": 'extern "C" __global__ void advance(float* x, int n, LaunchParams params) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    rules = {v.rule for v in r.violations}
+    assert "kernel_launch_abi_mismatch" in rules
+
+
 def test_split_rejects_runtime_unsafe_gpu_buffer_split():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* deviceX; };',
