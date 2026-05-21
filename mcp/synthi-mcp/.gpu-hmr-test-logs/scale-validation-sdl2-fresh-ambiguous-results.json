@@ -1,0 +1,178 @@
+{
+  "slug": "gpu-scale-validation-sdl2-ambiguous-target-20260521b",
+  "repo_commit": "4e06e5955e0d957012de39ddaa9d7cd0cc177f49",
+  "model": "gemini-3.1-flash-lite-preview",
+  "vendor": "rocm",
+  "arch": "gfx1201",
+  "render_backend": "sdl2",
+  "cmake_target_mode": "ambiguous",
+  "source_file_mix": {
+    "cpp": 13,
+    "hpp": 18,
+    "h": 10,
+    "hip": 11,
+    "cu": 0,
+    "total": 52
+  },
+  "template_evidence_mode": "fresh",
+  "workspace_file_count": 299,
+  "relevant_file_count": 59,
+  "framework_dependency": {
+    "backend": "sdl2",
+    "label": "SDL2",
+    "packages": [
+      "libsdl2-dev"
+    ],
+    "status": "available"
+  },
+  "started_at": "2026-05-21T03:22:08.149Z",
+  "finished_at": "2026-05-21T03:22:12.447Z",
+  "compose_files": [
+    "docker-compose.yml",
+    "docker-compose.gpu-amd.yml"
+  ],
+  "containers": {
+    "worker": {
+      "id": "5baf0d9b1181373de01084a268a12e6fb6775b116e2306132fea832dd4ab45f8",
+      "image_id": "sha256:5f4573a05aacf8e3eeb181111ea18ecb5c69377955ff11f76d3b49fc14b7fcb7",
+      "image": "vectant-ade-worker",
+      "created": "2026-05-21T01:17:21.749519856Z"
+    },
+    "ai_engine": {
+      "id": "bb3ecce7647f1ec534fc7d55ea2a41b28fc6a40d514af8c778c6c276b8f0a90f",
+      "image_id": "sha256:065f3c896213201a8e37b44feaa2c9f9151ce25103f82103603642e279a44681",
+      "image": "vectant-ade-ai-engine",
+      "created": "2026-05-21T01:12:05.229125572Z"
+    },
+    "mcp": {
+      "id": "7f0936e03e67414b7fa848bdfa8ba11705fd99ab32a40fc9f3f6f27ffc5576d1",
+      "image_id": "sha256:f8c790cb99095b1ac21af3ed273a5535167af79f1fefb510ccb7291fcf49c896",
+      "image": "vectant-ade-mcp",
+      "created": "2026-05-20T23:14:07.261192414Z"
+    }
+  },
+  "env": {
+    "SYNTHI_GEMINI_MODEL": "gemini-3.1-flash-lite-preview",
+    "SYNTHI_GPU_VENDOR": "rocm",
+    "SYNTHI_GPU_ARCH": "gfx1201",
+    "SYNTHI_SCALE_RENDER_BACKEND": "sdl2",
+    "SYNTHI_SCALE_CMAKE_TARGET_MODE": "ambiguous",
+    "SYNTHI_SCALE_HMR_DELTA_MODE": "ai_user_delta",
+    "SYNTHI_SCALE_TEMPLATE_EVIDENCE": "fresh",
+    "SYNTHI_SYNC_TO_GCS": ""
+  },
+  "worker_restarted_before_run": true,
+  "ai_engine_restarted_before_run": true,
+  "split_cache_bypassed_by_worker_restart": true,
+  "generated_roles": {},
+  "launch_indirection": {},
+  "warm_rebuild": {},
+  "runtime_policy": {},
+  "phases": [
+    {
+      "name": "ambiguous_cmake_target_rejected",
+      "wait_hmr_status": "expected_unsupported",
+      "wait_hmr_source": "deterministic_validation",
+      "wait_hmr_elapsed_ms": 78,
+      "wait_hmr_terminal_elapsed_ms": 78,
+      "wait_hmr_detail": {
+        "compile": {
+          "ok": true,
+          "session_id": "gpu-scale-validation-sdl2-ambiguous-target-20260521b",
+          "language": "cpp",
+          "filename": "src/app/main.cpp",
+          "dispatched_at": 1779333732562,
+          "note": "Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."
+        },
+        "wait": {
+          "status": "compile-error",
+          "elapsedMs": 78,
+          "hmrElapsedMs": 78,
+          "source": "hmr_status",
+          "detail": {
+            "status": "compile-error",
+            "module": "pipeline",
+            "errors": [
+              "GPU split endpoint failed for a GPU-preferred compile: AI endpoint http://ai-engine:8000/refactor/split/gpu failed with HTTP status 422 Unprocessable Entity: GPU split unsupported for this project shape | target_resolution_ambiguous: GPU split requires one selected CMake target, but target resolution is ambiguous via ambiguous_executable_targets_containing_focus: particle_field, particle_field_shadow | targetResolution.reasonCodes=target_resolution_ambiguous"
+            ]
+          }
+        }
+      },
+      "frame_gate": {
+        "status": "not_applicable",
+        "reason": "target_resolution_ambiguous"
+      },
+      "wall_elapsed_ms": 96,
+      "worker_log_markers": []
+    }
+  ],
+  "screenshots": [],
+  "checks": [
+    {
+      "name": "gpu target",
+      "status": "pass",
+      "detail": "rocm arch=gfx1201 render_backend=sdl2 cmake_target_mode=ambiguous template_evidence=fresh",
+      "ts": "2026-05-21T03:22:08.616Z"
+    },
+    {
+      "name": "source file mix",
+      "status": "pass",
+      "detail": "{\"cpp\":13,\"hpp\":18,\"h\":10,\"hip\":11,\"cu\":0,\"total\":52}",
+      "ts": "2026-05-21T03:22:08.619Z"
+    },
+    {
+      "name": "ordinary user project guard",
+      "status": "pass",
+      "detail": "299 files, no Synthi ABI or generated role filenames",
+      "ts": "2026-05-21T03:22:08.620Z"
+    },
+    {
+      "name": "render backend dependency preflight",
+      "status": "pass",
+      "detail": "SDL2: libsdl2-dev",
+      "ts": "2026-05-21T03:22:09.178Z"
+    },
+    {
+      "name": "create workspace",
+      "status": "pass",
+      "detail": "id=cmpexd0mj000kl201gsykjzcu slug=gpu-scale-validation-sdl2-ambiguous-target-20260521b",
+      "ts": "2026-05-21T03:22:09.222Z"
+    },
+    {
+      "name": "seed scale workspace",
+      "status": "pass",
+      "detail": "299 files",
+      "ts": "2026-05-21T03:22:10.636Z"
+    },
+    {
+      "name": "mcp tools/list",
+      "status": "pass",
+      "detail": "count=42",
+      "ts": "2026-05-21T03:22:11.013Z"
+    },
+    {
+      "name": "mcp attach",
+      "status": "pass",
+      "detail": "attached",
+      "ts": "2026-05-21T03:22:12.240Z"
+    },
+    {
+      "name": "ambiguous_cmake_target_rejected explicit fallback",
+      "status": "pass",
+      "detail": "target_resolution_ambiguous",
+      "ts": "2026-05-21T03:22:12.336Z"
+    },
+    {
+      "name": "worker saw full ambiguous target file set",
+      "status": "pass",
+      "detail": "[AI Split] ENTER (cache_key=5746811714087889825, src_len=375, files=299, gpu_mode=rocm, gpu_arch=gfx1201",
+      "ts": "2026-05-21T03:22:12.399Z"
+    },
+    {
+      "name": "ai-engine rejected ambiguous CMake target before split generation",
+      "status": "pass",
+      "detail": "deterministic unsupported project rejection: GPU split requires one selected CMake target, but target resolution is ambiguous",
+      "ts": "2026-05-21T03:22:12.447Z"
+    }
+  ]
+}
