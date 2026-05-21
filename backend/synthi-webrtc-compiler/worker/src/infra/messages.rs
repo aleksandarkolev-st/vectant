@@ -68,6 +68,10 @@ pub struct CompileRequest {
     /// Explicit user request for deterministic compilation (Loop A).
     #[serde(default)]
     pub user_requested_deterministic: bool,
+    /// Force GPU source edits through the AI GPU delta path instead of the
+    /// local direct-device fast path. Intended for verifier/agentic validation.
+    #[serde(default, alias = "use_gpu_ai_delta", alias = "force_ai_delta")]
+    pub force_gpu_ai_delta: bool,
     /// Frontend preference for the GPU HMR pipeline. Defaults true so existing
     /// clients get detector/manifest driven GPU behavior.
     #[serde(default = "default_prefer_gpu_pipeline")]

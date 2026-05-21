@@ -41,10 +41,9 @@ fn get_ai_backend_url() -> String {
 }
 
 fn add_ai_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-    match std::env::var("AI_BACKEND_AUTH_TOKEN").or_else(|_| std::env::var("AI_ENGINE_AUTH_TOKEN")) {
-        Ok(token) if !token.trim().is_empty() => {
-            request.header("x-synthi-internal-token", token)
-        }
+    match std::env::var("AI_BACKEND_AUTH_TOKEN").or_else(|_| std::env::var("AI_ENGINE_AUTH_TOKEN"))
+    {
+        Ok(token) if !token.trim().is_empty() => request.header("x-synthi-internal-token", token),
         _ => request,
     }
 }
@@ -69,15 +68,147 @@ fn ai_http_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+fn summarize_ai_error_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return "<empty response body>".to_string();
+    }
+    let summary = serde_json::from_str::<serde_json::Value>(trimmed)
+        .ok()
+        .and_then(|json| {
+            let detail = json.get("detail").unwrap_or(&json);
+            summarize_ai_error_json(detail)
+        })
+        .unwrap_or_else(|| trimmed.to_string());
+    summary.chars().take(1200).collect()
+}
+
+fn push_summary_part(parts: &mut Vec<String>, part: impl Into<String>) {
+    let part = part.into();
+    if !part.is_empty() && !parts.iter().any(|existing| existing == &part) {
+        parts.push(part);
+    }
+}
+
+fn summarize_ai_error_json(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Object(_) => {
+            let mut parts = Vec::new();
+            if let Some(message) = value.get("message").and_then(|v| v.as_str()) {
+                push_summary_part(&mut parts, message);
+            }
+            if let Some(violations) = value
+                .get("verification")
+                .and_then(|v| v.get("violations"))
+                .and_then(|v| v.as_array())
+            {
+                for violation in violations.iter().take(8) {
+                    let rule = violation
+                        .get("rule")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("verifier_violation");
+                    let message = violation
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    push_summary_part(&mut parts, format!("{}: {}", rule, message));
+                }
+            }
+            if let Some(reason_codes) = value
+                .get("source_context_report")
+                .and_then(|v| v.get("graphicsBackend"))
+                .and_then(|v| v.get("reasonCodes"))
+                .and_then(|v| v.as_array())
+            {
+                let codes: Vec<&str> = reason_codes
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .take(8)
+                    .collect();
+                if !codes.is_empty() {
+                    push_summary_part(
+                        &mut parts,
+                        format!("graphicsBackend.reasonCodes={}", codes.join(",")),
+                    );
+                }
+            }
+            if let Some(reason_codes) = value
+                .get("source_context_report")
+                .and_then(|v| v.get("buildMetadata"))
+                .and_then(|v| v.get("targetResolution"))
+                .and_then(|v| v.get("reasonCodes"))
+                .and_then(|v| v.as_array())
+            {
+                let codes: Vec<&str> = reason_codes
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .take(8)
+                    .collect();
+                if !codes.is_empty() {
+                    push_summary_part(
+                        &mut parts,
+                        format!("targetResolution.reasonCodes={}", codes.join(",")),
+                    );
+                }
+            }
+            if parts.is_empty() {
+                Some(value.to_string())
+            } else {
+                Some(parts.join(" | "))
+            }
+        }
+        _ => Some(value.to_string()),
+    }
+}
+
+async fn post_ai_json(
+    client: &reqwest::Client,
+    url: &str,
+    payload: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let resp = add_ai_auth(client.post(url))
+        .json(payload)
+        .timeout(ai_http_timeout())
+        .send()
+        .await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+    if !status.is_success() {
+        return Err(anyhow!(
+            "AI endpoint {} failed with HTTP status {}: {}",
+            url,
+            status,
+            summarize_ai_error_body(&body)
+        ));
+    }
+    serde_json::from_str::<serde_json::Value>(&body).map_err(|e| {
+        anyhow!(
+            "AI endpoint {} returned invalid JSON body: {}",
+            url,
+            e
+        )
+    })
+}
+
 fn text_has_gpu_markers(source: &str) -> bool {
     let lower = source.to_ascii_lowercase();
     source.contains("__global__")
         || source.contains("__device__")
         || source.contains("<<<")
+        || source.contains("GLOBAL_KERNEL_SIGNATURE")
+        || source.contains("HIPRT_DEVICE")
+        || source.contains("HIPRT_HOST_DEVICE")
         || lower.contains("cuda_runtime")
         || lower.contains("hip_runtime")
         || lower.contains("cudamalloc")
         || lower.contains("hipmalloc")
+        || lower.contains("oromodulelaunchkernel")
+        || lower.contains("hiprtccreateprogram")
+        || lower.contains("hiprtccompileprogram")
+        || lower.contains("hiprtcgetcode")
+        || lower.contains("hiprtcgetbitcode")
+        || lower.contains("cumodulelaunchkernel")
 }
 
 fn request_has_gpu_markers(req: &CompileRequest) -> bool {
@@ -154,6 +285,27 @@ fn split_content(value: Option<&serde_json::Value>) -> Option<String> {
             .map(|s| s.to_string()),
         _ => None,
     }
+}
+
+fn with_split_cache_report(
+    mut result: serde_json::Value,
+    cache_key: u64,
+    hit: bool,
+    reason: &str,
+    entries_before_lookup: usize,
+) -> serde_json::Value {
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert(
+            "_synthi_cache_report".to_string(),
+            serde_json::json!({
+                "splitCacheHit": hit,
+                "splitCacheReason": reason,
+                "splitCacheKey": cache_key.to_string(),
+                "splitCacheEntries": entries_before_lookup,
+            }),
+        );
+    }
+    result
 }
 
 fn manifest_module_file(manifest: &serde_json::Value, role: &str) -> Option<String> {
@@ -281,7 +433,10 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // produce different output depending on the user's project files and GPU
     // target. Include both so large multi-file projects and arch changes do
     // not reuse stale monolithic split output.
-    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v7";
+    // Cache entries are accepted split artifacts. Keep this tied to the
+    // prompt/verifier contract, not just source text, so newly hardened
+    // deterministic split verifiers do not reuse stale generated roles.
+    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v8-launch-abi";
     let source_hash = calculate_hash(&(
         AI_SPLIT_CACHE_SCHEMA_VERSION,
         req.language.as_str(),
@@ -304,14 +459,21 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
         has_gpu_markers
     );
 
-    {
+    let cache_entries_before_lookup = {
         let cache = get_ai_split_cache().lock().await;
         if let Some(cached) = cache.get(&source_hash) {
             eprintln!("[AI Split] Level 1 HIT (exact source_hash match)");
-            return Ok(cached.result.clone());
+            return Ok(with_split_cache_report(
+                cached.result.clone(),
+                source_hash,
+                true,
+                "exact_source_hash",
+                cache.len(),
+            ));
         }
         eprintln!("[AI Split] Level 1 MISS (cache entries: {})", cache.len());
-    }
+        cache.len()
+    };
 
     // Level 3: Full AI Split
     // The AI engine exposes /refactor/split/verified for verified splitting.
@@ -381,14 +543,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             gpu_split_url
         );
         let gpu_result: Result<serde_json::Value, anyhow::Error> = async {
-            let resp = client
-                .post(&gpu_split_url)
-                .json(&payload)
-                .timeout(ai_http_timeout())
-                .send()
-                .await?
-                .error_for_status()?;
-            Ok(resp.json::<serde_json::Value>().await?)
+            post_ai_json(&client, &gpu_split_url, &payload).await
         }
         .await;
         match gpu_result {
@@ -425,14 +580,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             verified_url
         );
         let verified_result: Result<serde_json::Value, anyhow::Error> = async {
-            let resp = client
-                .post(&verified_url)
-                .json(&payload)
-                .timeout(ai_http_timeout())
-                .send()
-                .await?
-                .error_for_status()?;
-            Ok(resp.json::<serde_json::Value>().await?)
+            post_ai_json(&client, &verified_url, &payload).await
         }
         .await;
 
@@ -443,28 +591,14 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                     "[AI Split] Verified returned no result field: {:?}, trying unverified",
                     json.to_string().chars().take(200).collect::<String>()
                 );
-                client
-                    .post(&split_url)
-                    .json(&payload)
-                    .timeout(ai_http_timeout())
-                    .send()
-                    .await?
-                    .json::<serde_json::Value>()
-                    .await?
+                post_ai_json(&client, &split_url, &payload).await?
             }
             Err(e) => {
                 eprintln!(
                     "[AI Split] Verified endpoint failed ({}), trying unverified",
                     e
                 );
-                let resp = client
-                    .post(&split_url)
-                    .json(&payload)
-                    .timeout(ai_http_timeout())
-                    .send()
-                    .await?
-                    .error_for_status()?;
-                resp.json::<serde_json::Value>().await?
+                post_ai_json(&client, &split_url, &payload).await?
             }
         }
     };
@@ -553,6 +687,13 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // The architecture is a plain markdown string (may be empty if the split
     // model forgot to emit the <synthi_arch_cache> XML block).
     let mut res = normalize_split_response(res, raw_response.get("manifest"));
+    res = with_split_cache_report(
+        res,
+        source_hash,
+        false,
+        "exact_source_hash_miss",
+        cache_entries_before_lookup,
+    );
     if let Some(arch) = raw_response.get("architecture").and_then(|v| v.as_str()) {
         if !arch.is_empty() {
             eprintln!(
@@ -577,7 +718,8 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // split Value so handler.rs can pull it into the sidecar and thread it
     // into compile_core / compile_gui. If the field is absent (old sidecar,
     // backend running pre-Phase-2 code, or parse failure on Python side),
-    // downstream falls back to `CompileManifest::sdl2_default()`.
+    // downstream uses `CompileManifest::generic_fallback()` without inferring
+    // framework link flags.
     if let Some(manifest) = raw_response.get("manifest") {
         if !manifest.is_null() {
             let manifest_size = manifest.to_string().len();
@@ -589,10 +731,67 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                 obj.insert("_synthi_manifest".to_string(), manifest.clone());
             }
         } else {
-            eprintln!("[AI Split] manifest field is null (fallback to sdl2 default downstream)");
+            eprintln!("[AI Split] manifest field is null (generic fallback downstream)");
         }
     } else {
-        eprintln!("[AI Split] no manifest in response (fallback to sdl2 default downstream)");
+        eprintln!("[AI Split] no manifest in response (generic fallback downstream)");
+    }
+
+    if let Some(agentic_report) = raw_response.get("agentic_report") {
+        if !agentic_report.is_null() {
+            eprintln!("[AI Split] agentic split report captured");
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert("_synthi_agentic_report".to_string(), agentic_report.clone());
+            }
+        }
+    }
+
+    if let Some(generated_report) = raw_response.get("generated_artifact_report") {
+        if !generated_report.is_null() {
+            eprintln!("[AI Split] generated artifact purity report captured");
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert(
+                    "_synthi_generated_artifact_report".to_string(),
+                    generated_report.clone(),
+                );
+            }
+        }
+    }
+
+    if let Some(mapping_report) = raw_response.get("device_mapping_report") {
+        if !mapping_report.is_null() {
+            eprintln!("[AI Split] device mapping report captured");
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert(
+                    "_synthi_device_mapping_report".to_string(),
+                    mapping_report.clone(),
+                );
+            }
+        }
+    }
+
+    if let Some(source_context_report) = raw_response.get("source_context_report") {
+        if !source_context_report.is_null() {
+            eprintln!("[AI Split] deterministic source context report captured");
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert(
+                    "_synthi_source_context_report".to_string(),
+                    source_context_report.clone(),
+                );
+            }
+        }
+    }
+
+    if let Some(launch_report) = raw_response.get("launch_indirection_report") {
+        if !launch_report.is_null() {
+            eprintln!("[AI Split] launch indirection report captured");
+            if let Some(obj) = res.as_object_mut() {
+                obj.insert(
+                    "_synthi_launch_indirection_report".to_string(),
+                    launch_report.clone(),
+                );
+            }
+        }
     }
 
     // ULTRAPLAN Phase 4: log host_runner presence. The parsed `res` Value
@@ -725,6 +924,94 @@ pub async fn perform_ai_diff_patch(
     );
 
     Ok(edit_list.edits)
+}
+
+#[derive(Debug, Clone)]
+pub struct GpuDiffPatchResult {
+    pub reload_plan: String,
+    pub edits: Vec<crate::hmr::edit_applier::Edit>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct GpuDiffPatchResponse {
+    #[serde(default)]
+    reload_plan: Option<String>,
+    #[serde(default)]
+    edits: Vec<crate::hmr::edit_applier::Edit>,
+    #[serde(default)]
+    elapsed_seconds: Option<f64>,
+}
+
+/// GPU-aware AI delta path. Unlike the generic diff patch endpoint, this sends
+/// the current device role and accepts `module="device"` edits, while the Rust
+/// side still applies and verifies the patch locally.
+pub async fn perform_gpu_ai_diff_patch(
+    diff: &str,
+    core_content: &str,
+    gui_content: &str,
+    shared_content: &str,
+    host_runner_content: &str,
+    device_content: &str,
+    architecture: Option<&str>,
+    mapping_report: Option<&serde_json::Value>,
+    compile_manifest: Option<&serde_json::Value>,
+    reload_plan_report: Option<&serde_json::Value>,
+    reload_plan_hint: Option<&str>,
+) -> Result<GpuDiffPatchResult> {
+    let client = reqwest::Client::new();
+    let backend_url = get_ai_backend_url();
+    let url = format!("{}/refactor/diff_patch/gpu", backend_url);
+
+    eprintln!(
+        "[GPU AI Delta] Calling {} with diff={} bytes arch={} chars device={} bytes hint={}",
+        url,
+        diff.len(),
+        architecture.map(|s| s.len()).unwrap_or(0),
+        device_content.len(),
+        reload_plan_hint.unwrap_or("none"),
+    );
+
+    let payload = serde_json::json!({
+        "diff": diff,
+        "core_content": core_content,
+        "gui_content": gui_content,
+        "shared_content": shared_content,
+        "host_runner_content": host_runner_content,
+        "device_content": device_content,
+        "architecture": architecture.unwrap_or(""),
+        "mapping_report": mapping_report.cloned().unwrap_or(serde_json::Value::Null),
+        "compile_manifest": compile_manifest.cloned().unwrap_or(serde_json::Value::Null),
+        "reload_plan_report": reload_plan_report.cloned().unwrap_or(serde_json::Value::Null),
+        "reload_plan": reload_plan_hint,
+    });
+
+    let res: serde_json::Value = add_ai_auth(client.post(&url))
+        .json(&payload)
+        .timeout(ai_http_timeout())
+        .send()
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+
+    let parsed: GpuDiffPatchResponse = serde_json::from_value(res.clone()).map_err(|e| {
+        anyhow::anyhow!(
+            "[GPU AI Delta] failed to parse GPU diff response: {} (raw: {})",
+            e,
+            res.to_string().chars().take(300).collect::<String>()
+        )
+    })?;
+    let reload_plan = parsed.reload_plan.unwrap_or_else(|| "mixed".to_string());
+    eprintln!(
+        "[GPU AI Delta] Completed in {:.2}s plan={} edit(s)={}",
+        parsed.elapsed_seconds.unwrap_or(0.0),
+        reload_plan,
+        parsed.edits.len()
+    );
+
+    Ok(GpuDiffPatchResult {
+        reload_plan,
+        edits: parsed.edits,
+    })
 }
 
 // NOTE: perform_targeted_delta_patch was removed together with the
@@ -1165,7 +1452,116 @@ mod tests {
         assert!(text_has_gpu_markers("__global__ void step(float* x) {}"));
         assert!(text_has_gpu_markers("#include <hip/hip_runtime.h>"));
         assert!(text_has_gpu_markers("kernel<<<grid, block>>>(x);"));
+        assert!(text_has_gpu_markers(
+            "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData data) {}"
+        ));
+        assert!(text_has_gpu_markers(
+            "HIPRT_DEVICE bool filterFunc(float x) { return x > 0.0f; }"
+        ));
+        assert!(text_has_gpu_markers(
+            "oroModuleLaunchKernel(fn, 1, 1, 1, 64, 1, 1, 0, stream, args, 0);"
+        ));
         assert!(!text_has_gpu_markers("int main() { return 0; }"));
+    }
+
+    #[test]
+    fn summarizes_ai_error_body_detail_object() {
+        let body = json!({
+            "detail": {
+                "message": "GPU split AI provider failed before verification",
+                "verification": {
+                    "ok": false,
+                    "violations": [
+                        {"rule": "ai_provider_timeout", "message": "TimeoutError"}
+                    ]
+                }
+            }
+        })
+        .to_string();
+
+        let summary = summarize_ai_error_body(&body);
+
+        assert!(summary.contains("GPU split AI provider failed before verification"));
+        assert!(summary.contains("ai_provider_timeout"));
+        assert!(summary.contains("TimeoutError"));
+    }
+
+    #[test]
+    fn summarizes_ai_error_body_keeps_unsupported_reason_codes_first() {
+        let body = json!({
+            "detail": {
+                "message": "GPU split unsupported for this project shape",
+                "source_context_report": {
+                    "graphicsBackend": {
+                        "primary": "vulkan",
+                        "reasonCodes": [
+                            "unsupported.graphics_backend_vulkan",
+                            "unsupported_project_shape"
+                        ],
+                        "evidence": [
+                            {"path": format!("src/noise_{}", "x".repeat(3000))}
+                        ]
+                    }
+                },
+                "verification": {
+                    "ok": false,
+                    "violations": [
+                        {
+                            "rule": "unsupported.graphics_backend_vulkan",
+                            "message": "Vulkan requires explicit fallback."
+                        }
+                    ]
+                }
+            }
+        })
+        .to_string();
+
+        let summary = summarize_ai_error_body(&body);
+
+        assert!(summary.contains("GPU split unsupported for this project shape"));
+        assert!(summary.contains("unsupported.graphics_backend_vulkan"));
+        assert!(summary.contains("unsupported_project_shape"));
+        assert!(summary.len() < 1200);
+    }
+
+    #[test]
+    fn summarizes_ai_error_body_keeps_target_resolution_reason_codes() {
+        let body = json!({
+            "detail": {
+                "message": "GPU split unsupported for this project shape",
+                "source_context_report": {
+                    "buildMetadata": {
+                        "targetResolution": {
+                            "status": "ambiguous",
+                            "reasonCodes": ["target_resolution_ambiguous"]
+                        }
+                    }
+                },
+                "verification": {
+                    "ok": false,
+                    "violations": [
+                        {
+                            "rule": "target_resolution_ambiguous",
+                            "message": "Multiple executable targets contain the requested file."
+                        }
+                    ]
+                }
+            }
+        })
+        .to_string();
+
+        let summary = summarize_ai_error_body(&body);
+
+        assert!(summary.contains("target_resolution_ambiguous"));
+        assert!(summary.contains("targetResolution.reasonCodes=target_resolution_ambiguous"));
+        assert!(summary.len() < 1200);
+    }
+
+    #[test]
+    fn summarizes_ai_error_body_string_detail() {
+        let summary = summarize_ai_error_body(r#"{"detail":"bad split"}"#);
+
+        assert_eq!(summary, "bad split");
     }
 
     #[test]

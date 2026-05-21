@@ -45,7 +45,7 @@ import re
 import posixpath
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Iterable, List, Mapping, Optional, Set
+from typing import Dict, Iterable, List, Mapping, Optional, Set
 
 
 HealTier = str  # "compile_hard" | "compile_soft" | "runtime"
@@ -104,7 +104,8 @@ _FORBIDDEN_GPU_RUNTIME_ACCESSOR_RE = re.compile(
 )
 _PLACEHOLDER_RENDER_RE = re.compile(
     r"\b(?:TODO|stub|placeholder|rendering logic|draw(?:ing)?\s+code\s+here|"
-    r"render(?:ing)?\s+code\s+here|omitted)\b",
+    r"render(?:ing)?\s+code\s+here|drawing\s+loop|real\s+implementation|omitted)\b"
+    r"|\.{3}\s*(?:draw(?:ing)?|render(?:ing)?)",
     re.IGNORECASE,
 )
 _GUI_BACKEND_PRESENT_RE = re.compile(
@@ -140,6 +141,19 @@ _SDL_SUBSTANTIAL_DRAW_RE = re.compile(
 )
 _OPENGL_RENDER_API_RE = re.compile(
     r"\b(?:glBegin|glDrawArrays|glDrawElements|glDrawPixels|glVertex[234][a-zA-Z]*)\s*\("
+)
+_GUI_RENDER_EFFECT_RE = re.compile(
+    r"\b(?:"
+    r"SDL_Render(?:FillRect|DrawRect|DrawLine|DrawLines|DrawPoints|Copy|CopyEx|Geometry)|"
+    r"gl(?:Begin|DrawArrays|DrawElements|DrawPixels|Vertex[234][A-Za-z]*|Color[34][A-Za-z]*|TexCoord[234]?[A-Za-z]*)|"
+    r"Draw(?:Pixel|Line|Circle|Rectangle|Triangle|Texture|Text|FPS|Poly|Spline|Ring)[A-Za-z0-9_]*|"
+    r"sfRenderWindow_draw[A-Za-z0-9_]*|"
+    r"ImGui::(?:Text|Button|Plot|Image|Render|Begin|End)"
+    r")\s*\("
+)
+_OPENGL_SURFACE_API_RE = re.compile(
+    r"\b(?:glClear|glClearColor|glViewport|glMatrixMode|glOrtho|gluOrtho2D|"
+    r"glBegin|glDrawArrays|glDrawElements|glDrawPixels|glVertex[234][a-zA-Z]*)\s*\("
 )
 _OPENGL_PROJECTION_RE = re.compile(
     r"\b(?:glOrtho|gluOrtho2D|glFrustum|glMatrixMode\s*\(\s*GL_PROJECTION|glm::ortho)\b"
@@ -413,6 +427,41 @@ _SYNTHI_LAUNCH_CALL_RE = re.compile(
     r"\bsynthi_gpu_launch\s*\(\s*[^,]+,\s*[\"'](?P<name>[A-Za-z_][A-Za-z0-9_]*)[\"']",
     re.DOTALL,
 )
+_SYNTHI_LAUNCH_BYPASS_RE = re.compile(
+    r"\bsynthi_gpu_(?:launch_raw(?:_checked)?|launch_table|launch_generation)\s*\(",
+    re.DOTALL,
+)
+_CPP_CAST_RE = re.compile(
+    r"\b(?:reinterpret_cast|static_cast|const_cast)\s*<(?P<type>[^>]+)>\s*"
+    r"\(\s*(?P<expr>.*?)\s*\)\s*$",
+    re.DOTALL,
+)
+_CPP_C_STYLE_VOID_CAST_RE = re.compile(
+    r"^\(\s*(?:const\s+)?void\s*\*\s*\)\s*",
+    re.DOTALL,
+)
+_CPP_DECL_TYPE_TEMPLATE = (
+    r"(?:^|[;\n{{}}])\s*"
+    r"(?P<type>"
+    r"(?:(?:static|inline|thread_local|extern|const|constexpr|volatile|mutable)\s+)*"
+    r"(?:struct\s+|class\s+)?"
+    r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*"
+    r"(?:\s*<[^;{{}}()=]+>)?"
+    r"(?:\s*[*&])?"
+    r")\s+"
+    r"{name}\b\s*(?:\[[^\]]*\])?\s*(?:[=;{{,)]|\))"
+)
+_CPP_DECL_KEYWORDS = {
+    "return",
+    "if",
+    "for",
+    "while",
+    "switch",
+    "case",
+    "else",
+    "sizeof",
+    "alignof",
+}
 
 
 def _iter_call_bodies(source: str, name: str) -> Iterable[str]:
@@ -477,6 +526,182 @@ def _function_body(source: str, name: str) -> str:
     return source[match.end(): i - 1]
 
 
+def _function_param_names(source: str, name: str) -> List[str]:
+    match = re.search(rf"\b{name}\s*\((?P<params>[^)]*)\)", source, re.DOTALL)
+    if not match:
+        return []
+    names: List[str] = []
+    for param in _split_top_level_args(match.group("params")):
+        tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", param)
+        if tokens:
+            names.append(tokens[-1])
+    return names
+
+
+def _normalize_cpp_type_name(type_text: str) -> str:
+    value = re.sub(r"/\*.*?\*/", " ", type_text, flags=re.DOTALL)
+    value = re.sub(r"\b(?:const|volatile|static|inline|thread_local|extern|mutable)\b", " ", value)
+    value = re.sub(r"\b(?:struct|class)\b", " ", value)
+    value = value.replace("*", " ").replace("&", " ")
+    value = re.sub(r"\s+", "", value)
+    value = value.strip(":")
+    return value
+
+
+def _cpp_type_compatible(a: str, b: str) -> bool:
+    left = _normalize_cpp_type_name(a)
+    right = _normalize_cpp_type_name(b)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return left.rsplit("::", 1)[-1] == right.rsplit("::", 1)[-1]
+
+
+def _cpp_type_basename(type_text: str) -> str:
+    normalized = _normalize_cpp_type_name(type_text)
+    return normalized.rsplit("::", 1)[-1] if normalized else ""
+
+
+def _declared_record_type_basenames(source: str) -> Set[str]:
+    return {
+        match.group("name")
+        for match in re.finditer(
+            r"\b(?:struct|class)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b",
+            source,
+        )
+    }
+
+
+def _iter_namespace_bodies(source: str) -> Iterable[tuple[str, str]]:
+    namespace_re = re.compile(r"\bnamespace\s+(?P<namespace>[A-Za-z_][A-Za-z0-9_]*)\s*\{")
+    for match in namespace_re.finditer(source):
+        body_start = match.end()
+        depth = 1
+        cursor = body_start
+        while cursor < len(source) and depth:
+            if source[cursor] == "{":
+                depth += 1
+            elif source[cursor] == "}":
+                depth -= 1
+            cursor += 1
+        if depth == 0:
+            yield match.group("namespace"), source[body_start : cursor - 1]
+
+
+def _namespaced_shared_symbols(shared_source: str) -> Dict[str, Set[str]]:
+    symbols: Dict[str, Set[str]] = {}
+    symbol_re = re.compile(
+        r"\b(?:constexpr|const)\s+"
+        r"(?:[A-Za-z_][A-Za-z0-9_:<>]*\s+)+"
+        r"(?P<name>k[A-Z][A-Za-z0-9_]*)\b"
+    )
+    for namespace, body in _iter_namespace_bodies(shared_source):
+        names = {match.group("name") for match in symbol_re.finditer(body)}
+        if names:
+            symbols.setdefault(namespace, set()).update(names)
+    return symbols
+
+
+def _uses_shared_symbol_unqualified(source: str, namespace: str, symbol: str) -> bool:
+    if re.search(rf"\busing\s+namespace\s+{re.escape(namespace)}\s*;", source):
+        return False
+    if re.search(rf"\busing\s+{re.escape(namespace)}::{re.escape(symbol)}\s*;", source):
+        return False
+    bare_re = re.compile(rf"(?<![:.\w]){re.escape(symbol)}\b")
+    for match in bare_re.finditer(source):
+        prefix_start = max(0, match.start() - len(namespace) - 2)
+        if source[prefix_start:match.start()] == f"{namespace}::":
+            continue
+        return True
+    return False
+
+
+def _strip_cpp_casts(expr: str) -> str:
+    out = expr.strip()
+    changed = True
+    while changed:
+        changed = False
+        cast = _CPP_CAST_RE.match(out)
+        if cast:
+            out = cast.group("expr").strip()
+            changed = True
+        out2 = _CPP_C_STYLE_VOID_CAST_RE.sub("", out).strip()
+        if out2 != out:
+            out = out2
+            changed = True
+    return out.strip()
+
+
+def _return_state_variable(expr: str) -> Optional[str]:
+    value = _strip_cpp_casts(expr)
+    value = re.sub(r"^\s*&\s*", "", value)
+    value = value.strip()
+    while value.startswith("(") and value.endswith(")"):
+        value = value[1:-1].strip()
+    match = re.match(r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*$", value)
+    return match.group("name") if match else None
+
+
+def _declared_variable_type(source: str, name: str) -> Optional[str]:
+    pattern = re.compile(
+        _CPP_DECL_TYPE_TEMPLATE.format(name=re.escape(name)),
+        re.DOTALL,
+    )
+    for match in pattern.finditer(source):
+        type_name = _normalize_cpp_type_name(match.group("type"))
+        if not type_name or type_name in _CPP_DECL_KEYWORDS:
+            continue
+        return type_name
+    return None
+
+
+def _core_returned_state_types(core_source: str) -> Set[str]:
+    body = _function_body(core_source, "core_on_load")
+    if not body:
+        return set()
+    types: Set[str] = set()
+    search_blobs = (body, core_source)
+    for match in re.finditer(r"\breturn\s+(?P<expr>[^;]+);", body):
+        variable = _return_state_variable(match.group("expr"))
+        if not variable or variable in {"nullptr", "NULL", "null"}:
+            continue
+        for blob in search_blobs:
+            declared_type = _declared_variable_type(blob, variable)
+            if declared_type:
+                types.add(declared_type)
+                break
+    return types
+
+
+def _gui_render_state_cast_types(gui_source: str) -> Set[str]:
+    body = _function_body(gui_source, "gui_on_render")
+    if not body:
+        return set()
+    param_names = _function_param_names(gui_source, "gui_on_render")
+    if not param_names:
+        return set()
+    state_param = param_names[0]
+    cast_types: Set[str] = set()
+    escaped = re.escape(state_param)
+    cpp_cast_re = re.compile(
+        rf"\b(?:reinterpret_cast|static_cast|const_cast)\s*<(?P<type>[^>]+)>\s*"
+        rf"\(\s*{escaped}\s*\)",
+        re.DOTALL,
+    )
+    c_style_cast_re = re.compile(
+        rf"\(\s*(?P<type>[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*"
+        rf"(?:\s*<[^;{{}}()=]+>)?\s*[*&]?)\s*\)\s*{escaped}\b",
+        re.DOTALL,
+    )
+    for pattern in (cpp_cast_re, c_style_cast_re):
+        for match in pattern.finditer(body):
+            normalized = _normalize_cpp_type_name(match.group("type"))
+            if normalized and normalized not in {"void", "auto"}:
+                cast_types.add(normalized)
+    return cast_types
+
+
 def _device_kernel_params(source: str, name: str) -> List[str]:
     match = re.search(
         rf"\b__global__\s+(?:void\s+)?{re.escape(name)}\s*\((?P<params>[^)]*)\)",
@@ -521,6 +746,10 @@ def _normalize_launch_buffer_arg(arg: str) -> str:
     return re.sub(r"\s+", "", arg)
 
 
+def _strip_cpp_comments(source: str) -> str:
+    return re.sub(r"//.*?$|/\*.*?\*/", " ", source, flags=re.MULTILINE | re.DOTALL)
+
+
 def _missing_init_launch_buffers(core_source: str, device_source: str) -> Set[str]:
     required: Set[str] = set()
     initialized: Set[str] = set()
@@ -547,6 +776,39 @@ def _missing_init_launch_buffers(core_source: str, device_source: str) -> Set[st
     if not required:
         return set()
     return {buf for buf in required if buf not in initialized}
+
+
+def _host_runner_routes_gui_module(host_runner_source: str) -> bool:
+    if not host_runner_source:
+        return True
+
+    resolves_gui_render = bool(
+        re.search(
+            r"\b(?:dlsym|GetProcAddress)\s*\([^;]*[\"']gui_on_render[\"']",
+            host_runner_source,
+            re.DOTALL,
+        )
+        or re.search(
+            r"\bgui_on_render\s*\(",
+            _strip_cpp_comments(host_runner_source),
+        )
+    )
+    if not resolves_gui_render:
+        return False
+
+    code = _strip_cpp_comments(host_runner_source)
+    call_pattern = re.compile(
+        r"\b(?!(?:dlsym|GetProcAddress|decltype|typedef|using|if|while|for|switch)\b)"
+        r"(?P<callee>[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_]*)*)"
+        r"\s*\((?P<args>[^(){};]*)\)\s*;",
+        re.DOTALL,
+    )
+    for match in call_pattern.finditer(code):
+        callee = re.sub(r"\s+", "", match.group("callee"))
+        args = match.group("args")
+        if "render" in callee.lower() and re.search(r"\b(?:state|core_state|app_state)\b", args):
+            return True
+    return False
 
 
 def _mirror_allocated_in_load(core_load_body: str, mirror: str) -> bool:
@@ -1152,6 +1414,7 @@ def verify_split_output(
             )
             continue
 
+        kernel_name = _launch_kernel_name(args[1])
         launch_args = args[-1].strip()
         if "(uintptr_t)" in launch_args or "reinterpret_cast" in launch_args or re.search(
             r"\(\s*const\s+void\s*\*\s*\)", launch_args
@@ -1171,6 +1434,25 @@ def verify_split_output(
 
         if launch_args.endswith("}"):
             entries = _split_top_level_args(launch_args[1:-1])
+            if kernel_name:
+                kernel_params = _device_kernel_params(device_source, kernel_name)
+                if kernel_params and len(entries) != len(kernel_params):
+                    violations.append(
+                        Violation(
+                            rule="kernel_launch_abi_mismatch",
+                            message=(
+                                "synthi_gpu_launch argument count must match "
+                                "the generated kernel parameter list exactly. "
+                                f"Kernel {kernel_name} declares {len(kernel_params)} "
+                                f"parameters but the host launch passes {len(entries)} "
+                                "arguments. Pass aggregate launch parameters as one "
+                                "host variable, or flatten the generated kernel "
+                                "signature to match the host launch ABI."
+                            ),
+                            offending_module=core_path,
+                            offending_symbol=kernel_name,
+                        )
+                    )
             for entry in entries:
                 stripped = entry.strip()
                 if stripped and not stripped.startswith("&"):
@@ -1189,6 +1471,71 @@ def verify_split_output(
 
     gui_source = files.get(gui_path) or ""
     host_runner_source = files.get(host_runner_path) or ""
+    core_state_types = _core_returned_state_types(core_source)
+    gui_state_cast_types = _gui_render_state_cast_types(gui_source)
+    shared_record_types = _declared_record_type_basenames(shared_source)
+    for core_state_type in sorted(core_state_types):
+        core_state_basename = _cpp_type_basename(core_state_type)
+        if core_state_basename and core_state_basename not in shared_record_types:
+            violations.append(
+                Violation(
+                    rule="generated.host_state_type_not_shared",
+                    message=(
+                        "core_on_load returns host-visible state type "
+                        f"{core_state_type}, but that record type is not declared "
+                        "in shared.h. Core and GUI are separate generated roles; "
+                        "any state layout passed across that boundary must be in "
+                        "the shared role before a split can be accepted."
+                    ),
+                    offending_module=core_path,
+                    offending_symbol=core_state_type,
+                )
+            )
+    if core_state_types and gui_state_cast_types:
+        for gui_state_type in sorted(gui_state_cast_types):
+            if any(_cpp_type_compatible(core_type, gui_state_type) for core_type in core_state_types):
+                continue
+            core_type_list = ", ".join(sorted(core_state_types))
+            violations.append(
+                Violation(
+                    rule="generated.core_gui_state_abi_mismatch",
+                    message=(
+                        "core_on_load returns host-visible state object type "
+                        f"{core_type_list}, but gui_on_render casts the runner-provided "
+                        f"state pointer to {gui_state_type}. The Synthi runner passes "
+                        "the core state to gui_on_render; generated core and GUI roles "
+                        "must agree on one shared host-visible state layout before a "
+                        "split can be accepted."
+                    ),
+                    offending_module=gui_path,
+                    offending_symbol=f"{core_type_list}->{gui_state_type}",
+                )
+            )
+    for namespace, symbols in sorted(_namespaced_shared_symbols(shared_source).items()):
+        for role_path, role_source in (
+            (core_path, core_source),
+            (gui_path, gui_source),
+            (host_runner_path, host_runner_source),
+        ):
+            if not role_path or not role_source:
+                continue
+            for symbol in sorted(symbols):
+                if _uses_shared_symbol_unqualified(role_source, namespace, symbol):
+                    violations.append(
+                        Violation(
+                            rule="generated.shared_namespace_symbol_unqualified",
+                            message=(
+                                "shared.h declares "
+                                f"{namespace}::{symbol}, but generated role "
+                                f"{role_path} uses {symbol} without qualifying it "
+                                "or importing it with a using declaration. Generated "
+                                "roles must preserve shared namespace boundaries so "
+                                "compile repair is not required to guess symbol scope."
+                            ),
+                            offending_module=role_path,
+                            offending_symbol=f"{namespace}::{symbol}",
+                        )
+                    )
     generated_render_backends = _render_backends_in_sources(
         (shared_source, core_source, gui_source, host_runner_source)
     )
@@ -1237,6 +1584,25 @@ def verify_split_output(
                 offending_symbol=placeholder_render.group(0),
             )
         )
+    gui_render_body = _function_body(gui_source, "gui_on_render")
+    if (
+        source_render_backends
+        and gui_render_body
+        and not _GUI_RENDER_EFFECT_RE.search(_strip_cpp_comments(gui_render_body))
+    ):
+        violations.append(
+            Violation(
+                rule="gui_render_no_effect",
+                message=(
+                    "The gui_on_render body does not contain any concrete "
+                    "backend drawing operation. A cast, comment, or empty "
+                    "function can compile but produces a black frame; render "
+                    "a visible primitive, texture, pixel buffer, UI widget, or "
+                    "other backend-specific representation from preserved state."
+                ),
+                offending_module=gui_path,
+            )
+        )
     render_present = _GUI_BACKEND_PRESENT_RE.search(gui_source)
     if render_present:
         symbol = render_present.group("name")
@@ -1282,6 +1648,26 @@ def verify_split_output(
                     "remain black under screenshot validation; render filled "
                     "rects, lines, geometry, textures, or another visible "
                     "backend-specific representation from preserved state."
+                ),
+                offending_module=gui_path,
+            )
+        )
+    if (
+        "glfw" in source_render_backends
+        and _OPENGL_SURFACE_API_RE.search(gui_source)
+        and not _OPENGL_RENDER_API_RE.search(gui_source)
+    ):
+        violations.append(
+            Violation(
+                rule="gui_render_too_sparse",
+                message=(
+                    "The gui role uses GLFW/OpenGL APIs but only clears or "
+                    "sets up the surface without drawing any substantial "
+                    "visible primitive. A first frame that only clears can "
+                    "compile yet remain black under screenshot validation; "
+                    "draw filled geometry, points, lines, textured quads, or "
+                    "another visible OpenGL representation from preserved "
+                    "state."
                 ),
                 offending_module=gui_path,
             )
@@ -1476,13 +1862,16 @@ def verify_split_output(
                 offending_module=host_runner_path,
             )
         )
-    if host_runner_source and not re.search(r"\bgui_on_(?:load|render)\b|libgui", host_runner_source):
+    if not _host_runner_routes_gui_module(host_runner_source):
         violations.append(
             Violation(
                 rule="host_runner_omits_gui_module",
                 message=(
-                    "The host_runner role must load/call the generated GUI module "
-                    "or otherwise route rendering through gui_on_render every frame."
+                    "The host_runner role must resolve and invoke the generated "
+                    "GUI render entrypoint every frame. Marker variables or "
+                    "dead references to libgui/gui_on_render are not enough; "
+                    "route the core state through gui_on_render before the "
+                    "backend presents the frame."
                 ),
                 offending_module=host_runner_path,
             )
@@ -1506,6 +1895,21 @@ def verify_split_output(
                     ),
                     offending_module=host_path,
                     offending_symbol=kernel,
+                )
+            )
+        for match in _SYNTHI_LAUNCH_BYPASS_RE.finditer(src):
+            symbol = match.group(0).split("(", 1)[0]
+            violations.append(
+                Violation(
+                    rule="launch_indirection_bypassed",
+                    message=(
+                        f"Host file {host_path} calls {symbol} directly. "
+                        "Generated roles must call synthi_gpu_launch(...) so "
+                        "the runtime can use the generation-checked launch "
+                        "indirection table and reject stale launch pointers."
+                    ),
+                    offending_module=host_path,
+                    offending_symbol=symbol,
                 )
             )
         for match in _SYNTHI_LAUNCH_CALL_RE.finditer(src):

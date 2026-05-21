@@ -6,14 +6,30 @@ through `parse_kernel_split_response` + `verify_split_output`.
 """
 
 import pytest
+import asyncio
 
+import agents.kernel_splitter as kernel_splitter
 from agents.gpu_detect import GpuDetectionResult, GpuDetectionEvidence
 from agents.kernel_splitter import (
+    KernelSplitProviderError,
     KernelSplitterError,
+    KernelSplitterUnsupportedProjectError,
+    build_split_retry_prompt,
     _project_source_context,
+    _source_files_scoped_to_context,
+    _source_device_preservation_contract,
+    _verifier_acceptance_gate_contract,
     build_prompt,
     parse_kernel_split_response,
+    run_kernel_splitter,
+    split_failure_verification,
+    split_provider_failure_verification,
+    split_agentic_report,
+    split_attempt_record,
 )
+from agents.gpu_source_context import build_project_source_context
+from llm.prompts import build_split_mode_prompt
+from verifier_gpu import SplitVerificationResult, Violation
 
 
 SAMPLE_RAW = '''
@@ -105,6 +121,62 @@ def test_missing_optional_blocks_are_empty():
     assert parsed["architecture_md"] == ""
 
 
+def test_device_preservation_contract_uses_selected_context_scope():
+    files = {
+        "HIP-Basic/saxpy/main.hip": """
+        #include <hip/hip_runtime.h>
+        __global__ void saxpy_kernel(float* y, const float* x) { y[threadIdx.x] = x[threadIdx.x]; }
+        int main(){ return 0; }
+        """,
+        "Applications/fdtd/main.hip": """
+        #include <hip/hip_runtime.h>
+        __global__ void apply_source_kernel(float* ez) { ez[threadIdx.x] = 1.0f; }
+        int main(){ return 0; }
+        """,
+        "compile_commands.json": """
+        [
+          {
+            "directory": "/repo/HIP-Basic/saxpy/build",
+            "file": "/repo/HIP-Basic/saxpy/main.hip",
+            "arguments": ["hipcc", "--offload-arch=gfx1201", "-c", "/repo/HIP-Basic/saxpy/main.hip"]
+          }
+        ]
+        """,
+        ".cmake/api/v1/reply/codemodel-v2-release.json": """
+        {
+          "kind": "codemodel",
+          "configurations": [
+            {
+              "name": "Release",
+              "targets": [
+                {"name": "hip_saxpy", "id": "hip_saxpy::@real", "jsonFile": "target-hip_saxpy-Release.json"},
+                {"name": "fdtd", "id": "fdtd::@real", "jsonFile": "target-fdtd-Release.json"}
+              ]
+            }
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-hip_saxpy-Release.json": """
+        {"name": "hip_saxpy", "id": "hip_saxpy::@real", "type": "EXECUTABLE", "sources": [{"path": "HIP-Basic/saxpy/main.hip"}]}
+        """,
+        ".cmake/api/v1/reply/target-fdtd-Release.json": """
+        {"name": "fdtd", "id": "fdtd::@real", "type": "EXECUTABLE", "sources": [{"path": "Applications/fdtd/main.hip"}]}
+        """,
+    }
+
+    _prompt, report = build_project_source_context(files, focus="HIP-Basic/saxpy/main.hip")
+    scoped = _source_files_scoped_to_context(files, report)
+    contract = _source_device_preservation_contract(
+        scoped,
+        roots=[unit["path"] for unit in report["deviceTuTopology"]["deviceTranslationUnits"]],
+    )
+
+    assert "HIP-Basic/saxpy/main.hip" in scoped
+    assert "Applications/fdtd/main.hip" not in scoped
+    assert "saxpy_kernel" in contract
+    assert "apply_source_kernel" not in contract
+
+
 def test_normalizes_nested_file_objects():
     raw = '''
 <JSON>{
@@ -179,10 +251,265 @@ def test_build_prompt_attaches_runtime_target_hint(monkeypatch):
     assert "arch=gfx1201" in p
 
 
+def test_split_attempt_record_hashes_prompt_and_reports_verifier_codes():
+    verification = SplitVerificationResult(
+        ok=False,
+        violations=[
+            Violation(
+                rule="split_missing_device_file",
+                message="device role missing",
+                offending_module="device",
+            )
+        ],
+    )
+
+    attempt = split_attempt_record(
+        attempt=2,
+        max_attempts=3,
+        model="gemini-test",
+        prompt="secret prompt text",
+        source_files=["src\\main.cpp", "src/gpu/k.hip"],
+        verification=verification,
+        repair_prompt=True,
+    )
+
+    assert attempt["phase"] == "repair_verify"
+    assert attempt["repairScope"] == "generated_artifacts_only"
+    assert attempt["sourceFiles"] == ["src/gpu/k.hip", "src/main.cpp"]
+    assert len(attempt["promptHash"]) == 64
+    assert "secret prompt text" not in str(attempt)
+    assert attempt["verifiers"][0]["status"] == "fail"
+    assert attempt["verifiers"][0]["reasonCodes"] == ["split_missing_device_file"]
+    assert attempt["verifiers"][1]["status"] == "pending_worker"
+
+    report = split_agentic_report(attempts=[attempt], accepted=False, max_attempts=3)
+    assert report["mode"] == "full_split"
+    assert report["attemptCount"] == 1
+    assert report["boundedRetries"] is True
+    assert report["persistedAfterVerification"] is False
+
+
+def test_split_failure_verification_is_reason_coded():
+    verification = split_failure_verification(
+        "split_response_unparseable",
+        "Response missing <JSON> block",
+    )
+
+    assert verification.ok is False
+    assert verification.violations[0].rule == "split_response_unparseable"
+    assert "missing <JSON>" in verification.violations[0].message
+
+
+def test_split_provider_timeout_is_reason_coded():
+    verification = split_provider_failure_verification(
+        KernelSplitProviderError(TimeoutError())
+    )
+
+    assert verification.ok is False
+    assert verification.violations[0].rule == "ai_provider_timeout"
+    assert "TimeoutError" in verification.violations[0].message
+
+
+def test_run_kernel_splitter_rejects_vulkan_before_ai_provider():
+    class Provider:
+        called = False
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise AssertionError("provider should not be called for unsupported Vulkan")
+
+    provider = Provider()
+    detection = GpuDetectionResult(
+        is_gpu=True,
+        vendor_hint="rocm",
+        per_file={
+            "src/gpu/flow.hip": GpuDetectionEvidence(qualifier_hits=1),
+        },
+    )
+    files = [
+        {
+            "name": "src/app/main.cpp",
+            "content": '#include <vulkan/vulkan.h>\nint main(){ VkInstance x{}; return 0; }',
+        },
+        {
+            "name": "src/gpu/flow.hip",
+            "content": "__global__ void flow() {}",
+        },
+    ]
+
+    with pytest.raises(KernelSplitterUnsupportedProjectError) as exc:
+        asyncio.run(
+            run_kernel_splitter(
+                provider=provider,
+                user_code=files[0]["content"],
+                lang="cpp",
+                detection=detection,
+                files=files,
+                focus="src/app/main.cpp",
+            )
+        )
+
+    assert provider.called is False
+    assert exc.value.reason_code == "unsupported.graphics_backend_vulkan"
+    assert exc.value.source_context_report["graphicsBackend"]["primary"] == "vulkan"
+
+
+def test_run_kernel_splitter_rejects_ambiguous_cmake_target_before_ai_provider():
+    class Provider:
+        called = False
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise AssertionError("provider should not be called for ambiguous CMake targets")
+
+    provider = Provider()
+    detection = GpuDetectionResult(
+        is_gpu=True,
+        vendor_hint="rocm",
+        per_file={
+            "src/gpu/flow.hip": GpuDetectionEvidence(qualifier_hits=1),
+        },
+    )
+    files = [
+        {"name": "CMakeLists.txt", "content": "add_executable(a src/app/main.cpp)\nadd_executable(b src/app/main.cpp)"},
+        {"name": "src/app/main.cpp", "content": "int main(){ return 0; }"},
+        {"name": "src/gpu/flow.hip", "content": "__global__ void flow() {}"},
+        {
+            "name": ".cmake/api/v1/reply/codemodel-v2-debug.json",
+            "content": """
+            {
+              "kind": "codemodel",
+              "configurations": [
+                {
+                  "name": "Debug",
+                  "targets": [
+                    {"name": "gpu_app_a", "id": "a::@123", "jsonFile": "target-a-Debug.json"},
+                    {"name": "gpu_app_b", "id": "b::@123", "jsonFile": "target-b-Debug.json"}
+                  ]
+                }
+              ]
+            }
+            """,
+        },
+        {
+            "name": ".cmake/api/v1/reply/target-a-Debug.json",
+            "content": '{"name":"gpu_app_a","id":"a::@123","type":"EXECUTABLE","sources":[{"path":"src/app/main.cpp"},{"path":"src/gpu/flow.hip"}]}',
+        },
+        {
+            "name": ".cmake/api/v1/reply/target-b-Debug.json",
+            "content": '{"name":"gpu_app_b","id":"b::@123","type":"EXECUTABLE","sources":[{"path":"src/app/main.cpp"},{"path":"src/gpu/flow.hip"}]}',
+        },
+    ]
+
+    with pytest.raises(KernelSplitterUnsupportedProjectError) as exc:
+        asyncio.run(
+            run_kernel_splitter(
+                provider=provider,
+                user_code=files[1]["content"],
+                lang="cpp",
+                detection=detection,
+                files=files,
+                focus="src/app/main.cpp",
+            )
+        )
+
+    assert provider.called is False
+    assert exc.value.reason_code == "target_resolution_ambiguous"
+    resolution = exc.value.source_context_report["buildMetadata"]["targetResolution"]
+    assert resolution["status"] == "ambiguous"
+    assert resolution["method"] == "ambiguous_executable_targets_containing_focus"
+
+
+def test_build_split_retry_prompt_preserves_previous_rejections():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- device_init_kernel_incomplete: missing d_x",
+            "- split_response_unparseable: missing <JSON>",
+        ],
+    )
+
+    assert "original prompt" in prompt
+    assert "deterministic verifiers" in prompt
+    assert "device_init_kernel_incomplete" in prompt
+    assert "split_response_unparseable" in prompt
+    assert "Verifier-specific repair checklist" in prompt
+    assert "init/seed kernel launch and signature" in prompt
+
+
+def test_build_split_retry_prompt_lists_rejected_project_headers():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- generated_role_includes_project_header: Generated role file includes project header 'src/gpu/api.hpp'.",
+            "- generated_role_includes_project_header: Generated role file includes project header 'src/render/window.hpp'.",
+        ],
+    )
+
+    assert "src/gpu/api.hpp" in prompt
+    assert "src/render/window.hpp" in prompt
+    assert "Do not emit any `#include` for them" in prompt
+
+
+def test_build_split_retry_prompt_guides_placeholder_render_repairs():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- gui_render_placeholder: The gui role contains placeholder render text 'rendering logic'.",
+        ],
+    )
+
+    assert "visible non-black pixels" in prompt
+    assert "placeholder render" in prompt
+
+
+def test_build_split_retry_prompt_guides_backend_preservation_repairs():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- render_backend_changed: The generated split introduced SDL rendering even though the source project used GLFW/OpenGL.",
+        ],
+    )
+
+    assert "Preserve the source render backend exactly" in prompt
+    assert "do not translate to another backend" in prompt
+
+
+def test_build_split_retry_prompt_guides_host_runner_gui_routing():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- host_runner_omits_gui_module: The host_runner role must resolve and invoke gui_on_render.",
+        ],
+    )
+
+    assert "gui_render(core_state)" in prompt
+    assert "dlsym(libgui" in prompt
+
+
+def test_verifier_acceptance_gate_contract_highlights_generic_split_gates():
+    contract = _verifier_acceptance_gate_contract()
+
+    assert "GPU SPLIT VERIFIER ACCEPTANCE GATES" in contract
+    assert "original workspace/project headers" in contract
+    assert "gui_on_render" in contract
+    assert "gui_render(core_state)" in contract
+    assert "placeholder comments" in contract
+
+
 def test_build_prompt_attaches_extra_instructions():
     p = build_prompt("x", extra_instructions="don't change kernel names")
     assert "EXTRA INSTRUCTIONS" in p
     assert "don't change kernel names" in p
+
+
+def test_split_mode_prompt_preserves_split_response_format():
+    prompt = build_split_mode_prompt("int main(){}", "cpp", "split contract")
+
+    assert "split contract" in prompt
+    assert "<JSON>...</JSON>" in prompt
+    assert "<synthi_arch_cache>...</synthi_arch_cache>" in prompt
+    assert "ONLY the JSON object" not in prompt
 
 
 def test_project_source_context_includes_multi_file_sources():
@@ -204,3 +531,106 @@ def test_project_source_context_includes_multi_file_sources():
     assert "// FILE: src/field/flow_table_00.h" in context
     assert "// FILE: src/field/flow_module_00.cpp" in context
     assert "docs/notes/field-note-000.md" not in context
+
+
+def test_project_source_context_prioritizes_macro_wrapped_gpu_kernels():
+    context = _project_source_context(
+        {
+            "src/main.cpp": "#include <GLFW/glfw3.h>\nint main(){ return 0; }",
+            "src/Device/GPUKernel.cpp": "void launch(){ oroModuleLaunchKernel(fn, 1, 1, 1, 64, 1, 1, 0, stream, args, 0); }",
+            "src/Device/kernels/CameraRays.h": """
+            GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)
+            CameraRays(HIPRTRenderData render_data) {
+                render_data.accum[threadIdx.x] = make_float4(1.0f);
+            }
+            """,
+            "src/Util/Unrelated.cpp": "int helper(){ return 1; }",
+        },
+        focus="src/main.cpp",
+    )
+
+    assert "// FILE: src/Device/kernels/CameraRays.h" in context
+    assert "// FILE: src/Device/GPUKernel.cpp" in context
+    assert "GLOBAL_KERNEL_SIGNATURE" in context
+    assert "oroModuleLaunchKernel" in context
+
+
+def test_source_device_preservation_contract_follows_device_headers():
+    contract = _source_device_preservation_contract(
+        {
+            "src/gpu/kernels.hip": '#include "particle_api.hpp"\nextern "C" __global__ void k(float* x) { x[0] += kGain; }',
+            "src/gpu/particle_api.hpp": '#pragma once\n#include "../config/device_constants.hpp"\nstruct LaunchParams { int n; };',
+            "src/config/device_constants.hpp": "#pragma once\nconstexpr float kGain = 1.0f;",
+            "src/app/main.cpp": "int main() { return 0; }",
+        }
+    )
+
+    assert "src/gpu/kernels.hip" in contract
+    assert "src/gpu/particle_api.hpp" in contract
+    assert "src/config/device_constants.hpp" in contract
+    assert "kGain" in contract
+    assert "Do not include these original project headers" in contract
+
+
+def test_source_device_preservation_contract_includes_runtime_compiled_kernel_headers():
+    contract = _source_device_preservation_contract(
+        {
+            "src/Device/kernels/CameraRays.h": """
+            #include "CameraCommon.h"
+            GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)
+            CameraRays(HIPRTRenderData render_data) {
+                render_data.accum[threadIdx.x] = kCameraGain;
+            }
+            """,
+            "src/Device/kernels/CameraCommon.h": "#pragma once\nconstexpr float kCameraGain = 0.5f;",
+        }
+    )
+
+    assert "src/Device/kernels/CameraRays.h" in contract
+    assert "src/Device/kernels/CameraCommon.h" in contract
+    assert "Required original kernels: CameraRays." in contract
+    assert "kCameraGain" in contract
+
+
+def test_source_device_preservation_contract_omits_lower_priority_headers_with_reason(monkeypatch):
+    monkeypatch.setattr(kernel_splitter, "_DEVICE_PRESERVATION_TOTAL_MAX_CHARS", 900)
+    monkeypatch.setattr(kernel_splitter, "_DEVICE_PRESERVATION_PER_FILE_MAX_CHARS", 400)
+    files = {
+        "src/Device/kernels/Root.h": (
+            '#include "Support0.h"\n'
+            "GLOBAL_KERNEL_SIGNATURE(void) RootKernel(float* out) { out[threadIdx.x] = kRoot; }"
+        ),
+        "src/Device/kernels/Support0.h": '#include "Support1.h"\nconstexpr float kRoot = 1.0f;\n',
+    }
+    for index in range(1, 12):
+        files[f"src/Device/kernels/Support{index}.h"] = (
+            f'#include "Support{index + 1}.h"\n'
+            f"constexpr float kSupport{index} = {index}.0f;\n"
+            + ("float padding_value = 1.0f;\n" * 20)
+        )
+
+    contract = _source_device_preservation_contract(files, roots=["src/Device/kernels/Root.h"])
+
+    assert "src/Device/kernels/Root.h" in contract
+    assert "Omitted lower-priority device-reachable files" in contract
+    assert "prompt-budget exclusion after device-anchor ranking" in contract
+
+
+def test_scoped_source_context_does_not_pull_every_gpu_marker_without_roots():
+    source_files = {
+        "src/main.cpp": "int main(){ return 0; }",
+        "src/Device/kernels/Selected.h": "GLOBAL_KERNEL_SIGNATURE(void) Selected(float* out) { out[0] = 1.0f; }",
+        "src/Device/kernels/Unrelated.h": "GLOBAL_KERNEL_SIGNATURE(void) Unrelated(float* out) { out[0] = 2.0f; }",
+    }
+    report = {
+        "included": [
+            {"path": "src/main.cpp"},
+            {"path": "src/Device/kernels/Selected.h"},
+        ],
+        "deviceTuTopology": {"deviceTranslationUnits": []},
+    }
+
+    scoped = _source_files_scoped_to_context(source_files, report)
+
+    assert "src/Device/kernels/Selected.h" in scoped
+    assert "src/Device/kernels/Unrelated.h" not in scoped

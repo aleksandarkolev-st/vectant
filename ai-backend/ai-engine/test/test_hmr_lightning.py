@@ -229,9 +229,8 @@ class TestManifestV1Validation:
 class TestTier0SafetyFlags:
     """Verify -O0 and -fno-merge-constants are required for Tier 0."""
 
-    def test_sdl2_default_has_tier0_flags(self):
-        """The sdl2_default() in Rust adds -O0 and -fno-merge-constants.
-        The Python manifest should validate that these are present."""
+    def test_tier0_requires_debug_safe_flags(self):
+        """Python manifest validation should require Tier 0 debug-safe flags."""
         raw = {
             "compiler": "g++",
             "std": "c++17",

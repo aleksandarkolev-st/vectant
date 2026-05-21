@@ -34,7 +34,7 @@ pub async fn compile_gui(
     let effective_manifest: &CompileManifest = match compile_manifest {
         Some(m) => m,
         None => {
-            owned_default_manifest = CompileManifest::sdl2_default();
+            owned_default_manifest = CompileManifest::generic_fallback();
             &owned_default_manifest
         }
     };
@@ -59,7 +59,11 @@ pub async fn compile_gui(
 
             // Use the already-processed content from Phase 1 (guardrails already applied)
             let content = processed_gui.to_string();
-            tokio::fs::write(dir_path.join(fname), &content).await?;
+            let source_path = dir_path.join(fname);
+            if let Some(parent) = source_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::write(&source_path, &content).await?;
 
             // ... (Additional GUI Guardrails should be applied here) ...
 
@@ -73,9 +77,7 @@ pub async fn compile_gui(
             // linking SDL2/GLFW/etc for headless projects (matches the
             // pre-manifest gating on `-lSDL2`).
             let mut effective_flag_strings: Vec<String> = Vec::with_capacity(
-                effective_manifest.common_flags.len()
-                    + effective_manifest.gui_link_flags.len()
-                    + 3,
+                effective_manifest.common_flags.len() + effective_manifest.gui_link_flags.len() + 3,
             );
             effective_flag_strings.push(std_flag.clone());
             effective_flag_strings.extend(effective_manifest.common_flags.iter().cloned());
@@ -87,8 +89,7 @@ pub async fn compile_gui(
             let effective_flag_refs: Vec<&str> =
                 effective_flag_strings.iter().map(String::as_str).collect();
 
-            let gui_cache_key =
-                IncrementalCache::cache_key(&content, &effective_flag_refs, &[]);
+            let gui_cache_key = IncrementalCache::cache_key(&content, &effective_flag_refs, &[]);
             if let Some(cached_so) = ctx.incremental_cache.get(&gui_cache_key).await {
                 let path = cached_so.to_string_lossy().to_string();
                 eprintln!("[Cache] HIT for gui module (persistent cache)");
@@ -103,9 +104,8 @@ pub async fn compile_gui(
                 // plus the manifest's gui_link_flags when req_is_gui is
                 // set (headless projects skip them to avoid linking
                 // SDL2/GLFW/etc for a gui.so that won't render).
-                let mut link_flags: Vec<String> = Vec::with_capacity(
-                    effective_manifest.gui_link_flags.len() + 2,
-                );
+                let mut link_flags: Vec<String> =
+                    Vec::with_capacity(effective_manifest.gui_link_flags.len() + 2);
                 if req_is_gui {
                     link_flags.extend(effective_manifest.gui_link_flags.iter().cloned());
                 }
@@ -151,8 +151,15 @@ pub async fn compile_gui(
                     compile_cmd.as_std().get_args()
                 );
                 compile_cmd.kill_on_drop(true);
-                let compile_child = compile_cmd.spawn().context("Failed to spawn compile step")?;
-                let compile_out = match timeout(Duration::from_secs(30), compile_child.wait_with_output()).await {
+                let compile_child = compile_cmd
+                    .spawn()
+                    .context("Failed to spawn compile step")?;
+                let compile_out = match timeout(
+                    Duration::from_secs(30),
+                    compile_child.wait_with_output(),
+                )
+                .await
+                {
                     Ok(Ok(out)) => out,
                     Ok(Err(e)) => return Err(e.into()),
                     Err(_) => {
@@ -160,7 +167,10 @@ pub async fn compile_gui(
                         anyhow::bail!("GUI compile step timed out after 30s");
                     }
                 };
-                eprintln!("[CompileGUI] compile step finished with status: {}", compile_out.status);
+                eprintln!(
+                    "[CompileGUI] compile step finished with status: {}",
+                    compile_out.status
+                );
 
                 // Step 2 (only if step 1 succeeded): link .o → .so.
                 // On compile-step failure, propagate the compile_out as
@@ -202,134 +212,153 @@ pub async fn compile_gui(
                     // See compile_core.rs for the rationale — when the stderr
                     // contains undefined-reference errors, update the manifest's
                     // link flags and retry once before falling back to source heal.
-                    let manifest_healed = crate::compiler::stages::ai_utils::try_manifest_heal_retry(
-                        &stderr_str,
-                        dir_path,
-                        "gui",
-                        &content,
-                        |m| {
-                            let mut cmd = cpp_compile_command(m.select_compiler(ModuleKind::Gui));
-                            cmd.arg(format!("-std={}", m.std));
-                            for f in &m.common_flags {
-                                cmd.arg(f);
-                            }
-                            cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
-                            if req_is_gui {
-                                for f in &m.gui_link_flags {
+                    let manifest_healed =
+                        crate::compiler::stages::ai_utils::try_manifest_heal_retry(
+                            &stderr_str,
+                            dir_path,
+                            "gui",
+                            &content,
+                            |m| {
+                                let mut cmd =
+                                    cpp_compile_command(m.select_compiler(ModuleKind::Gui));
+                                cmd.arg(format!("-std={}", m.std));
+                                for f in &m.common_flags {
                                     cmd.arg(f);
                                 }
-                            }
-                            cmd.arg("-ldl").arg("-rdynamic");
-                            cmd.current_dir(dir_path);
-                            cmd
-                        },
-                    )
-                    .await
-                    .is_some();
+                                cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
+                                if req_is_gui {
+                                    for f in &m.gui_link_flags {
+                                        cmd.arg(f);
+                                    }
+                                }
+                                cmd.arg("-ldl").arg("-rdynamic");
+                                cmd.current_dir(dir_path);
+                                cmd
+                            },
+                        )
+                        .await
+                        .is_some();
 
                     if manifest_healed {
                         eprintln!("[CompileGUI] manifest heal SUCCEEDED — skipping source heal");
                     } else {
+                        // ── AI Heal Loop ──
+                        let shared_for_heal = tokio::fs::read_to_string(
+                            dir_path.join(
+                                effective_manifest
+                                    .module_file(ModuleKind::Shared)
+                                    .unwrap_or("shared.h"),
+                            ),
+                        )
+                        .await
+                        .unwrap_or_default();
+                        // Read the cached split architecture from the sidecar so the
+                        // heal prompt has the same project-specific "Forbidden Patterns"
+                        // context that diff_patch uses.
+                        let heal_arch_md: String = {
+                            let sidecar = dir_path.join(".synthi_split_meta.json");
+                            match tokio::fs::read_to_string(&sidecar).await {
+                                Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                                    .ok()
+                                    .and_then(|v| {
+                                        v.get("architecture")
+                                            .and_then(|a| a.as_str())
+                                            .map(|s| s.to_string())
+                                    })
+                                    .unwrap_or_default(),
+                                Err(_) => String::new(),
+                            }
+                        };
+                        let heal_arch_hint: Option<&str> = if heal_arch_md.is_empty() {
+                            None
+                        } else {
+                            Some(heal_arch_md.as_str())
+                        };
+                        let mut heal_content = content.clone();
+                        let mut heal_stderr = stderr_str.clone();
+                        let mut healed = false;
 
-                    // ── AI Heal Loop ──
-                    let shared_for_heal = tokio::fs::read_to_string(
-                        dir_path.join(
-                            effective_manifest
-                                .module_file(ModuleKind::Shared)
-                                .unwrap_or("shared.h"),
-                        ),
-                    )
-                    .await
-                    .unwrap_or_default();
-                    // Read the cached split architecture from the sidecar so the
-                    // heal prompt has the same project-specific "Forbidden Patterns"
-                    // context that diff_patch uses.
-                    let heal_arch_md: String = {
-                        let sidecar = dir_path.join(".synthi_split_meta.json");
-                        match tokio::fs::read_to_string(&sidecar).await {
-                            Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
-                                .ok()
-                                .and_then(|v| v.get("architecture").and_then(|a| a.as_str()).map(|s| s.to_string()))
-                                .unwrap_or_default(),
-                            Err(_) => String::new(),
-                        }
-                    };
-                    let heal_arch_hint: Option<&str> = if heal_arch_md.is_empty() {
-                        None
-                    } else {
-                        Some(heal_arch_md.as_str())
-                    };
-                    let mut heal_content = content.clone();
-                    let mut heal_stderr = stderr_str.clone();
-                    let mut healed = false;
-
-                    for attempt in 0..2 {
-                        eprintln!("[CompileGUI] AI heal attempt {} for gui", attempt + 1);
-                        match crate::compiler::stages::ai_utils::perform_ai_heal(
-                            "gui", &heal_content, &heal_stderr, &shared_for_heal, heal_arch_hint,
-                        ).await {
-                            Ok(fixed) => {
-                                tokio::fs::write(dir_path.join(fname), &fixed).await?;
-                                let mut retry_cmd = cpp_compile_command(compiler_exe);
-                                retry_cmd.arg(&std_flag);
-                                for f in &effective_manifest.common_flags {
-                                    retry_cmd.arg(f);
-                                }
-                                retry_cmd
-                                    .arg(fname)
-                                    .arg("-I.")
-                                    .arg("-o")
-                                    .arg(&gui_out);
-                                if req_is_gui {
-                                    for f in &effective_manifest.gui_link_flags {
+                        for attempt in 0..2 {
+                            eprintln!("[CompileGUI] AI heal attempt {} for gui", attempt + 1);
+                            match crate::compiler::stages::ai_utils::perform_ai_heal(
+                                "gui",
+                                &heal_content,
+                                &heal_stderr,
+                                &shared_for_heal,
+                                heal_arch_hint,
+                            )
+                            .await
+                            {
+                                Ok(fixed) => {
+                                    tokio::fs::write(dir_path.join(fname), &fixed).await?;
+                                    let mut retry_cmd = cpp_compile_command(compiler_exe);
+                                    retry_cmd.arg(&std_flag);
+                                    for f in &effective_manifest.common_flags {
                                         retry_cmd.arg(f);
                                     }
-                                }
-                                retry_cmd.arg("-ldl").arg("-rdynamic");
-                                retry_cmd.current_dir(dir_path);
-                                retry_cmd.kill_on_drop(true);
-                                if let Ok(retry_child) = retry_cmd.spawn() {
-                                    if let Ok(Ok(retry_out)) = timeout(Duration::from_secs(30), retry_child.wait_with_output()).await {
-                                        if retry_out.status.success() {
-                                            eprintln!("[CompileGUI] AI heal succeeded on attempt {}", attempt + 1);
-                                            healed = true;
-                                            break;
+                                    retry_cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
+                                    if req_is_gui {
+                                        for f in &effective_manifest.gui_link_flags {
+                                            retry_cmd.arg(f);
                                         }
-                                        heal_stderr = String::from_utf8_lossy(&retry_out.stderr).to_string();
-                                        heal_content = fixed;
+                                    }
+                                    retry_cmd.arg("-ldl").arg("-rdynamic");
+                                    retry_cmd.current_dir(dir_path);
+                                    retry_cmd.kill_on_drop(true);
+                                    if let Ok(retry_child) = retry_cmd.spawn() {
+                                        if let Ok(Ok(retry_out)) = timeout(
+                                            Duration::from_secs(30),
+                                            retry_child.wait_with_output(),
+                                        )
+                                        .await
+                                        {
+                                            if retry_out.status.success() {
+                                                eprintln!(
+                                                    "[CompileGUI] AI heal succeeded on attempt {}",
+                                                    attempt + 1
+                                                );
+                                                healed = true;
+                                                break;
+                                            }
+                                            heal_stderr =
+                                                String::from_utf8_lossy(&retry_out.stderr)
+                                                    .to_string();
+                                            heal_content = fixed;
+                                        }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                eprintln!("[CompileGUI] AI heal failed: {}", e);
-                                break;
+                                Err(e) => {
+                                    eprintln!("[CompileGUI] AI heal failed: {}", e);
+                                    break;
+                                }
                             }
                         }
-                    }
 
-                    if !healed {
-                        let report = parse_compiler_output(&heal_stderr, "gui", CompilerType::Gcc, true);
-                        let diagnostics_json = report.to_json();
-                        let diag_payload = serde_json::json!({
-                            "sessionId": session_id.clone(),
-                            "type": "compile-diagnostics",
-                            "language": "cpp",
-                            "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json).unwrap_or_default(),
-                            "error_count": report.error_count,
-                            "warning_count": report.warning_count,
-                            "stage": "compile_gui"
-                        });
-                        let _ = ctx.log_dc
-                            .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
-                            .await;
+                        if !healed {
+                            let report =
+                                parse_compiler_output(&heal_stderr, "gui", CompilerType::Gcc, true);
+                            let diagnostics_json = report.to_json();
+                            let diag_payload = serde_json::json!({
+                                "sessionId": session_id.clone(),
+                                "type": "compile-diagnostics",
+                                "language": "cpp",
+                                "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json).unwrap_or_default(),
+                                "error_count": report.error_count,
+                                "warning_count": report.warning_count,
+                                "stage": "compile_gui"
+                            });
+                            let _ = ctx
+                                .log_dc
+                                .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
+                                .await;
 
-                        let truncated = if heal_stderr.len() > 500 {
-                            format!("{}…", &heal_stderr[..500])
-                        } else {
-                            heal_stderr.clone()
-                        };
-                        anyhow::bail!("GUI compilation failed: {}", truncated);
-                    }
+                            let truncated = if heal_stderr.len() > 500 {
+                                format!("{}…", &heal_stderr[..500])
+                            } else {
+                                heal_stderr.clone()
+                            };
+                            anyhow::bail!("GUI compilation failed: {}", truncated);
+                        }
                     } // end source-heal else-branch (Phase 6 manifest_healed=false)
                 }
 
