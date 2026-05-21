@@ -91,6 +91,23 @@ class KernelSplitterError(Exception):
     """
 
 
+class KernelSplitterUnsupportedProjectError(KernelSplitterError):
+    """Raised when deterministic source metadata rejects the project shape
+    before any AI proposal is requested.
+    """
+
+    def __init__(
+        self,
+        reason_code: str,
+        message: str,
+        *,
+        source_context_report: Optional[Mapping[str, Any]] = None,
+    ):
+        self.reason_code = reason_code
+        self.source_context_report = dict(source_context_report or {})
+        super().__init__(message)
+
+
 class KernelSplitProviderError(Exception):
     """Raised when the upstream AI provider fails before producing a split."""
 
@@ -733,6 +750,18 @@ async def run_kernel_splitter(
         source_map,
         focus=focus,
     )
+    graphics_backend = source_context_report.get("graphicsBackend")
+    if isinstance(graphics_backend, dict) and graphics_backend.get("supportStatus") == "unsupported":
+        reason_codes = graphics_backend.get("reasonCodes") or []
+        reason_code = str(reason_codes[0] if reason_codes else "unsupported_project_shape")
+        raise KernelSplitterUnsupportedProjectError(
+            reason_code,
+            (
+                "GPU split unsupported for graphics backend "
+                f"{graphics_backend.get('primary') or 'unknown'}: {','.join(reason_codes)}"
+            ),
+            source_context_report=source_context_report,
+        )
     prompt = build_prompt(
         user_code,
         detection=detection,

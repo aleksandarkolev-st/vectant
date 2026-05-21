@@ -19,6 +19,19 @@ _RENDER_RE = re.compile(
     r"\b(?:glfw|SDL_|SDL2|raylib|InitWindow|BeginDrawing|ImGui|Vk[A-Z]|vk[A-Z]|gl[A-Z])\b",
     re.I,
 )
+_BACKEND_PATTERNS = {
+    "sdl2": re.compile(r"\b(?:SDL2/SDL\.h|SDL_|SDL_Init|SDL_CreateWindow)\b", re.I),
+    "glfw_opengl": re.compile(
+        r"\b(?:GLFW/glfw3\.h|glfw[A-Z_]|GL/gl\.h|glClear|glBegin|glDraw)\b",
+        re.I,
+    ),
+    "raylib": re.compile(r"\b(?:raylib\.h|InitWindow|BeginDrawing|DrawCircle|CloseWindow)\b", re.I),
+    "sfml": re.compile(r"\b(?:SFML/Graphics\.hpp|sf::RenderWindow|sf::CircleShape)\b", re.I),
+    "imgui": re.compile(r"\b(?:imgui\.h|ImGui::|ImGui_Impl)\b", re.I),
+    "vulkan": re.compile(
+        r"\b(?:vulkan/vulkan\.h|GLFW_INCLUDE_VULKAN|Vk[A-Z][A-Za-z0-9_]*|vk[A-Z][A-Za-z0-9_]*|VK_[A-Z0-9_]+)\b"
+    ),
+}
 _KERNEL_DECL_RE = re.compile(r"\b__(?:global|device|constant|managed)__\b")
 _TEMPLATE_EVIDENCE_BASENAMES = {
     "template-evidence.json",
@@ -108,6 +121,64 @@ def _reason_and_priority(path: str, source: str, focus: Optional[str]) -> Tuple[
     if looks_like_source_file(normalized):
         return (8, "source_context")
     return (99, "unsupported_file_type")
+
+
+def _graphics_backend_report(source_files: Mapping[str, str]) -> dict:
+    evidence: list[dict] = []
+    detected: set[str] = set()
+    for path, source in sorted(source_files.items()):
+        normalized = normalize_path(path)
+        if not looks_like_source_file(normalized) and not normalized.endswith("CMakeLists.txt"):
+            continue
+        for backend, pattern in _BACKEND_PATTERNS.items():
+            if pattern.search(source or ""):
+                detected.add(backend)
+                evidence.append(
+                    {
+                        "backend": backend,
+                        "path": normalized,
+                        "reason": "source_marker",
+                    }
+                )
+
+    if "imgui" in detected:
+        if "sdl2" in detected:
+            detected.add("imgui_sdl2")
+        if "glfw_opengl" in detected:
+            detected.add("imgui_glfw")
+
+    primary = None
+    for candidate in [
+        "vulkan",
+        "imgui_sdl2",
+        "imgui_glfw",
+        "imgui",
+        "raylib",
+        "sfml",
+        "glfw_opengl",
+        "sdl2",
+    ]:
+        if candidate in detected:
+            primary = candidate
+            break
+
+    reason_codes: list[str] = []
+    support_status = "unknown"
+    if primary == "vulkan":
+        support_status = "unsupported"
+        reason_codes.append("unsupported.graphics_backend_vulkan")
+        reason_codes.append("unsupported_project_shape")
+    elif primary:
+        support_status = "candidate"
+
+    return {
+        "schemaVersion": "synthi.gpu.graphics_backend.v1",
+        "primary": primary,
+        "detected": sorted(detected),
+        "supportStatus": support_status,
+        "reasonCodes": reason_codes,
+        "evidence": evidence,
+    }
 
 
 def _parse_compile_commands(source_files: Mapping[str, str]) -> Tuple[str, List[dict], Optional[str]]:
@@ -688,6 +759,7 @@ def build_source_context_report(
         selected_command,
         cmake_file_api,
     )
+    graphics_backend = _graphics_backend_report(normalized_files)
     report = {
         "schemaVersion": SOURCE_CONTEXT_SCHEMA_VERSION,
         "focus": normalize_path(focus or ""),
@@ -714,6 +786,7 @@ def build_source_context_report(
                 else ["multi_device_tu_requires_topology_verification"]
             ),
         },
+        "graphicsBackend": graphics_backend,
         "promptBudget": {
             "maxChars": max_chars,
             "perFileMaxChars": per_file_max_chars,
@@ -807,6 +880,19 @@ def format_source_context_prompt(report: Mapping[str, Any], source_files: Mappin
         elif target_resolution.get("status") == "ambiguous":
             lines.append(
                 "CMake target resolution is ambiguous; do not guess target-specific flags or sources."
+            )
+    graphics_backend = report.get("graphicsBackend")
+    if isinstance(graphics_backend, dict):
+        primary = graphics_backend.get("primary")
+        if primary:
+            lines.append(
+                "Graphics backend: "
+                f"{primary} (status={graphics_backend.get('supportStatus')}, "
+                f"reasonCodes={','.join(graphics_backend.get('reasonCodes') or []) or 'none'})."
+            )
+        if graphics_backend.get("supportStatus") == "unsupported":
+            lines.append(
+                "This graphics backend is unsupported for GPU HMR unless a deterministic ownership model exists; do not claim hot reload support."
             )
     template_evidence = (
         report.get("buildMetadata", {})

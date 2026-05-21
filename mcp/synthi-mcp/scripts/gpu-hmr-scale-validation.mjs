@@ -23,7 +23,12 @@ const CFG = {
   slug: process.env.SLUG ?? `gpu-scale-validation-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`,
   hostId: process.env.HOST_ID ?? 'gpu-hmr-scale-validation',
   vendor: (process.env.SYNTHI_GPU_VENDOR ?? 'auto').toLowerCase(),
-  renderBackend: (process.env.SYNTHI_SCALE_RENDER_BACKEND ?? 'sdl2').toLowerCase().replace(/^sdl$/, 'sdl2'),
+  renderBackend: (process.env.SYNTHI_SCALE_RENDER_BACKEND ?? 'sdl2')
+    .toLowerCase()
+    .replace(/_/g, '-')
+    .replace(/^sdl$/, 'sdl2')
+    .replace(/^imgui-sdl$/, 'imgui-sdl2')
+    .replace(/^imgui-glfw-opengl$/, 'imgui-glfw'),
   gpuArch: process.env.SYNTHI_GPU_ARCH,
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.1-flash-lite-preview',
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
@@ -89,6 +94,103 @@ const GENERATED_WORKSPACE_ARTIFACTS = new Set([
   '.synthi_split_meta.json',
   '.synthi/build_manifest.json',
 ]);
+const SUPPORTED_RENDER_FIXTURES = new Set([
+  'sdl2',
+  'glfw',
+  'raylib',
+  'sfml',
+  'imgui-sdl2',
+  'imgui-glfw',
+  'vulkan',
+]);
+
+function renderBackendProfile(renderBackend) {
+  const profiles = {
+    sdl2: {
+      label: 'SDL2',
+      source: 'src/render/sdl_canvas.cpp',
+      header: 'src/render/sdl_canvas.hpp',
+      link: 'target_link_libraries(particle_field PRIVATE SDL2)',
+      cmakePrelude: '',
+      dependencyPackages: ['libsdl2-dev'],
+      dependencyProbe: "printf '%s\\n' '#include <SDL2/SDL.h>' 'int main(){ return SDL_Init(0); }' | c++ -x c++ - -lSDL2 -o /tmp/synthi-sdl2-probe && rm -f /tmp/synthi-sdl2-probe",
+      marker: /\bSDL_|SDL2\/SDL\.h|-lSDL2/,
+      forbidden: /\bGLFW|raylib\.h|SFML\/Graphics\.hpp|vulkan\/vulkan\.h|Vk[A-Z]|ImGui::/,
+    },
+    glfw: {
+      label: 'GLFW + OpenGL',
+      source: 'src/render/glfw_canvas.cpp',
+      header: 'src/render/glfw_canvas.hpp',
+      link: 'target_link_libraries(particle_field PRIVATE glfw GL)',
+      cmakePrelude: '',
+      dependencyPackages: ['libglfw3-dev', 'libgl1-mesa-dev'],
+      dependencyProbe: "printf '%s\\n' '#include <GLFW/glfw3.h>' '#include <GL/gl.h>' 'int main(){ return glfwInit() ? 0 : 1; }' | c++ -x c++ - -lglfw -lGL -o /tmp/synthi-glfw-probe && rm -f /tmp/synthi-glfw-probe",
+      marker: /\b(?:GLFW|glfw|-lglfw|GL\/gl\.h|glClear|glBegin|glDraw)/,
+      forbidden: /\bSDL_|SDL2\/SDL\.h|raylib\.h|SFML\/Graphics\.hpp|vulkan\/vulkan\.h|Vk[A-Z]|ImGui::/,
+    },
+    raylib: {
+      label: 'raylib',
+      source: 'src/render/raylib_canvas.cpp',
+      header: 'src/render/raylib_canvas.hpp',
+      link: 'target_link_libraries(particle_field PRIVATE raylib)',
+      cmakePrelude: '',
+      dependencyPackages: ['raylib development package or source-installed libraylib'],
+      dependencyProbe: "printf '%s\\n' '#include <raylib.h>' 'int main(){ return 0; }' | c++ -x c++ - -lraylib -o /tmp/synthi-raylib-probe && rm -f /tmp/synthi-raylib-probe",
+      marker: /\b(?:raylib\.h|InitWindow|BeginDrawing|DrawCircle|-lraylib)\b/,
+      forbidden: /\bSDL_|SDL2\/SDL\.h|GLFW|SFML\/Graphics\.hpp|vulkan\/vulkan\.h|Vk[A-Z]|ImGui::/,
+    },
+    sfml: {
+      label: 'SFML',
+      source: 'src/render/sfml_canvas.cpp',
+      header: 'src/render/sfml_canvas.hpp',
+      link: 'target_link_libraries(particle_field PRIVATE sfml-graphics sfml-window sfml-system)',
+      cmakePrelude: '',
+      dependencyPackages: ['libsfml-dev'],
+      dependencyProbe: "printf '%s\\n' '#include <SFML/Graphics.hpp>' 'int main(){ sf::CircleShape shape; return 0; }' | c++ -x c++ - -lsfml-graphics -lsfml-window -lsfml-system -o /tmp/synthi-sfml-probe && rm -f /tmp/synthi-sfml-probe",
+      marker: /\b(?:SFML\/Graphics\.hpp|sf::RenderWindow|sfml-graphics)\b/,
+      forbidden: /\bSDL_|SDL2\/SDL\.h|GLFW|raylib\.h|vulkan\/vulkan\.h|Vk[A-Z]|ImGui::/,
+    },
+    'imgui-sdl2': {
+      label: 'ImGui + SDL2',
+      source: 'src/render/imgui_sdl_canvas.cpp',
+      header: 'src/render/imgui_sdl_canvas.hpp',
+      link: 'target_link_libraries(particle_field PRIVATE SDL2 imgui)',
+      cmakePrelude: '',
+      dependencyPackages: ['libsdl2-dev', 'libimgui-dev'],
+      dependencyProbe: "printf '%s\\n' '#include <SDL2/SDL.h>' '#include <imgui.h>' 'int main(){ ImGui::CreateContext(); ImGui::DestroyContext(); return 0; }' | c++ -x c++ - -lSDL2 -limgui -o /tmp/synthi-imgui-sdl2-probe && rm -f /tmp/synthi-imgui-sdl2-probe",
+      marker: /\b(?:ImGui::|imgui\.h|SDL2\/SDL\.h|-lSDL2|imgui)\b/,
+      forbidden: /\bGLFW|raylib\.h|SFML\/Graphics\.hpp|vulkan\/vulkan\.h|Vk[A-Z]/,
+    },
+    'imgui-glfw': {
+      label: 'ImGui + GLFW',
+      source: 'src/render/imgui_glfw_canvas.cpp',
+      header: 'src/render/imgui_glfw_canvas.hpp',
+      link: 'target_link_libraries(particle_field PRIVATE glfw GL imgui)',
+      cmakePrelude: '',
+      dependencyPackages: ['libglfw3-dev', 'libgl1-mesa-dev', 'libimgui-dev'],
+      dependencyProbe: "printf '%s\\n' '#include <GLFW/glfw3.h>' '#include <GL/gl.h>' '#include <imgui.h>' 'int main(){ ImGui::CreateContext(); ImGui::DestroyContext(); return 0; }' | c++ -x c++ - -lglfw -lGL -limgui -o /tmp/synthi-imgui-glfw-probe && rm -f /tmp/synthi-imgui-glfw-probe",
+      marker: /\b(?:ImGui::|imgui\.h|GLFW|glfw|-lglfw|imgui)\b/,
+      forbidden: /\bSDL_|SDL2\/SDL\.h|raylib\.h|SFML\/Graphics\.hpp|vulkan\/vulkan\.h|Vk[A-Z]/,
+    },
+    vulkan: {
+      label: 'Vulkan unsupported fallback',
+      source: 'src/render/vulkan_canvas.cpp',
+      header: 'src/render/vulkan_canvas.hpp',
+      link: 'target_link_libraries(particle_field PRIVATE Vulkan::Vulkan)',
+      cmakePrelude: 'find_package(Vulkan REQUIRED)',
+      dependencyPackages: ['libvulkan-dev'],
+      dependencyProbe: "printf '%s\\n' '#include <vulkan/vulkan.h>' 'int main(){ VkInstance instance = VK_NULL_HANDLE; return instance == VK_NULL_HANDLE ? 0 : 1; }' | c++ -x c++ - -lvulkan -o /tmp/synthi-vulkan-probe && rm -f /tmp/synthi-vulkan-probe",
+      marker: /\b(?:vulkan\/vulkan\.h|Vk[A-Z]|vk[A-Z]|VK_|Vulkan::Vulkan)\b/,
+      forbidden: /\bSDL_|SDL2\/SDL\.h|GLFW|raylib\.h|SFML\/Graphics\.hpp|ImGui::/,
+      unsupportedReason: 'unsupported.graphics_backend_vulkan',
+    },
+  };
+  const profile = profiles[renderBackend];
+  if (!profile) {
+    throw new Error(`unsupported render backend fixture ${renderBackend}`);
+  }
+  return profile;
+}
 
 const report = {
   slug: CFG.slug,
@@ -101,6 +203,7 @@ const report = {
   template_evidence_mode: CFG.templateEvidenceMode,
   workspace_file_count: 0,
   relevant_file_count: 0,
+  framework_dependency: {},
   started_at: new Date().toISOString(),
   finished_at: '',
   compose_files: ['docker-compose.yml', 'docker-compose.gpu-amd.yml'],
@@ -537,6 +640,7 @@ function sourceFileMix(files) {
 
 function buildScaleProject(vendor, arch, renderBackend) {
   const isRocm = vendor === 'rocm';
+  const renderProfile = renderBackendProfile(renderBackend);
   const deviceExt = isRocm ? 'hip' : 'cu';
   const runtimeInclude = isRocm ? '#include <hip/hip_runtime.h>' : '#include <cuda_runtime.h>';
   const launchComment = isRocm ? 'hipLaunchKernelGGL' : 'cudaLaunchKernel';
@@ -549,10 +653,8 @@ function buildScaleProject(vendor, arch, renderBackend) {
   const integrationScale = useTemplateFixture
     ? '::scale_template::tuned_gain<float, 256>(44.0f)'
     : '44.0f';
-  const renderSource = renderBackend === 'glfw' ? 'src/render/glfw_canvas.cpp' : 'src/render/sdl_canvas.cpp';
-  const renderLink = renderBackend === 'glfw'
-    ? 'target_link_libraries(particle_field PRIVATE glfw GL)'
-    : 'target_link_libraries(particle_field PRIVATE SDL2)';
+  const renderSource = renderProfile.source;
+  const renderLink = renderProfile.link;
   const files = [];
   const mainCompileArguments = [
     'clang++',
@@ -575,13 +677,14 @@ function buildScaleProject(vendor, arch, renderBackend) {
 # Particle Field Validation Fixture
 
 Ordinary multi-file GPU project used by the scale validation harness.
-Render backend: ${renderBackend === 'glfw' ? 'GLFW + OpenGL' : 'SDL2'}.
+Render backend: ${renderProfile.label}.
 `, true);
 
   addFile(files, 'CMakeLists.txt', `
 cmake_minimum_required(VERSION 3.24)
 project(particle_field_validation LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
+${renderProfile.cmakePrelude}
 add_executable(particle_field
   src/app/main.cpp
   src/app/simulation.cpp
@@ -986,7 +1089,7 @@ int main() {
   return 0;
 }
 `, true);
-  } else {
+  } else if (renderBackend === 'glfw') {
     addFile(files, 'src/render/glfw_canvas.hpp', `
 #pragma once
 #include "../app/simulation.hpp"
@@ -1102,6 +1205,308 @@ int main() {
   return 0;
 }
 `, true);
+  } else if (renderBackend === 'raylib') {
+    addFile(files, 'src/render/raylib_canvas.hpp', `
+#pragma once
+#include "../app/simulation.hpp"
+namespace scale {
+class RaylibCanvas {
+ public:
+  RaylibCanvas(int width, int height);
+  ~RaylibCanvas();
+  bool pump();
+  void draw(const ParticleSnapshot& snapshot);
+ private:
+  int width_;
+  int height_;
+};
+}
+`, true);
+
+    addFile(files, 'src/render/raylib_canvas.cpp', `
+#include "raylib_canvas.hpp"
+#include <raylib.h>
+#include <cstddef>
+namespace scale {
+RaylibCanvas::RaylibCanvas(int width, int height) : width_(width), height_(height) {
+  InitWindow(width_, height_, "Scale Particle Field");
+  SetTargetFPS(60);
+}
+RaylibCanvas::~RaylibCanvas() { CloseWindow(); }
+bool RaylibCanvas::pump() { return !WindowShouldClose(); }
+void RaylibCanvas::draw(const ParticleSnapshot& snapshot) {
+  BeginDrawing();
+  ClearBackground(Color{6, 10, 18, 255});
+  for (std::size_t i = 0; i < snapshot.positions.size(); ++i) {
+    const Vec2& p = snapshot.positions[i];
+    const Rgba& c = snapshot.colors[i % snapshot.colors.size()];
+    DrawCircle(static_cast<int>(p.x), static_cast<int>(p.y), 4.0f, Color{c.r, c.g, c.b, c.a});
+  }
+  EndDrawing();
+}
+}
+`, true);
+
+    addFile(files, 'src/app/main.cpp', `
+#include "simulation.hpp"
+#include "../render/raylib_canvas.hpp"
+#include "../config/particle_config.hpp"
+
+int main() {
+  scale::Simulation simulation;
+  scale::RaylibCanvas canvas(scale::kCanvasWidth, scale::kCanvasHeight);
+  for (int frame = 0; frame < 240 && canvas.pump(); ++frame) {
+    simulation.step(1.0f / 60.0f);
+    canvas.draw(simulation.snapshot());
+  }
+  return 0;
+}
+`, true);
+  } else if (renderBackend === 'sfml') {
+    addFile(files, 'src/render/sfml_canvas.hpp', `
+#pragma once
+#include "../app/simulation.hpp"
+#include <SFML/Graphics.hpp>
+namespace scale {
+class SfmlCanvas {
+ public:
+  SfmlCanvas(int width, int height);
+  bool pump();
+  void draw(const ParticleSnapshot& snapshot);
+ private:
+  sf::RenderWindow window_;
+};
+}
+`, true);
+
+    addFile(files, 'src/render/sfml_canvas.cpp', `
+#include "sfml_canvas.hpp"
+#include <cstddef>
+namespace scale {
+SfmlCanvas::SfmlCanvas(int width, int height)
+    : window_(sf::VideoMode(width, height), "Scale Particle Field") {
+  window_.setFramerateLimit(60);
+}
+bool SfmlCanvas::pump() {
+  sf::Event event;
+  while (window_.pollEvent(event)) {
+    if (event.type == sf::Event::Closed) window_.close();
+  }
+  return window_.isOpen();
+}
+void SfmlCanvas::draw(const ParticleSnapshot& snapshot) {
+  window_.clear(sf::Color(6, 10, 18));
+  for (std::size_t i = 0; i < snapshot.positions.size(); ++i) {
+    const Vec2& p = snapshot.positions[i];
+    const Rgba& c = snapshot.colors[i % snapshot.colors.size()];
+    sf::CircleShape particle(4.0f);
+    particle.setFillColor(sf::Color(c.r, c.g, c.b, c.a));
+    particle.setPosition(p.x, p.y);
+    window_.draw(particle);
+  }
+  window_.display();
+}
+}
+`, true);
+
+    addFile(files, 'src/app/main.cpp', `
+#include "simulation.hpp"
+#include "../render/sfml_canvas.hpp"
+#include "../config/particle_config.hpp"
+
+int main() {
+  scale::Simulation simulation;
+  scale::SfmlCanvas canvas(scale::kCanvasWidth, scale::kCanvasHeight);
+  for (int frame = 0; frame < 240 && canvas.pump(); ++frame) {
+    simulation.step(1.0f / 60.0f);
+    canvas.draw(simulation.snapshot());
+  }
+  return 0;
+}
+`, true);
+  } else if (renderBackend === 'imgui-sdl2') {
+    addFile(files, 'src/render/imgui_sdl_canvas.hpp', `
+#pragma once
+#include "../app/simulation.hpp"
+struct SDL_Window;
+struct SDL_Renderer;
+namespace scale {
+class ImguiSdlCanvas {
+ public:
+  ImguiSdlCanvas(int width, int height);
+  ~ImguiSdlCanvas();
+  bool pump();
+  void draw(const ParticleSnapshot& snapshot);
+ private:
+  SDL_Window* window_;
+  SDL_Renderer* renderer_;
+  bool open_;
+};
+}
+`, true);
+
+    addFile(files, 'src/render/imgui_sdl_canvas.cpp', `
+#include "imgui_sdl_canvas.hpp"
+#include <SDL2/SDL.h>
+#include <imgui.h>
+#include <cstddef>
+namespace scale {
+ImguiSdlCanvas::ImguiSdlCanvas(int width, int height) : window_(nullptr), renderer_(nullptr), open_(true) {
+  SDL_Init(SDL_INIT_VIDEO);
+  window_ = SDL_CreateWindow("Scale Particle Field", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_SHOWN);
+  renderer_ = window_ ? SDL_CreateRenderer(window_, -1, SDL_RENDERER_ACCELERATED) : nullptr;
+  ImGui::CreateContext();
+}
+ImguiSdlCanvas::~ImguiSdlCanvas() {
+  ImGui::DestroyContext();
+  if (renderer_) SDL_DestroyRenderer(renderer_);
+  if (window_) SDL_DestroyWindow(window_);
+  SDL_Quit();
+}
+bool ImguiSdlCanvas::pump() {
+  SDL_Event event;
+  while (SDL_PollEvent(&event)) {
+    if (event.type == SDL_QUIT) open_ = false;
+  }
+  return open_;
+}
+void ImguiSdlCanvas::draw(const ParticleSnapshot& snapshot) {
+  ImGui::NewFrame();
+  ImGui::Begin("GPU HMR");
+  ImGui::Text("particles: %d", static_cast<int>(snapshot.positions.size()));
+  ImGui::End();
+  ImGui::Render();
+  if (renderer_) SDL_RenderPresent(renderer_);
+}
+}
+`, true);
+
+    addFile(files, 'src/app/main.cpp', `
+#include "simulation.hpp"
+#include "../render/imgui_sdl_canvas.hpp"
+#include "../config/particle_config.hpp"
+
+int main() {
+  scale::Simulation simulation;
+  scale::ImguiSdlCanvas canvas(scale::kCanvasWidth, scale::kCanvasHeight);
+  for (int frame = 0; frame < 240 && canvas.pump(); ++frame) {
+    simulation.step(1.0f / 60.0f);
+    canvas.draw(simulation.snapshot());
+  }
+  return 0;
+}
+`, true);
+  } else if (renderBackend === 'imgui-glfw') {
+    addFile(files, 'src/render/imgui_glfw_canvas.hpp', `
+#pragma once
+#include "../app/simulation.hpp"
+struct GLFWwindow;
+namespace scale {
+class ImguiGlfwCanvas {
+ public:
+  ImguiGlfwCanvas(int width, int height);
+  ~ImguiGlfwCanvas();
+  bool pump();
+  void draw(const ParticleSnapshot& snapshot);
+ private:
+  GLFWwindow* window_;
+};
+}
+`, true);
+
+    addFile(files, 'src/render/imgui_glfw_canvas.cpp', `
+#include "imgui_glfw_canvas.hpp"
+#include <GLFW/glfw3.h>
+#include <imgui.h>
+namespace scale {
+ImguiGlfwCanvas::ImguiGlfwCanvas(int width, int height) : window_(nullptr) {
+  glfwInit();
+  window_ = glfwCreateWindow(width, height, "Scale Particle Field", nullptr, nullptr);
+  if (window_) glfwMakeContextCurrent(window_);
+  ImGui::CreateContext();
+}
+ImguiGlfwCanvas::~ImguiGlfwCanvas() {
+  ImGui::DestroyContext();
+  if (window_) glfwDestroyWindow(window_);
+  glfwTerminate();
+}
+bool ImguiGlfwCanvas::pump() {
+  if (!window_) return false;
+  glfwPollEvents();
+  return !glfwWindowShouldClose(window_);
+}
+void ImguiGlfwCanvas::draw(const ParticleSnapshot& snapshot) {
+  ImGui::NewFrame();
+  ImGui::Begin("GPU HMR");
+  ImGui::Text("particles: %d", static_cast<int>(snapshot.positions.size()));
+  ImGui::End();
+  ImGui::Render();
+  if (window_) glfwSwapBuffers(window_);
+}
+}
+`, true);
+
+    addFile(files, 'src/app/main.cpp', `
+#include "simulation.hpp"
+#include "../render/imgui_glfw_canvas.hpp"
+#include "../config/particle_config.hpp"
+
+int main() {
+  scale::Simulation simulation;
+  scale::ImguiGlfwCanvas canvas(scale::kCanvasWidth, scale::kCanvasHeight);
+  for (int frame = 0; frame < 240 && canvas.pump(); ++frame) {
+    simulation.step(1.0f / 60.0f);
+    canvas.draw(simulation.snapshot());
+  }
+  return 0;
+}
+`, true);
+  } else if (renderBackend === 'vulkan') {
+    addFile(files, 'src/render/vulkan_canvas.hpp', `
+#pragma once
+#include "../app/simulation.hpp"
+#include <vulkan/vulkan.h>
+namespace scale {
+class VulkanCanvas {
+ public:
+  VulkanCanvas(int width, int height);
+  bool pump();
+  void draw(const ParticleSnapshot& snapshot);
+ private:
+  VkInstance instance_;
+};
+}
+`, true);
+
+    addFile(files, 'src/render/vulkan_canvas.cpp', `
+#include "vulkan_canvas.hpp"
+namespace scale {
+VulkanCanvas::VulkanCanvas(int, int) : instance_(VK_NULL_HANDLE) {}
+bool VulkanCanvas::pump() { return true; }
+void VulkanCanvas::draw(const ParticleSnapshot& snapshot) {
+  (void)snapshot;
+  (void)instance_;
+}
+}
+`, true);
+
+    addFile(files, 'src/app/main.cpp', `
+#include "simulation.hpp"
+#include "../render/vulkan_canvas.hpp"
+#include "../config/particle_config.hpp"
+
+int main() {
+  scale::Simulation simulation;
+  scale::VulkanCanvas canvas(scale::kCanvasWidth, scale::kCanvasHeight);
+  for (int frame = 0; frame < 240 && canvas.pump(); ++frame) {
+    simulation.step(1.0f / 60.0f);
+    canvas.draw(simulation.snapshot());
+  }
+  return 0;
+}
+`, true);
+  } else {
+    throw new Error(`missing fixture generator for render backend ${renderBackend}`);
   }
 
   addMultiSourceShardPack(files);
@@ -1164,6 +1569,57 @@ function assertOrdinaryUserProject(files) {
   record('ordinary user project guard', 'pass', `${files.length} files, no Synthi ABI or generated role filenames`);
 }
 
+async function assertRenderBackendDependencies(renderProfile) {
+  const packages = renderProfile.dependencyPackages || [];
+  report.framework_dependency = {
+    backend: CFG.renderBackend,
+    label: renderProfile.label,
+    packages,
+    status: 'not_checked',
+  };
+
+  if (renderProfile.unsupportedReason) {
+    report.framework_dependency.status = 'not_required_for_explicit_fallback';
+    record(
+      'render backend dependency preflight',
+      'pass',
+      `${renderProfile.label}: not required for explicit unsupported fallback`,
+    );
+    return;
+  }
+  if (CFG.mcpTransport !== 'docker') {
+    report.framework_dependency.status = 'skipped_host_transport';
+    record(
+      'render backend dependency preflight',
+      'warn',
+      `${renderProfile.label}: skipped outside docker transport`,
+    );
+    return;
+  }
+  if (!renderProfile.dependencyProbe) {
+    report.framework_dependency.status = 'missing_probe';
+    fail(`render backend ${renderProfile.label} has no dependency probe`);
+  }
+
+  const output = await execText(
+    'docker',
+    ['exec', CFG.workerContainer, 'sh', '-lc', renderProfile.dependencyProbe],
+    45000,
+  );
+  if (typeof output === 'undefined') {
+    report.framework_dependency.status = 'missing';
+    fail(
+      `render backend dependencies missing for ${renderProfile.label}; install/provide: ${packages.join(', ')}`,
+    );
+  }
+  report.framework_dependency.status = 'available';
+  record(
+    'render backend dependency preflight',
+    'pass',
+    `${renderProfile.label}: ${packages.join(', ') || 'no extra packages'}`,
+  );
+}
+
 async function compileViaMcp(args, waitTimeoutMs, phaseName, checkpoint) {
   const state = await ensureMcpAttached();
   const wallStart = Date.now();
@@ -1194,6 +1650,51 @@ async function compileViaMcp(args, waitTimeoutMs, phaseName, checkpoint) {
     throw new Error(`${phaseName} wait_hmr status=${wait?.status ?? 'missing'} detail=${JSON.stringify(wait).slice(0, 500)}`);
   }
   return { compile, wait, phase };
+}
+
+async function compileUnsupportedViaMcp(args, timeoutMs, phaseName, expectedReason) {
+  const state = await ensureMcpAttached();
+  const wallStart = Date.now();
+  let compile = null;
+  let wait = null;
+  let detail = null;
+  let matched = false;
+  try {
+    compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
+    detail = compile;
+    matched = JSON.stringify(compile).includes(expectedReason)
+      || JSON.stringify(compile).includes('unsupported_project_shape');
+    if (compile?.ok && !matched) {
+      wait = await waitHmrForCurrentWorkspace(state, timeoutMs, phaseName);
+      detail = { compile, wait };
+      matched = JSON.stringify(wait).includes(expectedReason)
+        || JSON.stringify(wait).includes('unsupported_project_shape');
+    }
+  } catch (err) {
+    detail = { error: String(err?.message || err) };
+    matched = detail.error.includes(expectedReason) || detail.error.includes('unsupported_project_shape');
+    if (!matched) throw err;
+  }
+  if (!matched) {
+    throw new Error(
+      `${phaseName} did not produce expected unsupported reason ${expectedReason}: `
+        + JSON.stringify(detail).slice(0, 1000),
+    );
+  }
+  const phase = {
+    name: phaseName,
+    wait_hmr_status: 'expected_unsupported',
+    wait_hmr_source: 'deterministic_validation',
+    wait_hmr_elapsed_ms: wait?.elapsedMs ?? null,
+    wait_hmr_terminal_elapsed_ms: wait?.hmrElapsedMs ?? null,
+    wait_hmr_detail: detail,
+    frame_gate: { status: 'not_applicable', reason: expectedReason },
+    wall_elapsed_ms: Date.now() - wallStart,
+    worker_log_markers: [],
+  };
+  report.phases.push(phase);
+  record(`${phaseName} explicit fallback`, 'pass', expectedReason);
+  return phase;
 }
 
 async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName) {
@@ -1462,20 +1963,17 @@ function validateGeneratedSplit(split, renderBackend) {
   if (!device.includes('__global__')) missing.push('__global__ device kernel');
   if (missing.length) throw new Error(`generated split missing expected generated pieces: ${missing.join(', ')}`);
   const generatedText = `${core}\n${gui}\n${host}\n${device}\n${split.sidecarRaw}\n${JSON.stringify(split.manifest)}`;
-  if (renderBackend === 'glfw') {
-    if (!/\b(?:GLFW|glfw|-lglfw|GL\/gl\.h|glClear|glBegin|glDraw)/.test(generatedText)) {
-      throw new Error('generated GLFW split does not preserve GLFW/OpenGL markers or link flags');
-    }
-    if (/\bSDL_|SDL2\/SDL\.h|-lSDL2/.test(generatedText)) {
-      throw new Error('generated GLFW split introduced SDL markers');
-    }
-    record('generated split preserved GLFW/OpenGL backend', 'pass', 'no SDL markers in generated roles');
-  } else if (renderBackend === 'sdl2') {
-    if (!/\bSDL_|SDL2\/SDL\.h|-lSDL2/.test(generatedText)) {
-      throw new Error('generated SDL2 split does not preserve SDL2 markers or link flags');
-    }
-    record('generated split preserved SDL2 backend', 'pass', 'SDL2 markers present');
+  const profile = renderBackendProfile(renderBackend);
+  if (profile.unsupportedReason) {
+    throw new Error(`validateGeneratedSplit called for unsupported backend ${renderBackend}; expected explicit fallback`);
   }
+  if (!profile.marker.test(generatedText)) {
+    throw new Error(`generated ${renderBackend} split does not preserve framework markers or link flags`);
+  }
+  if (profile.forbidden?.test(generatedText)) {
+    throw new Error(`generated ${renderBackend} split introduced markers from another framework`);
+  }
+  record(`generated split preserved ${profile.label} backend`, 'pass', 'framework markers present');
   record('generated split contains HMR ABI', 'pass', Object.values(split.roles).join(', '));
 }
 
@@ -2244,8 +2742,8 @@ async function writeReport() {
 async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
-  if (!['sdl2', 'glfw'].includes(CFG.renderBackend)) {
-    fail(`unsupported SYNTHI_SCALE_RENDER_BACKEND=${CFG.renderBackend}; expected sdl2 or glfw`);
+  if (!SUPPORTED_RENDER_FIXTURES.has(CFG.renderBackend)) {
+    fail(`unsupported SYNTHI_SCALE_RENDER_BACKEND=${CFG.renderBackend}; expected ${[...SUPPORTED_RENDER_FIXTURES].join(', ')}`);
   }
   if (!['missing', 'fresh', 'stale'].includes(CFG.templateEvidenceMode)) {
     fail(`unsupported SYNTHI_SCALE_TEMPLATE_EVIDENCE=${CFG.templateEvidenceMode}; expected missing, fresh, or stale`);
@@ -2285,6 +2783,7 @@ async function run() {
   if (report.source_file_mix.total < 40) fail(`scale fixture only has ${report.source_file_mix.total} source/header/device files`);
   record('source file mix', 'pass', JSON.stringify(report.source_file_mix));
   assertOrdinaryUserProject(project.files);
+  await assertRenderBackendDependencies(renderBackendProfile(CFG.renderBackend));
 
   const workspace = await createWorkspace({ name: `Synthi GPU Scale Validation (${vendor}/${CFG.renderBackend})`, slug: CFG.slug });
   record('create workspace', 'pass', `id=${workspace.id ?? 'n/a'} slug=${CFG.slug}`);
@@ -2299,6 +2798,27 @@ async function run() {
   const additionalFiles = project.files
     .filter((f) => f.path !== project.primaryPath)
     .map((f) => ({ name: f.path, content: f.content }));
+
+  if (CFG.renderBackend === 'vulkan') {
+    await compileUnsupportedViaMcp({
+      language: 'cpp',
+      filename: project.primaryPath,
+      source: primary.content,
+      files: additionalFiles,
+      is_gui: true,
+      use_ai_split: true,
+      user_requested_ai: true,
+      prefer_gpu_pipeline: true,
+      gpu_mode: vendor,
+      gpu_arch: arch,
+      slug: CFG.slug,
+      width: 800,
+      height: 600,
+    }, CFG.firstCompileTimeoutMs, 'vulkan_unsupported_fallback', 'unsupported.graphics_backend_vulkan');
+    await writeReport();
+    console.log(`url: ${CFG.frontendUrl}/workspace/${CFG.slug}`);
+    return;
+  }
 
   const firstCheckpoint = await workerCheckpoint();
   const aiCheckpoint = await workerCheckpoint();

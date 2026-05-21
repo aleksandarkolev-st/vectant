@@ -178,6 +178,125 @@ def test_source_context_reports_ambiguous_cmake_file_api_target():
     assert "CMake target resolution is ambiguous" in prompt
 
 
+def test_source_context_detects_framework_backends_without_forcing_link_hints():
+    files = {
+        "src/app/main.cpp": """
+        #include <raylib.h>
+        #include <SFML/Graphics.hpp>
+        #include "imgui.h"
+        #include <SDL2/SDL.h>
+        int main(){ InitWindow(800, 600, "x"); ImGui::NewFrame(); return 0; }
+        """,
+        "src/gpu/flow.hip": "__global__ void flow() {}",
+    }
+
+    prompt, report = build_project_source_context(files, focus="src/app/main.cpp")
+    backend = report["graphicsBackend"]
+
+    assert backend["schemaVersion"] == "synthi.gpu.graphics_backend.v1"
+    assert "raylib" in backend["detected"]
+    assert "sfml" in backend["detected"]
+    assert "imgui" in backend["detected"]
+    assert "imgui_sdl2" in backend["detected"]
+    assert backend["supportStatus"] == "candidate"
+    assert "unsupported.graphics_backend_vulkan" not in backend["reasonCodes"]
+    assert "Graphics backend:" in prompt
+
+
+def test_source_context_reports_vulkan_as_explicit_unsupported_fallback():
+    files = {
+        "CMakeLists.txt": """
+        find_package(Vulkan REQUIRED)
+        add_executable(vk_app src/app/main.cpp src/gpu/flow.hip)
+        target_link_libraries(vk_app PRIVATE Vulkan::Vulkan)
+        """,
+        "src/app/main.cpp": """
+        #include <vulkan/vulkan.h>
+        int main(){ VkInstance instance = VK_NULL_HANDLE; return instance == VK_NULL_HANDLE ? 0 : 1; }
+        """,
+        "src/gpu/flow.hip": "__global__ void flow() {}",
+    }
+
+    prompt, report = build_project_source_context(files, focus="src/app/main.cpp")
+    backend = report["graphicsBackend"]
+
+    assert backend["primary"] == "vulkan"
+    assert backend["supportStatus"] == "unsupported"
+    assert "unsupported.graphics_backend_vulkan" in backend["reasonCodes"]
+    assert "unsupported_project_shape" in backend["reasonCodes"]
+    assert "do not claim hot reload support" in prompt
+
+
+def test_large_repo_context_selects_target_and_records_omissions():
+    files = {
+        "CMakeLists.txt": "add_executable(gpu_app src/app/main.cpp src/gpu/flow.hip)",
+        "src/app/main.cpp": "int main(){ return 0; }",
+        "src/gpu/flow.hip": "__global__ void flow() {}",
+        "src/render/glfw_view.cpp": "#include <GLFW/glfw3.h>\nvoid draw(){}",
+        "compile_commands.json": """
+        [
+          {
+            "directory": "/repo/build",
+            "file": "/repo/src/app/main.cpp",
+            "arguments": ["clang++", "-Isrc", "-DAPP=1", "-c", "src/app/main.cpp"]
+          },
+          {
+            "directory": "/repo/build",
+            "file": "/repo/src/gpu/flow.hip",
+            "arguments": ["hipcc", "-Isrc", "--offload-arch=gfx1201", "-c", "src/gpu/flow.hip"]
+          }
+        ]
+        """,
+        ".cmake/api/v1/reply/codemodel-v2-debug.json": """
+        {
+          "kind": "codemodel",
+          "configurations": [
+            {
+              "name": "Debug",
+              "targets": [
+                {"name": "gpu_app", "id": "gpu_app::@123", "jsonFile": "target-gpu_app-Debug.json"},
+                {"name": "tooling_app", "id": "tooling::@123", "jsonFile": "target-tooling-Debug.json"}
+              ]
+            }
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-gpu_app-Debug.json": """
+        {
+          "name": "gpu_app",
+          "id": "gpu_app::@123",
+          "type": "EXECUTABLE",
+          "sources": [
+            {"path": "src/app/main.cpp"},
+            {"path": "src/gpu/flow.hip"},
+            {"path": "src/render/glfw_view.cpp"}
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-tooling-Debug.json": """
+        {
+          "name": "tooling_app",
+          "id": "tooling::@123",
+          "type": "EXECUTABLE",
+          "sources": [{"path": "tools/main.cpp"}]
+        }
+        """,
+    }
+    for index in range(5000):
+        files[f"docs/generated/note_{index:04}.md"] = f"large repo omission {index}\n"
+
+    _prompt, report = build_project_source_context(files, focus="src/app/main.cpp")
+    target = report["buildMetadata"]["targetResolution"]
+    dropped_reasons = {item["dropReason"] for item in report["dropped"]}
+
+    assert report["workspaceFileCount"] == len(files)
+    assert target["status"] == "selected"
+    assert target["selectedTarget"]["name"] == "gpu_app"
+    assert report["deterministicContextComplete"] is True
+    assert "docs_tests_examples" in dropped_reasons
+    assert report["buildMetadata"]["compileCommandsStatus"] == "selected"
+
+
 def test_source_context_ingests_compiler_template_evidence():
     command = [
         "hipcc",

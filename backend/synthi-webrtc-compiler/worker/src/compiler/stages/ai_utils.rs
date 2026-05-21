@@ -73,15 +73,74 @@ fn summarize_ai_error_body(body: &str) -> String {
     if trimmed.is_empty() {
         return "<empty response body>".to_string();
     }
-    let detail = serde_json::from_str::<serde_json::Value>(trimmed)
+    let summary = serde_json::from_str::<serde_json::Value>(trimmed)
         .ok()
-        .and_then(|json| json.get("detail").cloned().or(Some(json)));
-    let summary = match detail {
-        Some(serde_json::Value::String(s)) => s,
-        Some(value) => value.to_string(),
-        None => trimmed.to_string(),
-    };
+        .and_then(|json| {
+            let detail = json.get("detail").unwrap_or(&json);
+            summarize_ai_error_json(detail)
+        })
+        .unwrap_or_else(|| trimmed.to_string());
     summary.chars().take(1200).collect()
+}
+
+fn push_summary_part(parts: &mut Vec<String>, part: impl Into<String>) {
+    let part = part.into();
+    if !part.is_empty() && !parts.iter().any(|existing| existing == &part) {
+        parts.push(part);
+    }
+}
+
+fn summarize_ai_error_json(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Object(_) => {
+            let mut parts = Vec::new();
+            if let Some(message) = value.get("message").and_then(|v| v.as_str()) {
+                push_summary_part(&mut parts, message);
+            }
+            if let Some(violations) = value
+                .get("verification")
+                .and_then(|v| v.get("violations"))
+                .and_then(|v| v.as_array())
+            {
+                for violation in violations.iter().take(8) {
+                    let rule = violation
+                        .get("rule")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("verifier_violation");
+                    let message = violation
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    push_summary_part(&mut parts, format!("{}: {}", rule, message));
+                }
+            }
+            if let Some(reason_codes) = value
+                .get("source_context_report")
+                .and_then(|v| v.get("graphicsBackend"))
+                .and_then(|v| v.get("reasonCodes"))
+                .and_then(|v| v.as_array())
+            {
+                let codes: Vec<&str> = reason_codes
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .take(8)
+                    .collect();
+                if !codes.is_empty() {
+                    push_summary_part(
+                        &mut parts,
+                        format!("graphicsBackend.reasonCodes={}", codes.join(",")),
+                    );
+                }
+            }
+            if parts.is_empty() {
+                Some(value.to_string())
+            } else {
+                Some(parts.join(" | "))
+            }
+        }
+        _ => Some(value.to_string()),
+    }
 }
 
 async fn post_ai_json(
@@ -1385,6 +1444,44 @@ mod tests {
         assert!(summary.contains("GPU split AI provider failed before verification"));
         assert!(summary.contains("ai_provider_timeout"));
         assert!(summary.contains("TimeoutError"));
+    }
+
+    #[test]
+    fn summarizes_ai_error_body_keeps_unsupported_reason_codes_first() {
+        let body = json!({
+            "detail": {
+                "message": "GPU split unsupported for this project shape",
+                "source_context_report": {
+                    "graphicsBackend": {
+                        "primary": "vulkan",
+                        "reasonCodes": [
+                            "unsupported.graphics_backend_vulkan",
+                            "unsupported_project_shape"
+                        ],
+                        "evidence": [
+                            {"path": format!("src/noise_{}", "x".repeat(3000))}
+                        ]
+                    }
+                },
+                "verification": {
+                    "ok": false,
+                    "violations": [
+                        {
+                            "rule": "unsupported.graphics_backend_vulkan",
+                            "message": "Vulkan requires explicit fallback."
+                        }
+                    ]
+                }
+            }
+        })
+        .to_string();
+
+        let summary = summarize_ai_error_body(&body);
+
+        assert!(summary.contains("GPU split unsupported for this project shape"));
+        assert!(summary.contains("unsupported.graphics_backend_vulkan"));
+        assert!(summary.contains("unsupported_project_shape"));
+        assert!(summary.len() < 1200);
     }
 
     #[test]

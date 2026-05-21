@@ -6,16 +6,19 @@ through `parse_kernel_split_response` + `verify_split_output`.
 """
 
 import pytest
+import asyncio
 
 from agents.gpu_detect import GpuDetectionResult, GpuDetectionEvidence
 from agents.kernel_splitter import (
     KernelSplitProviderError,
     KernelSplitterError,
+    KernelSplitterUnsupportedProjectError,
     build_split_retry_prompt,
     _project_source_context,
     _source_device_preservation_contract,
     build_prompt,
     parse_kernel_split_response,
+    run_kernel_splitter,
     split_failure_verification,
     split_provider_failure_verification,
     split_agentic_report,
@@ -244,6 +247,50 @@ def test_split_provider_timeout_is_reason_coded():
     assert verification.ok is False
     assert verification.violations[0].rule == "ai_provider_timeout"
     assert "TimeoutError" in verification.violations[0].message
+
+
+def test_run_kernel_splitter_rejects_vulkan_before_ai_provider():
+    class Provider:
+        called = False
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise AssertionError("provider should not be called for unsupported Vulkan")
+
+    provider = Provider()
+    detection = GpuDetectionResult(
+        is_gpu=True,
+        vendor_hint="rocm",
+        per_file={
+            "src/gpu/flow.hip": GpuDetectionEvidence(qualifier_hits=1),
+        },
+    )
+    files = [
+        {
+            "name": "src/app/main.cpp",
+            "content": '#include <vulkan/vulkan.h>\nint main(){ VkInstance x{}; return 0; }',
+        },
+        {
+            "name": "src/gpu/flow.hip",
+            "content": "__global__ void flow() {}",
+        },
+    ]
+
+    with pytest.raises(KernelSplitterUnsupportedProjectError) as exc:
+        asyncio.run(
+            run_kernel_splitter(
+                provider=provider,
+                user_code=files[0]["content"],
+                lang="cpp",
+                detection=detection,
+                files=files,
+                focus="src/app/main.cpp",
+            )
+        )
+
+    assert provider.called is False
+    assert exc.value.reason_code == "unsupported.graphics_backend_vulkan"
+    assert exc.value.source_context_report["graphicsBackend"]["primary"] == "vulkan"
 
 
 def test_build_split_retry_prompt_preserves_previous_rejections():

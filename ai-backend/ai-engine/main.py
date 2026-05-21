@@ -2076,6 +2076,7 @@ from agents.gpu_detect import detect_project as _detect_gpu_project  # noqa: E40
 from agents.kernel_splitter import (  # noqa: E402
     KernelSplitProviderError as _KernelSplitProviderError,
     KernelSplitterError as _KernelSplitterError,
+    KernelSplitterUnsupportedProjectError as _KernelSplitterUnsupportedProjectError,
     build_split_retry_prompt as _build_split_retry_prompt,
     run_kernel_splitter as _run_kernel_splitter,
     split_failure_verification as _split_failure_verification,
@@ -2255,6 +2256,25 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 api_key=req.api_key,
                 files=req.files,
                 focus=req.focus,
+            )
+        except _KernelSplitterUnsupportedProjectError as e:
+            verification = _split_failure_verification(
+                e.reason_code,
+                str(e),
+            )
+            logger.info("[split/gpu] deterministic unsupported project rejection: %s", e)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "GPU split unsupported for this project shape",
+                    "verification": verification.to_dict(),
+                    "source_context_report": e.source_context_report,
+                    "agentic_report": _split_agentic_report(
+                        attempts=[],
+                        accepted=False,
+                        max_attempts=0,
+                    ),
+                },
             )
         except _KernelSplitterError as e:
             verification = _split_failure_verification(
