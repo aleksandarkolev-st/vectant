@@ -270,9 +270,31 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         }, 50);
       };
 
+      // Track the latest selection text. xterm may drop the selection
+      // synchronously on mousedown, so by the time contextmenu fires
+      // term.getSelection() can be empty even though the user obviously
+      // had text highlighted. We capture it via onSelectionChange and
+      // read this ref from the menu instead.
+      const lastSelectionRef = { current: '' };
+      try {
+        term.onSelectionChange(() => {
+          try {
+            const s = term.getSelection() || '';
+            if (s) lastSelectionRef.current = s;
+          } catch {}
+        });
+      } catch {}
+
+      // Read selection: prefer live, fall back to last captured.
+      const getCurrentSelection = () => {
+        let s = '';
+        try { s = (term.getSelection && term.getSelection()) || ''; } catch {}
+        return s || lastSelectionRef.current || '';
+      };
+
       // Selection-mode helpers used by the context menu.
       const copySelection = async () => {
-        const sel = (term.getSelection && term.getSelection()) || '';
+        const sel = getCurrentSelection();
         if (!sel) return;
         try {
           await navigator.clipboard.writeText(sel);
@@ -284,7 +306,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       };
 
       const copySelectionAsSingleLine = async () => {
-        const sel = (term.getSelection && term.getSelection()) || '';
+        const sel = getCurrentSelection();
         if (!sel) return;
         const joined = sel.replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
         try {
@@ -297,7 +319,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       };
 
       const openSearch = (urlBuilder) => {
-        const sel = (term.getSelection && term.getSelection()) || '';
+        const sel = getCurrentSelection();
         if (!sel) return;
         const url = urlBuilder(sel);
         try { window.open(url, '_blank', 'noopener,noreferrer'); } catch {}
@@ -323,10 +345,10 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
           return; // View-only guest
         }
-        const hasSelection = !!(term.hasSelection && term.hasSelection());
+        const sel = getCurrentSelection();
         // Selection present → custom context menu. No selection → fall
         // through to the existing right-click-to-paste behavior.
-        if (hasSelection) {
+        if (sel) {
           openMenuRef.current(e, [
             { id: 'copy', label: 'Copy', shortcut: 'Ctrl+Shift+C', action: copySelection },
             { id: 'copy-line', label: 'Copy as Single Line', dividerAfter: true, action: copySelectionAsSingleLine },
@@ -351,12 +373,24 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         pasteFromClipboard();
       };
 
-      // NB: no longer clear-on-mousedown — that would wipe the user's
-      // existing selection before our contextmenu handler could read it
-      // for the new selection-mode menu. The clear-aggressive call inside
-      // pasteFromClipboard still handles the "prior selection lingers
-      // after paste" case.
-      containerRef.current.addEventListener('contextmenu', handleContextMenu);
+      // Snapshot the current selection BEFORE xterm sees the right-click
+      // (capture phase, runs before any descendant handlers). The ref is
+      // reset first so it only reflects selection at the moment of the
+      // most recent right-mousedown — not a stale selection from earlier.
+      const handleMouseDownCapture = (e) => {
+        if (e.button !== 2) return;
+        lastSelectionRef.current = '';
+        try {
+          const s = term.getSelection ? term.getSelection() : '';
+          if (s) lastSelectionRef.current = s;
+        } catch {}
+      };
+      containerRef.current.addEventListener('mousedown', handleMouseDownCapture, true);
+
+      // Attach in CAPTURE phase so xterm.js (or anything else inside
+      // the container) cannot stopPropagation past us. Without this, our
+      // selection-mode menu silently never opened on some xterm builds.
+      containerRef.current.addEventListener('contextmenu', handleContextMenu, true);
 
       // ── Connect WebSocket ─────────────────────────────────────────
       connectWS(term, fitAddon);
@@ -391,7 +425,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         resizeObserver.disconnect();
         window.removeEventListener('resize', scheduleResize);
         if (containerEl) {
-          containerEl.removeEventListener('contextmenu', handleContextMenu);
+          containerEl.removeEventListener('contextmenu', handleContextMenu, true);
+          containerEl.removeEventListener('mousedown', handleMouseDownCapture, true);
         }
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         if (webglAddon) try { webglAddon.dispose(); } catch (_) {}
