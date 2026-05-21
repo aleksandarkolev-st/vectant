@@ -1,3 +1,78 @@
+# Source Control: The Conduit — Vectant Redesign 2026-05-21
+
+Spec: `docs/superpowers/specs/2026-05-21-source-control-vectant-redesign-design.md`
+Status: **Awaiting user approval before implementation begins.**
+
+## Scope
+- Reimagine the SCM column (`GitStatus.jsx`) around a sticky-bottom chat-style composer + a morphing Focal State Card.
+- Strip 89 hardcoded tailwind colors across 11 git files to a 3-color discipline (calm slate-violet + attention-purple + brand gradient), with one keep-color (untracked green).
+- Decompose the 86KB `GitStatus.jsx` monolith into a dozen ~100–350 line components under `synthi/src/components/git/scm/`.
+- Coordinate sibling git surfaces (summary footer, commit history, PR panel, conflict editor, rebase) so the entire git experience feels unified.
+
+## Checklist
+
+### Phase 0 — Pre-flight
+- [ ] User approves the design spec and this execution plan
+- [ ] Re-read GitStatus.jsx deeply to capture every behavioral pattern that must be preserved
+
+### Phase 1 — Foundation
+- [ ] Create `synthi/src/components/git/scm/` directory
+- [ ] Add `scm/scm-tokens.css` with component-scoped utility classes
+- [ ] **Checkpoint:** new CSS landed, no visible change yet
+
+### Phase 2 — Leaf components
+- [ ] Build `scm/FileRow.jsx` (~150 lines)
+- [ ] Build `scm/CommitTypeChips.jsx` (~60 lines)
+- [ ] Build `scm/SubViewPills.jsx` (~80 lines)
+- [ ] **Checkpoint:** leaf components render in isolation
+
+### Phase 3 — Container components
+- [ ] Build `scm/useFocalCardState.js` hook (~80 lines)
+- [ ] Build `scm/FocalCard.jsx` (~250 lines)
+- [ ] Build `scm/BranchBridge.jsx` (~120 lines)
+- [ ] Build `scm/FileSections.jsx` (~300 lines) with Virtuoso virtualization
+- [ ] Build `scm/StashList.jsx` (~120 lines)
+- [ ] Build `scm/OverflowMenu.jsx` (~120 lines)
+- [ ] **Checkpoint:** containers render with real redux data
+
+### Phase 4 — The Composer
+- [ ] Build `scm/CommitComposer.jsx` (~350 lines)
+- [ ] Wire commit-type chips, amend toggle, AI sparkle (placeholder), action button (Commit / Commit & Push)
+- [ ] Verify focus, reduced-motion, placeholder rotation
+- [ ] **Checkpoint:** composer is fully functional end-to-end
+
+### Phase 5 — Integration
+- [ ] Build `scm/SourceControlPanel.jsx` (~200 lines) top-level layout
+- [ ] Replace body of `GitStatus.jsx` with re-export shim
+- [ ] Validate panel renders via `synthi/src/app/workspace/[slug]/page.jsx:2790`
+- [ ] Test all flows: stage, unstage, stage all, unstage all, discard, commit, push, pull, fetch, branch switch, init, clone, stash, conflict open
+- [ ] **Checkpoint:** main SCM panel is the new design; behavior preserved
+
+### Phase 6 — Sibling surfaces
+- [ ] Restyle `GitSummaryPanel.jsx` — replace generic indigo/violet with `vt-ambient-bottom`, adopt row anatomy
+- [ ] Restyle `CommitHistoryPanel.jsx` — neutralize 7 hardcoded colors, attention-purple active row
+- [ ] Restyle `PullRequestsPanel.jsx` — adopt Branch Bridge header, FileRow grammar
+- [ ] Restyle `PRDetail.jsx` — composer-style "Quick reply", neutralize 23 hardcoded colors
+- [ ] Restyle `MergeConflictEditor.jsx` — danger-only color discipline, chip-style actions
+- [ ] Restyle `InteractiveRebasePanel.jsx`, `CreatePRForm.jsx`, `HunkStagingView.jsx`, `GitHubTokenModal.jsx`, `CommitGraphColumn.jsx`, `gitUtils.js`
+- [ ] **Checkpoint:** every git surface shares the same visual identity
+
+### Phase 7 — Cleanup & verification
+- [ ] Run grep for tailwind colors in `synthi/src/components/git/` — zero matches expected
+- [ ] Run `npm run lint` — resolve any new warnings
+- [ ] Walk through spec §12 acceptance criteria visually in dev server
+- [ ] Smoke test failure modes: no repo, dirty checkout, conflict, push rejection, pull conflict
+- [ ] Smoke test reduced-motion via DevTools
+- [ ] **Checkpoint:** all acceptance criteria met
+
+## Review
+*(to be filled in after implementation)*
+
+## Follow-up
+*(to be filled in after implementation — likely includes: AI commit-message backend route, consider PR-tab consolidation)*
+
+---
+
 # Workspace Sidebar Collapse Polish 2026-05-18
 
 ## Scope
