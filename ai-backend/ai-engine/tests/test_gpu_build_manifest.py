@@ -344,7 +344,7 @@ def test_gpu_manifest_does_not_infer_host_link_flags_from_framework_names():
     assert "-lSDL2" not in normalized["runner_link_flags"]
 
 
-def test_gpu_manifest_uses_original_project_link_hints_without_framework_catalog():
+def test_gpu_manifest_uses_cmake_target_link_libraries_without_framework_catalog():
     normalized = normalize_gpu_split_manifest(
         {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
         split_files={
@@ -355,13 +355,36 @@ def test_gpu_manifest_uses_original_project_link_hints_without_framework_catalog
             "device.hip": "",
         },
         link_hint_sources={
-            "src/app/main.cpp": "// LINK: -lSDL2\n#include <SDL2/SDL.h>\n",
+            "CMakeLists.txt": """
+                add_executable(particle_field src/app/main.cpp)
+                target_link_libraries(particle_field PRIVATE SDL2)
+            """,
         },
         vendor_hint="rocm",
         arch_hint=None,
     )
     assert "-lSDL2" in normalized["gui_link_flags"]
     assert "-lSDL2" in normalized["runner_link_flags"]
+
+
+def test_gpu_manifest_accepts_optional_source_link_hints_but_does_not_require_them():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        link_hint_sources={
+            "src/app/main.cpp": "// LINK: -lcustom_engine\n",
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+    )
+    assert "-lcustom_engine" in normalized["gui_link_flags"]
+    assert "-lcustom_engine" in normalized["runner_link_flags"]
 
 
 def test_internalizes_generated_gpu_roles_out_of_user_tree():

@@ -673,11 +673,6 @@ def normalize_gpu_split_manifest(
                 values.append(flag)
         manifest[field] = values
 
-    source_blobs = [str(v) for v in split_files.values()]
-    if link_hint_sources:
-        source_blobs.extend(str(v) for v in link_hint_sources.values())
-    source_blob = "\n".join(source_blobs)
-
     def add_host_link_flags(flags: List[str]) -> None:
         for field in ("gui_link_flags", "runner_link_flags"):
             values = list(manifest.get(field) or [])
@@ -686,6 +681,14 @@ def normalize_gpu_split_manifest(
                     values.append(flag)
             manifest[field] = values
 
+    project_sources = link_hint_sources or {}
+    metadata_flags = _extract_build_metadata_link_flags(project_sources)
+    if metadata_flags:
+        add_host_link_flags(metadata_flags)
+
+    source_blobs = [str(v) for v in split_files.values()]
+    source_blobs.extend(str(v) for v in project_sources.values())
+    source_blob = "\n".join(source_blobs)
     hinted_flags = _extract_source_link_hints(source_blob)
     if hinted_flags:
         add_host_link_flags(hinted_flags)
@@ -720,12 +723,61 @@ def normalize_gpu_split_manifest(
     return manifest
 
 
-def _extract_source_link_hints(source: str) -> List[str]:
-    """Extract explicit linker hints embedded in generated split sources.
+def _link_token_to_flag(token: str) -> Optional[str]:
+    token = token.strip().strip('"').strip("'")
+    if not token:
+        return None
+    if token in {"PRIVATE", "PUBLIC", "INTERFACE", "debug", "optimized", "general"}:
+        return None
+    if token.startswith(("$<", "${")):
+        return None
+    if token.startswith(("-", "/LIBPATH:")):
+        return token
+    if token.endswith((".a", ".so", ".dylib", ".lib")) or "/" in token or "\\" in token:
+        return token
+    if "::" in token:
+        token = token.rsplit("::", 1)[-1]
+    if re.match(r"^[A-Za-z0-9_.+-]+$", token):
+        return f"-l{token}"
+    return None
 
-    The AI sometimes preserves user-side `// LINK: -lfoo -lbar` comments or
-    emits MSVC-style `#pragma comment(lib, "foo")` hints. Linux linkers do not
-    consume either form directly, so normalize them into manifest link flags.
+
+def _extract_build_metadata_link_flags(source_files: Mapping[str, str]) -> List[str]:
+    """Extract linker flags from project build metadata.
+
+    This is intentionally generic. It reads user-owned build files such as
+    CMakeLists.txt instead of requiring source comments or a framework catalog.
+    """
+
+    flags: List[str] = []
+    seen: Set[str] = set()
+
+    def add(flag: Optional[str]) -> None:
+        if not flag or flag in seen:
+            return
+        flags.append(flag)
+        seen.add(flag)
+
+    for path, text in source_files.items():
+        normalized = str(path).replace("\\", "/")
+        if normalized.rsplit("/", 1)[-1] != "CMakeLists.txt":
+            continue
+        for match in re.finditer(
+            r"target_link_libraries\s*\(\s*([A-Za-z0-9_.:+-]+)\s+([^)]+)\)",
+            str(text),
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            body = re.sub(r"#.*", " ", match.group(2))
+            for token in re.split(r"[\s\r\n]+", body):
+                add(_link_token_to_flag(token))
+    return flags
+
+
+def _extract_source_link_hints(source: str) -> List[str]:
+    """Extract optional explicit linker hints embedded in project sources.
+
+    These are accepted for compatibility with existing fixtures and MSVC-style
+    pragmas, but production correctness must not depend on users writing them.
     """
 
     flags: List[str] = []
@@ -735,11 +787,10 @@ def _extract_source_link_hints(source: str) -> List[str]:
         flag = flag.strip()
         if not flag:
             return
-        if not flag.startswith("-l") and re.match(r"^[A-Za-z0-9_.+-]+$", flag):
-            flag = f"-l{flag}"
-        if flag.startswith("-l") and flag not in seen:
-            flags.append(flag)
-            seen.add(flag)
+        normalized = _link_token_to_flag(flag)
+        if normalized and normalized not in seen:
+            flags.append(normalized)
+            seen.add(normalized)
 
     for match in re.finditer(r"(?im)^\s*//\s*LINK:\s*(.+)$", source):
         for token in match.group(1).split():

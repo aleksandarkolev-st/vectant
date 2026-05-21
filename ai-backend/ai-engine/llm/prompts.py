@@ -3603,19 +3603,22 @@ shared.h:
 host_runner.cpp:
   - Owns EVERYTHING the split modules are forbidden from.
 
-# BUILD HINT SCANNING (read user source before guessing flags)
+# BUILD METADATA SCANNING (do not force source annotations)
 
-Before synthesizing link flags, SCAN the user's source for explicit build
-hints. If present, copy them VERBATIM into the manifest rather than guessing:
+Before synthesizing link flags, read project build metadata first:
+CMakeLists.txt, compile_commands.json, presets, package config output already
+present in the request, and any explicit compile/link command the user project
+already owns. Copy those flags into the manifest rather than guessing.
+
+Optional source hints are accepted for compatibility, but they are not required
+from users and must never be the only production path:
 
   #pragma comment(lib, "X")          -> add "-lX" to gui_link_flags
-  // LINK: -lX -L/path -I/path       -> parse, copy verbatim into gui_link_flags
+  // LINK: -lX -L/path -I/path       -> parse only when already present
   // REQUIRES: libx-dev              -> add to system_packages
   // BUILD: g++ main.cpp -lfoo       -> treat as authoritative
 
-User hints ALWAYS override your inference. Copy them VERBATIM.
-If a hint is present, set confidence.link_flags = "high" because the user
-told you what they need.
+Never invent framework link flags from include names alone.
 
 # INCLUDE → LINK RULE (mandatory, generic — applies to ALL libraries)
 
@@ -3688,9 +3691,9 @@ confidence.runner_synthesis:
              pattern that prevents a clean rewrite
 
 confidence.link_flags:
-  "high"   - well-known library OR user provided explicit // LINK: hint
-  "medium" - library identified but standard flags vary by distro
-  "low"    - couldn't identify library; guessed from header names
+  "high"   - link flags came from build metadata or existing explicit hints
+  "medium" - library identified but build metadata is partial
+  "low"    - link flags could not be proven; request manifest repair or fallback
 
 confidence.overall: minimum of the two above
 confidence.notes: free-form explanation of any low confidences
