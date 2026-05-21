@@ -123,11 +123,49 @@ def _reason_and_priority(path: str, source: str, focus: Optional[str]) -> Tuple[
     return (99, "unsupported_file_type")
 
 
-def _graphics_backend_report(source_files: Mapping[str, str]) -> dict:
+def _selected_target_source_scope(
+    cmake_file_api: Optional[Mapping[str, Any]],
+    focus: Optional[str],
+) -> Optional[set[str]]:
+    if not isinstance(cmake_file_api, Mapping):
+        return None
+    target_resolution = cmake_file_api.get("targetResolution")
+    selected_target = (
+        target_resolution.get("selectedTarget")
+        if isinstance(target_resolution, Mapping)
+        and target_resolution.get("status") == "selected"
+        else None
+    )
+    if not isinstance(selected_target, Mapping):
+        return None
+    raw_sources = selected_target.get("sourceFiles")
+    if not isinstance(raw_sources, list):
+        return None
+    scoped = {
+        normalize_path(str(source))
+        for source in raw_sources
+        if str(source).strip()
+    }
+    focus_path = normalize_path(focus or "")
+    if focus_path:
+        scoped.add(focus_path)
+    return scoped or None
+
+
+def _graphics_backend_report(
+    source_files: Mapping[str, str],
+    *,
+    focus: Optional[str] = None,
+    cmake_file_api: Optional[Mapping[str, Any]] = None,
+) -> dict:
     evidence: list[dict] = []
     detected: set[str] = set()
+    scoped_paths = _selected_target_source_scope(cmake_file_api, focus)
+    scope_mode = "selected_target_sources" if scoped_paths else "workspace_sources"
     for path, source in sorted(source_files.items()):
         normalized = normalize_path(path)
+        if scoped_paths and not any(_path_matches(normalized, scoped) for scoped in scoped_paths):
+            continue
         if not looks_like_source_file(normalized) and not normalized.endswith("CMakeLists.txt"):
             continue
         for backend, pattern in _BACKEND_PATTERNS.items():
@@ -138,6 +176,7 @@ def _graphics_backend_report(source_files: Mapping[str, str]) -> dict:
                         "backend": backend,
                         "path": normalized,
                         "reason": "source_marker",
+                        "scope": scope_mode,
                     }
                 )
 
@@ -178,6 +217,7 @@ def _graphics_backend_report(source_files: Mapping[str, str]) -> dict:
         "supportStatus": support_status,
         "reasonCodes": reason_codes,
         "evidence": evidence,
+        "scope": scope_mode,
     }
 
 
@@ -759,7 +799,11 @@ def build_source_context_report(
         selected_command,
         cmake_file_api,
     )
-    graphics_backend = _graphics_backend_report(normalized_files)
+    graphics_backend = _graphics_backend_report(
+        normalized_files,
+        focus=focus,
+        cmake_file_api=cmake_file_api,
+    )
     report = {
         "schemaVersion": SOURCE_CONTEXT_SCHEMA_VERSION,
         "focus": normalize_path(focus or ""),

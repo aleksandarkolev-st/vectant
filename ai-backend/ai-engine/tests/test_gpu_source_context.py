@@ -227,6 +227,63 @@ def test_source_context_reports_vulkan_as_explicit_unsupported_fallback():
     assert "do not claim hot reload support" in prompt
 
 
+def test_graphics_backend_detection_is_scoped_to_selected_cmake_target():
+    files = {
+        "CMakeLists.txt": """
+        add_subdirectory(HIP-Basic/saxpy)
+        add_subdirectory(HIP-Basic/vulkan_interop)
+        """,
+        "HIP-Basic/saxpy/main.hip": """
+        #include <hip/hip_runtime.h>
+        __global__ void saxpy_kernel(float* y, const float* x) { y[threadIdx.x] = x[threadIdx.x]; }
+        int main(){ return 0; }
+        """,
+        "HIP-Basic/vulkan_interop/main.hip": """
+        #include <vulkan/vulkan.h>
+        int main(){ VkInstance instance = VK_NULL_HANDLE; return instance == VK_NULL_HANDLE ? 0 : 1; }
+        """,
+        "compile_commands.json": """
+        [
+          {
+            "directory": "/repo/HIP-Basic/saxpy/build",
+            "file": "/repo/HIP-Basic/saxpy/main.hip",
+            "arguments": ["hipcc", "--offload-arch=gfx1201", "-c", "/repo/HIP-Basic/saxpy/main.hip"]
+          }
+        ]
+        """,
+        ".cmake/api/v1/reply/codemodel-v2-release.json": """
+        {
+          "kind": "codemodel",
+          "configurations": [
+            {
+              "name": "Release",
+              "targets": [
+                {"name": "hip_saxpy", "id": "hip_saxpy::@real", "jsonFile": "target-hip_saxpy-Release.json"},
+                {"name": "vulkan_interop", "id": "vulkan_interop::@real", "jsonFile": "target-vulkan_interop-Release.json"}
+              ]
+            }
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-hip_saxpy-Release.json": """
+        {"name": "hip_saxpy", "id": "hip_saxpy::@real", "type": "EXECUTABLE", "sources": [{"path": "HIP-Basic/saxpy/main.hip"}]}
+        """,
+        ".cmake/api/v1/reply/target-vulkan_interop-Release.json": """
+        {"name": "vulkan_interop", "id": "vulkan_interop::@real", "type": "EXECUTABLE", "sources": [{"path": "HIP-Basic/vulkan_interop/main.hip"}]}
+        """,
+    }
+
+    _prompt, report = build_project_source_context(files, focus="HIP-Basic/saxpy/main.hip")
+    backend = report["graphicsBackend"]
+
+    assert report["buildMetadata"]["targetResolution"]["selectedTarget"]["name"] == "hip_saxpy"
+    assert backend["scope"] == "selected_target_sources"
+    assert backend["primary"] is None
+    assert backend["supportStatus"] == "unknown"
+    assert "unsupported.graphics_backend_vulkan" not in backend["reasonCodes"]
+    assert all("vulkan_interop" not in item["path"] for item in backend["evidence"])
+
+
 def test_large_repo_context_selects_target_and_records_omissions():
     files = {
         "CMakeLists.txt": "add_executable(gpu_app src/app/main.cpp src/gpu/flow.hip)",
