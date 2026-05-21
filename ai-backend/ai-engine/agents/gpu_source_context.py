@@ -732,12 +732,25 @@ def build_source_context_report(
         for path, source in source_files.items()
         if normalize_path(path)
     }
+    selected_command = _selected_compile_command(normalized_files, focus)
+    cmake_file_api = _cmake_file_api_report(normalized_files, focus)
+    selected_target_scope = _selected_target_source_scope(cmake_file_api, focus)
     candidates: List[dict] = []
     dropped: List[dict] = []
 
     for path, source in sorted(normalized_files.items()):
         static_drop = _drop_reason(path)
         priority, reason = _reason_and_priority(path, source, focus)
+        is_target_scoped = (
+            not selected_target_scope
+            or not looks_like_source_file(path)
+            or any(_path_matches(path, scoped) for scoped in selected_target_scope)
+        )
+        is_device_like_source = (
+            normalize_path(path).lower().endswith((".cu", ".cuh", ".hip"))
+            or _KERNEL_DECL_RE.search(source or "") is not None
+            or ("<<<" in (source or "") and ">>>" in (source or ""))
+        )
         record = {
             "path": path,
             "reason": reason,
@@ -745,7 +758,9 @@ def build_source_context_report(
             "bytes": len(source.encode("utf-8")),
             "contentHash": content_hash(source),
         }
-        if static_drop:
+        if selected_target_scope and is_device_like_source and not is_target_scoped:
+            dropped.append({**record, "dropReason": "unrelated_target_device_source"})
+        elif static_drop:
             dropped.append({**record, "dropReason": static_drop})
         elif priority >= 99:
             dropped.append({**record, "dropReason": "unsupported_file_type"})
@@ -790,10 +805,13 @@ def build_source_context_report(
         }
         for item in candidates
         if item.get("reason") == "device_translation_unit"
+        or (
+            item.get("path") == normalize_path(focus or "")
+            and normalize_path(item.get("path") or "").lower().endswith((".cu", ".cuh", ".hip"))
+            and _KERNEL_DECL_RE.search(normalized_files.get(item.get("path") or "", "") or "")
+        )
     ]
     multi_device_tu = len(device_translation_units) > 1
-    selected_command = _selected_compile_command(normalized_files, focus)
-    cmake_file_api = _cmake_file_api_report(normalized_files, focus)
     template_evidence = _template_evidence_report(
         normalized_files,
         selected_command,

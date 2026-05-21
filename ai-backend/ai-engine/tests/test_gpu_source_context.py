@@ -284,6 +284,60 @@ def test_graphics_backend_detection_is_scoped_to_selected_cmake_target():
     assert all("vulkan_interop" not in item["path"] for item in backend["evidence"])
 
 
+def test_selected_target_context_drops_unrelated_device_translation_units():
+    files = {
+        "HIP-Basic/saxpy/main.hip": """
+        #include <hip/hip_runtime.h>
+        __global__ void saxpy_kernel(float* y, const float* x) { y[threadIdx.x] = x[threadIdx.x]; }
+        int main(){ return 0; }
+        """,
+        "HIP-Basic/matrix_multiplication/main.hip": """
+        #include <hip/hip_runtime.h>
+        __global__ void matrix_kernel(float* out) { out[threadIdx.x] = 1.0f; }
+        int main(){ return 0; }
+        """,
+        "Common/example_utils.hpp": "#pragma once\ninline int ceiling_div(int a, int b){ return (a + b - 1) / b; }\n",
+        "compile_commands.json": """
+        [
+          {
+            "directory": "/repo/HIP-Basic/saxpy/build",
+            "file": "/repo/HIP-Basic/saxpy/main.hip",
+            "arguments": ["hipcc", "--offload-arch=gfx1201", "-c", "/repo/HIP-Basic/saxpy/main.hip"]
+          }
+        ]
+        """,
+        ".cmake/api/v1/reply/codemodel-v2-release.json": """
+        {
+          "kind": "codemodel",
+          "configurations": [
+            {
+              "name": "Release",
+              "targets": [
+                {"name": "hip_saxpy", "id": "hip_saxpy::@real", "jsonFile": "target-hip_saxpy-Release.json"},
+                {"name": "matrix_multiplication", "id": "matrix_multiplication::@real", "jsonFile": "target-matrix_multiplication-Release.json"}
+              ]
+            }
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-hip_saxpy-Release.json": """
+        {"name": "hip_saxpy", "id": "hip_saxpy::@real", "type": "EXECUTABLE", "sources": [{"path": "HIP-Basic/saxpy/main.hip"}]}
+        """,
+        ".cmake/api/v1/reply/target-matrix_multiplication-Release.json": """
+        {"name": "matrix_multiplication", "id": "matrix_multiplication::@real", "type": "EXECUTABLE", "sources": [{"path": "HIP-Basic/matrix_multiplication/main.hip"}]}
+        """,
+    }
+
+    _prompt, report = build_project_source_context(files, focus="HIP-Basic/saxpy/main.hip")
+    included_paths = {item["path"] for item in report["included"]}
+    dropped = {item["path"]: item.get("dropReason") for item in report["dropped"]}
+
+    assert "HIP-Basic/saxpy/main.hip" in included_paths
+    assert dropped["HIP-Basic/matrix_multiplication/main.hip"] == "unrelated_target_device_source"
+    assert report["deviceTuTopology"]["deviceTranslationUnitCount"] == 1
+    assert report["deviceTuTopology"]["deviceTranslationUnits"][0]["path"] == "HIP-Basic/saxpy/main.hip"
+
+
 def test_large_repo_context_selects_target_and_records_omissions():
     files = {
         "CMakeLists.txt": "add_executable(gpu_app src/app/main.cpp src/gpu/flow.hip)",
