@@ -104,7 +104,8 @@
       "Bash(node -e \"['synthi-light','synthi-dark','solarized-dark','solarized-light','high-contrast-dark','high-contrast-light','midnight'].forEach\\(n => { try { JSON.parse\\(require\\('fs'\\).readFileSync\\('synthi/src/themes/builtin/'+n+'.json','utf8'\\)\\); console.log\\(n,'OK'\\); } catch\\(e\\) { console.log\\(n,'FAIL',e.message\\); } }\\)\")",
       "Bash(node --check synthi/src/components/ThemePicker.jsx)",
       "Bash(npx --prefix synthi babel synthi/src/components/ThemePicker.jsx --presets=@babel/preset-env,@babel/preset-react -o /dev/null)",
-      "PowerShell(Get-Process *)"
+      "PowerShell(Get-Process *)",
+      "Bash(git *)"
     ]
   }
 }
