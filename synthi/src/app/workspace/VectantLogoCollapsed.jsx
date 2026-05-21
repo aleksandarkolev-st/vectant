@@ -28,7 +28,12 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuLabel,
+  ContextMenuRadioGroup,
+  ContextMenuRadioItem,
   ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
 
@@ -40,6 +45,10 @@ export default function VectantLogoCollapsed({
   onSecondaryDragStart,
   isCompact = false,
   onSetCompact,
+  isPositionLocked = false,
+  onSetPositionLocked,
+  dockPreset = 'center',
+  onDockPresetChange,
   canResetPosition = false,
   onResetPosition,
   isDragging = false,
@@ -59,10 +68,14 @@ export default function VectantLogoCollapsed({
       onClick={phase === 'logo' ? handleClick : undefined}
       onMouseDown={handleMouseDown}
       tabIndex={phase === 'logo' ? 0 : -1}
-      title={phase === 'logo' ? 'Left click to open. Right click for actions. Right-drag to move.' : undefined}
+      title={phase === 'logo'
+        ? (isPositionLocked
+            ? 'Left click to open. Right click for actions. Movement locked.'
+            : 'Left click to open. Right click for actions. Right-drag to move.')
+        : undefined}
       className={[
         'vectant-logo-button th-focus-ring',
-        phase === 'logo' ? 'vectant-logo-button--movable' : '',
+        phase === 'logo' && !isPositionLocked ? 'vectant-logo-button--movable' : '',
         isDragging ? 'is-dragging' : '',
         state === 'error' ? 'vectant-logo--error' : '',
         state === 'healing' ? 'vectant-logo--healing' : '',
@@ -116,6 +129,31 @@ export default function VectantLogoCollapsed({
         >
           Compact labels
         </ContextMenuCheckboxItem>
+        <ContextMenuCheckboxItem
+          checked={isPositionLocked}
+          onCheckedChange={(checked) => onSetPositionLocked?.(Boolean(checked))}
+        >
+          Lock movement
+        </ContextMenuCheckboxItem>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger inset>
+            Dock position
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent
+            style={{
+              background: 'var(--bg-elevated)',
+              borderColor: 'var(--border-medium)',
+              color: 'var(--text-primary)',
+            }}
+          >
+            <ContextMenuRadioGroup value={dockPreset} onValueChange={(value) => onDockPresetChange?.(value)}>
+              <ContextMenuRadioItem value="free">Free position</ContextMenuRadioItem>
+              <ContextMenuRadioItem value="left">Bottom left</ContextMenuRadioItem>
+              <ContextMenuRadioItem value="center">Bottom center</ContextMenuRadioItem>
+              <ContextMenuRadioItem value="right">Bottom right</ContextMenuRadioItem>
+            </ContextMenuRadioGroup>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
         <ContextMenuSeparator />
         <ContextMenuItem
           disabled={!canResetPosition}

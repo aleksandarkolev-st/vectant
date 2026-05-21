@@ -23,6 +23,8 @@ import {
 
 const STATUS_ISLAND_OFFSET_KEY = 'synthi:status-island-offset';
 const STATUS_ISLAND_COMPACT_KEY = 'synthi:status-island-compact';
+const STATUS_ISLAND_POSITION_LOCK_KEY = 'synthi:status-island-position-locked';
+const STATUS_ISLAND_DOCK_KEY = 'synthi:status-island-dock';
 // Mouse must travel ≥5px from the mousedown point before we promote a
 // press-and-hold into a drag — small enough that intentional drags feel
 // responsive, large enough that a sloppy click never moves the island.
@@ -47,6 +49,7 @@ const STATUS_ISLAND_COLLAPSED_WIDTH_PX = 90;
 const STATUS_ISLAND_COLLAPSED_HEIGHT_PX = 44;
 const STATUS_ISLAND_BRACKET_OVERHANG_PX = (STATUS_ISLAND_COLLAPSED_WIDTH_PX - STATUS_ISLAND_PILL_HEIGHT_PX) / 2;
 const STATUS_ISLAND_BUILD_CONTROLS_GAP_PX = 8;
+const STATUS_ISLAND_DOCK_PRESETS = ['free', 'left', 'center', 'right'];
 
 function clampWithinBounds(value, min, max) {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return value;
@@ -127,6 +130,8 @@ function StatusBarInner({
   const offsetRef = useRef(offset);
   offsetRef.current = offset;
   const [isDragging, setIsDragging] = useState(false);
+  const [isPositionLocked, setIsPositionLocked] = useState(false);
+  const [dockPreset, setDockPreset] = useState('center');
 
   useEffect(() => {
     if (typeof window === 'undefined' || !rootRef.current) return;
@@ -207,8 +212,51 @@ function StatusBarInner({
     }
   }, []);
 
+  const persistPositionLocked = useCallback((next) => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage?.setItem(STATUS_ISLAND_POSITION_LOCK_KEY, next ? '1' : '0');
+    } catch {
+      // Ignore storage failures; in-memory state still works.
+    }
+  }, []);
+
+  const persistDockPreset = useCallback((next) => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage?.setItem(STATUS_ISLAND_DOCK_KEY, next);
+    } catch {
+      // Ignore storage failures; in-memory state still works.
+    }
+  }, []);
+
   const defaultCenterX = viewportSize.width / 2;
   const defaultCenterY = viewportSize.height - STATUS_ISLAND_DEFAULT_BOTTOM_PX - (STATUS_ISLAND_PILL_HEIGHT_PX / 2);
+
+  const loadDockPreset = useCallback(() => {
+    if (typeof window === 'undefined') return 'center';
+    try {
+      const saved = window.localStorage?.getItem(STATUS_ISLAND_DOCK_KEY);
+      if (STATUS_ISLAND_DOCK_PRESETS.includes(saved)) {
+        return saved;
+      }
+
+      // Migration: before dock presets existed we only persisted raw
+      // offsets. Preserve any non-zero saved offset as a free-position
+      // anchor instead of snapping legacy users back to center.
+      const savedOffset = window.localStorage?.getItem(STATUS_ISLAND_OFFSET_KEY);
+      if (savedOffset) {
+        const parsedOffset = JSON.parse(savedOffset);
+        if (parsedOffset?.x || parsedOffset?.y) {
+          return 'free';
+        }
+      }
+
+      return 'center';
+    } catch {
+      return 'center';
+    }
+  }, []);
 
   const clampOffsetToViewport = useCallback((nextOffset) => {
     if (!viewportSize.width || !viewportSize.height) return nextOffset;
@@ -238,6 +286,86 @@ function StatusBarInner({
     persistOffset(clampedOffset);
   }, [clampOffsetToViewport, persistOffset, viewportSize.height, viewportSize.width]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const saved = window.localStorage?.getItem(STATUS_ISLAND_POSITION_LOCK_KEY);
+      if (saved === '1') {
+        setIsPositionLocked(true);
+      }
+    } catch {
+      // Ignore storage failures.
+    }
+    setDockPreset(loadDockPreset());
+  }, [loadDockPreset]);
+
+  const setPositionLocked = useCallback((valueOrUpdater) => {
+    setIsPositionLocked((prev) => {
+      const next = typeof valueOrUpdater === 'function'
+        ? Boolean(valueOrUpdater(prev))
+        : Boolean(valueOrUpdater);
+      persistPositionLocked(next);
+      return next;
+    });
+  }, [persistPositionLocked]);
+
+  const setDockPresetAndPersist = useCallback((valueOrUpdater) => {
+    setDockPreset((prev) => {
+      const next = typeof valueOrUpdater === 'function'
+        ? valueOrUpdater(prev)
+        : valueOrUpdater;
+      const resolved = STATUS_ISLAND_DOCK_PRESETS.includes(next) ? next : 'free';
+      persistDockPreset(resolved);
+      return resolved;
+    });
+  }, [persistDockPreset]);
+
+  const computeDockedOffset = useCallback((preset) => {
+    const targetCenterX = (() => {
+      switch (preset) {
+        case 'left':
+          return STATUS_ISLAND_VIEWPORT_MARGIN_PX + (STATUS_ISLAND_COLLAPSED_WIDTH_PX / 2);
+        case 'right':
+          return viewportSize.width - STATUS_ISLAND_VIEWPORT_MARGIN_PX - (STATUS_ISLAND_COLLAPSED_WIDTH_PX / 2);
+        case 'center':
+        default:
+          return defaultCenterX;
+      }
+    })();
+
+    return clampOffsetToViewport({
+      x: targetCenterX - defaultCenterX,
+      y: 0,
+    });
+  }, [clampOffsetToViewport, defaultCenterX, viewportSize.width]);
+
+  const applyDockPreset = useCallback((preset, { persist = true } = {}) => {
+    const resolvedPreset = STATUS_ISLAND_DOCK_PRESETS.includes(preset) ? preset : 'free';
+    if (resolvedPreset === 'free') {
+      if (persist) {
+        setDockPresetAndPersist('free');
+      } else {
+        setDockPreset('free');
+      }
+      return;
+    }
+
+    const nextOffset = computeDockedOffset(resolvedPreset);
+    setOffset(nextOffset);
+    persistOffset(nextOffset);
+    if (persist) {
+      setDockPresetAndPersist(resolvedPreset);
+    } else {
+      setDockPreset(resolvedPreset);
+    }
+  }, [computeDockedOffset, persistOffset, setDockPresetAndPersist]);
+
+  useEffect(() => {
+    if (!viewportSize.width || !viewportSize.height) return;
+    if (dockPreset === 'free') return;
+    applyDockPreset(dockPreset, { persist: false });
+  }, [applyDockPreset, dockPreset, viewportSize.height, viewportSize.width]);
+
   const resetOffset = useCallback(() => {
     setOffset({ x: 0, y: 0 });
     if (typeof window !== 'undefined') {
@@ -247,9 +375,11 @@ function StatusBarInner({
         // Ignore — the in-memory reset already happened.
       }
     }
-  }, []);
+    setDockPresetAndPersist('center');
+  }, [setDockPresetAndPersist]);
 
   const startIslandDrag = useCallback((event, button) => {
+    if (isPositionLocked) return;
     if (event.button !== button) return;
     event.preventDefault();
     event.stopPropagation();
@@ -282,6 +412,7 @@ function StatusBarInner({
         document.body.style.userSelect = 'none';
         document.addEventListener('contextmenu', suppressContextMenu, true);
         contextMenuBlocked = true;
+        setDockPresetAndPersist('free');
       }
       pendingOffset = clampOffsetToViewport({ x: startOffset.x + dx, y: startOffset.y + dy });
       setOffset(pendingOffset);
@@ -305,7 +436,7 @@ function StatusBarInner({
 
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
-  }, [clampOffsetToViewport, persistOffset]);
+  }, [clampOffsetToViewport, isPositionLocked, persistOffset, setDockPresetAndPersist]);
 
   const handleDragMouseDown = useCallback((event) => {
     startIslandDrag(event, 0);
@@ -625,6 +756,10 @@ function StatusBarInner({
               onSecondaryDragStart={handleLogoRightMouseDown}
               isCompact={isCompact}
               onSetCompact={setCompactMode}
+              isPositionLocked={isPositionLocked}
+              onSetPositionLocked={setPositionLocked}
+              dockPreset={dockPreset}
+              onDockPresetChange={applyDockPreset}
               canResetPosition={hasOffset}
               onResetPosition={resetOffset}
               isDragging={isDragging}
