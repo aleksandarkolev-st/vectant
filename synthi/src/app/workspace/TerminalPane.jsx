@@ -246,6 +246,21 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       // to run. A single trailing newline is fine — that's just `cmd\n`,
       // which is what the user means when they copy a one-liner from a
       // README.
+      // Wipe xterm selection across all three timings: synchronously now,
+      // on the next animation frame (after xterm finishes its own mouse
+      // selection bookkeeping from the right-click), and on a 50ms tail
+      // (after the PTY echoes the pasted chars). Any one of these can be
+      // the moment a selection sneaks back in.
+      const clearSelectionAggressive = () => {
+        try { term.clearSelection(); } catch (_) {}
+        requestAnimationFrame(() => {
+          try { term.clearSelection(); } catch (_) {}
+        });
+        setTimeout(() => {
+          try { term.clearSelection(); } catch (_) {}
+        }, 50);
+      };
+
       const handleContextMenu = async (e) => {
         e.preventDefault();
         if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
@@ -257,13 +272,11 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           const hasEmbeddedNewline = text.replace(/\r?\n$/, '').includes('\n');
           // Session auto-approve skips the confirmation modal entirely.
           if (hasEmbeddedNewline && !sessionAutoApprovePaste) {
-            const lineCount = text.split(/\r?\n/).length;
-            setPasteConfirm({ text, lineCount, charCount: text.length });
+            setPasteConfirm({ text, lineCount: text.split(/\r?\n/).length, charCount: text.length });
           } else {
+            clearSelectionAggressive();
             term.paste(text);
-            // Right-click leaves any prior xterm selection highlighted —
-            // clear it so the pasted command isn't visually obscured.
-            try { term.clearSelection(); } catch (_) {}
+            clearSelectionAggressive();
           }
         } catch (_) {
           // Clipboard read can fail (permission denied, insecure context,
@@ -271,6 +284,19 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           // Ctrl/Cmd+V.
         }
       };
+
+      // Also wipe any selection produced by the right-mousedown itself,
+      // before the contextmenu event even fires. xterm reacts to the
+      // mousedown by extending/starting a selection under the cursor.
+      const handleRightMouseDown = (e) => {
+        if (e.button !== 2) return;
+        // Defer to after xterm's own mousedown handler runs so our clear
+        // wins the race against its selection update.
+        setTimeout(() => {
+          try { term.clearSelection(); } catch (_) {}
+        }, 0);
+      };
+      containerRef.current.addEventListener('mousedown', handleRightMouseDown);
       containerRef.current.addEventListener('contextmenu', handleContextMenu);
 
       // ── Connect WebSocket ─────────────────────────────────────────
@@ -307,6 +333,7 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         window.removeEventListener('resize', scheduleResize);
         if (containerEl) {
           containerEl.removeEventListener('contextmenu', handleContextMenu);
+          containerEl.removeEventListener('mousedown', handleRightMouseDown);
         }
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         if (webglAddon) try { webglAddon.dispose(); } catch (_) {}
@@ -521,10 +548,13 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     if (!pending) return;
     const term = terminalRef.current?.term;
     if (!term) return;
+    // Clear before + after + after-echo so no prior selection leaks through.
+    const clear = () => { try { term.clearSelection(); } catch (_) {} };
+    clear();
     try { term.paste(pending.text); } catch (_) {}
-    // Clear any prior xterm selection so the pasted text isn't highlighted.
-    try { term.clearSelection(); } catch (_) {}
-    // Hand focus back to the PTY — the dialog stole it on mount.
+    clear();
+    requestAnimationFrame(clear);
+    setTimeout(clear, 50);
     try { term.focus(); } catch (_) {}
   }, [pasteConfirm]);
 
