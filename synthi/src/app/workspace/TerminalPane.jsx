@@ -261,6 +261,9 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             setPasteConfirm({ text, lineCount, charCount: text.length });
           } else {
             term.paste(text);
+            // Right-click leaves any prior xterm selection highlighted —
+            // clear it so the pasted command isn't visually obscured.
+            try { term.clearSelection(); } catch (_) {}
           }
         } catch (_) {
           // Clipboard read can fail (permission denied, insecure context,
@@ -519,6 +522,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     const term = terminalRef.current?.term;
     if (!term) return;
     try { term.paste(pending.text); } catch (_) {}
+    // Clear any prior xterm selection so the pasted text isn't highlighted.
+    try { term.clearSelection(); } catch (_) {}
     // Hand focus back to the PTY — the dialog stole it on mount.
     try { term.focus(); } catch (_) {}
   }, [pasteConfirm]);
