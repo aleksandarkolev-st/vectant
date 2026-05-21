@@ -810,7 +810,7 @@ function StatusBarInner({
             />
           </div>
         )}
-        <div className="status-island-pill-wrapper relative w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))]">
+        <div className="status-island-pill-wrapper relative mx-auto w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))]">
           {/* Stage — owns the entrance scaleX. Wraps halo + pill + the
               two brackets so they morph together. The stage is inline-
               block (sizes to the pill's outer box), so positioning the
