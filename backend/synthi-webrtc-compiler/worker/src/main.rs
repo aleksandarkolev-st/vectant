@@ -1075,13 +1075,11 @@ async fn main() -> Result<()> {
         Mutex<Option<(mpsc::UnboundedSender<()>, tokio::time::Instant)>>,
     > = Arc::new(Mutex::new(None));
 
-    // Content-addressable incremental compilation cache (persists across sessions)
-    // Uses /dev/shm on Linux for fast RAM-based caching
-    let cache_dir = if cfg!(target_os = "linux") {
-        std::path::PathBuf::from("/dev/shm/synthi_compile_cache")
-    } else {
-        std::env::temp_dir().join("synthi_compile_cache")
-    };
+    // Content-addressable incremental compilation cache. GPU HMR may runtime-load
+    // compiled artifacts from this cache, so the resolver avoids noexec mounts
+    // unless an operator explicitly overrides the path.
+    let cache_dir = hmr::runtime_artifact_cache::incremental_compile_cache_dir();
+    debug_log!("[Cache] Incremental compile cache dir: {}", cache_dir.display());
     let incremental_cache = Arc::new(
         IncrementalCache::new(cache_dir)
             .await

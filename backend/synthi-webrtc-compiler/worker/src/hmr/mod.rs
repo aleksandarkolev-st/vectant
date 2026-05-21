@@ -101,6 +101,7 @@ pub mod reload_manager;
 pub mod reload_protocol;
 pub mod rollback_notification;
 pub mod rollout_flags;
+pub mod runtime_artifact_cache;
 pub mod scope_planner_bridge;
 pub mod shared_header_detect;
 pub mod slot_manager;
