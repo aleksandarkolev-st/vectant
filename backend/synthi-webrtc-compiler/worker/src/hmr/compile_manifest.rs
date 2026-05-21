@@ -437,7 +437,7 @@ impl CompileManifest {
     /// Legacy SDL2 fixture retained for unit tests that verify old manifest
     /// shape handling. Production fallbacks must use `generic_fallback()`.
     #[cfg(test)]
-    pub fn sdl2_default() -> Self {
+    pub fn legacy_sdl2_fixture() -> Self {
         Self {
             compiler: Compiler::GccPlusPlus,
             std: "c++26".to_string(),
@@ -669,8 +669,8 @@ mod tests {
     }
 
     #[test]
-    fn sdl2_default_is_buildable() {
-        let m = CompileManifest::sdl2_default();
+    fn legacy_sdl2_fixture_is_buildable() {
+        let m = CompileManifest::legacy_sdl2_fixture();
         assert_eq!(m.compiler.executable(), "g++");
         assert!(m.gui_link_flags.contains(&"-lSDL2".to_string()));
         assert_eq!(m.hot_reload_mode, HotReloadMode::Swap);
@@ -750,31 +750,31 @@ mod tests {
     }
 
     #[test]
-    fn sdl2_default_is_tier0_safe() {
-        let m = CompileManifest::sdl2_default();
+    fn legacy_sdl2_fixture_is_tier0_safe() {
+        let m = CompileManifest::legacy_sdl2_fixture();
         assert!(
             m.tier0_safe(),
-            "sdl2_default must include -O0 and -fno-merge-constants"
+            "legacy SDL2 fixture must include -O0 and -fno-merge-constants"
         );
     }
 
     #[test]
     fn tier0_safe_rejects_o2() {
-        let mut m = CompileManifest::sdl2_default();
+        let mut m = CompileManifest::legacy_sdl2_fixture();
         m.common_flags.push("-O2".to_string());
         assert!(!m.tier0_safe());
     }
 
     #[test]
     fn tier0_safe_rejects_missing_no_merge() {
-        let mut m = CompileManifest::sdl2_default();
+        let mut m = CompileManifest::legacy_sdl2_fixture();
         m.common_flags.retain(|f| f != "-fno-merge-constants");
         assert!(!m.tier0_safe());
     }
 
     #[test]
     fn with_tier0_flags_injects_missing() {
-        let mut m = CompileManifest::sdl2_default();
+        let mut m = CompileManifest::legacy_sdl2_fixture();
         m.common_flags
             .retain(|f| f != "-O0" && f != "-fno-merge-constants");
         assert!(!m.tier0_safe());
@@ -784,7 +784,7 @@ mod tests {
 
     #[test]
     fn with_tier0_flags_strips_o2() {
-        let mut m = CompileManifest::sdl2_default();
+        let mut m = CompileManifest::legacy_sdl2_fixture();
         m.common_flags.push("-O2".to_string());
         let fixed = m.with_tier0_flags();
         assert!(fixed.tier0_safe());
@@ -916,8 +916,8 @@ mod tests {
     }
 
     #[test]
-    fn sdl2_default_has_no_gpu_block() {
-        let m = CompileManifest::sdl2_default();
+    fn legacy_sdl2_fixture_has_no_gpu_block() {
+        let m = CompileManifest::legacy_sdl2_fixture();
         assert!(m.gpu.is_none());
     }
 
