@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from verifier_gpu import (
+    _CPP_DECL_KEYWORDS,
     SplitVerificationResult,
     _launch_initializer_args,
     _launch_kernel_name,
@@ -92,6 +93,7 @@ def repair_split_artifacts(
     role_paths = _resolve_split_role_paths(repaired, manifest)
     device_path = role_paths.get("device")
     core_path = role_paths.get("core")
+    shared_path = role_paths.get("shared")
 
     if device_path and device_path in repaired:
         if any(
@@ -143,6 +145,18 @@ def repair_split_artifacts(
             repaired[device_path] = device_after
             changed_files.update({core_path, device_path})
             repair_rules.append("repair.init_kernel_buffers")
+
+        shared_source = repaired.get(shared_path or "", "")
+        core_after, device_after, changed = _repair_launch_abi_mismatches(
+            core_source=repaired[core_path],
+            device_source=repaired[device_path],
+            shared_source=shared_source,
+        )
+        if changed:
+            repaired[core_path] = core_after
+            repaired[device_path] = device_after
+            changed_files.update({core_path, device_path})
+            repair_rules.append("repair.launch_abi_mismatch")
 
     return repaired, {
         "schemaVersion": REPAIR_SCHEMA_VERSION,
@@ -795,6 +809,175 @@ def _append_init_kernel_params_and_writes(
 
     write_block = _init_write_block(count_name, write_params)
     return source[:body_end] + write_block + source[body_end:]
+
+
+def _repair_launch_abi_mismatches(
+    *,
+    core_source: str,
+    device_source: str,
+    shared_source: str,
+) -> tuple[str, str, bool]:
+    launches = _collect_launches(core_source, device_source)
+    if not launches:
+        return core_source, device_source, False
+
+    out_core = core_source
+    out_device = device_source
+    changed = False
+    type_sources = (core_source, shared_source, device_source)
+
+    for launch in launches:
+        params = _kernel_params(out_device, launch.kernel)
+        if len(launch.launch_args) <= len(params):
+            continue
+
+        existing_names = {param.name for param in params}
+        additions: List[_ParamInfo] = []
+        for index, launch_arg in enumerate(launch.launch_args[len(params) :], start=len(params)):
+            inferred = _param_from_launch_arg(
+                launch_arg,
+                type_sources=type_sources,
+                existing_names=existing_names,
+                fallback=f"arg{index}",
+            )
+            if inferred is None:
+                return out_core, out_device, changed
+            additions.append(inferred)
+
+        if additions:
+            next_device = _append_kernel_params(out_device, launch.kernel, additions)
+            if next_device != out_device:
+                out_device = next_device
+                changed = True
+
+    next_core = _repair_launch_argument_addresses(out_core)
+    if next_core != out_core:
+        out_core = next_core
+        changed = True
+
+    return out_core, out_device, changed
+
+
+def _append_kernel_params(
+    device_source: str,
+    kernel: str,
+    additions: Sequence[_ParamInfo],
+) -> str:
+    match = next(
+        (
+            match
+            for match in _GLOBAL_KERNEL_SIGNATURE_RE.finditer(device_source)
+            if match.group("name") == kernel
+        ),
+        None,
+    )
+    if not match:
+        return device_source
+
+    new_param_text = match.group("params").strip()
+    appended = ", ".join(param.declaration for param in additions)
+    if new_param_text and new_param_text != "void":
+        new_param_text = f"{new_param_text}, {appended}"
+    else:
+        new_param_text = appended
+    return (
+        device_source[: match.start("params")]
+        + new_param_text
+        + device_source[match.end("params") :]
+    )
+
+
+def _param_from_launch_arg(
+    launch_arg: str,
+    *,
+    type_sources: Sequence[str],
+    existing_names: Set[str],
+    fallback: str,
+) -> Optional[_ParamInfo]:
+    expression = _normalize_launch_buffer_arg(launch_arg)
+    if not _addressable_launch_expr(expression):
+        return None
+    type_text = _infer_launch_expr_type(expression, type_sources)
+    if not type_text:
+        return None
+    name = _unique_param_name(_sanitize_param_name(expression, fallback), existing_names)
+    declaration = f"{type_text} {name}".strip()
+    return _ParamInfo(
+        declaration=declaration,
+        type_text=type_text,
+        name=name,
+        is_pointer="*" in type_text,
+    )
+
+
+def _addressable_launch_expr(expression: str) -> bool:
+    return bool(
+        re.match(
+            r"^[A-Za-z_][A-Za-z0-9_]*(?:(?:->|\.)[A-Za-z_][A-Za-z0-9_]*)*(?:\[[^\]]+\])?$",
+            expression.strip(),
+        )
+    )
+
+
+def _infer_launch_expr_type(expression: str, type_sources: Sequence[str]) -> Optional[str]:
+    field_match = re.search(r"(?:->|\.)(?P<field>[A-Za-z_][A-Za-z0-9_]*)$", expression)
+    if field_match:
+        return _declared_value_type(field_match.group("field"), type_sources)
+    name_match = re.match(r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)$", expression)
+    if name_match:
+        return _declared_value_type(name_match.group("name"), type_sources)
+    return None
+
+
+def _declared_value_type(name: str, type_sources: Sequence[str]) -> Optional[str]:
+    name_re = re.escape(name)
+    declaration_re = re.compile(
+        rf"(?:^|[;{{,]\s*)(?:static\s+|const\s+|constexpr\s+|volatile\s+)*"
+        rf"(?P<type>[A-Za-z_][A-Za-z0-9_:<>]*(?:\s+[A-Za-z_][A-Za-z0-9_:<>]*)*(?:\s*[*&])*)\s+"
+        rf"{name_re}\b\s*(?:[;=,\[])"
+    )
+    for source in type_sources:
+        for raw_line in source.splitlines():
+            line = raw_line.strip()
+            if not line or "(" in line:
+                continue
+            for match in declaration_re.finditer(line):
+                type_text = re.sub(r"\s+", " ", match.group("type")).strip()
+                if type_text and type_text not in _CPP_DECL_KEYWORDS:
+                    return type_text
+    return None
+
+
+def _repair_launch_argument_addresses(core_source: str) -> str:
+    replacements: Dict[Tuple[int, int], str] = {}
+    for start, end, body in _iter_launch_spans(core_source):
+        args = _split_top_level_args(body)
+        if len(args) != 7:
+            continue
+        launch_args = _launch_initializer_args(args[-1])
+        if not launch_args:
+            continue
+        fixed_entries: List[str] = []
+        changed = False
+        for entry in launch_args:
+            stripped = entry.strip()
+            if stripped.startswith("&"):
+                fixed_entries.append(stripped)
+                continue
+            if _addressable_launch_expr(stripped):
+                fixed_entries.append(f"&{stripped}")
+                changed = True
+            else:
+                fixed_entries.append(stripped)
+        if not changed:
+            continue
+        args[-1] = "{ " + ", ".join(fixed_entries) + " }"
+        replacements[(start, end)] = "synthi_gpu_launch(" + ", ".join(args) + ")"
+
+    out = core_source
+    for (start, end), replacement in sorted(replacements.items(), reverse=True):
+        out = out[:start] + replacement + out[end:]
+    return out
 
 
 def _matching_brace(source: str, open_brace: int) -> Optional[int]:

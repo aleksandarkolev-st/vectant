@@ -70,6 +70,64 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn x11_display_num() -> u32 {
+    const DEFAULT_DISPLAY_NUM: u32 = 99;
+    const MAX_DISPLAY_NUM: u32 = 65_535;
+
+    std::env::var("SYNTHI_XVFB_DISPLAY")
+        .ok()
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .filter(|num| *num <= MAX_DISPLAY_NUM)
+        .unwrap_or(DEFAULT_DISPLAY_NUM)
+}
+
+async fn clear_stale_x11_processes(display_num: u32) {
+    let display = format!(":{}", display_num);
+    let xvfb_pattern = format!("Xvfb {}", display);
+    if let Ok(status) = Command::new("pkill")
+        .arg("-f")
+        .arg(&xvfb_pattern)
+        .status()
+        .await
+    {
+        if status.success() {
+            debug_log!("Killed stale Xvfb process for display {}", display);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    let display_env = format!("DISPLAY={}", display);
+    if let Ok(output) = Command::new("pgrep")
+        .arg("matchbox-window-manager")
+        .output()
+        .await
+    {
+        for pid in String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse::<u32>().ok())
+        {
+            let environ = std::fs::read(format!("/proc/{}/environ", pid)).unwrap_or_default();
+            let owns_display = environ
+                .split(|byte| *byte == 0)
+                .any(|item| item == display_env.as_bytes());
+            if owns_display {
+                if let Ok(status) = Command::new("kill").arg(pid.to_string()).status().await {
+                    if status.success() {
+                        debug_log!(
+                            "Killed stale matchbox-window-manager process {} for display {}",
+                            pid,
+                            display
+                        );
+                    }
+                }
+            }
+        }
+        if !output.stdout.is_empty() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
 fn runner_load_command(name: &str, path: &str) -> Result<String> {
     if let Some(rest) = name.strip_prefix("__gpu_device:") {
         let mut fields = rest.splitn(3, ':');
@@ -387,9 +445,11 @@ pub async fn handle_runner_execution(
                 }
 
                 // Start Xvfb (Virtual Framebuffer)
-                // Try finding a free display or use separate ones per worker?
-                // For simplified single-worker model, we can use :99
-                let display_num = 99;
+                // The default remains the historical single-worker display,
+                // but deployments can override it per worker.
+                let display_num = x11_display_num();
+
+                clear_stale_x11_processes(display_num).await;
 
                 // [Fix] Clean up stale lock files from previous runs
                 let lock_file = format!("/tmp/.X11-unix/X{}", display_num);
