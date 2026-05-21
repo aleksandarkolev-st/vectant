@@ -576,6 +576,11 @@ export default function EditorPage({ params }) {
     const [buildLogs, setBuildLogs] = useState([]);
     const [buildLogsCollapsed, setBuildLogsCollapsed] = useState(false);
 
+    const openFullSettingsSidebar = useCallback(() => {
+        setSidebarView('settings');
+        sidebarPanelRef.current?.expand?.();
+    }, []);
+
     // Friendly project name (from the DB) used as the terminal prompt label
     // and anywhere else a human-readable workspace identifier is wanted.
     // Falls back to the slug until the fetch resolves so the prompt never
@@ -3316,6 +3321,7 @@ export default function EditorPage({ params }) {
                     onProblemsClick={onProblemsClickCb}
                     extensionStatusBarItems={extensionStatusBarItems}
                     vscodeServerState={vscodeServerState}
+                    onOpenFullSettings={openFullSettingsSidebar}
                     isRunning={isCompiling || isGuiRunning}
                     onStop={handleStop}
                     onReload={handleRestart}

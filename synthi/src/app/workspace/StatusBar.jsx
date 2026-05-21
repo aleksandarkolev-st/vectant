@@ -50,6 +50,32 @@ const STATUS_ISLAND_COLLAPSED_HEIGHT_PX = 44;
 const STATUS_ISLAND_BRACKET_OVERHANG_PX = (STATUS_ISLAND_COLLAPSED_WIDTH_PX - STATUS_ISLAND_PILL_HEIGHT_PX) / 2;
 const STATUS_ISLAND_BUILD_CONTROLS_GAP_PX = 8;
 const STATUS_ISLAND_DOCK_PRESETS = ['free', 'left', 'center', 'right'];
+const STATUS_ISLAND_MENU_PRESETS = {
+  default: {
+    label: 'Default',
+    isCompact: false,
+    isPositionLocked: false,
+    dockPreset: 'center',
+  },
+  minimal: {
+    label: 'Minimal',
+    isCompact: true,
+    isPositionLocked: false,
+    dockPreset: 'center',
+  },
+  'left-rail': {
+    label: 'Left rail',
+    isCompact: true,
+    isPositionLocked: true,
+    dockPreset: 'left',
+  },
+  'right-rail': {
+    label: 'Right rail',
+    isCompact: true,
+    isPositionLocked: true,
+    dockPreset: 'right',
+  },
+};
 
 function clampWithinBounds(value, min, max) {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return value;
@@ -99,6 +125,7 @@ function StatusBarInner({
   onProblemsClick,
   extensionStatusBarItems = [],
   vscodeServerState = 'disconnected',
+  onOpenFullSettings,
   // Build-controls island (desktop): renders Stop + Restart while a build
   // is running. Hidden when isRunning is falsy. On mobile these controls
   // live in the TopNav instead (sm:hidden vs hidden sm:flex).
@@ -360,6 +387,10 @@ function StatusBarInner({
     }
   }, [computeDockedOffset, persistOffset, setDockPresetAndPersist]);
 
+  const openFullSettings = useCallback(() => {
+    onOpenFullSettings?.();
+  }, [onOpenFullSettings]);
+
   useEffect(() => {
     if (!viewportSize.width || !viewportSize.height) return;
     if (dockPreset === 'free') return;
@@ -582,6 +613,27 @@ function StatusBarInner({
     setCompactMode((prev) => !prev);
   }, [setCompactMode]);
 
+  const currentMenuPresetId = (() => {
+    for (const [presetId, preset] of Object.entries(STATUS_ISLAND_MENU_PRESETS)) {
+      if (
+        preset.isCompact === isCompact
+        && preset.isPositionLocked === isPositionLocked
+        && preset.dockPreset === dockPreset
+      ) {
+        return presetId;
+      }
+    }
+    return 'custom';
+  })();
+
+  const applyMenuPreset = useCallback((presetId) => {
+    const preset = STATUS_ISLAND_MENU_PRESETS[presetId];
+    if (!preset) return;
+    setCompactMode(preset.isCompact);
+    applyDockPreset(preset.dockPreset);
+    setPositionLocked(preset.isPositionLocked);
+  }, [applyDockPreset, setCompactMode, setPositionLocked]);
+
   // PERF: Defer all Redux reads so StatusBar never blocks the editor
   const currentBranchRaw = useSelector(state => state.git?.currentBranch);
   const currentBranch = useDeferredValue(currentBranchRaw);
@@ -760,8 +812,11 @@ function StatusBarInner({
               onSetPositionLocked={setPositionLocked}
               dockPreset={dockPreset}
               onDockPresetChange={applyDockPreset}
+              activePresetId={currentMenuPresetId}
+              onPresetChange={applyMenuPreset}
               canResetPosition={hasOffset}
               onResetPosition={resetOffset}
+              onOpenFullSettings={openFullSettings}
               isDragging={isDragging}
             />
           </div>

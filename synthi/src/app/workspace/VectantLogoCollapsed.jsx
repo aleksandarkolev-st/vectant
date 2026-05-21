@@ -37,6 +37,13 @@ import {
   ContextMenuTrigger,
 } from '@/components/ui/context-menu';
 
+const MENU_PRESET_OPTIONS = [
+  { id: 'default', label: 'Default' },
+  { id: 'minimal', label: 'Minimal' },
+  { id: 'left-rail', label: 'Left rail' },
+  { id: 'right-rail', label: 'Right rail' },
+];
+
 export default function VectantLogoCollapsed({
   state = 'normal',
   phase = 'logo',
@@ -49,8 +56,11 @@ export default function VectantLogoCollapsed({
   onSetPositionLocked,
   dockPreset = 'center',
   onDockPresetChange,
+  activePresetId = 'custom',
+  onPresetChange,
   canResetPosition = false,
   onResetPosition,
+  onOpenFullSettings,
   isDragging = false,
 }) {
   const handleClick = useCallback(() => onActivate?.(), [onActivate]);
@@ -137,6 +147,26 @@ export default function VectantLogoCollapsed({
         </ContextMenuCheckboxItem>
         <ContextMenuSub>
           <ContextMenuSubTrigger inset>
+            Presets
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent
+            style={{
+              background: 'var(--bg-elevated)',
+              borderColor: 'var(--border-medium)',
+              color: 'var(--text-primary)',
+            }}
+          >
+            <ContextMenuRadioGroup value={activePresetId} onValueChange={(value) => onPresetChange?.(value)}>
+              {MENU_PRESET_OPTIONS.map((preset) => (
+                <ContextMenuRadioItem key={preset.id} value={preset.id}>
+                  {preset.label}
+                </ContextMenuRadioItem>
+              ))}
+            </ContextMenuRadioGroup>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger inset>
             Dock position
           </ContextMenuSubTrigger>
           <ContextMenuSubContent
@@ -155,6 +185,9 @@ export default function VectantLogoCollapsed({
           </ContextMenuSubContent>
         </ContextMenuSub>
         <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => onOpenFullSettings?.()}>
+          Open full settings
+        </ContextMenuItem>
         <ContextMenuItem
           disabled={!canResetPosition}
           onSelect={() => onResetPosition?.()}
