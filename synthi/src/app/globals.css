@@ -1879,6 +1879,14 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
   transition: none !important;
 }
 
+.status-island-stage {
+  /* Do not rely on flex distribution inside the shrink-to-fit wrapper.
+     Explicit stage centering keeps the collapsed V, the bracket pair,
+     and the expanded pill locked to one horizontal center. */
+  left: 50%;
+  transform: translateX(-50%);
+}
+
 /* Unified hover language for icon-buttons that live inside the status
    island family (build controls today, anything else we add later).
    Tinted background + tiny scale, eased out. No grabby 10% pops. */

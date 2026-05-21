@@ -21,12 +21,20 @@ import {
   selectAppliedFixCount,
   selectPendingFixCount,
 } from '@/redux/healingSelectors';
+import {
+  STATUS_ISLAND_OFFSET_KEY,
+  STATUS_ISLAND_DOCK_PRESETS,
+  STATUS_ISLAND_MENU_PRESETS,
+  deleteStatusIslandSavedPreset,
+  doesPresetMatchState,
+  persistStatusIslandCompact,
+  persistStatusIslandDockPreset,
+  persistStatusIslandPositionLocked,
+  readStatusIslandPreferences,
+  subscribeStatusIslandPreferences,
+  upsertStatusIslandSavedPreset,
+} from '@/lib/statusIslandPreferences';
 
-const STATUS_ISLAND_OFFSET_KEY = 'synthi:status-island-offset';
-const STATUS_ISLAND_COMPACT_KEY = 'synthi:status-island-compact';
-const STATUS_ISLAND_POSITION_LOCK_KEY = 'synthi:status-island-position-locked';
-const STATUS_ISLAND_DOCK_KEY = 'synthi:status-island-dock';
-const STATUS_ISLAND_SAVED_PRESETS_KEY = 'synthi:status-island-saved-presets';
 // Mouse must travel ≥5px from the mousedown point before we promote a
 // press-and-hold into a drag — small enough that intentional drags feel
 // responsive, large enough that a sloppy click never moves the island.
@@ -51,58 +59,6 @@ const STATUS_ISLAND_COLLAPSED_WIDTH_PX = 90;
 const STATUS_ISLAND_COLLAPSED_HEIGHT_PX = 44;
 const STATUS_ISLAND_BRACKET_OVERHANG_PX = (STATUS_ISLAND_COLLAPSED_WIDTH_PX - STATUS_ISLAND_PILL_HEIGHT_PX) / 2;
 const STATUS_ISLAND_BUILD_CONTROLS_GAP_PX = 8;
-const STATUS_ISLAND_DOCK_PRESETS = ['free', 'left', 'center', 'right'];
-const STATUS_ISLAND_MENU_PRESETS = {
-  default: {
-    label: 'Default',
-    isCompact: false,
-    isPositionLocked: false,
-    dockPreset: 'center',
-  },
-  minimal: {
-    label: 'Minimal',
-    isCompact: true,
-    isPositionLocked: false,
-    dockPreset: 'center',
-  },
-  'left-rail': {
-    label: 'Left rail',
-    isCompact: true,
-    isPositionLocked: true,
-    dockPreset: 'left',
-  },
-  'right-rail': {
-    label: 'Right rail',
-    isCompact: true,
-    isPositionLocked: true,
-    dockPreset: 'right',
-  },
-};
-
-function normalizeSavedPreset(candidate, fallbackId) {
-  if (!candidate || typeof candidate !== 'object') return null;
-
-  const label = String(candidate.label || '').trim().slice(0, 40);
-  if (!label) return null;
-
-  const dockPreset = STATUS_ISLAND_DOCK_PRESETS.includes(candidate.dockPreset)
-    ? candidate.dockPreset
-    : 'center';
-
-  return {
-    id: typeof candidate.id === 'string' && candidate.id ? candidate.id : fallbackId,
-    label,
-    isCompact: Boolean(candidate.isCompact),
-    isPositionLocked: Boolean(candidate.isPositionLocked),
-    dockPreset,
-  };
-}
-
-function doesPresetMatchState(preset, state) {
-  return preset.isCompact === state.isCompact
-    && preset.isPositionLocked === state.isPositionLocked
-    && preset.dockPreset === state.dockPreset;
-}
 
 function clampWithinBounds(value, min, max) {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return value;
@@ -184,6 +140,7 @@ function StatusBarInner({
   const offsetRef = useRef(offset);
   offsetRef.current = offset;
   const [isDragging, setIsDragging] = useState(false);
+  const [isCompact, setIsCompact] = useState(false);
   const [isPositionLocked, setIsPositionLocked] = useState(false);
   const [dockPreset, setDockPreset] = useState('center');
   const [savedPresets, setSavedPresets] = useState([]);
@@ -267,60 +224,8 @@ function StatusBarInner({
     }
   }, []);
 
-  const persistPositionLocked = useCallback((next) => {
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage?.setItem(STATUS_ISLAND_POSITION_LOCK_KEY, next ? '1' : '0');
-    } catch {
-      // Ignore storage failures; in-memory state still works.
-    }
-  }, []);
-
-  const persistDockPreset = useCallback((next) => {
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage?.setItem(STATUS_ISLAND_DOCK_KEY, next);
-    } catch {
-      // Ignore storage failures; in-memory state still works.
-    }
-  }, []);
-
-  const persistSavedPresets = useCallback((next) => {
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage?.setItem(STATUS_ISLAND_SAVED_PRESETS_KEY, JSON.stringify(next));
-    } catch {
-      // Ignore storage failures; in-memory state still works.
-    }
-  }, []);
-
   const defaultCenterX = viewportSize.width / 2;
   const defaultCenterY = viewportSize.height - STATUS_ISLAND_DEFAULT_BOTTOM_PX - (STATUS_ISLAND_PILL_HEIGHT_PX / 2);
-
-  const loadDockPreset = useCallback(() => {
-    if (typeof window === 'undefined') return 'center';
-    try {
-      const saved = window.localStorage?.getItem(STATUS_ISLAND_DOCK_KEY);
-      if (STATUS_ISLAND_DOCK_PRESETS.includes(saved)) {
-        return saved;
-      }
-
-      // Migration: before dock presets existed we only persisted raw
-      // offsets. Preserve any non-zero saved offset as a free-position
-      // anchor instead of snapping legacy users back to center.
-      const savedOffset = window.localStorage?.getItem(STATUS_ISLAND_OFFSET_KEY);
-      if (savedOffset) {
-        const parsedOffset = JSON.parse(savedOffset);
-        if (parsedOffset?.x || parsedOffset?.y) {
-          return 'free';
-        }
-      }
-
-      return 'center';
-    } catch {
-      return 'center';
-    }
-  }, []);
 
   const clampOffsetToViewport = useCallback((nextOffset) => {
     if (!viewportSize.width || !viewportSize.height) return nextOffset;
@@ -350,53 +255,25 @@ function StatusBarInner({
     persistOffset(clampedOffset);
   }, [clampOffsetToViewport, persistOffset, viewportSize.height, viewportSize.width]);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const saved = window.localStorage?.getItem(STATUS_ISLAND_POSITION_LOCK_KEY);
-      if (saved === '1') {
-        setIsPositionLocked(true);
-      }
-    } catch {
-      // Ignore storage failures.
-    }
-    setDockPreset(loadDockPreset());
-
-    try {
-      const savedPresetBlob = window.localStorage?.getItem(STATUS_ISLAND_SAVED_PRESETS_KEY);
-      if (!savedPresetBlob) return;
-      const parsed = JSON.parse(savedPresetBlob);
-      if (!Array.isArray(parsed)) return;
-      setSavedPresets(
-        parsed
-          .map((preset, index) => normalizeSavedPreset(preset, `status-island-preset-${index + 1}`))
-          .filter(Boolean)
-      );
-    } catch {
-      // Ignore malformed preset payloads.
-    }
-  }, [loadDockPreset]);
-
   const setPositionLocked = useCallback((valueOrUpdater) => {
     setIsPositionLocked((prev) => {
       const next = typeof valueOrUpdater === 'function'
         ? Boolean(valueOrUpdater(prev))
         : Boolean(valueOrUpdater);
-      persistPositionLocked(next);
+      persistStatusIslandPositionLocked(next);
       return next;
     });
-  }, [persistPositionLocked]);
+  }, []);
 
   const setDockPresetAndPersist = useCallback((valueOrUpdater) => {
     setDockPreset((prev) => {
       const next = typeof valueOrUpdater === 'function'
         ? valueOrUpdater(prev)
         : valueOrUpdater;
-      const resolved = STATUS_ISLAND_DOCK_PRESETS.includes(next) ? next : 'free';
-      persistDockPreset(resolved);
+      const resolved = persistStatusIslandDockPreset(next);
       return resolved;
     });
-  }, [persistDockPreset]);
+  }, []);
 
   const computeDockedOffset = useCallback((preset) => {
     const targetCenterX = (() => {
@@ -637,32 +514,30 @@ function StatusBarInner({
   // ── Compact mode (persisted) ────────────────────────────────────────
   // Hides all text labels in the expanded island. Icons / dots /
   // counts / branch name / cursor info stay visible.
-  const [isCompact, setIsCompact] = useState(false);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const saved = window.localStorage?.getItem(STATUS_ISLAND_COMPACT_KEY);
-      if (saved === '1') setIsCompact(true);
-    } catch {
-      // Ignore
-    }
-  }, []);
   const setCompactMode = useCallback((valueOrUpdater) => {
     setIsCompact((prev) => {
       const next = typeof valueOrUpdater === 'function'
         ? Boolean(valueOrUpdater(prev))
         : Boolean(valueOrUpdater);
-      try {
-        window.localStorage?.setItem(STATUS_ISLAND_COMPACT_KEY, next ? '1' : '0');
-      } catch {
-        // Ignore
-      }
+      persistStatusIslandCompact(next);
       return next;
     });
   }, []);
   const toggleCompact = useCallback(() => {
     setCompactMode((prev) => !prev);
   }, [setCompactMode]);
+
+  useEffect(() => {
+    const applyStoredPreferences = (preferences) => {
+      setIsCompact(Boolean(preferences?.isCompact));
+      setIsPositionLocked(Boolean(preferences?.isPositionLocked));
+      setDockPreset(preferences?.dockPreset || 'center');
+      setSavedPresets(Array.isArray(preferences?.savedPresets) ? preferences.savedPresets : []);
+    };
+
+    applyStoredPreferences(readStatusIslandPreferences());
+    return subscribeStatusIslandPreferences(applyStoredPreferences);
+  }, []);
 
   const currentPresetState = {
     isCompact,
@@ -704,45 +579,31 @@ function StatusBarInner({
     const rawLabel = window.prompt('Save status island preset as:', defaultLabel);
     if (rawLabel === null) return;
 
-    const label = rawLabel.trim().slice(0, 40);
-    if (!label) {
+    const result = upsertStatusIslandSavedPreset({
+      label: rawLabel,
+      state: currentPresetState,
+      activePresetId: activeSavedPreset?.id || '',
+    });
+    if (result.error) {
       toast('Preset name cannot be empty', { duration: 1800 });
       return;
     }
 
-    setSavedPresets((prev) => {
-      const existingById = activeSavedPreset ? prev.find((preset) => preset.id === activeSavedPreset.id) : null;
-      const existingByLabel = prev.find((preset) => preset.label.toLowerCase() === label.toLowerCase());
-      const targetPreset = existingById || existingByLabel;
-      const nextPreset = {
-        id: targetPreset?.id || `status-island-preset-${Date.now()}`,
-        label,
-        ...currentPresetState,
-      };
-      const next = targetPreset
-        ? prev.map((preset) => (preset.id === targetPreset.id ? nextPreset : preset))
-        : [...prev, nextPreset];
+    setSavedPresets(result.presets);
 
-      persistSavedPresets(next);
-      return next;
-    });
-
-    toast(activeSavedPreset ? 'Status island preset updated' : 'Status island preset saved', {
+    toast(result.updated ? 'Status island preset updated' : 'Status island preset saved', {
       duration: 1800,
     });
-  }, [activeSavedPreset, currentPresetState, persistSavedPresets, savedPresets.length]);
+  }, [activeSavedPreset, currentPresetState, savedPresets.length]);
 
   const deleteActiveSavedPreset = useCallback(() => {
     if (!activeSavedPreset) return;
 
-    setSavedPresets((prev) => {
-      const next = prev.filter((preset) => preset.id !== activeSavedPreset.id);
-      persistSavedPresets(next);
-      return next;
-    });
+    const result = deleteStatusIslandSavedPreset(activeSavedPreset.id);
+    setSavedPresets(result.presets);
 
     toast(`Deleted preset "${activeSavedPreset.label}"`, { duration: 1800 });
-  }, [activeSavedPreset, persistSavedPresets]);
+  }, [activeSavedPreset]);
 
   // PERF: Defer all Redux reads so StatusBar never blocks the editor
   const currentBranchRaw = useSelector(state => state.git?.currentBranch);
@@ -858,9 +719,11 @@ function StatusBarInner({
   // floating surface.
   // The stage sizes to its content (the pill) so the halo's inset-[-1px]
   // hugs the actual gradient ring instead of stretching across the
-  // wrapper's reserved min-w. The wrapper still reserves layout width
-  // via min-w-[640px] outside the stage.
-  const stageClassName = 'relative inline-block';
+  // wrapper's reserved min-w. We center the stage explicitly inside the
+  // wrapper so the brackets and collapsed V always share one reference
+  // frame, even while the wrapper flips between the 28px logo seed and
+  // the expanded min-width shell.
+  const stageClassName = 'status-island-stage relative inline-block';
 
   const dragHandle = (
     <button
@@ -937,7 +800,7 @@ function StatusBarInner({
             />
           </div>
         )}
-        <div className="status-island-pill-wrapper relative w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))] flex justify-center">
+        <div className="status-island-pill-wrapper relative w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))]">
           {/* Stage — owns the entrance scaleX. Wraps halo + pill + the
               two brackets so they morph together. The stage is inline-
               block (sizes to the pill's outer box), so positioning the
