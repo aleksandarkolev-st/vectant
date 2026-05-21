@@ -36,6 +36,16 @@ function normalizeHmrDeltaMode(value) {
   return aliases[normalized] ?? normalized;
 }
 
+function parseNonNegativeIntegerEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0 || !Number.isInteger(parsed)) {
+    throw new Error(`${name} must be a non-negative integer, got ${JSON.stringify(raw)}`);
+  }
+  return parsed;
+}
+
 const CFG = {
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
   collabUrl: process.env.COLLAB_URL ?? 'http://localhost:1234',
@@ -71,6 +81,7 @@ const CFG = {
   screenshotAttempts: Number(process.env.SYNTHI_SCALE_SCREENSHOT_ATTEMPTS ?? 6),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_SCALE_SCREENSHOT_FRESHNESS_MS ?? 5000),
+  targetWorkspaceFileCount: parseNonNegativeIntegerEnv('SYNTHI_SCALE_TARGET_FILE_COUNT', 0),
   syncToGcs: process.env.SYNTHI_SYNC_TO_GCS !== '0',
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
   mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
@@ -681,6 +692,59 @@ function sourceFileMix(files) {
   }
   mix.total = mix.cpp + mix.hpp + mix.h + mix.hip + mix.cu;
   return mix;
+}
+
+function addInertScaleFiles(files, targetCount) {
+  if (!targetCount || files.length >= targetCount) return;
+  const categories = [
+    {
+      dir: 'docs/scale',
+      ext: 'md',
+      content: (i) => `
+# Scale Context Note ${i}
+
+This ordinary project note is intentionally unrelated to the selected GPU target.
+`,
+    },
+    {
+      dir: 'tests/fixtures',
+      ext: 'json',
+      content: (i) => JSON.stringify({
+        fixture: `scale-context-${i}`,
+        target: 'unrelated',
+        values: [i, i + 1, i + 2],
+      }, null, 2) + '\n',
+    },
+    {
+      dir: 'examples/archive',
+      ext: 'cpp',
+      content: (i) => `
+namespace archived_example_${i} {
+float archived_value_${i}(float input) {
+  return input * ${Number(1 + (i % 97) * 0.0001).toFixed(4)}f;
+}
+}
+`,
+    },
+    {
+      dir: 'include/catalog',
+      ext: 'hpp',
+      content: (i) => `
+#pragma once
+namespace scale_catalog_${i} {
+constexpr int kCatalogValue = ${i};
+}
+`,
+    },
+  ];
+
+  let i = 0;
+  while (files.length < targetCount) {
+    const category = categories[i % categories.length];
+    const local = String(Math.floor(i / categories.length)).padStart(5, '0');
+    addFile(files, `${category.dir}/context_${local}.${category.ext}`, category.content(i));
+    i += 1;
+  }
 }
 
 function buildScaleProject(vendor, arch, renderBackend, cmakeTargetMode = 'single') {
@@ -1673,6 +1737,8 @@ constexpr int kValue = ${i};
 }
 `);
   }
+
+  addInertScaleFiles(files, CFG.targetWorkspaceFileCount);
 
   return {
     files,
@@ -3046,6 +3112,7 @@ async function run() {
     SYNTHI_SCALE_HMR_DELTA_MODE: CFG.hmrDeltaMode,
     SYNTHI_SCALE_VALIDATION_PROFILE: CFG.validationProfile,
     SYNTHI_SCALE_TEMPLATE_EVIDENCE: CFG.templateEvidenceMode,
+    SYNTHI_SCALE_TARGET_FILE_COUNT: String(CFG.targetWorkspaceFileCount),
     SYNTHI_SYNC_TO_GCS: process.env.SYNTHI_SYNC_TO_GCS ?? '',
   };
   report.containers = {
