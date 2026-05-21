@@ -424,7 +424,10 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // produce different output depending on the user's project files and GPU
     // target. Include both so large multi-file projects and arch changes do
     // not reuse stale monolithic split output.
-    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v7";
+    // Cache entries are accepted split artifacts. Keep this tied to the
+    // prompt/verifier contract, not just source text, so newly hardened
+    // deterministic split verifiers do not reuse stale generated roles.
+    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v8-launch-abi";
     let source_hash = calculate_hash(&(
         AI_SPLIT_CACHE_SCHEMA_VERSION,
         req.language.as_str(),
