@@ -40,6 +40,19 @@ const EXPAND_ANIM_MS = 760;
 //   160-460ms: shell scales down to seed
 //   340-540ms: logo fades in from opacity 0
 const COLLAPSE_ANIM_MS = 560;
+const STATUS_ISLAND_VIEWPORT_MARGIN_PX = 16;
+const STATUS_ISLAND_DEFAULT_BOTTOM_PX = 12;
+const STATUS_ISLAND_PILL_HEIGHT_PX = 28;
+const STATUS_ISLAND_COLLAPSED_WIDTH_PX = 90;
+const STATUS_ISLAND_COLLAPSED_HEIGHT_PX = 44;
+const STATUS_ISLAND_BRACKET_OVERHANG_PX = (STATUS_ISLAND_COLLAPSED_WIDTH_PX - STATUS_ISLAND_PILL_HEIGHT_PX) / 2;
+const STATUS_ISLAND_BUILD_CONTROLS_GAP_PX = 8;
+
+function clampWithinBounds(value, min, max) {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return value;
+  if (min > max) return (min + max) / 2;
+  return Math.min(Math.max(value, min), max);
+}
 
 /**
  * StatusBar Component - Synthi styled bottom status bar
@@ -96,17 +109,80 @@ function StatusBarInner({
   // isEntering as a derived value from the phase machine below so the
   // CSS classes stay coordinated with the phase transitions.
   const [isEntering, setIsEntering] = useState(true);
+  const rootRef = useRef(null);
+  const statusIslandShellRef = useRef(null);
+  const statusIslandRowRef = useRef(null);
+  const buildControlsRef = useRef(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const [expandedShellWidth, setExpandedShellWidth] = useState(640);
+  const [buildControlsWidth, setBuildControlsWidth] = useState(0);
 
   // ── Draggable island position ────────────────────────────────────
   // The pill sits centred at the bottom of the workspace by default,
-  // but the user can drag it via the grip handle to reposition. The
-  // offset is persisted to localStorage so the position survives
-  // reloads. A 5-px drag threshold (DRAG_THRESHOLD_PX) prevents a
-  // missed click on the handle from accidentally moving the island.
+  // but the user can drag it to reposition. The offset is persisted to
+  // localStorage so the position survives reloads. A 5-px drag threshold
+  // (DRAG_THRESHOLD_PX) prevents a missed click or right-press from
+  // accidentally moving the island.
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const offsetRef = useRef(offset);
   offsetRef.current = offset;
   const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !rootRef.current) return;
+
+    const updateViewportSize = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setViewportSize({
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      });
+    };
+
+    updateViewportSize();
+
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(updateViewportSize)
+      : null;
+    resizeObserver?.observe(rootRef.current);
+    window.addEventListener('resize', updateViewportSize);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', updateViewportSize);
+    };
+  }, []);
+
+  useEffect(() => {
+    const measureFootprint = () => {
+      const rowWidth = Math.ceil(statusIslandRowRef.current?.scrollWidth || 0);
+      const shellWidth = Math.ceil(statusIslandShellRef.current?.scrollWidth || 0);
+      const nextShellWidth = Math.max(28, rowWidth || shellWidth || 640);
+      const nextBuildControlsWidth = buildControlsRef.current
+        ? Math.ceil(buildControlsRef.current.getBoundingClientRect().width) + STATUS_ISLAND_BUILD_CONTROLS_GAP_PX
+        : 0;
+
+      setExpandedShellWidth((prev) => (prev === nextShellWidth ? prev : nextShellWidth));
+      setBuildControlsWidth((prev) => (prev === nextBuildControlsWidth ? prev : nextBuildControlsWidth));
+    };
+
+    measureFootprint();
+
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(measureFootprint)
+      : null;
+
+    if (statusIslandRowRef.current) resizeObserver?.observe(statusIslandRowRef.current);
+    if (statusIslandShellRef.current) resizeObserver?.observe(statusIslandShellRef.current);
+    if (buildControlsRef.current) resizeObserver?.observe(buildControlsRef.current);
+    window.addEventListener('resize', measureFootprint);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', measureFootprint);
+    };
+  }, [isRunning]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -131,16 +207,51 @@ function StatusBarInner({
     }
   }, []);
 
-  const handleDragMouseDown = useCallback((event) => {
-    if (event.button !== 0) return; // left button only
+  const defaultCenterX = viewportSize.width / 2;
+  const defaultCenterY = viewportSize.height - STATUS_ISLAND_DEFAULT_BOTTOM_PX - (STATUS_ISLAND_PILL_HEIGHT_PX / 2);
+
+  const clampOffsetToViewport = useCallback((nextOffset) => {
+    if (!viewportSize.width || !viewportSize.height) return nextOffset;
+
+    const clampedCenterX = clampWithinBounds(
+      defaultCenterX + nextOffset.x,
+      STATUS_ISLAND_VIEWPORT_MARGIN_PX + (STATUS_ISLAND_COLLAPSED_WIDTH_PX / 2),
+      viewportSize.width - STATUS_ISLAND_VIEWPORT_MARGIN_PX - (STATUS_ISLAND_COLLAPSED_WIDTH_PX / 2),
+    );
+    const clampedCenterY = clampWithinBounds(
+      defaultCenterY + nextOffset.y,
+      STATUS_ISLAND_VIEWPORT_MARGIN_PX + (STATUS_ISLAND_COLLAPSED_HEIGHT_PX / 2),
+      viewportSize.height - STATUS_ISLAND_VIEWPORT_MARGIN_PX - (STATUS_ISLAND_COLLAPSED_HEIGHT_PX / 2),
+    );
+
+    return {
+      x: Math.round(clampedCenterX - defaultCenterX),
+      y: Math.round(clampedCenterY - defaultCenterY),
+    };
+  }, [defaultCenterX, defaultCenterY, viewportSize.height, viewportSize.width]);
+
+  useEffect(() => {
+    if (!viewportSize.width || !viewportSize.height) return;
+    const clampedOffset = clampOffsetToViewport(offsetRef.current);
+    if (clampedOffset.x === offsetRef.current.x && clampedOffset.y === offsetRef.current.y) return;
+    setOffset(clampedOffset);
+    persistOffset(clampedOffset);
+  }, [clampOffsetToViewport, persistOffset, viewportSize.height, viewportSize.width]);
+
+  const startIslandDrag = useCallback((event, button) => {
+    if (event.button !== button) return;
     event.preventDefault();
     event.stopPropagation();
 
     const startX = event.clientX;
     const startY = event.clientY;
-    const startOffset = offsetRef.current;
+    const startOffset = clampOffsetToViewport(offsetRef.current);
     let promoted = false;
     let pendingOffset = startOffset;
+
+    const suppressContextMenu = (contextEvent) => {
+      contextEvent.preventDefault();
+    };
 
     const handleMouseMove = (moveEvent) => {
       const dx = moveEvent.clientX - startX;
@@ -152,24 +263,38 @@ function StatusBarInner({
         promoted = true;
         setIsDragging(true);
         document.body.style.cursor = 'grabbing';
+        document.body.style.userSelect = 'none';
       }
-      pendingOffset = { x: startOffset.x + dx, y: startOffset.y + dy };
+      pendingOffset = clampOffsetToViewport({ x: startOffset.x + dx, y: startOffset.y + dy });
       setOffset(pendingOffset);
     };
 
     const handleMouseUp = () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
+      window.setTimeout(() => {
+        document.removeEventListener('contextmenu', suppressContextMenu, true);
+      }, 0);
       document.body.style.cursor = '';
+      document.body.style.userSelect = '';
       if (promoted) {
         setIsDragging(false);
         persistOffset(pendingOffset);
       }
     };
 
+    document.addEventListener('contextmenu', suppressContextMenu, true);
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
-  }, [persistOffset]);
+  }, [clampOffsetToViewport, persistOffset]);
+
+  const handleDragMouseDown = useCallback((event) => {
+    startIslandDrag(event, 0);
+  }, [startIslandDrag]);
+
+  const handleLogoRightMouseDown = useCallback((event) => {
+    startIslandDrag(event, 2);
+  }, [startIslandDrag]);
 
   const handleDragDoubleClick = useCallback((event) => {
     event.preventDefault();
@@ -184,7 +309,24 @@ function StatusBarInner({
     }
   }, []);
 
-  const hasOffset = offset.x !== 0 || offset.y !== 0;
+  const clampedOffset = viewportSize.width && viewportSize.height
+    ? clampOffsetToViewport(offset)
+    : offset;
+  const hasOffset = clampedOffset.x !== 0 || clampedOffset.y !== 0;
+  const collapsedCenter = {
+    x: viewportSize.width ? defaultCenterX + clampedOffset.x : 0,
+    y: viewportSize.height ? defaultCenterY + clampedOffset.y : 0,
+  };
+  const expandedCenter = {
+    x: viewportSize.width
+      ? clampWithinBounds(
+          collapsedCenter.x,
+          STATUS_ISLAND_VIEWPORT_MARGIN_PX + STATUS_ISLAND_BRACKET_OVERHANG_PX + (expandedShellWidth / 2),
+          viewportSize.width - STATUS_ISLAND_VIEWPORT_MARGIN_PX - STATUS_ISLAND_BRACKET_OVERHANG_PX - buildControlsWidth - (expandedShellWidth / 2),
+        )
+      : 0,
+    y: collapsedCenter.y,
+  };
 
   // ── Logo / expanded phase machine ───────────────────────────────────
   // phase: 'logo'       → Vectant logo visible, pill hidden
@@ -430,12 +572,27 @@ function StatusBarInner({
   // CSS-friendly phase class so the wrapper can drive visibility of the
   // logo vs the pill without prop drilling.
   const phaseClass = `status-island-phase status-island-phase--${phase}`;
+  const visualCenter = phase === 'expanded' || phase === 'expanding'
+    ? expandedCenter
+    : collapsedCenter;
+  const positionerTransition = isDragging
+    ? 'none'
+    : phase === 'expanding'
+      ? 'left 720ms cubic-bezier(0.32, 0.72, 0, 1), top 720ms cubic-bezier(0.32, 0.72, 0, 1)'
+      : phase === 'collapsing'
+        ? 'left 560ms cubic-bezier(0.32, 0.72, 0, 1), top 560ms cubic-bezier(0.32, 0.72, 0, 1)'
+        : 'none';
 
   return (
-    <div className="status-bar-root pointer-events-none absolute inset-x-0 bottom-3 z-30 px-3 flex items-end justify-center" style={{ background: 'transparent' }}>
+    <div ref={rootRef} className="status-bar-root pointer-events-none absolute inset-0 z-30" style={{ background: 'transparent' }}>
       <div
-        className={`status-island-positioner pointer-events-auto ${phaseClass}`}
-        style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }}
+        className={`status-island-positioner pointer-events-auto ${phaseClass} ${isDragging ? 'is-dragging' : ''}`}
+        style={{
+          left: viewportSize.width ? `${visualCenter.x}px` : '50%',
+          top: viewportSize.height ? `${visualCenter.y}px` : `calc(100% - ${STATUS_ISLAND_DEFAULT_BOTTOM_PX + (STATUS_ISLAND_PILL_HEIGHT_PX / 2)}px)`,
+          transform: 'translate(-50%, -50%)',
+          transition: positionerTransition,
+        }}
       >
         {/* Logo — rendered for all transition phases so the V fade-out
             and bracket-slide animations are visible. Unmounted only
@@ -448,56 +605,12 @@ function StatusBarInner({
               phase={phase}
               pendingCount={healingPending}
               onActivate={triggerExpand}
+              onSecondaryDragStart={handleLogoRightMouseDown}
+              isDragging={isDragging}
             />
           </div>
         )}
         <div className="status-island-pill-wrapper relative w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))] flex justify-center">
-          {/* Build-controls island — hugs the right edge of the status island
-              wrapper, vertically centered. Floats just outside the status pill
-              so the status pill remains exactly centered on the page. Hidden
-              on mobile (the inline TopNav stop/restart handles that case). */}
-          {isRunning && (
-            <div className="absolute left-full ml-2 top-1/2 -translate-y-1/2 hidden sm:block z-20">
-              <div
-                className="flex items-center gap-1 h-7 px-1.5 rounded-full"
-                style={{
-                  /* Match the main status island: gradient-border via the
-                     padding-box/border-box trick. One ring, no double seam. */
-                  background:
-                    'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, ' +
-                    'linear-gradient(135deg, color-mix(in srgb, var(--attention-purple) 60%, transparent), color-mix(in srgb, var(--brand-stop-4) 50%, transparent)) border-box',
-                  border: '1px solid transparent',
-                  boxShadow:
-                    '0 16px 40px -8px rgba(0,0,0,0.85), ' +
-                    '0 0 18px -4px color-mix(in srgb, var(--attention-purple) 30%, transparent), ' +
-                    'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent)',
-                  backdropFilter: 'blur(14px) saturate(160%)',
-                  WebkitBackdropFilter: 'blur(14px) saturate(160%)',
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={onStop}
-                  aria-label="Stop running app"
-                  title="Stop"
-                  className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer"
-                  style={{ color: 'var(--accent-danger)', '--hover-bg': 'color-mix(in srgb, var(--accent-danger) 14%, transparent)' }}
-                >
-                  <Square className="w-3 h-3 fill-current" strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  onClick={onReload}
-                  aria-label="Restart running app"
-                  title="Restart"
-                  className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer"
-                  style={{ color: 'var(--brand-stop-4)', '--hover-bg': 'color-mix(in srgb, var(--brand-stop-4) 14%, transparent)' }}
-                >
-                  <RotateCw className="w-3 h-3" strokeWidth={2.25} />
-                </button>
-              </div>
-            </div>
-          )}
           {/* Stage — owns the entrance scaleX. Wraps halo + pill + the
               two brackets so they morph together. The stage is inline-
               block (sizes to the pill's outer box), so positioning the
@@ -505,6 +618,48 @@ function StatusBarInner({
               2px gap that auto-tracks the pill's animating max-width
               without per-bracket keyframes. */}
           <div className={stageClassName}>
+            {/* Build-controls island — anchored to the visible pill edge so
+                viewport clamping can account for the true rendered footprint. */}
+            {isRunning && (
+              <div ref={buildControlsRef} className="absolute left-full ml-2 top-1/2 -translate-y-1/2 hidden sm:block z-20">
+                <div
+                  className="flex items-center gap-1 h-7 px-1.5 rounded-full"
+                  style={{
+                    background:
+                      'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, ' +
+                      'linear-gradient(135deg, color-mix(in srgb, var(--attention-purple) 60%, transparent), color-mix(in srgb, var(--brand-stop-4) 50%, transparent)) border-box',
+                    border: '1px solid transparent',
+                    boxShadow:
+                      '0 16px 40px -8px rgba(0,0,0,0.85), ' +
+                      '0 0 18px -4px color-mix(in srgb, var(--attention-purple) 30%, transparent), ' +
+                      'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent)',
+                    backdropFilter: 'blur(14px) saturate(160%)',
+                    WebkitBackdropFilter: 'blur(14px) saturate(160%)',
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={onStop}
+                    aria-label="Stop running app"
+                    title="Stop"
+                    className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer"
+                    style={{ color: 'var(--accent-danger)', '--hover-bg': 'color-mix(in srgb, var(--accent-danger) 14%, transparent)' }}
+                  >
+                    <Square className="w-3 h-3 fill-current" strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onReload}
+                    aria-label="Restart running app"
+                    title="Restart"
+                    className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer"
+                    style={{ color: 'var(--brand-stop-4)', '--hover-bg': 'color-mix(in srgb, var(--brand-stop-4) 14%, transparent)' }}
+                  >
+                    <RotateCw className="w-3 h-3" strokeWidth={2.25} />
+                  </button>
+                </div>
+              </div>
+            )}
             {hasCollapsedOnce && (
               <>
                 <img
@@ -538,6 +693,7 @@ function StatusBarInner({
               }}
             />
             <div
+              ref={statusIslandShellRef}
               className={`status-island relative z-10 h-7 rounded-[6px] text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap ${isEntering ? 'status-island-entrance-shell status-island-entering' : ''} ${phase === 'collapsing' ? 'status-island-collapsing-shell' : ''} ${isCompact ? 'is-compact' : ''}`}
               style={{
                 background:
@@ -560,7 +716,7 @@ function StatusBarInner({
                   '-webkit-backdrop-filter 240ms ease-out',
               }}
             >
-              <div className={`status-island-row flex h-full items-center px-4 ${isEntering ? 'status-island-entrance-content' : ''} ${phase === 'collapsing' ? 'status-island-collapse-content' : ''}`}>
+              <div ref={statusIslandRowRef} className={`status-island-row flex h-full items-center px-4 ${isEntering ? 'status-island-entrance-content' : ''} ${phase === 'collapsing' ? 'status-island-collapse-content' : ''}`}>
               {/* ── LEFT ZONE — file/build state. flex-shrink-0 so a long
             language name in the right zone can't squeeze branch / problems
             into truncation. */}

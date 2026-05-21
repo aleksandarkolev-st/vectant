@@ -1869,10 +1869,14 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
 }
 
 .status-island-positioner {
-  /* Wraps the wrapper so the user-applied translate sits on its own
-     transform stack and doesn't fight the entrance scaleX. */
-  transition: none;
-  will-change: transform;
+  /* Absolute so the island can animate between the user's collapsed
+     anchor and the nearest fully-visible expanded center. */
+  position: absolute;
+  will-change: left, top;
+}
+
+.status-island-positioner.is-dragging {
+  transition: none !important;
 }
 
 /* Unified hover language for icon-buttons that live inside the status
@@ -1949,6 +1953,15 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
   transform: translateZ(0);
 }
 
+.vectant-logo-button--movable {
+  cursor: grab;
+}
+
+.vectant-logo-button--movable:active,
+.vectant-logo-button--movable.is-dragging {
+  cursor: grabbing;
+}
+
 .vectant-logo-halo {
   /* Quiet ambient halo around the V. Stronger in error/healing states. */
   position: absolute;
@@ -1971,17 +1984,27 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
 
 .vectant-logo-v {
   /* The V is the focal point — sized to fill the bracket interior
-     (44px outer × 68.5% inner ≈ 30px) so the mark sits snugly between
-     the bracket arms. Source PNG is squarish; width: auto preserves
-     aspect ratio. Slightly overflows the 28px button container, which
-     is fine since the button has no overflow clip. */
+     (44px outer × 68.5% inner ≈ 30px). We render at 32px so the V
+     visibly fills the interior (~1px overhang each side, no touching
+     the arms). Source PNG is squarish; width: auto preserves aspect
+     ratio. Overflows the 28px button by 4px — fine, the button has
+     no overflow clip.
+
+    translateY(+2px) aligns the V's *visual mass* with the bracket
+     interior centre. Measured centroid of the V's opaque pixels sits
+     at y=45.7% of the source PNG (i.e. ~1.4px ABOVE the rendered
+     bbox centre at 32px), because the V is wide on top and narrows
+     to a single point at the bottom — so mass skews upward. Without
+     the nudge, the V's wide top half reads as sitting too high in
+     the frame even though the bbox is technically centred. */
   position: relative;
-  height: 30px;
+  height: 32px;
   width: auto;
   z-index: 2;
   user-select: none;
   pointer-events: none;
-  transition: opacity 160ms ease-out, filter 200ms ease-out;
+  transform: translateY(2px);
+  transition: opacity 160ms ease-out, filter 200ms ease-out, transform 200ms ease-out;
 }
 
 /* Brackets are no longer rendered inside the logo button. They live as
@@ -2082,14 +2105,19 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
   display: none;
 }
 
-/* The V fades out at the start of expansion. We slow this from 140ms
-   to 380ms so the V is still partly visible while the pill is fading
-   in — together they read as a cross-dissolve rather than a fast swap
-   followed by a slow morph. */
+/* The V fades out at the start of expansion. Kept short (180ms) so
+   the V is essentially gone before the pill's shell-morph and content
+   fade-in animations get going — earlier we ran this at 380ms which
+   left the V visible across most of the shell's growth and read as
+  too much overlap between two unrelated motions. The translateY(+2px)
+  from the steady-state rule is preserved so the V doesn't jump at the
+  start of the fade. */
 .vectant-logo-v.is-fading {
   opacity: 0;
-  transform: scale(0.92);
-  transition: opacity 380ms ease-out, transform 380ms ease-out;
+  /* Preserve the +2px mass-center nudge while scaling down so the V
+     shrinks around its visual centre, not its bbox centre. */
+  transform: translateY(2px) scale(0.92);
+  transition: opacity 180ms ease-out, transform 180ms ease-out;
 }
 
 /* ── Island brackets ────────────────────────────────────────────────
@@ -2242,14 +2270,17 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
 }
 
 /* Logo opacity gating during collapse — start invisible, fade in only
-   after the shell has done most of its work. This is the fix for
-   "logo appears while pill is still full size and content is visible". */
+   after the shell has nearly finished collapsing. */
 .status-island-phase--collapsing .vectant-logo-wrapper {
-  /* Start the V fade-in earlier (200ms instead of 340ms) and run it
-     longer (320ms instead of 200ms) so it overlaps with the pill's
-     gradual opacity ramp-down — clean cross-dissolve between the two. */
+  /* Shell collapse keyframes run 160-460ms (delay 160 + 300ms duration).
+     We delay the V fade-in until 380ms so the shell is ~73% collapsed
+     before the V starts appearing. The two motions overlap only briefly
+     at the tail (80ms instead of the previous 260ms) and the V's
+     entrance is no longer competing with a still-shrinking pill.
+     Duration of 160ms ends the V fade-in at 540ms — just before the
+     phase flips to 'logo' at COLLAPSE_ANIM_MS = 560ms. */
   opacity: 0;
-  animation: vectant-logo-collapse-fade-in 320ms ease-out 200ms both;
+  animation: vectant-logo-collapse-fade-in 160ms ease-out 380ms both;
 }
 @keyframes vectant-logo-collapse-fade-in {
   from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
@@ -2382,22 +2413,6 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
   .vectant-logo--healing .vectant-logo-halo {
     transition: none !important;
     animation: none !important;
-  }
-}
-
-/* ─── TopNav search bar width ───────────────────────────────────────
-   The wrapper exposes its width via --topnav-search-w (set inline from
-   React based on focus). At xl+ we pin the width to 380px so focusing
-   the search bar no longer triggers a 240→420px width animation that
-   compresses the EditorTabStrip sibling. Below xl, the var still
-   drives the focus expand. */
-.topnav-search {
-  width: var(--topnav-search-w, 240px);
-}
-@media (min-width: 1280px) {
-  .topnav-search {
-    width: 380px !important;
-    transition: none !important;
   }
 }
 

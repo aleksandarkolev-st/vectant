@@ -111,12 +111,7 @@ function TopNav({
       </div>
       <div
         className="topnav-search relative transition-all duration-200 hidden sm:block min-w-0"
-        // Width is driven by a CSS var so the xl+ media query in globals.css
-        // can override it without an inline-style specificity fight. Below xl,
-        // the var animates 240→420px on focus (preserved); at xl+, the rule
-        // pins the bar at 380px so the EditorTabStrip sibling stops jittering
-        // when the user focuses search.
-        style={{ '--topnav-search-w': searchOpen ? '420px' : '240px', maxWidth: '100%' }}
+        style={{ width: searchOpen ? '420px' : '240px', maxWidth: '100%' }}
       >
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: 'var(--text-muted)' }} strokeWidth={1.5} />
         <input

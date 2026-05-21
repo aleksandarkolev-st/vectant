@@ -28,8 +28,18 @@ export default function VectantLogoCollapsed({
   phase = 'logo',
   pendingCount = 0,
   onActivate,
+  onSecondaryDragStart,
+  isDragging = false,
 }) {
   const handleClick = useCallback(() => onActivate?.(), [onActivate]);
+  const handleMouseDown = useCallback((event) => {
+    if (phase !== 'logo' || event.button !== 2) return;
+    onSecondaryDragStart?.(event);
+  }, [onSecondaryDragStart, phase]);
+  const handleContextMenu = useCallback((event) => {
+    if (phase !== 'logo') return;
+    event.preventDefault();
+  }, [phase]);
   // is-v-fading drives the V fade-out. Active during expanding only.
   const isVFading = phase === 'expanding';
 
@@ -38,9 +48,14 @@ export default function VectantLogoCollapsed({
       type="button"
       aria-label={phase === 'logo' ? 'Open status island' : 'Vectant'}
       onClick={phase === 'logo' ? handleClick : undefined}
+      onMouseDown={handleMouseDown}
+      onContextMenu={handleContextMenu}
       tabIndex={phase === 'logo' ? 0 : -1}
+      title={phase === 'logo' ? 'Left click to open. Right-drag to move.' : undefined}
       className={[
         'vectant-logo-button th-focus-ring',
+        phase === 'logo' ? 'vectant-logo-button--movable' : '',
+        isDragging ? 'is-dragging' : '',
         state === 'error' ? 'vectant-logo--error' : '',
         state === 'healing' ? 'vectant-logo--healing' : '',
       ].filter(Boolean).join(' ')}
