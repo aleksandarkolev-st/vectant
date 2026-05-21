@@ -1370,6 +1370,7 @@ pub async fn handle_compile_request(
                     if sidecar_manifest_json.is_null() { "no" } else { "yes" },
                 );
 
+                let mut natural_gpu_ai_delta_reason_codes: Vec<String> = Vec::new();
                 let direct_device_split = if is_device_source_request(&req.filename)
                     && !req.force_gpu_ai_delta
                 {
@@ -1527,6 +1528,12 @@ pub async fn handle_compile_request(
                                 device_patch.reason_codes.join(",")
                             );
                         }
+                        natural_gpu_ai_delta_reason_codes = device_patch.reason_codes.clone();
+                        eprintln!(
+                            "[GPU AI Delta] natural fallback requested: user={} reasons={}",
+                            request_device_name,
+                            natural_gpu_ai_delta_reason_codes.join(",")
+                        );
                         None
                     }
                 } else {
@@ -1688,12 +1695,12 @@ pub async fn handle_compile_request(
                             "gui": { "content": gui_content, "filename": gui_filename }
                         })
                     } else {
-                        if req.force_gpu_ai_delta {
+                        if req.force_gpu_ai_delta || !natural_gpu_ai_delta_reason_codes.is_empty() {
                             let request_device_name = normalized_request_filename(&req.filename)
                                 .unwrap_or_else(|| req.filename.replace('\\', "/"));
                             if !is_device_source_request(&request_device_name) {
                                 anyhow::bail!(
-                                    "force_gpu_ai_delta requires a .cu/.hip request, got {}",
+                                    "GPU AI delta requires a .cu/.hip request, got {}",
                                     req.filename
                                 );
                             }
@@ -1702,12 +1709,12 @@ pub async fn handle_compile_request(
                                 CompileManifest::from_json_value(&sidecar_manifest_json)
                                     .ok_or_else(|| {
                                         anyhow::anyhow!(
-                                            "force_gpu_ai_delta requires a compile manifest in the split sidecar"
+                                            "GPU AI delta requires a compile manifest in the split sidecar"
                                         )
                                     })?;
                             if sidecar_manifest.gpu.is_none() {
                                 anyhow::bail!(
-                                    "force_gpu_ai_delta requires a GPU compile manifest, but no gpu block is present"
+                                    "GPU AI delta requires a GPU compile manifest, but no gpu block is present"
                                 );
                             }
 
@@ -1722,7 +1729,7 @@ pub async fn handle_compile_request(
                             })
                             .ok_or_else(|| {
                                 anyhow::anyhow!(
-                                    "force_gpu_ai_delta could not resolve the internal generated device role"
+                                    "GPU AI delta could not resolve the internal generated device role"
                                 )
                             })?;
                             let generated_device_source = {
@@ -1936,6 +1943,15 @@ pub async fn handle_compile_request(
                                 "verifier.kernel_signature_checked".to_string(),
                                 "verifier.constant_global_layout_checked".to_string(),
                             ];
+                            let mut reason_codes = reason_codes;
+                            if !natural_gpu_ai_delta_reason_codes.is_empty() {
+                                reason_codes.push("ai_delta.local_proof_failed".to_string());
+                                reason_codes.extend(
+                                    natural_gpu_ai_delta_reason_codes
+                                        .iter()
+                                        .map(|code| format!("local_proof.{code}")),
+                                );
+                            }
                             let plan_report = ai_delta_reload_plan_report(
                                 &ai_delta.reload_plan,
                                 &request_device_name,
