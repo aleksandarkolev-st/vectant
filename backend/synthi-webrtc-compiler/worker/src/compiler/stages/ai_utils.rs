@@ -133,6 +133,25 @@ fn summarize_ai_error_json(value: &serde_json::Value) -> Option<String> {
                     );
                 }
             }
+            if let Some(reason_codes) = value
+                .get("source_context_report")
+                .and_then(|v| v.get("buildMetadata"))
+                .and_then(|v| v.get("targetResolution"))
+                .and_then(|v| v.get("reasonCodes"))
+                .and_then(|v| v.as_array())
+            {
+                let codes: Vec<&str> = reason_codes
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .take(8)
+                    .collect();
+                if !codes.is_empty() {
+                    push_summary_part(
+                        &mut parts,
+                        format!("targetResolution.reasonCodes={}", codes.join(",")),
+                    );
+                }
+            }
             if parts.is_empty() {
                 Some(value.to_string())
             } else {
@@ -1481,6 +1500,39 @@ mod tests {
         assert!(summary.contains("GPU split unsupported for this project shape"));
         assert!(summary.contains("unsupported.graphics_backend_vulkan"));
         assert!(summary.contains("unsupported_project_shape"));
+        assert!(summary.len() < 1200);
+    }
+
+    #[test]
+    fn summarizes_ai_error_body_keeps_target_resolution_reason_codes() {
+        let body = json!({
+            "detail": {
+                "message": "GPU split unsupported for this project shape",
+                "source_context_report": {
+                    "buildMetadata": {
+                        "targetResolution": {
+                            "status": "ambiguous",
+                            "reasonCodes": ["target_resolution_ambiguous"]
+                        }
+                    }
+                },
+                "verification": {
+                    "ok": false,
+                    "violations": [
+                        {
+                            "rule": "target_resolution_ambiguous",
+                            "message": "Multiple executable targets contain the requested file."
+                        }
+                    ]
+                }
+            }
+        })
+        .to_string();
+
+        let summary = summarize_ai_error_body(&body);
+
+        assert!(summary.contains("target_resolution_ambiguous"));
+        assert!(summary.contains("targetResolution.reasonCodes=target_resolution_ambiguous"));
         assert!(summary.len() < 1200);
     }
 

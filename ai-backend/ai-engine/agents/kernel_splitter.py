@@ -762,6 +762,30 @@ async def run_kernel_splitter(
             ),
             source_context_report=source_context_report,
         )
+    build_metadata = source_context_report.get("buildMetadata")
+    target_resolution = (
+        build_metadata.get("targetResolution")
+        if isinstance(build_metadata, dict)
+        else None
+    )
+    if isinstance(target_resolution, dict) and target_resolution.get("status") == "ambiguous":
+        reason_codes = target_resolution.get("reasonCodes") or []
+        reason_code = str(reason_codes[0] if reason_codes else "target_resolution_ambiguous")
+        matching = target_resolution.get("matchingTargets") or []
+        matching_names = [
+            str(target.get("name"))
+            for target in matching
+            if isinstance(target, Mapping) and target.get("name")
+        ]
+        raise KernelSplitterUnsupportedProjectError(
+            reason_code,
+            (
+                "GPU split requires one selected CMake target, but target "
+                f"resolution is ambiguous via {target_resolution.get('method') or 'unknown'}"
+                + (f": {', '.join(matching_names)}" if matching_names else "")
+            ),
+            source_context_report=source_context_report,
+        )
     prompt = build_prompt(
         user_code,
         detection=detection,

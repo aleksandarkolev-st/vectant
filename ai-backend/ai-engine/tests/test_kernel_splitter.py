@@ -293,6 +293,72 @@ def test_run_kernel_splitter_rejects_vulkan_before_ai_provider():
     assert exc.value.source_context_report["graphicsBackend"]["primary"] == "vulkan"
 
 
+def test_run_kernel_splitter_rejects_ambiguous_cmake_target_before_ai_provider():
+    class Provider:
+        called = False
+
+        async def ask_llm(self, *_args, **_kwargs):
+            self.called = True
+            raise AssertionError("provider should not be called for ambiguous CMake targets")
+
+    provider = Provider()
+    detection = GpuDetectionResult(
+        is_gpu=True,
+        vendor_hint="rocm",
+        per_file={
+            "src/gpu/flow.hip": GpuDetectionEvidence(qualifier_hits=1),
+        },
+    )
+    files = [
+        {"name": "CMakeLists.txt", "content": "add_executable(a src/app/main.cpp)\nadd_executable(b src/app/main.cpp)"},
+        {"name": "src/app/main.cpp", "content": "int main(){ return 0; }"},
+        {"name": "src/gpu/flow.hip", "content": "__global__ void flow() {}"},
+        {
+            "name": ".cmake/api/v1/reply/codemodel-v2-debug.json",
+            "content": """
+            {
+              "kind": "codemodel",
+              "configurations": [
+                {
+                  "name": "Debug",
+                  "targets": [
+                    {"name": "gpu_app_a", "id": "a::@123", "jsonFile": "target-a-Debug.json"},
+                    {"name": "gpu_app_b", "id": "b::@123", "jsonFile": "target-b-Debug.json"}
+                  ]
+                }
+              ]
+            }
+            """,
+        },
+        {
+            "name": ".cmake/api/v1/reply/target-a-Debug.json",
+            "content": '{"name":"gpu_app_a","id":"a::@123","type":"EXECUTABLE","sources":[{"path":"src/app/main.cpp"},{"path":"src/gpu/flow.hip"}]}',
+        },
+        {
+            "name": ".cmake/api/v1/reply/target-b-Debug.json",
+            "content": '{"name":"gpu_app_b","id":"b::@123","type":"EXECUTABLE","sources":[{"path":"src/app/main.cpp"},{"path":"src/gpu/flow.hip"}]}',
+        },
+    ]
+
+    with pytest.raises(KernelSplitterUnsupportedProjectError) as exc:
+        asyncio.run(
+            run_kernel_splitter(
+                provider=provider,
+                user_code=files[1]["content"],
+                lang="cpp",
+                detection=detection,
+                files=files,
+                focus="src/app/main.cpp",
+            )
+        )
+
+    assert provider.called is False
+    assert exc.value.reason_code == "target_resolution_ambiguous"
+    resolution = exc.value.source_context_report["buildMetadata"]["targetResolution"]
+    assert resolution["status"] == "ambiguous"
+    assert resolution["method"] == "ambiguous_executable_targets_containing_focus"
+
+
 def test_build_split_retry_prompt_preserves_previous_rejections():
     prompt = build_split_retry_prompt(
         "original prompt",

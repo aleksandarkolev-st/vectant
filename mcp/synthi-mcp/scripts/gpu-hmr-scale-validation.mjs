@@ -2,6 +2,11 @@
 // Large multi-file GPU HMR validation:
 //   ordinary user project -> MCP compile -> AI GPU split -> visible first frame
 //   -> user device-source AI delta -> GPU sidecar HMR -> visible changed frame.
+//
+// Target-resolution modes:
+//   SYNTHI_SCALE_CMAKE_TARGET_MODE=single    one executable owns the run file
+//   SYNTHI_SCALE_CMAKE_TARGET_MODE=multi     extra executable exists; run file still maps to one target
+//   SYNTHI_SCALE_CMAKE_TARGET_MODE=ambiguous two executables own the run file; split must be rejected
 
 import { spawn, execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -29,6 +34,9 @@ const CFG = {
     .replace(/^sdl$/, 'sdl2')
     .replace(/^imgui-sdl$/, 'imgui-sdl2')
     .replace(/^imgui-glfw-opengl$/, 'imgui-glfw'),
+  cmakeTargetMode: (process.env.SYNTHI_SCALE_CMAKE_TARGET_MODE ?? 'single')
+    .toLowerCase()
+    .replace(/_/g, '-'),
   gpuArch: process.env.SYNTHI_GPU_ARCH,
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3.1-flash-lite-preview',
   mcpTransport: (process.env.MCP_TRANSPORT ?? 'docker').toLowerCase(),
@@ -61,6 +69,8 @@ const BACKEND_RESULTS_JSON = path.join(LOG_DIR, `scale-validation-${CFG.renderBa
 const BACKEND_RESULTS_TXT = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-results.txt`);
 const MODE_RESULTS_JSON = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-results.json`);
 const MODE_RESULTS_TXT = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-results.txt`);
+const TARGET_MODE_RESULTS_JSON = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-${CFG.cmakeTargetMode}-results.json`);
+const TARGET_MODE_RESULTS_TXT = path.join(LOG_DIR, `scale-validation-${CFG.renderBackend}-${CFG.templateEvidenceMode}-${CFG.cmakeTargetMode}-results.txt`);
 
 function stableJson(value) {
   if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(',')}]`;
@@ -103,6 +113,7 @@ const SUPPORTED_RENDER_FIXTURES = new Set([
   'imgui-glfw',
   'vulkan',
 ]);
+const SUPPORTED_CMAKE_TARGET_MODES = new Set(['single', 'multi', 'ambiguous']);
 
 function renderBackendProfile(renderBackend) {
   const profiles = {
@@ -199,6 +210,7 @@ const report = {
   vendor: '',
   arch: '',
   render_backend: CFG.renderBackend,
+  cmake_target_mode: CFG.cmakeTargetMode,
   source_file_mix: {},
   template_evidence_mode: CFG.templateEvidenceMode,
   workspace_file_count: 0,
@@ -638,7 +650,7 @@ function sourceFileMix(files) {
   return mix;
 }
 
-function buildScaleProject(vendor, arch, renderBackend) {
+function buildScaleProject(vendor, arch, renderBackend, cmakeTargetMode = 'single') {
   const isRocm = vendor === 'rocm';
   const renderProfile = renderBackendProfile(renderBackend);
   const deviceExt = isRocm ? 'hip' : 'cu';
@@ -655,6 +667,69 @@ function buildScaleProject(vendor, arch, renderBackend) {
     : '44.0f';
   const renderSource = renderProfile.source;
   const renderLink = renderProfile.link;
+  const appTargetSources = [
+    'src/app/main.cpp',
+    'src/app/simulation.cpp',
+    renderSource,
+    `src/gpu/particle_kernels.${deviceExt}`,
+  ];
+  const cmakeExtraTargets = [];
+  const codemodelTargets = [
+    {
+      name: 'particle_field',
+      id: 'particle_field::@scale',
+      jsonFile: 'target-particle_field-Debug.json',
+    },
+  ];
+  const targetReplies = [
+    {
+      path: '.cmake/api/v1/reply/target-particle_field-Debug.json',
+      value: {
+        name: 'particle_field',
+        id: 'particle_field::@scale',
+        type: 'EXECUTABLE',
+        sources: appTargetSources.map((sourcePath) => ({ path: sourcePath })),
+      },
+    },
+  ];
+  if (cmakeTargetMode === 'multi') {
+    cmakeExtraTargets.push('add_executable(field_inspector tools/field_inspector.cpp)');
+    codemodelTargets.push({
+      name: 'field_inspector',
+      id: 'field_inspector::@scale',
+      jsonFile: 'target-field_inspector-Debug.json',
+    });
+    targetReplies.push({
+      path: '.cmake/api/v1/reply/target-field_inspector-Debug.json',
+      value: {
+        name: 'field_inspector',
+        id: 'field_inspector::@scale',
+        type: 'EXECUTABLE',
+        sources: [{ path: 'tools/field_inspector.cpp' }],
+      },
+    });
+  } else if (cmakeTargetMode === 'ambiguous') {
+    cmakeExtraTargets.push(`
+add_executable(particle_field_shadow
+  ${appTargetSources.join('\n  ')}
+)
+${renderLink.replace('particle_field', 'particle_field_shadow')}
+`);
+    codemodelTargets.push({
+      name: 'particle_field_shadow',
+      id: 'particle_field_shadow::@scale',
+      jsonFile: 'target-particle_field_shadow-Debug.json',
+    });
+    targetReplies.push({
+      path: '.cmake/api/v1/reply/target-particle_field_shadow-Debug.json',
+      value: {
+        name: 'particle_field_shadow',
+        id: 'particle_field_shadow::@scale',
+        type: 'EXECUTABLE',
+        sources: appTargetSources.map((sourcePath) => ({ path: sourcePath })),
+      },
+    });
+  }
   const files = [];
   const mainCompileArguments = [
     'clang++',
@@ -686,15 +761,13 @@ project(particle_field_validation LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 ${renderProfile.cmakePrelude}
 add_executable(particle_field
-  src/app/main.cpp
-  src/app/simulation.cpp
-  ${renderSource}
-  src/gpu/particle_kernels.${deviceExt}
+  ${appTargetSources.join('\n  ')}
 )
 ${renderLink}
+${cmakeExtraTargets.join('\n')}
 `, true);
 
-  addFile(files, 'compile_commands.json', JSON.stringify([
+  const compileCommands = [
     {
       directory: '/workspace/particle_field_validation/build',
       file: '/workspace/particle_field_validation/src/app/main.cpp',
@@ -705,35 +778,51 @@ ${renderLink}
       file: `/workspace/particle_field_validation/src/gpu/particle_kernels.${deviceExt}`,
       arguments: deviceCompileArguments,
     },
-  ], null, 2) + '\n', true);
+  ];
+  if (cmakeTargetMode === 'multi') {
+    compileCommands.push({
+      directory: '/workspace/particle_field_validation/build',
+      file: '/workspace/particle_field_validation/tools/field_inspector.cpp',
+      arguments: [
+        'clang++',
+        '-std=c++20',
+        '-Isrc',
+        '-DTOOL_TARGET=1',
+        '-c',
+        'tools/field_inspector.cpp',
+      ],
+    });
+  } else if (cmakeTargetMode === 'ambiguous') {
+    compileCommands.push({
+      directory: '/workspace/particle_field_validation/build-shadow',
+      file: '/workspace/particle_field_validation/src/app/main.cpp',
+      arguments: [
+        'clang++',
+        '-std=c++20',
+        '-Isrc',
+        '-DPARTICLE_FIELD_SHADOW_TARGET=1',
+        `-DSCALE_GPU_TARGET=${isRocm ? 'rocm' : 'cuda'}`,
+        `-DSCALE_GPU_ARCH=${arch}`,
+        '-c',
+        'src/app/main.cpp',
+      ],
+    });
+  }
+  addFile(files, 'compile_commands.json', JSON.stringify(compileCommands, null, 2) + '\n', true);
 
   addFile(files, '.cmake/api/v1/reply/codemodel-v2-debug.json', JSON.stringify({
     kind: 'codemodel',
     configurations: [
       {
         name: 'Debug',
-        targets: [
-          {
-            name: 'particle_field',
-            id: 'particle_field::@scale',
-            jsonFile: 'target-particle_field-Debug.json',
-          },
-        ],
+        targets: codemodelTargets,
       },
     ],
   }, null, 2) + '\n', true);
 
-  addFile(files, '.cmake/api/v1/reply/target-particle_field-Debug.json', JSON.stringify({
-    name: 'particle_field',
-    id: 'particle_field::@scale',
-    type: 'EXECUTABLE',
-    sources: [
-      { path: 'src/app/main.cpp' },
-      { path: 'src/app/simulation.cpp' },
-      { path: renderSource },
-      { path: `src/gpu/particle_kernels.${deviceExt}` },
-    ],
-  }, null, 2) + '\n', true);
+  for (const reply of targetReplies) {
+    addFile(files, reply.path, JSON.stringify(reply.value, null, 2) + '\n', true);
+  }
 
   if (emitTemplateEvidence) {
     const templateEvidenceEntries = [
@@ -1509,6 +1598,17 @@ int main() {
     throw new Error(`missing fixture generator for render backend ${renderBackend}`);
   }
 
+  if (cmakeTargetMode === 'multi') {
+    addFile(files, 'tools/field_inspector.cpp', `
+#include <iostream>
+
+int main() {
+  std::cout << "field inspector target\\n";
+  return 0;
+}
+`, true);
+  }
+
   addMultiSourceShardPack(files);
 
   for (let i = 0; i < 120; i += 1) {
@@ -2078,6 +2178,7 @@ function validateProdRunReportContract(split, project, vendor, arch) {
     throw new Error('run report missing cmakeCodemodelHash');
   }
   const buildMetadata = reportDoc.sourceContextReport?.buildMetadata || {};
+  const cmakeFileApi = buildMetadata.cmakeFileApi || {};
   const targetResolution = buildMetadata.targetResolution || {};
   if (buildMetadata.compileCommandsStatus !== 'selected') {
     throw new Error(`compile_commands was not selected: ${buildMetadata.compileCommandsStatus ?? 'missing'}`);
@@ -2087,6 +2188,19 @@ function validateProdRunReportContract(split, project, vendor, arch) {
   }
   if (targetResolution.status !== 'selected') {
     throw new Error(`CMake target was not selected: ${JSON.stringify(targetResolution).slice(0, 500)}`);
+  }
+  if (CFG.cmakeTargetMode === 'multi') {
+    if (Number(cmakeFileApi.targetCount || 0) < 2) {
+      throw new Error(`multi-target fixture did not expose multiple CMake targets: ${JSON.stringify(cmakeFileApi).slice(0, 500)}`);
+    }
+    if ((targetResolution.matchingTargets || []).length !== 1) {
+      throw new Error(`multi-target fixture should have one matching executable target: ${JSON.stringify(targetResolution).slice(0, 500)}`);
+    }
+    record(
+      'multi-target CMake File API selected the focus executable',
+      'pass',
+      `targets=${cmakeFileApi.targetCount} method=${targetResolution.method}`,
+    );
   }
   if (targetResolution.selectedTarget?.name !== 'particle_field') {
     throw new Error(`unexpected selected CMake target: ${targetResolution.selectedTarget?.name ?? 'missing'}`);
@@ -2168,6 +2282,7 @@ function validateProdRunReportContract(split, project, vendor, arch) {
     compileDbHash: reportDoc.compileDbHash,
     cmakeCodemodelHash: reportDoc.cmakeCodemodelHash,
     targetResolutionMethod: reportDoc.targetResolutionMethod ?? targetResolution.method ?? null,
+    cmakeTargetCount: cmakeFileApi.targetCount ?? null,
     targetName: selectedTarget.targetName,
     toolchainCapabilityProfileHash: reportDoc.toolchainCapabilityProfileHash,
     templateEvidenceStatus: reportDoc.templateEvidenceStatus,
@@ -2706,6 +2821,7 @@ async function writeReport() {
   await writeFile(RESULTS_JSON, json);
   await writeFile(BACKEND_RESULTS_JSON, json);
   await writeFile(MODE_RESULTS_JSON, json);
+  await writeFile(TARGET_MODE_RESULTS_JSON, json);
   const lines = [
     `slug: ${report.slug}`,
     `repo_commit: ${report.repo_commit}`,
@@ -2714,6 +2830,7 @@ async function writeReport() {
     `arch: ${report.arch}`,
     `render_backend: ${report.render_backend}`,
     `template_evidence_mode: ${report.template_evidence_mode}`,
+    `cmake_target_mode: ${report.cmake_target_mode}`,
     `source_file_mix: ${JSON.stringify(report.source_file_mix)}`,
     `workspace_file_count: ${report.workspace_file_count}`,
     `relevant_file_count: ${report.relevant_file_count}`,
@@ -2734,9 +2851,11 @@ async function writeReport() {
   await writeFile(RESULTS_TXT, text);
   await writeFile(BACKEND_RESULTS_TXT, text);
   await writeFile(MODE_RESULTS_TXT, text);
+  await writeFile(TARGET_MODE_RESULTS_TXT, text);
   console.log(`results: ${RESULTS_TXT}`);
   console.log(`backend_results: ${BACKEND_RESULTS_TXT}`);
   console.log(`mode_results: ${MODE_RESULTS_TXT}`);
+  console.log(`target_mode_results: ${TARGET_MODE_RESULTS_TXT}`);
 }
 
 async function run() {
@@ -2747,6 +2866,9 @@ async function run() {
   }
   if (!['missing', 'fresh', 'stale'].includes(CFG.templateEvidenceMode)) {
     fail(`unsupported SYNTHI_SCALE_TEMPLATE_EVIDENCE=${CFG.templateEvidenceMode}; expected missing, fresh, or stale`);
+  }
+  if (!SUPPORTED_CMAKE_TARGET_MODES.has(CFG.cmakeTargetMode)) {
+    fail(`unsupported SYNTHI_SCALE_CMAKE_TARGET_MODE=${CFG.cmakeTargetMode}; expected ${[...SUPPORTED_CMAKE_TARGET_MODES].join(', ')}`);
   }
   await resolveDockerContainers();
   report.repo_commit = await execText('git', ['rev-parse', 'HEAD'], 10000, true);
@@ -2760,6 +2882,7 @@ async function run() {
     SYNTHI_GPU_VENDOR: process.env.SYNTHI_GPU_VENDOR ?? '',
     SYNTHI_GPU_ARCH: arch,
     SYNTHI_SCALE_RENDER_BACKEND: CFG.renderBackend,
+    SYNTHI_SCALE_CMAKE_TARGET_MODE: CFG.cmakeTargetMode,
     SYNTHI_SCALE_HMR_DELTA_MODE: CFG.hmrDeltaMode,
     SYNTHI_SCALE_TEMPLATE_EVIDENCE: CFG.templateEvidenceMode,
     SYNTHI_SYNC_TO_GCS: process.env.SYNTHI_SYNC_TO_GCS ?? '',
@@ -2772,10 +2895,10 @@ async function run() {
   record(
     'gpu target',
     'pass',
-    `${vendor} arch=${arch} render_backend=${CFG.renderBackend} template_evidence=${CFG.templateEvidenceMode}`,
+    `${vendor} arch=${arch} render_backend=${CFG.renderBackend} cmake_target_mode=${CFG.cmakeTargetMode} template_evidence=${CFG.templateEvidenceMode}`,
   );
 
-  const project = buildScaleProject(vendor, arch, CFG.renderBackend);
+  const project = buildScaleProject(vendor, arch, CFG.renderBackend, CFG.cmakeTargetMode);
   report.workspace_file_count = project.files.length;
   report.relevant_file_count = project.relevantFiles.length;
   report.source_file_mix = sourceFileMix(project.relevantFiles);
@@ -2798,6 +2921,51 @@ async function run() {
   const additionalFiles = project.files
     .filter((f) => f.path !== project.primaryPath)
     .map((f) => ({ name: f.path, content: f.content }));
+
+  if (CFG.cmakeTargetMode === 'ambiguous') {
+    const ambiguousWorkerCheckpoint = await workerCheckpoint();
+    const ambiguousAiCheckpoint = await workerCheckpoint();
+    await compileUnsupportedViaMcp({
+      language: 'cpp',
+      filename: project.primaryPath,
+      source: primary.content,
+      files: additionalFiles,
+      is_gui: true,
+      use_ai_split: true,
+      user_requested_ai: true,
+      prefer_gpu_pipeline: true,
+      gpu_mode: vendor,
+      gpu_arch: arch,
+      slug: CFG.slug,
+      width: 800,
+      height: 600,
+    }, CFG.firstCompileTimeoutMs, 'ambiguous_cmake_target_rejected', 'target_resolution_ambiguous');
+
+    const workerFileMarker = await awaitLogRegex(
+      CFG.workerContainer,
+      new RegExp(`\\[AI Split\\] ENTER .*files=${project.files.length}.*gpu_arch=${arch}`),
+      1000,
+      ambiguousWorkerCheckpoint,
+    );
+    record('worker saw full ambiguous target file set', workerFileMarker.matched ? 'pass' : 'fail', workerFileMarker.snippet || `missing files=${project.files.length}`);
+    const aiAmbiguousMarker = await awaitLogRegex(
+      CFG.aiEngineContainer,
+      /deterministic unsupported project rejection: .*target resolution is ambiguous|target_resolution_ambiguous/,
+      1000,
+      ambiguousAiCheckpoint,
+    );
+    record(
+      'ai-engine rejected ambiguous CMake target before split generation',
+      aiAmbiguousMarker.matched ? 'pass' : 'fail',
+      aiAmbiguousMarker.snippet || 'missing target_resolution_ambiguous marker',
+    );
+    if (!workerFileMarker.matched || !aiAmbiguousMarker.matched) {
+      throw new Error('ambiguous target rejection evidence missing');
+    }
+    await writeReport();
+    console.log(`url: ${CFG.frontendUrl}/workspace/${CFG.slug}`);
+    return;
+  }
 
   if (CFG.renderBackend === 'vulkan') {
     await compileUnsupportedViaMcp({
