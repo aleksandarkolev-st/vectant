@@ -29,10 +29,16 @@ import { useSelector } from 'react-redux';
 
 export function useFocalCardState({ isSyncing = false } = {}) {
   const status = useSelector((s) => s.git?.status);
-  const unpushed = useSelector((s) => s.git?.unpushedCommits) || [];
-  const incoming = useSelector((s) => s.git?.incomingCommits) || [];
+  // Subscribe directly to the slice refs — fall back to `[]` inside
+  // the useMemo callback below so the dependency array stays stable
+  // across renders (a fresh `|| []` here would defeat memoization).
+  const unpushed = useSelector((s) => s.git?.unpushedCommits);
+  const incoming = useSelector((s) => s.git?.incomingCommits);
 
   return useMemo(() => {
+    const unpushedList = unpushed || [];
+    const incomingList = incoming || [];
+
     // No repository at all — biggest signal to show.
     if (status === null) {
       return { state: 'no-repo', ahead: 0, behind: 0, conflictCount: 0, fileCount: 0 };
@@ -45,8 +51,8 @@ export function useFocalCardState({ isSyncing = false } = {}) {
     if (hasConflicts) {
       return {
         state: 'conflicts',
-        ahead: unpushed.length,
-        behind: incoming.length,
+        ahead: unpushedList.length,
+        behind: incomingList.length,
         conflictCount,
         fileCount: status?.files?.length || 0,
       };
@@ -55,15 +61,15 @@ export function useFocalCardState({ isSyncing = false } = {}) {
     if (isSyncing) {
       return {
         state: 'syncing',
-        ahead: unpushed.length,
-        behind: incoming.length,
+        ahead: unpushedList.length,
+        behind: incomingList.length,
         conflictCount,
         fileCount: status?.files?.length || 0,
       };
     }
 
-    const ahead = unpushed.length;
-    const behind = incoming.length;
+    const ahead = unpushedList.length;
+    const behind = incomingList.length;
 
     if (ahead > 0 && behind > 0) {
       return { state: 'diverged', ahead, behind, conflictCount, fileCount: status?.files?.length || 0 };
