@@ -49,7 +49,7 @@ function CheckoutConflictDialog({ slug, branch, create, onClose }) {
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm">
             <div className="w-[380px] rounded-xl border shadow-2xl p-4" style={{ background: 'var(--bg-elevated, #18181b)', borderColor: 'var(--border-medium, #3f3f46)' }}>
                 <div className="flex items-start gap-2.5 mb-3">
-                    <AlertTriangle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+                    <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5" style={{ color: 'var(--accent-warning)' }} />
                     <div>
                         <h3 className="text-sm font-semibold" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
                             Uncommitted Changes
@@ -66,7 +66,11 @@ function CheckoutConflictDialog({ slug, branch, create, onClose }) {
                         onClick={handleStashAndCheckout}
                         disabled={busy}
                         className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors border disabled:opacity-50"
-                        style={{ background: 'rgba(59,130,246,0.10)', borderColor: 'rgba(59,130,246,0.30)', color: '#60a5fa' }}
+                        style={{
+                            background: 'color-mix(in srgb, var(--attention-purple) 10%, transparent)',
+                            borderColor: 'color-mix(in srgb, var(--attention-purple) 30%, transparent)',
+                            color: 'var(--attention-purple)'
+                        }}
                     >
                         <Archive className="w-3.5 h-3.5" />
                         Stash &amp; Checkout
@@ -76,7 +80,11 @@ function CheckoutConflictDialog({ slug, branch, create, onClose }) {
                         onClick={handleForceCheckout}
                         disabled={busy}
                         className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors border disabled:opacity-50"
-                        style={{ background: 'rgba(239,68,68,0.08)', borderColor: 'rgba(239,68,68,0.25)', color: '#f87171' }}
+                        style={{
+                            background: 'color-mix(in srgb, var(--accent-danger) 8%, transparent)',
+                            borderColor: 'color-mix(in srgb, var(--accent-danger) 25%, transparent)',
+                            color: 'var(--accent-danger)'
+                        }}
                     >
                         <Trash2 className="w-3.5 h-3.5" />
                         Force Checkout

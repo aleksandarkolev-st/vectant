@@ -205,7 +205,7 @@ export default function CommitGraphColumn({
           <>
             <circle
               cx={cx} cy={cy} r={r + 1}
-              fill="#0a0a0b"
+              style={{ fill: 'var(--bg-app)' }}
               stroke={graphNode.color}
               strokeWidth={2}
             />
@@ -222,7 +222,10 @@ export default function CommitGraphColumn({
           className="fixed z-[9999] pointer-events-none"
           style={{ left: tooltip.x + 12, top: tooltip.y - 8 }}
         >
-          <div className="bg-[#1c1c1e] border border-[#3f3f46] rounded-lg shadow-xl px-3 py-2 min-w-[200px] max-w-[320px]">
+          <div
+            className="rounded-lg shadow-xl px-3 py-2 min-w-[200px] max-w-[320px] border"
+            style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)' }}
+          >
             {/* Branch badges */}
             {tooltip.branches.length > 0 && (
               <div className="flex flex-wrap gap-1 mb-1.5">
@@ -247,7 +250,12 @@ export default function CommitGraphColumn({
                 {tooltip.tags.map((ref, i) => (
                   <span
                     key={i}
-                    className="text-[10px] px-1.5 py-0.5 rounded font-semibold text-amber-400 border border-amber-500/30 bg-amber-500/10"
+                    className="text-[10px] px-1.5 py-0.5 rounded font-semibold border"
+                    style={{
+                      color: 'var(--accent-warning)',
+                      borderColor: 'color-mix(in srgb, var(--accent-warning) 30%, transparent)',
+                      backgroundColor: 'color-mix(in srgb, var(--accent-warning) 10%, transparent)',
+                    }}
                   >
                     🏷 {ref.name}
                   </span>
@@ -255,20 +263,20 @@ export default function CommitGraphColumn({
               </div>
             )}
             {/* Commit info */}
-            <div className="text-[11px] text-[#e4e4e7] font-medium truncate">
+            <div className="text-[11px] font-medium truncate" style={{ color: 'var(--text-primary)' }}>
               {tooltip.commit.message}
             </div>
-            <div className="flex items-center gap-2 mt-1 text-[10px] text-[#71717a]">
+            <div className="flex items-center gap-2 mt-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
               <span>{tooltip.commit.author_name}</span>
               <span>·</span>
               <span>{tooltip.commit.date ? new Date(tooltip.commit.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''}</span>
             </div>
-            <code className="text-[9px] text-[#52525b] font-mono block mt-0.5">
+            <code className="text-[9px] font-mono block mt-0.5" style={{ color: 'var(--text-dim)' }}>
               {tooltip.commit.hash?.substring(0, 10)}
             </code>
             {/* Connection context */}
             {tooltip.connection && (
-              <div className="text-[10px] text-[#a1a1aa] mt-1 pt-1 border-t border-[#27272a] italic">
+              <div className="text-[10px] mt-1 pt-1 border-t italic" style={{ color: 'var(--text-secondary)', borderColor: 'var(--border-subtle)' }}>
                 {tooltip.connection}
               </div>
             )}

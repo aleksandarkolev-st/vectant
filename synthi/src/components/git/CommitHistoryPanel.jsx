@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import {
   buildCommitGraph, commitWebUrl, parseConventionalCommit,
-  ccColor, groupCommitsByDate, relativeTime, GRAPH_COLORS, hashBranchColor
+  groupCommitsByDate, relativeTime, GRAPH_COLORS, hashBranchColor
 } from './gitUtils';
 import CommitGraphColumn from './CommitGraphColumn';
 import InteractiveRebasePanel from './InteractiveRebasePanel';

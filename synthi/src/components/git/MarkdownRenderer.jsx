@@ -291,7 +291,7 @@ function CodeBlock({ lang, content }) {
           tokens.push(<span key={key++}>{rest.slice(lastIdx, match.index)}</span>);
         }
         tokens.push(
-          <span key={key++} style={{ color: '#c084fc' }}>{match[0]}</span>
+          <span key={key++} style={{ color: 'var(--attention-purple)' }}>{match[0]}</span>
         );
         lastIdx = match.index + match[0].length;
       }
@@ -379,11 +379,14 @@ function renderBlock(block, idx) {
             <li key={j} className="flex items-start gap-1.5 text-xs"
               style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
               {item.isTask ? (
-                <span className={`mt-0.5 w-3.5 h-3.5 rounded border flex-shrink-0 flex items-center justify-center text-[9px] ${
-                  item.checked
-                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400'
-                    : 'border-zinc-600'
-                }`}>
+                <span
+                  className="mt-0.5 w-3.5 h-3.5 rounded border flex-shrink-0 flex items-center justify-center text-[9px]"
+                  style={item.checked ? {
+                    background: 'color-mix(in srgb, var(--accent-success) 20%, transparent)',
+                    borderColor: 'color-mix(in srgb, var(--accent-success) 50%, transparent)',
+                    color: 'var(--accent-success)',
+                  } : { borderColor: 'var(--border-medium)' }}
+                >
                   {item.checked && '✓'}
                 </span>
               ) : (

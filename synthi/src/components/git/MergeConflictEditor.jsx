@@ -8,39 +8,52 @@ import { markResolved } from '@/redux/gitSlice';
 import { refreshWorkspaceThunk } from '@/redux/workspaceSlice';
 import { gitClient } from '@/services/gitClient';
 
-// ── Synthi dark theme colors (matching editor theme) ───────────────────────
+// ── Vectant brand-aligned conflict palette ─────────────────────────────────
+// Conflict blocks themselves feel danger-tinted (the conflict-marker rims
+// elsewhere in the SCM use --accent-danger) — but the two SIDES of a
+// conflict still need to be distinguishable, so we use two stops from the
+// brand gradient at opposite ends:
+//
+//   • Ours (current branch) → brand-stop-4 (blue, #3d6dff).
+//     Feels like "your stable thing."
+//   • Theirs (incoming)     → attention-purple (#b545ff).
+//     Feels like "the new thing demanding attention."
+//
+// Every value resolves at runtime to a CSS variable / color-mix expression
+// so the editor automatically follows the user's theme.
 const THEME = {
-    bg:            '#0c0d12',
-    headerBg:      '#0d0e14',
-    borderDim:     '#1a1b24',
+    bg:            'var(--bg-app)',
+    headerBg:      'var(--bg-panel)',
+    borderDim:     'var(--border-subtle)',
 
-    textPrimary:   '#e8eaf0',
-    textSecondary: '#7c80a0',
-    textMuted:     '#4d5168',
-    textAccent:    '#4aba9a',
+    textPrimary:   'var(--text-primary)',
+    textSecondary: 'var(--text-secondary)',
+    textMuted:     'var(--text-muted)',
+    textAccent:    'var(--attention-purple)',
 
-    // Current (ours) — teal-green tint
-    currentBg:        'rgba(58, 133, 116, 0.18)',
-    currentHeaderBg:  'rgba(58, 133, 116, 0.30)',
-    currentGutter:    'rgba(58, 133, 116, 0.65)',
-    currentLabel:     '#4aba9a',
+    // Current (ours) — brand blue stop.
+    currentBg:        'color-mix(in srgb, var(--brand-stop-4) 16%, transparent)',
+    currentHeaderBg:  'color-mix(in srgb, var(--brand-stop-4) 26%, transparent)',
+    currentGutter:    'color-mix(in srgb, var(--brand-stop-4) 60%, transparent)',
+    currentLabel:     'var(--brand-stop-4)',
 
-    // Incoming (theirs) — blue tint
-    incomingBg:       'rgba(122, 184, 248, 0.18)',
-    incomingHeaderBg: 'rgba(122, 184, 248, 0.30)',
-    incomingGutter:   'rgba(122, 184, 248, 0.65)',
-    incomingLabel:    '#7cb8f8',
+    // Incoming (theirs) — attention-purple.
+    incomingBg:       'color-mix(in srgb, var(--attention-purple) 14%, transparent)',
+    incomingHeaderBg: 'color-mix(in srgb, var(--attention-purple) 24%, transparent)',
+    incomingGutter:   'color-mix(in srgb, var(--attention-purple) 58%, transparent)',
+    incomingLabel:    'var(--attention-purple)',
 
-    // Separator
-    separatorBg:   'rgba(77, 81, 104, 0.30)',
+    // Separator between the two sides — calm slate-violet.
+    separatorBg:   'color-mix(in srgb, var(--accent-tertiary) 36%, transparent)',
 
-    // Action buttons
-    acceptBtn:      'rgba(74, 186, 154, 0.12)',
-    acceptBtnHover: 'rgba(74, 186, 154, 0.22)',
+    // Action buttons — accept variant uses an accent-success ambient so the
+    // user reads "this resolves" without it looking like a brand moment.
+    acceptBtn:      'color-mix(in srgb, var(--accent-success) 12%, transparent)',
+    acceptBtnHover: 'color-mix(in srgb, var(--accent-success) 22%, transparent)',
 
-    // Line numbers
-    lineNumBg: '#0d0e14',
-    lineNum:   '#454a5e',
+    // Line numbers — same gutter background pattern as the editor.
+    lineNumBg: 'var(--bg-panel)',
+    lineNum:   'var(--text-dim)',
 };
 
 // ── Conflict parser ─────────────────────────────────────────────────────────
@@ -299,7 +312,7 @@ export default function MergeConflictEditor({ slug, filePath, onClose, onResolve
                         className="text-xs px-2 py-0.5 rounded-full"
                         style={{
                             backgroundColor: remainingConflicts > 0 ? 'rgba(245, 158, 66, 0.15)' : 'rgba(74, 186, 154, 0.15)',
-                            color: remainingConflicts > 0 ? '#f59e42' : THEME.textAccent,
+                            color: remainingConflicts > 0 ? 'var(--accent-warning)' : THEME.textAccent,
                         }}
                     >
                         {remainingConflicts > 0
@@ -315,7 +328,7 @@ export default function MergeConflictEditor({ slug, filePath, onClose, onResolve
                             <button
                                 onClick={() => navigateConflict('prev')}
                                 disabled={currentConflictIdx === 0}
-                                className="p-1 rounded hover:bg-[#1e1f2e] disabled:opacity-30 transition-colors"
+                                className="p-1 rounded hover:bg-[var(--bg-elevated)] disabled:opacity-30 transition-colors"
                                 style={{ color: THEME.textSecondary }}
                             >
                                 <ChevronUp className="w-4 h-4" />
@@ -326,7 +339,7 @@ export default function MergeConflictEditor({ slug, filePath, onClose, onResolve
                             <button
                                 onClick={() => navigateConflict('next')}
                                 disabled={currentConflictIdx >= remainingConflicts - 1}
-                                className="p-1 rounded hover:bg-[#1e1f2e] disabled:opacity-30 transition-colors"
+                                className="p-1 rounded hover:bg-[var(--bg-elevated)] disabled:opacity-30 transition-colors"
                                 style={{ color: THEME.textSecondary }}
                             >
                                 <ChevronDown className="w-4 h-4" />
@@ -367,7 +380,7 @@ export default function MergeConflictEditor({ slug, filePath, onClose, onResolve
                         </button>
                     )}
 
-                    <button onClick={onClose} className="p-1.5 rounded hover:bg-[#1e1f2e] transition-colors" style={{ color: THEME.textSecondary }}>
+                    <button onClick={onClose} className="p-1.5 rounded hover:bg-[var(--bg-elevated)] transition-colors" style={{ color: THEME.textSecondary }}>
                         <X className="w-4 h-4" />
                     </button>
                 </div>
@@ -375,7 +388,14 @@ export default function MergeConflictEditor({ slug, filePath, onClose, onResolve
 
             {/* Error */}
             {error && (
-                <div className="px-4 py-2 text-sm" style={{ backgroundColor: 'rgba(255,87,87,0.10)', color: '#ff5757', borderBottom: '1px solid rgba(255,87,87,0.20)' }}>
+                <div
+                    className="px-4 py-2 text-sm"
+                    style={{
+                        backgroundColor: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)',
+                        color: 'var(--accent-danger)',
+                        borderBottom: '1px solid color-mix(in srgb, var(--accent-danger) 22%, transparent)',
+                    }}
+                >
                     {error}
                 </div>
             )}
@@ -434,7 +454,7 @@ export default function MergeConflictEditor({ slug, filePath, onClose, onResolve
                                 bgColor={THEME.separatorBg}
                                 isMarker
                                 markerLabel="═══════════════════════════════════════════"
-                                markerColor="#8b8fb0"
+                                markerColor="var(--accent-tertiary)"
                             />
 
                             {/* Incoming (theirs) lines */}

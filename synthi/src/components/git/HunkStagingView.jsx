@@ -217,23 +217,23 @@ function ContextMenu({ x, y, items, onClose }) {
   return (
     <div
       ref={ref}
-      className="fixed z-[999] bg-[#1e1e22] border border-[#3f3f46] rounded shadow-xl py-1 min-w-[180px]"
-      style={{ left: x, top: y }}
+      className="fixed z-[999] rounded shadow-xl py-1 min-w-[180px] border"
+      style={{ left: x, top: y, background: 'var(--bg-elevated)', borderColor: 'var(--border-medium)' }}
     >
       {items.map((item, i) => (
         item.separator ? (
-          <div key={i} className="border-t border-[#3f3f46] my-1" />
+          <div key={i} className="border-t border-[var(--border-medium)] my-1" />
         ) : (
           <button
             key={i}
             onClick={() => { item.action(); onClose(); }}
             disabled={item.disabled}
-            className="w-full text-left px-3 py-1.5 text-xs text-[#e4e4e7] hover:bg-[#3b82f6]/20 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+            className="w-full text-left px-3 py-1.5 text-xs text-[var(--text-primary)] hover:bg-[color-mix(in_srgb,var(--attention-purple)_15%,transparent)] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
           >
-            {item.icon && <item.icon className="w-3 h-3 text-[#71717a]" />}
+            {item.icon && <item.icon className="w-3 h-3 text-[var(--text-muted)]" />}
             {item.label}
             {item.shortcut && (
-              <span className="ml-auto text-[10px] text-[#52525b]">{item.shortcut}</span>
+              <span className="ml-auto text-[10px] text-[var(--text-dim)]">{item.shortcut}</span>
             )}
           </button>
         )
@@ -264,32 +264,32 @@ function HunkBlock({ hunk, selectedLines, onToggleLine, onToggleHunk, onSplitHun
   let newLineNum = hunk.newStart;
 
   return (
-    <div className="border border-[#27272a] rounded overflow-hidden">
+    <div className="border border-[var(--border-subtle)] rounded overflow-hidden">
       {/* Hunk header */}
-      <div className="flex items-center gap-1 px-2 py-1 bg-[#1a1a2e] border-b border-[#27272a]">
-        <button onClick={() => setCollapsed(!collapsed)} className="text-[#71717a] hover:text-[#a1a1aa]">
+      <div className="flex items-center gap-1 px-2 py-1 bg-[var(--bg-elevated)] border-b border-[var(--border-subtle)]">
+        <button onClick={() => setCollapsed(!collapsed)} className="text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
           {collapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
         </button>
         <button
           onClick={() => onToggleHunk(hunk)}
-          className="flex items-center gap-1 text-[#71717a] hover:text-[#a1a1aa]"
+          className="flex items-center gap-1 text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
           title={allChangeLinesSelected ? 'Deselect entire hunk' : 'Select entire hunk'}
         >
           {allChangeLinesSelected
-            ? <CheckSquare className="w-3.5 h-3.5 text-[#3b82f6]" />
+            ? <CheckSquare className="w-3.5 h-3.5 text-[var(--attention-purple)]" />
             : someChangeLinesSelected
-              ? <CheckSquare className="w-3.5 h-3.5 text-[#3b82f6]/50" />
+              ? <CheckSquare className="w-3.5 h-3.5 text-[color-mix(in_srgb,var(--attention-purple)_50%,transparent)]" />
               : <Square className="w-3.5 h-3.5" />
           }
         </button>
-        <span className="text-[10px] font-mono text-[#6366f1] truncate flex-1">{hunk.header}</span>
-        <span className="text-[9px] text-[#52525b] flex-shrink-0 mr-1">
+        <span className="text-[10px] font-mono text-[var(--accent-secondary)] truncate flex-1">{hunk.header}</span>
+        <span className="text-[9px] text-[var(--text-dim)] flex-shrink-0 mr-1">
           {changeCount} change{changeCount !== 1 ? 's' : ''}
         </span>
         {canSplit && (
           <button
             onClick={() => onSplitHunk(hunk)}
-            className="flex items-center gap-0.5 text-[10px] text-[#71717a] hover:text-[#a1a1aa] hover:bg-[#27272a] px-1 py-0.5 rounded transition-colors"
+            className="flex items-center gap-0.5 text-[10px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-elevated)] px-1 py-0.5 rounded transition-colors"
             title="Split this hunk into smaller pieces"
           >
             <Scissors className="w-3 h-3" />
@@ -318,9 +318,9 @@ function HunkBlock({ hunk, selectedLines, onToggleLine, onToggleHunk, onSplitHun
             }
 
             const bgColor = line.type === 'add'
-              ? (isSelected ? 'bg-emerald-500/15' : 'bg-emerald-500/5')
+              ? (isSelected ? 'bg-[color-mix(in_srgb,var(--accent-success)_15%,transparent)]' : 'bg-[color-mix(in_srgb,var(--accent-success)_5%,transparent)]')
               : line.type === 'remove'
-                ? (isSelected ? 'bg-red-500/15' : 'bg-red-500/5')
+                ? (isSelected ? 'bg-[color-mix(in_srgb,var(--accent-danger)_15%,transparent)]' : 'bg-[color-mix(in_srgb,var(--accent-danger)_5%,transparent)]')
                 : '';
 
             return (
@@ -335,8 +335,8 @@ function HunkBlock({ hunk, selectedLines, onToggleLine, onToggleHunk, onSplitHun
                 }}
               >
                 {/* Checkbox gutter */}
-                <div className={`w-6 flex-shrink-0 flex items-center justify-center border-r border-[#27272a]/50 ${
-                  isChange ? 'cursor-pointer hover:bg-[#3b82f6]/10' : ''
+                <div className={`w-6 flex-shrink-0 flex items-center justify-center border-r border-[color-mix(in_srgb,var(--border-subtle)_50%,transparent)] ${
+                  isChange ? 'cursor-pointer hover:bg-[color-mix(in_srgb,var(--attention-purple)_10%,transparent)]' : ''
                 }`}>
                   {isChange ? (
                     <button
@@ -344,32 +344,32 @@ function HunkBlock({ hunk, selectedLines, onToggleLine, onToggleHunk, onSplitHun
                       className="w-full h-full flex items-center justify-center"
                     >
                       {isSelected ? (
-                        <div className="w-3 h-3 rounded-sm bg-[#3b82f6] flex items-center justify-center">
+                        <div className="w-3 h-3 rounded-sm bg-[var(--attention-purple)] flex items-center justify-center">
                           <Check className="w-2 h-2 text-white" />
                         </div>
                       ) : (
-                        <div className="w-3 h-3 rounded-sm border border-[#3f3f46] group-hover/line:border-[#3b82f6]/50 transition-colors" />
+                        <div className="w-3 h-3 rounded-sm border border-[var(--border-medium)] group-hover/line:border-[color-mix(in_srgb,var(--attention-purple)_50%,transparent)] transition-colors" />
                       )}
                     </button>
                   ) : null}
                 </div>
                 {/* Old line number */}
-                <span className="w-8 text-right pr-1 text-[#3f3f46] select-none flex-shrink-0 border-r border-[#27272a]/30">
+                <span className="w-8 text-right pr-1 text-[var(--text-dim)] select-none flex-shrink-0 border-r border-[color-mix(in_srgb,var(--border-subtle)_30%,transparent)]">
                   {oldLn}
                 </span>
                 {/* New line number */}
-                <span className="w-8 text-right pr-1 text-[#3f3f46] select-none flex-shrink-0 border-r border-[#27272a]/30">
+                <span className="w-8 text-right pr-1 text-[var(--text-dim)] select-none flex-shrink-0 border-r border-[color-mix(in_srgb,var(--border-subtle)_30%,transparent)]">
                   {newLn}
                 </span>
                 {/* +/- prefix */}
                 <span className={`w-4 text-center flex-shrink-0 ${
-                  line.type === 'add' ? 'text-emerald-400' : line.type === 'remove' ? 'text-red-400' : 'text-[#3f3f46]'
+                  line.type === 'add' ? 'text-[var(--accent-success)]' : line.type === 'remove' ? 'text-[var(--accent-danger)]' : 'text-[var(--text-dim)]'
                 }`}>
                   {line.type === 'add' ? '+' : line.type === 'remove' ? '-' : ' '}
                 </span>
                 {/* Content */}
                 <span className={`flex-1 pr-2 whitespace-pre overflow-x-auto ${
-                  line.type === 'add' ? 'text-emerald-300' : line.type === 'remove' ? 'text-red-300' : 'text-[#a1a1aa]'
+                  line.type === 'add' ? 'text-[var(--accent-success)]' : line.type === 'remove' ? 'text-[var(--accent-danger)]' : 'text-[var(--text-secondary)]'
                 }`}>
                   {line.content}
                 </span>
@@ -618,25 +618,25 @@ export default function HunkStagingView({ slug, filePath, onClose }) {
   const isBusy = staging || reverting;
 
   return (
-    <div className="flex flex-col h-full bg-[#0a0a0b] text-[#e4e4e7]">
+    <div className="flex flex-col h-full bg-[var(--bg-app)] text-[var(--text-primary)]">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[#27272a] bg-[#111113]">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--border-subtle)] bg-[var(--bg-panel)]">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-xs font-semibold text-[#e4e4e7] truncate">{fileName}</span>
-          <span className="text-[10px] text-[#52525b] truncate" title={filePath}>{filePath}</span>
+          <span className="text-xs font-semibold text-[var(--text-primary)] truncate">{fileName}</span>
+          <span className="text-[10px] text-[var(--text-dim)] truncate" title={filePath}>{filePath}</span>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          <span className="text-[10px] text-[#71717a]">
+          <span className="text-[10px] text-[var(--text-muted)]">
             {selectedCount}/{totalChangeLines} lines
           </span>
-          <button onClick={selectAll} className="text-[10px] text-[#3b82f6] hover:text-[#60a5fa] transition-colors">
+          <button onClick={selectAll} className="text-[10px] text-[var(--attention-purple)] hover:opacity-80 transition-colors">
             All
           </button>
-          <button onClick={selectNone} className="text-[10px] text-[#71717a] hover:text-[#a1a1aa] transition-colors">
+          <button onClick={selectNone} className="text-[10px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors">
             None
           </button>
           {onClose && (
-            <button onClick={onClose} className="hover:bg-[#27272a] p-0.5 rounded text-[#71717a] hover:text-[#e4e4e7]">
+            <button onClick={onClose} className="hover:bg-[var(--bg-elevated)] p-0.5 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)]">
               <X className="w-3.5 h-3.5" />
             </button>
           )}
@@ -647,16 +647,16 @@ export default function HunkStagingView({ slug, filePath, onClose }) {
       <div className="flex-1 overflow-auto">
         {loading ? (
           <div className="flex items-center justify-center h-32">
-            <RefreshCw className="w-4 h-4 animate-spin text-[#3b82f6]" />
-            <span className="ml-2 text-xs text-[#71717a]">Loading diff…</span>
+            <RefreshCw className="w-4 h-4 animate-spin text-[var(--attention-purple)]" />
+            <span className="ml-2 text-xs text-[var(--text-muted)]">Loading diff…</span>
           </div>
         ) : error ? (
           <div className="p-4 text-center">
-            <p className="text-xs text-red-400">{error}</p>
+            <p className="text-xs text-[var(--accent-danger)]">{error}</p>
           </div>
         ) : !diff || diff.hunks.length === 0 ? (
           <div className="p-4 text-center">
-            <p className="text-xs text-[#52525b] italic">No diff available for this file</p>
+            <p className="text-xs text-[var(--text-dim)] italic">No diff available for this file</p>
           </div>
         ) : (
           <div className="p-2 space-y-2">
@@ -678,8 +678,8 @@ export default function HunkStagingView({ slug, filePath, onClose }) {
 
       {/* Footer / Action buttons */}
       {diff && diff.hunks.length > 0 && (
-        <div className="flex items-center justify-between px-3 py-2 border-t border-[#27272a] bg-[#111113]">
-          <span className="text-[10px] text-[#52525b]">
+        <div className="flex items-center justify-between px-3 py-2 border-t border-[var(--border-subtle)] bg-[var(--bg-panel)]">
+          <span className="text-[10px] text-[var(--text-dim)]">
             Right-click lines for more options · Ctrl+Enter to stage
           </span>
           <div className="flex items-center gap-2">
@@ -687,7 +687,7 @@ export default function HunkStagingView({ slug, filePath, onClose }) {
             <button
               onClick={handleRevertSelected}
               disabled={isBusy || selectedCount === 0}
-              className="flex items-center gap-1.5 bg-[#27272a] hover:bg-[#3f3f46] border border-[#3f3f46] disabled:opacity-50 disabled:cursor-not-allowed text-[#e4e4e7] px-3 py-1 rounded text-xs font-medium transition-colors"
+              className="flex items-center gap-1.5 bg-[var(--bg-elevated)] hover:opacity-90 border border-[var(--border-medium)] disabled:opacity-50 disabled:cursor-not-allowed text-[var(--text-primary)] px-3 py-1 rounded text-xs font-medium transition-colors"
             >
               {reverting ? (
                 <RefreshCw className="w-3 h-3 animate-spin" />
@@ -700,7 +700,7 @@ export default function HunkStagingView({ slug, filePath, onClose }) {
             <button
               onClick={handleStageSelected}
               disabled={isBusy || selectedCount === 0}
-              className="flex items-center gap-1.5 bg-[#3b82f6] hover:bg-[#2563eb] disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1 rounded text-xs font-medium transition-colors"
+              className="flex items-center gap-1.5 bg-[var(--attention-purple)] hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1 rounded text-xs font-medium transition-colors"
             >
               {staging ? (
                 <RefreshCw className="w-3 h-3 animate-spin" />
