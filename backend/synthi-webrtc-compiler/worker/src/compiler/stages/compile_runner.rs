@@ -24,7 +24,7 @@
 //     NOT regenerate it on AI splits — handler.rs enforces that side.
 //
 // Manifest fallback: when `compile_manifest` is None (pre-Phase-3 sidecar),
-// uses `CompileManifest::sdl2_default()` for backward compatibility, same
+// uses `CompileManifest::generic_fallback()` for manifest-less sidecars, same
 // pattern as compile_core / compile_gui.
 
 use crate::compiler::context::CompileContext;
@@ -103,7 +103,8 @@ fn push_if_absent(flags: &mut Vec<String>, flag: &str) {
 /// `host_runner_content`: the source code (already pulled out of the
 ///   AI split response or read from `host_runner.cpp` on disk).
 /// `compile_manifest`: when present, drives compiler/std/common_flags/
-///   runner_link_flags. When absent, falls back to `sdl2_default()`.
+///   runner_link_flags. When absent, uses a generic fallback with no
+///   framework-specific link inference.
 ///
 /// Returns:
 ///   - `Ok(Some(path))` on success — absolute path to the compiled binary
@@ -124,14 +125,13 @@ pub async fn compile_runner(
 
     let dir_path = &ctx.workspace_path;
 
-    // Resolve the effective manifest. Same pattern as compile_core.rs:
-    // if the universal split prompt landed a manifest, use it; else fall
-    // back to the SDL2 default which matches the legacy hardcoded shape.
+    // Resolve the effective manifest. Missing manifests use a generic fallback
+    // and do not infer framework-specific link flags.
     let owned_default_manifest;
     let effective_manifest: &CompileManifest = match compile_manifest {
         Some(m) => m,
         None => {
-            owned_default_manifest = CompileManifest::sdl2_default();
+            owned_default_manifest = CompileManifest::generic_fallback();
             &owned_default_manifest
         }
     };

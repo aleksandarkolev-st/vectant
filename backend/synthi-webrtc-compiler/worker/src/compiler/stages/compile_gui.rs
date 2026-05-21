@@ -34,7 +34,7 @@ pub async fn compile_gui(
     let effective_manifest: &CompileManifest = match compile_manifest {
         Some(m) => m,
         None => {
-            owned_default_manifest = CompileManifest::sdl2_default();
+            owned_default_manifest = CompileManifest::generic_fallback();
             &owned_default_manifest
         }
     };

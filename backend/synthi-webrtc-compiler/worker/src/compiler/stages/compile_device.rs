@@ -660,7 +660,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_source_returns_none() {
-        let mut manifest = CompileManifest::sdl2_default();
+        let mut manifest = CompileManifest::generic_fallback();
         manifest.gpu = Some(cuda_block());
         let tmp = tempfile::tempdir().unwrap();
         let out = compile_device_phase0(tmp.path(), tmp.path(), 1, "", None, &manifest)
@@ -671,7 +671,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_gpu_block_returns_none() {
-        let manifest = CompileManifest::sdl2_default();
+        let manifest = CompileManifest::generic_fallback();
         let tmp = tempfile::tempdir().unwrap();
         let out = compile_device_phase0(
             tmp.path(),
@@ -690,7 +690,7 @@ mod tests {
     #[tokio::test]
     async fn returns_none_when_feature_disabled() {
         // With gpu-hmr off the entry point declines regardless of input.
-        let mut manifest = CompileManifest::sdl2_default();
+        let mut manifest = CompileManifest::generic_fallback();
         manifest.gpu = Some(cuda_block());
         let tmp = tempfile::tempdir().unwrap();
         let out = compile_device_phase0(

@@ -215,7 +215,10 @@ async function detectArch(vendor) {
   const detected = String(out || '').trim().split(/\s+/).find((v) => (
     vendor === 'cuda' ? /^sm_\d+$/.test(v) : /^gfx[0-9][0-9a-z]*$/.test(v)
   ));
-  return detected || (vendor === 'rocm' ? 'gfx90a' : 'sm_80');
+  if (!detected) {
+    throw new Error(`could not auto-detect ${vendor} GPU arch; set SYNTHI_GPU_ARCH explicitly`);
+  }
+  return detected;
 }
 
 async function createWorkspace({ name, slug }) {
@@ -910,7 +913,6 @@ class SdlCanvas {
 #include "sdl_canvas.hpp"
 #include <SDL2/SDL.h>
 #include <cstddef>
-// LINK: -lSDL2
 namespace scale {
 SdlCanvas::SdlCanvas(int width, int height)
     : width_(width), height_(height), window_(nullptr), renderer_(nullptr), open_(true) {
@@ -1010,7 +1012,6 @@ class GlfwCanvas {
 #include <GLFW/glfw3.h>
 #include <GL/gl.h>
 #include <cstddef>
-// LINK: -lglfw -lGL
 namespace scale {
 GlfwCanvas::GlfwCanvas(int width, int height)
     : width_(width), height_(height), window_(nullptr), open_(true) {

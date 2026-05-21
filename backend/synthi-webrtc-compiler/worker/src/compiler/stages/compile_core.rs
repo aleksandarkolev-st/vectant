@@ -24,17 +24,13 @@ pub async fn compile_core(
 ) -> Result<Option<String>> {
     let dir_path = &ctx.workspace_path;
 
-    // ULTRAPLAN Phase 3: resolve the effective compile manifest.
-    // If the AI-synthesised manifest is present (universal split prompt
-    // path), use it to drive the g++ invocation. Otherwise fall back to
-    // the hardcoded SDL2 shape, which matches the pre-Phase-3 behavior
-    // exactly — so existing SDL2 projects compile identically whether or
-    // not a manifest is in the sidecar.
+    // Resolve the effective compile manifest. Missing manifests use a generic
+    // host fallback and do not infer framework-specific link flags.
     let owned_default_manifest;
     let effective_manifest: &CompileManifest = match compile_manifest {
         Some(m) => m,
         None => {
-            owned_default_manifest = CompileManifest::sdl2_default();
+            owned_default_manifest = CompileManifest::generic_fallback();
             &owned_default_manifest
         }
     };

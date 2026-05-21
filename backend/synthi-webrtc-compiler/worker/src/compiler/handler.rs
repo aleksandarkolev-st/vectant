@@ -1173,8 +1173,8 @@ pub async fn handle_compile_request(
             // ULTRAPLAN Phase 3: persist the AI-synthesised compile manifest
             // alongside the architecture. On Tier 2/3 the FallbackDeterministic
             // branch reads it back from the sidecar. `null` is the "no manifest
-            // in this response" sentinel — downstream treats it as "fall back
-            // to sdl2_default()".
+            // in this response" sentinel; downstream uses a generic fallback
+            // and does not infer framework link flags.
             let manifest_json = result
                 .get("_synthi_manifest")
                 .cloned()
@@ -1321,7 +1321,7 @@ pub async fn handle_compile_request(
                 // (cached split doc — may be empty on pre-migration sidecars),
                 // and `compile_manifest` (AI-synthesised build recipe from the
                 // universal split prompt — may be null on pre-Phase-3 sidecars,
-                // in which case downstream falls back to sdl2_default()) from
+                // in which case downstream uses a generic fallback) from
                 // the same sidecar file in one pass.
                 let (sidecar_meta, original_source, architecture_md, sidecar_manifest_json) = {
                     if let Ok(meta_raw) = tokio::fs::read_to_string(&sidecar_path).await {
@@ -2714,7 +2714,7 @@ pub async fn handle_compile_request(
     //      through) and any edge case where the split_data was built
     //      without the manifest embedded.
     //   3. None → downstream `compile_core` / `compile_gui` fall back to
-    //      `CompileManifest::sdl2_default()`, preserving exact backward
+    //      `CompileManifest::generic_fallback()`, preserving generic host
     //      compatibility with pre-universal-prompt projects.
     let compile_manifest: Option<CompileManifest> = {
         let from_request = req
@@ -2769,7 +2769,7 @@ pub async fn handle_compile_request(
             m.hot_reload_mode.as_str(),
             m.tier0_safe(),
         ),
-        None => eprintln!("[HMR] compile_manifest: none (falling back to sdl2_default downstream)"),
+        None => eprintln!("[HMR] compile_manifest: none (generic fallback downstream)"),
     }
 
     if let Some(gpu) = compile_manifest.as_ref().and_then(|m| m.gpu.as_ref()) {

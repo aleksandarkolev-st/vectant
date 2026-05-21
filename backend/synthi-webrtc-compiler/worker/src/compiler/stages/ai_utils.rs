@@ -628,7 +628,8 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // split Value so handler.rs can pull it into the sidecar and thread it
     // into compile_core / compile_gui. If the field is absent (old sidecar,
     // backend running pre-Phase-2 code, or parse failure on Python side),
-    // downstream falls back to `CompileManifest::sdl2_default()`.
+    // downstream uses `CompileManifest::generic_fallback()` without inferring
+    // framework link flags.
     if let Some(manifest) = raw_response.get("manifest") {
         if !manifest.is_null() {
             let manifest_size = manifest.to_string().len();
@@ -640,10 +641,10 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
                 obj.insert("_synthi_manifest".to_string(), manifest.clone());
             }
         } else {
-            eprintln!("[AI Split] manifest field is null (fallback to sdl2 default downstream)");
+            eprintln!("[AI Split] manifest field is null (generic fallback downstream)");
         }
     } else {
-        eprintln!("[AI Split] no manifest in response (fallback to sdl2 default downstream)");
+        eprintln!("[AI Split] no manifest in response (generic fallback downstream)");
     }
 
     if let Some(agentic_report) = raw_response.get("agentic_report") {

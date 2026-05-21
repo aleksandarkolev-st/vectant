@@ -1789,8 +1789,8 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             )
 
         # Parse + validate the manifest (Phase 2). If malformed, log and
-        # return `manifest=None` so the Rust worker falls back to hardcoded
-        # SDL2 defaults (backward compat with pre-universal sidecars).
+        # return `manifest=None` so the Rust worker uses a generic fallback
+        # without inferring framework link flags.
         manifest_parsed: Optional[BuildManifest] = None
         manifest_out: Optional[dict] = None
         if manifest_dict is not None:
@@ -1824,13 +1824,13 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             except Exception as e:
                 logger.warning(
                     f"[split/verified] manifest validation failed: {e}. "
-                    "Proceeding with None (worker will fall back to SDL2 default)."
+                    "Proceeding with None (worker will use generic fallback)."
                 )
                 manifest_out = None
         else:
             logger.info(
                 "[split/verified] no <synthi_build_manifest> in response "
-                "(pre-universal prompt? worker falls back to SDL2 default)"
+                "(pre-universal prompt? worker uses generic fallback)"
             )
 
         # Clean up markdown if present
@@ -1891,8 +1891,8 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             # hot_reload_mode, and confidence fields — emitted by the AI
             # inside <synthi_build_manifest>...</synthi_build_manifest>. May
             # be None if the response didn't contain one (pre-universal
-            # prompt, or model failed to emit the block) — worker falls
-            # back to hardcoded SDL2 defaults.
+            # prompt, or model failed to emit the block) — worker uses
+            # a generic fallback and does not infer framework link flags.
             "manifest": manifest_out,
             "lang": req.lang,
             "verified": True,

@@ -136,7 +136,9 @@ function archProbeCommand(vendor) {
 
 async function detectArch(vendor) {
   if (CFG.gpuArch && CFG.gpuArch.toLowerCase() !== 'auto') return CFG.gpuArch;
-  if (CFG.mcpTransport !== 'docker') return vendor === 'rocm' ? 'gfx90a' : 'sm_80';
+  if (CFG.mcpTransport !== 'docker') {
+    throw new Error(`could not auto-detect ${vendor} GPU arch outside docker transport; set SYNTHI_GPU_ARCH explicitly`);
+  }
   const out = await execText('docker', [
     'exec',
     CFG.workerContainer,
@@ -147,7 +149,10 @@ async function detectArch(vendor) {
   const detected = String(out || '').trim().split(/\s+/).find((v) => (
     vendor === 'cuda' ? /^sm_\d+$/.test(v) : /^gfx[0-9][0-9a-z]*$/.test(v)
   ));
-  return detected || (vendor === 'rocm' ? 'gfx90a' : 'sm_80');
+  if (!detected) {
+    throw new Error(`could not auto-detect ${vendor} GPU arch; set SYNTHI_GPU_ARCH explicitly`);
+  }
+  return detected;
 }
 
 async function createWorkspace({ name, slug }) {

@@ -540,7 +540,7 @@ function archForVendor(vendor, tc = null) {
   if (CFG.gpuArch && CFG.gpuArch.toLowerCase() !== 'auto') return CFG.gpuArch;
   if (vendor === 'cuda' && tc?.worker?.cudaArch) return tc.worker.cudaArch;
   if (vendor === 'rocm' && tc?.worker?.rocmArch) return tc.worker.rocmArch;
-  return vendor === 'rocm' ? 'gfx90a' : 'sm_80';
+  throw new Error(`could not resolve ${vendor} GPU arch; set SYNTHI_GPU_ARCH explicitly`);
 }
 
 async function probeToolchain() {
@@ -579,8 +579,8 @@ function vendorsForConfig(tc) {
   if (CFG.vendor === 'auto') {
     const detected = autoVendorFromToolchain(tc);
     if (detected) return [detected];
-    record('preflight', 'auto GPU vendor detection', 'warn', 'no CUDA/ROCm worker GPU/toolchain detected; defaulting to cuda for skip-aware validation');
-    return ['cuda'];
+    record('preflight', 'auto GPU vendor detection', 'skip', 'no CUDA/ROCm worker GPU/toolchain detected');
+    return [];
   }
   return [CFG.vendor];
 }

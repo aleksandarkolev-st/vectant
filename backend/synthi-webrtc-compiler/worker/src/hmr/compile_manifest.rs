@@ -5,8 +5,8 @@
 // The compile manifest is the machine-readable config the AI emits
 // inside the split response (via <synthi_build_manifest> XML tags) to
 // tell the worker HOW to compile the split modules for the user's
-// chosen library. Without it, the worker hardcodes `g++ -lSDL2` and
-// only SDL2 projects work.
+// chosen library. Without it, the worker uses a generic host fallback and
+// does not infer framework link flags.
 //
 // With it, the worker reads per-project:
 //   - compiler (g++ or clang++)
@@ -35,8 +35,7 @@
 // On Tier 2 / Tier 3 compile paths, handler.rs reads it back and threads
 // `Option<&CompileManifest>` into compile_core / compile_gui. If None
 // (pre-universal-prompt sidecars, manifest omitted, JSON parse failure),
-// the compile stages fall back to hardcoded SDL2 defaults — no regression
-// on existing projects.
+// the compile stages use `CompileManifest::generic_fallback()`.
 //
 // See HMR_AGNOSTIC_ULTRAPLAN.md §4 for the full schema and §5.4 for the
 // hot_reload_mode semantics.
@@ -387,10 +386,57 @@ fn default_std() -> String {
 }
 
 impl CompileManifest {
-    /// Construct a hardcoded SDL2 default for backward compatibility with
-    /// projects that predate the universal split prompt (sidecars without
-    /// a `compile_manifest` field). Matches the old hardcoded compile_core
-    /// / compile_gui behavior exactly.
+    /// Construct a technology-agnostic fallback for old sidecars that do not
+    /// carry a compile manifest. It preserves the generic host-module compile
+    /// flags but intentionally does not infer framework or GPU link flags.
+    pub fn generic_fallback() -> Self {
+        Self {
+            compiler: Compiler::GccPlusPlus,
+            std: "c++26".to_string(),
+            common_flags: vec![
+                "-shared".to_string(),
+                "-fPIC".to_string(),
+                "-O0".to_string(),
+                "-fno-merge-constants".to_string(),
+                "-D_POSIX_C_SOURCE=199309L".to_string(),
+                "-g".to_string(),
+                "-gdwarf-4".to_string(),
+                "-fno-omit-frame-pointer".to_string(),
+                "-fdiagnostics-format=json".to_string(),
+            ],
+            core_link_flags: Vec::new(),
+            gui_link_flags: Vec::new(),
+            shared_link_flags: Vec::new(),
+            runner_link_flags: vec!["-ldl".to_string()],
+            files: vec![
+                "shared.h".to_string(),
+                "core.cpp".to_string(),
+                "gui.cpp".to_string(),
+                "host_runner.cpp".to_string(),
+            ],
+            module_files: ModuleFiles {
+                shared: Some("shared.h".to_string()),
+                core: Some("core.cpp".to_string()),
+                gui: Some("gui.cpp".to_string()),
+                host_runner: Some("host_runner.cpp".to_string()),
+                device: None,
+            },
+            system_packages: Vec::new(),
+            hot_reload_mode: HotReloadMode::Swap,
+            confidence: ConfidenceBlock {
+                overall: ConfidenceLevel::Low,
+                runner_synthesis: ConfidenceLevel::Low,
+                link_flags: ConfidenceLevel::Low,
+                notes: "Generic fallback: no framework or GPU link flags inferred.".to_string(),
+            },
+            build_steps: None,
+            gpu: None,
+        }
+    }
+
+    /// Legacy SDL2 fixture retained for unit tests that verify old manifest
+    /// shape handling. Production fallbacks must use `generic_fallback()`.
+    #[cfg(test)]
     pub fn sdl2_default() -> Self {
         Self {
             compiler: Compiler::GccPlusPlus,
@@ -429,7 +475,7 @@ impl CompileManifest {
                 overall: ConfidenceLevel::High,
                 runner_synthesis: ConfidenceLevel::High,
                 link_flags: ConfidenceLevel::High,
-                notes: "Hardcoded SDL2 default (no manifest in sidecar).".to_string(),
+                notes: "Legacy SDL2 test fixture.".to_string(),
             },
             build_steps: None,
             gpu: None,
@@ -437,7 +483,8 @@ impl CompileManifest {
     }
 
     /// Parse a manifest from the sidecar's `compile_manifest` JSON field.
-    /// Returns `None` on parse failure — caller falls back to `sdl2_default()`.
+    /// Returns `None` on parse failure. Callers use a generic fallback or
+    /// request a verified re-split; missing manifests never infer link flags.
     pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
     }
@@ -446,10 +493,8 @@ impl CompileManifest {
     /// modules (`Core`, `Gui`, `Shared`, `HostRunner`) use the manifest's
     /// host `compiler` field (`g++` / `clang++`). The device module uses
     /// the GPU block's `device_compiler` (`nvcc` / `clang-cuda` / `hipcc`)
-    /// when present; falls back to `"nvcc"` if `Device` is requested on a
-    /// manifest without a `gpu` block (defensive — the orchestrator
-    /// shouldn't dispatch a Device build without the block, but the
-    /// fallback keeps the helper total).
+    /// when present. Requesting `Device` on a manifest without a `gpu` block is
+    /// a caller bug and is rejected before device compilation is dispatched.
     ///
     /// Spec: GPU_HMR_ULTRAPLAN §5.3.
     pub fn select_compiler(&self, kind: ModuleKind) -> &'static str {
@@ -458,7 +503,7 @@ impl CompileManifest {
                 .gpu
                 .as_ref()
                 .map(|g| g.device_compiler.executable())
-                .unwrap_or("nvcc"),
+                .expect("device compiler selection requires manifest.gpu"),
             _ => self.compiler.executable(),
         }
     }
@@ -863,12 +908,10 @@ mod tests {
     }
 
     #[test]
-    fn select_compiler_falls_back_when_no_gpu_block() {
-        // Defensive: an orchestrator that wrongly dispatches a Device
-        // build on a host-only manifest still gets a sane default
-        // rather than a panic.
+    fn select_compiler_rejects_device_when_no_gpu_block() {
         let m: CompileManifest = serde_json::from_str(SAMPLE_SDL2_JSON).unwrap();
-        assert_eq!(m.select_compiler(ModuleKind::Device), "nvcc");
+        let result = std::panic::catch_unwind(|| m.select_compiler(ModuleKind::Device));
+        assert!(result.is_err());
         assert_eq!(m.select_compiler(ModuleKind::Core), "g++");
     }
 

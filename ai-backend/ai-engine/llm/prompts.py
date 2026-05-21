@@ -4363,7 +4363,7 @@ fields, emit a `files` array plus a `gpu` sub-object:
     "gpu": {
       "vendor": "cuda",                       // or "rocm"
       "device_compiler": "nvcc",              // or "clang-cuda" or "hipcc"
-      "arch": ["sm_80"],                      // ["gfx90a"] for ROCm
+      "arch": ["<selected-target-arch>"],
       "device_flags": ["-O3", "-lineinfo", "--use_fast_math"],
       "runtime_libs": ["cudart", "cuda"],     // ["amdhip64"] for ROCm
       "snapshot_mode": "auto",
@@ -4371,9 +4371,10 @@ fields, emit a `files` array plus a `gpu` sub-object:
     }
 
 `fatbin_strategy` must be `"sidecar_module"` — embedded fatbins are
-not HMR-compatible. Pick `arch` from the source's targeting hints
-(comments, `#pragma`, etc.) or default to `sm_80` (CUDA) /
-`gfx90a` (ROCm) when the source doesn't specify.
+not HMR-compatible. Pick `arch` only from selected-target build
+metadata, explicit request metadata, or source targeting hints. Do not
+invent a CUDA or ROCm default when the target architecture is missing;
+emit a verifier-readable manifest failure instead.
 Use vendor-correct device flags: CUDA may use `--use_fast_math`, but
 ROCm/HIP must not. A ROCm `device_flags` list should usually be
 `["-O3", "-lineinfo"]`.
