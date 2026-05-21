@@ -443,16 +443,26 @@ def _resolve_quoted_include(
     return None
 
 
-def _device_reachable_source_files(source_files: Mapping[str, str]) -> Dict[str, str]:
+def _device_reachable_source_files(
+    source_files: Mapping[str, str],
+    roots: Optional[Sequence[str]] = None,
+) -> Dict[str, str]:
     normalized = {path.replace("\\", "/"): source for path, source in source_files.items()}
-    roots = sorted(
-        path
-        for path, source in normalized.items()
-        if path.lower().endswith((".cu", ".hip"))
-        and ("__global__" in source or "__device__" in source)
-    )
+    if roots:
+        root_paths = sorted(
+            path.replace("\\", "/")
+            for path in roots
+            if path and path.replace("\\", "/") in normalized
+        )
+    else:
+        root_paths = sorted(
+            path
+            for path, source in normalized.items()
+            if path.lower().endswith((".cu", ".hip"))
+            and ("__global__" in source or "__device__" in source)
+        )
     reachable: Dict[str, str] = {}
-    queue = list(roots)
+    queue = list(root_paths)
     while queue:
         path = queue.pop(0)
         if path in reachable:
@@ -472,8 +482,44 @@ def _device_reachable_source_files(source_files: Mapping[str, str]) -> Dict[str,
     return {path: reachable[path] for path in sorted(reachable)}
 
 
-def _source_device_preservation_contract(source_files: Mapping[str, str]) -> str:
-    device_sources = _device_reachable_source_files(source_files)
+def _device_roots_from_context_report(source_context_report: Mapping[str, Any]) -> List[str]:
+    topology = source_context_report.get("deviceTuTopology")
+    units = topology.get("deviceTranslationUnits") if isinstance(topology, Mapping) else None
+    if not isinstance(units, list):
+        return []
+    roots = []
+    for unit in units:
+        if isinstance(unit, Mapping) and unit.get("path"):
+            roots.append(str(unit["path"]).replace("\\", "/"))
+    return roots
+
+
+def _source_files_scoped_to_context(
+    source_files: Mapping[str, str],
+    source_context_report: Mapping[str, Any],
+) -> Dict[str, str]:
+    normalized = {path.replace("\\", "/"): source for path, source in source_files.items()}
+    included = source_context_report.get("included")
+    scoped_paths = {
+        str(item.get("path")).replace("\\", "/")
+        for item in included or []
+        if isinstance(item, Mapping) and item.get("path")
+    }
+    roots = _device_roots_from_context_report(source_context_report)
+    scoped_paths.update(_device_reachable_source_files(normalized, roots=roots))
+    scoped = {
+        path: normalized[path]
+        for path in sorted(scoped_paths)
+        if path in normalized
+    }
+    return scoped or dict(normalized)
+
+
+def _source_device_preservation_contract(
+    source_files: Mapping[str, str],
+    roots: Optional[Sequence[str]] = None,
+) -> str:
+    device_sources = _device_reachable_source_files(source_files, roots=roots)
     if not device_sources:
         return ""
     kernels = sorted(
@@ -754,6 +800,11 @@ async def run_kernel_splitter(
         source_map,
         focus=focus,
     )
+    scoped_source_map = _source_files_scoped_to_context(
+        source_map,
+        source_context_report,
+    )
+    device_preservation_roots = _device_roots_from_context_report(source_context_report)
     graphics_backend = source_context_report.get("graphicsBackend")
     if isinstance(graphics_backend, dict) and graphics_backend.get("supportStatus") == "unsupported":
         reason_codes = graphics_backend.get("reasonCodes") or []
@@ -798,7 +849,10 @@ async def run_kernel_splitter(
             for part in [
                 extra_instructions,
                 project_context,
-                _source_device_preservation_contract(source_map),
+                _source_device_preservation_contract(
+                    scoped_source_map,
+                    roots=device_preservation_roots,
+                ),
             ]
             if part
         ),
@@ -831,7 +885,7 @@ async def run_kernel_splitter(
         files=parsed["files"],
         manifest_arch=arch_list,
         manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
-        source_files=source_map,
+        source_files=scoped_source_map,
     )
     repair_report: dict = {
         "schemaVersion": "synthi.gpu.split_repair.v1",
@@ -845,7 +899,7 @@ async def run_kernel_splitter(
         repaired_files, repair_report = repair_split_artifacts(
             files=parsed["files"],
             manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
-            source_files=source_map,
+            source_files=scoped_source_map,
             verification=verification,
         )
         if repair_report.get("repaired"):
@@ -853,7 +907,7 @@ async def run_kernel_splitter(
                 files=repaired_files,
                 manifest_arch=arch_list,
                 manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
-                source_files=source_map,
+                source_files=scoped_source_map,
             )
             parsed["files"] = repaired_files
             verification = repaired_verification

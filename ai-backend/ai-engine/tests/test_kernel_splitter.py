@@ -15,6 +15,7 @@ from agents.kernel_splitter import (
     KernelSplitterUnsupportedProjectError,
     build_split_retry_prompt,
     _project_source_context,
+    _source_files_scoped_to_context,
     _source_device_preservation_contract,
     build_prompt,
     parse_kernel_split_response,
@@ -24,6 +25,7 @@ from agents.kernel_splitter import (
     split_agentic_report,
     split_attempt_record,
 )
+from agents.gpu_source_context import build_project_source_context
 from verifier_gpu import SplitVerificationResult, Violation
 
 
@@ -114,6 +116,62 @@ def test_missing_optional_blocks_are_empty():
     assert parsed["kernel_hashes"] == {}
     assert parsed["launch_graph"] == []
     assert parsed["architecture_md"] == ""
+
+
+def test_device_preservation_contract_uses_selected_context_scope():
+    files = {
+        "HIP-Basic/saxpy/main.hip": """
+        #include <hip/hip_runtime.h>
+        __global__ void saxpy_kernel(float* y, const float* x) { y[threadIdx.x] = x[threadIdx.x]; }
+        int main(){ return 0; }
+        """,
+        "Applications/fdtd/main.hip": """
+        #include <hip/hip_runtime.h>
+        __global__ void apply_source_kernel(float* ez) { ez[threadIdx.x] = 1.0f; }
+        int main(){ return 0; }
+        """,
+        "compile_commands.json": """
+        [
+          {
+            "directory": "/repo/HIP-Basic/saxpy/build",
+            "file": "/repo/HIP-Basic/saxpy/main.hip",
+            "arguments": ["hipcc", "--offload-arch=gfx1201", "-c", "/repo/HIP-Basic/saxpy/main.hip"]
+          }
+        ]
+        """,
+        ".cmake/api/v1/reply/codemodel-v2-release.json": """
+        {
+          "kind": "codemodel",
+          "configurations": [
+            {
+              "name": "Release",
+              "targets": [
+                {"name": "hip_saxpy", "id": "hip_saxpy::@real", "jsonFile": "target-hip_saxpy-Release.json"},
+                {"name": "fdtd", "id": "fdtd::@real", "jsonFile": "target-fdtd-Release.json"}
+              ]
+            }
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-hip_saxpy-Release.json": """
+        {"name": "hip_saxpy", "id": "hip_saxpy::@real", "type": "EXECUTABLE", "sources": [{"path": "HIP-Basic/saxpy/main.hip"}]}
+        """,
+        ".cmake/api/v1/reply/target-fdtd-Release.json": """
+        {"name": "fdtd", "id": "fdtd::@real", "type": "EXECUTABLE", "sources": [{"path": "Applications/fdtd/main.hip"}]}
+        """,
+    }
+
+    _prompt, report = build_project_source_context(files, focus="HIP-Basic/saxpy/main.hip")
+    scoped = _source_files_scoped_to_context(files, report)
+    contract = _source_device_preservation_contract(
+        scoped,
+        roots=[unit["path"] for unit in report["deviceTuTopology"]["deviceTranslationUnits"]],
+    )
+
+    assert "HIP-Basic/saxpy/main.hip" in scoped
+    assert "Applications/fdtd/main.hip" not in scoped
+    assert "saxpy_kernel" in contract
+    assert "apply_source_kernel" not in contract
 
 
 def test_normalizes_nested_file_objects():
