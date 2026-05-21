@@ -20,81 +20,17 @@ import {
 } from './gitUtils';
 import CommitGraphColumn from './CommitGraphColumn';
 import InteractiveRebasePanel from './InteractiveRebasePanel';
+import './scm/scm-tokens.css';
 
 /* ────────────────────────────────────────────────────────────
- * CommitHistoryPanel — SourceTree-style advanced history view
+ * CommitHistoryPanel — SourceTree-style advanced history view,
+ * restyled for the Vectant design language.  Calm slate-violet
+ * baseline, attention-purple for selected commit + HEAD, danger
+ * red for revert, brand-bar treatment reserved for unpushed.
  *
- * Features:
- *  • Visual commit graph with lane-based rendering
- *  • Search / filter by author, message, hash
- *  • Commit detail view with diff + file list
- *  • Right-click context menus (cherry-pick, revert, copy hash)
- *  • Infinite scroll with paginated loading
+ * Behavior preserved: graph, search/filter, context menu, commit
+ * detail, infinite scroll via Virtuoso.
  * ──────────────────────────────────────────────────────────── */
-
-/* ─── Graph Column SVG ──────────────────────────────── */
-
-function GraphColumn({ graphNode, rowHeight = 36, totalLanes }) {
-  if (!graphNode) return <div style={{ width: 20 }} />;
-  const cols = Math.max(totalLanes || 1, graphNode.laneCount || 1);
-  const colW = 14;
-  const width = cols * colW + 6;
-  const cx = graphNode.col * colW + colW / 2 + 3;
-  const cy = rowHeight / 2;
-  const r = graphNode.isMerge ? 5 : 3.5;
-
-  return (
-    <svg width={width} height={rowHeight} className="flex-shrink-0" style={{ minWidth: width }}>
-      {/* Active lane rails — straight vertical lines through this row */}
-      {graphNode.activeLanes.map((lane, idx) => {
-        if (lane === null) return null;
-        const x = idx * colW + colW / 2 + 3;
-        const laneColor = graphNode.activeLaneColors?.[idx] || GRAPH_COLORS[idx % GRAPH_COLORS.length];
-        return (
-          <line key={`lane-${idx}`} x1={x} y1={0} x2={x} y2={rowHeight}
-            stroke={laneColor} strokeWidth={1.5} opacity={0.35} />
-        );
-      })}
-      {/* Current commit's own vertical rail (above and below node) */}
-      <line x1={cx} y1={0} x2={cx} y2={cy - r - 1}
-        stroke={graphNode.color} strokeWidth={1.5} opacity={0.6} />
-      <line x1={cx} y1={cy + r + 1} x2={cx} y2={rowHeight}
-        stroke={graphNode.color} strokeWidth={1.5} opacity={0.6} />
-      {/* Merge curves from parent columns into the commit node */}
-      {graphNode.mergeFromCols.map((mc, i) => {
-        const mx = mc * colW + colW / 2 + 3;
-        const d = `M ${mx} 0 C ${mx} ${cy * 0.55}, ${cx} ${cy * 0.45}, ${cx} ${cy}`;
-        const mergeColor = graphNode.activeLaneColors?.[mc] || GRAPH_COLORS[mc % GRAPH_COLORS.length];
-        return (
-          <path key={`merge-${i}`} d={d} fill="none"
-            stroke={mergeColor} strokeWidth={1.5} opacity={0.55} />
-        );
-      })}
-      {/* Closing lanes — branches merging into this commit's lane */}
-      {(graphNode.closingLanes || []).map((cl, i) => {
-        const clx = cl * colW + colW / 2 + 3;
-        const d = `M ${clx} 0 C ${clx} ${cy * 0.55}, ${cx} ${cy * 0.45}, ${cx} ${cy}`;
-        const closeColor = graphNode.activeLaneColors?.[cl] || GRAPH_COLORS[cl % GRAPH_COLORS.length];
-        return (
-          <path key={`close-${i}`} d={d} fill="none"
-            stroke={closeColor} strokeWidth={1.5} opacity={0.45} />
-        );
-      })}
-      {/* Commit node — merge nodes are larger & hollow, regular commits are solid */}
-      {graphNode.isMerge ? (
-        <>
-          <circle cx={cx} cy={cy} r={r + 1}
-            fill="#0a0a0b" stroke={graphNode.color} strokeWidth={2} />
-          <circle cx={cx} cy={cy} r={2}
-            fill={graphNode.color} />
-        </>
-      ) : (
-        <circle cx={cx} cy={cy} r={r}
-          fill={graphNode.color} />
-      )}
-    </svg>
-  );
-}
 
 /* ─── Context menu ──────────────────────────────────── */
 
@@ -130,23 +66,24 @@ function ContextMenu({ x, y, commit, onClose, onAction }) {
   return (
     <div
       ref={menuRef}
-      className="fixed z-[9999] bg-[#1c1c1e] border border-[#3f3f46] rounded-lg shadow-xl py-1 min-w-[200px]"
-      style={{ left: x, top: y }}
+      className="fixed z-[9999] rounded-lg shadow-xl py-1 min-w-[200px]"
+      style={{
+        left: x, top: y,
+        background: 'var(--bg-panel)',
+        border: '1px solid var(--border-subtle)',
+      }}
     >
       {items.map((item, i) =>
         item.divider ? (
-          <div key={i} className="h-px bg-[#27272a] my-1" />
+          <div key={i} className="h-px my-1" style={{ background: 'var(--border-subtle)' }} />
         ) : (
           <button
             key={i}
             onClick={() => { onAction(item.action, commit); onClose(); }}
-            className={`w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors
-              ${item.danger
-                ? 'text-red-400 hover:bg-red-500/10'
-                : 'text-[#e4e4e7] hover:bg-[#27272a]'
-              }`}
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs th-action th-focus-ring"
+            style={{ color: item.danger ? 'var(--accent-danger)' : 'var(--text-primary)' }}
           >
-            <item.icon className="w-3 h-3 flex-shrink-0" />
+            <item.icon className="w-3 h-3 flex-shrink-0" strokeWidth={2} />
             {item.label}
           </button>
         )
@@ -160,9 +97,15 @@ function ContextMenu({ x, y, commit, onClose, onAction }) {
 function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
   if (loading) {
     return (
-      <div className="border-t border-[#27272a] bg-[#111113] p-4 flex items-center gap-2">
-        <RefreshCw className="w-3.5 h-3.5 animate-spin text-[#3b82f6]" />
-        <span className="text-xs text-[#71717a]">Loading commit details…</span>
+      <div
+        className="p-4 flex items-center gap-2"
+        style={{
+          borderTop: '1px solid var(--border-subtle)',
+          background: 'var(--bg-panel)',
+        }}
+      >
+        <RefreshCw className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Loading commit details…</span>
       </div>
     );
   }
@@ -173,41 +116,57 @@ function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
   const totalInsertions = files.reduce((s, f) => s + (f.insertions || 0), 0);
   const totalDeletions = files.reduce((s, f) => s + (f.deletions || 0), 0);
   const totalChanges = totalInsertions + totalDeletions;
-  // Build a mini bar chart of insertions vs deletions
   const insPercent = totalChanges > 0 ? Math.round((totalInsertions / totalChanges) * 100) : 50;
 
   return (
-    <div className="border-t border-[#27272a] bg-[#111113] max-h-[50%] overflow-auto">
+    <div
+      className="max-h-[50%] overflow-auto"
+      style={{
+        borderTop: '1px solid var(--border-subtle)',
+        background: 'var(--bg-panel)',
+      }}
+    >
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[#27272a] sticky top-0 bg-[#111113] z-10">
+      <div
+        className="flex items-center justify-between px-3 py-2 sticky top-0 z-10"
+        style={{
+          borderBottom: '1px solid var(--border-subtle)',
+          background: 'var(--bg-panel)',
+        }}
+      >
         <div className="flex items-center gap-2 min-w-0">
-          <GitCommit className="w-3.5 h-3.5 text-[#3b82f6] flex-shrink-0" />
-          <code className="text-[11px] font-mono text-[#71717a]">{detail.hash?.substring(0, 10)}</code>
-          <span className="text-xs font-semibold text-[#e4e4e7] truncate">{detail.subject}</span>
+          <GitCommit className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
+          <code className="text-[11px] font-mono" style={{ color: 'var(--text-muted)' }}>{detail.hash?.substring(0, 10)}</code>
+          <span className="text-xs font-semibold truncate" style={{ color: 'var(--text-primary)' }}>{detail.subject}</span>
         </div>
-        <button onClick={onClose} className="hover:bg-[#27272a] p-0.5 rounded text-[#71717a] hover:text-[#e4e4e7]">
-          <X className="w-3.5 h-3.5" />
+        <button
+          onClick={onClose}
+          className="th-btn-ghost p-0.5 rounded th-focus-ring"
+          aria-label="Close commit detail"
+          title="Close"
+        >
+          <X className="w-3.5 h-3.5" strokeWidth={2} />
         </button>
       </div>
 
       {/* Meta */}
-      <div className="px-3 py-2 space-y-1 border-b border-[#27272a]">
+      <div className="px-3 py-2 space-y-1" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
         <div className="flex items-center gap-2 text-[11px]">
-          <User className="w-3 h-3 text-[#52525b]" />
-          <span className="text-[#a1a1aa]">{detail.author_name}</span>
-          <span className="text-[#52525b]">&lt;{detail.author_email}&gt;</span>
+          <User className="w-3 h-3" style={{ color: 'var(--text-dim)' }} strokeWidth={2} />
+          <span style={{ color: 'var(--text-secondary)' }}>{detail.author_name}</span>
+          <span style={{ color: 'var(--text-dim)' }}>&lt;{detail.author_email}&gt;</span>
         </div>
         <div className="flex items-center gap-2 text-[11px]">
-          <Calendar className="w-3 h-3 text-[#52525b]" />
-          <span className="text-[#a1a1aa]">{detail.date ? new Date(detail.date).toLocaleString() : ''}</span>
-          <span className="text-[#52525b]">{relativeTime(detail.date)}</span>
+          <Calendar className="w-3 h-3" style={{ color: 'var(--text-dim)' }} strokeWidth={2} />
+          <span style={{ color: 'var(--text-secondary)' }}>{detail.date ? new Date(detail.date).toLocaleString() : ''}</span>
+          <span style={{ color: 'var(--text-dim)' }}>{relativeTime(detail.date)}</span>
         </div>
         <div className="flex items-center gap-2 text-[11px]">
-          <Hash className="w-3 h-3 text-[#52525b]" />
-          <code className="text-[#71717a] font-mono">{detail.hash}</code>
+          <Hash className="w-3 h-3" style={{ color: 'var(--text-dim)' }} strokeWidth={2} />
+          <code className="font-mono" style={{ color: 'var(--text-muted)' }}>{detail.hash}</code>
         </div>
         {detail.body && (
-          <p className="text-[11px] text-[#a1a1aa] mt-1 whitespace-pre-wrap">{detail.body}</p>
+          <p className="text-[11px] mt-1 whitespace-pre-wrap" style={{ color: 'var(--text-secondary)' }}>{detail.body}</p>
         )}
       </div>
 
@@ -215,20 +174,41 @@ function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
       <div className="px-3 py-2">
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-center gap-1.5">
-            <FileText className="w-3 h-3 text-[#52525b]" />
-            <span className="text-[11px] text-[#71717a] font-medium">{files.length} file{files.length !== 1 ? 's' : ''} changed</span>
-            {totalInsertions > 0 && <span className="text-emerald-400 text-[10px] font-mono">+{totalInsertions}</span>}
-            {totalDeletions > 0 && <span className="text-red-400 text-[10px] font-mono">−{totalDeletions}</span>}
+            <FileText className="w-3 h-3" style={{ color: 'var(--text-dim)' }} strokeWidth={2} />
+            <span className="text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>
+              {files.length} file{files.length !== 1 ? 's' : ''} changed
+            </span>
+            {totalInsertions > 0 && (
+              <span className="text-[10px] font-mono" style={{ color: 'var(--accent-success)' }}>
+                +{totalInsertions}
+              </span>
+            )}
+            {totalDeletions > 0 && (
+              <span className="text-[10px] font-mono" style={{ color: 'var(--accent-danger)' }}>
+                −{totalDeletions}
+              </span>
+            )}
           </div>
         </div>
-        {/* Insertions/deletions bar */}
+        {/* Insertions/deletions bar — restrained, only inside the
+            commit detail pane.  Uses accent-success / accent-danger
+            tokens instead of the previous tailwind colors. */}
         {totalChanges > 0 && (
           <div className="flex items-center gap-2 mb-2">
-            <div className="flex-1 h-1.5 bg-[#27272a] rounded-full overflow-hidden flex">
-              <div className="bg-emerald-500 h-full transition-all" style={{ width: `${insPercent}%` }} />
-              <div className="bg-red-500 h-full transition-all" style={{ width: `${100 - insPercent}%` }} />
+            <div
+              className="flex-1 h-1.5 rounded-full overflow-hidden flex"
+              style={{ background: 'var(--border-subtle)' }}
+            >
+              <div
+                className="h-full transition-all"
+                style={{ background: 'var(--accent-success)', width: `${insPercent}%` }}
+              />
+              <div
+                className="h-full transition-all"
+                style={{ background: 'var(--accent-danger)', width: `${100 - insPercent}%` }}
+              />
             </div>
-            <span className="text-[9px] text-[#52525b] flex-shrink-0">{totalChanges} changes</span>
+            <span className="text-[9px] flex-shrink-0" style={{ color: 'var(--text-dim)' }}>{totalChanges} changes</span>
           </div>
         )}
         {files.length > 0 ? (
@@ -237,28 +217,33 @@ function CommitDetailPane({ detail, loading, onClose, onFileClick }) {
               const fileName = typeof f === 'string' ? f : f.file;
               const ins = typeof f === 'object' ? (f.insertions || 0) : 0;
               const del = typeof f === 'object' ? (f.deletions || 0) : 0;
+              const statusLetter = ins > 0 && del > 0 ? 'M' : ins > 0 ? 'A' : 'D';
+              const statusColor =
+                ins > 0 && del > 0 ? 'var(--text-secondary)'
+                  : ins > 0 ? 'var(--accent-success)'
+                    : 'var(--accent-danger)';
               return (
-                <li key={i}
-                  className="flex items-center gap-1.5 text-[11px] px-1 py-0.5 hover:bg-[#27272a] rounded cursor-pointer group"
+                <li
+                  key={i}
+                  className="flex items-center gap-1.5 text-[11px] px-1 py-0.5 rounded cursor-pointer group transition-colors"
                   onClick={() => onFileClick?.(fileName, detail.hash)}
                   title={`Click to open diff in editor for ${fileName}`}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-elevated)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                 >
-                  <span className={`w-3 text-center font-mono text-[10px] flex-shrink-0 ${
-                    ins > 0 && del > 0 ? 'text-amber-400' :
-                    ins > 0 ? 'text-emerald-400' : 'text-red-400'
-                  }`}>
-                    {ins > 0 && del > 0 ? 'M' : ins > 0 ? 'A' : 'D'}
+                  <span className="w-3 text-center font-mono text-[10px] flex-shrink-0" style={{ color: statusColor }}>
+                    {statusLetter}
                   </span>
-                  <span className="text-[#e4e4e7] truncate flex-1 group-hover:text-[#3b82f6] transition-colors">{fileName}</span>
-                  {ins > 0 && <span className="text-emerald-400 text-[10px]">+{ins}</span>}
-                  {del > 0 && <span className="text-red-400 text-[10px]">-{del}</span>}
-                  <ExternalLink className="w-2.5 h-2.5 text-[#52525b] opacity-0 group-hover:opacity-100 flex-shrink-0 transition-opacity" />
+                  <span className="truncate flex-1 transition-colors" style={{ color: 'var(--text-primary)' }}>{fileName}</span>
+                  {ins > 0 && <span className="text-[10px]" style={{ color: 'var(--accent-success)' }}>+{ins}</span>}
+                  {del > 0 && <span className="text-[10px]" style={{ color: 'var(--accent-danger)' }}>-{del}</span>}
+                  <ExternalLink className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 flex-shrink-0 transition-opacity" style={{ color: 'var(--text-dim)' }} strokeWidth={2} />
                 </li>
               );
             })}
           </ul>
         ) : (
-          <p className="text-[10px] text-[#52525b] italic">No changed files</p>
+          <p className="text-[10px] italic" style={{ color: 'var(--text-dim)' }}>No changed files</p>
         )}
       </div>
     </div>
@@ -275,58 +260,84 @@ function FilterBar({
   authors, onClose,
 }) {
   return (
-    <div className="flex flex-col gap-1.5 px-3 py-2 bg-[#111113] border-b border-[#27272a]">
-      {/* Row 1: text search + author */}
+    <div
+      className="flex flex-col gap-1.5 px-3 py-2"
+      style={{
+        background: 'var(--bg-panel)',
+        borderBottom: '1px solid var(--border-subtle)',
+      }}
+    >
       <div className="flex items-center gap-2">
-        <Search className="w-3.5 h-3.5 text-[#52525b] flex-shrink-0" />
+        <Search className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--text-dim)' }} strokeWidth={2} />
         <input
           type="text"
           value={searchQuery}
-          onChange={e => onSearchChange(e.target.value)}
+          onChange={(e) => onSearchChange(e.target.value)}
           placeholder="Search by message, hash, author, or file path…"
-          className="flex-1 bg-transparent text-xs text-[#e4e4e7] placeholder-[#3f3f46] focus:outline-none"
+          className="flex-1 bg-transparent text-xs focus:outline-none th-focus-ring"
+          style={{ color: 'var(--text-primary)' }}
           autoFocus
         />
         {authors.length > 0 && (
           <select
             value={authorFilter}
-            onChange={e => onAuthorChange(e.target.value)}
-            className="bg-[#18181b] border border-[#3f3f46] rounded px-1.5 py-0.5 text-[10px] text-[#a1a1aa] focus:outline-none focus:border-[#3b82f6]"
+            onChange={(e) => onAuthorChange(e.target.value)}
+            className="rounded px-1.5 py-0.5 text-[10px] focus:outline-none th-focus-ring"
+            style={{
+              background: 'var(--bg-elevated)',
+              border: '1px solid var(--border-subtle)',
+              color: 'var(--text-secondary)',
+            }}
           >
             <option value="">All authors</option>
-            {authors.map(a => (
+            {authors.map((a) => (
               <option key={a} value={a}>{a}</option>
             ))}
           </select>
         )}
-        <button onClick={onClose} className="hover:bg-[#27272a] p-0.5 rounded text-[#71717a] hover:text-[#e4e4e7]">
-          <X className="w-3 h-3" />
+        <button
+          onClick={onClose}
+          className="p-0.5 rounded th-btn-ghost th-focus-ring"
+          aria-label="Close filter"
+          title="Close filter"
+        >
+          <X className="w-3 h-3" strokeWidth={2} />
         </button>
       </div>
-      {/* Row 2: date range */}
-      <div className="flex items-center gap-2 text-[10px]">
-        <Calendar className="w-3 h-3 text-[#52525b] flex-shrink-0" />
-        <span className="text-[#71717a]">From</span>
+      <div className="flex items-center gap-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+        <Calendar className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--text-dim)' }} strokeWidth={2} />
+        <span>From</span>
         <input
           type="date"
           value={dateFrom}
-          onChange={e => onDateFromChange(e.target.value)}
-          className="bg-[#18181b] border border-[#3f3f46] rounded px-1 py-0.5 text-[10px] text-[#a1a1aa] focus:outline-none focus:border-[#3b82f6]"
+          onChange={(e) => onDateFromChange(e.target.value)}
+          className="rounded px-1 py-0.5 text-[10px] focus:outline-none th-focus-ring"
+          style={{
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-subtle)',
+            color: 'var(--text-secondary)',
+          }}
         />
-        <span className="text-[#71717a]">To</span>
+        <span>To</span>
         <input
           type="date"
           value={dateTo}
-          onChange={e => onDateToChange(e.target.value)}
-          className="bg-[#18181b] border border-[#3f3f46] rounded px-1 py-0.5 text-[10px] text-[#a1a1aa] focus:outline-none focus:border-[#3b82f6]"
+          onChange={(e) => onDateToChange(e.target.value)}
+          className="rounded px-1 py-0.5 text-[10px] focus:outline-none th-focus-ring"
+          style={{
+            background: 'var(--bg-elevated)',
+            border: '1px solid var(--border-subtle)',
+            color: 'var(--text-secondary)',
+          }}
         />
         {(dateFrom || dateTo) && (
           <button
             onClick={() => { onDateFromChange(''); onDateToChange(''); }}
-            className="text-[#71717a] hover:text-[#e4e4e7]"
+            className="th-btn-ghost th-focus-ring"
             title="Clear date filter"
+            aria-label="Clear date filter"
           >
-            <X className="w-2.5 h-2.5" />
+            <X className="w-2.5 h-2.5" strokeWidth={2} />
           </button>
         )}
       </div>
@@ -339,11 +350,14 @@ function FilterBar({
 export default function CommitHistoryPanel({ slug }) {
   const dispatch = useDispatch();
   const loading = useSelector(selectGitLoading);
-  const { commitHistory, commitDetail, commitDetailLoading } = useSelector(s => s.git);
-  const unpushedCommits = useSelector(s => s.git.unpushedCommits);
-  const remotes = useSelector(s => s.git.remotes);
+  const { commitHistory, commitDetail, commitDetailLoading } = useSelector((s) => s.git);
+  const unpushedCommits = useSelector((s) => s.git.unpushedCommits);
+  const remotes = useSelector((s) => s.git.remotes);
   const primaryRemoteUrl = remotes?.[0]?.refs?.push ?? null;
-  const unpushedHashes = useMemo(() => new Set((unpushedCommits || []).map(c => c.hash)), [unpushedCommits]);
+  const unpushedHashes = useMemo(
+    () => new Set((unpushedCommits || []).map((c) => c.hash)),
+    [unpushedCommits],
+  );
 
   const [searchQuery, setSearchQuery] = useState('');
   const [authorFilter, setAuthorFilter] = useState('');
@@ -352,11 +366,9 @@ export default function CommitHistoryPanel({ slug }) {
   const [showFilter, setShowFilter] = useState(false);
   const [selectedHash, setSelectedHash] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
-  const [rebaseCommits, setRebaseCommits] = useState(null); // commits for interactive rebase
-  const [page, setPage] = useState(1);
+  const [rebaseCommits, setRebaseCommits] = useState(null);
   const scrollRef = useRef(null);
 
-  // Load commit history
   useEffect(() => {
     if (slug) {
       dispatch(fetchCommitHistory({ slug, page: 1, limit: 200 }));
@@ -366,7 +378,6 @@ export default function CommitHistoryPanel({ slug }) {
   const allCommits = useMemo(() => commitHistory?.all ?? [], [commitHistory]);
   const refsMap = useMemo(() => commitHistory?.refs ?? {}, [commitHistory]);
 
-  // Extract unique authors
   const authors = useMemo(() => {
     const set = new Set();
     for (const c of allCommits) {
@@ -375,35 +386,34 @@ export default function CommitHistoryPanel({ slug }) {
     return [...set].sort();
   }, [allCommits]);
 
-  // Filter commits
   const filteredCommits = useMemo(() => {
     let result = allCommits;
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      result = result.filter(c =>
-        c.message?.toLowerCase().includes(q) ||
-        c.hash?.toLowerCase().includes(q) ||
-        c.author_name?.toLowerCase().includes(q)
+      result = result.filter((c) =>
+        c.message?.toLowerCase().includes(q)
+        || c.hash?.toLowerCase().includes(q)
+        || c.author_name?.toLowerCase().includes(q),
       );
     }
-    if (authorFilter) {
-      result = result.filter(c => c.author_name === authorFilter);
-    }
+    if (authorFilter) result = result.filter((c) => c.author_name === authorFilter);
     if (dateFrom) {
       const from = new Date(dateFrom);
       from.setHours(0, 0, 0, 0);
-      result = result.filter(c => c.date && new Date(c.date) >= from);
+      result = result.filter((c) => c.date && new Date(c.date) >= from);
     }
     if (dateTo) {
       const to = new Date(dateTo);
       to.setHours(23, 59, 59, 999);
-      result = result.filter(c => c.date && new Date(c.date) <= to);
+      result = result.filter((c) => c.date && new Date(c.date) <= to);
     }
     return result;
   }, [allCommits, searchQuery, authorFilter, dateFrom, dateTo]);
 
-  // Build graph
-  const graphNodes = useMemo(() => buildCommitGraph(filteredCommits, refsMap), [filteredCommits, refsMap]);
+  const graphNodes = useMemo(
+    () => buildCommitGraph(filteredCommits, refsMap),
+    [filteredCommits, refsMap],
+  );
   const maxLanes = useMemo(() => {
     let max = 0;
     for (const gn of graphNodes) {
@@ -412,7 +422,6 @@ export default function CommitHistoryPanel({ slug }) {
     return max;
   }, [graphNodes]);
 
-  // Group by date
   const dateGroups = useMemo(() => groupCommitsByDate(filteredCommits), [filteredCommits]);
 
   const handleRefresh = useCallback(() => {
@@ -426,17 +435,14 @@ export default function CommitHistoryPanel({ slug }) {
 
   const handleContextAction = useCallback(async (action, commit) => {
     switch (action) {
-      // Clipboard copies: silent on success — the action is immediate
-      // and contextual, so a toast confirmation is redundant noise.
-      // Failure path (rejected promise) still surfaces an error toast.
       case 'copy-hash':
         navigator.clipboard.writeText(commit.hash).catch(() =>
-          toast.error('Could not copy hash to clipboard')
+          toast.error('Could not copy hash to clipboard'),
         );
         break;
       case 'copy-message':
         navigator.clipboard.writeText(commit.message).catch(() =>
-          toast.error('Could not copy message to clipboard')
+          toast.error('Could not copy message to clipboard'),
         );
         break;
       case 'view-detail':
@@ -444,7 +450,7 @@ export default function CommitHistoryPanel({ slug }) {
         dispatch(fetchCommitDetail({ slug, hash: commit.hash }));
         break;
       case 'cherry-pick':
-        if (confirm(`Cherry-pick commit ${commit.hash.substring(0, 7)}?\n\n"${commit.message}"`)) {
+        if (window.confirm(`Cherry-pick commit ${commit.hash.substring(0, 7)}?\n\n"${commit.message}"`)) {
           const result = await dispatch(cherryPickCommit({ slug, hash: commit.hash }));
           if (cherryPickCommit.fulfilled.match(result)) {
             toast.success(`Cherry-picked ${commit.hash.substring(0, 7)}`);
@@ -454,7 +460,7 @@ export default function CommitHistoryPanel({ slug }) {
         }
         break;
       case 'revert':
-        if (confirm(`Revert commit ${commit.hash.substring(0, 7)}?\n\n"${commit.message}"\n\nThis will create a new commit that undoes the changes.`)) {
+        if (window.confirm(`Revert commit ${commit.hash.substring(0, 7)}?\n\n"${commit.message}"\n\nThis will create a new commit that undoes the changes.`)) {
           const result = await dispatch(revertCommit({ slug, hash: commit.hash }));
           if (revertCommit.fulfilled.match(result)) {
             toast.success(`Reverted ${commit.hash.substring(0, 7)}`);
@@ -465,22 +471,17 @@ export default function CommitHistoryPanel({ slug }) {
         }
         break;
       case 'rebase-from': {
-        // Collect all commits from this one to the top (most recent)
-        const idx = allCommits.findIndex(c => c.hash === commit.hash);
+        const idx = allCommits.findIndex((c) => c.hash === commit.hash);
         if (idx < 0) break;
-        // allCommits is newest-first; for rebase-todo we need oldest-first
         const commitsForRebase = allCommits.slice(0, idx + 1).reverse();
-        if (commitsForRebase.length < 1) {
-          toast.error('No commits to rebase');
-          break;
-        }
+        if (commitsForRebase.length < 1) { toast.error('No commits to rebase'); break; }
         setRebaseCommits(commitsForRebase);
         break;
       }
       case 'create-tag': {
-        const tagName = prompt(`Create tag on ${commit.hash.substring(0, 7)}:\n\nTag name:`);
+        const tagName = window.prompt(`Create tag on ${commit.hash.substring(0, 7)}:\n\nTag name:`);
         if (!tagName?.trim()) break;
-        const tagMessage = prompt('Tag message (leave empty for lightweight tag):');
+        const tagMessage = window.prompt('Tag message (leave empty for lightweight tag):');
         const result = await dispatch(createTag({ slug, name: tagName.trim(), ref: commit.hash, message: tagMessage || undefined }));
         if (createTag.fulfilled.match(result)) {
           toast.success(`Tag "${tagName.trim()}" created`);
@@ -489,6 +490,8 @@ export default function CommitHistoryPanel({ slug }) {
         }
         break;
       }
+      default:
+        break;
     }
   }, [dispatch, slug, handleRefresh, allCommits]);
 
@@ -501,7 +504,6 @@ export default function CommitHistoryPanel({ slug }) {
     }
   }, [dispatch, slug, selectedHash]);
 
-  // If rebase panel is open, render it instead of the commit list
   if (rebaseCommits) {
     return (
       <InteractiveRebasePanel
@@ -513,13 +515,19 @@ export default function CommitHistoryPanel({ slug }) {
   }
 
   return (
-    <div className="flex flex-col h-full bg-[#0a0a0b] text-[#e4e4e7]">
+    <div className="flex flex-col h-full" style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}>
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-[#27272a] bg-[#111113]">
+      <div
+        className="flex items-center justify-between px-3 py-2"
+        style={{
+          background: 'var(--bg-panel)',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}
+      >
         <div className="flex items-center gap-2">
-          <GitCommit className="w-4 h-4 text-[#3b82f6]" />
+          <GitCommit className="w-4 h-4" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
           <span className="text-xs font-semibold">Commit History</span>
-          <span className="text-[10px] text-[#52525b]">
+          <span className="text-[10px]" style={{ color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
             {filteredCommits.length !== allCommits.length
               ? `${filteredCommits.length}/${allCommits.length}`
               : allCommits.length}
@@ -528,18 +536,26 @@ export default function CommitHistoryPanel({ slug }) {
         <div className="flex items-center gap-1">
           <button
             onClick={() => setShowFilter(!showFilter)}
-            className={`p-1 rounded transition-colors ${showFilter ? 'bg-[#3b82f6]/20 text-[#3b82f6]' : 'hover:bg-[#27272a] text-[#71717a] hover:text-[#e4e4e7]'}`}
+            className={`scm-row-action th-focus-ring ${showFilter ? '' : ''}`}
+            style={{
+              width: 24, height: 24,
+              color: showFilter ? 'var(--attention-purple)' : 'var(--text-muted)',
+              background: showFilter ? 'color-mix(in srgb, var(--attention-purple) 14%, transparent)' : 'transparent',
+            }}
             title="Search & filter"
+            aria-label="Toggle filter"
           >
-            <Filter className="w-3.5 h-3.5" />
+            <Filter className="w-3.5 h-3.5" strokeWidth={2} />
           </button>
           <button
             onClick={handleRefresh}
             disabled={loading}
-            className="p-1 rounded hover:bg-[#27272a] text-[#71717a] hover:text-[#e4e4e7] disabled:opacity-50 transition-colors"
+            className="scm-row-action th-focus-ring"
+            style={{ width: 24, height: 24, color: 'var(--text-muted)' }}
             title="Refresh"
+            aria-label="Refresh commit history"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} strokeWidth={2} />
           </button>
         </div>
       </div>
@@ -556,17 +572,20 @@ export default function CommitHistoryPanel({ slug }) {
           dateTo={dateTo}
           onDateToChange={setDateTo}
           authors={authors}
-          onClose={() => { setShowFilter(false); setSearchQuery(''); setAuthorFilter(''); setDateFrom(''); setDateTo(''); }}
+          onClose={() => {
+            setShowFilter(false);
+            setSearchQuery('');
+            setAuthorFilter('');
+            setDateFrom('');
+            setDateTo('');
+          }}
         />
       )}
 
-      {/* Commit list — PERF: Virtualized with react-virtuoso.
-           Flattens date-group headers + commit rows into a single list
-           so only visible rows are rendered in the DOM. */}
+      {/* Commit list — virtualized via Virtuoso */}
       <div ref={scrollRef} className="flex-1 overflow-hidden">
         {dateGroups.length > 0 ? (
           (() => {
-            // Flatten date groups + commits into a single array for virtualization
             const flatItems = [];
             for (const group of dateGroups) {
               flatItems.push({ type: 'header', label: group.label, key: `hdr-${group.label}` });
@@ -582,8 +601,19 @@ export default function CommitHistoryPanel({ slug }) {
                 itemContent={(index, item) => {
                   if (item.type === 'header') {
                     return (
-                      <div className="sticky top-0 z-[5] px-3 py-1 bg-[#0d0d0f] border-b border-[#1a1a1e]">
-                        <span className="text-[10px] text-[#52525b] font-semibold uppercase tracking-wider">{item.label}</span>
+                      <div
+                        className="sticky top-0 z-[5] px-3 py-1"
+                        style={{
+                          background: 'var(--bg-app)',
+                          borderBottom: '1px solid var(--border-subtle)',
+                        }}
+                      >
+                        <span
+                          className="text-[10px] font-semibold uppercase tracking-wider"
+                          style={{ color: 'var(--text-muted)' }}
+                        >
+                          {item.label}
+                        </span>
                       </div>
                     );
                   }
@@ -597,18 +627,42 @@ export default function CommitHistoryPanel({ slug }) {
                   const isHead = gIdx === 0;
                   const isUnpushed = unpushedHashes.has(commit.hash);
 
+                  // Left bar: brand gradient for unpushed (these are
+                  // *your* outgoing work), attention-purple for
+                  // selected, transparent otherwise.
+                  const leftBarStyle = isSelected
+                    ? { boxShadow: 'inset 2px 0 0 0 var(--attention-purple)' }
+                    : isUnpushed
+                      ? {
+                          boxShadow:
+                            'inset 2px 0 0 0 var(--brand-stop-3), '
+                            + 'inset 6px 0 12px -6px color-mix(in srgb, var(--brand-stop-3) 30%, transparent)',
+                        }
+                      : { boxShadow: 'none' };
+
+                  const rowBg = isSelected
+                    ? 'color-mix(in srgb, var(--attention-purple) 12%, transparent)'
+                    : isUnpushed
+                      ? 'color-mix(in srgb, var(--brand-stop-3) 5%, transparent)'
+                      : 'transparent';
+
                   return (
                     <div
-                      className={`flex items-center cursor-pointer transition-colors border-l-2
-                        ${isSelected
-                          ? 'bg-[#3b82f6]/10 border-l-[#3b82f6]'
-                          : isUnpushed
-                            ? 'hover:bg-[#27272a] border-l-amber-500/40 bg-amber-500/[0.03]'
-                            : 'hover:bg-[#27272a] border-l-transparent'
-                        }`}
+                      className="flex items-center cursor-pointer transition-colors"
+                      style={{ ...leftBarStyle, background: rowBg }}
                       onClick={() => handleCommitClick(commit)}
-                      onContextMenu={e => handleContextMenu(e, commit)}
+                      onContextMenu={(e) => handleContextMenu(e, commit)}
                       title={`${commit.hash}\n${isoDate}\n\nRight-click for actions`}
+                      onMouseEnter={(e) => {
+                        if (!isSelected) {
+                          e.currentTarget.style.background = isUnpushed
+                            ? 'color-mix(in srgb, var(--brand-stop-3) 8%, transparent)'
+                            : 'color-mix(in srgb, var(--text-primary) 4%, transparent)';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.background = rowBg;
+                      }}
                     >
                       <CommitGraphColumn
                         graphNode={gn}
@@ -621,78 +675,110 @@ export default function CommitHistoryPanel({ slug }) {
                       />
                       <div className="flex-1 min-w-0 py-1.5 pr-2">
                         <div className="flex items-center gap-1.5">
-                          <code className="font-mono text-[10px] text-[#52525b] flex-shrink-0">{commit.hash?.substring(0, 7)}</code>
+                          <code
+                            className="font-mono text-[10px] flex-shrink-0"
+                            style={{ color: 'var(--text-dim)' }}
+                          >
+                            {commit.hash?.substring(0, 7)}
+                          </code>
                           {isHead && (
-                            <span className="text-[8px] px-1 py-0 rounded font-bold flex-shrink-0 border border-[#3b82f6]/50 text-[#3b82f6] bg-[#3b82f6]/10">
+                            <span
+                              className="text-[8px] px-1 py-0 rounded font-bold flex-shrink-0"
+                              style={{
+                                border: '1px solid color-mix(in srgb, var(--attention-purple) 45%, transparent)',
+                                color: 'var(--attention-purple)',
+                                background: 'color-mix(in srgb, var(--attention-purple) 12%, transparent)',
+                              }}
+                            >
                               HEAD
                             </span>
                           )}
                           {isUnpushed && !isHead && (
-                            <span className="text-[8px] px-0.5 py-0 rounded flex-shrink-0 text-amber-400" title="Unpushed">
+                            <span
+                              className="text-[8px] px-0.5 py-0 rounded flex-shrink-0"
+                              style={{ color: 'var(--brand-stop-3)' }}
+                              title="Unpushed"
+                            >
                               ↑
                             </span>
                           )}
                           {(refsMap[commit.hash?.substring(0, 7)] || []).map((ref, ri) => {
+                            // Refs (branches and tags) keep their lane color so the
+                            // graph and the badge stay visually associated.  Tags
+                            // get a calm slate-violet treatment instead of the
+                            // previous amber to stay on-palette.
                             const laneColor = ref.type === 'tag'
-                              ? '#f59e0b'
-                              : ref.type === 'remote'
-                                ? (gn?.color || hashBranchColor(ref.name))
-                                : (gn?.color || hashBranchColor(ref.name));
+                              ? 'var(--accent-secondary)'
+                              : (gn?.color || hashBranchColor(ref.name));
                             return (
-                              <span key={ri}
-                                className="text-[9px] px-1 py-0 rounded font-medium flex-shrink-0 inline-flex items-center gap-0.5 border"
+                              <span
+                                key={ri}
+                                className="text-[9px] px-1 py-0 rounded font-medium flex-shrink-0 inline-flex items-center gap-0.5"
                                 style={{
-                                  borderColor: `${laneColor}50`,
+                                  border: `1px solid ${laneColor}50`,
                                   color: laneColor,
-                                  backgroundColor: `${laneColor}18`,
+                                  background: `${laneColor}18`,
                                 }}
                               >
-                                {ref.type === 'tag' ? '🏷' : <GitBranch className="w-2 h-2" />}
+                                {ref.type === 'tag'
+                                  ? <Tag className="w-2 h-2" strokeWidth={2} />
+                                  : <GitBranch className="w-2 h-2" strokeWidth={2} />}
                                 {ref.name}
                               </span>
                             );
                           })}
                           {cc && (
-                            <span className={`text-[9px] px-1 py-0.5 rounded font-medium flex-shrink-0 bg-opacity-20`}
-                              style={{ color: ccColor(cc.type), backgroundColor: ccColor(cc.type) + '20' }}>
+                            <span
+                              className="text-[9px] px-1 py-0.5 rounded font-medium flex-shrink-0 uppercase tracking-wider"
+                              style={{
+                                color: 'var(--text-secondary)',
+                                background: 'var(--bg-elevated)',
+                                border: '1px solid var(--border-subtle)',
+                              }}
+                            >
                               {cc.type}{cc.scope ? `(${cc.scope})` : ''}
                             </span>
                           )}
-                          <span className="text-xs text-[#e4e4e7] truncate">
+                          <span className="text-xs truncate" style={{ color: 'var(--text-primary)' }}>
                             {cc ? cc.description : commit.message}
                           </span>
                         </div>
-                        <div className="flex items-center gap-1.5 text-[10px] text-[#52525b]">
+                        <div className="flex items-center gap-1.5 text-[10px]" style={{ color: 'var(--text-dim)' }}>
                           <span className="truncate">{commit.author_name}</span>
                           <span>·</span>
                           <span className="flex-shrink-0">{relativeTime(commit.date)}</span>
                         </div>
                       </div>
-                      <div className="flex items-center gap-0.5 pr-2 opacity-0 hover:opacity-100 transition-opacity flex-shrink-0"
-                        style={{ opacity: isSelected ? 1 : undefined }}>
+                      <div
+                        className="flex items-center gap-0.5 pr-2 transition-opacity flex-shrink-0"
+                        style={{ opacity: isSelected ? 1 : undefined }}
+                      >
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             navigator.clipboard.writeText(commit.hash).catch(() =>
-                              toast.error('Could not copy hash to clipboard')
+                              toast.error('Could not copy hash to clipboard'),
                             );
                           }}
-                          className="p-0.5 rounded hover:bg-[#3f3f46] text-[#52525b] hover:text-[#e4e4e7]"
+                          className="scm-row-action"
+                          style={{ width: 18, height: 18 }}
                           aria-label="Copy commit hash"
                           title="Copy hash"
                         >
-                          <Copy className="w-2.5 h-2.5" />
+                          <Copy className="w-2.5 h-2.5" strokeWidth={2} />
                         </button>
                         {webUrl && (
                           <a
                             href={webUrl}
                             target="_blank"
                             rel="noreferrer"
-                            onClick={e => e.stopPropagation()}
-                            className="p-0.5 rounded hover:bg-[#3f3f46] text-[#52525b] hover:text-[#e4e4e7]"
+                            onClick={(e) => e.stopPropagation()}
+                            className="scm-row-action"
+                            style={{ width: 18, height: 18 }}
                             title="View on remote"
+                            aria-label="View commit on remote"
                           >
-                            <ExternalLink className="w-2.5 h-2.5" />
+                            <ExternalLink className="w-2.5 h-2.5" strokeWidth={2} />
                           </a>
                         )}
                       </div>
@@ -703,13 +789,15 @@ export default function CommitHistoryPanel({ slug }) {
             );
           })()
         ) : (
-          <div className="flex items-center justify-center h-32 text-[#52525b] text-xs italic">
+          <div
+            className="flex items-center justify-center h-32 text-xs italic"
+            style={{ color: 'var(--text-dim)' }}
+          >
             {searchQuery || authorFilter ? 'No matching commits' : 'No commit history'}
           </div>
         )}
       </div>
 
-      {/* Commit detail pane */}
       {selectedHash && (
         <CommitDetailPane
           detail={commitDetail}
@@ -721,7 +809,6 @@ export default function CommitHistoryPanel({ slug }) {
         />
       )}
 
-      {/* Context menu */}
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}
