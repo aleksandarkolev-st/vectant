@@ -113,7 +113,14 @@ const FORBIDDEN_ABI = [
   'device_descriptor',
   'device_kernel_sig_hash',
 ];
-const FORBIDDEN_ROLE_NAMES = ['core', 'gui', 'host_runner', 'device', 'shared'];
+const FORBIDDEN_ROLE_BASENAMES = new Set([
+  'core.cpp',
+  'gui.cpp',
+  'host_runner.cpp',
+  'shared.h',
+  'device.cu',
+  'device.hip',
+]);
 const GENERATED_WORKSPACE_ARTIFACTS = new Set([
   'core.cpp',
   'gui.cpp',
@@ -1683,12 +1690,8 @@ function assertOrdinaryUserProject(files) {
     for (const needle of FORBIDDEN_ABI) {
       if (file.content.includes(needle)) abiHits.push(`${file.path}:${needle}`);
     }
-    const lower = file.path.toLowerCase();
-    for (const role of FORBIDDEN_ROLE_NAMES) {
-      if (lower.split('/').some((part) => part.includes(role))) {
-        roleNameHits.push(`${file.path}:${role}`);
-      }
-    }
+    const basename = file.path.toLowerCase().split('/').pop() ?? '';
+    if (FORBIDDEN_ROLE_BASENAMES.has(basename)) roleNameHits.push(file.path);
   }
   if (abiHits.length) fail(`starting project contains Synthi ABI exports: ${abiHits.slice(0, 8).join(', ')}`);
   if (roleNameHits.length) fail(`starting project filenames contain generated role names: ${roleNameHits.slice(0, 8).join(', ')}`);

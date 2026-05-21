@@ -43,6 +43,9 @@ _GLOBAL_KERNEL_SIGNATURE_RE = re.compile(
     r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\((?P<params>[^)]*)\)",
     re.DOTALL,
 )
+_DEVICE_TO_HOST_COPY_MARKER_RE = re.compile(
+    r"\b(?:cudaMemcpyDeviceToHost|hipMemcpyDeviceToHost)\b"
+)
 
 
 @dataclass
@@ -117,6 +120,13 @@ def repair_split_artifacts(
             repaired[device_path] = device_after
             changed_files.add(device_path)
             repair_rules.append("repair.source_device_constants")
+
+    if core_path and core_path in repaired and "device_to_host_copy_not_launch_guarded" in input_reason_codes:
+        core_after, changed = _repair_device_to_host_copy_guards(repaired[core_path])
+        if changed:
+            repaired[core_path] = core_after
+            changed_files.add(core_path)
+            repair_rules.append("repair.device_to_host_copy_guard")
 
     if (
         core_path
@@ -381,6 +391,91 @@ def _iter_launch_spans(source: str) -> Iterable[Tuple[int, int, str]]:
         cursor = i
 
 
+def _statement_end(source: str, call_end: int) -> Optional[int]:
+    index = call_end
+    while index < len(source) and source[index].isspace():
+        index += 1
+    if index < len(source) and source[index] == ";":
+        return index + 1
+    return None
+
+
+def _iter_call_statement_spans(source: str, name: str) -> Iterable[Tuple[int, int, str]]:
+    needle = f"{name}("
+    cursor = 0
+    while True:
+        start = source.find(needle, cursor)
+        if start < 0:
+            return
+        i = start + len(needle)
+        depth = 1
+        while i < len(source) and depth:
+            if source[i] == "(":
+                depth += 1
+            elif source[i] == ")":
+                depth -= 1
+            i += 1
+        if depth != 0:
+            return
+        end = _statement_end(source, i)
+        if end is not None:
+            yield start, end, source[start:end]
+        cursor = i
+
+
+def _repair_device_to_host_copy_guards(core_source: str) -> tuple[str, bool]:
+    if "synthi_gpu_launch(" not in core_source or not _DEVICE_TO_HOST_COPY_MARKER_RE.search(core_source):
+        return core_source, False
+    if re.search(
+        r"(?:\bif\s*\(\s*synthi_gpu_launch\s*\(|\b(?:const\s+)?(?:bool|auto)(?:\s+const)?\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*synthi_gpu_launch\s*\()",
+        core_source,
+        re.DOTALL,
+    ):
+        return core_source, False
+
+    launch_statements: List[Tuple[int, int, str]] = []
+    for start, call_end, _body in _iter_launch_spans(core_source):
+        statement_end = _statement_end(core_source, call_end)
+        if statement_end is not None:
+            launch_statements.append((start, statement_end, core_source[start:statement_end]))
+    if not launch_statements:
+        return core_source, False
+
+    copy_statements: List[Tuple[int, int, str]] = []
+    for name in ("cudaMemcpy", "hipMemcpy"):
+        for start, end, statement in _iter_call_statement_spans(core_source, name):
+            if _DEVICE_TO_HOST_COPY_MARKER_RE.search(statement):
+                copy_statements.append((start, end, statement))
+    if not copy_statements:
+        return core_source, False
+
+    launch_vars: Dict[int, str] = {}
+    replacements: Dict[Tuple[int, int], str] = {}
+    for copy_start, copy_end, copy_statement in sorted(copy_statements):
+        prior_launches = [
+            (index, launch_start, launch_end, launch_statement)
+            for index, (launch_start, launch_end, launch_statement) in enumerate(launch_statements)
+            if launch_end <= copy_start
+        ]
+        if not prior_launches:
+            continue
+        launch_index, launch_start, launch_end, launch_statement = prior_launches[-1]
+        launch_var = launch_vars.setdefault(
+            launch_index,
+            f"synthi_hmr_launch_ok_{launch_index + 1}",
+        )
+        replacements[(launch_start, launch_end)] = f"bool {launch_var} = {launch_statement}"
+        replacements[(copy_start, copy_end)] = f"if ({launch_var}) {{ {copy_statement} }}"
+
+    if not replacements:
+        return core_source, False
+
+    out = core_source
+    for (start, end), replacement in sorted(replacements.items(), reverse=True):
+        out = out[:start] + replacement + out[end:]
+    return out, out != core_source
+
+
 def _kernel_params(device_source: str, kernel: str) -> List[_ParamInfo]:
     for match in _GLOBAL_KERNEL_SIGNATURE_RE.finditer(device_source):
         if match.group("name") != kernel:
@@ -454,9 +549,13 @@ def _repair_init_kernel_buffers(
         return core_source, device_source, False
 
     required: Dict[str, Tuple[str, _ParamInfo]] = {}
+    required_order: List[Tuple[str, str, _ParamInfo]] = []
     initialized: Set[str] = set()
     for launch in update_launches:
-        required.update(launch.pointer_buffers)
+        for buffer, info in launch.pointer_buffers.items():
+            if buffer not in required:
+                required_order.append((buffer, info[0], info[1]))
+            required[buffer] = info
     for launch in init_launches:
         initialized.update(launch.pointer_buffers)
 
@@ -465,13 +564,22 @@ def _repair_init_kernel_buffers(
         return core_source, device_source, False
 
     init_launch = init_launches[0]
-    additions = [(buffer, required[buffer][0], required[buffer][1]) for buffer in missing]
-    core_after = _append_init_launch_args(core_source, init_launch, additions)
-    init_params = [_init_param_from_update(buffer, param) for buffer, _arg, param in additions]
+    additions = [
+        (buffer, launch_arg, param)
+        for buffer, launch_arg, param in required_order
+        if buffer in missing
+    ]
+    init_params_before = _kernel_params(device_source, init_launch.kernel)
+    core_after = _append_init_launch_args(
+        core_source,
+        init_launch,
+        additions,
+        init_params_before,
+    )
     device_after = _append_init_kernel_params_and_writes(
         device_source,
         init_launch.kernel,
-        init_params,
+        additions,
     )
     return core_after, device_after, core_after != core_source or device_after != device_source
 
@@ -480,18 +588,72 @@ def _append_init_launch_args(
     core_source: str,
     init_launch: _LaunchInfo,
     additions: Sequence[Tuple[str, str, _ParamInfo]],
+    init_params: Sequence[_ParamInfo],
 ) -> str:
-    existing = {_normalize_launch_buffer_arg(arg) for arg in init_launch.launch_args}
-    new_args = list(init_launch.launch_args)
-    for buffer, launch_arg, _param in additions:
-        if buffer not in existing:
+    required = {buffer: (launch_arg, param) for buffer, launch_arg, param in additions}
+    used_required: Set[str] = set()
+    used_current_indexes: Set[int] = set()
+    new_args: List[str] = []
+
+    for index, init_param in enumerate(init_params):
+        current_arg = (
+            init_launch.launch_args[index]
+            if index < len(init_launch.launch_args) and index not in used_current_indexes
+            else None
+        )
+        current_buffer = (
+            _normalize_launch_buffer_arg(current_arg)
+            if current_arg is not None
+            else None
+        )
+        selected_arg: Optional[str] = None
+
+        if init_param.is_pointer:
+            if current_buffer in required and current_buffer not in used_required:
+                selected_arg = current_arg
+                used_current_indexes.add(index)
+                used_required.add(current_buffer)
+            else:
+                for buffer, (launch_arg, update_param) in required.items():
+                    if buffer in used_required:
+                        continue
+                    if _param_matches_required_buffer(init_param, buffer, update_param):
+                        selected_arg = launch_arg
+                        used_required.add(buffer)
+                        break
+
+        if selected_arg is None:
+            for current_index, candidate_arg in enumerate(init_launch.launch_args):
+                if current_index in used_current_indexes:
+                    continue
+                if _launch_arg_matches_param(candidate_arg, init_param):
+                    selected_arg = candidate_arg
+                    used_current_indexes.add(current_index)
+                    break
+
+        if selected_arg is None and current_arg is not None:
+            selected_arg = current_arg
+            used_current_indexes.add(index)
+            if current_buffer in required:
+                used_required.add(current_buffer)
+
+        if selected_arg is not None:
+            new_args.append(selected_arg)
+
+    for buffer, (launch_arg, _param) in required.items():
+        if buffer not in used_required:
             new_args.append(launch_arg)
-            existing.add(buffer)
 
     args = list(init_launch.args)
     args[-1] = "{ " + ", ".join(new_args) + " }"
     replacement = "synthi_gpu_launch(" + ", ".join(args) + ")"
     return core_source[: init_launch.start] + replacement + core_source[init_launch.end :]
+
+
+def _launch_arg_matches_param(arg: str, param: _ParamInfo) -> bool:
+    normalized = _normalize_launch_buffer_arg(arg)
+    tail_name = _sanitize_param_name(normalized, "")
+    return tail_name == param.name or normalized == param.name
 
 
 def _sanitize_param_name(buffer: str, fallback: str) -> str:
@@ -515,10 +677,39 @@ def _init_param_from_update(buffer: str, param: _ParamInfo) -> _ParamInfo:
     )
 
 
+def _param_matches_required_buffer(
+    init_param: _ParamInfo,
+    buffer: str,
+    update_param: _ParamInfo,
+) -> bool:
+    if not init_param.is_pointer:
+        return False
+    candidate_names = {
+        _sanitize_param_name(buffer, update_param.name),
+        update_param.name,
+        _sanitize_param_name(buffer, ""),
+    }
+    return init_param.name in {name for name in candidate_names if name}
+
+
+def _unique_param_name(base: str, existing_names: Set[str]) -> str:
+    candidate = base or "buffer"
+    if candidate not in existing_names:
+        existing_names.add(candidate)
+        return candidate
+    index = 2
+    while True:
+        next_candidate = f"{candidate}_{index}"
+        if next_candidate not in existing_names:
+            existing_names.add(next_candidate)
+            return next_candidate
+        index += 1
+
+
 def _append_init_kernel_params_and_writes(
     device_source: str,
     kernel: str,
-    additions: Sequence[_ParamInfo],
+    additions: Sequence[Tuple[str, str, _ParamInfo]],
 ) -> str:
     if not additions:
         return device_source
@@ -536,23 +727,61 @@ def _append_init_kernel_params_and_writes(
 
     existing_params = _kernel_params(device_source, kernel)
     existing_names = {param.name for param in existing_params}
-    params_to_add = [param for param in additions if param.name not in existing_names]
-    if not params_to_add:
-        return device_source
+    represented_buffers: Set[str] = set()
+    write_params: List[_ParamInfo] = []
+    for existing_param in existing_params:
+        if not existing_param.is_pointer:
+            continue
+        for buffer, _launch_arg, update_param in additions:
+            if buffer in represented_buffers:
+                continue
+            if _param_matches_required_buffer(existing_param, buffer, update_param):
+                represented_buffers.add(buffer)
+                write_params.append(existing_param)
+                break
+
+    params_to_add: List[_ParamInfo] = []
+    for buffer, _launch_arg, update_param in additions:
+        if buffer in represented_buffers:
+            continue
+        param = _init_param_from_update(buffer, update_param)
+        unique_name = _unique_param_name(param.name, existing_names)
+        if unique_name != param.name:
+            param = _ParamInfo(
+                declaration=f"{param.type_text} {unique_name}".strip(),
+                type_text=param.type_text,
+                name=unique_name,
+                is_pointer=param.is_pointer,
+            )
+        params_to_add.append(param)
+        write_params.append(param)
 
     new_param_text = match.group("params").strip()
-    appended = ", ".join(param.declaration for param in params_to_add)
-    if new_param_text and new_param_text != "void":
-        new_param_text = f"{new_param_text}, {appended}"
-    else:
-        new_param_text = appended
-    source = (
-        device_source[: match.start("params")]
-        + new_param_text
-        + device_source[match.end("params") :]
-    )
+    source = device_source
+    if params_to_add:
+        appended = ", ".join(param.declaration for param in params_to_add)
+        if new_param_text and new_param_text != "void":
+            new_param_text = f"{new_param_text}, {appended}"
+        else:
+            new_param_text = appended
+        source = (
+            device_source[: match.start("params")]
+            + new_param_text
+            + device_source[match.end("params") :]
+        )
 
-    body_start = source.find("{", match.end())
+    updated_match = next(
+        (
+            match
+            for match in _GLOBAL_KERNEL_SIGNATURE_RE.finditer(source)
+            if match.group("name") == kernel
+        ),
+        None,
+    )
+    if not updated_match:
+        return source
+
+    body_start = source.find("{", updated_match.end())
     if body_start < 0:
         return source
     body_end = _matching_brace(source, body_start)
@@ -564,7 +793,7 @@ def _append_init_kernel_params_and_writes(
     if not count_name:
         return source
 
-    write_block = _init_write_block(count_name, params_to_add)
+    write_block = _init_write_block(count_name, write_params)
     return source[:body_end] + write_block + source[body_end:]
 
 

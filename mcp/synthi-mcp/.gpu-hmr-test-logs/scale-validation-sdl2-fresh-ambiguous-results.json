@@ -1,11 +1,13 @@
 {
-  "slug": "gpu-scale-validation-sdl2-ambiguous-target-20260521b",
-  "repo_commit": "4e06e5955e0d957012de39ddaa9d7cd0cc177f49",
+  "slug": "gpu-scale-validation-sdl2-ambiguous-20260521c",
+  "repo_commit": "dfd215553f0f237a5cad30d5a5559f28dcc232ff",
   "model": "gemini-3.1-flash-lite-preview",
   "vendor": "rocm",
   "arch": "gfx1201",
   "render_backend": "sdl2",
   "cmake_target_mode": "ambiguous",
+  "hmr_delta_mode": "ai_user_delta",
+  "validation_profile": "full",
   "source_file_mix": {
     "cpp": 13,
     "hpp": 18,
@@ -25,18 +27,18 @@
     ],
     "status": "available"
   },
-  "started_at": "2026-05-21T03:22:08.149Z",
-  "finished_at": "2026-05-21T03:22:12.447Z",
+  "started_at": "2026-05-21T10:01:52.930Z",
+  "finished_at": "2026-05-21T10:01:58.711Z",
   "compose_files": [
     "docker-compose.yml",
     "docker-compose.gpu-amd.yml"
   ],
   "containers": {
     "worker": {
-      "id": "5baf0d9b1181373de01084a268a12e6fb6775b116e2306132fea832dd4ab45f8",
-      "image_id": "sha256:5f4573a05aacf8e3eeb181111ea18ecb5c69377955ff11f76d3b49fc14b7fcb7",
-      "image": "vectant-ade-worker",
-      "created": "2026-05-21T01:17:21.749519856Z"
+      "id": "d993a39adf2a1ba21694dc3e614a0fa1ce422325b8e8425edbe8dfc2b1960dee",
+      "image_id": "sha256:f01ea15d72cede1c7bb2c48d240267981feeca362cef5a8fa6e36f3f7e63f2a7",
+      "image": "vectant-ade-worker-gpu:local",
+      "created": "2026-05-21T04:44:44.330234794Z"
     },
     "ai_engine": {
       "id": "bb3ecce7647f1ec534fc7d55ea2a41b28fc6a40d514af8c778c6c276b8f0a90f",
@@ -58,6 +60,7 @@
     "SYNTHI_SCALE_RENDER_BACKEND": "sdl2",
     "SYNTHI_SCALE_CMAKE_TARGET_MODE": "ambiguous",
     "SYNTHI_SCALE_HMR_DELTA_MODE": "ai_user_delta",
+    "SYNTHI_SCALE_VALIDATION_PROFILE": "full",
     "SYNTHI_SCALE_TEMPLATE_EVIDENCE": "fresh",
     "SYNTHI_SYNC_TO_GCS": ""
   },
@@ -68,26 +71,28 @@
   "launch_indirection": {},
   "warm_rebuild": {},
   "runtime_policy": {},
+  "direct_device_fast_path": {},
+  "ai_delta_observations": [],
   "phases": [
     {
       "name": "ambiguous_cmake_target_rejected",
       "wait_hmr_status": "expected_unsupported",
       "wait_hmr_source": "deterministic_validation",
-      "wait_hmr_elapsed_ms": 78,
-      "wait_hmr_terminal_elapsed_ms": 78,
+      "wait_hmr_elapsed_ms": 120,
+      "wait_hmr_terminal_elapsed_ms": 120,
       "wait_hmr_detail": {
         "compile": {
           "ok": true,
-          "session_id": "gpu-scale-validation-sdl2-ambiguous-target-20260521b",
+          "session_id": "gpu-scale-validation-sdl2-ambiguous-20260521c",
           "language": "cpp",
           "filename": "src/app/main.cpp",
-          "dispatched_at": 1779333732562,
+          "dispatched_at": 1779357718239,
           "note": "Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."
         },
         "wait": {
           "status": "compile-error",
-          "elapsedMs": 78,
-          "hmrElapsedMs": 78,
+          "elapsedMs": 120,
+          "hmrElapsedMs": 120,
           "source": "hmr_status",
           "detail": {
             "status": "compile-error",
@@ -102,7 +107,7 @@
         "status": "not_applicable",
         "reason": "target_resolution_ambiguous"
       },
-      "wall_elapsed_ms": 96,
+      "wall_elapsed_ms": 153,
       "worker_log_markers": []
     }
   ],
@@ -111,68 +116,68 @@
     {
       "name": "gpu target",
       "status": "pass",
-      "detail": "rocm arch=gfx1201 render_backend=sdl2 cmake_target_mode=ambiguous template_evidence=fresh",
-      "ts": "2026-05-21T03:22:08.616Z"
+      "detail": "rocm arch=gfx1201 render_backend=sdl2 cmake_target_mode=ambiguous template_evidence=fresh hmr_delta_mode=ai_user_delta validation_profile=full",
+      "ts": "2026-05-21T10:01:53.548Z"
     },
     {
       "name": "source file mix",
       "status": "pass",
       "detail": "{\"cpp\":13,\"hpp\":18,\"h\":10,\"hip\":11,\"cu\":0,\"total\":52}",
-      "ts": "2026-05-21T03:22:08.619Z"
+      "ts": "2026-05-21T10:01:53.551Z"
     },
     {
       "name": "ordinary user project guard",
       "status": "pass",
       "detail": "299 files, no Synthi ABI or generated role filenames",
-      "ts": "2026-05-21T03:22:08.620Z"
+      "ts": "2026-05-21T10:01:53.552Z"
     },
     {
       "name": "render backend dependency preflight",
       "status": "pass",
       "detail": "SDL2: libsdl2-dev",
-      "ts": "2026-05-21T03:22:09.178Z"
+      "ts": "2026-05-21T10:01:54.436Z"
     },
     {
       "name": "create workspace",
       "status": "pass",
-      "detail": "id=cmpexd0mj000kl201gsykjzcu slug=gpu-scale-validation-sdl2-ambiguous-target-20260521b",
-      "ts": "2026-05-21T03:22:09.222Z"
+      "detail": "id=cmpfbn3uu000vl2016qd2rhrj slug=gpu-scale-validation-sdl2-ambiguous-20260521c",
+      "ts": "2026-05-21T10:01:54.491Z"
     },
     {
       "name": "seed scale workspace",
       "status": "pass",
       "detail": "299 files",
-      "ts": "2026-05-21T03:22:10.636Z"
+      "ts": "2026-05-21T10:01:56.189Z"
     },
     {
       "name": "mcp tools/list",
       "status": "pass",
       "detail": "count=42",
-      "ts": "2026-05-21T03:22:11.013Z"
+      "ts": "2026-05-21T10:01:56.686Z"
     },
     {
       "name": "mcp attach",
       "status": "pass",
       "detail": "attached",
-      "ts": "2026-05-21T03:22:12.240Z"
+      "ts": "2026-05-21T10:01:58.053Z"
     },
     {
       "name": "ambiguous_cmake_target_rejected explicit fallback",
       "status": "pass",
       "detail": "target_resolution_ambiguous",
-      "ts": "2026-05-21T03:22:12.336Z"
+      "ts": "2026-05-21T10:01:58.206Z"
     },
     {
       "name": "worker saw full ambiguous target file set",
       "status": "pass",
-      "detail": "[AI Split] ENTER (cache_key=5746811714087889825, src_len=375, files=299, gpu_mode=rocm, gpu_arch=gfx1201",
-      "ts": "2026-05-21T03:22:12.399Z"
+      "detail": "[AI Split] ENTER (cache_key=15564425698369977781, src_len=375, files=299, gpu_mode=rocm, gpu_arch=gfx1201",
+      "ts": "2026-05-21T10:01:58.643Z"
     },
     {
       "name": "ai-engine rejected ambiguous CMake target before split generation",
       "status": "pass",
       "detail": "deterministic unsupported project rejection: GPU split requires one selected CMake target, but target resolution is ambiguous",
-      "ts": "2026-05-21T03:22:12.447Z"
+      "ts": "2026-05-21T10:01:58.711Z"
     }
   ]
 }
