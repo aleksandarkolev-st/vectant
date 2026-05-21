@@ -342,35 +342,42 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       const handleContextMenu = (e) => {
         e.preventDefault();
+        e.stopPropagation();
         if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
           return; // View-only guest
         }
         const sel = getCurrentSelection();
-        // Selection present → custom context menu. No selection → fall
-        // through to the existing right-click-to-paste behavior.
-        if (sel) {
-          openMenuRef.current(e, [
-            { id: 'copy', label: 'Copy', shortcut: 'Ctrl+Shift+C', action: copySelection },
-            { id: 'copy-line', label: 'Copy as Single Line', dividerAfter: true, action: copySelectionAsSingleLine },
-            {
-              id: 'google',
-              label: 'Search on Google',
-              action: () => openSearch((s) => `https://www.google.com/search?q=${encodeURIComponent(s)}`),
-            },
-            {
-              id: 'so',
-              label: 'Search on Stack Overflow',
-              dividerAfter: true,
-              action: () => openSearch((s) => `https://stackoverflow.com/search?q=${encodeURIComponent(s)}`),
-            },
-            { id: 'select-all', label: 'Select All', action: () => { try { term.selectAll(); } catch {} } },
-            { id: 'clear-sel', label: 'Clear Selection', dividerAfter: true, action: () => clearSelectionAggressive() },
-            { id: 'paste', label: 'Paste', shortcut: 'Ctrl+Shift+V', action: pasteFromClipboard },
-          ]);
-          return;
-        }
-        // No selection — preserve existing paste-on-right-click behavior.
-        pasteFromClipboard();
+        const hasSel = !!sel;
+        // Always show the menu — Copy / Search / Clear are disabled when
+        // there's nothing to copy. Matches VS Code terminal behavior and
+        // means a single right-click is never a guessing game about whether
+        // a paste or a menu will appear.
+        openMenuRef.current(e, [
+          { id: 'copy', label: 'Copy', shortcut: 'Ctrl+Shift+C', disabled: !hasSel, action: copySelection },
+          { id: 'copy-line', label: 'Copy as Single Line', disabled: !hasSel, dividerAfter: true, action: copySelectionAsSingleLine },
+          {
+            id: 'paste',
+            label: 'Paste',
+            shortcut: 'Ctrl+Shift+V',
+            dividerAfter: true,
+            action: pasteFromClipboard,
+          },
+          {
+            id: 'google',
+            label: 'Search on Google',
+            disabled: !hasSel,
+            action: () => openSearch((s) => `https://www.google.com/search?q=${encodeURIComponent(s)}`),
+          },
+          {
+            id: 'so',
+            label: 'Search on Stack Overflow',
+            disabled: !hasSel,
+            dividerAfter: true,
+            action: () => openSearch((s) => `https://stackoverflow.com/search?q=${encodeURIComponent(s)}`),
+          },
+          { id: 'select-all', label: 'Select All', action: () => { try { term.selectAll(); } catch {} } },
+          { id: 'clear-sel', label: 'Clear Selection', disabled: !hasSel, action: () => clearSelectionAggressive() },
+        ]);
       };
 
       // Snapshot the current selection BEFORE xterm sees the right-click
