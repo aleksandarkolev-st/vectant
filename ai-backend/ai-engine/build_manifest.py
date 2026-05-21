@@ -75,6 +75,7 @@ DeviceCompiler = Literal["nvcc", "clang-cuda", "hipcc"]
 DeviceVendor   = Literal["cuda", "rocm"]
 SnapshotMode   = Literal["driver_checkpoint", "userspace", "auto"]
 FatbinStrategy = Literal["sidecar_module"]
+SUPPORTED_GPU_VENDORS = {"cuda", "rocm"}
 
 
 class GpuBuildBlock(BaseModel):
@@ -341,6 +342,15 @@ def _gpu_internal_role_paths(vendor: str) -> dict[str, str]:
     }
 
 
+def _normalize_gpu_vendor(raw: Any) -> Optional[str]:
+    vendor = str(raw or "").strip().lower()
+    if vendor in {"hip", "amd", "amdhip"}:
+        return "rocm"
+    if vendor in SUPPORTED_GPU_VENDORS:
+        return vendor
+    return None
+
+
 def _gpu_device_role_id(path: str) -> str:
     normalized = str(path or "device").replace("\\", "/").rsplit("/", 1)[-1]
     stem = normalized.rsplit(".", 1)[0] or "device"
@@ -481,9 +491,12 @@ def internalize_gpu_generated_artifacts(
 
     manifest_out = dict(manifest)
     gpu = dict(manifest_out.get("gpu") if isinstance(manifest_out.get("gpu"), dict) else {})
-    vendor = str(gpu.get("vendor") or "cuda").lower()
-    if vendor not in {"cuda", "rocm"}:
-        vendor = "cuda"
+    vendor = _normalize_gpu_vendor(gpu.get("vendor"))
+    if not vendor:
+        raise ManifestRejection(
+            "GPU generated artifact internalization requires an explicit supported "
+            "gpu.vendor from the verified compile manifest; refusing to default to CUDA."
+        )
     declared_roles = dict(
         manifest_out.get("module_files")
         if isinstance(manifest_out.get("module_files"), Mapping)
@@ -555,6 +568,7 @@ def normalize_gpu_split_manifest(
     raw: Mapping[str, Any] | None,
     *,
     split_files: Mapping[str, str],
+    link_hint_sources: Optional[Mapping[str, str]] = None,
     vendor_hint: Optional[str] = None,
     arch_hint: Optional[str] = None,
 ) -> dict:
@@ -574,10 +588,21 @@ def normalize_gpu_split_manifest(
         return fallback
 
     gpu = dict(manifest.get("gpu") if isinstance(manifest.get("gpu"), dict) else {})
-    vendor = str(gpu.get("vendor") or vendor_hint or "").lower()
-    if vendor not in {"cuda", "rocm"}:
-        device_name = file_by(lambda base, full: base.endswith(".hip") or ".hip" in full)
-        vendor = "rocm" if device_name else "cuda"
+    vendor = _normalize_gpu_vendor(gpu.get("vendor") or vendor_hint)
+    if not vendor:
+        raise ManifestRejection(
+            "GPU split manifest is missing a supported gpu.vendor from selected "
+            "target metadata; refusing to infer vendor from filenames."
+        )
+
+    arch_values = _normalize_str_list(gpu.get("arch"))
+    if arch_hint:
+        arch_values = [arch_hint]
+    elif not arch_values:
+        raise ManifestRejection(
+            "GPU split manifest is missing gpu.arch and no selected-target "
+            "architecture hint was supplied; refusing to default the GPU arch."
+        )
 
     default_device = "device.hip" if vendor == "rocm" else "device.cu"
     roles = dict(manifest.get("module_files") if isinstance(manifest.get("module_files"), dict) else {})
@@ -624,13 +649,11 @@ def normalize_gpu_split_manifest(
     if vendor == "rocm":
         compiler = "hipcc"
         manifest["compiler"] = "clang++"
-        arch = arch_hint or "gfx90a"
         include_flags = ["-D__HIP_PLATFORM_AMD__", "-I/opt/rocm/include"]
         link_flags = ["-L/opt/rocm/lib", "-lamdhip64"]
         runtime_libs = ["amdhip64"]
     else:
         compiler = "nvcc"
-        arch = arch_hint or "sm_80"
         include_flags = ["-I/usr/local/cuda/include"]
         link_flags = ["-L/usr/local/cuda/lib64", "-L/usr/local/cuda/lib64/stubs", "-lcudart", "-lcuda"]
         runtime_libs = ["cudart", "cuda"]
@@ -650,7 +673,10 @@ def normalize_gpu_split_manifest(
                 values.append(flag)
         manifest[field] = values
 
-    source_blob = "\n".join(str(v) for v in split_files.values())
+    source_blobs = [str(v) for v in split_files.values()]
+    if link_hint_sources:
+        source_blobs.extend(str(v) for v in link_hint_sources.values())
+    source_blob = "\n".join(source_blobs)
 
     def add_host_link_flags(flags: List[str]) -> None:
         for field in ("gui_link_flags", "runner_link_flags"):
@@ -664,19 +690,6 @@ def normalize_gpu_split_manifest(
     if hinted_flags:
         add_host_link_flags(hinted_flags)
 
-    if "SDL2/" in source_blob or "SDL_" in source_blob:
-        add_host_link_flags(["-lSDL2"])
-    if "GLFW/" in source_blob or "GLFWwindow" in source_blob or "glfw" in source_blob:
-        add_host_link_flags(["-lglfw"])
-    if (
-        "GL/" in source_blob
-        or "glClear" in source_blob
-        or "glBegin" in source_blob
-        or "glDraw" in source_blob
-        or "glVertex" in source_blob
-    ):
-        add_host_link_flags(["-lGL"])
-
     runner_flags = list(manifest.get("runner_link_flags") or [])
     for flag in ("-ldl", "-pthread", "-rdynamic"):
         if flag not in runner_flags:
@@ -685,10 +698,7 @@ def normalize_gpu_split_manifest(
 
     gpu["vendor"] = vendor
     gpu["device_compiler"] = compiler
-    if arch_hint:
-        gpu["arch"] = [arch_hint]
-    elif not isinstance(gpu.get("arch"), list) or not gpu.get("arch"):
-        gpu["arch"] = [arch]
+    gpu["arch"] = arch_values
     gpu["device_flags"] = _normalize_gpu_device_flags(gpu.get("device_flags"), vendor)
     gpu["device_roles"] = _normalize_gpu_device_roles(
         gpu.get("device_roles"),

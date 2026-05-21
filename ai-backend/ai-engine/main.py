@@ -2408,19 +2408,19 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         if req.gpu_arch and req.gpu_arch.strip().lower() != "auto"
         else None
     )
-    manifest_raw = normalize_gpu_split_manifest(
-        split.manifest if isinstance(split.manifest, dict) else {},
-        split_files=split.files,
-        vendor_hint=detection.vendor_hint,
-        arch_hint=(
-            request_arch_hint
-            or os.getenv("SYNTHI_GPU_ARCH_HINT")
-            or os.getenv("SYNTHI_GPU_ARCH")
-            or None
-        ),
-    )
-
     try:
+        manifest_raw = normalize_gpu_split_manifest(
+            split.manifest if isinstance(split.manifest, dict) else {},
+            split_files=split.files,
+            link_hint_sources=file_map,
+            vendor_hint=detection.vendor_hint,
+            arch_hint=(
+                request_arch_hint
+                or os.getenv("SYNTHI_GPU_ARCH_HINT")
+                or os.getenv("SYNTHI_GPU_ARCH")
+                or None
+            ),
+        )
         manifest_parsed = parse_manifest(manifest_raw)
         validate_manifest_v1(manifest_parsed)
         manifest_out = manifest_to_dict(manifest_parsed)

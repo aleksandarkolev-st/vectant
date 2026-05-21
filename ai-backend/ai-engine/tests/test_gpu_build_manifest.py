@@ -174,7 +174,7 @@ def test_normalizes_ai_gpu_manifest_defaults_for_rocm():
         split_files={
             "shared.h": "",
             "core.cpp": "",
-            "gui.cpp": "#include <SDL2/SDL.h>",
+            "gui.cpp": "// LINK: -lSDL2\n#include <SDL2/SDL.h>",
             "host_runner.cpp": "",
             "device.hip": "",
         },
@@ -215,6 +215,7 @@ def test_normalizes_glfw_opengl_gpu_manifest_link_flags():
             "shared.h": "",
             "core.cpp": "",
             "gui.cpp": """
+                // LINK: -lglfw -lGL
                 #include <GLFW/glfw3.h>
                 #include <GL/gl.h>
                 void render(GLFWwindow* window) {
@@ -292,6 +293,75 @@ def test_runtime_arch_hint_overrides_ai_gpu_arch_guess():
     validate_manifest_v1(parsed)
     assert parsed.gpu is not None
     assert parsed.gpu.arch == ["gfx1201"]
+
+
+def test_gpu_manifest_rejects_missing_vendor_instead_of_guessing_cuda():
+    with pytest.raises(ManifestRejection, match="gpu.vendor"):
+        normalize_gpu_split_manifest(
+            {"gpu": {"arch": ["sm_120"]}},
+            split_files={
+                "shared.h": "",
+                "core.cpp": "",
+                "gui.cpp": "",
+                "host_runner.cpp": "",
+                "device.hip": "",
+            },
+            vendor_hint=None,
+            arch_hint=None,
+        )
+
+
+def test_gpu_manifest_rejects_missing_arch_instead_of_defaulting():
+    with pytest.raises(ManifestRejection, match="gpu.arch"):
+        normalize_gpu_split_manifest(
+            {"gpu": {"vendor": "rocm"}},
+            split_files={
+                "shared.h": "",
+                "core.cpp": "",
+                "gui.cpp": "",
+                "host_runner.cpp": "",
+                "device.hip": "",
+            },
+            vendor_hint="rocm",
+            arch_hint=None,
+        )
+
+
+def test_gpu_manifest_does_not_infer_host_link_flags_from_framework_names():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "#include <SDL2/SDL.h>\nvoid f() { SDL_Init(0); }",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+    )
+    assert "-lSDL2" not in normalized["gui_link_flags"]
+    assert "-lSDL2" not in normalized["runner_link_flags"]
+
+
+def test_gpu_manifest_uses_original_project_link_hints_without_framework_catalog():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "#include <SDL2/SDL.h>\nvoid f() { SDL_Init(0); }",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        link_hint_sources={
+            "src/app/main.cpp": "// LINK: -lSDL2\n#include <SDL2/SDL.h>\n",
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+    )
+    assert "-lSDL2" in normalized["gui_link_flags"]
+    assert "-lSDL2" in normalized["runner_link_flags"]
 
 
 def test_internalizes_generated_gpu_roles_out_of_user_tree():
