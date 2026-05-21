@@ -24,6 +24,43 @@ def test_source_context_records_included_and_dropped_reasons():
     assert report["deterministicContextComplete"] is True
 
 
+def test_source_context_treats_macro_wrapped_runtime_kernels_as_gpu_context():
+    files = {
+        "CMakeLists.txt": """
+        find_package(OpenGL REQUIRED)
+        add_executable(HIPRTPathTracer src/main.cpp src/Device/GPUKernel.cpp src/Device/kernels/CameraRays.h)
+        target_link_libraries(HIPRTPathTracer PRIVATE glfw GLEW::GLEW OpenGL::GL)
+        """,
+        "src/main.cpp": """
+        #include <GLFW/glfw3.h>
+        #include <imgui.h>
+        int main(){ glfwInit(); ImGui::CreateContext(); return 0; }
+        """,
+        "src/Device/GPUKernel.cpp": """
+        void GPUKernel::launch(void* fn, void** args) {
+          oroModuleLaunchKernel(fn, 1, 1, 1, 64, 1, 1, 0, stream, args, nullptr);
+        }
+        """,
+        "src/Device/kernels/CameraRays.h": """
+        GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)
+        CameraRays(HIPRTRenderData render_data) {
+          const int x = threadIdx.x + blockIdx.x * blockDim.x;
+          render_data.accum[x] = make_float4(0.25f);
+        }
+        """,
+    }
+
+    prompt, report = build_project_source_context(files, focus="src/main.cpp")
+    included_reasons = {item["path"]: item["includeReason"] for item in report["included"]}
+
+    assert included_reasons["src/Device/GPUKernel.cpp"] == "kernel_declaration"
+    assert included_reasons["src/Device/kernels/CameraRays.h"] == "kernel_declaration"
+    assert "GLOBAL_KERNEL_SIGNATURE" in prompt
+    assert "oroModuleLaunchKernel" in prompt
+    assert "glfw_opengl" in report["graphicsBackend"]["detected"]
+    assert "imgui_glfw" in report["graphicsBackend"]["detected"]
+
+
 def test_source_context_selects_compile_command_for_focus():
     files = {
         "src/app/main.cpp": "int main(){ return 0; }",
@@ -282,6 +319,62 @@ def test_graphics_backend_detection_is_scoped_to_selected_cmake_target():
     assert backend["supportStatus"] == "unknown"
     assert "unsupported.graphics_backend_vulkan" not in backend["reasonCodes"]
     assert all("vulkan_interop" not in item["path"] for item in backend["evidence"])
+
+
+def test_graphics_backend_detection_ignores_vendored_vulkan_sources_for_primary_backend():
+    files = {
+        "CMakeLists.txt": """
+        add_executable(path_tracer src/main.cpp src/OpenGL/Display.cpp thirdparties/hiprt/src/vk_device.cpp)
+        """,
+        "src/main.cpp": """
+        #include <GLFW/glfw3.h>
+        #include <imgui.h>
+        int main(){ glfwInit(); ImGui::CreateContext(); return 0; }
+        """,
+        "src/OpenGL/Display.cpp": """
+        #include <GL/glew.h>
+        void draw(){ glClear(GL_COLOR_BUFFER_BIT); }
+        """,
+        "thirdparties/hiprt/src/vk_device.cpp": """
+        #include <vulkan/vulkan.h>
+        void vendor_probe(){ VkInstance instance = VK_NULL_HANDLE; }
+        """,
+        ".cmake/api/v1/reply/codemodel-v2-release.json": """
+        {
+          "kind": "codemodel",
+          "configurations": [
+            {
+              "name": "Release",
+              "targets": [
+                {"name": "path_tracer", "id": "path_tracer::@real", "jsonFile": "target-path_tracer-Release.json"}
+              ]
+            }
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-path_tracer-Release.json": """
+        {
+          "name": "path_tracer",
+          "id": "path_tracer::@real",
+          "type": "EXECUTABLE",
+          "sources": [
+            {"path": "src/main.cpp"},
+            {"path": "src/OpenGL/Display.cpp"},
+            {"path": "thirdparties/hiprt/src/vk_device.cpp"}
+          ]
+        }
+        """,
+    }
+
+    _prompt, report = build_project_source_context(files, focus="src/main.cpp")
+    backend = report["graphicsBackend"]
+    dropped_reasons = {item["path"]: item["dropReason"] for item in report["dropped"]}
+
+    assert dropped_reasons["thirdparties/hiprt/src/vk_device.cpp"] == "vendor_dependency"
+    assert backend["primary"] == "imgui_glfw"
+    assert "glfw_opengl" in backend["detected"]
+    assert "vulkan" not in backend["detected"]
+    assert "unsupported.graphics_backend_vulkan" not in backend["reasonCodes"]
 
 
 def test_selected_target_context_drops_unrelated_device_translation_units():

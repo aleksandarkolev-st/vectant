@@ -8,6 +8,7 @@ through `parse_kernel_split_response` + `verify_split_output`.
 import pytest
 import asyncio
 
+import agents.kernel_splitter as kernel_splitter
 from agents.gpu_detect import GpuDetectionResult, GpuDetectionEvidence
 from agents.kernel_splitter import (
     KernelSplitProviderError,
@@ -17,6 +18,7 @@ from agents.kernel_splitter import (
     _project_source_context,
     _source_files_scoped_to_context,
     _source_device_preservation_contract,
+    _verifier_acceptance_gate_contract,
     build_prompt,
     parse_kernel_split_response,
     run_kernel_splitter,
@@ -26,6 +28,7 @@ from agents.kernel_splitter import (
     split_attempt_record,
 )
 from agents.gpu_source_context import build_project_source_context
+from llm.prompts import build_split_mode_prompt
 from verifier_gpu import SplitVerificationResult, Violation
 
 
@@ -434,10 +437,79 @@ def test_build_split_retry_prompt_preserves_previous_rejections():
     assert "init/seed kernel launch and signature" in prompt
 
 
+def test_build_split_retry_prompt_lists_rejected_project_headers():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- generated_role_includes_project_header: Generated role file includes project header 'src/gpu/api.hpp'.",
+            "- generated_role_includes_project_header: Generated role file includes project header 'src/render/window.hpp'.",
+        ],
+    )
+
+    assert "src/gpu/api.hpp" in prompt
+    assert "src/render/window.hpp" in prompt
+    assert "Do not emit any `#include` for them" in prompt
+
+
+def test_build_split_retry_prompt_guides_placeholder_render_repairs():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- gui_render_placeholder: The gui role contains placeholder render text 'rendering logic'.",
+        ],
+    )
+
+    assert "visible non-black pixels" in prompt
+    assert "placeholder render" in prompt
+
+
+def test_build_split_retry_prompt_guides_backend_preservation_repairs():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- render_backend_changed: The generated split introduced SDL rendering even though the source project used GLFW/OpenGL.",
+        ],
+    )
+
+    assert "Preserve the source render backend exactly" in prompt
+    assert "do not translate to another backend" in prompt
+
+
+def test_build_split_retry_prompt_guides_host_runner_gui_routing():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- host_runner_omits_gui_module: The host_runner role must resolve and invoke gui_on_render.",
+        ],
+    )
+
+    assert "gui_render(core_state)" in prompt
+    assert "dlsym(libgui" in prompt
+
+
+def test_verifier_acceptance_gate_contract_highlights_generic_split_gates():
+    contract = _verifier_acceptance_gate_contract()
+
+    assert "GPU SPLIT VERIFIER ACCEPTANCE GATES" in contract
+    assert "original workspace/project headers" in contract
+    assert "gui_on_render" in contract
+    assert "gui_render(core_state)" in contract
+    assert "placeholder comments" in contract
+
+
 def test_build_prompt_attaches_extra_instructions():
     p = build_prompt("x", extra_instructions="don't change kernel names")
     assert "EXTRA INSTRUCTIONS" in p
     assert "don't change kernel names" in p
+
+
+def test_split_mode_prompt_preserves_split_response_format():
+    prompt = build_split_mode_prompt("int main(){}", "cpp", "split contract")
+
+    assert "split contract" in prompt
+    assert "<JSON>...</JSON>" in prompt
+    assert "<synthi_arch_cache>...</synthi_arch_cache>" in prompt
+    assert "ONLY the JSON object" not in prompt
 
 
 def test_project_source_context_includes_multi_file_sources():
@@ -461,6 +533,28 @@ def test_project_source_context_includes_multi_file_sources():
     assert "docs/notes/field-note-000.md" not in context
 
 
+def test_project_source_context_prioritizes_macro_wrapped_gpu_kernels():
+    context = _project_source_context(
+        {
+            "src/main.cpp": "#include <GLFW/glfw3.h>\nint main(){ return 0; }",
+            "src/Device/GPUKernel.cpp": "void launch(){ oroModuleLaunchKernel(fn, 1, 1, 1, 64, 1, 1, 0, stream, args, 0); }",
+            "src/Device/kernels/CameraRays.h": """
+            GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)
+            CameraRays(HIPRTRenderData render_data) {
+                render_data.accum[threadIdx.x] = make_float4(1.0f);
+            }
+            """,
+            "src/Util/Unrelated.cpp": "int helper(){ return 1; }",
+        },
+        focus="src/main.cpp",
+    )
+
+    assert "// FILE: src/Device/kernels/CameraRays.h" in context
+    assert "// FILE: src/Device/GPUKernel.cpp" in context
+    assert "GLOBAL_KERNEL_SIGNATURE" in context
+    assert "oroModuleLaunchKernel" in context
+
+
 def test_source_device_preservation_contract_follows_device_headers():
     contract = _source_device_preservation_contract(
         {
@@ -476,3 +570,67 @@ def test_source_device_preservation_contract_follows_device_headers():
     assert "src/config/device_constants.hpp" in contract
     assert "kGain" in contract
     assert "Do not include these original project headers" in contract
+
+
+def test_source_device_preservation_contract_includes_runtime_compiled_kernel_headers():
+    contract = _source_device_preservation_contract(
+        {
+            "src/Device/kernels/CameraRays.h": """
+            #include "CameraCommon.h"
+            GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)
+            CameraRays(HIPRTRenderData render_data) {
+                render_data.accum[threadIdx.x] = kCameraGain;
+            }
+            """,
+            "src/Device/kernels/CameraCommon.h": "#pragma once\nconstexpr float kCameraGain = 0.5f;",
+        }
+    )
+
+    assert "src/Device/kernels/CameraRays.h" in contract
+    assert "src/Device/kernels/CameraCommon.h" in contract
+    assert "Required original kernels: CameraRays." in contract
+    assert "kCameraGain" in contract
+
+
+def test_source_device_preservation_contract_omits_lower_priority_headers_with_reason(monkeypatch):
+    monkeypatch.setattr(kernel_splitter, "_DEVICE_PRESERVATION_TOTAL_MAX_CHARS", 900)
+    monkeypatch.setattr(kernel_splitter, "_DEVICE_PRESERVATION_PER_FILE_MAX_CHARS", 400)
+    files = {
+        "src/Device/kernels/Root.h": (
+            '#include "Support0.h"\n'
+            "GLOBAL_KERNEL_SIGNATURE(void) RootKernel(float* out) { out[threadIdx.x] = kRoot; }"
+        ),
+        "src/Device/kernels/Support0.h": '#include "Support1.h"\nconstexpr float kRoot = 1.0f;\n',
+    }
+    for index in range(1, 12):
+        files[f"src/Device/kernels/Support{index}.h"] = (
+            f'#include "Support{index + 1}.h"\n'
+            f"constexpr float kSupport{index} = {index}.0f;\n"
+            + ("float padding_value = 1.0f;\n" * 20)
+        )
+
+    contract = _source_device_preservation_contract(files, roots=["src/Device/kernels/Root.h"])
+
+    assert "src/Device/kernels/Root.h" in contract
+    assert "Omitted lower-priority device-reachable files" in contract
+    assert "prompt-budget exclusion after device-anchor ranking" in contract
+
+
+def test_scoped_source_context_does_not_pull_every_gpu_marker_without_roots():
+    source_files = {
+        "src/main.cpp": "int main(){ return 0; }",
+        "src/Device/kernels/Selected.h": "GLOBAL_KERNEL_SIGNATURE(void) Selected(float* out) { out[0] = 1.0f; }",
+        "src/Device/kernels/Unrelated.h": "GLOBAL_KERNEL_SIGNATURE(void) Unrelated(float* out) { out[0] = 2.0f; }",
+    }
+    report = {
+        "included": [
+            {"path": "src/main.cpp"},
+            {"path": "src/Device/kernels/Selected.h"},
+        ],
+        "deviceTuTopology": {"deviceTranslationUnits": []},
+    }
+
+    scoped = _source_files_scoped_to_context(source_files, report)
+
+    assert "src/Device/kernels/Selected.h" in scoped
+    assert "src/Device/kernels/Unrelated.h" not in scoped

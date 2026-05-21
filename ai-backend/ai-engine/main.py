@@ -2091,6 +2091,7 @@ from agents.gpu_mod_delta import (  # noqa: E402
     build_gpu_diff_patch_retry_prompt as _build_gpu_diff_patch_retry_prompt,
     build_gpu_diff_patch_prompt as _build_gpu_diff_patch_prompt,
     gpu_diff_patch_anchor_failures as _gpu_diff_patch_anchor_failures,
+    gpu_diff_patch_content_failures as _gpu_diff_patch_content_failures,
     parse_gpu_diff_response as _parse_gpu_diff_response,
 )
 from agents.gpu_healer import (  # noqa: E402
@@ -2541,6 +2542,7 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
             )
             parsed = _parse_gpu_diff_response(ai_response)
             failures = _gpu_diff_patch_anchor_failures(req, parsed["edits"])
+            failures.extend(_gpu_diff_patch_content_failures(req, parsed["edits"]))
             if not failures:
                 elapsed = time.time() - start_time
                 print(

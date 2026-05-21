@@ -2720,6 +2720,27 @@ def _needs_code_changes(prompt: str) -> bool:
     return _detect_query_intent(prompt) == "change"
 
 
+def build_split_mode_prompt(
+    code: str,
+    lang: str,
+    split_prompt: str = "",
+) -> str:
+    """Build the transport wrapper for split prompts.
+
+    Split prompts define their own strict response format. Do not reuse the
+    general JSON-only suffix here: GPU splits must return both the generated
+    role file block and the architecture cache block.
+    """
+
+    return (
+        (split_prompt or "")
+        + f"\n\nHere is the code to split (language: {lang}):\n```{lang}\n{code}\n```"
+        + "\n\nRespond exactly in the split prompt's required format: "
+        + "<JSON>...</JSON> first, followed by <synthi_arch_cache>...</synthi_arch_cache>. "
+        + "No prose before, between, or after those blocks."
+    )
+
+
 def build_prompt(
     code: str,
     lang: str,
@@ -4382,6 +4403,32 @@ Use vendor-correct device flags: CUDA may use `--use_fast_math`, but
 ROCm/HIP must not. A ROCm `device_flags` list should usually be
 `["-O3", "-lineinfo"]`.
 
+# GENERATED-MODULE LINK MANIFEST SCOPE
+
+Build metadata describes the user's original target; the generated hot
+modules are smaller adapter modules. Do not blindly copy every transitive
+CMake target library into `core_link_flags`, `gui_link_flags`, or
+`runner_link_flags`.
+
+Only include link flags that are required by the generated role source you
+emit:
+
+  - `core_link_flags`: libraries directly referenced by generated core.cpp.
+  - `gui_link_flags`: libraries directly referenced by generated gui.cpp.
+  - `runner_link_flags`: libraries directly referenced by generated
+    host_runner.cpp.
+  - `gpu.runtime_libs`: GPU runtime libraries needed by the selected vendor
+    loader path.
+
+If a dependency appears only in the original application but your generated
+role source does not include its headers or call its symbols, omit it from the
+generated module manifest. If build metadata contains semantic CMake imported
+target names such as `Pkg::Target`, `OpenGL::GL`, or package component names,
+do not convert those names into guessed `-l...` flags. Use concrete linker
+flags already present in the metadata, package-config output, or explicit
+toolchain evidence. Otherwise leave the role flag out and set
+`confidence.link_flags` below high with an explanation.
+
 # NO-SHIM CONTRACT
 
   - Never introduce a new kernel whose name looks like `_safe`, `_v2`,
@@ -4522,6 +4569,11 @@ Rules:
   `module: "device"`, use an anchor from the CURRENT generated `device`
   block, even when the USER DIFF line has a different spelling in the
   original `.cu` / `.hip` source.
+- Generated role files must stay self-contained. Do not add quoted
+  `#include "..."` lines for original workspace or project headers. Quoted
+  includes may only target emitted Synthi role files such as `shared.h` or
+  `synthi_gpu_runtime.h`. Copy or adapt required structs, constants, and
+  helpers into the generated roles instead.
 
 ARCHITECTURE CACHE:
 {ARCHITECTURE}

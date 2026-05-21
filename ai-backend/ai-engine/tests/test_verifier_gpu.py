@@ -97,6 +97,35 @@ def test_split_rejects_placeholder_opengl_drawing_loop_comment():
     assert any(v.rule == "gui_render_placeholder" for v in r.violations)
 
 
+def test_split_rejects_gui_render_with_comment_but_no_drawing_effect():
+    source_files = {
+        "src/render/glfw_canvas.cpp": (
+            "#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n"
+            "void render() { glBegin(GL_POINTS); glVertex2f(10, 10); glEnd(); }"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { void* renderer; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include "shared.h"\n#include <GLFW/glfw3.h>\n#include <GL/gl.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { AppState* state = reinterpret_cast<AppState*>(state_ptr); '
+            '// Concrete backend drawing code using state->renderer\n }'
+        ),
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": 'extern "C" __global__ void step() {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    assert any(v.rule == "gui_render_no_effect" for v in r.violations)
+
+
 def test_split_rejects_glfw_opengl_clear_only_renderer():
     source_files = {
         "src/render/glfw_canvas.cpp": (

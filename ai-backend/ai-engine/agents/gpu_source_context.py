@@ -32,7 +32,17 @@ _BACKEND_PATTERNS = {
         r"\b(?:vulkan/vulkan\.h|GLFW_INCLUDE_VULKAN|Vk[A-Z][A-Za-z0-9_]*|vk[A-Z][A-Za-z0-9_]*|VK_[A-Z0-9_]+)\b"
     ),
 }
-_KERNEL_DECL_RE = re.compile(r"\b__(?:global|device|constant|managed)__\b")
+_KERNEL_DECL_RE = re.compile(
+    r"\b(?:"
+    r"__(?:global|device|constant|managed|host)__"
+    r"|GLOBAL_KERNEL_SIGNATURE\s*\("
+    r"|HIPRT_(?:DEVICE|HOST_DEVICE)\b"
+    r"|oroModuleLaunchKernel\b"
+    r"|hiprtc(?:CreateProgram|CompileProgram|GetCode|GetBitcode)\b"
+    r"|cuModuleLaunchKernel\b"
+    r")",
+    re.I,
+)
 _TEMPLATE_EVIDENCE_BASENAMES = {
     "template-evidence.json",
     "template_evidence.json",
@@ -94,7 +104,20 @@ def _drop_reason(path: str) -> Optional[str]:
         return "generated_or_build_output"
     if normalized.startswith(("docs/", "doc/", "examples/", "test/", "tests/")):
         return "docs_tests_examples"
-    if normalized.startswith(("vendor/", "third_party/", "external/", "node_modules/")):
+    if normalized.startswith((
+        "vendor/",
+        "vendors/",
+        "third_party/",
+        "third-party/",
+        "thirdparties/",
+        "3rdparty/",
+        "3rd_party/",
+        "external/",
+        "extern/",
+        "deps/",
+        "_deps/",
+        "node_modules/",
+    )):
         return "vendor_dependency"
     return None
 
@@ -108,18 +131,20 @@ def _reason_and_priority(path: str, source: str, focus: Optional[str]) -> Tuple[
         return (1, "build_metadata")
     if normalized.lower().endswith((".cu", ".cuh", ".hip")) and _KERNEL_DECL_RE.search(source):
         return (2, "device_translation_unit")
-    if "<<<" in source and ">>>" in source:
-        return (3, "kernel_launch_site")
-    if _RENDER_RE.search(source):
-        return (4, "render_backend")
-    if _STATE_RE.search(source):
-        return (5, "state_type_definition")
     if looks_like_source_file(normalized) and _KERNEL_DECL_RE.search(source):
-        return (6, "kernel_declaration")
+        if "/kernels/" in normalized:
+            return (3, "kernel_declaration")
+        return (4, "kernel_declaration")
+    if "<<<" in source and ">>>" in source:
+        return (5, "kernel_launch_site")
+    if _RENDER_RE.search(source):
+        return (6, "render_backend")
+    if _STATE_RE.search(source):
+        return (7, "state_type_definition")
     if normalized.startswith("src/") and looks_like_source_file(normalized):
-        return (7, "transitive_source_context")
+        return (8, "transitive_source_context")
     if looks_like_source_file(normalized):
-        return (8, "source_context")
+        return (9, "source_context")
     return (99, "unsupported_file_type")
 
 
@@ -165,6 +190,8 @@ def _graphics_backend_report(
     for path, source in sorted(source_files.items()):
         normalized = normalize_path(path)
         if scoped_paths and not any(_path_matches(normalized, scoped) for scoped in scoped_paths):
+            continue
+        if _drop_reason(normalized) == "vendor_dependency":
             continue
         if not looks_like_source_file(normalized) and not normalized.endswith("CMakeLists.txt"):
             continue

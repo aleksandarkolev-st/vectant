@@ -60,12 +60,13 @@ RUN set -eux; \
     if apt-cache show g++-14 >/dev/null 2>&1; then GCC_VERSION=14; else GCC_VERSION=13; fi; \
     apt-get install -y --no-install-recommends \
       ca-certificates \
-      "gcc-${GCC_VERSION}" "g++-${GCC_VERSION}" clang make cmake pkg-config \
+      "gcc-${GCC_VERSION}" "g++-${GCC_VERSION}" clang make cmake git pkg-config \
       openjdk-17-jdk-headless \
       python3 python3-pip \
       libsdl2-2.0-0 libsdl2-dev \
       libglfw3 libglfw3-dev \
-      libgl1-mesa-dev libgl1-mesa-dri libglx-mesa0 mesa-utils \
+      libgl1-mesa-dev libglu1-mesa-dev libgl1-mesa-dri libglx-mesa0 mesa-utils \
+      libglew-dev libpng-dev \
       curl xz-utils gnupg libxml2 \
       gstreamer1.0-tools \
       gstreamer1.0-plugins-base \

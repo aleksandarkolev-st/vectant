@@ -11,7 +11,7 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -46,6 +46,9 @@ const CFG = {
   repoName: configuredRepoName,
   repoPath: path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_REPO_PATH ?? `tmp/real-rocm/${configuredRepoName}`),
   entryFile: process.env.SYNTHI_REAL_ROCM_ENTRY ?? 'HIP-Basic/saxpy/main.hip',
+  deltaFile: process.env.SYNTHI_REAL_ROCM_DELTA_FILE
+    ?? process.env.SYNTHI_REAL_ROCM_ENTRY
+    ?? 'HIP-Basic/saxpy/main.hip',
   targetName: process.env.SYNTHI_REAL_ROCM_TARGET ?? 'hip_saxpy',
   buildSubdir: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? 'HIP-Basic/saxpy',
   workerRepoPath: process.env.SYNTHI_REAL_ROCM_WORKER_PATH ?? `${configuredWorkerTempDir}/${configuredRepoName}`,
@@ -59,6 +62,9 @@ const CFG = {
   cmakeTargetType: process.env.SYNTHI_REAL_ROCM_TARGET_TYPE ?? 'EXECUTABLE',
   cmakeTargetIdNamespace: process.env.SYNTHI_REAL_ROCM_TARGET_ID_NAMESPACE ?? 'real-rocm',
   gpuMode: process.env.SYNTHI_REAL_ROCM_GPU_MODE ?? 'rocm',
+  buildUpstream: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM !== '0',
+  runUpstream: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM !== '0',
+  upstreamRunCommand: process.env.SYNTHI_REAL_ROCM_UPSTREAM_RUN_COMMAND ?? '',
   width: Number(process.env.SYNTHI_REAL_ROCM_WIDTH ?? 800),
   height: Number(process.env.SYNTHI_REAL_ROCM_HEIGHT ?? 600),
   deltaBefore:
@@ -106,6 +112,7 @@ const report = {
   repo_path: CFG.repoPath,
   repo_commit: null,
   entry_file: CFG.entryFile,
+  delta_file: CFG.deltaFile,
   target_name: CFG.targetName,
   gpu_arch: CFG.gpuArch,
   file_count: 0,
@@ -185,9 +192,21 @@ touch build/.cmake/api/v1/query/codemodel-v2
 start=$(date +%s%3N)
 cmake -S . -B build -DCMAKE_BUILD_TYPE=${shQuote(CFG.cmakeConfigName)} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_PREFIX_PATH=/opt/rocm -DCMAKE_HIP_ARCHITECTURES=${shQuote(CFG.gpuArch)} > ${shQuote(`${CFG.workerTempDir}/configure.log`)} 2>&1
 configured=$(date +%s%3N)
-cmake --build build -j2 > ${shQuote(`${CFG.workerTempDir}/build.log`)} 2>&1
+if [ ${CFG.buildUpstream ? '1' : '0'} -eq 1 ]; then
+  cmake --build build -j2 --target ${shQuote(CFG.targetName)} > ${shQuote(`${CFG.workerTempDir}/build.log`)} 2>&1
+else
+  : > ${shQuote(`${CFG.workerTempDir}/build.log`)}
+fi
 built=$(date +%s%3N)
-./build/${shQuote(CFG.targetName)} > ${shQuote(`${CFG.workerTempDir}/run.log`)} 2>&1
+if [ ${CFG.runUpstream ? '1' : '0'} -eq 1 ]; then
+  if [ -n ${shQuote(CFG.upstreamRunCommand)} ]; then
+    ${CFG.upstreamRunCommand} > ${shQuote(`${CFG.workerTempDir}/run.log`)} 2>&1
+  else
+    ./build/${shQuote(CFG.targetName)} > ${shQuote(`${CFG.workerTempDir}/run.log`)} 2>&1
+  fi
+else
+  printf 'upstream run skipped by SYNTHI_REAL_ROCM_RUN_UPSTREAM=0\\n' > ${shQuote(`${CFG.workerTempDir}/run.log`)}
+fi
 ran=$(date +%s%3N)
 printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\n' "$((configured-start))" "$((built-configured))" "$((ran-built))"
 `;
@@ -196,15 +215,49 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\n' "$((configured-start))" "$
   report.logs.upstream_run = runLog;
   const phase = { name: 'upstream_gpu_build_run', timings, output: runLog.slice(0, 1000) };
   report.phases.push(phase);
-  record('upstream GPU target builds and runs', 'pass', `${timings.replace(/\s+/g, ' ')} output=${runLog.split(/\r?\n/).at(-1) ?? ''}`);
+  record(
+    'upstream GPU target metadata configured',
+    'pass',
+    `${timings.replace(/\s+/g, ' ')} build=${CFG.buildUpstream ? 'on' : 'skipped'} run=${CFG.runUpstream ? 'on' : 'skipped'}`,
+  );
 
-  const compileCommands = await execText(
+  return collectBuildMetadataFromWorker(buildPath);
+}
+
+async function collectBuildMetadataFromWorker(buildPath) {
+  const metadataDir = await mkdtemp(path.join(path.resolve(REPO_ROOT, 'tmp'), 'real-rocm-build-metadata-'));
+  const compileHostPath = path.join(metadataDir, 'compile_commands.json');
+  const replyHostPath = path.join(metadataDir, 'reply');
+  await execText(
     'docker',
-    ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(`${buildPath}/compile_commands.json`)}`],
+    ['cp', `${CFG.workerContainer}:${buildPath}/compile_commands.json`, compileHostPath],
     30000,
     true,
   );
-  return normalizeCompileCommands(compileCommands);
+  await execText(
+    'docker',
+    ['cp', `${CFG.workerContainer}:${buildPath}/.cmake/api/v1/reply`, replyHostPath],
+    30000,
+    true,
+  );
+
+  const compileCommandsJson = normalizeCompileCommands(await readFile(compileHostPath, 'utf8'));
+  const replyFiles = [];
+  for (const name of (await readdir(replyHostPath)).sort()) {
+    if (!name.endsWith('.json')) continue;
+    const content = normalizeBuildMetadataText(await readFile(path.join(replyHostPath, name), 'utf8'));
+    replyFiles.push({ path: `.cmake/api/v1/reply/${name}`, content });
+  }
+  if (!replyFiles.length) {
+    throw new Error('CMake File API reply directory did not contain JSON metadata');
+  }
+  return { compileCommandsJson, cmakeReplyFiles: replyFiles };
+}
+
+function normalizeBuildMetadataText(raw) {
+  const workerRoot = CFG.workerRepoPath.replace(/\\/g, '/');
+  const workspaceRoot = CFG.workspaceRoot.replace(/\\/g, '/');
+  return String(raw).replaceAll(workerRoot, workspaceRoot);
 }
 
 function normalizeCompileCommands(raw) {
@@ -214,23 +267,26 @@ function normalizeCompileCommands(raw) {
   if (!selected) throw new Error(`compile_commands.json did not include ${CFG.entryFile}`);
   const workerRoot = CFG.workerRepoPath.replace(/\\/g, '/');
   const workspaceRoot = CFG.workspaceRoot.replace(/\\/g, '/');
-  const normalized = {
-    ...selected,
-    directory: String(selected.directory || '').replace(workerRoot, workspaceRoot),
-    file: String(selected.file || '').replace(workerRoot, workspaceRoot),
-  };
-  if (normalized.command) normalized.command = String(normalized.command).replaceAll(workerRoot, workspaceRoot);
-  if (Array.isArray(normalized.arguments)) {
-    normalized.arguments = normalized.arguments.map((arg) => String(arg).replaceAll(workerRoot, workspaceRoot));
-  }
-  return JSON.stringify([normalized], null, 2) + '\n';
+  const normalized = entries.map((entry) => {
+    const updated = {
+      ...entry,
+      directory: String(entry.directory || '').replace(workerRoot, workspaceRoot),
+      file: String(entry.file || '').replace(workerRoot, workspaceRoot),
+    };
+    if (updated.command) updated.command = String(updated.command).replaceAll(workerRoot, workspaceRoot);
+    if (Array.isArray(updated.arguments)) {
+      updated.arguments = updated.arguments.map((arg) => String(arg).replaceAll(workerRoot, workspaceRoot));
+    }
+    return updated;
+  });
+  return JSON.stringify(normalized, null, 2) + '\n';
 }
 
 function shQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
-async function collectRepoFiles(compileCommandsJson) {
+async function collectRepoFiles(buildMetadata) {
   const raw = await execText('git', ['-C', CFG.repoPath, 'ls-files', '-z'], 30000, true);
   const rels = raw.split('\0').filter(Boolean).sort();
   const files = [];
@@ -238,6 +294,10 @@ async function collectRepoFiles(compileCommandsJson) {
   for (const rel of rels) {
     const full = path.join(CFG.repoPath, rel);
     const st = await stat(full);
+    if (!st.isFile()) {
+      skipped.push({ path: rel.replace(/\\/g, '/'), reason: 'not_regular_file' });
+      continue;
+    }
     if (st.size > CFG.maxFileBytes) {
       skipped.push({ path: rel.replace(/\\/g, '/'), reason: 'too_large', bytes: st.size });
       continue;
@@ -250,30 +310,10 @@ async function collectRepoFiles(compileCommandsJson) {
     files.push({ path: rel.replace(/\\/g, '/'), content: buf.toString('utf8') });
   }
 
-  files.push({ path: 'compile_commands.json', content: compileCommandsJson });
-  files.push({
-    path: `.cmake/api/v1/reply/codemodel-v2-${CFG.cmakeConfigName.toLowerCase()}.json`,
-    content: JSON.stringify({
-      kind: 'codemodel',
-      configurations: [{
-        name: CFG.cmakeConfigName,
-        targets: [{
-          name: CFG.targetName,
-          id: `${CFG.targetName}::@${CFG.cmakeTargetIdNamespace}`,
-          jsonFile: `target-${CFG.targetName}-${CFG.cmakeConfigName}.json`,
-        }],
-      }],
-    }, null, 2) + '\n',
-  });
-  files.push({
-    path: `.cmake/api/v1/reply/target-${CFG.targetName}-${CFG.cmakeConfigName}.json`,
-    content: JSON.stringify({
-      name: CFG.targetName,
-      id: `${CFG.targetName}::@${CFG.cmakeTargetIdNamespace}`,
-      type: CFG.cmakeTargetType,
-      sources: [{ path: CFG.entryFile }],
-    }, null, 2) + '\n',
-  });
+  files.push({ path: 'compile_commands.json', content: buildMetadata.compileCommandsJson });
+  for (const reply of buildMetadata.cmakeReplyFiles) {
+    files.push(reply);
+  }
 
   report.seeded_file_count = files.length;
   report.skipped_file_count = skipped.length;
@@ -369,6 +409,10 @@ class McpClient {
     if (res.isError) throw new Error(`tool ${name} isError: ${text ?? JSON.stringify(res)}`);
     if (!text) return {};
     try { return JSON.parse(text); } catch { return { raw: text }; }
+  }
+
+  async toolCallRaw(name, args, timeoutMs = CFG.mcpRequestTimeoutMs) {
+    return this.request('tools/call', { name, arguments: args }, timeoutMs);
   }
 }
 
@@ -534,14 +578,16 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt) {
 async function captureScreenshot(label) {
   if (!mcpState?.client) return null;
   for (let attempt = 1; attempt <= CFG.screenshotAttempts; attempt += 1) {
-    const shot = await mcpState.client.toolCall('synthi_screenshot', { freshness_max_ms: CFG.screenshotFreshnessMaxMs }, 30000).catch((e) => ({ error: e.message }));
-    if (shot?.data) {
+    const shot = await mcpState.client.toolCallRaw('synthi_screenshot', { freshness_max_ms: CFG.screenshotFreshnessMaxMs }, 30000).catch((e) => ({ error: e.message }));
+    const content = Array.isArray(shot?.content) ? shot.content : [];
+    const imageBlock = content.find((block) => block?.type === 'image' && typeof block.data === 'string');
+    if (imageBlock?.data) {
       const outPath = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`);
-      const bytes = Buffer.from(shot.data, 'base64');
+      const bytes = Buffer.from(imageBlock.data, 'base64');
       await writeFile(outPath, bytes);
-      const image = sharp(bytes);
-      const meta = await image.metadata();
-      const stats = await image.greyscale().raw().toBuffer().then((buf) => {
+      const sharpImage = sharp(bytes);
+      const meta = await sharpImage.metadata();
+      const stats = await sharpImage.greyscale().raw().toBuffer().then((buf) => {
         let visible = 0;
         let sum = 0;
         for (const value of buf) {
@@ -555,7 +601,9 @@ async function captureScreenshot(label) {
       record(`screenshot ${label}`, stats.visible > 500 ? 'pass' : 'warn', JSON.stringify(row));
       return row;
     }
-    record(`screenshot ${label}`, 'warn', `attempt=${attempt} ${shot?.error ?? 'no data'}`);
+    const text = content.find((block) => block?.type === 'text')?.text;
+    const detail = shot?.error ?? text ?? (shot?.isError ? JSON.stringify(shot?.structuredContent ?? shot) : 'no data');
+    record(`screenshot ${label}`, 'warn', `attempt=${attempt} ${detail}`);
     await sleep(1000);
   }
   if (!CFG.expectScreenshot) {
@@ -605,8 +653,9 @@ async function collectRuntimeEvidence() {
   );
   const aiEvidence = evidenceLines(
     aiLogs,
-    /Calling API|mode=delta|mode=split|verifier rejected|POST \/refactor\/(?:split\/gpu|diff_patch\/gpu|heal)/i,
+    /Calling API|mode=delta|mode=split|verifier rejected|POST \/refactor\/(?:split\/gpu|diff_patch(?:\/gpu)?|heal)/i,
   );
+  const genericDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch(?!\/gpu)/i);
   const gpuDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch\/gpu/i);
   const compileHealCalls = countMatches(aiEvidence, /POST \/refactor\/heal/i);
   report.evidence = {
@@ -614,7 +663,9 @@ async function collectRuntimeEvidence() {
     ai_engine_log_lines: aiEvidence,
     ai_call_counts: {
       split: countMatches(aiEvidence, /mode=split/i),
+      generic_delta: genericDeltaCalls,
       gpu_delta: gpuDeltaCalls,
+      total_delta: genericDeltaCalls + gpuDeltaCalls,
       compile_heal: compileHealCalls,
       model_delta_mode: countMatches(aiEvidence, /mode=delta/i),
     },
@@ -627,7 +678,7 @@ async function collectRuntimeEvidence() {
   record(
     'runtime evidence collected',
     'pass',
-    `ai_split=${report.evidence.ai_call_counts.split} ai_gpu_delta=${report.evidence.ai_call_counts.gpu_delta} ai_compile_heal=${report.evidence.ai_call_counts.compile_heal} restart_policy_blocks=${report.evidence.runner_policy_counts.existing_reload_blocked}`,
+    `ai_split=${report.evidence.ai_call_counts.split} ai_delta=${report.evidence.ai_call_counts.total_delta} ai_gpu_delta=${report.evidence.ai_call_counts.gpu_delta} ai_compile_heal=${report.evidence.ai_call_counts.compile_heal} restart_policy_blocks=${report.evidence.runner_policy_counts.existing_reload_blocked}`,
   );
 }
 
@@ -641,6 +692,7 @@ async function writeResults() {
     `source_url: ${report.source_url}`,
     `repo_commit: ${report.repo_commit}`,
     `entry_file: ${report.entry_file}`,
+    `delta_file: ${report.delta_file}`,
     `file_count: ${report.file_count}`,
     `seeded_file_count: ${report.seeded_file_count}`,
     `skipped_file_count: ${report.skipped_file_count}`,
@@ -661,11 +713,15 @@ async function run() {
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
   await ensureRepo();
-  const compileCommandsJson = await prepareUpstreamBuild();
-  const files = await collectRepoFiles(compileCommandsJson);
+  const buildMetadata = await prepareUpstreamBuild();
+  const files = await collectRepoFiles(buildMetadata);
   const primary = files.find((file) => file.path === CFG.entryFile);
   if (!primary) throw new Error(`entry file missing from seeded files: ${CFG.entryFile}`);
-  const additionalFiles = files.filter((file) => file.path !== CFG.entryFile).map((file) => ({ name: file.path, content: file.content }));
+  const deltaPrimary = files.find((file) => file.path === CFG.deltaFile);
+  if (!deltaPrimary) throw new Error(`delta file missing from seeded files: ${CFG.deltaFile}`);
+  const firstAdditionalFiles = files
+    .filter((file) => file.path !== CFG.entryFile)
+    .map((file) => ({ name: file.path, content: file.content }));
 
   await createWorkspace();
   await writeFilesBatch(files);
@@ -674,7 +730,7 @@ async function run() {
     language: 'cpp',
     filename: CFG.entryFile,
     source: primary.content,
-    files: additionalFiles,
+    files: firstAdditionalFiles,
     is_gui: CFG.expectScreenshot,
     use_ai_split: true,
     user_requested_ai: true,
@@ -687,18 +743,21 @@ async function run() {
   }, CFG.firstCompileTimeoutMs, 'first_real_repo_ai_split_compile');
   await captureScreenshot('first-compile');
 
-  const edited = editConfiguredSource(primary.content);
+  const edited = editConfiguredSource(deltaPrimary.content);
+  const hmrAdditionalFiles = files
+    .filter((file) => file.path !== CFG.deltaFile)
+    .map((file) => ({ name: file.path, content: file.content }));
   await httpJson(
     'POST',
     `${CFG.collabUrl}/git/${CFG.slug}/write-files-batch`,
-    { files: [{ path: CFG.entryFile, encoding: 'utf8', content: edited }], syncToGcs: CFG.syncToGcs },
+    { files: [{ path: CFG.deltaFile, encoding: 'utf8', content: edited }], syncToGcs: CFG.syncToGcs },
     { 'x-user-id': CFG.hostId },
   );
   await compileViaMcp({
     language: 'cpp',
-    filename: CFG.entryFile,
+    filename: CFG.deltaFile,
     source: edited,
-    files: additionalFiles,
+    files: hmrAdditionalFiles,
     is_gui: CFG.expectScreenshot,
     use_ai_split: true,
     user_requested_ai: true,

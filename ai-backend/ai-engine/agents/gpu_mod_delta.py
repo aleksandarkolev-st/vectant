@@ -30,6 +30,7 @@ VALID_RELOAD_PLANS = {"host_only", "device_only", "mixed", "abi_breaking"}
 VALID_GPU_EDIT_MODULES = {"core", "gui", "shared", "host_runner", "device"}
 VALID_GPU_EDIT_OPS = {"insert_after", "insert_before", "replace", "delete"}
 DEVICE_PATHS = {"device.cu", "device.hip"}
+_QUOTED_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
 HOST_PATH_TO_MODULE = {
     "core.cpp": "core",
     "gui.cpp": "gui",
@@ -195,6 +196,33 @@ def gpu_diff_patch_anchor_failures(
     return failures
 
 
+def gpu_diff_patch_content_failures(
+    req: GpuDiffPatchRequest,
+    edits: Iterable[Mapping[str, object]],
+) -> List[dict]:
+    allowed_includes = _allowed_generated_includes(req.compile_manifest)
+    failures: List[dict] = []
+    for index, edit in enumerate(edits):
+        module = _normalize_module(str(edit.get("module", "")))
+        content = edit.get("content", "")
+        if not isinstance(content, str):
+            continue
+        for included in _QUOTED_INCLUDE_RE.findall(content):
+            normalized = _normalize_path(included)
+            basename = normalized.rsplit("/", 1)[-1]
+            if normalized in allowed_includes or basename in allowed_includes:
+                continue
+            failures.append(
+                {
+                    "index": index,
+                    "module": module,
+                    "reason": "generated_role_includes_project_header",
+                    "include": included,
+                }
+            )
+    return failures
+
+
 def build_gpu_diff_patch_retry_prompt(
     original_prompt: str,
     failures: Iterable[Mapping[str, object]],
@@ -212,21 +240,37 @@ def build_gpu_diff_patch_retry_prompt(
         "- Do not use a line that appears only in USER DIFF or the original user source.",
         "- Every anchor must appear exactly once in its target module.",
         "",
+        "Generated-role include rules:",
+        "- Generated roles may quote-include only emitted Synthi role files or synthi_gpu_runtime.h.",
+        "- Do not add #include lines for original workspace/project headers.",
+        "- Copy or adapt required structs, constants, and helpers into generated roles instead.",
+        "",
         "Rejected edits:",
     ]
     for failure in failures:
         anchor = str(failure.get("anchor") or "")
         if len(anchor) > 240:
             anchor = anchor[:237] + "..."
-        lines.append(
-            "- edit #{index} module={module} reason={reason} match_count={count} anchor={anchor!r}".format(
-                index=failure.get("index"),
-                module=failure.get("module"),
-                reason=failure.get("reason"),
-                count=failure.get("match_count", "n/a"),
-                anchor=anchor,
+        include = str(failure.get("include") or "")
+        if include:
+            lines.append(
+                "- edit #{index} module={module} reason={reason} include={include!r}".format(
+                    index=failure.get("index"),
+                    module=failure.get("module"),
+                    reason=failure.get("reason"),
+                    include=include,
+                )
             )
-        )
+        else:
+            lines.append(
+                "- edit #{index} module={module} reason={reason} match_count={count} anchor={anchor!r}".format(
+                    index=failure.get("index"),
+                    module=failure.get("module"),
+                    reason=failure.get("reason"),
+                    count=failure.get("match_count", "n/a"),
+                    anchor=anchor,
+                )
+            )
     lines += [
         "",
         "Return ONLY the corrected JSON object. No markdown fences, no prose.",
@@ -243,6 +287,44 @@ def _json_block(value: object) -> str:
         return json.dumps(value, sort_keys=True, indent=2)
     except TypeError:
         return str(value)
+
+
+def _normalize_path(value: str) -> str:
+    parts: List[str] = []
+    for part in str(value or "").replace("\\", "/").split("/"):
+        if not part or part == ".":
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts)
+
+
+def _allowed_generated_includes(compile_manifest: object) -> set[str]:
+    allowed = {"synthi_gpu_runtime.h"}
+    if not isinstance(compile_manifest, Mapping):
+        allowed.update({"shared.h", "core.cpp", "gui.cpp", "host_runner.cpp", "device.cu", "device.hip"})
+        return allowed
+    module_files = compile_manifest.get("module_files")
+    if isinstance(module_files, Mapping):
+        for value in module_files.values():
+            if not isinstance(value, str) or not value.strip():
+                continue
+            normalized = _normalize_path(value)
+            allowed.add(normalized)
+            allowed.add(normalized.rsplit("/", 1)[-1])
+    files = compile_manifest.get("files")
+    if isinstance(files, list):
+        for value in files:
+            if not isinstance(value, str) or not value.strip():
+                continue
+            normalized = _normalize_path(value)
+            allowed.add(normalized)
+            allowed.add(normalized.rsplit("/", 1)[-1])
+    allowed.update({"shared.h", "core.cpp", "gui.cpp", "host_runner.cpp", "device.cu", "device.hip"})
+    return allowed
 
 
 def validate_gpu_edit_list(edits: object) -> List[dict]:

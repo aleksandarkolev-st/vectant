@@ -196,10 +196,19 @@ fn text_has_gpu_markers(source: &str) -> bool {
     source.contains("__global__")
         || source.contains("__device__")
         || source.contains("<<<")
+        || source.contains("GLOBAL_KERNEL_SIGNATURE")
+        || source.contains("HIPRT_DEVICE")
+        || source.contains("HIPRT_HOST_DEVICE")
         || lower.contains("cuda_runtime")
         || lower.contains("hip_runtime")
         || lower.contains("cudamalloc")
         || lower.contains("hipmalloc")
+        || lower.contains("oromodulelaunchkernel")
+        || lower.contains("hiprtccreateprogram")
+        || lower.contains("hiprtccompileprogram")
+        || lower.contains("hiprtcgetcode")
+        || lower.contains("hiprtcgetbitcode")
+        || lower.contains("cumodulelaunchkernel")
 }
 
 fn request_has_gpu_markers(req: &CompileRequest) -> bool {
@@ -1443,6 +1452,15 @@ mod tests {
         assert!(text_has_gpu_markers("__global__ void step(float* x) {}"));
         assert!(text_has_gpu_markers("#include <hip/hip_runtime.h>"));
         assert!(text_has_gpu_markers("kernel<<<grid, block>>>(x);"));
+        assert!(text_has_gpu_markers(
+            "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData data) {}"
+        ));
+        assert!(text_has_gpu_markers(
+            "HIPRT_DEVICE bool filterFunc(float x) { return x > 0.0f; }"
+        ));
+        assert!(text_has_gpu_markers(
+            "oroModuleLaunchKernel(fn, 1, 1, 1, 64, 1, 1, 0, stream, args, 0);"
+        ));
         assert!(!text_has_gpu_markers("int main() { return 0; }"));
     }
 

@@ -728,6 +728,104 @@ fn gpu_ai_delta_touched_roles(edits: &[crate::hmr::edit_applier::Edit]) -> Vec<S
     roles.into_iter().collect()
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GeneratedRoleIncludeViolation {
+    role: String,
+    include_path: String,
+}
+
+fn normalize_generated_include_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let mut parts: Vec<String> = Vec::new();
+    for part in normalized.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            parts.pop();
+            continue;
+        }
+        parts.push(part.to_string());
+    }
+    parts.join("/")
+}
+
+fn basename(path: &str) -> String {
+    normalize_generated_include_path(path)
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+fn role_dir(path: &str) -> String {
+    normalize_generated_include_path(path)
+        .rsplit_once('/')
+        .map(|(dir, _)| dir.to_string())
+        .unwrap_or_default()
+}
+
+fn quoted_include_from_line(line: &str) -> Option<String> {
+    let after_hash = line.trim_start().strip_prefix('#')?.trim_start();
+    let after_include = after_hash.strip_prefix("include")?;
+    let rest = after_include.trim_start();
+    let quoted = rest.strip_prefix('"')?;
+    let end = quoted.find('"')?;
+    Some(quoted[..end].trim().to_string())
+}
+
+fn generated_role_include_policy_violations(
+    roles: &[(&str, &str, &str)],
+) -> Vec<GeneratedRoleIncludeViolation> {
+    let mut allowed = std::collections::BTreeSet::new();
+    allowed.insert("synthi_gpu_runtime.h".to_string());
+    for (_, path, _) in roles {
+        let normalized = normalize_generated_include_path(path);
+        if !normalized.is_empty() {
+            allowed.insert(normalized.clone());
+            allowed.insert(basename(&normalized));
+        }
+    }
+
+    let mut violations = Vec::new();
+    for (role, path, source) in roles {
+        let dir = role_dir(path);
+        for line in source.lines() {
+            let Some(included) = quoted_include_from_line(line) else {
+                continue;
+            };
+            let normalized = normalize_generated_include_path(&included);
+            let base = basename(&normalized);
+            let resolved = if dir.is_empty() {
+                normalized.clone()
+            } else {
+                normalize_generated_include_path(&format!("{}/{}", dir, included))
+            };
+            if allowed.contains(&normalized)
+                || allowed.contains(&base)
+                || allowed.contains(&resolved)
+            {
+                continue;
+            }
+            violations.push(GeneratedRoleIncludeViolation {
+                role: (*role).to_string(),
+                include_path: included,
+            });
+        }
+    }
+    violations
+}
+
+fn format_generated_role_include_violations(
+    violations: &[GeneratedRoleIncludeViolation],
+) -> String {
+    violations
+        .iter()
+        .map(|v| format!("{} includes {:?}", v.role, v.include_path))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 #[derive(Debug, Clone)]
 struct WarmRebuildDecision {
     accepted: bool,
@@ -1948,6 +2046,77 @@ pub async fn handle_compile_request(
                                 &generated_device_source,
                             )?;
 
+                            let include_violations =
+                                generated_role_include_policy_violations(&[
+                                    ("shared", &shared_filename, &final_shared),
+                                    ("core", &core_filename, &final_core),
+                                    ("gui", &gui_filename, &final_gui),
+                                    ("host_runner", &host_runner_filename, &final_host_runner),
+                                    ("device", &generated_device_path, &final_device),
+                                ]);
+                            if !include_violations.is_empty() {
+                                let details =
+                                    format_generated_role_include_violations(&include_violations);
+                                let touched_roles = include_violations
+                                    .iter()
+                                    .map(|v| v.role.clone())
+                                    .collect::<std::collections::BTreeSet<_>>()
+                                    .into_iter()
+                                    .collect::<Vec<_>>();
+                                let (plan_report, mut verifier_report, reason_codes) =
+                                    gpu_ai_delta_policy_rejection_reports(
+                                        &ai_delta.reload_plan,
+                                        &request_device_name,
+                                        &generated_device_path,
+                                        vec![
+                                            "generated_role_includes_project_header".to_string(),
+                                            "verifier.generated_role_include_policy_failed"
+                                                .to_string(),
+                                        ],
+                                        touched_roles,
+                                    );
+                                if let Some(obj) = verifier_report.as_object_mut() {
+                                    obj.insert(
+                                        "includeViolations".to_string(),
+                                        serde_json::json!(
+                                            include_violations
+                                                .iter()
+                                                .map(|v| serde_json::json!({
+                                                    "role": v.role,
+                                                    "include": v.include_path
+                                                }))
+                                                .collect::<Vec<_>>()
+                                        ),
+                                    );
+                                }
+                                let mut meta =
+                                    sidecar_meta.as_object().cloned().unwrap_or_default();
+                                meta.insert("lastReloadPlanReport".to_string(), plan_report);
+                                meta.insert(
+                                    "lastGpuAiDeltaVerifierReport".to_string(),
+                                    verifier_report,
+                                );
+                                meta.insert(
+                                    "patchTier".to_string(),
+                                    serde_json::Value::String("ai_delta_rejected".to_string()),
+                                );
+                                invalidate_derived_gpu_reports(&mut meta);
+                                write_sidecar_logged(
+                                    &sidecar_path,
+                                    &serde_json::Value::Object(meta),
+                                    &session_id,
+                                )
+                                .await;
+                                eprintln!(
+                                    "[GPU AI Delta] rejected generated-role include policy: {}",
+                                    details
+                                );
+                                anyhow::bail!(
+                                    "GPU AI delta verifier rejected generated-role include policy: reason_codes={}",
+                                    reason_codes.join(",")
+                                );
+                            }
+
                             let signature_before =
                                 kernel_abi_fingerprint_source(&generated_device_source);
                             let signature_after = kernel_abi_fingerprint_source(&final_device);
@@ -2530,6 +2699,36 @@ pub async fn handle_compile_request(
                             // architecture is still valid (same split modules, same
                             // contract) and the manifest hasn't changed (same
                             // library, same link flags).
+                            if sidecar_manifest_json
+                                .get("gpu")
+                                .map(|v| !v.is_null())
+                                .unwrap_or(false)
+                            {
+                                let include_violations =
+                                    generated_role_include_policy_violations(&[
+                                        ("shared", &shared_filename, &final_shared),
+                                        ("core", &core_filename, &final_core),
+                                        ("gui", &gui_filename, &final_gui),
+                                        (
+                                            "host_runner",
+                                            &host_runner_filename,
+                                            &final_host_runner,
+                                        ),
+                                    ]);
+                                if !include_violations.is_empty() {
+                                    let details = format_generated_role_include_violations(
+                                        &include_violations,
+                                    );
+                                    eprintln!(
+                                        "[GPU AI Delta] rejected generated-role include policy: {}",
+                                        details
+                                    );
+                                    anyhow::bail!(
+                                        "GPU AI delta verifier rejected generated-role include policy: reason_codes=generated_role_includes_project_header details={}",
+                                        details
+                                    );
+                                }
+                            }
                             if let Some(ref p) = enrichment.adapted_status.core_path {
                                 let _ = tokio::fs::write(p, &final_core).await;
                             }
@@ -4881,6 +5080,53 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
         assert_eq!(
             gpu_ai_delta_touched_roles(&edits),
             vec!["device".to_string(), "shared".to_string()]
+        );
+    }
+
+    #[test]
+    fn generated_role_include_policy_allows_only_generated_role_headers() {
+        let roles = [
+            (
+                "shared",
+                ".synthi/generated/gpu/shared.h",
+                "#pragma once\n#include \"synthi_gpu_runtime.h\"\n",
+            ),
+            (
+                "core",
+                ".synthi/generated/gpu/core.cpp",
+                "#include \"shared.h\"\nvoid core_on_update(){}\n",
+            ),
+            (
+                "gui",
+                ".synthi/generated/gpu/gui.cpp",
+                "#include \"shared.h\"\nvoid gui_on_render(void*){}\n",
+            ),
+        ];
+
+        assert!(generated_role_include_policy_violations(&roles).is_empty());
+    }
+
+    #[test]
+    fn generated_role_include_policy_rejects_project_headers() {
+        let roles = [
+            (
+                "shared",
+                ".synthi/generated/gpu/shared.h",
+                "#pragma once\n#include \"synthi_gpu_runtime.h\"\n",
+            ),
+            (
+                "core",
+                ".synthi/generated/gpu/core.cpp",
+                "#include \"shared.h\"\n#include \"Device/includes/AdaptiveSampling.h\"\n",
+            ),
+        ];
+
+        let violations = generated_role_include_policy_violations(&roles);
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].role, "core");
+        assert_eq!(
+            violations[0].include_path,
+            "Device/includes/AdaptiveSampling.h"
         );
     }
 

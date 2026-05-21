@@ -227,6 +227,16 @@ def split_failure_verification(rule: str, message: str) -> SplitVerificationResu
     )
 
 
+def _rejected_project_headers(rejection_notes: Sequence[str]) -> List[str]:
+    headers: set[str] = set()
+    for note in rejection_notes:
+        for match in re.finditer(r"project header ['\"]([^'\"]+)['\"]", note):
+            header = match.group(1).strip().replace("\\", "/")
+            if header:
+                headers.add(header)
+    return sorted(headers)
+
+
 def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
     joined = "\n".join(rejection_notes)
     guidance: List[str] = []
@@ -234,6 +244,13 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
         guidance.append(
             "- Inline/adapt every quoted project header into generated role code; generated roles may quote-include only emitted role files or synthi_gpu_runtime.h."
         )
+        rejected_headers = _rejected_project_headers(rejection_notes)
+        if rejected_headers:
+            guidance.append(
+                "- The verifier rejected these original workspace headers as generated-role includes: "
+                + ", ".join(f"`{header}`" for header in rejected_headers)
+                + ". Do not emit any `#include` for them; copy/adapt the required declarations instead."
+            )
     if "source_device_identifier_not_" in joined or "source_device_constant_" in joined:
         guidance.append(
             "- Copy device constants and helper bodies into device.hip/device.cu and keep actual reads of those identifiers in the preserved kernel body."
@@ -241,6 +258,14 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
     if "host_visible_mirror_not_initialized_for_render" in joined:
         guidance.append(
             "- In core_on_load, immediately fill every host-visible mirror that gui_on_render reads with varied on-screen values from the user's setup math."
+        )
+    if "gui_render_placeholder" in joined or "gui_render_no_effect" in joined:
+        guidance.append(
+            "- Replace placeholder render comments or stubs with concrete drawing commands for the source backend. gui_on_render must update the supplied render surface/context and produce visible non-black pixels on the first frame."
+        )
+    if "render_backend_changed" in joined:
+        guidance.append(
+            "- Preserve the source render backend exactly. If the source context reports GLFW/OpenGL, raylib, SFML, SDL, ImGui, or Vulkan, do not translate to another backend; generated gui.cpp and host_runner.cpp must use that same backend's runner-supplied surface/context."
         )
     if "device_init_kernel_incomplete" in joined:
         guidance.append(
@@ -260,11 +285,24 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
         )
     if "host_runner_omits_gui_module" in joined:
         guidance.append(
-            "- host_runner.cpp must load/resolve gui_on_load and gui_on_render, store the resolved render function pointer, and invoke it on the core state every frame before presenting. Marker variables or dead references such as `auto gui_on_render = libgui` do not satisfy this contract."
+            "- host_runner.cpp must load/resolve gui_on_load and gui_on_render, store the resolved render function pointer, and invoke it on the core state every frame before presenting. Marker variables or dead references such as `auto gui_on_render = libgui` do not satisfy this contract. Use a real shape like `using GuiRenderFn = void (*)(void*); auto gui_render = reinterpret_cast<GuiRenderFn>(dlsym(libgui, \"gui_on_render\")); ... if (gui_render) { gui_render(core_state); }`."
         )
     if not guidance:
         return ""
     return "Verifier-specific repair checklist:\n" + "\n".join(guidance)
+
+
+def _verifier_acceptance_gate_contract() -> str:
+    return "\n".join(
+        [
+            "# GPU SPLIT VERIFIER ACCEPTANCE GATES",
+            "- Generated role files must be self-contained. Quoted includes may only target emitted Synthi role files or synthi_gpu_runtime.h; original workspace/project headers must be copied or adapted into generated roles.",
+            "- host_runner.cpp must resolve core_on_load/core_on_update and gui_on_load/gui_on_render from the generated modules, store the function pointers, call core_on_update, then call gui_on_render with the core state before the backend presents each frame. A valid runner has a real `void* core_state` returned from core_on_load and calls a resolved render pointer such as `gui_render(core_state);` inside the frame loop.",
+            "- gui_on_render must contain executable backend drawing code, not TODOs, placeholder comments, or 'rendering logic' stubs. It must draw visible non-black output through the original project's render backend.",
+            "- Generated GUI and runner code must not switch frameworks. Preserve the source render backend reported by deterministic context selection.",
+            "- Device kernels and runtime-compiled kernel headers selected by source context must keep original kernel names and body semantics so later user body edits can map into the generated device role.",
+        ]
+    )
 
 
 def build_split_retry_prompt(
@@ -303,15 +341,37 @@ _ROLE_FILENAMES = {
     "host_runner": "host_runner.cpp",
     "device": "device.cu",
 }
-_SOURCE_GLOBAL_KERNEL_RE = re.compile(r"\b__global__\s+(?:void\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_SOURCE_GLOBAL_KERNEL_RE = re.compile(
+    r"\b(?:"
+    r"__global__\s+(?:void\s+)?"
+    r"|GLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+(?:__launch_bounds__\s*\([^)]*\)\s*)?"
+    r")([A-Za-z_][A-Za-z0-9_]*)\s*\("
+)
+_GPU_DEVICE_MARKER_RE = re.compile(
+    r"\b(?:"
+    r"__(?:global|device|constant|managed|host)__"
+    r"|GLOBAL_KERNEL_SIGNATURE\s*\("
+    r"|HIPRT_(?:DEVICE|HOST_DEVICE)\b"
+    r"|oroModuleLaunchKernel\b"
+    r"|hiprtc(?:CreateProgram|CompileProgram|GetCode|GetBitcode)\b"
+    r"|cuModuleLaunchKernel\b"
+    r")",
+    re.I,
+)
 _SOURCE_DEVICE_IDENTIFIER_RE = re.compile(r"\bk[A-Z][A-Za-z0-9_]*\b")
 _QUOTE_INCLUDE_RE = re.compile(r"#\s*include\s+\"(?P<path>[^\"]+)\"")
 _PROJECT_CONTEXT_MAX_CHARS = 70000
 _PROJECT_CONTEXT_PER_FILE_MAX_CHARS = 3000
+_DEVICE_PRESERVATION_TOTAL_MAX_CHARS = 160000
+_DEVICE_PRESERVATION_PER_FILE_MAX_CHARS = 8000
 
 
 def _looks_like_source_file(name: str) -> bool:
     return bool(re.search(r"\.(?:h|hpp|hh|cpp|cc|cxx|cu|hip)$", name.replace("\\", "/"), re.I))
+
+
+def _has_gpu_device_marker(source: str) -> bool:
+    return bool(_GPU_DEVICE_MARKER_RE.search(source or "") or ("<<<" in source and ">>>" in source))
 
 
 def _extract_embedded_source_object(value: str) -> Optional[str]:
@@ -458,8 +518,7 @@ def _device_reachable_source_files(
         root_paths = sorted(
             path
             for path, source in normalized.items()
-            if path.lower().endswith((".cu", ".hip"))
-            and ("__global__" in source or "__device__" in source)
+            if _looks_like_source_file(path) and _has_gpu_device_marker(source)
         )
     reachable: Dict[str, str] = {}
     queue = list(root_paths)
@@ -506,7 +565,18 @@ def _source_files_scoped_to_context(
         if isinstance(item, Mapping) and item.get("path")
     }
     roots = _device_roots_from_context_report(source_context_report)
-    scoped_paths.update(_device_reachable_source_files(normalized, roots=roots))
+    if roots:
+        scoped_paths.update(_device_reachable_source_files(normalized, roots=roots))
+    else:
+        included_device_roots = [
+            path
+            for path in sorted(scoped_paths)
+            if path in normalized and _looks_like_source_file(path) and _has_gpu_device_marker(normalized[path])
+        ]
+        if included_device_roots:
+            scoped_paths.update(
+                _device_reachable_source_files(normalized, roots=included_device_roots)
+            )
     scoped = {
         path: normalized[path]
         for path in sorted(scoped_paths)
@@ -539,8 +609,8 @@ def _source_device_preservation_contract(
     sections = [
         "# SOURCE DEVICE PRESERVATION CONTRACT",
         "The generated device role must copy/adapt the device-reachable user GPU source below, not summarize it.",
-        "This includes the selected .cu/.hip translation unit and any quoted project headers reachable from it.",
-        "Preserve original __global__ kernel names, non-empty kernel bodies, device helpers, constants, branches, boundary/reset logic, template helper math, and output writes.",
+        "This includes selected .cu/.hip translation units, macro-wrapped kernel headers, runtime-compiled kernel sources, and quoted project headers reachable from them.",
+        "Preserve original kernel names, non-empty kernel bodies, device helpers, constants, branches, boundary/reset logic, template helper math, and output writes.",
         "Do not include these original project headers from generated role files; inline/adapt the needed structs, constants, and helper function bodies into the generated roles.",
         "Do not emit dangling constant declarations, empty kernels, renamed kernels, or simplified substitute kernels.",
     ]
@@ -548,9 +618,47 @@ def _source_device_preservation_contract(
         sections.append(f"Required original kernels: {', '.join(kernels)}.")
     if identifiers:
         sections.append(f"Required device identifiers/constants: {', '.join(identifiers)}.")
-    for path, source in sorted(device_sources.items()):
-        body = source if len(source) <= 12000 else source[:12000] + "\n/* ... truncated ... */"
-        sections.append(f"```cpp\n// FILE: {path}\n{body}\n```")
+    root_set = {str(root).replace("\\", "/") for root in roots or []}
+
+    def sort_key(item: tuple[str, str]) -> tuple[int, str]:
+        path, source = item
+        if path in root_set:
+            return (0, path)
+        if _SOURCE_GLOBAL_KERNEL_RE.search(source):
+            return (1, path)
+        if _has_gpu_device_marker(source):
+            return (2, path)
+        if "/kernels/" in path:
+            return (3, path)
+        return (4, path)
+
+    used = sum(len(section) + 2 for section in sections)
+    omitted: List[str] = []
+    for path, source in sorted(device_sources.items(), key=sort_key):
+        body = source
+        if len(body) > _DEVICE_PRESERVATION_PER_FILE_MAX_CHARS:
+            body = (
+                body[:_DEVICE_PRESERVATION_PER_FILE_MAX_CHARS]
+                + "\n/* ... file truncated for source-device preservation budget ... */"
+            )
+        block = f"```cpp\n// FILE: {path}\n{body}\n```"
+        priority = sort_key((path, source))[0]
+        if (
+            priority > 0
+            and used + len(block) + 2 > _DEVICE_PRESERVATION_TOTAL_MAX_CHARS
+        ):
+            omitted.append(path)
+            continue
+        sections.append(block)
+        used += len(block) + 2
+    if omitted:
+        shown = ", ".join(omitted[:20])
+        suffix = "" if len(omitted) <= 20 else f", and {len(omitted) - 20} more"
+        sections.append(
+            "Omitted lower-priority device-reachable files from this preservation prompt "
+            f"because the deterministic prompt budget was reached: {shown}{suffix}. "
+            "Reason: prompt-budget exclusion after device-anchor ranking."
+        )
     return "\n".join(sections)
 
 
@@ -572,9 +680,7 @@ def _project_context_sort_key(item: tuple[str, str], focus: Optional[str]) -> tu
         return (0, path)
     if path == "CMakeLists.txt":
         return (1, path)
-    if (path.startswith("src/gpu/") or path.startswith("src/kernels/")) and (
-        "__global__" in source or "__device__" in source
-    ):
+    if (path.startswith("src/gpu/") or path.startswith("src/kernels/") or "/kernels/" in path) and _has_gpu_device_marker(source):
         return (2, path)
     if path.startswith("src/app/"):
         return (3, path)
@@ -614,10 +720,12 @@ def _project_source_context(source_files: Mapping[str, str], focus: Optional[str
         ),
         "Do not assume the active editor file is the whole project.",
         (
-            "Only source files containing actual `__global__` or `__device__` "
-            "device code are device-preservation anchors. Auxiliary `.hip`/`.cu` "
-            "files without those qualifiers are ordinary helper context; do not "
-            "force every helper constant into the generated device role."
+            "Only source files containing actual GPU kernel/device markers "
+            "(`__global__`, `__device__`, macro-wrapped kernel signatures, "
+            "or runtime-compiled GPU kernel launch paths) are device-preservation "
+            "anchors. Auxiliary `.hip`/`.cu` files without those markers are "
+            "ordinary helper context; do not force every helper constant into "
+            "the generated device role."
         ),
     ]
     used = sum(len(part) for part in sections)
@@ -848,6 +956,7 @@ async def run_kernel_splitter(
             part
             for part in [
                 extra_instructions,
+                _verifier_acceptance_gate_contract(),
                 project_context,
                 _source_device_preservation_contract(
                     scoped_source_map,

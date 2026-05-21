@@ -6,6 +6,7 @@ from agents.gpu_mod_delta import (
     build_gpu_diff_patch_prompt,
     classify_mod_delta,
     gpu_diff_patch_anchor_failures,
+    gpu_diff_patch_content_failures,
     parse_gpu_diff_response,
 )
 
@@ -123,3 +124,47 @@ def test_gpu_delta_retry_prompt_explains_anchor_rejection():
     assert "DETERMINISTIC VERIFIER REJECTION" in prompt
     assert "CURRENT generated device role" in prompt
     assert "vx[i] += force;" in prompt
+
+
+def test_gpu_delta_content_verifier_rejects_project_header_include():
+    req = GpuDiffPatchRequest(
+        diff="@@",
+        compile_manifest={
+            "module_files": {
+                "shared": ".synthi/generated/gpu/shared.h",
+                "core": ".synthi/generated/gpu/core.cpp",
+                "gui": ".synthi/generated/gpu/gui.cpp",
+                "host_runner": ".synthi/generated/gpu/host_runner.cpp",
+                "device": ".synthi/generated/gpu/device.hip",
+            }
+        },
+    )
+    failures = gpu_diff_patch_content_failures(
+        req,
+        [
+            {
+                "module": "core",
+                "operation": "insert_after",
+                "anchor": "#include <hip/hip_runtime.h>",
+                "content": '\n#include "Device/includes/AdaptiveSampling.h"\n',
+            }
+        ],
+    )
+    assert failures
+    assert failures[0]["reason"] == "generated_role_includes_project_header"
+
+
+def test_gpu_delta_content_verifier_allows_generated_role_include():
+    req = GpuDiffPatchRequest(diff="@@")
+    failures = gpu_diff_patch_content_failures(
+        req,
+        [
+            {
+                "module": "core",
+                "operation": "insert_after",
+                "anchor": "#include <stdint.h>",
+                "content": '\n#include "shared.h"\n#include "synthi_gpu_runtime.h"\n',
+            }
+        ],
+    )
+    assert failures == []

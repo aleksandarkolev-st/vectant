@@ -142,6 +142,15 @@ _SDL_SUBSTANTIAL_DRAW_RE = re.compile(
 _OPENGL_RENDER_API_RE = re.compile(
     r"\b(?:glBegin|glDrawArrays|glDrawElements|glDrawPixels|glVertex[234][a-zA-Z]*)\s*\("
 )
+_GUI_RENDER_EFFECT_RE = re.compile(
+    r"\b(?:"
+    r"SDL_Render(?:FillRect|DrawRect|DrawLine|DrawLines|DrawPoints|Copy|CopyEx|Geometry)|"
+    r"gl(?:Begin|DrawArrays|DrawElements|DrawPixels|Vertex[234][A-Za-z]*|Color[34][A-Za-z]*|TexCoord[234]?[A-Za-z]*)|"
+    r"Draw(?:Pixel|Line|Circle|Rectangle|Triangle|Texture|Text|FPS|Poly|Spline|Ring)[A-Za-z0-9_]*|"
+    r"sfRenderWindow_draw[A-Za-z0-9_]*|"
+    r"ImGui::(?:Text|Button|Plot|Image|Render|Begin|End)"
+    r")\s*\("
+)
 _OPENGL_SURFACE_API_RE = re.compile(
     r"\b(?:glClear|glClearColor|glViewport|glMatrixMode|glOrtho|gluOrtho2D|"
     r"glBegin|glDrawArrays|glDrawElements|glDrawPixels|glVertex[234][a-zA-Z]*)\s*\("
@@ -1573,6 +1582,25 @@ def verify_split_output(
                 ),
                 offending_module=gui_path,
                 offending_symbol=placeholder_render.group(0),
+            )
+        )
+    gui_render_body = _function_body(gui_source, "gui_on_render")
+    if (
+        source_render_backends
+        and gui_render_body
+        and not _GUI_RENDER_EFFECT_RE.search(_strip_cpp_comments(gui_render_body))
+    ):
+        violations.append(
+            Violation(
+                rule="gui_render_no_effect",
+                message=(
+                    "The gui_on_render body does not contain any concrete "
+                    "backend drawing operation. A cast, comment, or empty "
+                    "function can compile but produces a black frame; render "
+                    "a visible primitive, texture, pixel buffer, UI widget, or "
+                    "other backend-specific representation from preserved state."
+                ),
+                offending_module=gui_path,
             )
         )
     render_present = _GUI_BACKEND_PRESENT_RE.search(gui_source)
