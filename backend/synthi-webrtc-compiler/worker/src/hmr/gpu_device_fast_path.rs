@@ -927,15 +927,81 @@ fn statement_patch_anchor(
             continue;
         };
         let new_text = new_source.get(*new_start..*new_end)?;
-        let relative = unique_substr_offset(generated_body, old_text)?;
+        if let Some(relative) = unique_substr_offset(generated_body, old_text) {
+            return Some(StatementPatchAnchor {
+                relative_start: relative,
+                old_len: old_text.len(),
+                replacement: new_text.to_string(),
+            });
+        }
+        let Some((relative, old_len)) = normalized_statement_anchor_offset(generated_body, old_text)
+        else {
+            continue;
+        };
         return Some(StatementPatchAnchor {
             relative_start: relative,
-            old_len: old_text.len(),
+            old_len,
             replacement: new_text.to_string(),
         });
     }
 
     None
+}
+
+fn normalized_statement_anchor_offset(generated_body: &str, old_text: &str) -> Option<(usize, usize)> {
+    let old_normalized = normalize_statement_anchor(old_text);
+    if old_normalized.is_empty() {
+        return None;
+    }
+
+    let mut found: Option<(usize, usize)> = None;
+    for (start, end) in statement_spans(generated_body) {
+        let candidate = generated_body.get(start..end)?;
+        if normalize_statement_anchor(candidate) != old_normalized {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some((start, end - start));
+    }
+    found
+}
+
+fn statement_spans(source: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let bytes = source.as_bytes();
+    let mut start = 0usize;
+    for (idx, byte) in bytes.iter().enumerate() {
+        if matches!(*byte, b'{' | b'}') {
+            if let Some(span) = trim_ascii_span(source, start, idx) {
+                spans.push(span);
+            }
+            start = idx + 1;
+            continue;
+        }
+        if *byte == b';' {
+            if let Some(span) = trim_ascii_span(source, start, idx + 1) {
+                spans.push(span);
+            }
+            start = idx + 1;
+        }
+    }
+    if let Some(span) = trim_ascii_span(source, start, source.len()) {
+        spans.push(span);
+    }
+    spans
+}
+
+fn normalize_statement_anchor(text: &str) -> String {
+    let without_global_qualifiers = text.replace("::", "");
+    collapse_ws(&without_global_qualifiers)
+        .replace(" ;", ";")
+        .replace("( ", "(")
+        .replace(" )", ")")
+        .replace("[ ", "[")
+        .replace(" ]", "]")
+        .replace(" ,", ",")
 }
 
 fn enclosing_patch_spans(
@@ -1275,6 +1341,25 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("(a + 0.25f) * x[i]"));
+    }
+
+    #[test]
+    fn global_namespace_qualifier_drift_uses_normalized_statement_anchor() {
+        let source = "namespace scale_template { template <typename T> __device__ T gain(T v) { return v; } }\n__global__ void flow(float* x, int n) {\n  x[0] += ::scale_template::gain<float>(1.0f);\n}\n";
+        let next = "namespace scale_template { template <typename T> __device__ T gain(T v) { return v; } }\n__global__ void flow(float* x, int n) {\n  x[0] -= ::scale_template::gain<float>(1.0f);\n}\n";
+        let generated = "namespace scale_template { template <typename T> __device__ T gain(T v) { return v; } }\nextern \"C\" __global__ void flow(float* x, int n) {\n  x[0] += scale_template::gain<float>(1.0f);\n}\n";
+        let mut meta = sidecar();
+        meta["sourceBaselineContents"]["src/gpu/flow.hip"] = Value::String(source.to_string());
+        meta["sourceBaselineHashes"]["src/gpu/flow.hip"] = Value::String(sha256_hex(source));
+
+        let result = try_direct_device_body_patch(&meta, "src/gpu/flow.hip", next, generated);
+
+        assert!(result.accepted, "{:?}", result.reason_codes);
+        assert!(result
+            .patched_device_source
+            .as_deref()
+            .unwrap_or_default()
+            .contains("x[0] -= ::scale_template::gain<float>(1.0f);"));
     }
 
     #[test]

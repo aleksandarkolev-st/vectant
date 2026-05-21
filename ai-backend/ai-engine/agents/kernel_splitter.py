@@ -260,7 +260,7 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
         )
     if "host_runner_omits_gui_module" in joined:
         guidance.append(
-            "- host_runner.cpp must load/resolve gui_on_load and gui_on_render and call gui_on_render on the core state every frame before presenting."
+            "- host_runner.cpp must load/resolve gui_on_load and gui_on_render, store the resolved render function pointer, and invoke it on the core state every frame before presenting. Marker variables or dead references such as `auto gui_on_render = libgui` do not satisfy this contract."
         )
     if not guidance:
         return ""

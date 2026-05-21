@@ -570,6 +570,29 @@ fn is_device_source_request(filename: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn prefer_deterministic_gpu_edit(
+    is_adapted: bool,
+    prefer_gpu_pipeline: bool,
+    filename: &str,
+    force_gpu_ai_delta: bool,
+) -> bool {
+    is_adapted
+        && prefer_gpu_pipeline
+        && !force_gpu_ai_delta
+        && (is_device_source_request(filename) || is_device_header_request(filename))
+}
+
+fn classifier_failure_count_for_request(
+    consecutive_failures: u32,
+    prefer_deterministic_gpu_edit: bool,
+) -> u32 {
+    if prefer_deterministic_gpu_edit {
+        0
+    } else {
+        consecutive_failures
+    }
+}
+
 fn sidecar_string_for_path(
     sidecar: &serde_json::Value,
     object_key: &str,
@@ -1163,17 +1186,23 @@ pub async fn handle_compile_request(
     }
 
     // ── Build LoopClassifierInput with rich context ──
-    let prefer_deterministic_device_edit = adapted_status.is_adapted
-        && req.prefer_gpu_pipeline
-        && is_device_source_request(&req.filename)
-        && !req.force_gpu_ai_delta;
-    let classifier_user_requested_ai = req.user_requested_ai && !prefer_deterministic_device_edit;
+    let prefer_deterministic_gpu_edit_flag = prefer_deterministic_gpu_edit(
+        adapted_status.is_adapted,
+        req.prefer_gpu_pipeline,
+        &req.filename,
+        req.force_gpu_ai_delta,
+    );
+    let classifier_user_requested_ai = req.user_requested_ai && !prefer_deterministic_gpu_edit_flag;
+    let classifier_consecutive_failures = classifier_failure_count_for_request(
+        consecutive_failures,
+        prefer_deterministic_gpu_edit_flag,
+    );
 
     let classifier_input = LoopClassifierInput {
         adapted_status: &adapted_status,
         current_source_hash: Some(&source_hash_str),
         rollout_flags: &rollout_flags,
-        consecutive_failures,
+        consecutive_failures: classifier_consecutive_failures,
         failure_rescue_threshold: 2,
         user_requested_ai: classifier_user_requested_ai,
         user_requested_deterministic: req.user_requested_deterministic,
@@ -1196,14 +1225,17 @@ pub async fn handle_compile_request(
     // classifier's inputs live, we're guessing at why. The line is noisy
     // but fires once per compile request, which is fine.
     eprintln!(
-        "[HMR] classify_loop → {:?} (reason={:?}) inputs: is_adapted={} split_hash={:?} src_hash={} consec_fail={} user_ai={} user_det={} lang={}",
+        "[HMR] classify_loop → {:?} (reason={:?}) inputs: is_adapted={} split_hash={:?} src_hash={} consec_fail={} effective_consec_fail={} prefer_det_gpu={} user_ai={} effective_user_ai={} user_det={} lang={}",
         compile_loop,
         classification.reason,
         adapted_status.is_adapted,
         adapted_status.split_hash,
         source_hash_str,
         consecutive_failures,
+        classifier_consecutive_failures,
+        prefer_deterministic_gpu_edit_flag,
         req.user_requested_ai,
+        classifier_user_requested_ai,
         req.user_requested_deterministic,
         language
     );
@@ -4466,6 +4498,50 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
         assert_ne!(
             kernel_abi_fingerprint_source(before),
             kernel_abi_fingerprint_source(after)
+        );
+    }
+
+    #[test]
+    fn deterministic_gpu_edits_are_not_preempted_by_failure_rescue() {
+        let status =
+            AdaptedProjectStatus::adapted(PathBuf::from("core.cpp"), PathBuf::from("gui.cpp"), None)
+                .with_split_hash("hash1".into());
+        let flags = crate::hmr::rollout_flags::RolloutFlags::new_defaults();
+
+        assert!(prefer_deterministic_gpu_edit(
+            true,
+            true,
+            "src/gpu/flow.hip",
+            false
+        ));
+        assert!(prefer_deterministic_gpu_edit(
+            true,
+            true,
+            "src/gpu/flow_template.hpp",
+            false
+        ));
+        assert!(!prefer_deterministic_gpu_edit(
+            true,
+            true,
+            "src/gpu/flow_template.hpp",
+            true
+        ));
+
+        let effective_failures = classifier_failure_count_for_request(3, true);
+        let classification = classify_loop(&LoopClassifierInput {
+            adapted_status: &status,
+            current_source_hash: Some("hash1"),
+            rollout_flags: &flags,
+            consecutive_failures: effective_failures,
+            failure_rescue_threshold: 2,
+            user_requested_ai: false,
+            user_requested_deterministic: false,
+        });
+
+        assert_eq!(effective_failures, 0);
+        assert_eq!(
+            classification.loop_type,
+            crate::hmr::loop_classifier::CompileLoop::LoopA
         );
     }
 

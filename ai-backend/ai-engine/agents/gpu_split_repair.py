@@ -557,19 +557,28 @@ def _repair_init_kernel_buffers(
     device_source: str,
 ) -> tuple[str, str, bool]:
     launches = _collect_launches(core_source, device_source)
-    init_launches = [launch for launch in launches if launch.is_init]
     update_launches = [launch for launch in launches if not launch.is_init]
-    if not init_launches or not update_launches:
+    if not update_launches:
         return core_source, device_source, False
 
     required: Dict[str, Tuple[str, _ParamInfo]] = {}
     required_order: List[Tuple[str, str, _ParamInfo]] = []
-    initialized: Set[str] = set()
     for launch in update_launches:
         for buffer, info in launch.pointer_buffers.items():
             if buffer not in required:
                 required_order.append((buffer, info[0], info[1]))
             required[buffer] = info
+
+    init_launches = [launch for launch in launches if launch.is_init]
+    if not init_launches:
+        return _insert_synthi_init_kernel(
+            core_source=core_source,
+            device_source=device_source,
+            update_launch=update_launches[0],
+            required_order=required_order,
+        )
+
+    initialized: Set[str] = set()
     for launch in init_launches:
         initialized.update(launch.pointer_buffers)
 
@@ -596,6 +605,58 @@ def _repair_init_kernel_buffers(
         additions,
     )
     return core_after, device_after, core_after != core_source or device_after != device_source
+
+
+def _insert_synthi_init_kernel(
+    *,
+    core_source: str,
+    device_source: str,
+    update_launch: _LaunchInfo,
+    required_order: Sequence[Tuple[str, str, _ParamInfo]],
+) -> tuple[str, str, bool]:
+    if not required_order:
+        return core_source, device_source, False
+
+    count_arg, count_param = _launch_count_argument(device_source, update_launch)
+    if not count_arg or not count_param:
+        return core_source, device_source, False
+
+    kernel_name = _unique_kernel_name(device_source, "synthi_hmr_init_buffers")
+    pointer_params: List[_ParamInfo] = []
+    existing_names: Set[str] = {count_param.name}
+    launch_args: List[str] = []
+    for buffer, launch_arg, update_param in required_order:
+        param = _init_param_from_update(buffer, update_param)
+        unique_name = _unique_param_name(param.name, existing_names)
+        if unique_name != param.name:
+            param = _ParamInfo(
+                declaration=f"{param.type_text} {unique_name}".strip(),
+                type_text=param.type_text,
+                name=unique_name,
+                is_pointer=param.is_pointer,
+            )
+        pointer_params.append(param)
+        launch_args.append(launch_arg)
+
+    launch_args.append(count_arg)
+    params = pointer_params + [count_param]
+    init_kernel = _synthi_init_kernel_source(kernel_name, params, count_param.name)
+    device_after = device_source.rstrip() + "\n\n" + init_kernel + "\n"
+
+    args = list(update_launch.args)
+    args[1] = f'"{kernel_name}"'
+    args[-1] = "{ " + ", ".join(launch_args) + " }"
+    init_call = "synthi_gpu_launch(" + ", ".join(args) + ")"
+    init_block = (
+        "static bool synthi_hmr_device_initialized = false;\n"
+        "    if (!synthi_hmr_device_initialized) {\n"
+        f"        bool synthi_hmr_init_ok = {init_call};\n"
+        "        if (synthi_hmr_init_ok) synthi_hmr_device_initialized = true;\n"
+        "    }\n"
+    )
+    insert_at = _statement_start(core_source, update_launch.start)
+    core_after = core_source[:insert_at] + init_block + core_source[insert_at:]
+    return core_after, device_after, True
 
 
 def _append_init_launch_args(
@@ -662,6 +723,70 @@ def _append_init_launch_args(
     args[-1] = "{ " + ", ".join(new_args) + " }"
     replacement = "synthi_gpu_launch(" + ", ".join(args) + ")"
     return core_source[: init_launch.start] + replacement + core_source[init_launch.end :]
+
+
+def _kernel_body_source(device_source: str, kernel: str) -> str:
+    span = _kernel_function_span(device_source, kernel)
+    if span is None:
+        return ""
+    function_source = device_source[span[0] : span[1]]
+    body_start = function_source.find("{")
+    if body_start < 0:
+        return ""
+    return function_source[body_start + 1 : -1]
+
+
+def _launch_count_argument(
+    device_source: str,
+    launch: _LaunchInfo,
+) -> Tuple[Optional[str], Optional[_ParamInfo]]:
+    params = _kernel_params(device_source, launch.kernel)
+    body = _kernel_body_source(device_source, launch.kernel)
+    count_name = _count_param_name(body, params)
+    if count_name:
+        for index, param in enumerate(params):
+            if param.name == count_name and index < len(launch.launch_args):
+                return launch.launch_args[index], param
+
+    for index in range(len(params) - 1, -1, -1):
+        param = params[index]
+        if param.is_pointer or index >= len(launch.launch_args):
+            continue
+        if re.search(r"\b(?:int|size_t|uint32_t|unsigned\s+int)\b", param.type_text):
+            return launch.launch_args[index], param
+    return None, None
+
+
+def _unique_kernel_name(device_source: str, base: str) -> str:
+    existing = {match.group("name") for match in _GLOBAL_KERNEL_SIGNATURE_RE.finditer(device_source)}
+    if base not in existing:
+        return base
+    index = 2
+    while f"{base}_{index}" in existing:
+        index += 1
+    return f"{base}_{index}"
+
+
+def _synthi_init_kernel_source(
+    kernel_name: str,
+    params: Sequence[_ParamInfo],
+    count_name: str,
+) -> str:
+    param_text = ", ".join(param.declaration for param in params)
+    return (
+        f'extern "C" __global__ void {kernel_name}({param_text}) {{'
+        f"{_init_write_block(count_name, [param for param in params if param.is_pointer])}"
+        "}"
+    )
+
+
+def _statement_start(source: str, call_start: int) -> int:
+    index = max(0, min(call_start, len(source)))
+    while index > 0 and source[index - 1] not in ";\n{}":
+        index -= 1
+    while index < call_start and source[index].isspace() and source[index] != "\n":
+        index += 1
+    return index
 
 
 def _launch_arg_matches_param(arg: str, param: _ParamInfo) -> bool:
@@ -817,14 +942,28 @@ def _repair_launch_abi_mismatches(
     device_source: str,
     shared_source: str,
 ) -> tuple[str, str, bool]:
-    launches = _collect_launches(core_source, device_source)
-    if not launches:
-        return core_source, device_source, False
-
     out_core = core_source
     out_device = device_source
     changed = False
     type_sources = (core_source, shared_source, device_source)
+
+    next_core = _repair_aggregate_launch_args(
+        out_core,
+        out_device,
+        type_sources,
+    )
+    if next_core != out_core:
+        out_core = next_core
+        changed = True
+
+    next_core = _repair_launch_argument_addresses(out_core)
+    if next_core != out_core:
+        out_core = next_core
+        changed = True
+
+    launches = _collect_launches(out_core, out_device)
+    if not launches:
+        return out_core, out_device, changed
 
     for launch in launches:
         params = _kernel_params(out_device, launch.kernel)
@@ -850,12 +989,109 @@ def _repair_launch_abi_mismatches(
                 out_device = next_device
                 changed = True
 
-    next_core = _repair_launch_argument_addresses(out_core)
-    if next_core != out_core:
-        out_core = next_core
-        changed = True
-
     return out_core, out_device, changed
+
+
+def _repair_aggregate_launch_args(
+    core_source: str,
+    device_source: str,
+    type_sources: Sequence[str],
+) -> str:
+    replacements: Dict[Tuple[int, int], str] = {}
+    insertions: Dict[int, str] = {}
+    unique_index = 1
+
+    for launch in _collect_launches(core_source, device_source):
+        params = _kernel_params(device_source, launch.kernel)
+        if len(launch.launch_args) <= len(params):
+            continue
+
+        for param_index, param in enumerate(params):
+            if param.is_pointer:
+                continue
+            fields = _struct_fields(param.type_text, type_sources)
+            if len(fields) <= 1:
+                continue
+            if len(launch.launch_args) - len(params) + 1 != len(fields):
+                continue
+
+            values = launch.launch_args[param_index : param_index + len(fields)]
+            if len(values) != len(fields):
+                continue
+            if not all(_addressable_launch_expr(_normalize_launch_buffer_arg(value)) for value in values):
+                continue
+
+            variable_name = f"synthi_hmr_launch_params_{unique_index}"
+            unique_index += 1
+            initializer = ", ".join(_normalize_launch_buffer_arg(value) for value in values)
+            declaration = f"{param.type_text} {variable_name} = {{ {initializer} }};\n"
+            new_launch_args = (
+                launch.launch_args[:param_index]
+                + [f"&{variable_name}"]
+                + launch.launch_args[param_index + len(fields) :]
+            )
+            new_call_args = list(launch.args)
+            new_call_args[-1] = "{ " + ", ".join(new_launch_args) + " }"
+            replacements[(launch.start, launch.end)] = "synthi_gpu_launch(" + ", ".join(new_call_args) + ")"
+            insertions[_statement_start(core_source, launch.start)] = declaration
+            break
+
+    if not replacements and not insertions:
+        return core_source
+
+    out = core_source
+    for (start, end), replacement in sorted(replacements.items(), reverse=True):
+        out = out[:start] + replacement + out[end:]
+    for insert_at, declaration in sorted(insertions.items(), reverse=True):
+        out = out[:insert_at] + declaration + out[insert_at:]
+    return out
+
+
+def _statement_start(source: str, index: int) -> int:
+    cursor = index
+    while cursor > 0 and source[cursor - 1].isspace():
+        cursor -= 1
+    while cursor > 0 and source[cursor - 1] not in ";{}":
+        cursor -= 1
+    while cursor < len(source) and source[cursor].isspace():
+        cursor += 1
+    return cursor
+
+
+def _struct_fields(type_text: str, type_sources: Sequence[str]) -> List[Tuple[str, str]]:
+    type_name = re.sub(r"\b(?:const|volatile|struct|class)\b", " ", type_text)
+    type_name = type_name.replace("*", " ").replace("&", " ")
+    type_name = re.sub(r"\s+", " ", type_name).strip()
+    type_name = type_name.rsplit("::", 1)[-1]
+    if not type_name:
+        return []
+
+    struct_re = re.compile(
+        rf"\bstruct\s+{re.escape(type_name)}\s*\{{(?P<body>.*?)\}}\s*;",
+        re.DOTALL,
+    )
+    fields: List[Tuple[str, str]] = []
+    for source in type_sources:
+        match = struct_re.search(source)
+        if not match:
+            continue
+        for raw_declaration in match.group("body").split(";"):
+            field_match = re.search(
+                r"^\s*(?P<type>[A-Za-z_][A-Za-z0-9_:<>]*(?:\s+[A-Za-z_][A-Za-z0-9_:<>]*)*(?:\s*[*&])*)\s+"
+                r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^;]*)?\s*$",
+                raw_declaration,
+            )
+            if not field_match:
+                continue
+            fields.append(
+                (
+                    re.sub(r"\s+", " ", field_match.group("type")).strip(),
+                    field_match.group("name"),
+                )
+            )
+        if fields:
+            return fields
+    return []
 
 
 def _append_kernel_params(
@@ -950,6 +1186,8 @@ def _declared_value_type(name: str, type_sources: Sequence[str]) -> Optional[str
 
 def _repair_launch_argument_addresses(core_source: str) -> str:
     replacements: Dict[Tuple[int, int], str] = {}
+    insertions: Dict[int, List[str]] = {}
+    unique_index = 1
     for start, end, body in _iter_launch_spans(core_source):
         args = _split_top_level_args(body)
         if len(args) != 7:
@@ -967,6 +1205,15 @@ def _repair_launch_argument_addresses(core_source: str) -> str:
             if _addressable_launch_expr(stripped):
                 fixed_entries.append(f"&{stripped}")
                 changed = True
+            elif _inline_launch_initializer_expr(stripped):
+                while f"synthi_hmr_launch_arg_{unique_index}" in core_source:
+                    unique_index += 1
+                variable_name = f"synthi_hmr_launch_arg_{unique_index}"
+                unique_index += 1
+                insert_at = _statement_start(core_source, start)
+                insertions.setdefault(insert_at, []).append(f"auto {variable_name} = {stripped};\n")
+                fixed_entries.append(f"&{variable_name}")
+                changed = True
             else:
                 fixed_entries.append(stripped)
         if not changed:
@@ -977,7 +1224,20 @@ def _repair_launch_argument_addresses(core_source: str) -> str:
     out = core_source
     for (start, end), replacement in sorted(replacements.items(), reverse=True):
         out = out[:start] + replacement + out[end:]
+    for insert_at, declarations in sorted(insertions.items(), reverse=True):
+        out = out[:insert_at] + "".join(declarations) + out[insert_at:]
     return out
+
+
+def _inline_launch_initializer_expr(expression: str) -> bool:
+    expr = expression.strip()
+    return bool(
+        re.match(
+            r"^(?:(?:const|volatile)\s+)*[A-Za-z_][A-Za-z0-9_:<>]*(?:\s+[A-Za-z_][A-Za-z0-9_:<>]*)*\s*\{.*\}$",
+            expr,
+            re.DOTALL,
+        )
+    )
 
 
 def _matching_brace(source: str, open_brace: int) -> Optional[int]:
@@ -993,7 +1253,11 @@ def _matching_brace(source: str, open_brace: int) -> Optional[int]:
 
 
 def _count_param_name(body: str, params: Sequence[_ParamInfo]) -> Optional[str]:
-    guard = re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\s*<\s*(?P<count>[A-Za-z_][A-Za-z0-9_]*)", body)
+    guard = re.search(
+        r"\b[A-Za-z_][A-Za-z0-9_]*\s*<\s*"
+        r"(?P<count>[A-Za-z_][A-Za-z0-9_]*(?:(?:->|\.)[A-Za-z_][A-Za-z0-9_]*)*)",
+        body,
+    )
     if guard:
         return guard.group("count")
     for param in reversed(params):

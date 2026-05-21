@@ -737,6 +737,10 @@ def _normalize_launch_buffer_arg(arg: str) -> str:
     return re.sub(r"\s+", "", arg)
 
 
+def _strip_cpp_comments(source: str) -> str:
+    return re.sub(r"//.*?$|/\*.*?\*/", " ", source, flags=re.MULTILINE | re.DOTALL)
+
+
 def _missing_init_launch_buffers(core_source: str, device_source: str) -> Set[str]:
     required: Set[str] = set()
     initialized: Set[str] = set()
@@ -763,6 +767,39 @@ def _missing_init_launch_buffers(core_source: str, device_source: str) -> Set[st
     if not required:
         return set()
     return {buf for buf in required if buf not in initialized}
+
+
+def _host_runner_routes_gui_module(host_runner_source: str) -> bool:
+    if not host_runner_source:
+        return True
+
+    resolves_gui_render = bool(
+        re.search(
+            r"\b(?:dlsym|GetProcAddress)\s*\([^;]*[\"']gui_on_render[\"']",
+            host_runner_source,
+            re.DOTALL,
+        )
+        or re.search(
+            r"\bgui_on_render\s*\(",
+            _strip_cpp_comments(host_runner_source),
+        )
+    )
+    if not resolves_gui_render:
+        return False
+
+    code = _strip_cpp_comments(host_runner_source)
+    call_pattern = re.compile(
+        r"\b(?!(?:dlsym|GetProcAddress|decltype|typedef|using|if|while|for|switch)\b)"
+        r"(?P<callee>[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_]*)*)"
+        r"\s*\((?P<args>[^(){};]*)\)\s*;",
+        re.DOTALL,
+    )
+    for match in call_pattern.finditer(code):
+        callee = re.sub(r"\s+", "", match.group("callee"))
+        args = match.group("args")
+        if "render" in callee.lower() and re.search(r"\b(?:state|core_state|app_state)\b", args):
+            return True
+    return False
 
 
 def _mirror_allocated_in_load(core_load_body: str, mirror: str) -> bool:
@@ -1797,13 +1834,16 @@ def verify_split_output(
                 offending_module=host_runner_path,
             )
         )
-    if host_runner_source and not re.search(r"\bgui_on_(?:load|render)\b|libgui", host_runner_source):
+    if not _host_runner_routes_gui_module(host_runner_source):
         violations.append(
             Violation(
                 rule="host_runner_omits_gui_module",
                 message=(
-                    "The host_runner role must load/call the generated GUI module "
-                    "or otherwise route rendering through gui_on_render every frame."
+                    "The host_runner role must resolve and invoke the generated "
+                    "GUI render entrypoint every frame. Marker variables or "
+                    "dead references to libgui/gui_on_render are not enough; "
+                    "route the core state through gui_on_render before the "
+                    "backend presents the frame."
                 ),
                 offending_module=host_runner_path,
             )

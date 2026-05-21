@@ -212,28 +212,65 @@ def test_repair_reorders_existing_init_signature_buffers_without_count_mismatch(
     assert "dvy[synthi_hmr_i] = 0.0f" in repaired["device.hip"]
 
 
-def test_repair_flattens_device_kernel_signature_to_launch_abi():
+def test_repair_init_kernel_keeps_state_field_count_expression():
     files = {
         "shared.h": (
             '#include "synthi_gpu_runtime.h"\n'
-            "struct AppState {\n"
-            "  float* dx;\n"
-            "  float* dy;\n"
-            "  float* dvx;\n"
-            "  float* dvy;\n"
-            "  unsigned int* drgba;\n"
-            "  int count;\n"
-            "  float dt;\n"
-            "  float flow_scale;\n"
-            "  float swirl;\n"
-            "};"
+            "struct AppState { float* dx; float* dy; float* dvx; unsigned int* drgba; int count; };"
         ),
         "core.cpp": (
-            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            '#include <hip/hip_runtime.h>\n'
+            'extern "C" void* core_on_load(void*, void*) { '
+            'static AppState state; AppState* s = &state; '
+            'hipMalloc(&s->dx, 4096); hipMalloc(&s->dy, 4096); '
+            'hipMalloc(&s->dvx, 4096); hipMalloc(&s->drgba, 4096); return s; }\n'
             'extern "C" void core_on_update(void* state, double) { '
             "auto* s = static_cast<AppState*>(state); "
-            'synthi_gpu_launch(nullptr, "advance_particle_field", 4, 256, 0, nullptr, '
-            "{ &s->dx, &s->dy, &s->dvx, &s->dvy, &s->drgba, &s->count, &s->dt, &s->flow_scale, &s->swirl }); }\n"
+            'synthi_gpu_launch(nullptr, "init_particles", 4, 256, 0, nullptr, { &s }); '
+            'synthi_gpu_launch(nullptr, "advance_particles", 4, 256, 0, nullptr, '
+            '{ &s->dx, &s->dy, &s->dvx, &s->drgba, &s->count }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": (
+            'extern "C" __global__ void init_particles(AppState* s) { '
+            'int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < s->count) { s->dx[i] = 0.0f; } }\n'
+            'extern "C" __global__ void advance_particles(float* dx, float* dy, float* dvx, unsigned int* drgba, int count) { '
+            'int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < count) { dx[i] += dvx[i]; drgba[i] = 0u; } }'
+        ),
+    }
+    verification = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "device_init_kernel_incomplete" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files={},
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.init_kernel_buffers" in report["repairRules"]
+    assert "if (synthi_hmr_i < s->count)" in repaired["device.hip"]
+    assert "if (synthi_hmr_i < s)" not in repaired["device.hip"]
+    after = verify_split_output(files=repaired, manifest_arch=["gfx1201"])
+    assert not any(v.rule == "device_init_kernel_incomplete" for v in after.violations)
+
+
+def test_repair_inserts_missing_one_time_init_kernel_before_update():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct Params { float dt; };',
+        "core.cpp": (
+            '#include <hip/hip_runtime.h>\n'
+            'extern "C" void* core_on_load(void*, void*) { '
+            'hipMalloc(&s.dx, 4096); hipMalloc(&s.dy, 4096); '
+            'hipMalloc(&s.dvx, 4096); hipMalloc(&s.drgba, 4096); return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'bool ok = synthi_gpu_launch(nullptr, "advance_particle_field", 4, 256, 0, nullptr, '
+            '{ &s.dx, &s.dy, &s.dvx, &s.drgba, &s.count, &s.params }); if (ok) {} }\n'
             'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
             'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
             'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
@@ -242,9 +279,71 @@ def test_repair_flattens_device_kernel_signature_to_launch_abi():
         "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
         "device.hip": (
             'extern "C" __global__ void advance_particle_field('
-            "float* dx, float* dy, float* dvx, float* dvy, unsigned int* drgba, int count, float dt) { "
+            'float* dx, float* dy, float* dvx, unsigned int* drgba, int count, Params params) { '
+            'int i = blockIdx.x * blockDim.x + threadIdx.x; '
+            'if (i < count) { dx[i] += dvx[i] * params.dt; drgba[i] = 0u; } }'
+        ),
+    }
+    verification = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "device_buffers_not_initialized" for v in verification.violations)
+    assert any(v.rule == "device_init_kernel_incomplete" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files={},
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.init_kernel_buffers" in report["repairRules"]
+    assert "synthi_hmr_device_initialized" in repaired["core.cpp"]
+    assert "synthi_hmr_init_buffers" in repaired["core.cpp"]
+    assert 'extern "C" __global__ void synthi_hmr_init_buffers' in repaired["device.hip"]
+    assert "dvx[synthi_hmr_i] = 0.0f" in repaired["device.hip"]
+    assert "drgba[synthi_hmr_i] = 0u" in repaired["device.hip"]
+    after = verify_split_output(files=repaired, manifest_arch=["gfx1201"])
+    rules = {v.rule for v in after.violations}
+    assert "device_buffers_not_initialized" not in rules
+    assert "device_init_kernel_incomplete" not in rules
+
+
+def test_repair_recomposes_aggregate_launch_param_from_flat_host_args():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "struct LaunchParams { float dt; float center_x; float center_y; float bounds_x; float bounds_y; };\n"
+            "struct AppState {\n"
+            "  float* dx;\n"
+            "  float* dy;\n"
+            "  float* dvx;\n"
+            "  float* dvy;\n"
+            "  unsigned int* drgba;\n"
+            "  int count;\n"
+            "  float dt;\n"
+            "  float center_x;\n"
+            "  float center_y;\n"
+            "  float bounds_x;\n"
+            "  float bounds_y;\n"
+            "};"
+        ),
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            "auto* s = static_cast<AppState*>(state); "
+            'synthi_gpu_launch(nullptr, "advance_particle_field", 4, 256, 0, nullptr, '
+            "{ &s->dx, &s->dy, &s->dvx, &s->dvy, &s->drgba, &s->count, &s->dt, &s->center_x, &s->center_y, &s->bounds_x, &s->bounds_y }); }\n"
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": (
+            'extern "C" __global__ void advance_particle_field('
+            "float* dx, float* dy, float* dvx, float* dvy, unsigned int* drgba, int count, LaunchParams params) { "
             "int i = blockIdx.x * blockDim.x + threadIdx.x; "
-            "if (i < count) { dx[i] += dvx[i] * dt; dy[i] += dvy[i] * dt; drgba[i] = 0xff00ff00u; } }"
+            "if (i < count) { dx[i] += dvx[i] * params.dt; dy[i] += dvy[i] * params.dt; drgba[i] = 0xff00ff00u; } }"
         ),
     }
     verification = verify_split_output(files=files, manifest_arch=["gfx1201"])
@@ -259,8 +358,9 @@ def test_repair_flattens_device_kernel_signature_to_launch_abi():
 
     assert report["repaired"] is True
     assert "repair.launch_abi_mismatch" in report["repairRules"]
-    assert "float flow_scale" in repaired["device.hip"]
-    assert "float swirl" in repaired["device.hip"]
+    assert "LaunchParams synthi_hmr_launch_params_1" in repaired["core.cpp"]
+    assert "{ &s->dx, &s->dy, &s->dvx, &s->dvy, &s->drgba, &s->count, &synthi_hmr_launch_params_1 }" in repaired["core.cpp"]
+    assert "float center_x" not in repaired["device.hip"]
     after = verify_split_output(files=repaired, manifest_arch=["gfx1201"])
     assert not any(v.rule == "kernel_launch_abi_mismatch" for v in after.violations)
 
@@ -297,6 +397,48 @@ def test_repair_launch_argument_addresses_for_simple_lvalues():
     assert report["repaired"] is True
     assert "repair.launch_abi_mismatch" in report["repairRules"]
     assert "{ &s->dx, &s->count }" in repaired["core.cpp"]
+    after = verify_split_output(files=repaired, manifest_arch=["gfx1201"])
+    assert not any(v.rule == "launch_arg_not_address" for v in after.violations)
+
+
+def test_repair_materializes_inline_launch_initializer_argument():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "struct LaunchParams { float dt; float center_x; float center_y; };\n"
+            "struct AppState { float* dx; int count; float dt; float center_x; float center_y; };"
+        ),
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            "auto* s = static_cast<AppState*>(state); "
+            'synthi_gpu_launch(nullptr, "step", 1, 64, 0, nullptr, '
+            "{ &s->dx, &s->count, LaunchParams{ s->dt, s->center_x, s->center_y } }); }\n"
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": (
+            'extern "C" __global__ void step(float* dx, int count, LaunchParams params) { '
+            "int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < count) dx[i] += params.dt; }"
+        ),
+    }
+    verification = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "launch_arg_not_address" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files={},
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.launch_abi_mismatch" in report["repairRules"]
+    assert "auto synthi_hmr_launch_arg_1 = LaunchParams{ s->dt, s->center_x, s->center_y };" in repaired["core.cpp"]
+    assert "{ &s->dx, &s->count, &synthi_hmr_launch_arg_1 }" in repaired["core.cpp"]
     after = verify_split_output(files=repaired, manifest_arch=["gfx1201"])
     assert not any(v.rule == "launch_arg_not_address" for v in after.violations)
 

@@ -2375,6 +2375,22 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
 
+        if split.repair_report and split.repair_report.get("inputReasonCodes"):
+            post_repair_codes = (
+                [v.rule for v in split.verification.violations]
+                if split.verification
+                else []
+            )
+            logger.info(
+                "[split/gpu] split attempt %s/%s deterministic repair: repaired=%s rules=%s changed=%s remaining=%s",
+                attempt,
+                max_split_attempts,
+                split.repair_report.get("repaired"),
+                split.repair_report.get("repairRules", []),
+                split.repair_report.get("changedFiles", []),
+                post_repair_codes,
+            )
+
         split_attempts.append(
             _split_attempt_record(
                 attempt=attempt,

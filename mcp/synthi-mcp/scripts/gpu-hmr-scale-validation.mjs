@@ -1815,19 +1815,24 @@ async function assertRenderBackendDependencies(renderProfile) {
   );
 }
 
-async function compileViaMcp(args, waitTimeoutMs, phaseName, checkpoint) {
+async function compileViaMcp(args, waitTimeoutMs, phaseName, checkpoint, options = {}) {
+  const expectedHmrModule = typeof options.expectedHmrModule === 'string'
+    && options.expectedHmrModule.trim()
+    ? options.expectedHmrModule.trim()
+    : null;
   const state = await ensureMcpAttached();
   const wallStart = Date.now();
   const compileDispatchedAt = new Date().toISOString();
   const compile = await state.client.toolCall('synthi_compile', args, waitTimeoutMs);
   if (!compile?.ok) throw new Error(`synthi_compile failed: ${JSON.stringify(compile).slice(0, 500)}`);
   const waitStartedAt = new Date().toISOString();
-  const wait = await waitHmrForCurrentWorkspace(state, waitTimeoutMs, phaseName);
+  const wait = await waitHmrForCurrentWorkspace(state, waitTimeoutMs, phaseName, expectedHmrModule);
   const waitFinishedAt = new Date().toISOString();
   const wallElapsed = Date.now() - wallStart;
   const workerTail = await dockerLogs(CFG.workerContainer, checkpoint);
   const phase = {
     name: phaseName,
+    expected_hmr_module: expectedHmrModule,
     compile_dispatched_at: compileDispatchedAt,
     wait_hmr_started_at: waitStartedAt,
     wait_hmr_finished_at: waitFinishedAt,
@@ -1892,7 +1897,7 @@ async function compileUnsupportedViaMcp(args, timeoutMs, phaseName, expectedReas
   return phase;
 }
 
-async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName) {
+async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, expectedModule = null) {
   const startedAt = Date.now();
   const eventLogSinceTs = startedAt - 2000;
   let last = null;
@@ -1903,11 +1908,14 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName) {
     try {
       wait = await state.client.toolCall(
         'synthi_wait_hmr',
-        { timeoutMs: sliceTimeoutMs },
+        {
+          timeoutMs: sliceTimeoutMs,
+          ...(expectedModule ? { module: expectedModule } : {}),
+        },
         sliceTimeoutMs + 7000,
       );
     } catch (err) {
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
       if (recovered) return recovered;
       throw err;
     }
@@ -1915,18 +1923,32 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName) {
     const previewId = wait?.detail?.preview_id;
     if (previewId && previewId !== CFG.slug) {
       record(`${phaseName} ignored stale wait_hmr`, 'warn', `preview_id=${previewId} status=${wait?.status ?? 'unknown'}`);
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
       if (recovered) return recovered;
       continue;
     }
     if (wait?.status === 'timeout') {
-      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
+      if (recovered) return recovered;
+      continue;
+    }
+    if (
+      expectedModule
+      && wait?.status === 'discarded'
+      && wait?.detail?.reason === 'superseded_by_newer_candidate'
+    ) {
+      record(
+        `${phaseName} ignored superseded candidate wait_hmr`,
+        'warn',
+        `expected_module=${expectedModule}`,
+      );
+      const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
       if (recovered) return recovered;
       continue;
     }
     return wait;
   }
-  const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
+  const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt, expectedModule);
   if (recovered) return recovered;
   return last ?? { status: 'timeout', elapsedMs: timeoutMs, source: 'validation_harness' };
 }
@@ -1956,7 +1978,19 @@ function hmrStatusFromEvent(entry) {
   return null;
 }
 
-async function currentHmrFromEventLog(state, sinceTs, startedAt) {
+function hmrModule(detail) {
+  if (!detail || typeof detail !== 'object') return null;
+  if (typeof detail.module === 'string') return detail.module;
+  if (detail.data && typeof detail.data === 'object' && typeof detail.data.module === 'string') {
+    return detail.data.module;
+  }
+  if (detail.detail && typeof detail.detail === 'object' && typeof detail.detail.module === 'string') {
+    return detail.detail.module;
+  }
+  return null;
+}
+
+async function currentHmrFromEventLog(state, sinceTs, startedAt, expectedModule = null) {
   const log = await state.client.toolCall(
     'synthi_get_event_log',
     { kind: 'hmr', since_ts: sinceTs, limit: 200 },
@@ -1971,12 +2005,20 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt) {
     if (!['applied', 'rejected', 'compile-error', 'full-reload-required', 'discarded'].includes(status)) {
       continue;
     }
+    const detail = raw.data && typeof raw.data === 'object' ? raw.data : raw;
+    if (
+      expectedModule
+      && status === 'applied'
+      && hmrModule(detail) !== expectedModule
+    ) {
+      continue;
+    }
     return {
       status,
       elapsedMs: Date.now() - startedAt,
       hmrElapsedMs: typeof entry.ts === 'number' ? entry.ts - startedAt : null,
       source: 'event_log',
-      detail: raw.data && typeof raw.data === 'object' ? raw.data : raw,
+      detail,
       frame_gate: {
         status: 'event_log_recovered',
         note: 'terminal HMR event was recovered from the MCP session event log after a stale wait_hmr event',
@@ -2717,7 +2759,9 @@ async function compileUserDeviceDelta(project, editedDevice, vendor, checkpoint)
     args.force_gpu_ai_delta = true;
     phaseName = 'ai_device_delta_hmr';
   }
-  return compileViaMcp(args, CFG.hotSwapTimeoutMs, phaseName, checkpoint);
+  return compileViaMcp(args, CFG.hotSwapTimeoutMs, phaseName, checkpoint, {
+    expectedHmrModule: 'device',
+  });
 }
 
 async function compileTemplateWarmRebuild(project, editedHeader, currentDevice, vendor, checkpoint) {
@@ -2748,7 +2792,9 @@ async function compileTemplateWarmRebuild(project, editedHeader, currentDevice, 
     args.user_requested_deterministic = true;
     args.force_gpu_ai_delta = false;
   }
-  return compileViaMcp(args, CFG.hotSwapTimeoutMs, 'template_warm_rebuild_hmr', checkpoint);
+  return compileViaMcp(args, CFG.hotSwapTimeoutMs, 'template_warm_rebuild_hmr', checkpoint, {
+    expectedHmrModule: 'device',
+  });
 }
 
 async function dispatchTemplateWarmRebuildNegative(project, editedHeader, currentDevice, vendor, checkpoint) {
@@ -3232,7 +3278,9 @@ async function run() {
     slug: CFG.slug,
     width: 800,
     height: 600,
-  }, CFG.firstCompileTimeoutMs, 'first_ai_split_compile', firstCheckpoint);
+  }, CFG.firstCompileTimeoutMs, 'first_ai_split_compile', firstCheckpoint, {
+    expectedHmrModule: 'device',
+  });
   record('first compile via MCP', 'pass', `files=${1 + additionalFiles.length}`);
 
   const workerFileMarker = await awaitLogRegex(
@@ -3243,14 +3291,24 @@ async function run() {
   );
   record('worker saw full file set', workerFileMarker.matched ? 'pass' : 'fail', workerFileMarker.snippet || `missing files=${project.files.length}`);
 
+  const workerSplitCacheHit = await awaitLogRegex(
+    CFG.workerContainer,
+    /\[AI Split\] Level 1 HIT \(exact source_hash match\)/,
+    1000,
+    firstCheckpoint,
+  );
   const aiFileMarker = await awaitLogRegex(
     CFG.aiEngineContainer,
-    new RegExp(`\\[split/gpu\\] request file context count=${project.files.length}.*${project.primaryPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+    new RegExp(`\\[split/gpu\\] request file context count=${project.files.length}\\b`),
     1000,
     aiCheckpoint,
   );
-  record('ai-engine saw full file set', aiFileMarker.matched ? 'pass' : 'fail', aiFileMarker.snippet || `missing count=${project.files.length}`);
-  if (!workerFileMarker.matched || !aiFileMarker.matched) {
+  const aiContextStatus = aiFileMarker.matched || workerSplitCacheHit.matched ? 'pass' : 'fail';
+  const aiContextDetail = aiFileMarker.matched
+    ? aiFileMarker.snippet
+    : (workerSplitCacheHit.snippet || `missing count=${project.files.length}`);
+  record('ai-engine saw full file set or split cache hit', aiContextStatus, aiContextDetail);
+  if (!workerFileMarker.matched || aiContextStatus !== 'pass') {
     throw new Error('file-set delivery evidence missing');
   }
 
