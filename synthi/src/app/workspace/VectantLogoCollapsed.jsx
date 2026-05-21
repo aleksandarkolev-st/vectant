@@ -58,6 +58,12 @@ export default function VectantLogoCollapsed({
   onDockPresetChange,
   activePresetId = 'custom',
   onPresetChange,
+  savedPresets = [],
+  activeSavedPresetId = '',
+  activeSavedPresetLabel = '',
+  onApplySavedPreset,
+  onSaveCurrentPreset,
+  onDeleteSavedPreset,
   canResetPosition = false,
   onResetPosition,
   onOpenFullSettings,
@@ -165,6 +171,35 @@ export default function VectantLogoCollapsed({
             </ContextMenuRadioGroup>
           </ContextMenuSubContent>
         </ContextMenuSub>
+        <ContextMenuItem onSelect={() => onSaveCurrentPreset?.()}>
+          Save current as preset...
+        </ContextMenuItem>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger inset>
+            Saved presets
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent
+            style={{
+              background: 'var(--bg-elevated)',
+              borderColor: 'var(--border-medium)',
+              color: 'var(--text-primary)',
+            }}
+          >
+            {savedPresets.length > 0 ? (
+              <ContextMenuRadioGroup value={activeSavedPresetId} onValueChange={(value) => onApplySavedPreset?.(value)}>
+                {savedPresets.map((preset) => (
+                  <ContextMenuRadioItem key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </ContextMenuRadioItem>
+                ))}
+              </ContextMenuRadioGroup>
+            ) : (
+              <ContextMenuItem disabled>
+                No saved presets yet
+              </ContextMenuItem>
+            )}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
         <ContextMenuSub>
           <ContextMenuSubTrigger inset>
             Dock position
@@ -187,6 +222,12 @@ export default function VectantLogoCollapsed({
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => onOpenFullSettings?.()}>
           Open full settings
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!activeSavedPresetId}
+          onSelect={() => onDeleteSavedPreset?.()}
+        >
+          {activeSavedPresetId ? `Delete "${activeSavedPresetLabel}"` : 'Delete saved preset'}
         </ContextMenuItem>
         <ContextMenuItem
           disabled={!canResetPosition}

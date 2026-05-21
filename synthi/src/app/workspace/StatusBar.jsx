@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
+import { toast } from 'sonner';
 import { BranchSelector } from '@/components/git/BranchSelector';
 import { selectCursorPosition } from '@/redux/uiSlice';
 import { selectActiveFile } from '@/redux/workspaceSlice';
@@ -25,6 +26,7 @@ const STATUS_ISLAND_OFFSET_KEY = 'synthi:status-island-offset';
 const STATUS_ISLAND_COMPACT_KEY = 'synthi:status-island-compact';
 const STATUS_ISLAND_POSITION_LOCK_KEY = 'synthi:status-island-position-locked';
 const STATUS_ISLAND_DOCK_KEY = 'synthi:status-island-dock';
+const STATUS_ISLAND_SAVED_PRESETS_KEY = 'synthi:status-island-saved-presets';
 // Mouse must travel ≥5px from the mousedown point before we promote a
 // press-and-hold into a drag — small enough that intentional drags feel
 // responsive, large enough that a sloppy click never moves the island.
@@ -76,6 +78,31 @@ const STATUS_ISLAND_MENU_PRESETS = {
     dockPreset: 'right',
   },
 };
+
+function normalizeSavedPreset(candidate, fallbackId) {
+  if (!candidate || typeof candidate !== 'object') return null;
+
+  const label = String(candidate.label || '').trim().slice(0, 40);
+  if (!label) return null;
+
+  const dockPreset = STATUS_ISLAND_DOCK_PRESETS.includes(candidate.dockPreset)
+    ? candidate.dockPreset
+    : 'center';
+
+  return {
+    id: typeof candidate.id === 'string' && candidate.id ? candidate.id : fallbackId,
+    label,
+    isCompact: Boolean(candidate.isCompact),
+    isPositionLocked: Boolean(candidate.isPositionLocked),
+    dockPreset,
+  };
+}
+
+function doesPresetMatchState(preset, state) {
+  return preset.isCompact === state.isCompact
+    && preset.isPositionLocked === state.isPositionLocked
+    && preset.dockPreset === state.dockPreset;
+}
 
 function clampWithinBounds(value, min, max) {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return value;
@@ -159,6 +186,7 @@ function StatusBarInner({
   const [isDragging, setIsDragging] = useState(false);
   const [isPositionLocked, setIsPositionLocked] = useState(false);
   const [dockPreset, setDockPreset] = useState('center');
+  const [savedPresets, setSavedPresets] = useState([]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !rootRef.current) return;
@@ -257,6 +285,15 @@ function StatusBarInner({
     }
   }, []);
 
+  const persistSavedPresets = useCallback((next) => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage?.setItem(STATUS_ISLAND_SAVED_PRESETS_KEY, JSON.stringify(next));
+    } catch {
+      // Ignore storage failures; in-memory state still works.
+    }
+  }, []);
+
   const defaultCenterX = viewportSize.width / 2;
   const defaultCenterY = viewportSize.height - STATUS_ISLAND_DEFAULT_BOTTOM_PX - (STATUS_ISLAND_PILL_HEIGHT_PX / 2);
 
@@ -324,6 +361,20 @@ function StatusBarInner({
       // Ignore storage failures.
     }
     setDockPreset(loadDockPreset());
+
+    try {
+      const savedPresetBlob = window.localStorage?.getItem(STATUS_ISLAND_SAVED_PRESETS_KEY);
+      if (!savedPresetBlob) return;
+      const parsed = JSON.parse(savedPresetBlob);
+      if (!Array.isArray(parsed)) return;
+      setSavedPresets(
+        parsed
+          .map((preset, index) => normalizeSavedPreset(preset, `status-island-preset-${index + 1}`))
+          .filter(Boolean)
+      );
+    } catch {
+      // Ignore malformed preset payloads.
+    }
   }, [loadDockPreset]);
 
   const setPositionLocked = useCallback((valueOrUpdater) => {
@@ -613,18 +664,22 @@ function StatusBarInner({
     setCompactMode((prev) => !prev);
   }, [setCompactMode]);
 
+  const currentPresetState = {
+    isCompact,
+    isPositionLocked,
+    dockPreset,
+  };
+
   const currentMenuPresetId = (() => {
     for (const [presetId, preset] of Object.entries(STATUS_ISLAND_MENU_PRESETS)) {
-      if (
-        preset.isCompact === isCompact
-        && preset.isPositionLocked === isPositionLocked
-        && preset.dockPreset === dockPreset
-      ) {
+      if (doesPresetMatchState(preset, currentPresetState)) {
         return presetId;
       }
     }
     return 'custom';
   })();
+
+  const activeSavedPreset = savedPresets.find((preset) => doesPresetMatchState(preset, currentPresetState)) || null;
 
   const applyMenuPreset = useCallback((presetId) => {
     const preset = STATUS_ISLAND_MENU_PRESETS[presetId];
@@ -633,6 +688,61 @@ function StatusBarInner({
     applyDockPreset(preset.dockPreset);
     setPositionLocked(preset.isPositionLocked);
   }, [applyDockPreset, setCompactMode, setPositionLocked]);
+
+  const applySavedPreset = useCallback((presetId) => {
+    const preset = savedPresets.find((entry) => entry.id === presetId);
+    if (!preset) return;
+    setCompactMode(preset.isCompact);
+    applyDockPreset(preset.dockPreset);
+    setPositionLocked(preset.isPositionLocked);
+  }, [applyDockPreset, savedPresets, setCompactMode, setPositionLocked]);
+
+  const saveCurrentAsPreset = useCallback(() => {
+    if (typeof window === 'undefined') return;
+
+    const defaultLabel = activeSavedPreset?.label || `Preset ${savedPresets.length + 1}`;
+    const rawLabel = window.prompt('Save status island preset as:', defaultLabel);
+    if (rawLabel === null) return;
+
+    const label = rawLabel.trim().slice(0, 40);
+    if (!label) {
+      toast('Preset name cannot be empty', { duration: 1800 });
+      return;
+    }
+
+    setSavedPresets((prev) => {
+      const existingById = activeSavedPreset ? prev.find((preset) => preset.id === activeSavedPreset.id) : null;
+      const existingByLabel = prev.find((preset) => preset.label.toLowerCase() === label.toLowerCase());
+      const targetPreset = existingById || existingByLabel;
+      const nextPreset = {
+        id: targetPreset?.id || `status-island-preset-${Date.now()}`,
+        label,
+        ...currentPresetState,
+      };
+      const next = targetPreset
+        ? prev.map((preset) => (preset.id === targetPreset.id ? nextPreset : preset))
+        : [...prev, nextPreset];
+
+      persistSavedPresets(next);
+      return next;
+    });
+
+    toast(activeSavedPreset ? 'Status island preset updated' : 'Status island preset saved', {
+      duration: 1800,
+    });
+  }, [activeSavedPreset, currentPresetState, persistSavedPresets, savedPresets.length]);
+
+  const deleteActiveSavedPreset = useCallback(() => {
+    if (!activeSavedPreset) return;
+
+    setSavedPresets((prev) => {
+      const next = prev.filter((preset) => preset.id !== activeSavedPreset.id);
+      persistSavedPresets(next);
+      return next;
+    });
+
+    toast(`Deleted preset "${activeSavedPreset.label}"`, { duration: 1800 });
+  }, [activeSavedPreset, persistSavedPresets]);
 
   // PERF: Defer all Redux reads so StatusBar never blocks the editor
   const currentBranchRaw = useSelector(state => state.git?.currentBranch);
@@ -814,6 +924,12 @@ function StatusBarInner({
               onDockPresetChange={applyDockPreset}
               activePresetId={currentMenuPresetId}
               onPresetChange={applyMenuPreset}
+              savedPresets={savedPresets}
+              activeSavedPresetId={activeSavedPreset?.id || ''}
+              activeSavedPresetLabel={activeSavedPreset?.label || ''}
+              onApplySavedPreset={applySavedPreset}
+              onSaveCurrentPreset={saveCurrentAsPreset}
+              onDeleteSavedPreset={deleteActiveSavedPreset}
               canResetPosition={hasOffset}
               onResetPosition={resetOffset}
               onOpenFullSettings={openFullSettings}
