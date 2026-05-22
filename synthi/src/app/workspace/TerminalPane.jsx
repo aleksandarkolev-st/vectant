@@ -3,11 +3,9 @@ import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
 import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw } from 'lucide-react';
-import { toast } from 'sonner';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { resolveCollabWsUrl } from '@/lib/collab-url';
-import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 import {
   TERMINAL_COLOR_KEYS,
   getTerminalOverrides,
@@ -103,13 +101,6 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
   // Live theme from ThemeProvider
   const { terminalTheme } = useTheme();
-
-  // Selection-mode context menu. Captured in a ref so the DOM-level
-  // contextmenu listener (registered inside the imperative init() effect)
-  // can reach the latest openMenu without going through props/re-render.
-  const { menuState, openMenu, closeMenu } = useContextMenu();
-  const openMenuRef = useRef(openMenu);
-  openMenuRef.current = openMenu;
 
   const [state, setState] = useState('connecting'); // connecting | connected | error | closed
   const [shellInfo, setShellInfo] = useState('');
@@ -258,8 +249,9 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       // Wipe xterm selection across all three timings: synchronously now,
       // on the next animation frame (after xterm finishes its own mouse
       // selection bookkeeping from the right-click), and on a 50ms tail
-      // (after the PTY echoes the pasted chars). Any one of these can be
-      // the moment a selection sneaks back in.
+      // (after the PTY echoes the pasted chars). Without this, a prior
+      // double-click selection would be left highlighted on top of the
+      // pasted text.
       const clearSelectionAggressive = () => {
         try { term.clearSelection(); } catch (_) {}
         requestAnimationFrame(() => {
@@ -270,66 +262,16 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         }, 50);
       };
 
-      // Track the latest selection text. xterm may drop the selection
-      // synchronously on mousedown, so by the time contextmenu fires
-      // term.getSelection() can be empty even though the user obviously
-      // had text highlighted. We capture it via onSelectionChange and
-      // read this ref from the menu instead.
-      const lastSelectionRef = { current: '' };
-      try {
-        term.onSelectionChange(() => {
-          try {
-            const s = term.getSelection() || '';
-            if (s) lastSelectionRef.current = s;
-          } catch {}
-        });
-      } catch {}
-
-      // Read selection: prefer live, fall back to last captured.
-      const getCurrentSelection = () => {
-        let s = '';
-        try { s = (term.getSelection && term.getSelection()) || ''; } catch {}
-        return s || lastSelectionRef.current || '';
-      };
-
-      // Selection-mode helpers used by the context menu.
-      const copySelection = async () => {
-        const sel = getCurrentSelection();
-        if (!sel) return;
-        try {
-          await navigator.clipboard.writeText(sel);
-          toast.success('Copied to clipboard');
-        } catch {
-          toast.error('Copy failed');
+      const handleContextMenu = async (e) => {
+        e.preventDefault();
+        if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
+          return; // View-only guest
         }
-        clearSelectionAggressive();
-      };
-
-      const copySelectionAsSingleLine = async () => {
-        const sel = getCurrentSelection();
-        if (!sel) return;
-        const joined = sel.replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
-        try {
-          await navigator.clipboard.writeText(joined);
-          toast.success('Copied as single line');
-        } catch {
-          toast.error('Copy failed');
-        }
-        clearSelectionAggressive();
-      };
-
-      const openSearch = (urlBuilder) => {
-        const sel = getCurrentSelection();
-        if (!sel) return;
-        const url = urlBuilder(sel);
-        try { window.open(url, '_blank', 'noopener,noreferrer'); } catch {}
-      };
-
-      const pasteFromClipboard = async () => {
         try {
           const text = await navigator.clipboard.readText();
           if (!text) return;
           const hasEmbeddedNewline = text.replace(/\r?\n$/, '').includes('\n');
+          // Session auto-approve skips the confirmation modal entirely.
           if (hasEmbeddedNewline && !sessionAutoApprovePaste) {
             setPasteConfirm({ text, lineCount: text.split(/\r?\n/).length, charCount: text.length });
           } else {
@@ -337,81 +279,13 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             term.paste(text);
             clearSelectionAggressive();
           }
-        } catch {}
-      };
-
-      const handleContextMenu = (e) => {
-        console.log('[TerminalPane] contextmenu fired', { target: e.target, hasOpenMenu: !!openMenuRef.current });
-        e.preventDefault();
-        e.stopPropagation();
-        if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
-          return; // View-only guest
+        } catch (_) {
+          // Clipboard read can fail (permission denied, insecure context,
+          // user gesture lost). Stay silent — the user can fall back to
+          // Ctrl/Cmd+V.
         }
-        const sel = getCurrentSelection();
-        const hasSel = !!sel;
-        // Always show the menu — Copy / Search / Clear are disabled when
-        // there's nothing to copy. Matches VS Code terminal behavior and
-        // means a single right-click is never a guessing game about whether
-        // a paste or a menu will appear.
-        openMenuRef.current(e, [
-          { id: 'copy', label: 'Copy', shortcut: 'Ctrl+Shift+C', disabled: !hasSel, action: copySelection },
-          { id: 'copy-line', label: 'Copy as Single Line', disabled: !hasSel, dividerAfter: true, action: copySelectionAsSingleLine },
-          {
-            id: 'paste',
-            label: 'Paste',
-            shortcut: 'Ctrl+Shift+V',
-            dividerAfter: true,
-            action: pasteFromClipboard,
-          },
-          {
-            id: 'google',
-            label: 'Search on Google',
-            disabled: !hasSel,
-            action: () => openSearch((s) => `https://www.google.com/search?q=${encodeURIComponent(s)}`),
-          },
-          {
-            id: 'so',
-            label: 'Search on Stack Overflow',
-            disabled: !hasSel,
-            dividerAfter: true,
-            action: () => openSearch((s) => `https://stackoverflow.com/search?q=${encodeURIComponent(s)}`),
-          },
-          { id: 'select-all', label: 'Select All', action: () => { try { term.selectAll(); } catch {} } },
-          { id: 'clear-sel', label: 'Clear Selection', disabled: !hasSel, action: () => clearSelectionAggressive() },
-        ]);
       };
-
-      // Snapshot the current selection BEFORE xterm sees the right-click
-      // (capture phase, runs before any descendant handlers). The ref is
-      // reset first so it only reflects selection at the moment of the
-      // most recent right-mousedown — not a stale selection from earlier.
-      const handleMouseDownCapture = (e) => {
-        if (e.button !== 2) return;
-        lastSelectionRef.current = '';
-        try {
-          const s = term.getSelection ? term.getSelection() : '';
-          if (s) lastSelectionRef.current = s;
-        } catch {}
-      };
-      containerRef.current.addEventListener('mousedown', handleMouseDownCapture, true);
-
-      // Attach in CAPTURE phase so xterm.js (or anything else inside
-      // the container) cannot stopPropagation past us. Without this, our
-      // selection-mode menu silently never opened on some xterm builds.
-      containerRef.current.addEventListener('contextmenu', handleContextMenu, true);
-
-      // Belt + braces: also listen at document level in capture phase.
-      // If some descendant inside the container manages to stopPropagation
-      // before our container-capture handler runs (unlikely but possible
-      // with bizarre extension code), the document handler still fires
-      // because document is hit even earlier in capture phase.
-      const handleDocContextMenu = (e) => {
-        const containerEl2 = containerRef.current;
-        if (!containerEl2 || !containerEl2.contains(e.target)) return;
-        console.log('[TerminalPane] doc-level fallback contextmenu fired');
-        handleContextMenu(e);
-      };
-      document.addEventListener('contextmenu', handleDocContextMenu, true);
+      containerRef.current.addEventListener('contextmenu', handleContextMenu);
 
       // ── Connect WebSocket ─────────────────────────────────────────
       connectWS(term, fitAddon);
@@ -446,10 +320,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         resizeObserver.disconnect();
         window.removeEventListener('resize', scheduleResize);
         if (containerEl) {
-          containerEl.removeEventListener('contextmenu', handleContextMenu, true);
-          containerEl.removeEventListener('mousedown', handleMouseDownCapture, true);
+          containerEl.removeEventListener('contextmenu', handleContextMenu);
         }
-        document.removeEventListener('contextmenu', handleDocContextMenu, true);
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         if (webglAddon) try { webglAddon.dispose(); } catch (_) {}
         linksAddon.dispose();
@@ -715,8 +587,6 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           onClose={() => setColorPickerOpen(false)}
         />
       )}
-
-      {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
 
       {/* Session: View-only terminal overlay for guests without canTerminal */}
       {isGuest && !canTerminal && state === 'connected' && (
