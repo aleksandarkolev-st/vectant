@@ -352,10 +352,14 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             },
           },
           {
-            id: 'so',
-            label: 'Search on Stack Overflow',
+            id: 'ask-ai',
+            label: 'Ask AI',
             action: () => {
-              try { window.open(`https://stackoverflow.com/search?q=${encodeURIComponent(selectedText)}`, '_blank', 'noopener,noreferrer'); } catch {}
+              try {
+                window.dispatchEvent(new CustomEvent('synthi:ask-ai', {
+                  detail: { text: selectedText, language: 'shell', filePath: '', startLine: null, endLine: null },
+                }));
+              } catch {}
             },
           },
         ]);
