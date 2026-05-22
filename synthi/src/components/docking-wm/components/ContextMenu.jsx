@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { cn } from "@/lib/utils";
 
 // ────────────────────────────────────────────────────────
 //  Menu item data
@@ -198,22 +199,16 @@ export function ContextMenu({ items, position, onClose }) {
     <div
       ref={menuRef}
       role="menu"
-      className="docking-context-menu"
+      data-slot="context-menu-content"
+      className={cn(
+        "bg-popover text-popover-foreground fixed z-50 min-w-[8rem]",
+        "overflow-hidden rounded-md border p-1 shadow-md",
+        "animate-in fade-in-0 zoom-in-95 duration-75",
+      )}
       style={{
-        position: "fixed",
         left: adjusted.x,
         top: adjusted.y,
         zIndex: 99999,
-        minWidth: 200,
-        maxWidth: 280,
-        background: "var(--docking-bg-elevated, #1e1e2e)",
-        border: "1px solid var(--docking-border, #333)",
-        borderRadius: 6,
-        padding: "4px 0",
-        boxShadow: "0 8px 32px rgba(0,0,0,.55)",
-        fontSize: 13,
-        color: "var(--docking-text-primary, #ccc)",
-        fontFamily: "inherit",
       }}
     >
       {items.map((item) => (
@@ -221,6 +216,8 @@ export function ContextMenu({ items, position, onClose }) {
           <button
             role="menuitem"
             disabled={item.disabled}
+            data-slot="context-menu-item"
+            data-disabled={item.disabled ? "" : undefined}
             onClick={(e) => {
               e.stopPropagation();
               if (!item.disabled) {
@@ -228,42 +225,19 @@ export function ContextMenu({ items, position, onClose }) {
                 onClose();
               }
             }}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              width: "100%",
-              padding: "6px 12px",
-              background: "none",
-              border: "none",
-              color: item.disabled
-                ? "var(--docking-text-tertiary, #555)"
-                : "inherit",
-              cursor: item.disabled ? "default" : "pointer",
-              textAlign: "left",
-              fontSize: "inherit",
-              fontFamily: "inherit",
-              lineHeight: "1.4",
-            }}
-            onMouseEnter={(e) => {
-              if (!item.disabled) {
-                e.currentTarget.style.background =
-                  "var(--docking-bg-hover, rgba(255,255,255,.06))";
-              }
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "none";
-            }}
+            className={cn(
+              "relative flex w-full cursor-default select-none items-center gap-2",
+              "rounded-sm px-2 py-1.5 text-sm outline-hidden",
+              "hover:bg-accent hover:text-accent-foreground",
+              "focus:bg-accent focus:text-accent-foreground",
+              "data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
+            )}
           >
-            <span>{item.label}</span>
+            <span className="flex-1 text-left">{item.label}</span>
             {item.shortcut && (
               <span
-                style={{
-                  marginLeft: 24,
-                  fontSize: 11,
-                  color: "var(--docking-text-tertiary, #666)",
-                  whiteSpace: "nowrap",
-                }}
+                data-slot="context-menu-shortcut"
+                className="text-muted-foreground ml-auto text-xs tracking-widest"
               >
                 {item.shortcut}
               </span>
@@ -271,11 +245,9 @@ export function ContextMenu({ items, position, onClose }) {
           </button>
           {item.dividerAfter && (
             <div
-              style={{
-                height: 1,
-                margin: "4px 8px",
-                background: "var(--docking-border, #333)",
-              }}
+              role="separator"
+              data-slot="context-menu-separator"
+              className="bg-border -mx-1 my-1 h-px"
             />
           )}
         </div>
