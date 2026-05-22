@@ -53,6 +53,12 @@ pub struct ModuleSlot {
     pub blob_bytes: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PartialModuleSlot {
+    slot: ModuleSlot,
+    symbols: Vec<String>,
+}
+
 impl ModuleSlot {
     pub fn module_ptr(&self) -> CuModule {
         self.handle as CuModule
@@ -200,6 +206,7 @@ impl std::fmt::Display for ModuleManagerError {
 pub struct GpuModuleManager {
     primary: Option<ModuleSlot>,
     standby: Option<ModuleSlot>,
+    partials: Vec<PartialModuleSlot>,
     kernels: KernelTable,
     /// Last driver error, set whenever a call returned non-zero.
     /// Cleared when the offending slot is cleared.
@@ -228,6 +235,10 @@ impl GpuModuleManager {
 
     pub fn kernel_table(&self) -> &KernelTable {
         &self.kernels
+    }
+
+    pub fn partial_module_count(&self) -> usize {
+        self.partials.len()
     }
 
     pub fn last_error(&self) -> Option<&ModuleManagerError> {
@@ -394,6 +405,86 @@ impl GpuModuleManager {
         self.primary = Some(new_primary);
         self.swap_count += 1;
         Ok(retired)
+    }
+
+    /// Merges a standby module that contains only a subset of kernels into the
+    /// active launch table. The primary module remains loaded for every symbol
+    /// outside `replaced_symbols`; the partial module stays resident for the
+    /// replacement function handles.
+    pub fn merge_standby_partial(
+        &mut self,
+        previous: KernelTable,
+        replaced_symbols: &[String],
+    ) -> Result<Vec<ModuleSlot>, ModuleManagerError> {
+        let new_partial = match self.standby.take() {
+            Some(s) => s,
+            None => {
+                let err = ModuleManagerError::NoStandby;
+                self.last_error = Some(err.clone());
+                return Err(err);
+            }
+        };
+        if self.primary.is_none() {
+            self.standby = Some(new_partial);
+            let err = ModuleManagerError::NoPrimary;
+            self.last_error = Some(err.clone());
+            return Err(err);
+        }
+
+        let mut partial_symbols = Vec::new();
+        for symbol in replaced_symbols {
+            if self.kernels.get(symbol).is_none() {
+                self.standby = Some(new_partial);
+                let err = ModuleManagerError::UnknownKernel(symbol.clone());
+                self.last_error = Some(err.clone());
+                return Err(err);
+            }
+            if !partial_symbols.iter().any(|existing| existing == symbol) {
+                partial_symbols.push(symbol.clone());
+            }
+        }
+        if partial_symbols.is_empty() {
+            self.standby = Some(new_partial);
+            let err = ModuleManagerError::NoTarget;
+            self.last_error = Some(err.clone());
+            return Err(err);
+        }
+
+        let partial_table = std::mem::take(&mut self.kernels);
+        let mut merged = previous;
+        for symbol in &partial_symbols {
+            if let Some(handle) = partial_table.get(symbol) {
+                merged.insert(symbol.clone(), handle);
+            }
+        }
+
+        let mut retired = Vec::new();
+        let mut retained = Vec::new();
+        for partial in self.partials.drain(..) {
+            if partial
+                .symbols
+                .iter()
+                .all(|symbol| partial_symbols.iter().any(|new_symbol| new_symbol == symbol))
+            {
+                retired.push(partial.slot);
+            } else {
+                retained.push(partial);
+            }
+        }
+        retained.push(PartialModuleSlot {
+            slot: new_partial,
+            symbols: partial_symbols,
+        });
+
+        self.partials = retained;
+        self.kernels = merged;
+        self.swap_count += 1;
+        self.last_error = None;
+        Ok(retired)
+    }
+
+    pub fn drain_partial_modules(&mut self) -> Vec<ModuleSlot> {
+        self.partials.drain(..).map(|partial| partial.slot).collect()
     }
 
     /// Unloads a retired module handle. Wraps `cuModuleUnload`.
@@ -788,6 +879,78 @@ mod tests {
         assert_eq!(retired.unwrap(), first);
         assert_eq!(m.primary().unwrap(), second);
         assert_eq!(m.swap_count(), 2);
+    }
+
+    #[test]
+    fn partial_merge_overrides_changed_symbols_and_keeps_primary() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+
+        let primary = m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["shade".into(), "trace".into()])
+            .unwrap();
+        let original_shade = m.kernel_table().get("shade").unwrap();
+        let original_trace = m.kernel_table().get("trace").unwrap();
+        m.swap().unwrap();
+
+        m.load_standby(&t, &[4, 5]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        let previous = {
+            let mut table = KernelTable::new();
+            table.insert("shade", original_shade);
+            table.insert("trace", original_trace);
+            table
+        };
+        let retired = m
+            .merge_standby_partial(previous, &["shade".to_string()])
+            .unwrap();
+
+        assert!(retired.is_empty());
+        assert_eq!(m.primary().unwrap(), primary);
+        assert_eq!(m.partial_module_count(), 1);
+        assert_ne!(m.kernel_table().get("shade"), Some(original_shade));
+        assert_eq!(m.kernel_table().get("trace"), Some(original_trace));
+        assert_eq!(m.swap_count(), 2);
+    }
+
+    #[test]
+    fn repeated_partial_merge_retires_superseded_partial_module() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+
+        m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["shade".into(), "trace".into()])
+            .unwrap();
+        let original_shade = m.kernel_table().get("shade").unwrap();
+        let original_trace = m.kernel_table().get("trace").unwrap();
+        m.swap().unwrap();
+
+        let mut previous = KernelTable::new();
+        previous.insert("shade", original_shade);
+        previous.insert("trace", original_trace);
+        m.load_standby(&t, &[4, 5]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        m.merge_standby_partial(previous, &["shade".to_string()])
+            .unwrap();
+        let first_partial_handle = m.partials[0].slot.handle;
+        let first_shade = m.kernel_table().get("shade").unwrap();
+
+        let mut previous = KernelTable::new();
+        previous.insert("shade", first_shade);
+        previous.insert("trace", original_trace);
+        m.load_standby(&t, &[6, 7]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        let retired = m
+            .merge_standby_partial(previous, &["shade".to_string()])
+            .unwrap();
+
+        assert_eq!(retired.len(), 1);
+        assert_eq!(retired[0].handle, first_partial_handle);
+        assert_eq!(m.partial_module_count(), 1);
+        assert_eq!(m.kernel_table().get("trace"), Some(original_trace));
+        assert_ne!(m.kernel_table().get("shade"), Some(first_shade));
     }
 
     #[test]

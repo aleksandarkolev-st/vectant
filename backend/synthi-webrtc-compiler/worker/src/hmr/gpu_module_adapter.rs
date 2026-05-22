@@ -735,7 +735,21 @@ impl Adapter for GpuModuleAdapter {
             };
         }
 
+        let partial_device_reload = req
+            .build_manifest
+            .capabilities
+            .iter()
+            .any(|capability| capability == "gpu_sidecar_partial_module");
         let load_result = (|| -> Result<(), String> {
+            if partial_device_reload && first_device_load {
+                return Err(
+                    "partial GPU sidecar reload requires an existing full device module".into(),
+                );
+            }
+            if partial_device_reload && req.build_manifest.exported_symbols.is_empty() {
+                return Err("partial GPU sidecar reload has no target symbols".into());
+            }
+            let previous_table = self.module_manager.kernel_table().clone();
             if self.config.vendor == GpuVendor::Rocm {
                 self.module_manager
                     .load_standby_from_file(&symbols, artifact, blob.len())
@@ -748,11 +762,23 @@ impl Adapter for GpuModuleAdapter {
             self.module_manager
                 .resolve_kernels(&symbols, &req.build_manifest.exported_symbols)
                 .map_err(Self::module_manager_error)?;
-            let retired = self
-                .module_manager
-                .swap()
-                .map_err(Self::module_manager_error)?;
-            if let Some(retired) = retired {
+            let retired = if partial_device_reload {
+                self.module_manager
+                    .merge_standby_partial(previous_table, &req.build_manifest.exported_symbols)
+                    .map_err(Self::module_manager_error)?
+            } else {
+                let mut retired = Vec::new();
+                if let Some(slot) = self
+                    .module_manager
+                    .swap()
+                    .map_err(Self::module_manager_error)?
+                {
+                    retired.push(slot);
+                }
+                retired.extend(self.module_manager.drain_partial_modules());
+                retired
+            };
+            for retired in retired {
                 self.module_manager
                     .unload_retired(&symbols, retired)
                     .map_err(Self::module_manager_error)?;
@@ -775,7 +801,11 @@ impl Adapter for GpuModuleAdapter {
                 }));
                 self.emit_report(GpuSwapInputs {
                     plan,
-                    reason: "device-file-only-edit".into(),
+                    reason: if partial_device_reload {
+                        "device-partial-file-only-edit".into()
+                    } else {
+                        "device-file-only-edit".into()
+                    },
                     streams_synced: 1,
                     force_drain_timeout: false,
                     snapshot_bytes,

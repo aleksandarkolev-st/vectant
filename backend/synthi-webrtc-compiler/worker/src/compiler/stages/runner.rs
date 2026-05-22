@@ -129,7 +129,14 @@ async fn clear_stale_x11_processes(display_num: u32) {
 }
 
 fn runner_load_command(name: &str, path: &str) -> Result<String> {
-    if let Some(rest) = name.strip_prefix("__gpu_device:") {
+    let gpu_marker = name
+        .strip_prefix("__gpu_device_partial:")
+        .map(|rest| ("load_device_partial", rest))
+        .or_else(|| {
+            name.strip_prefix("__gpu_device:")
+                .map(|rest| ("load_device", rest))
+        });
+    if let Some((command, rest)) = gpu_marker {
         let mut fields = rest.splitn(3, ':');
         let vendor = fields
             .next()
@@ -144,11 +151,11 @@ fn runner_load_command(name: &str, path: &str) -> Result<String> {
         let abi = fields.next().filter(|s| !s.is_empty());
         if let Some(abi) = abi {
             Ok(format!(
-                "load_device {} {} {} {}\n",
-                vendor, path, kernels, abi
+                "{} {} {} {} {}\n",
+                command, vendor, path, kernels, abi
             ))
         } else {
-            Ok(format!("load_device {} {} {}\n", vendor, path, kernels))
+            Ok(format!("{} {} {} {}\n", command, vendor, path, kernels))
         }
     } else {
         Ok(format!("load {} {}\n", name, path))
@@ -1316,6 +1323,18 @@ mod tests {
             runner_load_command("__gpu_device:rocm:advance,init:12345", "/tmp/device.hsaco")
                 .unwrap(),
             "load_device rocm /tmp/device.hsaco advance,init 12345\n"
+        );
+    }
+
+    #[test]
+    fn gpu_device_partial_load_command_uses_partial_runner_verb() {
+        assert_eq!(
+            runner_load_command(
+                "__gpu_device_partial:rocm:advance:12345",
+                "/tmp/device_part.hsaco"
+            )
+            .unwrap(),
+            "load_device_partial rocm /tmp/device_part.hsaco advance 12345\n"
         );
     }
 

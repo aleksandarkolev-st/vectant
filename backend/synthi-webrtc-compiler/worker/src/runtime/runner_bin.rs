@@ -1321,12 +1321,16 @@ fn main() {
                     // before on_render uses it — prevents flicker
                     skip_render_frames = 1;
                 }
-                "load_device" => {
-                    // usage: load_device <cuda|rocm|hip> <cubin|hsaco> <kernel1,kernel2,...|-> [abi_fingerprint]
+                "load_device" | "load_device_partial" => {
+                    // usage: load_device[_partial] <cuda|rocm|hip> <cubin|hsaco> <kernel1,kernel2,...|-> [abi_fingerprint]
                     #[cfg(feature = "gpu-hmr")]
                     {
+                        let partial_device_load = parts[0] == "load_device_partial";
                         if parts.len() < 3 {
-                            eprintln!("[Runner] [GPU HMR] Invalid load_device command format");
+                            eprintln!(
+                                "[Runner] [GPU HMR] Invalid {} command format",
+                                parts[0]
+                            );
                             continue;
                         }
 
@@ -1352,6 +1356,13 @@ fn main() {
                         let artifact_hash = std::fs::metadata(artifact_path)
                             .map(|m| m.len().to_string())
                             .unwrap_or_else(|_| "unknown".to_string());
+                        let mut capabilities = vec![
+                            "gpu_sidecar_module".to_string(),
+                            "synthi_gpu_launch".to_string(),
+                        ];
+                        if partial_device_load {
+                            capabilities.push("gpu_sidecar_partial_module".to_string());
+                        }
                         let manifest = BuildManifest::for_language(
                             session_id
                                 .clone()
@@ -1368,10 +1379,7 @@ fn main() {
                             "device.hip".to_string()
                         }])
                         .with_exported_symbols(kernels.clone())
-                        .with_capabilities(vec![
-                            "gpu_sidecar_module".to_string(),
-                            "synthi_gpu_launch".to_string(),
-                        ])
+                        .with_capabilities(capabilities)
                         .with_snapshot_modes(vec![SnapshotMode::Binary]);
 
                         let req = AdapterReloadRequest {
@@ -1423,10 +1431,11 @@ fn main() {
                         let kernels_log = kernels.join(",");
                         gpu_reload_inflight.insert(language_owned.clone(), Instant::now());
                         eprintln!(
-                            "[Runner] [GPU HMR] Device sidecar reload started vendor={} artifact={} kernels={}",
+                            "[Runner] [GPU HMR] Device sidecar reload started vendor={} artifact={} kernels={} partial={}",
                             language_owned,
                             artifact_path_owned,
-                            kernels_log
+                            kernels_log,
+                            partial_device_load
                         );
                         thread::spawn(move || {
                             let result = adapter.reload(&req);
