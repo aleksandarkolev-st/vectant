@@ -947,6 +947,55 @@ pub fn build_device_partial_source(source: &str, symbols: &[String]) -> Option<S
     Some(partial)
 }
 
+pub fn build_device_include_bridge_partial_source(
+    source: &str,
+    target_source_paths: &[String],
+    omit_source_paths: &[String],
+) -> Option<String> {
+    let target_paths = target_source_paths
+        .iter()
+        .map(|path| normalize_path(path))
+        .filter(|path| !path.is_empty())
+        .collect::<BTreeSet<_>>();
+    let omit_paths = omit_source_paths
+        .iter()
+        .map(|path| normalize_path(path))
+        .filter(|path| !path.is_empty() && !target_paths.contains(path))
+        .collect::<BTreeSet<_>>();
+    if target_paths.is_empty() || omit_paths.is_empty() {
+        return None;
+    }
+
+    let include_re =
+        Regex::new(r#"^\s*#\s*include\s+"(?P<path>[^"]+)""#).expect("include regex");
+    let mut partial = String::with_capacity(source.len());
+    let mut removed = 0usize;
+    let mut kept_target = false;
+    for line in source.split_inclusive('\n') {
+        let line_body = line.trim_end_matches(['\r', '\n']);
+        let newline = line.get(line_body.len()..).unwrap_or_default();
+        if let Some(caps) = include_re.captures(line_body) {
+            if let Some(include_path) = caps.name("path").map(|m| normalize_path(m.as_str())) {
+                if target_paths.contains(&include_path) {
+                    kept_target = true;
+                }
+                if omit_paths.contains(&include_path) {
+                    partial.push_str("// synthi-gpu-hmr: omitted source include from partial artifact");
+                    partial.push_str(newline);
+                    removed += 1;
+                    continue;
+                }
+            }
+        }
+        partial.push_str(line);
+    }
+
+    if removed == 0 || !kept_target {
+        return None;
+    }
+    Some(partial)
+}
+
 fn next_function_body_open(source: &str, after_params: usize) -> Option<usize> {
     let rest = source.get(after_params..)?;
     let brace = rest.find('{')?;
@@ -1601,6 +1650,36 @@ extern "C" __global__ void trace(float* x) {
         let source = "extern \"C\" __global__ void shade(float* x) {\n  x[0] = 1.0f;\n}\n";
 
         assert!(build_device_partial_source(source, &["shade".to_string()]).is_none());
+    }
+
+    #[test]
+    fn include_bridge_partial_source_omits_unaffected_kernel_includes() {
+        let source = "#include <hip/hip_runtime.h>\n#include \"synthi_gpu_runtime.h\"\n#include \"src/Device/includes/Common.h\"\n#include \"src/Device/kernels/CameraRays.h\"\n#include \"src/Device/kernels/Megakernel.h\"\n";
+
+        let partial = build_device_include_bridge_partial_source(
+            source,
+            &["src/Device/kernels/CameraRays.h".to_string()],
+            &["src/Device/kernels/Megakernel.h".to_string()],
+        )
+        .unwrap();
+
+        assert!(partial.contains("#include <hip/hip_runtime.h>"));
+        assert!(partial.contains("#include \"src/Device/includes/Common.h\""));
+        assert!(partial.contains("#include \"src/Device/kernels/CameraRays.h\""));
+        assert!(!partial.contains("#include \"src/Device/kernels/Megakernel.h\""));
+        assert!(partial.contains("omitted source include from partial artifact"));
+    }
+
+    #[test]
+    fn include_bridge_partial_source_declines_without_target_include() {
+        let source = "#include \"src/Device/kernels/Megakernel.h\"\n";
+
+        assert!(build_device_include_bridge_partial_source(
+            source,
+            &["src/Device/kernels/CameraRays.h".to_string()],
+            &["src/Device/kernels/Megakernel.h".to_string()],
+        )
+        .is_none());
     }
 
     #[test]

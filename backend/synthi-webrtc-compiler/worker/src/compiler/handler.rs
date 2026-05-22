@@ -1,5 +1,6 @@
 use crate::debug_log;
 use anyhow::{Context, Result};
+use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
 use crate::compiler::builder::{
@@ -318,9 +319,9 @@ use crate::hmr::deterministic_compile::{
     DeterministicRebuildScope,
 };
 use crate::hmr::gpu_device_fast_path::{
-    build_device_partial_source, device_header_kernel_body_only_edit_symbol,
-    device_only_capability_rejection_reason, device_source_hash, mapped_generated_device_path,
-    try_direct_device_body_patch,
+    build_device_include_bridge_partial_source, build_device_partial_source,
+    device_header_kernel_body_only_edit_symbol, device_only_capability_rejection_reason,
+    device_source_hash, mapped_generated_device_path, try_direct_device_body_patch,
 };
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
@@ -961,6 +962,7 @@ struct WarmRebuildDecision {
     verifier_report: serde_json::Value,
     reason_codes: Vec<String>,
     generated_device_path: Option<String>,
+    affected_symbols: Vec<String>,
 }
 
 fn is_device_header_request(filename: &str) -> bool {
@@ -1037,6 +1039,48 @@ fn device_include_graph_mentions_source(sidecar: &serde_json::Value, path: &str)
             path,
         )
         || template_evidence_mentions_source(sidecar, path)
+}
+
+fn include_bridge_kernel_source_paths(
+    sidecar: &serde_json::Value,
+    target_path: &str,
+) -> (Vec<String>, Vec<String>) {
+    let target = normalized_request_filename(target_path).unwrap_or_else(|| target_path.replace('\\', "/"));
+    let mut targets = BTreeSet::new();
+    let mut omitted = BTreeSet::new();
+
+    for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
+        let Some(items) = sidecar.pointer(pointer).and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for item in items {
+            if item.get("kind").and_then(serde_json::Value::as_str) != Some("kernel") {
+                continue;
+            }
+            let include_bridge_mapping =
+                item.get("generatedMappingMode").and_then(serde_json::Value::as_str)
+                    == Some("source_include_bridge")
+                    || item.get("mappingConfidence").and_then(serde_json::Value::as_str)
+                        == Some("generated_include_bridge_same_source");
+            if !include_bridge_mapping {
+                continue;
+            }
+            let Some(source_path) = item
+                .get("sourcePath")
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename)
+            else {
+                continue;
+            };
+            if source_path == target {
+                targets.insert(source_path);
+            } else {
+                omitted.insert(source_path);
+            }
+        }
+    }
+
+    (targets.into_iter().collect(), omitted.into_iter().collect())
 }
 
 fn ranked_option_reason_codes(sidecar: &serde_json::Value, plan: &str) -> Vec<String> {
@@ -1269,6 +1313,7 @@ fn try_warm_rebuild_header_plan(
         verifier_report: verifier,
         reason_codes,
         generated_device_path: generated_device_path.map(str::to_string),
+        affected_symbols: body_only_kernel.into_iter().collect(),
     })
 }
 
@@ -2068,7 +2113,38 @@ pub async fn handle_compile_request(
                             generated_path,
                             warm.reason_codes.join(",")
                         );
-                        Some(serde_json::json!({
+                        let partial_device_payload = if warm.affected_symbols.is_empty() {
+                            None
+                        } else {
+                            let (target_paths, omit_paths) =
+                                include_bridge_kernel_source_paths(&sidecar_meta, &request_name);
+                            build_device_include_bridge_partial_source(
+                                &generated_device_source,
+                                &target_paths,
+                                &omit_paths,
+                            )
+                            .map(|partial_source| {
+                                let partial_filename = partial_device_filename(
+                                    &generated_path,
+                                    &warm.affected_symbols,
+                                    &partial_source,
+                                );
+                                eprintln!(
+                                    "[gpu-hmr] warm_rebuild partial source prepared: file={} bytes={} full_bytes={} symbols={} omitted_includes={}",
+                                    partial_filename,
+                                    partial_source.len(),
+                                    generated_device_source.len(),
+                                    warm.affected_symbols.join(","),
+                                    omit_paths.len()
+                                );
+                                serde_json::json!({
+                                    "content": partial_source,
+                                    "filename": partial_filename,
+                                    "symbols": warm.affected_symbols.clone(),
+                                })
+                            })
+                        };
+                        let mut split_payload = serde_json::json!({
                             "shared": { "content": shared_content, "filename": shared_filename },
                             "core": { "content": core_content, "filename": core_filename },
                             "gui": { "content": gui_content, "filename": gui_filename },
@@ -2076,7 +2152,13 @@ pub async fn handle_compile_request(
                             "device": { "content": generated_device_source, "filename": generated_path },
                             "_synthi_manifest": sidecar_manifest_json.clone(),
                             "_synthi_reload_plan": warm.reload_plan.clone(),
-                        }))
+                        });
+                        if let (Some(obj), Some(partial)) =
+                            (split_payload.as_object_mut(), partial_device_payload)
+                        {
+                            obj.insert("_synthi_device_partial".to_string(), partial);
+                        }
+                        Some(split_payload)
                     }
                 } {
                     split
@@ -5096,6 +5178,17 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
             "deviceMappingReport": {
                 "schemaVersion": "synthi.gpu.device_mapping.v1",
                 "generatedDevicePath": ".synthi/generated/gpu/device.hip",
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "CameraRays",
+                        "sourcePath": "src/Device/kernels/CameraRays.h",
+                        "generatedRole": "device",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_include_bridge_same_source",
+                        "generatedMappingMode": "source_include_bridge"
+                    }
+                ],
                 "deviceIncludeGraph": {
                     "schemaVersion": "synthi.gpu.device_include_graph.v1",
                     "status": "bounded",
@@ -5226,6 +5319,38 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
             .reason_codes
             .iter()
             .any(|code| code == "template_evidence_not_required"));
+        assert_eq!(decision.affected_symbols, vec!["CameraRays".to_string()]);
+    }
+
+    #[test]
+    fn include_bridge_kernel_paths_omit_only_other_mapped_kernel_sources() {
+        let mut sidecar = generated_include_bridge_sidecar();
+        sidecar["deviceMappingReport"]["deviceMappings"] = serde_json::json!([
+            {
+                "kind": "kernel",
+                "symbol": "CameraRays",
+                "sourcePath": "src/Device/kernels/CameraRays.h",
+                "generatedRole": "device",
+                "generatedPath": ".synthi/generated/gpu/device.hip",
+                "mappingConfidence": "generated_include_bridge_same_source",
+                "generatedMappingMode": "source_include_bridge"
+            },
+            {
+                "kind": "kernel",
+                "symbol": "MegaKernel",
+                "sourcePath": "src/Device/kernels/Megakernel.h",
+                "generatedRole": "device",
+                "generatedPath": ".synthi/generated/gpu/device.hip",
+                "mappingConfidence": "generated_include_bridge_same_source",
+                "generatedMappingMode": "source_include_bridge"
+            }
+        ]);
+
+        let (targets, omitted) =
+            include_bridge_kernel_source_paths(&sidecar, "src/Device/kernels/CameraRays.h");
+
+        assert_eq!(targets, vec!["src/Device/kernels/CameraRays.h".to_string()]);
+        assert_eq!(omitted, vec!["src/Device/kernels/Megakernel.h".to_string()]);
     }
 
     #[test]
