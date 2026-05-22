@@ -13,51 +13,115 @@
  * The data-theme-type="dark|light" attribute on <html> is set by
  * ThemeProvider for CSS selectors that need to differ by base type. */
 :root {
-  /* Dark Blue-Gray Backgrounds (Unique Synthi Style) - More extreme contrast */
-  --bg-app: #08090d;
-  --bg-editor: #0c0d12;
-  --bg-sidebar: #070810;
-  --bg-panel: #101118;
-  --bg-surface: #14151d;
-  --bg-elevated: #1a1b24;
-  --border-subtle: #1a1b24;
-  --border-medium: #2a2b38;
-  --border-focus: #3a3b52;
-  --border-strong: #42445a;
+  /* Atmospheric Depth backgrounds — deeper, less neutral, more "void" */
+  --bg-app: #06060a;
+  --bg-editor: #0a0b11;
+  --bg-sidebar: #06060a;
+  --bg-panel: #0d0e15;
+  --bg-surface: #131420;
+  --bg-elevated: #1a1c2a;
+  --border-subtle: #1a1c2a;
+  --border-medium: #2b2d3e;
+  --border-focus: #3a3d55;
+  --border-strong: #45485f;
   --text-primary: #f4f5f8;
   --text-secondary: #9ba2b8;
   --text-muted: #5a6178;
   --text-dim: #3d4256;
 
-  /* Synthi Brand Accent - Teal #327464 */
-  --accent-primary: #327464;
-  --accent-secondary: #3d8b78;
-  --accent-tertiary: #4a9e8a;
-  --accent-gradient: linear-gradient(
+  /* ── Vectant Brand Gradient ─────────────────────────────────────
+     Logo gradient stops at the exact positions you specified.
+     These are the ONLY place the saturated brand colors live; use
+     them for signature moments (logo, AI activations, run state,
+     focus rims) — never as a fill on calm surfaces. */
+  --brand-stop-1: #ff3d8a;  /*  17%  pink   */
+  --brand-stop-2: #ff3737;  /*  40%  red    */
+  --brand-stop-3: #a23dff;  /*  71%  purple */
+  --brand-stop-4: #3d6dff;  /* 100%  blue   */
+  --brand-gradient: linear-gradient(
     135deg,
-    #327464 0%,
-    #3d8b78 50%,
-    #4a9e8a 100%
+    var(--brand-stop-1) 17%,
+    var(--brand-stop-2) 40%,
+    var(--brand-stop-3) 71%,
+    var(--brand-stop-4) 100%
   );
-  --accent-glow: 0 0 20px rgba(50, 116, 100, 0.4);
+  --brand-gradient-horizontal: linear-gradient(
+    90deg,
+    var(--brand-stop-1) 17%,
+    var(--brand-stop-2) 40%,
+    var(--brand-stop-3) 71%,
+    var(--brand-stop-4) 100%
+  );
+
+  /* Calm everyday accent — slate-violet that BARELY reads as color.
+     Use for ambient borders, faint hovers, neutral indicators. If
+     it's grabbing your eye, it's the wrong token. */
+  --accent-primary: #6c6885;
+  --accent-secondary: #8a85a8;
+  --accent-tertiary: #4d4870;
+  --accent-gradient: var(--brand-gradient);
+  --accent-glow: 0 0 18px color-mix(in srgb, var(--accent-primary) 22%, transparent);
+
+  /* Attention purple — the rare "this needs your eye RIGHT NOW"
+     moment. Saturated and bright. Use for: active file row in
+     the tree, toggle-ON switches, selected option pills, focused
+     panel borders, status-bar pills representing a live state.
+     If everything uses it, nothing does. */
+  --attention-purple: #b545ff;
+  --attention-glow: 0 0 22px color-mix(in srgb, var(--attention-purple) 38%, transparent);
+  --attention-rim: 0 0 0 1px color-mix(in srgb, var(--attention-purple) 28%, transparent),
+                   0 0 16px -2px color-mix(in srgb, var(--attention-purple) 36%, transparent);
   --accent-danger: #ff5757;
   --accent-danger-soft: #ff575720;
   --accent-success: #4ade80;
   --accent-warning: #fbbf24;
 
-  /* Synthi Syntax Highlighting - Unique Pastel Theme with better contrast */
-  --syntax-keyword: #3a8574;
-  --syntax-string: #a8e6cf;
+  /* Atmospheric Depth tokens — used by .vt-rim, .vt-ambient-* utilities.
+     Rim-glow is a soft outer halo, ambient-haze is a 1px gradient line
+     that fades to 0 at the edges (used on chrome trim). */
+  --rim-glow: 0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 18%, transparent),
+              0 0 14px -2px color-mix(in srgb, var(--brand-stop-3) 22%, transparent);
+  --rim-glow-active: 0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 32%, transparent),
+                     0 0 22px -2px color-mix(in srgb, var(--brand-stop-3) 38%, transparent);
+  --ambient-haze-bottom: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--brand-stop-1) 12%, transparent) 17%,
+    color-mix(in srgb, var(--brand-stop-2) 12%, transparent) 40%,
+    color-mix(in srgb, var(--brand-stop-3) 12%, transparent) 71%,
+    color-mix(in srgb, var(--brand-stop-4) 12%, transparent) 100%,
+    transparent 100%
+  );
+  --depth-shadow-1: 0 1px 0 0 rgba(0,0,0,0.4), 0 2px 8px -4px rgba(0,0,0,0.5);
+  --depth-shadow-2: 0 4px 24px -8px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.02) inset;
+  --depth-shadow-3: 0 12px 48px -12px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.03) inset;
+
+  /* Syntax highlighting — refreshed to harmonize with brand cool-tones */
+  --syntax-keyword: #b5a4ff;
+  --syntax-string: #9be8c4;
   --syntax-function: #7cb8f8;
   --syntax-comment: #454a5e;
-  --syntax-preprocessor: #b8a8f0;
+  --syntax-preprocessor: #d49aff;
   --syntax-number: #f5d142;
   --syntax-type: #8ad4ff;
+
+  /* Shell brand colors — these match the canonical brand colors of each
+     shell so the icons read as familiar. Themed via CSS variables so
+     light themes / accessibility themes can rebalance contrast without
+     touching JSX. */
+  --shell-powershell: #5391FE;
+  --shell-cmd: #cccccc;
+  --shell-bash: #4EAA25;
+  --shell-gitbash: #F05032;
+  --shell-zsh: #c678dd;
+  --shell-fish: #E44D26;
+  --shell-sh: #888888;
+  --shell-default: #888888;
 
   /* Shadows for depth */
   --shadow-panel: 0 2px 8px rgba(0, 0, 0, 0.6);
   --shadow-dropdown: 0 4px 16px rgba(0, 0, 0, 0.7);
-  --shadow-glow: 0 0 15px rgba(50, 116, 100, 0.2);
+  --shadow-glow: 0 0 18px color-mix(in srgb, var(--brand-stop-3) 18%, transparent);
 
   --radius: 0.625rem;
 
@@ -111,13 +175,13 @@
 }
 
 :root {
-  --background: #0a0b10;
+  --background: #06060a;
   --foreground: #f0f2f5;
-  --card: #0d0e14;
+  --card: #0d0e15;
   --card-foreground: #f0f2f5;
-  --popover: #0d0e14;
+  --popover: #0d0e15;
   --popover-foreground: #f0f2f5;
-  --primary: #327464;
+  --primary: #b545ff;
   --primary-foreground: #ffffff;
   --secondary: #1c1d26;
   --secondary-foreground: #f0f2f5;
@@ -128,30 +192,30 @@
   --destructive: #ff5757;
   --border: #1c1d26;
   --input: #1c1d26;
-  --ring: #327464;
-  --chart-1: #327464;
+  --ring: #b545ff;
+  --chart-1: #b545ff;
   --chart-2: #4ade80;
-  --chart-3: #3d8b78;
+  --chart-3: #a23dff;
   --chart-4: #ff5757;
   --chart-5: #88c0fc;
-  --sidebar: #090a0f;
+  --sidebar: #06060a;
   --sidebar-foreground: #f0f2f5;
-  --sidebar-primary: #327464;
+  --sidebar-primary: #b545ff;
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #1c1d26;
   --sidebar-accent-foreground: #f0f2f5;
   --sidebar-border: #1c1d26;
-  --sidebar-ring: #327464;
+  --sidebar-ring: #b545ff;
 }
 
 .dark {
-  --background: #0a0b10;
+  --background: #06060a;
   --foreground: #f0f2f5;
-  --card: #0d0e14;
+  --card: #0d0e15;
   --card-foreground: #f0f2f5;
-  --popover: #0d0e14;
+  --popover: #0d0e15;
   --popover-foreground: #f0f2f5;
-  --primary: #327464;
+  --primary: #b545ff;
   --primary-foreground: #ffffff;
   --secondary: #1c1d26;
   --secondary-foreground: #f0f2f5;
@@ -162,20 +226,20 @@
   --destructive: #ff5757;
   --border: #1c1d26;
   --input: #1c1d26;
-  --ring: #327464;
-  --chart-1: #327464;
+  --ring: #b545ff;
+  --chart-1: #b545ff;
   --chart-2: #4ade80;
-  --chart-3: #3d8b78;
+  --chart-3: #a23dff;
   --chart-4: #ff5757;
   --chart-5: #88c0fc;
-  --sidebar: #090a0f;
+  --sidebar: #06060a;
   --sidebar-foreground: #f0f2f5;
-  --sidebar-primary: #327464;
+  --sidebar-primary: #b545ff;
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #1c1d26;
   --sidebar-accent-foreground: #f0f2f5;
   --sidebar-border: #1c1d26;
-  --sidebar-ring: #327464;
+  --sidebar-ring: #b545ff;
 }
 
 @layer base {
@@ -623,11 +687,12 @@
   box-shadow: var(--shadow-dropdown);
 }
 
-/* Active line glow for editor */
+/* Active line glow for editor — follows the cursor; uses the
+   attention-purple because *this is the focal line right now*. */
 .synthi-active-line-glow {
-  border-left: 2px solid var(--accent-primary) !important;
+  border-left: 2px solid var(--attention-purple) !important;
   box-shadow: inset 4px 0 8px -4px
-    color-mix(in srgb, var(--accent-primary) 30%, transparent) !important;
+    color-mix(in srgb, var(--attention-purple) 32%, transparent) !important;
 }
 
 /* Custom focus ring for Synthi */
@@ -807,17 +872,6 @@
   opacity: 1;
 }
 
-/* Custom tooltip styling */
-.synthi-tooltip {
-  background: var(--bg-panel);
-  border: 1px solid var(--border-medium);
-  border-radius: 8px;
-  padding: 8px 12px;
-  font-size: 12px;
-  color: var(--text-primary);
-  box-shadow: var(--shadow-dropdown);
-}
-
 /* ===== Theme-aware UI Utility Classes ===== */
 
 /* Ghost button — secondary text, elevated bg on hover */
@@ -832,15 +886,15 @@
   color: var(--text-primary);
 }
 
-/* Active / toggled button state */
+/* Active / toggled button state — focal moment, uses attention purple. */
 .th-btn-active {
-  color: var(--accent-primary) !important;
+  color: var(--attention-purple) !important;
   background: color-mix(
     in srgb,
-    var(--accent-primary) 8%,
+    var(--attention-purple) 10%,
     transparent
   ) !important;
-  border: 1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent) !important;
+  border: 1px solid color-mix(in srgb, var(--attention-purple) 30%, transparent) !important;
 }
 
 /* Input field */
@@ -850,9 +904,9 @@
   border-color: var(--border-subtle);
 }
 .th-input:focus {
-  border-color: var(--accent-primary);
+  border-color: var(--attention-purple);
   box-shadow: 0 0 0 2px
-    color-mix(in srgb, var(--accent-primary) 20%, transparent);
+    color-mix(in srgb, var(--attention-purple) 22%, transparent);
 }
 .th-input::placeholder {
   color: var(--text-muted);
@@ -884,12 +938,12 @@
   background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
 }
 
-/* Toggle switch */
+/* Toggle switch — ON state uses attention purple. */
 .th-toggle-on {
   background: linear-gradient(
     to right,
-    var(--accent-primary),
-    var(--accent-secondary)
+    var(--attention-purple),
+    color-mix(in srgb, var(--attention-purple) 75%, white 25%)
   );
 }
 .th-toggle-off {
@@ -953,17 +1007,17 @@
   opacity: 0.85;
 }
 
-/* ── Dashboard tab overrides ── */
+/* ── Dashboard tab overrides — active uses attention purple ── */
 [data-synthi-tab][data-state="active"] {
   background: color-mix(
     in srgb,
-    var(--accent-primary) 15%,
+    var(--attention-purple) 12%,
     transparent
   ) !important;
-  color: var(--accent-tertiary) !important;
+  color: var(--attention-purple) !important;
   border-color: color-mix(
     in srgb,
-    var(--accent-primary) 30%,
+    var(--attention-purple) 32%,
     transparent
   ) !important;
 }
@@ -1022,7 +1076,7 @@
 
 /* Synthi Fix Preview Styling */
 .synthi-fix-preview-code-above {
-  background-color: rgba(50, 116, 100, 0.1);
+  background-color: color-mix(in srgb, var(--accent-primary) 10%, transparent);
   border-left: 3px solid var(--accent-primary);
   color: var(--text-primary);
   font-family: "JetBrains Mono", "Fira Code", monospace;
@@ -1045,9 +1099,9 @@
 }
 
 .synthi-fix-code {
-  color: var(--accent-tertiary); /* Mint/Teal for suggested code */
+  color: var(--accent-secondary);
   font-weight: 600;
-  text-shadow: 0 0 10px rgba(74, 158, 138, 0.2);
+  text-shadow: 0 0 10px color-mix(in srgb, var(--accent-secondary) 22%, transparent);
 }
 
 .synthi-fix-preview-strikethrough {
@@ -1302,6 +1356,122 @@
   animation: heal-count-pop 280ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
+/* ── Fix-applied feedback ────────────────────────────────────────────
+   When a fix lands, briefly flash the surrounding pill with a brand
+   glow so the user sees the system did something. Restrained: a single
+   ~700ms ramp + decay, no sparkles, no shimmer. */
+@keyframes heal-applied-flash {
+  0% {
+    box-shadow:
+      0 0 0 0 color-mix(in srgb, var(--brand-stop-3) 0%, transparent),
+      0 0 0 0 color-mix(in srgb, var(--brand-stop-3) 0%, transparent);
+    background-color: transparent;
+  }
+  30% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 55%, transparent),
+      0 0 18px -2px color-mix(in srgb, var(--brand-stop-3) 50%, transparent);
+    background-color: color-mix(in srgb, var(--brand-stop-3) 14%, transparent);
+  }
+  100% {
+    box-shadow:
+      0 0 0 0 transparent,
+      0 0 0 0 transparent;
+    background-color: transparent;
+  }
+}
+.heal-applied-flash {
+  animation: heal-applied-flash 720ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+/* ── Checkmark morph ─────────────────────────────────────────────────
+   Spinner → check transition on AIFixCard apply. The class wraps a
+   small badge that draws the check stroke via a SVG dasharray. */
+@keyframes heal-check-draw {
+  0% {
+    stroke-dashoffset: 24;
+    opacity: 0;
+    transform: scale(0.85);
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.heal-check-morph {
+  animation: heal-check-draw 360ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-origin: center;
+}
+.heal-check-morph path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  animation: heal-check-draw 360ms cubic-bezier(0.34, 1.56, 0.64, 1) 60ms both;
+}
+
+/* ── Editor decorations on healed lines ──────────────────────────────
+   Monaco adds these via deltaDecorations. The line range gets a brief
+   brand-tinted sweep that fades; the gutter on the left gets a
+   matching glow. Both auto-decay so the editor returns to calm. */
+@keyframes heal-line-sweep {
+  0% {
+    opacity: 0;
+    background-position: -120% 50%;
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    background-position: 220% 50%;
+  }
+}
+.heal-line-sweep {
+  /* Applied as a Monaco linesDecorationsClassName / className on the
+     full line range. The sweep is a moving gradient across the line. */
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--brand-stop-3) 22%, transparent) 30%,
+    color-mix(in srgb, var(--brand-stop-1) 18%, transparent) 50%,
+    color-mix(in srgb, var(--brand-stop-4) 22%, transparent) 70%,
+    transparent 100%
+  );
+  background-size: 240% 100%;
+  background-position: -120% 50%;
+  background-repeat: no-repeat;
+  animation: heal-line-sweep 2400ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  pointer-events: none;
+}
+
+@keyframes heal-gutter-glow {
+  0% {
+    opacity: 0;
+    box-shadow: 0 0 0 0 transparent;
+  }
+  18% {
+    opacity: 1;
+    box-shadow:
+      inset 2px 0 0 0 var(--brand-stop-3),
+      0 0 10px -2px color-mix(in srgb, var(--brand-stop-3) 60%, transparent);
+  }
+  100% {
+    opacity: 0;
+    box-shadow:
+      inset 2px 0 0 0 color-mix(in srgb, var(--brand-stop-3) 20%, transparent),
+      0 0 0 0 transparent;
+  }
+}
+.heal-gutter-glow {
+  /* Applied via Monaco's linesDecorationsClassName. Sits in the gutter
+     column so it doesn't shift line numbers. */
+  animation: heal-gutter-glow 2400ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  pointer-events: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .heal-chevron,
   .heal-card,
@@ -1310,8 +1480,835 @@
   .heal-popover,
   .heal-row-enter,
   .heal-stagger > *,
-  .heal-count-pop {
+  .heal-count-pop,
+  .heal-applied-flash,
+  .heal-check-morph,
+  .heal-check-morph path,
+  .heal-line-sweep,
+  .heal-gutter-glow {
     animation: none !important;
     transition: none !important;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   VECTANT — Atmospheric Depth utilities
+   ───────────────────────────────────────────────────────────────────
+   The brand gradient lives in `--brand-gradient`. These utilities are
+   how it leaves a mark on the UI: a 1px hairline at chrome trim
+   edges (.vt-ambient-*), a soft outer halo on focused/active surfaces
+   (.vt-rim, .vt-rim-active), and a single 2-3px vertical "brand bar"
+   stamp for left-edge active indicators (.vt-brand-bar). Pulse the
+   gradient on signature AI moments with .vt-brand-pulse.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Ambient gradient hairlines — 1px line that fades to 0 at both edges.
+   Use at the bottom of TopNav, top of StatusBar, inside edge of
+   ActivityBar. Always at low opacity; the gradient should whisper. */
+.vt-ambient-bottom {
+  position: relative;
+}
+.vt-ambient-bottom::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--ambient-haze-bottom);
+  background-size: 200% 100%;
+  pointer-events: none;
+  opacity: 0.7;
+  animation: vt-ambient-drift 22s ease-in-out infinite;
+}
+
+.vt-ambient-top {
+  position: relative;
+}
+.vt-ambient-top::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -1px;
+  height: 1px;
+  background: var(--ambient-haze-bottom);
+  background-size: 200% 100%;
+  pointer-events: none;
+  opacity: 0.7;
+  animation: vt-ambient-drift 22s ease-in-out infinite;
+}
+
+/* Ambient drift — the gradient hairlines slowly shift back and forth
+   over 22s. Subtle enough to be subliminal; gives the chrome a faint
+   pulse of life without ever announcing itself. */
+@keyframes vt-ambient-drift {
+  0%, 100% { background-position: 0% 50%; }
+  50%      { background-position: 100% 50%; }
+}
+
+/* Rim-light — soft halo around the element. The non-active form is
+   barely visible; use vt-rim-active when the element is genuinely the
+   focal point of the user's attention. */
+.vt-rim {
+  box-shadow: var(--rim-glow);
+}
+.vt-rim-active {
+  box-shadow: var(--rim-glow-active);
+}
+
+/* Brand bar — vertical gradient stripe used as a left-edge marker on
+   active rows (file tree, activity bar). 2px wide by default. */
+.vt-brand-bar {
+  position: relative;
+}
+.vt-brand-bar::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: linear-gradient(
+    180deg,
+    var(--brand-stop-1) 0%,
+    var(--brand-stop-2) 33%,
+    var(--brand-stop-3) 66%,
+    var(--brand-stop-4) 100%
+  );
+  box-shadow: 0 0 12px -2px color-mix(in srgb, var(--brand-stop-3) 50%, transparent);
+}
+
+/* Brand fill — solid gradient background. Reserved for signature
+   moments: AI streaming, primary CTAs, run state, save flash. */
+.vt-brand-fill {
+  background: var(--brand-gradient);
+  color: #ffffff;
+}
+
+/* Brand text — gradient-clipped wordmark. Use on logo, "Vectant ADE"
+   in copy, and the AI activity label. */
+.vt-brand-text {
+  background: var(--brand-gradient-horizontal);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Pulsing brand glow — AI is doing something. Slow, calm, ~2.2s loop,
+   contained to a soft halo (does not change the element's own color).
+   Honors prefers-reduced-motion. */
+@keyframes vt-brand-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand-stop-3) 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 22px -2px color-mix(in srgb, var(--brand-stop-3) 38%, transparent);
+  }
+}
+.vt-brand-pulse {
+  animation: vt-brand-pulse 2.2s ease-in-out infinite;
+}
+
+/* Streaming gradient sweep — used on AI message left edges and
+   on the send button while a response is streaming. */
+@keyframes vt-brand-sweep {
+  0%   { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+.vt-brand-sweep {
+  background: linear-gradient(
+    90deg,
+    var(--brand-stop-1),
+    var(--brand-stop-2),
+    var(--brand-stop-3),
+    var(--brand-stop-4),
+    var(--brand-stop-3),
+    var(--brand-stop-2),
+    var(--brand-stop-1)
+  );
+  background-size: 200% 100%;
+  animation: vt-brand-sweep 3.5s linear infinite;
+}
+
+.terminal-pane-shell .xterm .xterm-scroll-area {
+  padding-bottom: calc(var(--workspace-statusbar-terminal-clearance, 0px) + var(--workspace-terminal-overscroll, 46px));
+}
+
+.terminal-pane-shell .xterm .xterm-viewport {
+  scrollbar-gutter: stable;
+  scroll-padding-bottom: var(--workspace-terminal-overscroll, 46px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vt-brand-pulse,
+  .vt-brand-sweep,
+  .vt-ambient-bottom::after,
+  .vt-ambient-top::before {
+    animation: none !important;
+  }
+}
+
+/* ─── Focus-visible ring ──────────────────────────────────────────────
+   Reusable keyboard-focus indicator. Uses :focus-visible (not :focus)
+   so mouse clicks don't leave a lingering ring. Brand-tinted so it
+   doesn't clash with the surrounding palette. Apply by adding the
+   `th-focus-ring` class to any interactive element. */
+.th-focus-ring:focus {
+  outline: none;
+}
+
+.th-focus-ring:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--bg-app),
+    0 0 0 3px color-mix(in srgb, var(--attention-purple) 70%, transparent);
+}
+
+/* For inputs that already have a border + box-shadow, drop the inner
+   ring spacing so the focus halo hugs the field. */
+.th-focus-ring-inset:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--attention-purple) 70%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--attention-purple) 18%, transparent);
+}
+
+/* ─── Status Island entrance animation ───────────────────────────────
+   First-load reveal for the floating status pill. The stage scales
+   horizontally from a small circular seed into the full pill width.
+
+   Why scale rather than clip-path: the gradient border lives on the
+   pill via padding-box/border-box. Clipping leaves the gradient at the
+   FULL pill edges, so clipped rounded ends read as a hard dark cut-off.
+   Scaling the stage anchors the gradient to the silhouette's true edges
+   at every frame of the morph.
+
+   PERF: backdrop-filter is the dominant cost when scaling a translucent
+   element across many frames — the compositor must re-blur the
+   background through changing geometry. We disable it for the duration
+   of the entrance via the .status-island-entering modifier on the
+   pill, then snap it back at the tail. Combined with a single master
+   timeline (no per-layer animations stacking compositor wakeups) this
+   is what removes the choppiness without changing the visual concept.
+*/
+
+/* Master timeline lives on the stage. Children read from CSS custom
+   properties driven by this single animation so we never have multiple
+   keyframes competing for compositor wakeups in the same frame. */
+.status-island-entrance-shell {
+  animation: status-island-shell 720ms cubic-bezier(0.32, 0.72, 0, 1) both;
+  transform-origin: center center;
+  /* Pre-warm: ensure the layer exists from frame 1 so the first
+     animation frame is not the one that creates it. */
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* Single combined ring (halo + shadow merged). Driven by its own
+   short tail animation that starts as the shell settles. */
+.status-island-entrance-halo {
+  animation: status-island-halo 420ms 540ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+/* Content fades in once the shell silhouette is wide enough for type
+   not to read as squashed. Starts mid-morph (not at the tail) so the
+   pill never appears empty for a perceivable beat. */
+.status-island-entrance-content {
+  animation: status-island-content 280ms 480ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+/* While the pill is entering, ramp the backdrop blur down to zero. The
+   inset highlight + gradient border + solid bg-elevated fill carry the
+   silhouette on their own. Using blur(0px) rather than `none` keeps the
+   property defined so the transition back to blur(14px) interpolates
+   smoothly instead of snapping. */
+.status-island-entering {
+  backdrop-filter: blur(0px) saturate(100%) !important;
+  -webkit-backdrop-filter: blur(0px) saturate(100%) !important;
+}
+
+@keyframes status-island-shell {
+  /* Seed pulse — visible as a glowing dot that grows quickly into the
+     pill. Opacity ramp is part of the same ease (no hold), and the seed
+     keeps a slight vertical scale so it reads as a soft pill rather than
+     a sliver. */
+  0% {
+    transform: scale3d(0.06, 0.62, 1);
+    opacity: 0;
+  }
+  18% {
+    transform: scale3d(0.08, 0.78, 1);
+    opacity: 1;
+  }
+  /* Unfurl — gradient brand colour carries the silhouette outward.
+     The unfurl owns the majority of the timeline so the eye reads it
+     as the primary motion. */
+  72% {
+    transform: scale3d(1.012, 1.008, 1);
+    opacity: 1;
+  }
+  /* Settle — tiny overshoot resolves to identity. backdrop-filter is
+     still suppressed here; the .status-island-entering class is removed
+     by the JS timer ~60ms after this lands. */
+  100% {
+    transform: scale3d(1, 1, 1);
+    opacity: 1;
+  }
+}
+
+@keyframes status-island-halo {
+  /* One glow ring (combines the old halo + shadow into a single layer
+     so the compositor only wakes one element for the tail). */
+  0% {
+    opacity: 0;
+  }
+  55% {
+    opacity: 0.22;
+  }
+  100% {
+    opacity: 0.16;
+  }
+}
+
+@keyframes status-island-content {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 3px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/* ─── Status Island drag handle ──────────────────────────────────────
+   A small grip affordance on the left rail of the pill. Subtle by
+   default; pops to full opacity on hover. Combined with a 5px drag
+   threshold this makes accidental drags effectively impossible — you
+   have to land on a 14-px target AND move ≥5 px before the island
+   responds. We avoid a "drag from anywhere on the pill" model because
+   the pill is dense with click targets (branch, problems, collab, …)
+   and hijacking the whole surface would feel grabby. */
+.status-island-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 18px;
+  margin-left: -6px;
+  margin-right: 2px;
+  border-radius: 4px;
+  color: var(--text-muted, #7a8099);
+  opacity: 0.35;
+  cursor: grab;
+  transition: opacity 140ms ease, color 140ms ease, background-color 140ms ease, transform 140ms ease;
+  flex-shrink: 0;
+  user-select: none;
+  touch-action: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.status-island-drag-handle:hover {
+  opacity: 0.95;
+  color: var(--text-primary, #e8eaf0);
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+}
+
+.status-island-drag-handle:active,
+.status-island-drag-handle.is-dragging {
+  cursor: grabbing;
+  opacity: 1;
+  transform: scale(0.96);
+}
+
+.status-island-drag-handle--moved {
+  /* Slight brand tint once the user has moved the island — signals
+     that the position is overridden, and that double-click resets it. */
+  color: var(--brand-stop-2, #b06bff);
+  opacity: 0.7;
+}
+
+.status-island-positioner {
+  /* Wraps the wrapper so the user-applied translate sits on its own
+     transform stack and doesn't fight the entrance scaleX. */
+  transition: none;
+  will-change: transform;
+}
+
+/* Unified hover language for icon-buttons that live inside the status
+   island family (build controls today, anything else we add later).
+   Tinted background + tiny scale, eased out. No grabby 10% pops. */
+.status-island-action {
+  transition:
+    background-color 140ms ease-out,
+    transform 140ms ease-out,
+    color 140ms ease-out;
+  background-color: transparent;
+}
+
+.status-island-action:hover {
+  background-color: var(--hover-bg, color-mix(in srgb, var(--text-primary) 8%, transparent));
+  transform: scale(1.06);
+}
+
+.status-island-action:active {
+  transform: scale(0.96);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-island-action,
+  .status-island-action:hover,
+  .status-island-action:active {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-island-entrance-shell,
+  .status-island-entrance-halo,
+  .status-island-entrance-content {
+    animation: none !important;
+  }
+  .status-island-entering {
+    /* Reduced motion skips the blur ramp too — snap to steady state. */
+    backdrop-filter: blur(14px) saturate(160%) !important;
+    -webkit-backdrop-filter: blur(14px) saturate(160%) !important;
+  }
+}
+
+/* ─── Vectant logo collapsed state ───────────────────────────────────
+   When the island is in 'logo' phase, the StatusBar swaps out the pill
+   for the three logo PNGs in their tight formation. The same component
+   tree owns hover-to-expand. Sizing matches the island's h-7 (28px)
+   so the morph reads as the same object reshaping.
+
+   The PNGs are 1:5-ish tall rectangles; we render them at the same
+   height as the island so the brackets read as integral pieces of the
+   silhouette during the expand handoff.
+
+   NOTE: The existing .status-island-entrance-shell keyframes are NOT
+   touched. We reuse them for the expand-from-logo motion by applying
+   the same class on demand. */
+
+.vectant-logo-button {
+  /* Same height as the island (h-7 = 28px) so the height never
+     changes during the expand morph — only width. */
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  width: 90px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+  /* Pre-warm the compositor layer so the first frame of expansion
+     doesn't have to allocate one. */
+  transform: translateZ(0);
+}
+
+.vectant-logo-halo {
+  /* Quiet ambient halo around the V. Stronger in error/healing states. */
+  position: absolute;
+  inset: -6px -10px;
+  border-radius: 999px;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--brand-stop-3) 22%, transparent) 0%,
+    transparent 70%
+  );
+  filter: blur(4px);
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 200ms ease-out, background 200ms ease-out;
+}
+
+.vectant-logo-button:hover .vectant-logo-halo {
+  opacity: 0.8;
+}
+
+.vectant-logo-v {
+  /* The V is the focal point — full height, centered. The source PNG
+     is squarish so width: auto preserves aspect ratio. */
+  position: relative;
+  height: 26px;
+  width: auto;
+  z-index: 2;
+  user-select: none;
+  pointer-events: none;
+  transition: opacity 160ms ease-out, filter 200ms ease-out;
+}
+
+.vectant-logo-bracket {
+  /* Brackets flank the V. Tall thin elements; we render at full island
+     height so they read like the eventual L/R edges of the pill.
+     During expand, they translateX outward to their final island-edge
+     positions. */
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  height: 28px;
+  width: auto;
+  z-index: 1;
+  user-select: none;
+  pointer-events: none;
+  transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1), opacity 200ms ease-out;
+}
+
+.vectant-logo-bracket--left {
+  /* Sits flush against the left side of the V. The V is ~30px wide at
+     this size; halve that and offset by the bracket's own width.
+     left:50% + translateX(-100%-15px) places the bracket's right edge
+     against the V's left edge. */
+  left: 50%;
+  transform: translateX(calc(-100% - 15px));
+}
+
+.vectant-logo-bracket--right {
+  right: 50%;
+  transform: translateX(calc(100% + 15px));
+}
+
+/* ── Status signals on the collapsed logo ─────────────────────────── */
+
+.vectant-logo--error .vectant-logo-v {
+  /* Red overlay tint — preserves luminance via filter rather than a
+     hard color swap so the gradient is still legible. */
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent-danger) 60%, transparent))
+          hue-rotate(-30deg) saturate(1.6);
+}
+.vectant-logo--error .vectant-logo-halo {
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--accent-danger) 30%, transparent) 0%,
+    transparent 70%
+  );
+  opacity: 0.7;
+}
+
+.vectant-logo--healing .vectant-logo-halo {
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--brand-stop-3) 38%, transparent) 0%,
+    transparent 70%
+  );
+  animation: vectant-logo-healing-pulse 1400ms ease-in-out infinite;
+}
+
+@keyframes vectant-logo-healing-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 0.9; }
+}
+
+.vectant-logo-badge {
+  position: absolute;
+  bottom: -2px;
+  right: 4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--brand-gradient-horizontal);
+  color: var(--bg-app);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--brand-stop-3) 50%, transparent);
+  z-index: 3;
+}
+
+/* ── Expand / collapse motion ──────────────────────────────────────── */
+
+/* Wraps the whole positioner so we can swap visibility of logo vs pill
+   without layout shift. */
+.status-island-phase {
+  position: relative;
+}
+
+/* Hide the pill cleanly when in logo phase. We use visibility (not
+   display:none) so layout width stays consistent during the morph. */
+.status-island-phase--logo .status-island-pill-wrapper {
+  visibility: hidden;
+  pointer-events: none;
+}
+.status-island-phase--logo .vectant-logo-wrapper {
+  visibility: visible;
+}
+
+/* Conversely, hide the logo when in expanded/expanding/collapsing. */
+.status-island-phase--expanded .vectant-logo-wrapper,
+.status-island-phase--expanding .vectant-logo-wrapper,
+.status-island-phase--collapsing .vectant-logo-wrapper {
+  display: none;
+}
+
+/* The V fades out at the start of expansion and fades back in at the
+   end of collapse. JS toggles .is-fading. */
+.vectant-logo-v.is-fading {
+  opacity: 0;
+  transform: scale(0.92);
+  transition: opacity 140ms ease-out, transform 220ms ease-out;
+}
+
+/* During expand, the brackets fly outward. Distance is fixed to the
+   island's centered min-w (640px) — half that minus a few px so the
+   brackets read as the island's L/R edges. */
+.vectant-logo-button.is-spreading .vectant-logo-bracket--left {
+  transform: translateX(-310px);
+  opacity: 0;
+  /* Slightly longer than the V-fade so the brackets are still mid-flight
+     when the V is gone — reads as the brackets pulling the pill outward
+     rather than two unrelated motions. */
+  transition: transform 480ms cubic-bezier(0.32, 0.72, 0, 1),
+              opacity 360ms ease-out 180ms;
+}
+.vectant-logo-button.is-spreading .vectant-logo-bracket--right {
+  transform: translateX(calc(100% + 310px - 15px));
+  opacity: 0;
+  transition: transform 480ms cubic-bezier(0.32, 0.72, 0, 1),
+              opacity 360ms ease-out 180ms;
+}
+
+/* ── Collapse animation ─────────────────────────────────────────────
+   Mirror of the entrance — the pill contracts back to the seed before
+   the logo fades in. Uses a SEPARATE class (NOT the entrance class)
+   so the existing status-island-shell keyframes remain untouched.
+
+   Timing:
+     0-160ms  → pill content + ambient glow fade out
+     160-460ms → pill shell scales down to the seed
+     320-520ms → logo fades in (overlap with the last frames of shell
+                 collapse so the logo appears as the pill shrinks
+                 away, not after a visible empty frame). */
+
+@keyframes status-island-collapse {
+  0% {
+    transform: scale3d(1, 1, 1);
+    opacity: 1;
+  }
+  70% {
+    transform: scale3d(0.08, 0.78, 1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale3d(0.06, 0.62, 1);
+    opacity: 0;
+  }
+}
+
+.status-island-collapsing-shell {
+  /* 160ms delay = content fade window. Shell stays at full size while
+     the icons and glow disappear, then collapses cleanly. */
+  animation: status-island-collapse 300ms cubic-bezier(0.32, 0.72, 0, 1) 160ms both;
+  transform-origin: center center;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+@keyframes status-island-collapse-content {
+  from {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(0, -2px, 0);
+  }
+}
+
+.status-island-collapse-content {
+  /* Faster than the shell collapse — content vanishes first so the
+     shrinking shell isn't still rendering legible icons mid-morph. */
+  animation: status-island-collapse-content 140ms ease-in both;
+}
+
+/* Ambient glow halo also fades fast — it lives as a sibling div with
+   inline opacity: 0.16 once the entrance settles, so we target the
+   stable .status-island-halo-bg class (NOT the temporary entrance
+   class which only exists during first mount). */
+.status-island-halo-bg {
+  transition: opacity 140ms ease-in;
+}
+.status-island-phase--collapsing .status-island-halo-bg {
+  opacity: 0 !important;
+}
+
+/* Drop backdrop-filter for the same compositor reason as during
+   entrance (re-blurring a scaling translucent surface is the dominant
+   cost). */
+.status-island-phase--collapsing .status-island {
+  backdrop-filter: blur(0px) saturate(100%) !important;
+  -webkit-backdrop-filter: blur(0px) saturate(100%) !important;
+}
+
+/* Hide the pill entirely in 'logo' phase so it never intercepts clicks
+   beneath the logo. opacity:0 is the safety net for the brief frame at
+   the collapsing→logo transition where the content's CSS animation
+   class drops (animation end-state was opacity 0 via fill:both, but
+   the moment the class drops the opacity reverts to its computed
+   default of 1 — and if the visibility:hidden hasn't applied yet in
+   the same frame, the icons flash visible). opacity:0 ensures the
+   content can never repaint visible during the logo phase regardless
+   of paint-order races. */
+.status-island-phase--logo .status-island-pill-wrapper {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+.status-island-phase--logo .status-island-pill-wrapper * {
+  pointer-events: none;
+}
+
+/* Logo opacity gating during collapse — start invisible, fade in only
+   after the shell has done most of its work. This is the fix for
+   "logo appears while pill is still full size and content is visible". */
+.status-island-phase--collapsing .vectant-logo-wrapper {
+  opacity: 0;
+  animation: vectant-logo-collapse-fade-in 200ms ease-out 340ms both;
+}
+@keyframes vectant-logo-collapse-fade-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.96); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+/* ── Compact mode (shrink, not hide) ───────────────────────────────
+   Per user feedback: snapping display:none feels too rigid. Instead,
+   each hideable element shrinks its width + opacity + margins over
+   240ms so the island bunches up smoothly.
+
+   .status-island-label   → text spans (Heal / Operator / Synced / ...)
+   .status-island-number  → numeric counts (problems, users, healing)
+   .status-island-cursor  → cursor position (Ln/Col)
+
+   Notes:
+   - max-width is the workhorse — it animates fine and works for
+     inline / inline-block / flex children.
+   - We override display: inline → inline-block on labels because max-
+     width doesn't apply to pure inline elements; overflow:hidden +
+     vertical-align:middle keep the visual identical when expanded.
+   - The Tailwind `hidden 2xl:inline` pattern still hides labels below
+     2xl so this only animates at the breakpoint where labels render. */
+
+.status-island .status-island-label {
+  display: inline-block;
+  overflow: hidden;
+  white-space: nowrap;
+  vertical-align: middle;
+  max-width: 12ch;
+  opacity: 1;
+  transition:
+    max-width 240ms ease-out,
+    opacity 200ms ease-out,
+    margin 240ms ease-out,
+    padding 240ms ease-out;
+}
+.status-island.is-compact .status-island-label {
+  max-width: 0 !important;
+  opacity: 0;
+  margin-left: 0;
+  margin-right: 0;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.status-island .status-island-number {
+  display: inline-block;
+  overflow: hidden;
+  white-space: nowrap;
+  vertical-align: middle;
+  max-width: 4ch;
+  opacity: 1;
+  transition: max-width 240ms ease-out, opacity 200ms ease-out, margin 240ms ease-out;
+}
+.status-island.is-compact .status-island-number {
+  max-width: 0;
+  opacity: 0;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.status-island .status-island-cursor {
+  overflow: hidden;
+  max-width: 120px;
+  opacity: 1;
+  transition:
+    max-width 240ms ease-out,
+    opacity 200ms ease-out,
+    padding 240ms ease-out,
+    margin 240ms ease-out;
+}
+.status-island.is-compact .status-island-cursor {
+  max-width: 0;
+  opacity: 0;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* BranchSelector — strip the text + chevron via CSS targeting on the
+   wrapper. Keeps the GitBranch icon (first svg) visible. Uses the same
+   shrink language as the rest so it joins the bunch-up animation. */
+.status-island .status-island-branch button > span,
+.status-island .status-island-branch button > svg:last-child {
+  overflow: hidden;
+  max-width: 12ch;
+  opacity: 1;
+  transition: max-width 240ms ease-out, opacity 200ms ease-out, margin 240ms ease-out;
+}
+.status-island.is-compact .status-island-branch button > span,
+.status-island.is-compact .status-island-branch button > svg:last-child {
+  max-width: 0;
+  opacity: 0;
+  margin-left: 0;
+  margin-right: 0;
+}
+.status-island .status-island-branch button {
+  transition: gap 240ms ease-out, padding 240ms ease-out;
+}
+.status-island.is-compact .status-island-branch button {
+  gap: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* Bunch-up animation — when compact toggles on, gap between items
+   tightens from gap-3 (12px) to 4px in a smooth 240ms ease-out. */
+.status-island .status-island-row {
+  transition: gap 240ms ease-out, padding 240ms ease-out;
+  gap: 12px;
+}
+.status-island.is-compact .status-island-row {
+  gap: 4px;
+  padding-left: 10px;
+  padding-right: 10px;
+}
+/* Inner zone gaps also tighten in lockstep. */
+.status-island .status-island-zone {
+  transition: gap 240ms ease-out;
+}
+.status-island.is-compact .status-island-zone {
+  gap: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vectant-logo-bracket,
+  .vectant-logo-v,
+  .vectant-logo-halo,
+  .vectant-logo--healing .vectant-logo-halo {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+

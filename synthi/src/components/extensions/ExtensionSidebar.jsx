@@ -43,15 +43,18 @@ module.exports = { activate, deactivate };
 };
 
 // ─── State colors ────────────────────────────────────────────
-const STATE_COLORS = {
-  active: 'bg-emerald-500',
-  installed: 'bg-zinc-500',
-  loaded: 'bg-blue-400',
-  activating: 'bg-yellow-500 animate-pulse',
-  disabled: 'bg-zinc-600',
-  crashed: 'bg-red-500',
-  quarantined: 'bg-red-700',
+// Style objects (not Tailwind utility strings) so the dots respect the
+// active theme — `--accent-*` are remapped by ThemeProvider on swap.
+const STATE_STYLES = {
+  active:      { background: 'var(--accent-success)' },
+  installed:   { background: 'var(--text-muted)' },
+  loaded:      { background: 'var(--brand-stop-4)' },
+  activating:  { background: 'var(--accent-warning)' },
+  disabled:    { background: 'var(--text-dim)' },
+  crashed:     { background: 'var(--accent-danger)' },
+  quarantined: { background: 'color-mix(in srgb, var(--accent-danger) 80%, black)' },
 };
+const STATE_PULSE = new Set(['activating']);
 const STATE_LABELS = {
   active: 'Active', installed: 'Installed', loaded: 'Loaded',
   activating: 'Activating…', disabled: 'Disabled',
@@ -81,12 +84,16 @@ function ExtensionRow({ ext, onEnable, onDisable, onUninstall, onRestart }) {
           </div>
           <div className="text-[10px] truncate" style={{ color: 'var(--text-dim)' }}>{ext.publisher}</div>
         </div>
-        <span className={`shrink-0 inline-block w-2 h-2 rounded-full ${STATE_COLORS[ext.state] || 'bg-zinc-500'}`} title={STATE_LABELS[ext.state] || ext.state} />
+        <span
+          className={`shrink-0 inline-block w-2 h-2 rounded-full ${STATE_PULSE.has(ext.state) ? 'animate-pulse' : ''}`}
+          style={STATE_STYLES[ext.state] || { background: 'var(--text-muted)' }}
+          title={STATE_LABELS[ext.state] || ext.state}
+        />
       </div>
       {expanded && (
         <div className="px-3 pb-2.5 pt-0.5 border-t" style={{ borderColor: 'var(--border-subtle)' }}>
           <p className="text-[11px] mb-2" style={{ color: 'var(--text-secondary)' }}>{ext.description || 'No description.'}</p>
-          <div className="flex gap-3 text-[10px] mb-2" style={{ color: 'var(--text-muted)' }}>
+          <div className="flex gap-3 text-[10px] mb-2" style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
             <span>State: <span style={{ color: 'var(--text-primary)' }}>{STATE_LABELS[ext.state] || ext.state}</span></span>
             {ext.crashCount > 0 && <span style={{ color: 'var(--accent-danger)' }}>Crashes: {ext.crashCount}</span>}
             <span>Activations: {ext.activationCount || 0}</span>
@@ -98,7 +105,7 @@ function ExtensionRow({ ext, onEnable, onDisable, onUninstall, onRestart }) {
           )}
           <div className="flex gap-1.5">
             {isDisabled ? (
-              <button onClick={() => onEnable(ext.id)} className="px-2 py-1 text-[11px] rounded text-white" style={{ background: 'var(--accent-success)' }}>Enable</button>
+              <button onClick={() => onEnable(ext.id)} className="px-2 py-1 text-[11px] rounded" style={{ background: 'var(--accent-success)', color: 'var(--bg-app)' }}>Enable</button>
             ) : (
               <button onClick={() => onDisable(ext.id)} className="px-2 py-1 text-[11px] rounded transition-colors" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>Disable</button>
             )}
@@ -159,12 +166,12 @@ function MarketplaceRow({ ext, installedIds, onMarketplaceInstall }) {
           <div className="flex items-center gap-2 text-[10px]" style={{ color: 'var(--text-dim)' }}>
             <span className="truncate">{ext.namespace}</span>
             {ext.averageRating != null && (
-              <span className="flex items-center gap-0.5 shrink-0" style={{ color: 'var(--accent-warning)' }}>
+              <span className="flex items-center gap-0.5 shrink-0" style={{ color: 'var(--accent-warning)', fontVariantNumeric: 'tabular-nums' }}>
                 <Star className="w-2.5 h-2.5 fill-current" />
                 {ext.averageRating.toFixed(1)}
               </span>
             )}
-            <span className="shrink-0">{downloads} ↓</span>
+            <span className="shrink-0" style={{ fontVariantNumeric: 'tabular-nums' }}>{downloads} ↓</span>
           </div>
         </div>
         {/* Install button */}
@@ -478,23 +485,25 @@ module.exports = { activate, deactivate };
   const onDragLeave = useCallback(() => { setDragOver(false); }, []);
 
   return (
-    <div className="h-full flex flex-col" style={{ background: 'var(--bg-app)', color: 'var(--text-primary)' }}>
-      {/* Header strip with gradient accent */}
-      <div className="flex-shrink-0">
-        <div className="h-[2px]" style={{ background: 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary), var(--accent-tertiary), transparent)' }} />
-        <div className="flex items-center gap-2 px-3 py-2">
-          <Puzzle size={14} className="flex-shrink-0" style={{ color: 'var(--accent-secondary)' }} />
-          <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Extensions</span>
-          <div className="ml-auto flex items-center gap-0.5">
-            <button
-              onClick={() => setShowInstall(!showInstall)}
-              className="p-1.5 rounded-lg transition-all"
-              style={{ color: 'var(--text-muted)' }}
-              title="Install from code"
-            >
-              <Plus className="w-3.5 h-3.5" strokeWidth={1.5} />
-            </button>
-          </div>
+    <div className="h-full flex flex-col" style={{ background: 'var(--bg-sidebar)', color: 'var(--text-primary)' }}>
+      <div
+        className="flex shrink-0 items-center gap-2 border-b px-3 py-2"
+        style={{
+          borderColor: 'var(--border-subtle)',
+          background: 'color-mix(in srgb, var(--bg-sidebar) 72%, var(--bg-editor) 28%)',
+        }}
+      >
+        <Puzzle size={14} className="flex-shrink-0" style={{ color: 'var(--accent-secondary)' }} />
+        <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>Extensions</span>
+        <div className="ml-auto flex items-center gap-0.5">
+          <button
+            onClick={() => setShowInstall(!showInstall)}
+            className="p-1.5 rounded-lg transition-all"
+            style={{ color: 'var(--text-muted)' }}
+            title="Install from code"
+          >
+            <Plus className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </button>
         </div>
       </div>
       <div className="px-3 pb-2 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -503,14 +512,14 @@ module.exports = { activate, deactivate };
         <div className="flex gap-0.5 rounded-md p-0.5 mb-2" style={{ background: 'var(--bg-editor)' }}>
           <button
             onClick={() => setTab('installed')}
-            className={`flex-1 px-2 py-1 text-[11px] font-medium rounded transition-colors`}
+            className="th-focus-ring flex-1 px-2 py-1 text-[11px] font-medium rounded transition-colors"
             style={tab === 'installed' ? { background: 'var(--bg-elevated)', color: 'var(--text-primary)', boxShadow: '0 1px 2px rgba(0,0,0,0.15)' } : { color: 'var(--text-muted)' }}
           >
-            Installed ({extensions.length})
+            Installed (<span style={{ fontVariantNumeric: 'tabular-nums' }}>{extensions.length}</span>)
           </button>
           <button
             onClick={() => setTab('marketplace')}
-            className={`flex-1 px-2 py-1 text-[11px] font-medium rounded transition-colors`}
+            className="th-focus-ring flex-1 px-2 py-1 text-[11px] font-medium rounded transition-colors"
             style={tab === 'marketplace' ? { background: 'var(--bg-elevated)', color: 'var(--text-primary)', boxShadow: '0 1px 2px rgba(0,0,0,0.15)' } : { color: 'var(--text-muted)' }}
           >
             Marketplace
@@ -526,7 +535,7 @@ module.exports = { activate, deactivate };
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search extensions on Open VSX…"
-              className="w-full pl-7 pr-7 py-1.5 border rounded text-[12px] focus:outline-none transition-colors"
+              className="th-focus-ring-inset w-full pl-7 pr-7 py-1.5 border rounded text-[12px] transition-colors"
               style={{ background: 'var(--bg-editor)', borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
               autoFocus
             />
@@ -572,12 +581,15 @@ module.exports = { activate, deactivate };
               onDragOver={onDragOver}
               onDragLeave={onDragLeave}
               onClick={() => vsixInputRef.current?.click()}
-              className={`relative flex flex-col items-center justify-center gap-1.5 border-2 border-dashed rounded-lg py-4 px-3 cursor-pointer transition-colors ${
+              className="relative flex flex-col items-center justify-center gap-1.5 border-2 border-dashed rounded-lg py-4 px-3 cursor-pointer transition-colors"
+              style={
                 dragOver
-                  ? 'border-[#4aba9a] bg-[#4aba9a]/10'
-                  : ''
-              }`}
-              style={!dragOver ? { borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' } : {}}
+                  ? {
+                      borderColor: 'color-mix(in srgb, var(--brand-stop-4) 60%, transparent)',
+                      background: 'color-mix(in srgb, var(--brand-stop-4) 10%, transparent)',
+                    }
+                  : { borderColor: 'var(--border-subtle)', background: 'var(--bg-editor)' }
+              }
             >
               <input
                 ref={vsixInputRef}
@@ -621,15 +633,30 @@ module.exports = { activate, deactivate };
             <button
               onClick={handleInstallSample}
               disabled={installing || !ready}
-              className="w-full px-3 py-1.5 text-[11px] font-medium rounded disabled:opacity-40 transition-colors"
-              style={{ background: 'var(--accent-secondary)', color: 'var(--bg-app)' }}
+              className="w-full px-3 py-1.5 text-[11px] font-medium rounded-md disabled:opacity-40 transition-colors"
+              style={{
+                /* Secondary CTA — quieter than the brand-gradient
+                   primary on the empty state, but still discoverable.
+                   Uses a tinted surface so it reads as "action" without
+                   competing with the marketplace primary. */
+                background: 'color-mix(in srgb, var(--brand-stop-3) 12%, transparent)',
+                color: 'var(--text-primary)',
+                border: '1px solid color-mix(in srgb, var(--brand-stop-3) 28%, transparent)',
+              }}
             >
               {installing && !vsixFileName ? 'Installing…' : 'Install Hello World Extension'}
             </button>
           </div>
 
           {installError && (
-            <div className="text-[11px] text-red-400 bg-red-950/30 border border-red-800/40 rounded px-2 py-1.5">
+            <div
+              className="text-[11px] rounded px-2 py-1.5"
+              style={{
+                color: 'var(--accent-danger)',
+                background: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--accent-danger) 26%, transparent)',
+              }}
+            >
               {installError}
             </div>
           )}
@@ -642,7 +669,7 @@ module.exports = { activate, deactivate };
           <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: 'var(--text-muted)' }}>Recent Issues</div>
           {errors.slice(0, 5).map((err, i) => (
             <div key={i} className="flex items-start gap-1.5 mb-1 text-[11px]">
-              <span className={err.severity === 'error' ? 'text-red-400' : 'text-yellow-400'}>●</span>
+              <span style={{ color: err.severity === 'error' ? 'var(--accent-danger)' : 'var(--accent-warning)' }}>●</span>
               <div className="flex-1 min-w-0">
                 <div className="truncate" style={{ color: 'var(--text-primary)' }}>{err.title}</div>
                 <div className="truncate" style={{ color: 'var(--text-muted)' }}>{err.message}</div>
@@ -658,16 +685,43 @@ module.exports = { activate, deactivate };
         {tab === 'installed' ? (
           // ── Installed extensions list ──
           extensions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center px-4">
-              <Puzzle className="w-8 h-8 mb-3" style={{ color: 'var(--text-dim)' }} />
-              <div className="text-[12px] mb-1" style={{ color: 'var(--text-muted)' }}>No extensions installed</div>
-              <div className="text-[11px] mb-3" style={{ color: 'var(--text-dim)' }}>
-                Click <Plus className="inline w-3 h-3" /> to install a test extension, or browse the <span style={{ color: 'var(--accent-secondary)' }}>Marketplace</span> tab.
+            <div className="flex flex-col items-center justify-center h-full text-center px-4 relative">
+              {/* Soft ambient halo behind the icon — restrained so it
+                  reads as a focal moment, not background noise. */}
+              <div
+                aria-hidden="true"
+                className="absolute pointer-events-none"
+                style={{
+                  width: 120,
+                  height: 120,
+                  borderRadius: '50%',
+                  background: 'radial-gradient(circle, color-mix(in srgb, var(--brand-stop-3) 8%, transparent) 0%, transparent 65%)',
+                  filter: 'blur(4px)',
+                  top: 'calc(50% - 100px)',
+                }}
+              />
+              <div
+                className="relative w-11 h-11 mb-3 rounded-xl flex items-center justify-center"
+                style={{
+                  background: 'color-mix(in srgb, var(--brand-stop-3) 8%, var(--bg-elevated))',
+                  border: '1px solid color-mix(in srgb, var(--brand-stop-3) 22%, transparent)',
+                  boxShadow: '0 0 22px -4px color-mix(in srgb, var(--brand-stop-3) 28%, transparent)',
+                }}
+              >
+                <Puzzle className="w-5 h-5" style={{ color: 'var(--accent-secondary)' }} />
+              </div>
+              <div className="text-[13px] font-medium mb-1" style={{ color: 'var(--text-primary)' }}>No extensions yet</div>
+              <div className="text-[11px] mb-4 max-w-[220px]" style={{ color: 'var(--text-muted)' }}>
+                Click <Plus className="inline w-3 h-3 align-text-bottom" /> to install a test extension, or browse the Marketplace.
               </div>
               <button
                 onClick={() => setTab('marketplace')}
-                className="px-3 py-1.5 text-[11px] font-medium rounded transition-colors"
-                style={{ background: 'color-mix(in srgb, var(--accent-secondary) 15%, transparent)', color: 'var(--accent-secondary)' }}
+                className="px-3.5 py-1.5 text-[11px] font-semibold rounded-md transition-all hover:-translate-y-px"
+                style={{
+                  background: 'var(--brand-gradient-horizontal)',
+                  color: '#ffffff',
+                  boxShadow: '0 4px 16px -4px color-mix(in srgb, var(--brand-stop-3) 40%, transparent)',
+                }}
               >
                 Browse Marketplace
               </button>
@@ -694,7 +748,14 @@ module.exports = { activate, deactivate };
               </div>
             )}
             {searchError && (
-              <div className="text-[11px] text-red-400 bg-red-950/30 border border-red-800/40 rounded px-2 py-1.5 mb-2">
+              <div
+                className="text-[11px] rounded px-2 py-1.5 mb-2"
+                style={{
+                  color: 'var(--accent-danger)',
+                  background: 'color-mix(in srgb, var(--accent-danger) 10%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--accent-danger) 26%, transparent)',
+                }}
+              >
                 {searchError}
               </div>
             )}
@@ -708,7 +769,7 @@ module.exports = { activate, deactivate };
             )}
             {!searching && searchResults.length > 0 && (
               <>
-                <div className="text-[10px] mb-1.5 px-1" style={{ color: 'var(--text-dim)' }}>
+                <div className="text-[10px] mb-1.5 px-1" style={{ color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>
                   {searchTotal.toLocaleString()} results from Open VSX
                 </div>
                 {searchResults.map((ext) => (

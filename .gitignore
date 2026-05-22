@@ -31,3 +31,8 @@ mcp/synthi-mcp/.gpu-hmr-test-artifacts/
 node_modules/.vite/
 
 CLAUDE.md
+
+.claude/
+.playwright-mcp/
+.scratch-playwright/
+.agents/

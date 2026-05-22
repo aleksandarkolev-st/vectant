@@ -21,6 +21,11 @@ const UI_STORAGE_KEY = 'synthi:ui';
 const EXPANDED_FOLDERS_KEY = 'synthi:expandedFolders';
 const THEME_STORAGE_KEY = 'synthi:theme';
 const HEALING_STORAGE_KEY = 'synthi:healing';
+/* Bump when changing healing defaults so existing users pick up the new
+   defaults instead of being stuck with their persisted state. Anything
+   saved at a lower version is treated as missing and the fresh defaults
+   apply. v2 = enabled-by-default + onDiagnosticsStable + useAIForHard. */
+const HEALING_CONFIG_VERSION = 2;
 
 // Workspace-specific storage key helpers
 const getOpenTabsKey = (slug) => `synthi:openTabs:${slug}`;
@@ -74,7 +79,15 @@ export function loadHealingPrefs() {
   try {
     const raw = localStorage.getItem(HEALING_STORAGE_KEY);
     if (!raw) return undefined;
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    /* Migration gate: older payloads (or those written before the
+       version bump) are discarded so the new defaults apply once. The
+       user can re-customize in the settings panel after that. */
+    if (!parsed || parsed.version !== HEALING_CONFIG_VERSION) {
+      try { localStorage.removeItem(HEALING_STORAGE_KEY); } catch (_) {}
+      return undefined;
+    }
+    return parsed;
   } catch (e) {
     console.warn('Failed to load healing prefs from localStorage', e);
     return undefined;
@@ -166,6 +179,7 @@ function saveHealingPrefs(healingState) {
   if (typeof window === 'undefined' || !window.localStorage) return;
   try {
     const toSave = {
+      version: HEALING_CONFIG_VERSION,
       enabled: !!healingState.enabled,
       config: healingState.config || {},
     };

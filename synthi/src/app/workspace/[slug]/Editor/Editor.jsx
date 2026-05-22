@@ -59,6 +59,7 @@ import { takeLastChars, useCustomScrollbar } from './utils';
 import { SYNTHI_THEME } from './theme';
 import { useTheme } from '@/components/ThemeProvider';
 import { ConflictBanner } from './ConflictBanner';
+import SelectionContextMenu from './SelectionContextMenu';
 import MergeConflictEditor from '@/components/git/MergeConflictEditor';
 import UnsavedChangesDialog from '@/components/ui/UnsavedChangesDialog';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
@@ -188,6 +189,8 @@ const TerminalManagerDyn = dynamic(() => import('../../TerminalManager.jsx'), {
     ssr: false
 });
 
+const DOCK_LAYOUT_RESIZE_EVENT = 'synthi:dock-layout-resize';
+
 let servicesInitialized = false;
 let servicesInitPromise = null; // serialize concurrent init attempts
 
@@ -289,6 +292,7 @@ const EditorPanel = ({
     const [pendingClose, setPendingClose] = useState(null);
     const [lspStatus, setLspStatus] = useState('Idle');
     const [servicesReady, setServicesReady] = useState(false);
+    const editorViewportRef = useRef(null);
     const slug = useAppSelector(state => state.workspace.slug);
 
     // Refs for file cache data — used during async service init to pre-populate
@@ -393,6 +397,85 @@ const EditorPanel = ({
     const lspOpenedUrisRef = useRef(new Map()); // Map<clientKey, { uri, languageId }>
     // Track textDocumentSync capability reported by each language server
     const lspSyncCapRef = useRef(new Map()); // Map<clientKey, number> (1=Full, 2=Incremental)
+
+    useEffect(() => {
+        if (typeof window === 'undefined') return undefined;
+
+        let animationFrameId = null;
+        let settleTimerId = null;
+
+        const relayoutEditors = () => {
+            try { editorInstance?.layout?.(); } catch (_) { /* ignored */ }
+            try { diffEditorRef.current?.layout?.(); } catch (_) { /* ignored */ }
+        };
+
+        const handleDockLayoutResize = () => {
+            relayoutEditors();
+            if (animationFrameId != null) {
+                window.cancelAnimationFrame(animationFrameId);
+            }
+            if (settleTimerId != null) {
+                window.clearTimeout(settleTimerId);
+            }
+            animationFrameId = window.requestAnimationFrame(relayoutEditors);
+            settleTimerId = window.setTimeout(relayoutEditors, 280);
+        };
+
+        window.addEventListener(DOCK_LAYOUT_RESIZE_EVENT, handleDockLayoutResize);
+        return () => {
+            window.removeEventListener(DOCK_LAYOUT_RESIZE_EVENT, handleDockLayoutResize);
+            if (animationFrameId != null) {
+                window.cancelAnimationFrame(animationFrameId);
+            }
+            if (settleTimerId != null) {
+                window.clearTimeout(settleTimerId);
+            }
+        };
+    }, [editorInstance]);
+
+    useEffect(() => {
+        const viewport = editorViewportRef.current;
+        if (!viewport) return undefined;
+
+        let animationFrameId = null;
+        let settleTimerId = null;
+        let previousWidth = 0;
+        let previousHeight = 0;
+
+        const relayoutEditors = () => {
+            try { editorInstance?.layout?.(); } catch (_) { /* ignored */ }
+            try { diffEditorRef.current?.layout?.(); } catch (_) { /* ignored */ }
+        };
+
+        const observer = new ResizeObserver(([entry]) => {
+            const width = entry?.contentRect?.width ?? 0;
+            const height = entry?.contentRect?.height ?? 0;
+            if (width === previousWidth && height === previousHeight) return;
+            previousWidth = width;
+            previousHeight = height;
+
+            relayoutEditors();
+            if (animationFrameId != null) {
+                window.cancelAnimationFrame(animationFrameId);
+            }
+            if (settleTimerId != null) {
+                window.clearTimeout(settleTimerId);
+            }
+            animationFrameId = window.requestAnimationFrame(relayoutEditors);
+            settleTimerId = window.setTimeout(relayoutEditors, 280);
+        });
+
+        observer.observe(viewport);
+        return () => {
+            observer.disconnect();
+            if (animationFrameId != null) {
+                window.cancelAnimationFrame(animationFrameId);
+            }
+            if (settleTimerId != null) {
+                window.clearTimeout(settleTimerId);
+            }
+        };
+    }, [editorInstance, diffMode]);
 
     // Initialize Monaco Services ONCE — uses a module-level promise so that
     // concurrent callers (StrictMode double-fire, fast remounts) all wait for
@@ -3977,10 +4060,19 @@ const EditorPanel = ({
     const editorUI = (
                     <div className="h-full flex flex-col rounded-tl-lg rounded-tr-lg overflow-hidden" style={{ background: 'var(--bg-editor)' }}>
                         {/* Minimal Sleek Header - Synthi Brand Theme */}
-                        <div className="h-10 border-b-2 flex justify-between select-none shadow-sm" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)' }}>
+                        {/* Editor toolbar — the file-tab strip has been lifted
+                            into the TopNav (smart strip); this row now holds
+                            only the editor-level actions (collab avatars, Solo
+                            pill, save). The tabs DOM stays mounted (hidden) so
+                            scroll-into-view + middle-click + drag handlers
+                            remain wired for any code that still references them. */}
+                        <div className="hidden h-8 border-b justify-between select-none shadow-sm" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-app)' }}>
 
-                            {/* Breadcrumbs */}
-                                <div className="h-full flex min-w-0 relative group tabs-container-wrapper">
+                            {/* Breadcrumbs — visually hidden, the tab strip
+                                was lifted into the TopNav. We keep the DOM
+                                mounted because refs & handlers are still
+                                wired throughout the editor. */}
+                                <div className="hidden h-full flex min-w-0 relative group tabs-container-wrapper">
                                     {/* Tabs bar (sleek) */}
                                     <div
                                         ref={tabsContainerRef}
@@ -3994,11 +4086,18 @@ const EditorPanel = ({
                                                 left: tabIndicator.left,
                                                 width: tabIndicator.width,
                                                 opacity: tabIndicator.visible ? 1 : 0,
-                                                background: 'linear-gradient(90deg, var(--accent-primary), var(--accent-secondary), var(--accent-primary))',
-                                                boxShadow: '0 0 8px color-mix(in srgb, var(--accent-primary) 50%, transparent)',
-                                                transition: 'left 0.15s cubic-bezier(0.4, 0, 0.2, 1), width 0.15s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.1s ease',
+                                                backgroundImage: [
+                                                    'var(--brand-gradient-horizontal)',
+                                                    'linear-gradient(90deg, color-mix(in srgb, var(--accent-primary) 78%, transparent), color-mix(in srgb, var(--accent-primary) 78%, transparent))',
+                                                ].join(', '),
+                                                backgroundRepeat: 'no-repeat, no-repeat',
+                                                backgroundSize: `${hoveredTabPath ? '100% 100%' : '0% 100%'}, 100% 100%`,
+                                                boxShadow: hoveredTabPath
+                                                    ? '0 0 8px color-mix(in srgb, var(--brand-stop-3) 28%, transparent)'
+                                                    : '0 0 8px color-mix(in srgb, var(--accent-primary) 30%, transparent)',
+                                                transition: 'left 0.15s cubic-bezier(0.4, 0, 0.2, 1), width 0.15s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.1s ease, background-size 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s ease',
                                                 borderRadius: '2px 2px 0 0',
-                                                willChange: 'left, width',
+                                                willChange: 'left, width, background-size',
                                             }}
                                         />
                                         {openFiles && openFiles.length > 0 ? openFiles.map((file, idx) => {
@@ -4232,7 +4331,8 @@ const EditorPanel = ({
                                     <div className="absolute left-0 right-0 bottom-0 h-[3px] z-20 pointer-events-none">
                                         <div
                                             ref={scrollbarThumbRef}
-                                            className="absolute top-0 bottom-0 bg-gradient-to-r from-[#3a857450] to-[#4a9a8850] rounded-[3px] cursor-pointer pointer-events-auto opacity-0 transition-opacity duration-200 group-hover:opacity-100 [&.visible]:opacity-100"
+                                            className="absolute top-0 bottom-0 rounded-[3px] cursor-pointer pointer-events-auto opacity-0 transition-opacity duration-200 group-hover:opacity-100 [&.visible]:opacity-100"
+                                            style={{ background: 'linear-gradient(90deg, color-mix(in srgb, var(--brand-stop-3) 35%, transparent), color-mix(in srgb, var(--brand-stop-4) 35%, transparent))' }}
                                             onMouseDown={handleThumbMouseDown}
                                         />
                                     </div>
@@ -4413,7 +4513,7 @@ const EditorPanel = ({
                         )}
 
                         {/* Editor Container */}
-                        <div className="flex-1 overflow-hidden relative group">
+                        <div ref={editorViewportRef} className="flex-1 overflow-hidden relative group">
                             <ContextMenu>
                                 <ContextMenuTrigger asChild>
                                     <div className="h-full w-full">
@@ -4486,6 +4586,74 @@ const EditorPanel = ({
                                                 </div>
                                             </div>
                                         )}
+                                        {/* Branded empty state — replaces the bare Monaco buffer
+                                            when no file is open. Atmospheric: ambient gradient halo,
+                                            wordmark, three keyboard hints. */}
+                                        {!activeFile && (!openFiles || openFiles.length === 0) && !diffMode && (
+                                            <div
+                                                className="absolute inset-0 z-10 flex flex-col items-center justify-center pointer-events-none select-none"
+                                                style={{ background: 'var(--bg-editor)' }}
+                                            >
+                                                <div
+                                                    aria-hidden="true"
+                                                    className="absolute pointer-events-none"
+                                                    style={{
+                                                        width: 520,
+                                                        height: 520,
+                                                        borderRadius: '50%',
+                                                        background: 'radial-gradient(circle, color-mix(in srgb, var(--brand-stop-3) 10%, transparent) 0%, color-mix(in srgb, var(--brand-stop-1) 4%, transparent) 35%, transparent 70%)',
+                                                        filter: 'blur(28px)',
+                                                    }}
+                                                />
+                                                <div
+                                                    className="vt-brand-text relative text-[44px] font-semibold tracking-tight leading-none mb-3"
+                                                    style={{ letterSpacing: '-0.02em' }}
+                                                >
+                                                    VECTANT
+                                                </div>
+                                                <div className="relative text-[12px] mb-7" style={{ color: 'var(--text-muted)' }}>
+                                                    An editor that heals, thinks, and ships with you.
+                                                </div>
+                                                <div className="relative flex items-center gap-5 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                                             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                            Ctrl
+                                                        </kbd>
+                                                        <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                                             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                            P
+                                                        </kbd>
+                                                        <span className="ml-1">Quick open</span>
+                                                    </div>
+                                                    <span style={{ color: 'var(--text-dim)' }}>·</span>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                                             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                            Ctrl
+                                                        </kbd>
+                                                        <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                                             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                            K
+                                                        </kbd>
+                                                        <span className="ml-1">AI assist</span>
+                                                    </div>
+                                                    <span style={{ color: 'var(--text-dim)' }}>·</span>
+                                                    <div className="flex items-center gap-1.5">
+                                                        <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                                             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                            Ctrl
+                                                        </kbd>
+                                                        <kbd className="px-1.5 py-0.5 rounded text-[10px] font-mono"
+                                                             style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                                                            B
+                                                        </kbd>
+                                                        <span className="ml-1">Toggle tree</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+
                                         {/* Regular Editor — hidden when diff is active */}
                                         <div className="h-full w-full" style={{ display: diffMode ? 'none' : undefined }}>
                                             <Editor
@@ -4654,6 +4822,10 @@ const EditorPanel = ({
                                                     }, 100);
                                                 }}
                                             />
+                                            {/* Selection-only context menu. Opens ONLY when right-clicking
+                                                on a non-empty selection; right-clicks elsewhere fall through
+                                                to the wrapping Radix ContextMenu (Run File / Format / Save). */}
+                                            <SelectionContextMenu editor={editorInstance} />
                                         </div>
                                         </>)}
                                     </div>
