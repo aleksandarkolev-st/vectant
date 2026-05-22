@@ -3,9 +3,11 @@ import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
 import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw } from 'lucide-react';
+import { toast } from 'sonner';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { resolveCollabWsUrl } from '@/lib/collab-url';
+import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 import {
   TERMINAL_COLOR_KEYS,
   getTerminalOverrides,
@@ -101,6 +103,14 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
   // Live theme from ThemeProvider
   const { terminalTheme } = useTheme();
+
+  // Selection-mode context menu (only opens when right-click lands on a
+  // non-empty xterm selection — like the editor's SelectionContextMenu).
+  // Captured in a ref so the imperative DOM-level contextmenu listener
+  // inside init() can reach the latest openMenu.
+  const { menuState, openMenu, closeMenu } = useContextMenu();
+  const openMenuRef = useRef(openMenu);
+  openMenuRef.current = openMenu;
 
   const [state, setState] = useState('connecting'); // connecting | connected | error | closed
   const [shellInfo, setShellInfo] = useState('');
@@ -262,16 +272,27 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         }, 50);
       };
 
-      const handleContextMenu = async (e) => {
-        e.preventDefault();
-        if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
-          return; // View-only guest
-        }
+      // Track latest selection text. xterm can drop its selection on
+      // mousedown before our contextmenu handler runs, so we mirror the
+      // selection here and also snapshot it in a capture-phase mousedown
+      // handler before xterm sees the right-click. The contextmenu logic
+      // reads from this ref instead of calling term.getSelection() at
+      // event time.
+      const lastSelectionRef = { current: '' };
+      try {
+        term.onSelectionChange(() => {
+          try {
+            const s = term.getSelection() || '';
+            lastSelectionRef.current = s;
+          } catch {}
+        });
+      } catch {}
+
+      const pasteFromClipboard = async () => {
         try {
           const text = await navigator.clipboard.readText();
           if (!text) return;
           const hasEmbeddedNewline = text.replace(/\r?\n$/, '').includes('\n');
-          // Session auto-approve skips the confirmation modal entirely.
           if (hasEmbeddedNewline && !sessionAutoApprovePaste) {
             setPasteConfirm({ text, lineCount: text.split(/\r?\n/).length, charCount: text.length });
           } else {
@@ -279,13 +300,78 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             term.paste(text);
             clearSelectionAggressive();
           }
-        } catch (_) {
+        } catch {
           // Clipboard read can fail (permission denied, insecure context,
-          // user gesture lost). Stay silent — the user can fall back to
-          // Ctrl/Cmd+V.
+          // user gesture lost). Stay silent — fall back to Ctrl/Cmd+V.
         }
       };
-      containerRef.current.addEventListener('contextmenu', handleContextMenu);
+
+      const handleContextMenu = (e) => {
+        e.preventDefault();
+        if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
+          return; // View-only guest
+        }
+
+        // Did the user right-click on selected text? If yes → menu.
+        // If no (no selection) → keep existing right-click-to-paste.
+        let selectedText = '';
+        try { selectedText = term.getSelection?.() || ''; } catch {}
+        if (!selectedText) selectedText = lastSelectionRef.current || '';
+
+        if (!selectedText) {
+          pasteFromClipboard();
+          return;
+        }
+
+        e.stopPropagation();
+        openMenuRef.current(e, [
+          {
+            id: 'copy',
+            label: 'Copy',
+            shortcut: 'Ctrl+Shift+C',
+            action: () => {
+              navigator.clipboard.writeText(selectedText).then(
+                () => toast.success('Copied'),
+                () => toast.error('Copy failed'),
+              );
+              clearSelectionAggressive();
+            },
+          },
+          {
+            id: 'paste',
+            label: 'Paste',
+            shortcut: 'Ctrl+Shift+V',
+            dividerAfter: true,
+            action: pasteFromClipboard,
+          },
+          {
+            id: 'google',
+            label: 'Search on Google',
+            action: () => {
+              try { window.open(`https://www.google.com/search?q=${encodeURIComponent(selectedText)}`, '_blank', 'noopener,noreferrer'); } catch {}
+            },
+          },
+          {
+            id: 'so',
+            label: 'Search on Stack Overflow',
+            action: () => {
+              try { window.open(`https://stackoverflow.com/search?q=${encodeURIComponent(selectedText)}`, '_blank', 'noopener,noreferrer'); } catch {}
+            },
+          },
+        ]);
+      };
+
+      // Snapshot selection on right-mousedown in CAPTURE phase, before
+      // xterm's own mousedown handler can possibly clear it.
+      const handleRightMouseDownCapture = (e) => {
+        if (e.button !== 2) return;
+        try {
+          const s = term.getSelection?.() || '';
+          if (s) lastSelectionRef.current = s;
+        } catch {}
+      };
+      containerRef.current.addEventListener('mousedown', handleRightMouseDownCapture, true);
+      containerRef.current.addEventListener('contextmenu', handleContextMenu, true);
 
       // ── Connect WebSocket ─────────────────────────────────────────
       connectWS(term, fitAddon);
@@ -320,7 +406,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         resizeObserver.disconnect();
         window.removeEventListener('resize', scheduleResize);
         if (containerEl) {
-          containerEl.removeEventListener('contextmenu', handleContextMenu);
+          containerEl.removeEventListener('contextmenu', handleContextMenu, true);
+          containerEl.removeEventListener('mousedown', handleRightMouseDownCapture, true);
         }
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         if (webglAddon) try { webglAddon.dispose(); } catch (_) {}
@@ -587,6 +674,8 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           onClose={() => setColorPickerOpen(false)}
         />
       )}
+
+      {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
 
       {/* Session: View-only terminal overlay for guests without canTerminal */}
       {isGuest && !canTerminal && state === 'connected' && (
