@@ -71,6 +71,23 @@ export default function SelectionContextMenu({ editor }) {
         try { editor.trigger?.('selection-context-menu', cmdId, null); } catch {}
       };
 
+      const askAI = () => {
+        let language = '';
+        let filePath = '';
+        try {
+          const model = editor.getModel?.();
+          language = model?.getLanguageId?.() || '';
+          filePath = model?.uri?.path || '';
+        } catch {}
+        const startLine = sel.startLineNumber ?? null;
+        const endLine = sel.endLineNumber ?? null;
+        try {
+          window.dispatchEvent(new CustomEvent('synthi:ask-ai', {
+            detail: { text: selectedText, language, filePath, startLine, endLine },
+          }));
+        } catch {}
+      };
+
       openMenu(e, [
         { id: 'copy',  label: 'Copy',  shortcut: 'Ctrl+C', action: copy },
         { id: 'cut',   label: 'Cut',   shortcut: 'Ctrl+X', action: cut },
@@ -81,10 +98,10 @@ export default function SelectionContextMenu({ editor }) {
           action: () => openInTab((s) => `https://www.google.com/search?q=${encodeURIComponent(s)}`),
         },
         {
-          id: 'so',
-          label: 'Search on Stack Overflow',
+          id: 'ask-ai',
+          label: 'Ask AI',
           dividerAfter: true,
-          action: () => openInTab((s) => `https://stackoverflow.com/search?q=${encodeURIComponent(s)}`),
+          action: askAI,
         },
         { id: 'format', label: 'Format Selection', action: () => trigger('editor.action.formatSelection') },
         { id: 'rename', label: 'Rename Symbol', shortcut: 'F2', action: () => trigger('editor.action.rename') },

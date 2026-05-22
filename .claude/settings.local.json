@@ -120,6 +120,8 @@
       "Bash(git -C \"C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade\" diff HEAD~3 -- synthi/src/app/workspace/TerminalPane.jsx)",
       "Bash(git -C \"C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade\" grep -n \"contextmenu\" -- \"synthi/src/app/workspace/TerminalManager.jsx\")",
       "Bash(git *)"
+      "Bash(git *)",
+      "Bash(node *)"
     ]
   }
 }

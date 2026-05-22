@@ -129,7 +129,16 @@ export function generateDerivedVariables(ui) {
   if (!ui) return vars;
 
   const p = ui.accentPrimary || '#6c6885';
-  const att = ui.attentionPurple || '#b545ff';
+  const as = ui.accentSecondary || p;
+  const at = ui.accentTertiary || p;
+
+  // ── Attention accent ──
+  // Historically called "attention-purple" because the original Vectant
+  // Dark used purple. We keep the variable name for compatibility but
+  // derive it from the active theme's accent so every theme gets its
+  // own signature colour instead of a fixed purple. A theme that wants
+  // to preserve its own brand purple can still set `ui.attentionPurple`.
+  const att = ui.attentionPurple || p;
   vars.set('--attention-purple', att);
   const attRgb = hexToRgb(att);
   if (attRgb) {
@@ -140,15 +149,17 @@ export function generateDerivedVariables(ui) {
     );
   }
 
-  // ── Vectant brand gradient stops ──
-  // Brand identity is intentionally independent of the active theme:
-  // the gradient comes from the Vectant logo. A theme may override
-  // these via `brandStops: { p1, p2, p3, p4 }` if needed.
+  // ── Brand gradient stops ──
+  // Default to the theme's accent palette so the brand gradient (used
+  // by the bottom status bar, primary CTAs, etc.) follows the active
+  // theme. A theme can pin its own multi-stop identity via
+  // `ui.brandStops: { p1, p2, p3, p4 }` — Vectant Dark does this to
+  // keep its pink → red → purple → blue brand gradient.
   const brand = ui.brandStops || {};
-  const b1 = brand.p1 || '#ff3d8a';
-  const b2 = brand.p2 || '#ff3737';
-  const b3 = brand.p3 || '#a23dff';
-  const b4 = brand.p4 || '#3d6dff';
+  const b1 = brand.p1 || as;
+  const b2 = brand.p2 || p;
+  const b3 = brand.p3 || at;
+  const b4 = brand.p4 || p;
   vars.set('--brand-stop-1', b1);
   vars.set('--brand-stop-2', b2);
   vars.set('--brand-stop-3', b3);
