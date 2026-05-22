@@ -160,6 +160,14 @@ CameraRays(HIPRTRenderData render_data) {
         manifest={"module_files": {"device": ".synthi/generated/gpu/device.hip"}},
     )
 
+    assert report["mappingStatus"] == "mapped"
+    assert report["deviceMappings"][0]["sourcePath"] == "src/Device/kernels/CameraRays.h"
+    assert report["deviceMappings"][0]["symbol"] == "CameraRays"
+    assert (
+        report["deviceMappings"][0]["mappingConfidence"]
+        == "generated_include_bridge_same_source"
+    )
+    assert report["deviceMappings"][0]["generatedMappingMode"] == "source_include_bridge"
     assert report["kernelSignatureHashes"]["CameraRays"].startswith("0x")
     assert report["deviceIncludeGraph"]["generatedDeviceIncludes"] == [
         "src/Device/kernels/CameraRays.h"

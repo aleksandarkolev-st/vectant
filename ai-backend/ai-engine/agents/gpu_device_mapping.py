@@ -78,10 +78,29 @@ def build_device_mapping_report(
 
     mappings = []
     unmapped = []
+    generated_include_paths = set(generated_included_sources)
     for source_path, source in sorted(source_device_files.items()):
         source_regions = extract_kernel_regions(source)
         for name, source_region in sorted(source_regions.items()):
             generated_region = generated_regions.get(name)
+            if not generated_region and source_path in generated_include_paths:
+                mappings.append(
+                    {
+                        "kind": "kernel",
+                        "symbol": name,
+                        "sourcePath": source_path,
+                        "generatedRole": "device",
+                        "generatedPath": generated_path,
+                        "mappingConfidence": "generated_include_bridge_same_source",
+                        "signatureHash": source_region.signature_hash,
+                        "sourceBodyRange": {
+                            "startByte": source_region.body_start,
+                            "endByte": source_region.body_end,
+                        },
+                        "generatedMappingMode": "source_include_bridge",
+                    }
+                )
+                continue
             if not generated_region:
                 unmapped.append({"sourcePath": source_path, "symbol": name, "reason": "generated_kernel_missing"})
                 continue
