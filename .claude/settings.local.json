@@ -106,7 +106,12 @@
       "Bash(npx --prefix synthi babel synthi/src/components/ThemePicker.jsx --presets=@babel/preset-env,@babel/preset-react -o /dev/null)",
       "PowerShell(Get-Process *)"
       "PowerShell(Get-Process *)",
-      "Bash(git *)"
+      "PowerShell(Resolve-DnsName *)",
+      "PowerShell(Get-NetIPConfiguration *)",
+      "PowerShell(Out-Null *)",
+      "PowerShell(Get-Service *)",
+      "Bash(git *)",
+      "Bash(node *)"
     ]
   }
 }
