@@ -15,6 +15,7 @@ _GLOBAL_KERNEL_RE = re.compile(
     r'(?:extern\s+"C"\s+)?(?:'
     r'__global__\s+(?:void\s+)?'
     r'|GLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+(?:__launch_bounds__\s*\([^)]*\)\s*)?'
+    r'(?:(?:inline|__forceinline__|static|constexpr)\s+)*'
     r')(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(',
     re.MULTILINE,
 )
@@ -179,8 +180,8 @@ def extract_kernel_regions(source: str) -> Dict[str, KernelRegion]:
             break
         name = match.group("name")
         params, after_params = _read_balanced(masked, match.end() - 1, "(", ")")
-        body_open = _find_next_non_ws(masked, after_params)
-        if body_open is None or body_open >= len(masked) or masked[body_open] != "{":
+        body_open = _find_kernel_body_open(masked, after_params)
+        if body_open is None:
             cursor = max(after_params, match.end())
             continue
         _body, body_close = _read_balanced(masked, body_open, "{", "}")
@@ -331,6 +332,28 @@ def _find_next_non_ws(source: str, index: int) -> Optional[int]:
             return i
         i += 1
     return None
+
+
+def _find_kernel_body_open(source: str, after_params: int) -> Optional[int]:
+    """Find a kernel body after signatures, including preprocessor alternates."""
+
+    next_token = _find_next_non_ws(source, after_params)
+    if next_token is None:
+        return None
+    if source[next_token] == "{":
+        return next_token
+
+    search_limit = min(len(source), after_params + 4096)
+    body_open = source.find("{", after_params, search_limit)
+    if body_open < 0:
+        return None
+
+    between = source[after_params:body_open]
+    if ";" in between:
+        return None
+    if "}" in between:
+        return None
+    return body_open
 
 
 def _read_balanced(source: str, open_index: int, open_ch: str, close_ch: str) -> tuple[str, int]:

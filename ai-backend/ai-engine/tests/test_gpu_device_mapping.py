@@ -178,6 +178,41 @@ CameraRays(HIPRTRenderData render_data) {
     )
 
 
+def test_build_device_mapping_report_handles_preprocessor_split_kernel_signature():
+    source = {
+        "src/Device/kernels/CameraRays.h": """
+#ifdef __KERNELCC__
+GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData render_data)
+#else
+GLOBAL_KERNEL_SIGNATURE(void) inline CameraRays(HIPRTRenderData render_data, int x, int y)
+#endif
+{
+  render_data.random_number += 1;
+}
+""",
+    }
+    generated = {
+        ".synthi/generated/gpu/device.hip": """
+#define __KERNELCC__ 1
+#include "src/Device/kernels/CameraRays.h"
+"""
+    }
+
+    report = build_device_mapping_report(
+        source_files=source,
+        generated_files=generated,
+        manifest={"module_files": {"device": ".synthi/generated/gpu/device.hip"}},
+    )
+
+    assert report["mappingStatus"] == "mapped"
+    assert report["deviceMappings"][0]["sourcePath"] == "src/Device/kernels/CameraRays.h"
+    assert report["deviceMappings"][0]["symbol"] == "CameraRays"
+    assert report["deviceMappings"][0]["generatedMappingMode"] == "source_include_bridge"
+    assert report["sourceBaselineContents"]["src/Device/kernels/CameraRays.h"].lstrip().startswith(
+        "#ifdef"
+    )
+
+
 def test_build_device_mapping_report_ignores_commented_kernel_examples():
     report = build_device_mapping_report(
         source_files={
