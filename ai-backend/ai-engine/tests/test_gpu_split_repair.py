@@ -1,5 +1,183 @@
-from agents.gpu_split_repair import repair_split_artifacts
+from agents.gpu_split_repair import repair_split_artifacts, sanitize_generated_heal_output
 from verifier_gpu import verify_split_output
+
+
+def test_heal_sanitizer_removes_missing_project_toolkit_include_and_calls():
+    source = (
+        "#include <GL/gl.h>\n"
+        '#include "imgui/imgui.h"\n'
+        '#include "shared.h"\n'
+        'extern "C" void gui_on_render(void* state_ptr) {\n'
+        "    glBegin(GL_TRIANGLES);\n"
+        "    glEnd();\n"
+        "    ImGui::NewFrame();\n"
+        '    ImGui::Begin("Panel");\n'
+        '    ImGui::Text("Frame");\n'
+        "    ImGui::End();\n"
+        "}\n"
+    )
+    repaired, changed = sanitize_generated_heal_output(
+        module="gui",
+        source=source,
+        errors='fatal error: "imgui/imgui.h" file not found',
+    )
+
+    assert changed is True
+    assert '#include "imgui/imgui.h"' not in repaired
+    assert "ImGui::" not in repaired
+    assert "#include <GL/gl.h>" in repaired
+    assert '#include "shared.h"' in repaired
+    assert "glBegin(GL_TRIANGLES);" in repaired
+
+
+def test_repair_materializes_visible_opengl_render_for_glfw_source():
+    source_files = {
+        "src/main.cpp": (
+            "#include <GLFW/glfw3.h>\n"
+            "#include <GL/gl.h>\n"
+            "void draw_frame() { glClear(GL_COLOR_BUFFER_BIT); }"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { (void)state_ptr; }'
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void noop() {}',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "gui_render_no_effect" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.gui_render_effect" in report["repairRules"]
+    assert "#include <GL/gl.h>" in repaired["gui.cpp"]
+    assert "glBegin(GL_QUADS)" in repaired["gui.cpp"]
+    assert "glVertex2f" in repaired["gui.cpp"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule == "gui_render_no_effect" for v in after.violations)
+    assert not any(v.rule == "gui_render_too_sparse" for v in after.violations)
+
+
+def test_repair_replaces_project_ui_toolkit_render_with_self_contained_opengl():
+    source_files = {
+        "src/main.cpp": (
+            "#include <GLFW/glfw3.h>\n"
+            "void draw_frame() { glClear(GL_COLOR_BUFFER_BIT); }"
+        ),
+        "thirdparties/imgui/imgui.h": "namespace ImGui { void Begin(const char*); void Text(const char*); void End(); }",
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame_count; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include <GLFW/glfw3.h>\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "(void)state_ptr; ImGui::Begin(\"Stats\"); ImGui::Text(\"Frame\"); ImGui::End(); }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void noop() {}',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "gui_render_no_effect" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert "repair.gui_render_effect" in report["repairRules"]
+    assert "ImGui::" not in repaired["gui.cpp"]
+    assert "glBegin(GL_QUADS)" in repaired["gui.cpp"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule == "gui_render_no_effect" for v in after.violations)
+
+
+def test_repair_uses_generated_opengl_context_when_source_context_is_target_scoped():
+    source_files = {
+        "src/Device/kernels/CameraRays.h": 'extern "C" __global__ void CameraRays() {}',
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int width; int height; void* h_output; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            '#include <GL/gl.h>\n'
+            '#include "imgui/imgui.h"\n'
+            '#include "shared.h"\n'
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void* state_ptr) { '
+            "AppState* state = reinterpret_cast<AppState*>(state_ptr); "
+            "glBindTexture(GL_TEXTURE_2D, 0); "
+            "ImGui::Begin(\"Preview\"); ImGui::Image(state->h_output, ImVec2(state->width, state->height)); ImGui::End(); }"
+        ),
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void CameraRays() {}',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "gui_render_no_effect" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert "repair.generated_project_includes" in report["repairRules"]
+    assert "repair.gui_render_effect" in report["repairRules"]
+    assert "imgui" not in repaired["gui.cpp"]
+    assert "ImGui::" not in repaired["gui.cpp"]
+    assert "glBegin(GL_QUADS)" in repaired["gui.cpp"]
 
 
 def test_repair_preserves_source_device_constant_declaration():
@@ -53,6 +231,535 @@ def test_repair_preserves_source_device_constant_declaration():
         source_files=source_files,
     )
     assert not any(v.rule == "source_device_constant_declaration_not_preserved" for v in after.violations)
+
+
+def test_repair_bridges_macro_kernel_device_headers_without_stubbing():
+    source_files = {
+        "src/Device/includes/FixIntellisense.h": (
+            "#pragma once\n"
+            "#ifdef __KERNELCC__\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) extern \"C\" returnType __global__\n"
+            "#else\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) returnType\n"
+            "#endif\n"
+        ),
+        "src/Device/kernels/CameraRays.h": (
+            "#pragma once\n"
+            '#include "Device/includes/FixIntellisense.h"\n'
+            "constexpr int kCameraSeedOffset = 3;\n"
+            "#ifdef __KERNELCC__\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData render_data)\n"
+            "#else\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) inline CameraRays(HIPRTRenderData render_data, int x, int y)\n"
+            "#endif\n"
+            "{ render_data.random_number += kCameraSeedOffset; }\n"
+        ),
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": 'extern "C" __global__ void CameraRays(void* data) {}',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "source_device_kernel_signature_not_preserved" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.source_device_include_bridge" in report["repairRules"]
+    assert '#include "src/Device/kernels/CameraRays.h"' in repaired["device.hip"]
+    assert "#include <hip/hip_runtime.h>" in repaired["device.hip"]
+    assert "__KERNELCC__" in repaired["device.hip"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule.startswith("source_device_kernel_") for v in after.violations)
+    assert not any(v.rule.startswith("source_device_identifier_") for v in after.violations)
+
+
+def test_repair_bridge_derives_device_prelude_and_guarded_option_defaults():
+    source_files = {
+        "thirdparties/HIPRT-Fork/hiprt/impl/hiprt_device_impl.h": (
+            "#pragma once\n#include <hiprt/impl/Math.h>\n#include <hiprt/hiprt_device.h>\n"
+        ),
+        "src/HostDeviceCommon/KernelOptions/Common.h": (
+            "#pragma once\n#define KERNEL_OPTION_TRUE 1\n#define KERNEL_OPTION_FALSE 0\n"
+        ),
+        "src/HostDeviceCommon/KernelOptions/KernelOptions.h": (
+            "#pragma once\n"
+            '#include "HostDeviceCommon/KernelOptions/Common.h"\n'
+            "#ifndef __KERNELCC__\n"
+            "#define __shared__\n"
+            "#define __restrict__\n"
+            "#define FeatureToggle KERNEL_OPTION_TRUE\n"
+            "#define KernelBlockWidthHeight 8\n"
+            "#define KernelWorkgroupThreadCount (KernelBlockWidthHeight * KernelBlockWidthHeight)\n"
+            "#endif\n"
+        ),
+        "src/HostDeviceCommon/Math.h": (
+            "#pragma once\n"
+            "#if defined(__KERNELCC__)\n"
+            "#include <hiprt/hiprt_device.h>\n"
+            "#endif\n"
+        ),
+        "src/Device/includes/FixIntellisense.h": (
+            "#pragma once\n"
+            "#ifdef __KERNELCC__\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) extern \"C\" returnType __global__\n"
+            "#else\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) returnType\n"
+            "#endif\n"
+        ),
+        "src/Device/kernels/CameraRays.h": (
+            "#pragma once\n"
+            '#include "HostDeviceCommon/Math.h"\n'
+            '#include "HostDeviceCommon/KernelOptions/KernelOptions.h"\n'
+            '#include "Device/includes/FixIntellisense.h"\n'
+            "#if RuntimeCompileOption == KERNEL_OPTION_TRUE\n"
+            "#define RuntimeCompileOptionBranch 1\n"
+            "#else\n"
+            "#define RuntimeCompileOptionBranch 0\n"
+            "#endif\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) CameraRays(int* out)\n"
+            "{ if (FeatureToggle == KERNEL_OPTION_TRUE && RuntimeCompileOptionBranch) *out = KernelWorkgroupThreadCount; }\n"
+        ),
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": 'extern "C" __global__ void CameraRays(void* data) {}',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "source_device_kernel_signature_not_preserved" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    device = repaired["device.hip"]
+    assert "repair.source_device_include_bridge" in report["repairRules"]
+    assert "#include <hiprt/impl/hiprt_device_impl.h>" in device
+    assert "// Synthi source-derived device macro defaults" in device
+    assert "#ifndef __shared__" not in device
+    assert "#define __restrict__" not in device
+    assert "#ifndef FeatureToggle\n#define FeatureToggle KERNEL_OPTION_TRUE\n#endif" in device
+    assert "#ifndef KernelWorkgroupThreadCount\n#define KernelWorkgroupThreadCount (KernelBlockWidthHeight * KernelBlockWidthHeight)\n#endif" in device
+    assert "#ifndef RuntimeCompileOption\n#define RuntimeCompileOption KERNEL_OPTION_FALSE\n#endif" in device
+    assert device.index("#ifndef RuntimeCompileOption") < device.index(
+        '#include "src/Device/kernels/CameraRays.h"'
+    )
+    assert device.index("#include <hiprt/impl/hiprt_device_impl.h>") < device.index(
+        '#include "src/Device/kernels/CameraRays.h"'
+    )
+
+
+def test_repair_bridge_includes_source_owned_device_callback_definitions():
+    source_files = {
+        "thirdparties/HIPRT-Fork/hiprt/impl/hiprt_device_impl.h": (
+            "#pragma once\n"
+            "HIPRT_DEVICE bool filterFunc(int value);\n"
+            "HIPRT_DEVICE bool traverse(int value) { return filterFunc(value); }\n"
+        ),
+        "src/device_callbacks.h": (
+            "#pragma once\n"
+            "#include <hiprt/impl/hiprt_device_impl.h>\n"
+            "HIPRT_DEVICE bool filterFunc(int value) { return value > 0; }\n"
+        ),
+        "src/Device/includes/FixIntellisense.h": (
+            "#pragma once\n"
+            "#ifdef __KERNELCC__\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) extern \"C\" returnType __global__\n"
+            "#else\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) returnType\n"
+            "#endif\n"
+        ),
+        "src/Device/kernels/CameraRays.h": (
+            "#pragma once\n"
+            "#include <hiprt/impl/hiprt_device_impl.h>\n"
+            '#include "Device/includes/FixIntellisense.h"\n'
+            "GLOBAL_KERNEL_SIGNATURE(void) CameraRays(int* out)\n"
+            "{ if (traverse(1)) *out = 1; }\n"
+        ),
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": 'extern "C" __global__ void CameraRays(void* data) {}',
+    }
+
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    device = repaired["device.hip"]
+    assert "repair.source_device_include_bridge" in report["repairRules"]
+    assert '#include "src/device_callbacks.h"' in device
+    assert "#include <hiprt/impl/hiprt_device_impl.h>" not in device
+    assert device.index('#include "src/device_callbacks.h"') < device.index(
+        '#include "src/Device/kernels/CameraRays.h"'
+    )
+
+
+def test_repair_bridge_does_not_duplicate_transitively_included_source_constants():
+    source_files = {
+        "src/HostDeviceCommon/Math.h": (
+            "#pragma once\n"
+            "__device__ inline int helper() { return 1; }\n"
+            "constexpr float kNestedConstant = 2.0f;\n"
+        ),
+        "src/Device/includes/FixIntellisense.h": (
+            "#pragma once\n"
+            "#ifdef __KERNELCC__\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) extern \"C\" returnType __global__\n"
+            "#else\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) returnType\n"
+            "#endif\n"
+        ),
+        "src/Device/kernels/CameraRays.h": (
+            "#pragma once\n"
+            '#include "HostDeviceCommon/Math.h"\n'
+            '#include "Device/includes/FixIntellisense.h"\n'
+            "GLOBAL_KERNEL_SIGNATURE(void) CameraRays(int* out) { *out = (int)kNestedConstant + helper(); }\n"
+        ),
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": 'extern "C" __global__ void CameraRays(void* data) {}',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    repaired, _report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    device = repaired["device.hip"]
+    assert '#include "src/Device/kernels/CameraRays.h"' in device
+    assert "kNestedConstant" not in device
+
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule == "source_device_constant_declaration_not_preserved" for v in after.violations)
+    assert not any(v.rule == "source_device_identifier_not_preserved" for v in after.violations)
+
+
+def test_repair_removes_generated_gpu_sdk_vector_type_redeclarations():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "#include <hip/hip_runtime.h>\n"
+            "struct float3 { float x, y, z; };\n"
+            "struct int2 { int x, y; };\n"
+            "struct AppState { float3 p; int2 size; };"
+        ),
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": "extern \"C\" __global__ void noop() {}",
+    }
+    verification = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files={})
+    assert any(v.rule == "generated_role_redeclares_gpu_sdk_type" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files={},
+        verification=verification,
+    )
+
+    assert "repair.gpu_sdk_type_redeclarations" in report["repairRules"]
+    assert "struct float3" not in repaired["shared.h"]
+    assert "struct int2" not in repaired["shared.h"]
+    assert "float3 p" in repaired["shared.h"]
+    assert "int2 size" in repaired["shared.h"]
+    after = verify_split_output(files=repaired, manifest_arch=["gfx1201"], source_files={})
+    assert not any(v.rule == "generated_role_redeclares_gpu_sdk_type" for v in after.violations)
+
+
+def test_repair_strips_verifier_rejected_project_includes():
+    source_files = {
+        "thirdparties/imgui/imgui.h": "namespace ImGui { void Text(const char*); }",
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": '#include <imgui.h>\nextern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* core_state = 0; void (*gui_render)(void*) = 0; if (gui_render) gui_render(core_state); return 0; }",
+        "device.hip": 'extern "C" __global__ void step(int) {}',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "generated_role_includes_project_header" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.generated_project_includes" in report["repairRules"]
+    assert "imgui.h" not in repaired["gui.cpp"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule == "generated_role_includes_project_header" for v in after.violations)
+
+
+def test_repair_removes_unbacked_launches_when_source_device_headers_are_authority():
+    source_files = {
+        "src/Device/includes/FixIntellisense.h": (
+            "#pragma once\n"
+            "#ifdef __KERNELCC__\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) extern \"C\" returnType __global__\n"
+            "#else\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) returnType\n"
+            "#endif\n"
+        ),
+        "src/Device/kernels/CameraRays.h": (
+            "#pragma once\n"
+            '#include "Device/includes/FixIntellisense.h"\n'
+            "struct HIPRTRenderData { unsigned int random_number; };\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData render_data)\n"
+            "{ render_data.random_number += 3u; }\n"
+        ),
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'synthi_gpu_launch(nullptr, "init_buffers", 1, 64, 0, nullptr, { &frame }); '
+            'bool launched = synthi_gpu_launch(nullptr, "my_function", 1, 64, 0, nullptr, { &frame }); '
+            "if (launched) { ++frame; } }\n"
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": 'extern "C" __global__ void CameraRays(void* data) {}',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "source_device_kernel_signature_not_preserved" for v in verification.violations)
+    assert {
+        v.offending_symbol
+        for v in verification.violations
+        if v.rule == "launch_site_unresolved"
+    } == {"init_buffers", "my_function"}
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.source_device_include_bridge" in report["repairRules"]
+    assert "repair.unresolved_generated_launches" in report["repairRules"]
+    assert 'synthi_gpu_launch(nullptr, "init_buffers"' not in repaired["core.cpp"]
+    assert 'synthi_gpu_launch(nullptr, "my_function"' not in repaired["core.cpp"]
+    assert "bool launched = false;" in repaired["core.cpp"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule == "launch_site_unresolved" for v in after.violations)
+    assert not any(v.rule.startswith("source_device_kernel_") for v in after.violations)
+
+
+def test_repair_rechecks_launches_after_source_device_bridge_replaces_fake_kernel():
+    source_files = {
+        "src/Device/includes/FixIntellisense.h": (
+            "#pragma once\n"
+            "#ifdef __KERNELCC__\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) extern \"C\" returnType __global__\n"
+            "#else\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) returnType\n"
+            "#endif\n"
+        ),
+        "src/Device/kernels/CameraRays.h": (
+            "#pragma once\n"
+            '#include "Device/includes/FixIntellisense.h"\n'
+            "struct HIPRTRenderData { unsigned int random_number; };\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData render_data)\n"
+            "{ render_data.random_number += 3u; }\n"
+        ),
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'synthi_gpu_launch(nullptr, "my_function", 1, 64, 0, nullptr, { &frame }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": (
+            'extern "C" __global__ void CameraRays(void* data) {}\n'
+            'extern "C" __global__ void my_function(int* frame) { *frame += 1; }'
+        ),
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "source_device_kernel_signature_not_preserved" for v in verification.violations)
+    assert not any(v.rule == "launch_site_unresolved" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert "repair.source_device_include_bridge" in report["repairRules"]
+    assert "repair.unresolved_generated_launches" in report["repairRules"]
+    assert "my_function" not in repaired["core.cpp"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule == "launch_site_unresolved" for v in after.violations)
+    assert not any(v.rule.startswith("source_device_kernel_") for v in after.violations)
+
+
+def test_repair_replaces_placeholder_host_runner_with_real_gui_routing():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": 'extern "C" __global__ void noop() {}',
+    }
+    verification = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "host_runner_omits_gui_module" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files={},
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.host_runner_gui_routing" in report["repairRules"]
+    assert 'dlsym(libgui, "gui_on_render")' in repaired["host_runner.cpp"]
+    assert "gui_render(core_state);" in repaired["host_runner.cpp"]
+    after = verify_split_output(files=repaired, manifest_arch=["gfx1201"])
+    assert not any(v.rule == "host_runner_omits_gui_module" for v in after.violations)
 
 
 def test_repair_restores_source_kernel_semantics_from_device_headers():
@@ -286,7 +993,6 @@ def test_repair_inserts_missing_one_time_init_kernel_before_update():
     }
     verification = verify_split_output(files=files, manifest_arch=["gfx1201"])
     assert any(v.rule == "device_buffers_not_initialized" for v in verification.violations)
-    assert any(v.rule == "device_init_kernel_incomplete" for v in verification.violations)
 
     repaired, report = repair_split_artifacts(
         files=files,
@@ -306,6 +1012,56 @@ def test_repair_inserts_missing_one_time_init_kernel_before_update():
     rules = {v.rule for v in after.violations}
     assert "device_buffers_not_initialized" not in rules
     assert "device_init_kernel_incomplete" not in rules
+
+
+def test_repair_init_kernel_uses_source_included_device_signatures():
+    source_files = {
+        "src/kernels/CopyValues.h": (
+            'extern "C" __global__ void copy_values(const float* values, float* output, int n) { '
+            'int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < n) output[i] = values[i]; }'
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* d_values; float* d_output; int n; };',
+        "core.cpp": (
+            '#include <hip/hip_runtime.h>\n'
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; '
+            'hipMalloc(&s.d_values, 4096); hipMalloc(&s.d_output, 4096); return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { auto* s = (AppState*)state; '
+            'synthi_gpu_launch(nullptr, "copy_values", 1, 256, 0, nullptr, { &s->d_values, &s->d_output, &s->n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": '#include "src/kernels/CopyValues.h"\n',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "device_buffers_not_initialized" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.init_kernel_buffers" in report["repairRules"]
+    assert '#include "src/kernels/CopyValues.h"' in repaired["device.hip"]
+    assert 'extern "C" __global__ void synthi_hmr_init_buffers' in repaired["device.hip"]
+    assert "synthi_hmr_device_initialized" in repaired["core.cpp"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule == "device_buffers_not_initialized" for v in after.violations)
 
 
 def test_repair_recomposes_aggregate_launch_param_from_flat_host_args():

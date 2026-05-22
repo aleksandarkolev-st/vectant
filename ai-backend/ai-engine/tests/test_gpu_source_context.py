@@ -61,6 +61,81 @@ def test_source_context_treats_macro_wrapped_runtime_kernels_as_gpu_context():
     assert "imgui_glfw" in report["graphicsBackend"]["detected"]
 
 
+def test_source_context_does_not_let_large_raw_metadata_evict_kernel_headers():
+    files = {
+        "CMakeLists.txt": "add_executable(HIPRTPathTracer src/main.cpp src/Device/kernels/CameraRays.h)",
+        "src/main.cpp": "int main(){ return 0; }",
+        "src/Device/kernels/CameraRays.h": """
+        GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)
+        CameraRays(HIPRTRenderData render_data) {
+          render_data.random_number += 1;
+        }
+        """,
+        "compile_commands.json": "[" + (" " * 6000) + "]",
+        ".cmake/api/v1/reply/codemodel-v2-release.json": """
+        {
+          "kind": "codemodel",
+          "configurations": [
+            {
+              "name": "Release",
+              "targets": [
+                {"name": "HIPRTPathTracer", "id": "HIPRTPathTracer::@real", "jsonFile": "target-HIPRTPathTracer-Release.json"}
+              ]
+            }
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-HIPRTPathTracer-Release.json": """
+        {
+          "name": "HIPRTPathTracer",
+          "id": "HIPRTPathTracer::@real",
+          "type": "EXECUTABLE",
+          "sources": [
+            {"path": "src/main.cpp"},
+            {"path": "src/Device/kernels/CameraRays.h"}
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-large-helper-Release.json": "{" + '"padding":"' + ("x" * 12000) + '"}',
+    }
+
+    prompt, report = build_project_source_context(
+        files,
+        focus="src/main.cpp",
+        max_chars=9000,
+        per_file_max_chars=4000,
+    )
+    included_paths = {item["path"] for item in report["included"]}
+    dropped = {item["path"]: item.get("dropReason") for item in report["dropped"]}
+
+    assert "src/Device/kernels/CameraRays.h" in included_paths
+    assert "GLOBAL_KERNEL_SIGNATURE" in prompt
+    assert dropped["compile_commands.json"] == "prompt_budget_exclusion"
+    included_order = [item["path"] for item in report["included"]]
+    if ".cmake/api/v1/reply/target-large-helper-Release.json" in included_order:
+        assert included_order.index("src/Device/kernels/CameraRays.h") < included_order.index(
+            ".cmake/api/v1/reply/target-large-helper-Release.json"
+        )
+    assert report["deterministicContextComplete"] is True
+
+
+def test_source_context_does_not_promote_commented_kernel_examples():
+    files = {
+        "src/main.cpp": "int main(){ return 0; }",
+        "src/Device/includes/FixIntellisense.h": """
+        // extern "C" void __global__ my_function(...)
+        /* GLOBAL_KERNEL_SIGNATURE(void) FakeKernel(RenderData data) {} */
+        """,
+    }
+
+    _prompt, report = build_project_source_context(files, focus="src/main.cpp")
+    reasons = {item["path"]: item["includeReason"] for item in report["included"]}
+    device_tus = {item["path"] for item in report["deviceTuTopology"]["deviceTranslationUnits"]}
+
+    assert reasons["src/Device/includes/FixIntellisense.h"] != "kernel_declaration"
+    assert "src/Device/includes/FixIntellisense.h" not in device_tus
+
+
 def test_source_context_selects_compile_command_for_focus():
     files = {
         "src/app/main.cpp": "int main(){ return 0; }",

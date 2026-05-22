@@ -426,6 +426,182 @@ def test_split_rejects_generated_role_including_project_header():
     )
 
 
+def test_split_allows_device_role_including_target_source_device_header():
+    source_files = {
+        "src/Device/kernels/CameraRays.h": (
+            "#pragma once\n"
+            "constexpr int kCameraSeedOffset = 3;\n"
+            "#ifdef __KERNELCC__\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData render_data)\n"
+            "#else\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) inline CameraRays(HIPRTRenderData render_data, int x, int y)\n"
+            "#endif\n"
+            "{ render_data.random_number += kCameraSeedOffset; }\n"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": '#define __KERNELCC__ 1\n#include "src/Device/kernels/CameraRays.h"\n',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+
+    disallowed = {
+        "generated_role_includes_project_header",
+        "source_device_kernel_not_preserved",
+        "source_device_kernel_signature_not_preserved",
+        "source_device_kernel_body_not_preserved",
+        "source_device_constant_declaration_not_preserved",
+        "source_device_identifier_not_preserved",
+        "source_device_identifier_not_used",
+    }
+    assert not any(v.rule in disallowed for v in r.violations), r.violations
+
+
+def test_split_rejects_non_device_role_including_target_source_device_header():
+    source_files = {
+        "src/Device/kernels/CameraRays.h": (
+            "GLOBAL_KERNEL_SIGNATURE(void) CameraRays(HIPRTRenderData render_data) {"
+            " render_data.random_number += 1; }"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\n#include "src/Device/kernels/CameraRays.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": '#include "src/Device/kernels/CameraRays.h"\n',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+
+    assert any(
+        v.rule == "generated_role_includes_project_header"
+        and v.offending_module == "shared.h"
+        for v in r.violations
+    )
+
+
+def test_split_rejects_non_device_role_angle_include_resolving_to_project_file():
+    source_files = {
+        "thirdparties/imgui/imgui.h": "#pragma once\nnamespace ImGui { void Begin(const char*); }\n"
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": '#include <imgui.h>\nextern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": "extern \"C\" __global__ void noop() {}",
+    }
+
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+
+    assert any(
+        v.rule == "generated_role_includes_project_header"
+        and v.offending_symbol == "imgui.h"
+        for v in r.violations
+    )
+
+
+def test_split_rejects_non_device_role_unknown_angle_header_even_without_context():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": '#include <imgui.h>\nextern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": "extern \"C\" __global__ void noop() {}",
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files={})
+
+    assert any(
+        v.rule == "generated_role_includes_project_header"
+        and v.offending_symbol == "imgui.h"
+        for v in r.violations
+    )
+
+
+def test_split_allows_standard_and_installed_generated_role_includes():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\n#include <vector>\nstruct AppState { int n; };',
+        "core.cpp": (
+            '#include <hip/hip_runtime.h>\n'
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": '#include <GLFW/glfw3.h>\n#include <GL/gl.h>\nextern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": "extern \"C\" __global__ void noop() {}",
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files={})
+
+    assert not any(v.rule == "generated_role_includes_project_header" for v in r.violations)
+
+
+def test_split_rejects_generated_gpu_sdk_vector_type_redeclaration():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "#include <hip/hip_runtime.h>\n"
+            "struct float3 { float x, y, z; };\n"
+            "struct AppState { float3 p; };"
+        ),
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": "extern \"C\" __global__ void noop() {}",
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files={})
+
+    assert any(
+        v.rule == "generated_role_redeclares_gpu_sdk_type"
+        and v.offending_symbol == "float3"
+        for v in r.violations
+    )
+
+
 def test_split_rejects_invented_gpu_runtime_accessor():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
@@ -506,7 +682,10 @@ def test_split_rejects_glfw_opengl_render_that_drops_projection():
             "glVertex2f(s->x[i] - 4, s->y[i] + 4); } glEnd(); }"
         ),
         "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
-        "device.cu": 'extern "C" __global__ void step(float*) {}',
+        "device.cu": (
+            'extern "C" __global__ void step(float* particles) { '
+            'int i = blockIdx.x * blockDim.x + threadIdx.x; particles[i] = particles[i] + 1.0f; }'
+        ),
     }
     source_files = {
         "src/render/glfw_canvas.cpp": (
@@ -537,7 +716,10 @@ def test_split_rejects_gui_device_pointer_dereference():
             '}'
         ),
         "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
-        "device.cu": 'extern "C" __global__ void step(float*) {}',
+        "device.cu": (
+            'extern "C" __global__ void step(float* particles) { '
+            'int i = blockIdx.x * blockDim.x + threadIdx.x; particles[i] = particles[i] + 1.0f; }'
+        ),
     }
     r = verify_split_output(files=files, manifest_arch=["sm_80"])
     assert any(
@@ -564,6 +746,87 @@ def test_split_rejects_uninitialized_device_buffers():
     }
     r = verify_split_output(files=files, manifest_arch=["sm_80"])
     assert any(v.rule == "device_buffers_not_initialized" for v in r.violations)
+
+
+def test_split_allows_source_device_launch_without_pointer_init_requirement():
+    source_files = {
+        "src/Device/kernels/CameraRays.h": (
+            "struct HIPRTRenderData { unsigned int random_number; };\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) CameraRays(HIPRTRenderData render_data) "
+            "{ render_data.random_number += 1; }\n"
+        )
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { void* d_scene; int n; };',
+        "core.cpp": (
+            '#include <hip/hip_runtime.h>\n'
+            'extern "C" void* core_on_load(void*, void*) { hipMalloc(&d_scene, 4096); return 0; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'HIPRTRenderData render_data{}; '
+            'synthi_gpu_launch(nullptr, "CameraRays", 1, 256, 0, nullptr, { &render_data }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": '#include "src/Device/kernels/CameraRays.h"\n',
+    }
+
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+
+    assert not any(v.rule == "device_buffers_not_initialized" for v in r.violations)
+
+
+def test_split_allows_output_only_pointer_kernel_without_init():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { size_t* d_size; };',
+        "core.cpp": (
+            '#include <hip/hip_runtime.h>\n'
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; hipMalloc(&s.d_size, sizeof(size_t)); return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { auto* s = (AppState*)state; '
+            'synthi_gpu_launch(nullptr, "write_size", 1, 1, 0, nullptr, { &s->d_size }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": 'extern "C" __global__ void write_size(size_t* out_buffer) { out_buffer[0] = sizeof(float); }',
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert not any(v.rule == "device_buffers_not_initialized" for v in r.violations)
+
+
+def test_split_reports_only_pointer_params_that_need_input_state():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* d_values; float* d_output; int n; };',
+        "core.cpp": (
+            '#include <hip/hip_runtime.h>\n'
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; '
+            'hipMalloc(&s.d_values, 4096); hipMalloc(&s.d_output, 4096); return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { auto* s = (AppState*)state; '
+            'synthi_gpu_launch(nullptr, "copy_values", 1, 256, 0, nullptr, { &s->d_values, &s->d_output, &s->n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": (
+            'extern "C" __global__ void copy_values(const float* values, float* output, int n) { '
+            'int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < n) output[i] = values[i]; }'
+        ),
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    init_violations = [v for v in r.violations if v.rule == "device_buffers_not_initialized"]
+    assert init_violations
+    assert "d_values" in (init_violations[0].offending_symbol or "")
+    assert "d_output" not in (init_violations[0].offending_symbol or "")
 
 
 def test_split_rejects_host_to_device_copy_in_core_on_load():
@@ -771,6 +1034,133 @@ def test_split_rejects_dropped_source_device_kernel_and_constants():
         and v.offending_symbol == "kHmrScaleDirection"
         for v in r.violations
     )
+
+
+def test_split_rejects_dropped_macro_wrapped_runtime_kernel_header():
+    source_files = {
+        "src/Device/kernels/CameraRays.h": """
+        GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)
+        CameraRays(HIPRTRenderData render_data) {
+          render_data.random_number += 1;
+        }
+        """
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) { synthi_gpu_launch(nullptr, "OtherKernel", 1, 64, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { auto gui_on_render = 0; return 0; }",
+        "device.hip": 'extern "C" __global__ void OtherKernel(int) {}',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+
+    assert any(
+        v.rule == "source_device_kernel_not_preserved"
+        and v.offending_symbol == "CameraRays"
+        for v in r.violations
+    )
+
+
+def test_split_rejects_stubbed_macro_wrapped_runtime_kernel_body():
+    source_files = {
+        "src/Device/kernels/CameraRays.h": """
+        #ifdef __KERNELCC__
+        GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData render_data)
+        #else
+        GLOBAL_KERNEL_SIGNATURE(void) inline CameraRays(HIPRTRenderData render_data, int x, int y)
+        #endif
+        {
+          render_data.random_number += 1;
+        }
+        """
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": 'extern "C" __global__ void CameraRays(HIPRTRenderData render_data) {}',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+
+    assert any(
+        v.rule == "source_device_kernel_body_not_preserved"
+        and v.offending_symbol == "CameraRays"
+        for v in r.violations
+    )
+
+
+def test_split_rejects_macro_kernel_signature_erasure():
+    source_files = {
+        "src/Device/kernels/CameraRays.h": """
+        GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)
+        CameraRays(HIPRTRenderData render_data) {
+          render_data.random_number += 1;
+        }
+        """
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": 'extern "C" __global__ void CameraRays(void* data) { data = data; }',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+
+    assert any(
+        v.rule == "source_device_kernel_signature_not_preserved"
+        and v.offending_symbol == "CameraRays"
+        for v in r.violations
+    )
+
+
+def test_split_ignores_commented_kernel_examples_in_source_headers():
+    source_files = {
+        "src/Device/includes/FixIntellisense.h": """
+        // extern "C" void __global__ my_function(...)
+        /* GLOBAL_KERNEL_SIGNATURE(void) FakeKernel(RenderData data) {} */
+        """
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": "",
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+
+    assert not any(v.offending_symbol == "my_function" for v in r.violations)
+    assert not any(v.offending_symbol == "FakeKernel" for v in r.violations)
 
 
 def test_split_ignores_constants_in_non_device_hip_helpers():

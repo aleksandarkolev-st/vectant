@@ -4318,12 +4318,18 @@ extern "C" unsigned long long device_kernel_sig_hash(const char* name);
 
 # GENERATED ROLE FILES ARE SELF-CONTAINED
 
-Provided workspace files are context, not compilation inputs for the generated
-hot modules. Do not include original user project headers or sources from the
-generated roles. Quoted includes in generated role files may only refer to
-other emitted Synthi role files, usually the shared role, or to
+Provided workspace files are context, not compilation inputs for generated
+core/gui/shared/host_runner modules. Do not include original user project
+headers or sources from those generated roles. Quoted includes there may only
+refer to other emitted Synthi role files, usually the shared role, or to
 `"synthi_gpu_runtime.h"`. Standard library and GPU runtime includes must use
 angle brackets.
+
+The generated device role has one narrow exception: it may quote-include
+target-scoped device source/header files explicitly selected by the source
+device preservation contract. This is only for preserving source-authoritative
+kernel bodies in large runtime-compiled projects. It is not permission to
+include arbitrary application, renderer, UI, or host project headers.
 
 Invalid generated output:
 
@@ -4334,9 +4340,10 @@ Invalid generated output:
 ```
 
 Instead, copy or adapt the necessary structs, constants, function bodies, and
-kernel declarations into the generated `shared`, `core`, `gui`, and `device`
-roles. The split must compile after Synthi writes only the generated role files
-plus its runtime header.
+kernel declarations into the generated `shared`, `core`, `gui`, and where
+needed `device` roles. The split must compile after Synthi writes the generated
+role files, its runtime header, and any verifier-selected target device source
+projection referenced by the generated device role.
 
 # ABI HASH STAMP
 

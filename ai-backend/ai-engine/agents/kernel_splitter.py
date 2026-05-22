@@ -42,6 +42,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
+from agents.abi_stamper import stamp_device_source
 from agents.gpu_detect import GpuDetectionResult
 from agents.gpu_split_repair import repair_split_artifacts
 from agents.gpu_source_context import build_project_source_context
@@ -242,7 +243,7 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
     guidance: List[str] = []
     if "generated_role_includes_project_header" in joined:
         guidance.append(
-            "- Inline/adapt every quoted project header into generated role code; generated roles may quote-include only emitted role files or synthi_gpu_runtime.h."
+            "- Inline/adapt quoted project headers into generated role code unless the verifier-selected device role is directly including a target-scoped device source/header listed by the source preservation contract. Core/gui/shared/host_runner may quote-include only emitted role files or synthi_gpu_runtime.h."
         )
         rejected_headers = _rejected_project_headers(rejection_notes)
         if rejected_headers:
@@ -275,6 +276,10 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
         guidance.append(
             "- For each synthi_gpu_launch call, make the host initializer-list match the generated kernel parameter list exactly. If the kernel takes a LaunchParams-style struct, create one host variable and pass its address as a single argument; otherwise flatten the kernel signature to match the host launch ABI."
         )
+    if "launch_site_unresolved" in joined:
+        guidance.append(
+            "- Do not invent placeholder host launches. Every synthi_gpu_launch kernel name must be an actual __global__ symbol emitted in the device role or a target-scoped source-device kernel preserved by the device role. If you add or keep a synthi_gpu_launch call, first ensure that exact kernel name is declared in device.hip/device.cu; otherwise remove the invented launch site instead of naming a fake kernel such as `my_function`."
+        )
     if "generated.host_state_type_not_shared" in joined:
         guidance.append(
             "- Define the host-visible state record exactly once in shared.h; core.cpp, gui.cpp, and host_runner.cpp must include shared.h and use that type."
@@ -296,11 +301,13 @@ def _verifier_acceptance_gate_contract() -> str:
     return "\n".join(
         [
             "# GPU SPLIT VERIFIER ACCEPTANCE GATES",
-            "- Generated role files must be self-contained. Quoted includes may only target emitted Synthi role files or synthi_gpu_runtime.h; original workspace/project headers must be copied or adapted into generated roles.",
+            "- Generated core/gui/shared/host_runner role files must be self-contained. Quoted includes there may only target emitted Synthi role files or synthi_gpu_runtime.h; original workspace/project headers must be copied or adapted into those roles.",
+            "- The generated device role may directly quote-include only target-scoped device source/header files listed in the source preservation contract, so large runtime-compiled kernel headers can remain source-authoritative. Do not include arbitrary project headers.",
             "- host_runner.cpp must resolve core_on_load/core_on_update and gui_on_load/gui_on_render from the generated modules, store the function pointers, call core_on_update, then call gui_on_render with the core state before the backend presents each frame. A valid runner has a real `void* core_state` returned from core_on_load and calls a resolved render pointer such as `gui_render(core_state);` inside the frame loop.",
             "- gui_on_render must contain executable backend drawing code, not TODOs, placeholder comments, or 'rendering logic' stubs. It must draw visible non-black output through the original project's render backend.",
             "- Generated GUI and runner code must not switch frameworks. Preserve the source render backend reported by deterministic context selection.",
             "- Device kernels and runtime-compiled kernel headers selected by source context must keep original kernel names and body semantics so later user body edits can map into the generated device role.",
+            "- Host launch sites must not invent kernel names. Every `synthi_gpu_launch(...)` kernel string must match an actual generated or source-preserved device kernel symbol.",
         ]
     )
 
@@ -360,6 +367,7 @@ _GPU_DEVICE_MARKER_RE = re.compile(
 )
 _SOURCE_DEVICE_IDENTIFIER_RE = re.compile(r"\bk[A-Z][A-Za-z0-9_]*\b")
 _QUOTE_INCLUDE_RE = re.compile(r"#\s*include\s+\"(?P<path>[^\"]+)\"")
+_ANY_INCLUDE_RE = re.compile(r"#\s*include\s+[<\"](?P<path>[^>\"]+)[>\"]")
 _PROJECT_CONTEXT_MAX_CHARS = 70000
 _PROJECT_CONTEXT_PER_FILE_MAX_CHARS = 3000
 _DEVICE_PRESERVATION_TOTAL_MAX_CHARS = 160000
@@ -541,6 +549,57 @@ def _device_reachable_source_files(
     return {path: reachable[path] for path in sorted(reachable)}
 
 
+def _include_namespace(include_path: str) -> str:
+    return include_path.replace("\\", "/").lstrip("./").split("/", 1)[0]
+
+
+def _paths_for_include(source_files: Mapping[str, str], include_path: str) -> List[str]:
+    normalized_include = include_path.replace("\\", "/").lstrip("./")
+    if not normalized_include:
+        return []
+    return sorted(
+        path
+        for path in source_files
+        if path == normalized_include or path.endswith(f"/{normalized_include}")
+    )
+
+
+def _device_compiler_prelude_scope(
+    source_files: Mapping[str, str],
+    device_sources: Mapping[str, str],
+) -> set[str]:
+    """Find project-declared compiler prelude files for reachable device code."""
+
+    device_include_names = {
+        match.group("path").replace("\\", "/").lstrip("./")
+        for source in device_sources.values()
+        for match in _ANY_INCLUDE_RE.finditer(source)
+    }
+    namespaces = {
+        _include_namespace(include)
+        for include in device_include_names
+        if _include_namespace(include)
+    }
+    if not namespaces:
+        return set()
+
+    prelude_paths: set[str] = set()
+    for path, source in source_files.items():
+        includes = [
+            match.group("path").replace("\\", "/").lstrip("./")
+            for match in _ANY_INCLUDE_RE.finditer(source)
+        ]
+        for include in includes:
+            basename = include.rsplit("/", 1)[-1].lower()
+            if "device_impl" not in basename:
+                continue
+            if _include_namespace(include) not in namespaces:
+                continue
+            prelude_paths.add(path)
+            prelude_paths.update(_paths_for_include(source_files, include))
+    return prelude_paths
+
+
 def _device_roots_from_context_report(source_context_report: Mapping[str, Any]) -> List[str]:
     topology = source_context_report.get("deviceTuTopology")
     units = topology.get("deviceTranslationUnits") if isinstance(topology, Mapping) else None
@@ -565,8 +624,10 @@ def _source_files_scoped_to_context(
         if isinstance(item, Mapping) and item.get("path")
     }
     roots = _device_roots_from_context_report(source_context_report)
+    device_sources: Dict[str, str] = {}
     if roots:
-        scoped_paths.update(_device_reachable_source_files(normalized, roots=roots))
+        device_sources = _device_reachable_source_files(normalized, roots=roots)
+        scoped_paths.update(device_sources)
     else:
         included_device_roots = [
             path
@@ -574,9 +635,12 @@ def _source_files_scoped_to_context(
             if path in normalized and _looks_like_source_file(path) and _has_gpu_device_marker(normalized[path])
         ]
         if included_device_roots:
-            scoped_paths.update(
-                _device_reachable_source_files(normalized, roots=included_device_roots)
+            device_sources = _device_reachable_source_files(
+                normalized, roots=included_device_roots
             )
+            scoped_paths.update(device_sources)
+    if device_sources:
+        scoped_paths.update(_device_compiler_prelude_scope(normalized, device_sources))
     scoped = {
         path: normalized[path]
         for path in sorted(scoped_paths)
@@ -611,7 +675,8 @@ def _source_device_preservation_contract(
         "The generated device role must copy/adapt the device-reachable user GPU source below, not summarize it.",
         "This includes selected .cu/.hip translation units, macro-wrapped kernel headers, runtime-compiled kernel sources, and quoted project headers reachable from them.",
         "Preserve original kernel names, non-empty kernel bodies, device helpers, constants, branches, boundary/reset logic, template helper math, and output writes.",
-        "Do not include these original project headers from generated role files; inline/adapt the needed structs, constants, and helper function bodies into the generated roles.",
+        "For core/gui/shared/host_runner, do not include original project headers; inline/adapt the needed structs, constants, and helper function bodies into generated roles.",
+        "For the device role only, a direct quote-include of the listed target-scoped device source/header path is allowed when that preserves source-authoritative kernel bodies better than inlining.",
         "Do not emit dangling constant declarations, empty kernels, renamed kernels, or simplified substitute kernels.",
     ]
     if kernels:
@@ -813,6 +878,58 @@ def parse_kernel_split_response(raw: str) -> Dict[str, Any]:
         "kernel_hashes": {str(k): str(v) for k, v in kernel_hashes.items()},
         "launch_graph": launch_graph,
     }
+
+
+def _manifest_device_path(
+    manifest: Optional[Mapping[str, Any]],
+    files: Mapping[str, str],
+) -> Optional[str]:
+    module_files = manifest.get("module_files") if isinstance(manifest, Mapping) else None
+    if isinstance(module_files, Mapping):
+        device = module_files.get("device")
+        if isinstance(device, str) and device.strip() in files:
+            return device.strip()
+    for path in sorted(files):
+        if path.replace("\\", "/").lower().endswith((".cu", ".hip")):
+            return path
+    return None
+
+
+def _resolve_source_include(include_path: str, source_files: Mapping[str, str]) -> Optional[str]:
+    normalized = include_path.replace("\\", "/").lstrip("./")
+    normalized_sources = {
+        path.replace("\\", "/").lstrip("./"): source
+        for path, source in source_files.items()
+    }
+    if normalized in normalized_sources:
+        return normalized
+    matches = [
+        path
+        for path in normalized_sources
+        if path.endswith("/" + normalized)
+        or (path.startswith("src/") and path[4:] == normalized)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _kernel_hashes_for_generated_split(
+    *,
+    files: Mapping[str, str],
+    manifest: Optional[Mapping[str, Any]],
+    source_files: Mapping[str, str],
+) -> Dict[str, str]:
+    device_path = _manifest_device_path(manifest, files)
+    if not device_path:
+        return {}
+    device_source = files.get(device_path, "")
+    hashes = dict(stamp_device_source(device_source))
+    for match in _QUOTE_INCLUDE_RE.finditer(device_source):
+        resolved = _resolve_source_include(match.group("path"), source_files)
+        if resolved is not None:
+            hashes.update(stamp_device_source(source_files[resolved]))
+    return hashes
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1020,6 +1137,11 @@ async def run_kernel_splitter(
             )
             parsed["files"] = repaired_files
             verification = repaired_verification
+    parsed["kernel_hashes"] = _kernel_hashes_for_generated_split(
+        files=parsed["files"],
+        manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
+        source_files=scoped_source_map,
+    )
 
     return KernelSplitResult(
         files=parsed["files"],

@@ -49,7 +49,9 @@ See HMR_AGNOSTIC_ULTRAPLAN.md §5.3 for the full Point 3 design.
 """
 from __future__ import annotations
 
+import json
 import re
+import shlex
 from typing import Any, Dict, List, Literal, Mapping, Optional, Set, Tuple
 
 try:
@@ -577,6 +579,7 @@ def normalize_gpu_split_manifest(
     link_hint_sources: Optional[Mapping[str, str]] = None,
     vendor_hint: Optional[str] = None,
     arch_hint: Optional[str] = None,
+    focus_path: Optional[str] = None,
 ) -> dict:
     """Fill mechanical defaults the GPU splitter prompt may omit.
 
@@ -688,7 +691,7 @@ def normalize_gpu_split_manifest(
             manifest[field] = values
 
     project_sources = link_hint_sources or {}
-    metadata_flags = _extract_build_metadata_link_flags(project_sources)
+    metadata_flags = _extract_build_metadata_link_flags(project_sources, focus_path=focus_path)
     if metadata_flags:
         add_host_link_flags(metadata_flags)
 
@@ -705,10 +708,14 @@ def normalize_gpu_split_manifest(
             runner_flags.append(flag)
     manifest["runner_link_flags"] = runner_flags
 
+    metadata_device_flags = _extract_build_metadata_device_flags(project_sources, vendor, focus_path=focus_path)
+    raw_device_flags = _normalize_str_list(gpu.get("device_flags"))
+    raw_device_flags.extend(metadata_device_flags)
+
     gpu["vendor"] = vendor
     gpu["device_compiler"] = compiler
     gpu["arch"] = arch_values
-    gpu["device_flags"] = _normalize_gpu_device_flags(gpu.get("device_flags"), vendor)
+    gpu["device_flags"] = _normalize_gpu_device_flags(raw_device_flags, vendor)
     gpu["device_roles"] = _normalize_gpu_device_roles(
         gpu.get("device_roles"),
         device_path=str(roles.get("device") or default_device),
@@ -729,6 +736,158 @@ def normalize_gpu_split_manifest(
     return manifest
 
 
+def _extract_build_metadata_device_flags(
+    source_files: Mapping[str, str],
+    vendor: str,
+    *,
+    focus_path: Optional[str] = None,
+) -> List[str]:
+    cmake_flags = _extract_cmake_file_api_device_flags(source_files, vendor, focus_path=focus_path)
+    if cmake_flags:
+        return cmake_flags
+
+    compile_db = source_files.get("compile_commands.json")
+    if not compile_db:
+        return []
+    try:
+        entries = json.loads(compile_db)
+    except Exception:
+        return []
+    if not isinstance(entries, list):
+        return []
+
+    source_keys = [
+        str(path).replace("\\", "/").lstrip("./")
+        for path in source_files
+        if str(path).replace("\\", "/").lower().endswith((".c", ".cc", ".cpp", ".cxx", ".cu", ".cuh", ".hip", ".h", ".hh", ".hpp", ".hxx"))
+    ]
+    project_roots = _infer_compile_command_project_roots(entries, source_keys)
+    flags: List[str] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        args = entry.get("arguments")
+        if isinstance(args, list):
+            tokens = [str(arg) for arg in args]
+        else:
+            command = entry.get("command")
+            if not isinstance(command, str):
+                continue
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                continue
+        flags.extend(_device_flags_from_compile_tokens(tokens, project_roots, vendor))
+    return _dedupe_preserve_order(flags)
+
+
+def _infer_compile_command_project_roots(entries: Any, source_keys: List[str]) -> List[str]:
+    roots: List[str] = []
+    for entry in (entries if isinstance(entries, list) else []):
+        if not isinstance(entry, Mapping):
+            continue
+        raw_file = str(entry.get("file") or "").replace("\\", "/")
+        if not raw_file.startswith("/"):
+            continue
+        for rel in sorted(source_keys, key=len, reverse=True):
+            suffix = "/" + rel
+            if raw_file.endswith(suffix):
+                root = raw_file[: -len(suffix)].rstrip("/")
+                if root and root not in roots:
+                    roots.append(root)
+                break
+    return roots
+
+
+def _device_flags_from_compile_tokens(tokens: List[str], project_roots: List[str], vendor: str) -> List[str]:
+    flags: List[str] = []
+    skip_next = False
+    paired_path_flags = {"-I", "-isystem", "-iquote", "-idirafter", "--include-directory", "-include"}
+    for index, token in enumerate(tokens[1:], start=1):
+        if skip_next:
+            skip_next = False
+            continue
+        if token in {"-o", "-c", "-MF", "-MT", "-MQ"}:
+            skip_next = True
+            continue
+        if token.startswith(("-o", "-MF", "-MT", "-MQ")):
+            continue
+        if token in paired_path_flags:
+            if index + 1 >= len(tokens):
+                continue
+            value = _rewrite_compile_metadata_path(tokens[index + 1], project_roots)
+            if value:
+                flags.extend([token, value])
+            skip_next = True
+            continue
+        if token.startswith("-I") and len(token) > 2:
+            value = _rewrite_compile_metadata_path(token[2:], project_roots)
+            if value:
+                flags.append("-I" + value)
+            continue
+        if token.startswith("-D") or token.startswith("-U"):
+            flags.append(token)
+            continue
+        if token.startswith("-std="):
+            flags.append(token)
+            continue
+        if vendor == "cuda" and token.startswith(("--expt-", "--use_fast_math", "--use-fast-math")):
+            flags.append(token)
+            continue
+        if vendor == "rocm" and token in {"-fgpu-rdc", "--gpu-rdc"}:
+            flags.append(token)
+            continue
+    return flags
+
+
+def _rewrite_compile_metadata_path(path: str, project_roots: List[str]) -> str:
+    value = str(path).strip().strip('"').strip("'").replace("\\", "/")
+    if not value:
+        return ""
+    for root in sorted(project_roots, key=len, reverse=True):
+        prefix = root.rstrip("/") + "/"
+        if value == root.rstrip("/"):
+            return "."
+        if value.startswith(prefix):
+            return value[len(prefix):] or "."
+    return value
+
+
+def _dedupe_preserve_order(values: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: Set[str] = set()
+    paired_path_flags = {"-I", "-isystem", "-iquote", "-idirafter", "--include-directory", "-include"}
+    index = 0
+    while index < len(values):
+        value = values[index]
+        if not value:
+            index += 1
+            continue
+        if value in paired_path_flags and index + 1 < len(values):
+            pair_value = values[index + 1]
+            key = f"{value}\0{pair_value}"
+            if pair_value and key not in seen:
+                out.extend([value, pair_value])
+                seen.add(key)
+            index += 2
+            continue
+        if value not in seen:
+            out.append(value)
+            seen.add(value)
+        index += 1
+    return out
+
+
+def _normalize_project_path(path: str) -> str:
+    return str(path).replace("\\", "/").lstrip("./")
+
+
+def _path_matches(candidate: str, wanted: str) -> bool:
+    left = _normalize_project_path(candidate)
+    right = _normalize_project_path(wanted)
+    return left == right or left.endswith("/" + right) or right.endswith("/" + left)
+
+
 def _link_token_to_flag(token: str) -> Optional[str]:
     token = token.strip().strip('"').strip("'")
     if not token:
@@ -738,7 +897,7 @@ def _link_token_to_flag(token: str) -> Optional[str]:
     if token.startswith("$<"):
         return None
     if token.startswith("${"):
-        return token
+        return None
     if token.startswith(("-", "/LIBPATH:")):
         return token
     if token.endswith((".a", ".so", ".dylib", ".lib")) or "/" in token or "\\" in token:
@@ -780,7 +939,11 @@ def _expand_cmake_link_token(token: str, variables: Mapping[str, List[str]]) -> 
     return [token]
 
 
-def _extract_build_metadata_link_flags(source_files: Mapping[str, str]) -> List[str]:
+def _extract_build_metadata_link_flags(
+    source_files: Mapping[str, str],
+    *,
+    focus_path: Optional[str] = None,
+) -> List[str]:
     """Extract linker flags from project build metadata.
 
     This is intentionally generic. It reads user-owned build files such as
@@ -795,6 +958,9 @@ def _extract_build_metadata_link_flags(source_files: Mapping[str, str]) -> List[
             return
         flags.append(flag)
         seen.add(flag)
+
+    for flag in _extract_cmake_file_api_link_flags(source_files, focus_path=focus_path):
+        add(flag)
 
     for path, text in source_files.items():
         normalized = str(path).replace("\\", "/")
@@ -811,6 +977,204 @@ def _extract_build_metadata_link_flags(source_files: Mapping[str, str]) -> List[
                 for expanded in _expand_cmake_link_token(token, variables):
                     add(_link_token_to_flag(expanded))
     return flags
+
+
+def _split_command_fragment(fragment: str) -> List[str]:
+    try:
+        return shlex.split(fragment, posix=True)
+    except ValueError:
+        return [token for token in re.split(r"[\s\r\n]+", fragment) if token]
+
+
+def _target_sources_from_cmake_payload(payload: Mapping[str, Any]) -> List[str]:
+    sources = payload.get("sources")
+    if not isinstance(sources, list):
+        return []
+    out: List[str] = []
+    for item in sources:
+        if not isinstance(item, Mapping):
+            continue
+        path = item.get("path")
+        if isinstance(path, str) and path.strip():
+            out.append(_normalize_project_path(path))
+    return out
+
+
+def _cmake_target_payloads(
+    source_files: Mapping[str, str],
+    *,
+    focus_path: Optional[str] = None,
+) -> List[Mapping[str, Any]]:
+    records: List[Tuple[int, Mapping[str, Any]]] = []
+    for path, text in source_files.items():
+        normalized = str(path).replace("\\", "/")
+        base = normalized.rsplit("/", 1)[-1]
+        if not (
+            normalized.endswith(".json")
+            and base.startswith("target-")
+            and "/.cmake/api/v1/reply/" in f"/{normalized}"
+        ):
+            continue
+        try:
+            payload = json.loads(str(text))
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        sources = _target_sources_from_cmake_payload(payload)
+        score = 1
+        if focus_path and any(_path_matches(source, focus_path) for source in sources):
+            score += 100
+        if str(payload.get("type") or "").upper() == "EXECUTABLE":
+            score += 10
+        records.append((score, payload))
+
+    if not records:
+        return []
+    max_score = max(score for score, _payload in records)
+    return [payload for score, payload in records if score == max_score]
+
+
+def _flags_from_cmake_compile_group(
+    group: Mapping[str, Any],
+    *,
+    project_roots: List[str],
+    vendor: str,
+) -> List[str]:
+    flags: List[str] = []
+    for item in group.get("defines") or []:
+        if not isinstance(item, Mapping):
+            continue
+        define = str(item.get("define") or "").strip()
+        if define:
+            flags.append("-D" + define)
+    for item in group.get("includes") or []:
+        if not isinstance(item, Mapping):
+            continue
+        path = _rewrite_compile_metadata_path(str(item.get("path") or ""), project_roots)
+        if not path:
+            continue
+        if item.get("isSystem"):
+            flags.extend(["-isystem", path])
+        else:
+            flags.append("-I" + path)
+    for item in group.get("compileCommandFragments") or []:
+        if not isinstance(item, Mapping):
+            continue
+        tokens = _split_command_fragment(str(item.get("fragment") or ""))
+        flags.extend(_device_flags_from_compile_tokens(["compiler"] + tokens, project_roots, vendor))
+    if not any(flag.startswith("-std=") for flag in flags):
+        standard = group.get("languageStandard")
+        if isinstance(standard, Mapping):
+            value = str(standard.get("standard") or "").strip()
+            if value:
+                language = str(group.get("language") or "").upper()
+                if language in {"CXX", "CUDA", "HIP"}:
+                    flags.append(f"-std=gnu++{value}")
+    return flags
+
+
+def _extract_cmake_file_api_device_flags(
+    source_files: Mapping[str, str],
+    vendor: str,
+    *,
+    focus_path: Optional[str] = None,
+) -> List[str]:
+    payloads = _cmake_target_payloads(source_files, focus_path=focus_path)
+    if not payloads:
+        return []
+    source_keys = [
+        str(path).replace("\\", "/").lstrip("./")
+        for path in source_files
+        if str(path)
+        .replace("\\", "/")
+        .lower()
+        .endswith((".c", ".cc", ".cpp", ".cxx", ".cu", ".cuh", ".hip", ".h", ".hh", ".hpp", ".hxx"))
+    ]
+    entries = []
+    compile_db = source_files.get("compile_commands.json")
+    if compile_db:
+        try:
+            parsed = json.loads(compile_db)
+            if isinstance(parsed, list):
+                entries = parsed
+        except Exception:
+            entries = []
+    project_roots = _infer_compile_command_project_roots(entries, source_keys)
+    flags: List[str] = []
+    for payload in payloads:
+        groups = payload.get("compileGroups")
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, Mapping):
+                continue
+            language = str(group.get("language") or "").upper()
+            if language not in {"CXX", "CUDA", "HIP"}:
+                continue
+            flags.extend(
+                _flags_from_cmake_compile_group(
+                    group,
+                    project_roots=project_roots,
+                    vendor=vendor,
+                )
+            )
+    return _dedupe_preserve_order(flags)
+
+
+def _extract_cmake_file_api_link_flags(
+    source_files: Mapping[str, str],
+    *,
+    focus_path: Optional[str] = None,
+) -> List[str]:
+    """Extract target-scoped link flags from CMake File API target replies.
+
+    CMake's File API has already resolved imported targets such as
+    OpenGL::GL/GLEW::GLEW to concrete link fragments. Prefer executable target
+    replies when present so helper/static-library targets do not widen the
+    generated module link scope.
+    """
+
+    target_records: List[Tuple[bool, List[str]]] = []
+    payloads = _cmake_target_payloads(source_files, focus_path=focus_path)
+    if not payloads:
+        payloads = _cmake_target_payloads(source_files)
+    for payload in payloads:
+        link = payload.get("link")
+        fragments = link.get("commandFragments") if isinstance(link, Mapping) else None
+        if not isinstance(fragments, list):
+            continue
+        flags: List[str] = []
+        seen: Set[str] = set()
+        for item in fragments:
+            if not isinstance(item, Mapping):
+                continue
+            role = str(item.get("role") or "")
+            if role not in {"libraries", "libraryPath", "framework", "frameworkPath"}:
+                continue
+            for token in _split_command_fragment(str(item.get("fragment") or "")):
+                flag = _link_token_to_flag(token)
+                if flag and flag not in seen:
+                    flags.append(flag)
+                    seen.add(flag)
+        if flags:
+            target_records.append((str(payload.get("type") or "").upper() == "EXECUTABLE", flags))
+
+    if any(is_executable for is_executable, _flags in target_records):
+        target_records = [
+            (is_executable, flags)
+            for is_executable, flags in target_records
+            if is_executable
+        ]
+
+    out: List[str] = []
+    seen_out: Set[str] = set()
+    for _is_executable, flags in target_records:
+        for flag in flags:
+            if flag not in seen_out:
+                out.append(flag)
+                seen_out.add(flag)
+    return out
 
 
 def _extract_source_link_hints(source: str) -> List[str]:
@@ -882,18 +1246,35 @@ def _normalize_gpu_device_flags(raw_flags: Any, vendor: str) -> List[str]:
 
     normalized: List[str] = []
     seen: Set[str] = set()
+    seen_pairs: Set[str] = set()
+    paired_path_flags = {"-I", "-isystem", "-iquote", "-idirafter", "--include-directory", "-include"}
 
     def add(flag: str) -> None:
         if flag and flag not in seen:
             normalized.append(flag)
             seen.add(flag)
 
-    for raw in raw_flags:
+    index = 0
+    while index < len(raw_flags):
+        raw = raw_flags[index]
         flag = str(raw).strip()
         if not flag:
+            index += 1
             continue
+        if flag in paired_path_flags and index + 1 < len(raw_flags):
+            value = str(raw_flags[index + 1]).strip()
+            pair_key = f"{flag}\0{value}"
+            if value and pair_key not in seen_pairs:
+                normalized.extend([flag, value])
+                seen_pairs.add(pair_key)
+            index += 2
+            continue
+        if flag.startswith("-std="):
+            normalized = [existing for existing in normalized if not existing.startswith("-std=")]
+            seen = {existing for existing in seen if not existing.startswith("-std=")}
         if vendor == "rocm" and flag in {"--use_fast_math", "--use-fast-math"}:
             # hipcc's clang device path rejects nvcc's CUDA-only spelling.
+            index += 1
             continue
         if vendor == "rocm" and (
             flag.startswith("-arch=sm_")
@@ -901,16 +1282,19 @@ def _normalize_gpu_device_flags(raw_flags: Any, vendor: str) -> List[str]:
             or flag.startswith("-gencode")
             or flag.startswith("--generate-code")
         ):
+            index += 1
             continue
         if vendor == "cuda" and (
             flag.startswith("--offload-arch=gfx")
             or flag.startswith("--amdgpu-target=")
             or flag.startswith("--rocm-path")
         ):
+            index += 1
             continue
         add(flag)
+        index += 1
 
-    for default in ("-O3", "-lineinfo"):
+    for default in ("-I.", "-O3", "-lineinfo"):
         add(default)
 
     return normalized

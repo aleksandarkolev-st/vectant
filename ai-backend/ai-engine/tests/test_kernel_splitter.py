@@ -19,6 +19,7 @@ from agents.kernel_splitter import (
     _source_files_scoped_to_context,
     _source_device_preservation_contract,
     _verifier_acceptance_gate_contract,
+    _kernel_hashes_for_generated_split,
     build_prompt,
     parse_kernel_split_response,
     run_kernel_splitter,
@@ -121,6 +122,27 @@ def test_missing_optional_blocks_are_empty():
     assert parsed["architecture_md"] == ""
 
 
+def test_kernel_hashes_are_recomputed_from_included_source_device_headers():
+    files = {
+        "device.hip": '#define __KERNELCC__ 1\n#include "src/Device/kernels/CameraRays.h"\n'
+    }
+    source_files = {
+        "src/Device/kernels/CameraRays.h": (
+            "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) "
+            "CameraRays(HIPRTRenderData render_data) { render_data.random_number += 1; }"
+        )
+    }
+
+    hashes = _kernel_hashes_for_generated_split(
+        files=files,
+        manifest={"module_files": {"device": "device.hip"}},
+        source_files=source_files,
+    )
+
+    assert set(hashes) == {"CameraRays"}
+    assert hashes["CameraRays"].startswith("0x")
+
+
 def test_device_preservation_contract_uses_selected_context_scope():
     files = {
         "HIP-Basic/saxpy/main.hip": """
@@ -175,6 +197,32 @@ def test_device_preservation_contract_uses_selected_context_scope():
     assert "Applications/fdtd/main.hip" not in scoped
     assert "saxpy_kernel" in contract
     assert "apply_source_kernel" not in contract
+
+
+def test_context_scope_keeps_source_declared_device_compiler_prelude():
+    files = {
+        "src/Device/kernels/CameraRays.h": (
+            '#include "HostDeviceCommon/RenderData.h"\n'
+            "GLOBAL_KERNEL_SIGNATURE(void) CameraRays(int* out) { *out = 1; }\n"
+        ),
+        "src/HostDeviceCommon/RenderData.h": "#include <hiprt/hiprt_device.h>\n",
+        "src/llvm-compile-kernel.h": (
+            "#include <hiprt/hiprt_device.h>\n"
+            "#include <hiprt/impl/hiprt_device_impl.h>\n"
+        ),
+        "thirdparties/HIPRT-Fork/hiprt/impl/hiprt_device_impl.h": (
+            "#include <hiprt/hiprt_device.h>\n"
+        ),
+    }
+    report = {
+        "included": [{"path": "src/Device/kernels/CameraRays.h"}],
+        "deviceTuTopology": {"deviceTranslationUnits": []},
+    }
+
+    scoped = _source_files_scoped_to_context(files, report)
+
+    assert "src/llvm-compile-kernel.h" in scoped
+    assert "thirdparties/HIPRT-Fork/hiprt/impl/hiprt_device_impl.h" in scoped
 
 
 def test_normalizes_nested_file_objects():
@@ -487,6 +535,19 @@ def test_build_split_retry_prompt_guides_host_runner_gui_routing():
     assert "dlsym(libgui" in prompt
 
 
+def test_build_split_retry_prompt_guides_unresolved_launch_repairs():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- launch_site_unresolved: Host file core.cpp launches 'my_function' via synthi_gpu_launch(...) but no matching __global__ symbol is declared in the device role.",
+        ],
+    )
+
+    assert "Do not invent placeholder host launches" in prompt
+    assert "actual __global__ symbol" in prompt
+    assert "fake kernel" in prompt
+
+
 def test_verifier_acceptance_gate_contract_highlights_generic_split_gates():
     contract = _verifier_acceptance_gate_contract()
 
@@ -495,6 +556,7 @@ def test_verifier_acceptance_gate_contract_highlights_generic_split_gates():
     assert "gui_on_render" in contract
     assert "gui_render(core_state)" in contract
     assert "placeholder comments" in contract
+    assert "must not invent kernel names" in contract
 
 
 def test_build_prompt_attaches_extra_instructions():
@@ -569,7 +631,8 @@ def test_source_device_preservation_contract_follows_device_headers():
     assert "src/gpu/particle_api.hpp" in contract
     assert "src/config/device_constants.hpp" in contract
     assert "kGain" in contract
-    assert "Do not include these original project headers" in contract
+    assert "For core/gui/shared/host_runner, do not include original project headers" in contract
+    assert "For the device role only" in contract
 
 
 def test_source_device_preservation_contract_includes_runtime_compiled_kernel_headers():

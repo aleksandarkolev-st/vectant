@@ -106,6 +106,87 @@ extern "C" __global__ void flow(float* x, int n) {
     ]
 
 
+def test_build_device_mapping_report_treats_runtime_kernel_headers_as_device_sources():
+    source = {
+        "src/Device/kernels/CameraRays.h": """
+#include "CameraCommon.h"
+GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)
+CameraRays(HIPRTRenderData render_data) {
+  render_data.random_number += kCameraGain;
+}
+""",
+        "src/Device/kernels/CameraCommon.h": "#pragma once\nconstexpr int kCameraGain = 1;\n",
+    }
+    generated = {
+        ".synthi/generated/gpu/device.hip": """
+extern "C" __global__ void CameraRays(HIPRTRenderData render_data) {
+  render_data.random_number += kCameraGain;
+}
+"""
+    }
+
+    report = build_device_mapping_report(
+        source_files=source,
+        generated_files=generated,
+        manifest={"module_files": {"device": ".synthi/generated/gpu/device.hip"}},
+    )
+
+    assert report["sourceBaselineContents"]["src/Device/kernels/CameraRays.h"].lstrip().startswith("#include")
+    assert "src/Device/kernels/CameraCommon.h" in report["sourceBaselineContents"]
+    assert report["deviceMappings"][0]["sourcePath"] == "src/Device/kernels/CameraRays.h"
+    assert report["deviceMappings"][0]["symbol"] == "CameraRays"
+
+
+def test_build_device_mapping_report_records_generated_source_include_bridge():
+    source = {
+        "src/Device/kernels/CameraRays.h": """
+GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)
+CameraRays(HIPRTRenderData render_data) {
+  render_data.random_number += kCameraGain;
+}
+""",
+        "src/Device/kernels/CameraCommon.h": "#pragma once\nconstexpr int kCameraGain = 1;\n",
+    }
+    generated = {
+        ".synthi/generated/gpu/device.hip": """
+#define __KERNELCC__ 1
+#include "src/Device/kernels/CameraRays.h"
+"""
+    }
+
+    report = build_device_mapping_report(
+        source_files=source,
+        generated_files=generated,
+        manifest={"module_files": {"device": ".synthi/generated/gpu/device.hip"}},
+    )
+
+    assert report["kernelSignatureHashes"]["CameraRays"].startswith("0x")
+    assert report["deviceIncludeGraph"]["generatedDeviceIncludes"] == [
+        "src/Device/kernels/CameraRays.h"
+    ]
+    assert "src/Device/kernels/CameraRays.h" in report["deviceIncludeGraph"]["deviceTranslationUnits"]
+    assert report["sourceBaselineContents"]["src/Device/kernels/CameraRays.h"].lstrip().startswith(
+        "GLOBAL_KERNEL_SIGNATURE"
+    )
+
+
+def test_build_device_mapping_report_ignores_commented_kernel_examples():
+    report = build_device_mapping_report(
+        source_files={
+            "src/Device/includes/FixIntellisense.h": """
+            // extern "C" void __global__ my_function(...)
+            /* GLOBAL_KERNEL_SIGNATURE(void) FakeKernel(RenderData data) {} */
+            """
+        },
+        generated_files={".synthi/generated/gpu/device.hip": ""},
+        manifest={"module_files": {"device": ".synthi/generated/gpu/device.hip"}},
+    )
+
+    assert report["deviceMappings"] == []
+    assert report["unmappedKernels"] == []
+    assert "src/Device/includes/FixIntellisense.h" not in report["sourceBaselineContents"]
+
+
 def test_build_device_mapping_report_records_missing_device_include():
     report = build_device_mapping_report(
         source_files={

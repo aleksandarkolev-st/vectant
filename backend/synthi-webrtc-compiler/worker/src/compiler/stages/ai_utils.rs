@@ -48,7 +48,7 @@ fn add_ai_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     }
 }
 
-/// HTTP timeout for AI backend calls (diff_patch, heal, manifest heal, split).
+/// Single provider-call timeout for AI backend requests.
 ///
 /// Previously hardcoded per call site (60s for diff_patch/heal/manifest_heal,
 /// 150s for split). Raised and unified after live Gemini calls were observed
@@ -56,16 +56,43 @@ fn add_ai_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
 /// AI had already produced a correct answer, falling through to Tier 3 full
 /// re-split and wasting ~60s per save.
 ///
-/// 180s is the worst-case ceiling for any Gemini model we currently call.
+/// 180s is the default single-call ceiling.
 /// Operators can override with `SYNTHI_AI_HTTP_TIMEOUT_SECS` if a slower
 /// model or degraded service requires more headroom, or set it lower to
 /// fail fast in CI.
+const DEFAULT_AI_HTTP_TIMEOUT_SECS: u64 = 180;
+const GPU_SPLIT_MAX_PROVIDER_ATTEMPTS: u64 = 3;
+const GPU_SPLIT_VERIFIER_OVERHEAD_SECS: u64 = 90;
+
 fn ai_http_timeout() -> std::time::Duration {
     let secs: u64 = std::env::var("SYNTHI_AI_HTTP_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(180);
+        .unwrap_or(DEFAULT_AI_HTTP_TIMEOUT_SECS);
     std::time::Duration::from_secs(secs)
+}
+
+/// Endpoint-level timeout for AI requests sent through the JSON helper.
+///
+/// `/refactor/split/gpu` can perform multiple provider attempts in one HTTP
+/// request because the AI engine retries verifier-rejected splits before
+/// returning. Its client-side timeout therefore needs to cover the whole
+/// verifier-gated endpoint budget, not just one Gemini call.
+fn ai_http_timeout_for_url(url: &str) -> std::time::Duration {
+    if url.ends_with("/refactor/split/gpu") {
+        let secs = std::env::var("SYNTHI_AI_GPU_SPLIT_HTTP_TIMEOUT_SECS")
+            .or_else(|_| std::env::var("SYNTHI_AI_HTTP_TIMEOUT_SECS"))
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(default_gpu_split_http_timeout_secs());
+        return std::time::Duration::from_secs(secs);
+    }
+    ai_http_timeout()
+}
+
+fn default_gpu_split_http_timeout_secs() -> u64 {
+    DEFAULT_AI_HTTP_TIMEOUT_SECS * GPU_SPLIT_MAX_PROVIDER_ATTEMPTS
+        + GPU_SPLIT_VERIFIER_OVERHEAD_SECS
 }
 
 fn summarize_ai_error_body(body: &str) -> String {
@@ -169,7 +196,7 @@ async fn post_ai_json(
 ) -> Result<serde_json::Value> {
     let resp = add_ai_auth(client.post(url))
         .json(payload)
-        .timeout(ai_http_timeout())
+        .timeout(ai_http_timeout_for_url(url))
         .send()
         .await?;
     let status = resp.status();
@@ -182,13 +209,8 @@ async fn post_ai_json(
             summarize_ai_error_body(&body)
         ));
     }
-    serde_json::from_str::<serde_json::Value>(&body).map_err(|e| {
-        anyhow!(
-            "AI endpoint {} returned invalid JSON body: {}",
-            url,
-            e
-        )
-    })
+    serde_json::from_str::<serde_json::Value>(&body)
+        .map_err(|e| anyhow!("AI endpoint {} returned invalid JSON body: {}", url, e))
 }
 
 fn text_has_gpu_markers(source: &str) -> bool {
@@ -436,7 +458,8 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // Cache entries are accepted split artifacts. Keep this tied to the
     // prompt/verifier contract, not just source text, so newly hardened
     // deterministic split verifiers do not reuse stale generated roles.
-    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v8-launch-abi";
+    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str =
+        "gpu-strict-lifecycle-v14-gpu-sdk-type-gate";
     let source_hash = calculate_hash(&(
         AI_SPLIT_CACHE_SCHEMA_VERSION,
         req.language.as_str(),
@@ -542,10 +565,8 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             "[AI Split] GPU markers detected; calling GPU split endpoint: {}",
             gpu_split_url
         );
-        let gpu_result: Result<serde_json::Value, anyhow::Error> = async {
-            post_ai_json(&client, &gpu_split_url, &payload).await
-        }
-        .await;
+        let gpu_result: Result<serde_json::Value, anyhow::Error> =
+            async { post_ai_json(&client, &gpu_split_url, &payload).await }.await;
         match gpu_result {
             Ok(json) if json.get("result").and_then(|r| r.as_str()).is_some() => {
                 eprintln!("[AI Split] GPU split endpoint returned a 5-file split");
@@ -579,10 +600,8 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             "[AI Split] Calling VERIFIED AI split endpoint: {}",
             verified_url
         );
-        let verified_result: Result<serde_json::Value, anyhow::Error> = async {
-            post_ai_json(&client, &verified_url, &payload).await
-        }
-        .await;
+        let verified_result: Result<serde_json::Value, anyhow::Error> =
+            async { post_ai_json(&client, &verified_url, &payload).await }.await;
 
         match verified_result {
             Ok(json) if json.get("result").and_then(|r| r.as_str()).is_some() => json,
@@ -1446,6 +1465,16 @@ pub async fn perform_ai_heal_manifest(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn gpu_split_timeout_covers_provider_retry_budget() {
+        assert_eq!(
+            default_gpu_split_http_timeout_secs(),
+            DEFAULT_AI_HTTP_TIMEOUT_SECS * GPU_SPLIT_MAX_PROVIDER_ATTEMPTS
+                + GPU_SPLIT_VERIFIER_OVERHEAD_SECS
+        );
+        assert!(default_gpu_split_http_timeout_secs() > DEFAULT_AI_HTTP_TIMEOUT_SECS);
+    }
 
     #[test]
     fn detects_gpu_markers_in_source_text() {

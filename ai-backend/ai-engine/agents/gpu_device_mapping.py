@@ -8,11 +8,14 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Set
 
-from agents.abi_stamper import constant_layout_hash, stamp_device_source
+from agents.abi_stamper import constant_layout_hash, mask_comments_for_parsing, stamp_device_source
 
 
 _GLOBAL_KERNEL_RE = re.compile(
-    r'(?:extern\s+"C"\s+)?__global__\s+(?:void\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(',
+    r'(?:extern\s+"C"\s+)?(?:'
+    r'__global__\s+(?:void\s+)?'
+    r'|GLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+(?:__launch_bounds__\s*\([^)]*\)\s*)?'
+    r')(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(',
     re.MULTILINE,
 )
 _LOCAL_INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"(?P<path>[^"]+)"', re.MULTILINE)
@@ -44,13 +47,21 @@ def build_device_mapping_report(
     generated_path = _manifest_device_path(manifest) or _first_device_path(generated_files)
     generated_source = generated_files.get(generated_path or "", "") if generated_path else ""
     generated_regions = extract_kernel_regions(generated_source)
+    normalized_sources = {
+        _normalize_path(path): source for path, source in source_files.items()
+    }
+    generated_included_sources = _generated_direct_source_includes(
+        generated_path or "",
+        generated_source,
+        normalized_sources,
+    )
+    generated_semantic_source = "\n".join(
+        [generated_source, *generated_included_sources.values()]
+    )
     source_device_files = {
         _normalize_path(path): source
         for path, source in source_files.items()
-        if _is_device_source_path(path) and ("__global__" in source or "__device__" in source)
-    }
-    normalized_sources = {
-        _normalize_path(path): source for path, source in source_files.items()
+        if _is_device_compilation_source(path, source)
     }
     reachable_headers, include_graph, missing_includes = _collect_device_reachable_headers(
         normalized_sources,
@@ -101,8 +112,11 @@ def build_device_mapping_report(
     source_baselines = {
         path: source for path, source in sorted(baseline_sources.items()) if path in source_hashes
     }
+    generated_kernel_hashes = dict(stamp_device_source(generated_source))
+    for source in generated_included_sources.values():
+        generated_kernel_hashes.update(stamp_device_source(source))
     constant_layout_hashes = {
-        "generated:device": constant_layout_hash(generated_source),
+        "generated:device": constant_layout_hash(generated_semantic_source),
         **{
             path: constant_layout_hash(source)
             for path, source in sorted(source_device_files.items())
@@ -117,12 +131,13 @@ def build_device_mapping_report(
         "unmappedKernels": unmapped,
         "sourceBaselineHashes": source_hashes,
         "sourceBaselineContents": source_baselines,
-        "kernelSignatureHashes": stamp_device_source(generated_source),
+        "kernelSignatureHashes": generated_kernel_hashes,
         "constantGlobalLayoutHashes": constant_layout_hashes,
         "deviceIncludeGraph": {
             "schemaVersion": "synthi.gpu.device_include_graph.v1",
             "status": "bounded" if not missing_includes else "missing_includes",
             "deviceTranslationUnits": sorted(source_device_files),
+            "generatedDeviceIncludes": sorted(generated_included_sources),
             "reachableHeaders": sorted(reachable_headers),
             "edges": [
                 {"source": source, "includes": includes}
@@ -137,18 +152,19 @@ def build_device_mapping_report(
 def extract_kernel_regions(source: str) -> Dict[str, KernelRegion]:
     regions: Dict[str, KernelRegion] = {}
     cursor = 0
+    masked = mask_comments_for_parsing(source)
     signatures = stamp_device_source(source)
     while True:
-        match = _GLOBAL_KERNEL_RE.search(source, cursor)
+        match = _GLOBAL_KERNEL_RE.search(masked, cursor)
         if not match:
             break
         name = match.group("name")
-        params, after_params = _read_balanced(source, match.end() - 1, "(", ")")
-        body_open = _find_next_non_ws(source, after_params)
-        if body_open is None or body_open >= len(source) or source[body_open] != "{":
+        params, after_params = _read_balanced(masked, match.end() - 1, "(", ")")
+        body_open = _find_next_non_ws(masked, after_params)
+        if body_open is None or body_open >= len(masked) or masked[body_open] != "{":
             cursor = max(after_params, match.end())
             continue
-        _body, body_close = _read_balanced(source, body_open, "{", "}")
+        _body, body_close = _read_balanced(masked, body_open, "{", "}")
         regions[name] = KernelRegion(
             name=name,
             params=params,
@@ -190,6 +206,22 @@ def _is_device_header_path(path: str) -> bool:
     return _normalize_path(path).lower().endswith((".cuh", ".hpp", ".hh", ".h"))
 
 
+def _is_device_compilation_source(path: str, source: str) -> bool:
+    normalized = _normalize_path(path).lower()
+    masked = mask_comments_for_parsing(source)
+    if normalized.endswith((".cu", ".hip")):
+        return "__global__" in masked or "__device__" in masked
+    if not _is_device_header_path(path):
+        return False
+    return bool(
+        "__global__" in masked
+        or "__device__" in masked
+        or "GLOBAL_KERNEL_SIGNATURE" in masked
+        or "HIPRT_DEVICE" in masked
+        or "HIPRT_HOST_DEVICE" in masked
+    )
+
+
 def _normalize_path(path: str) -> str:
     normalized = str(path).replace("\\", "/")
     while normalized.startswith("./"):
@@ -222,6 +254,20 @@ def _resolve_local_include(source_path: str, include_path: str, files: Mapping[s
     return None
 
 
+def _generated_direct_source_includes(
+    generated_path: str,
+    generated_source: str,
+    source_files: Mapping[str, str],
+) -> Dict[str, str]:
+    included: Dict[str, str] = {}
+    masked = mask_comments_for_parsing(generated_source)
+    for match in _LOCAL_INCLUDE_RE.finditer(masked):
+        resolved = _resolve_local_include(generated_path, match.group("path"), source_files)
+        if resolved and _is_device_compilation_source(resolved, source_files[resolved]):
+            included[resolved] = source_files[resolved]
+    return included
+
+
 def _collect_device_reachable_headers(
     files: Mapping[str, str],
     device_translation_units: Set[str],
@@ -238,8 +284,9 @@ def _collect_device_reachable_headers(
             continue
         visited.add(current)
         source = files.get(current, "")
+        masked = mask_comments_for_parsing(source)
         includes: list[str] = []
-        for match in _LOCAL_INCLUDE_RE.finditer(source):
+        for match in _LOCAL_INCLUDE_RE.finditer(masked):
             raw_include = match.group("path")
             resolved = _resolve_local_include(current, raw_include, files)
             if not resolved:

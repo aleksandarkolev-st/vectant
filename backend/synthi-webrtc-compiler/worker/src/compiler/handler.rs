@@ -318,8 +318,8 @@ use crate::hmr::deterministic_compile::{
     DeterministicRebuildScope,
 };
 use crate::hmr::gpu_device_fast_path::{
-    device_only_capability_rejection_reason, device_source_hash, mapped_generated_device_path,
-    try_direct_device_body_patch,
+    device_header_kernel_body_only_edit_symbol, device_only_capability_rejection_reason,
+    device_source_hash, mapped_generated_device_path, try_direct_device_body_patch,
 };
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
@@ -898,6 +898,16 @@ fn device_include_graph_mentions_source(sidecar: &serde_json::Value, path: &str)
             "/deviceMappingReport/deviceIncludeGraph/reachableHeaders",
             path,
         )
+        || sidecar_array_contains_path(
+            sidecar,
+            "/deviceMappingReport/deviceIncludeGraph/deviceTranslationUnits",
+            path,
+        )
+        || sidecar_array_contains_path(
+            sidecar,
+            "/deviceMappingReport/deviceIncludeGraph/generatedDeviceIncludes",
+            path,
+        )
         || template_evidence_mentions_source(sidecar, path)
 }
 
@@ -1028,6 +1038,16 @@ fn try_warm_rebuild_header_plan(
     if generated_device_path.is_none() {
         preflight_reasons.push("mapping_missing".to_string());
     }
+    let source_included_by_generated_role = sidecar_array_contains_path(
+        sidecar_meta,
+        "/deviceMappingReport/deviceIncludeGraph/generatedDeviceIncludes",
+        user_path,
+    );
+    let body_only_kernel = if source_included_by_generated_role {
+        device_header_kernel_body_only_edit_symbol(old_source, new_source)
+    } else {
+        None
+    };
 
     let candidate_plan = warm_rebuild_reload_plan(
         "warm_rebuild",
@@ -1053,7 +1073,26 @@ fn try_warm_rebuild_header_plan(
         .get("selectedPlan")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
-    let mut reason_codes = if preflight_reasons.is_empty()
+    let ranked_warm_reasons = ranked_option_reason_codes(&normalized_candidate, "warm_rebuild");
+    let non_template_warm_reasons: Vec<String> = ranked_warm_reasons
+        .iter()
+        .filter(|code| !code.starts_with("template_"))
+        .cloned()
+        .collect();
+    let deterministic_body_rebuild = preflight_reasons.is_empty()
+        && body_only_kernel.is_some()
+        && non_template_warm_reasons.is_empty();
+    let mut reason_codes = if deterministic_body_rebuild {
+        vec![
+            "edit.device_source_included_header".to_string(),
+            "edit.header_kernel_body_only".to_string(),
+            "abi.kernel_signature_preserved".to_string(),
+            "abi.constant_global_layout_preserved".to_string(),
+            "template_evidence_not_required".to_string(),
+            "build.warm_rebuild".to_string(),
+            "build.device_sidecar_rebuild".to_string(),
+        ]
+    } else if preflight_reasons.is_empty()
         && arbiter_decision == "auto_run"
         && selected_plan == "warm_rebuild"
     {
@@ -1066,10 +1105,7 @@ fn try_warm_rebuild_header_plan(
         ]
     } else {
         let mut reasons = preflight_reasons;
-        reasons.extend(ranked_option_reason_codes(
-            &normalized_candidate,
-            "warm_rebuild",
-        ));
+        reasons.extend(ranked_warm_reasons.clone());
         if arbiter_decision != "auto_run" {
             reasons.push("arbiter_path_not_worth_running".to_string());
         }
@@ -1081,8 +1117,8 @@ fn try_warm_rebuild_header_plan(
     let accepted = reason_codes
         .iter()
         .any(|code| code == "build.warm_rebuild")
-        && arbiter_decision == "auto_run"
-        && selected_plan == "warm_rebuild";
+        && (deterministic_body_rebuild
+            || (arbiter_decision == "auto_run" && selected_plan == "warm_rebuild"));
     let estimated_ms = ranked_option_estimate_ms(&normalized_candidate, "warm_rebuild");
     let plan = warm_rebuild_reload_plan(
         if accepted { "warm_rebuild" } else { "unsupported" },
@@ -1578,7 +1614,8 @@ pub async fn handle_compile_request(
                 );
 
                 let mut natural_gpu_ai_delta_reason_codes: Vec<String> = Vec::new();
-                let direct_device_split = if is_device_source_request(&req.filename)
+                let direct_device_split = if (is_device_source_request(&req.filename)
+                    || is_device_header_request(&req.filename))
                     && !req.force_gpu_ai_delta
                 {
                     let request_device_name = normalized_request_filename(&req.filename)
@@ -1905,9 +1942,11 @@ pub async fn handle_compile_request(
                         if req.force_gpu_ai_delta || !natural_gpu_ai_delta_reason_codes.is_empty() {
                             let request_device_name = normalized_request_filename(&req.filename)
                                 .unwrap_or_else(|| req.filename.replace('\\', "/"));
-                            if !is_device_source_request(&request_device_name) {
+                            if !is_device_source_request(&request_device_name)
+                                && !is_device_header_request(&request_device_name)
+                            {
                                 anyhow::bail!(
-                                    "GPU AI delta requires a .cu/.hip request, got {}",
+                                    "GPU AI delta requires a GPU source or device header request, got {}",
                                     req.filename
                                 );
                             }
@@ -4831,6 +4870,48 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
         }))
     }
 
+    fn generated_include_bridge_sidecar() -> serde_json::Value {
+        let header = "#pragma once\n#ifdef __KERNELCC__\nGLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData render_data)\n#else\nGLOBAL_KERNEL_SIGNATURE(void) inline CameraRays(HIPRTRenderData render_data, int x, int y)\n#endif\n{\n  render_data.random_number += 1;\n}\n";
+        normalize_split_sidecar(&serde_json::json!({
+            "selectedCompileCommand": {
+                "schemaVersion": "synthi.gpu.selected_compile_command.v1",
+                "identity": "compile-command-id",
+                "effectiveFlagsHash": "flags-hash"
+            },
+            "effectiveFlagsHash": "flags-hash",
+            "toolchainCapabilities": {
+                "schemaVersion": "synthi.gpu.toolchain_capability.v1",
+                "status": "current",
+                "compilerId": "hipcc",
+                "gpuVendor": "rocm",
+                "gpuArch": "gfx1201",
+                "requiresRdc": false,
+                "supportsDeviceOnlyReload": true
+            },
+            "sourceBaselineContents": {
+                "src/Device/kernels/CameraRays.h": header
+            },
+            "sourceBaselineHashes": {
+                "src/Device/kernels/CameraRays.h": device_source_hash(header)
+            },
+            "deviceMappingReport": {
+                "schemaVersion": "synthi.gpu.device_mapping.v1",
+                "generatedDevicePath": ".synthi/generated/gpu/device.hip",
+                "deviceIncludeGraph": {
+                    "schemaVersion": "synthi.gpu.device_include_graph.v1",
+                    "status": "bounded",
+                    "deviceTranslationUnits": ["src/Device/kernels/CameraRays.h"],
+                    "generatedDeviceIncludes": ["src/Device/kernels/CameraRays.h"],
+                    "reachableHeaders": [],
+                    "edges": [],
+                    "missingIncludes": [],
+                    "reasonCodes": []
+                }
+            },
+            "launch_indirection_report": warm_launch_indirection_report()
+        }))
+    }
+
     #[test]
     fn warm_rebuild_header_edit_requires_fresh_bounded_template_evidence() {
         let sidecar = warm_rebuild_sidecar("fresh");
@@ -4905,6 +4986,47 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
             .reason_codes
             .iter()
             .any(|code| code == "template_evidence_stale"));
+    }
+
+    #[test]
+    fn warm_rebuild_accepts_generated_include_kernel_body_edit_without_template_evidence() {
+        let sidecar = generated_include_bridge_sidecar();
+        let old_header = sidecar
+            .pointer("/sourceBaselineContents/src~1Device~1kernels~1CameraRays.h")
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        let new_header = old_header.replace("random_number += 1", "random_number += 3");
+
+        let decision = try_warm_rebuild_header_plan(
+            &sidecar,
+            "src/Device/kernels/CameraRays.h",
+            old_header,
+            &new_header,
+            Some(".synthi/generated/gpu/device.hip"),
+        )
+        .expect("warm decision");
+
+        assert!(
+            decision.accepted,
+            "reason_codes={:?} verifier={}",
+            decision.reason_codes,
+            decision.verifier_report
+        );
+        assert_eq!(
+            decision
+                .reload_plan
+                .get("plan")
+                .and_then(serde_json::Value::as_str),
+            Some("warm_rebuild")
+        );
+        assert!(decision
+            .reason_codes
+            .iter()
+            .any(|code| code == "edit.header_kernel_body_only"));
+        assert!(decision
+            .reason_codes
+            .iter()
+            .any(|code| code == "template_evidence_not_required"));
     }
 
     #[test]

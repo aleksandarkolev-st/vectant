@@ -31,8 +31,8 @@ use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::stages::ai_utils::calculate_hash;
 use crate::compiler::stages::compile_helpers::{
-    compile_to_object_command, cpp_compile_command, link_object_to_exec_command,
-    object_path_for_exec,
+    compile_to_object_command, cpp_compile_command, filter_unresolved_manifest_library_flags,
+    link_object_to_exec_command, object_path_for_exec,
 };
 use crate::hmr::compile_manifest::{CompileManifest, ModuleKind};
 use crate::hmr::incremental_cache::IncrementalCache;
@@ -327,7 +327,8 @@ pub async fn compile_runner(
             "host_runner",
             host_runner_content,
             |m| {
-                let mut cmd = cpp_compile_command(m.select_compiler(ModuleKind::HostRunner));
+                let retry_compiler = m.select_compiler(ModuleKind::HostRunner);
+                let mut cmd = cpp_compile_command(retry_compiler);
                 cmd.arg(format!("-std={}", m.std));
                 // Strip -shared / -fPIC (runner is an executable, not a .so)
                 for f in &m.common_flags {
@@ -344,12 +345,23 @@ pub async fn compile_runner(
                     .arg("-I.")
                     .arg("-o")
                     .arg(&runner_out);
-                for f in &m.runner_link_flags {
+                let mut retry_link_flags = m.runner_link_flags.clone();
+                push_if_absent(&mut retry_link_flags, "-ldl");
+                if !retry_link_flags
+                    .iter()
+                    .any(|f| f == "-pthread" || f == "-lpthread")
+                {
+                    retry_link_flags.push("-pthread".to_string());
+                }
+                push_if_absent(&mut retry_link_flags, "-rdynamic");
+                let filtered_link_flags = filter_unresolved_manifest_library_flags(
+                    retry_compiler,
+                    &retry_link_flags,
+                    dir_path,
+                );
+                for f in filtered_link_flags {
                     cmd.arg(f);
                 }
-                // Phase 12.5: -pthread for stdin reader thread in new
-                // host_runner template (must mirror build_runner_flag_list).
-                cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
                 cmd.current_dir(dir_path);
                 cmd
             },
@@ -416,11 +428,23 @@ pub async fn compile_runner(
                             .arg("-I.")
                             .arg("-o")
                             .arg(&runner_out);
-                        for f in &effective_manifest.runner_link_flags {
+                        let mut retry_link_flags = effective_manifest.runner_link_flags.clone();
+                        push_if_absent(&mut retry_link_flags, "-ldl");
+                        if !retry_link_flags
+                            .iter()
+                            .any(|f| f == "-pthread" || f == "-lpthread")
+                        {
+                            retry_link_flags.push("-pthread".to_string());
+                        }
+                        push_if_absent(&mut retry_link_flags, "-rdynamic");
+                        let filtered_link_flags = filter_unresolved_manifest_library_flags(
+                            compiler_exe,
+                            &retry_link_flags,
+                            dir_path,
+                        );
+                        for f in filtered_link_flags {
                             retry_cmd.arg(f);
                         }
-                        // Phase 12.5: -pthread mirrors build_runner_flag_list.
-                        retry_cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
                         retry_cmd.current_dir(dir_path);
                         retry_cmd.kill_on_drop(true);
                         if let Ok(retry_child) = retry_cmd.spawn() {

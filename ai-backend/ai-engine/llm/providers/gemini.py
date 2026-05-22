@@ -28,6 +28,17 @@ from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt,
 load_dotenv()  # Load once at import
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 def _get_metrics_collector():
     """Lazy import to avoid circular dependencies."""
     try:
@@ -72,6 +83,15 @@ class GeminiProvider(AiProvider):
                 generation_config=self.generation_config,
             )
         return self._clients[cache_key]
+
+    def _timeout_seconds(self, mode: str, prompt_len: int) -> float:
+        default_timeout = _env_float("SYNTHI_GEMINI_TIMEOUT_SEC", 120.0)
+        if mode == "split":
+            split_default = 300.0 if prompt_len >= 200_000 else 180.0
+            return _env_float("SYNTHI_GEMINI_SPLIT_TIMEOUT_SEC", split_default)
+        if mode == "delta":
+            return _env_float("SYNTHI_GEMINI_DELTA_TIMEOUT_SEC", default_timeout)
+        return default_timeout
 
     async def ask_llm(
         self,
@@ -135,11 +155,15 @@ class GeminiProvider(AiProvider):
             total_tokens = 0
 
             # Non-streaming — more reliable than streaming which hangs on this model
-            print(f"[Gemini] Calling API for mode={mode_lower}, prompt_len={len(full_prompt)} chars")
+            timeout_seconds = self._timeout_seconds(mode_lower, len(full_prompt))
+            print(
+                f"[Gemini] Calling API for mode={mode_lower}, "
+                f"prompt_len={len(full_prompt)} chars, timeout={timeout_seconds:.1f}s"
+            )
             try:
                 resp = await asyncio.wait_for(
                     client.generate_content_async(full_prompt, stream=False),
-                    timeout=120.0,
+                    timeout=timeout_seconds,
                 )
                 combined = resp.text.strip()
                 total_tokens = _count_tokens(combined)

@@ -39,6 +39,10 @@ use crate::hmr::compile_manifest::CompileManifest;
 #[cfg(feature = "gpu-hmr")]
 use anyhow::Context;
 use anyhow::Result;
+#[cfg(feature = "gpu-hmr")]
+use regex::Regex;
+#[cfg(feature = "gpu-hmr")]
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 #[cfg(feature = "gpu-hmr")]
 use tokio::io::AsyncReadExt;
@@ -172,6 +176,30 @@ async fn compile_device_inner(
 
     let mut current_source = device_source.to_string();
     for attempt in 0..=max_heal_attempts {
+        if heal_allowed {
+            match remove_source_owned_device_forward_decls(
+                workspace_dir,
+                source_filename,
+                &current_source,
+                gpu,
+            )
+            .await
+            {
+                Ok(sanitized) if sanitized != current_source => {
+                    eprintln!(
+                        "[compile-device] removed source-owned generated device forward declarations before compile"
+                    );
+                    current_source = sanitized;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!(
+                        "[compile-device] source-owned declaration cleanup skipped: {e}"
+                    );
+                }
+            }
+        }
+
         tokio::fs::write(&source_path, &current_source)
             .await
             .context("writing device source")?;
@@ -260,6 +288,304 @@ async fn compile_device_inner(
     }
 
     unreachable!("device compile loop always returns or bails")
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn remove_source_owned_device_forward_decls(
+    workspace_dir: &Path,
+    source_filename: &str,
+    source: &str,
+    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+) -> Result<String> {
+    let owned_names = reachable_source_owned_device_functions(
+        workspace_dir,
+        source_filename,
+        source,
+        &gpu.device_flags,
+    )
+    .await?;
+    if owned_names.is_empty() {
+        return Ok(source.to_string());
+    }
+    Ok(remove_forward_decls_for_names(source, &owned_names))
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn reachable_source_owned_device_functions(
+    workspace_dir: &Path,
+    source_filename: &str,
+    source: &str,
+    device_flags: &[String],
+) -> Result<HashSet<String>> {
+    const MAX_INCLUDED_FILES: usize = 160;
+    const MAX_INCLUDED_BYTES: u64 = 2 * 1024 * 1024;
+
+    let mut include_dirs = device_include_dirs(workspace_dir, device_flags);
+    include_dirs.push(workspace_dir.to_path_buf());
+    if let Some(parent) = workspace_dir.join(source_filename).parent() {
+        include_dirs.push(parent.to_path_buf());
+    }
+
+    let mut queue = VecDeque::new();
+    let root_dir = workspace_dir
+        .join(source_filename)
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| workspace_dir.to_path_buf());
+    for include in parse_includes(source) {
+        if let Some(path) = resolve_device_include(
+            workspace_dir,
+            &root_dir,
+            &include.path,
+            include.quoted,
+            &include_dirs,
+        ) {
+            queue.push_back(path);
+        }
+    }
+
+    let mut visited = HashSet::new();
+    let mut names = HashSet::new();
+    while let Some(path) = queue.pop_front() {
+        if visited.len() >= MAX_INCLUDED_FILES {
+            break;
+        }
+        let normalized = normalize_path_key(&path);
+        if !visited.insert(normalized) {
+            continue;
+        }
+        let Ok(metadata) = tokio::fs::metadata(&path).await else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > MAX_INCLUDED_BYTES {
+            continue;
+        }
+        let Ok(content) = tokio::fs::read_to_string(&path).await else {
+            continue;
+        };
+        names.extend(source_owned_device_function_names(&content));
+        let including_dir = path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| workspace_dir.to_path_buf());
+        for include in parse_includes(&content) {
+            if let Some(next) = resolve_device_include(
+                workspace_dir,
+                &including_dir,
+                &include.path,
+                include.quoted,
+                &include_dirs,
+            ) {
+                queue.push_back(next);
+            }
+        }
+    }
+
+    Ok(names)
+}
+
+#[cfg(feature = "gpu-hmr")]
+#[derive(Debug)]
+struct DeviceInclude {
+    path: String,
+    quoted: bool,
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn parse_includes(source: &str) -> Vec<DeviceInclude> {
+    let include_re =
+        Regex::new(r#"(?m)^\s*#\s*include\s*(?P<delim>[<"])(?P<path>[^>"]+)[>"]"#)
+            .expect("valid include regex");
+    include_re
+        .captures_iter(&strip_cpp_comments_for_device_compile(source))
+        .filter_map(|caps| {
+            let path = caps.name("path")?.as_str().trim();
+            if path.is_empty() {
+                return None;
+            }
+            Some(DeviceInclude {
+                path: path.replace('\\', "/"),
+                quoted: caps.name("delim").map(|m| m.as_str()) == Some("\""),
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_include_dirs(workspace_dir: &Path, device_flags: &[String]) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let mut iter = device_flags.iter().peekable();
+    while let Some(flag) = iter.next() {
+        let candidates: Vec<String> = if flag == "-I" || flag == "-isystem" {
+            iter.next().map(|next| vec![next.clone()]).unwrap_or_default()
+        } else if let Some(rest) = flag.strip_prefix("-I") {
+            vec![rest.to_string()]
+        } else if let Some(rest) = flag.strip_prefix("-isystem") {
+            vec![rest.to_string()]
+        } else if let Some(rest) = flag.strip_prefix("--include-directory=") {
+            vec![rest.to_string()]
+        } else if let Some(rest) = flag.strip_prefix("--system-include=") {
+            vec![rest.to_string()]
+        } else {
+            Vec::new()
+        };
+
+        for candidate in candidates {
+            let trimmed = candidate.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let path = PathBuf::from(trimmed);
+            dirs.push(if path.is_absolute() {
+                path
+            } else {
+                workspace_dir.join(path)
+            });
+        }
+    }
+    dirs
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn resolve_device_include(
+    workspace_dir: &Path,
+    including_dir: &Path,
+    include_path: &str,
+    quoted: bool,
+    include_dirs: &[PathBuf],
+) -> Option<PathBuf> {
+    let include_path = include_path.trim();
+    if include_path.is_empty() || include_path.contains('\0') {
+        return None;
+    }
+    let include = PathBuf::from(include_path);
+    if include.is_absolute() && include.is_file() {
+        return Some(include);
+    }
+
+    let mut candidates = Vec::new();
+    if quoted {
+        candidates.push(including_dir.join(&include));
+    }
+    candidates.push(workspace_dir.join(&include));
+    for dir in include_dirs {
+        candidates.push(dir.join(&include));
+    }
+
+    candidates.into_iter().find(|candidate| candidate.is_file())
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn source_owned_device_function_names(source: &str) -> HashSet<String> {
+    let device_fn_re = Regex::new(
+        r#"(?xs)
+        \b(?:HIPRT_DEVICE|HIPRT_HOST_DEVICE|__device__|__host__\s+__device__|__device__\s+__host__)\b
+        (?P<signature>[^;{}]*?)
+        \b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*
+        \(
+            [^;{}()]*
+            (?:\([^;{}()]*\)[^;{}()]*)*
+        \)
+        \s*(?:;|\{)
+        "#,
+    )
+    .expect("valid device function regex");
+    device_fn_re
+        .captures_iter(&strip_cpp_comments_for_device_compile(source))
+        .filter_map(|caps| {
+            let name = caps.name("name")?.as_str();
+            if matches!(
+                name,
+                "if" | "for" | "while" | "switch" | "return" | "__global__"
+            ) {
+                return None;
+            }
+            Some(name.to_string())
+        })
+        .collect()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn remove_forward_decls_for_names(source: &str, source_owned_names: &HashSet<String>) -> String {
+    if source_owned_names.is_empty() {
+        return source.to_string();
+    }
+
+    let forward_decl_re = Regex::new(
+        r#"(?ms)
+        ^[ \t]*
+        (?:
+            extern\s+(?:"C"\s+)?
+        )?
+        (?:
+            __device__|HIPRT_DEVICE|HIPRT_HOST_DEVICE|__host__\s+__device__|__device__\s+__host__
+        )\b
+        [^;{}]*?
+        \b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*
+        \(
+            [^;{}()]*
+            (?:\([^;{}()]*\)[^;{}()]*)*
+        \)
+        \s*;\s*
+        (?:\r?\n)?
+        "#,
+    )
+    .expect("valid forward declaration regex");
+    let out = forward_decl_re
+        .replace_all(source, |caps: &regex::Captures| {
+            let name = caps.name("name").map(|m| m.as_str()).unwrap_or("");
+            if source_owned_names.contains(name) {
+                String::new()
+            } else {
+                caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string()
+            }
+        })
+        .into_owned();
+
+    let empty_extern_c_re =
+        Regex::new(r#"(?ms)^[ \t]*extern\s+"C"\s*\{\s*\}\s*(?:\r?\n)?"#)
+            .expect("valid empty extern C regex");
+    empty_extern_c_re.replace_all(&out, "").into_owned()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn strip_cpp_comments_for_device_compile(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let bytes = source.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            out.push(' ');
+            out.push(' ');
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                out.push(' ');
+                i += 1;
+            }
+        } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            out.push(' ');
+            out.push(' ');
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                out.push(if bytes[i] == b'\n' { '\n' } else { ' ' });
+                i += 1;
+            }
+            if i + 1 < bytes.len() {
+                out.push(' ');
+                out.push(' ');
+                i += 2;
+            }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn normalize_path_key(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -625,6 +951,86 @@ mod tests {
         ));
         assert!(!is_internal_generated_device_source("device.hip"));
         assert!(!is_internal_generated_device_source("src/gpu/raster.hip"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[tokio::test]
+    async fn source_owned_cleanup_removes_generated_device_forward_decl_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let header = tmp
+            .path()
+            .join("thirdparties/HIPRT-Fork/hiprt/impl/hiprt_device_impl.h");
+        tokio::fs::create_dir_all(header.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(
+            &header,
+            "HIPRT_DEVICE bool filterFunc(unsigned int, unsigned int, const hiprtRay&);\n",
+        )
+        .await
+        .unwrap();
+
+        let mut block = rocm_block();
+        block.device_flags = vec!["-Ithirdparties/HIPRT-Fork".to_string()];
+        let source = r#"
+#include <hiprt/impl/hiprt_device_impl.h>
+extern "C" {
+    __device__ bool filterFunc(unsigned int, unsigned int, const hiprtRay&);
+}
+__device__ int generated_helper();
+extern "C" __global__ void CameraRays(int* out) { *out = 1; }
+"#;
+
+        let cleaned = remove_source_owned_device_forward_decls(
+            tmp.path(),
+            ".synthi/generated/gpu/device.hip",
+            source,
+            &block,
+        )
+        .await
+        .unwrap();
+
+        assert!(cleaned.contains("#include <hiprt/impl/hiprt_device_impl.h>"));
+        assert!(!cleaned.contains("__device__ bool filterFunc"));
+        assert!(!cleaned.contains("extern \"C\" {\n}"));
+        assert!(cleaned.contains("__device__ int generated_helper();"));
+        assert!(cleaned.contains("extern \"C\" __global__ void CameraRays"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn source_owned_cleanup_keeps_unknown_generated_forward_decls() {
+        let mut owned = HashSet::new();
+        owned.insert("source_declared".to_string());
+        let source = r#"
+__device__ int source_declared(float*);
+__device__ int generated_helper();
+extern "C" __global__ void apply(float* out) { *out = 1.0f; }
+"#;
+
+        let cleaned = remove_forward_decls_for_names(source, &owned);
+
+        assert!(!cleaned.contains("source_declared(float*)"));
+        assert!(cleaned.contains("__device__ int generated_helper();"));
+        assert!(cleaned.contains("extern \"C\" __global__ void apply"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn source_owned_cleanup_removes_extern_device_forward_decl_conflict() {
+        let mut owned = HashSet::new();
+        owned.insert("filterFunc".to_string());
+        let source = r#"
+extern __device__ hiprtHit filterFunc(unsigned int, unsigned int, const hiprtRay&);
+extern __device__ int generated_helper();
+extern "C" __global__ void apply(float* out) { *out = 1.0f; }
+"#;
+
+        let cleaned = remove_forward_decls_for_names(source, &owned);
+
+        assert!(!cleaned.contains("hiprtHit filterFunc"));
+        assert!(cleaned.contains("extern __device__ int generated_helper();"));
+        assert!(cleaned.contains("extern \"C\" __global__ void apply"));
     }
 
     #[cfg(feature = "gpu-hmr")]

@@ -3,7 +3,8 @@ use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::serialization_utils::calculate_hash;
 use crate::compiler::stages::compile_helpers::{
-    compile_to_object_command, cpp_compile_command, link_object_to_so_command, object_path_for_so,
+    compile_to_object_command, cpp_compile_command, filter_unresolved_manifest_library_flags,
+    link_object_to_so_command, object_path_for_so,
 };
 use crate::hmr::compile_manifest::{CompileManifest, ModuleKind};
 use crate::hmr::incremental_cache::IncrementalCache;
@@ -72,18 +73,16 @@ pub async fn compile_gui(
 
             // Build the effective flag list — manifest common_flags +
             // std + gui_link_flags + hardcoded dlopen boilerplate.
-            // `req_is_gui=false` means the runner won't ask gui.so to
-            // render anything, so we skip the gui_link_flags to avoid
-            // linking SDL2/GLFW/etc for headless projects (matches the
-            // pre-manifest gating on `-lSDL2`).
+            // Once the split emits a GUI module, its link flags are part
+            // of that module's recipe. `req_is_gui` only controls fallback
+            // stub generation below; gating link flags on it can create a
+            // .so with unresolved framework symbols that fails at dlopen.
             let mut effective_flag_strings: Vec<String> = Vec::with_capacity(
                 effective_manifest.common_flags.len() + effective_manifest.gui_link_flags.len() + 3,
             );
             effective_flag_strings.push(std_flag.clone());
             effective_flag_strings.extend(effective_manifest.common_flags.iter().cloned());
-            if req_is_gui {
-                effective_flag_strings.extend(effective_manifest.gui_link_flags.iter().cloned());
-            }
+            effective_flag_strings.extend(effective_manifest.gui_link_flags.iter().cloned());
             effective_flag_strings.push("-ldl".to_string());
             effective_flag_strings.push("-rdynamic".to_string());
             let effective_flag_refs: Vec<&str> =
@@ -101,14 +100,11 @@ pub async fn compile_gui(
                 // ULTRAPLAN Phase 9b: two-step split (see compile_core.rs
                 // for rationale). Same pattern: compile via ccache, link
                 // directly. Link flags for gui include `-ldl -rdynamic`
-                // plus the manifest's gui_link_flags when req_is_gui is
-                // set (headless projects skip them to avoid linking
-                // SDL2/GLFW/etc for a gui.so that won't render).
+                // plus the manifest's gui_link_flags whenever the split
+                // actually produced a GUI module.
                 let mut link_flags: Vec<String> =
                     Vec::with_capacity(effective_manifest.gui_link_flags.len() + 2);
-                if req_is_gui {
-                    link_flags.extend(effective_manifest.gui_link_flags.iter().cloned());
-                }
+                link_flags.extend(effective_manifest.gui_link_flags.iter().cloned());
                 link_flags.push("-ldl".to_string());
                 link_flags.push("-rdynamic".to_string());
 
@@ -221,17 +217,23 @@ pub async fn compile_gui(
                             |m| {
                                 let mut cmd =
                                     cpp_compile_command(m.select_compiler(ModuleKind::Gui));
+                                let retry_compiler = m.select_compiler(ModuleKind::Gui);
                                 cmd.arg(format!("-std={}", m.std));
                                 for f in &m.common_flags {
                                     cmd.arg(f);
                                 }
                                 cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
-                                if req_is_gui {
-                                    for f in &m.gui_link_flags {
-                                        cmd.arg(f);
-                                    }
+                                let mut retry_link_flags = m.gui_link_flags.clone();
+                                retry_link_flags.push("-ldl".to_string());
+                                retry_link_flags.push("-rdynamic".to_string());
+                                let filtered_link_flags = filter_unresolved_manifest_library_flags(
+                                    retry_compiler,
+                                    &retry_link_flags,
+                                    dir_path,
+                                );
+                                for f in filtered_link_flags {
+                                    cmd.arg(f);
                                 }
-                                cmd.arg("-ldl").arg("-rdynamic");
                                 cmd.current_dir(dir_path);
                                 cmd
                             },
@@ -297,12 +299,19 @@ pub async fn compile_gui(
                                         retry_cmd.arg(f);
                                     }
                                     retry_cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
-                                    if req_is_gui {
-                                        for f in &effective_manifest.gui_link_flags {
-                                            retry_cmd.arg(f);
-                                        }
+                                    let mut retry_link_flags =
+                                        effective_manifest.gui_link_flags.clone();
+                                    retry_link_flags.push("-ldl".to_string());
+                                    retry_link_flags.push("-rdynamic".to_string());
+                                    let filtered_link_flags =
+                                        filter_unresolved_manifest_library_flags(
+                                            compiler_exe,
+                                            &retry_link_flags,
+                                            dir_path,
+                                        );
+                                    for f in filtered_link_flags {
+                                        retry_cmd.arg(f);
                                     }
-                                    retry_cmd.arg("-ldl").arg("-rdynamic");
                                     retry_cmd.current_dir(dir_path);
                                     retry_cmd.kill_on_drop(true);
                                     if let Ok(retry_child) = retry_cmd.spawn() {

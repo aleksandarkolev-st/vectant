@@ -63,6 +63,9 @@ const CFG = {
   cmakeConfigName: process.env.SYNTHI_REAL_ROCM_CMAKE_CONFIG ?? 'Release',
   cmakeTargetType: process.env.SYNTHI_REAL_ROCM_TARGET_TYPE ?? 'EXECUTABLE',
   cmakeTargetIdNamespace: process.env.SYNTHI_REAL_ROCM_TARGET_ID_NAMESPACE ?? 'real-rocm',
+  buildMetadataDir: process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR
+    ? path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR)
+    : '',
   gpuMode: process.env.SYNTHI_REAL_ROCM_GPU_MODE ?? 'rocm',
   buildUpstream: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM !== '0',
   runUpstream: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM !== '0',
@@ -139,6 +142,7 @@ const report = {
       SYNTHI_REAL_ROCM_RUN_UPSTREAM: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM ?? '',
       SYNTHI_REAL_ROCM_MAX_FILE_BYTES: process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? '',
       SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES: process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? '',
+      SYNTHI_REAL_ROCM_BUILD_METADATA_DIR: process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR ?? '',
       SYNTHI_GEMINI_MODEL: process.env.SYNTHI_GEMINI_MODEL ?? '',
       SYNTHI_GPU_ARCH: process.env.SYNTHI_GPU_ARCH ?? '',
       MCP_CONTAINER: process.env.MCP_CONTAINER ?? '',
@@ -243,6 +247,22 @@ async function listTrackedFiles() {
 }
 
 async function prepareUpstreamBuild() {
+  if (CFG.buildMetadataDir) {
+    const metadata = await collectBuildMetadataFromHost(CFG.buildMetadataDir);
+    report.phases.push({
+      name: 'upstream_gpu_build_run',
+      timings: 'configure_ms=cached\nbuild_ms=skipped\nrun_ms=skipped',
+      output: `using cached CMake metadata from ${CFG.buildMetadataDir}`,
+    });
+    report.logs.upstream_run = 'upstream configure/build/run skipped; using cached CMake metadata\n';
+    record(
+      'upstream GPU target metadata configured',
+      'pass',
+      `cached_metadata=${CFG.buildMetadataDir} build=skipped run=skipped`,
+    );
+    return metadata;
+  }
+
   const buildPath = `${CFG.workerRepoPath}/${CFG.buildSubdir}/build`;
   const shell = [
     'set -e',
@@ -291,6 +311,41 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\n' "$((configured-start))" "$
   );
 
   return collectBuildMetadataFromWorker(buildPath);
+}
+
+async function collectBuildMetadataFromHost(metadataDir) {
+  const compileHostPath = path.join(metadataDir, 'compile_commands.json');
+  const replyHostPath = path.join(metadataDir, 'reply');
+  if (!existsSync(compileHostPath)) {
+    throw new Error(`cached CMake metadata missing compile_commands.json: ${compileHostPath}`);
+  }
+  if (!existsSync(replyHostPath)) {
+    throw new Error(`cached CMake metadata missing reply directory: ${replyHostPath}`);
+  }
+
+  const compileCommandsJson = normalizeCompileCommands(await readFile(compileHostPath, 'utf8'));
+  const replyFiles = [];
+  const projectionHints = {
+    target_source_paths: new Set(),
+    target_include_dirs: new Set(),
+    matched_target_files: [],
+  };
+  for (const name of (await readdir(replyHostPath)).sort()) {
+    if (!name.endsWith('.json')) continue;
+    const content = normalizeBuildMetadataText(await readFile(path.join(replyHostPath, name), 'utf8'));
+    replyFiles.push({ path: `.cmake/api/v1/reply/${name}`, content });
+    collectProjectionHintsFromCmakeReply(name, content, projectionHints);
+  }
+  if (!replyFiles.length) {
+    throw new Error(`cached CMake metadata reply directory did not contain JSON metadata: ${replyHostPath}`);
+  }
+  return {
+    compileCommandsJson,
+    cmakeReplyFiles: replyFiles,
+    targetSourcePaths: [...projectionHints.target_source_paths].sort(),
+    targetIncludeDirs: [...projectionHints.target_include_dirs].sort(),
+    matchedTargetFiles: projectionHints.matched_target_files.sort(),
+  };
 }
 
 async function collectBuildMetadataFromWorker(buildPath) {

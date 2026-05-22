@@ -1,7 +1,7 @@
 # PROTOTYPING AI ENGINE WITH PYTHON, LATER SWITCH TO RUST
 from __future__ import annotations
 
-from typing import List, Optional, Union, Tuple
+from typing import Any, List, Mapping, Optional, Union, Tuple
 import re
 import requests
 import json
@@ -2111,6 +2111,41 @@ def _file_map_from_request(req: AnalyzeAiRequest) -> dict[str, str]:
     return files
 
 
+def _device_mapping_source_scope(
+    file_map: Mapping[str, str],
+    source_context_report: Optional[Mapping[str, Any]],
+) -> Mapping[str, str]:
+    if not isinstance(source_context_report, Mapping):
+        return file_map
+
+    scoped_paths: set[str] = set()
+    for section in ("included", "criticalDropped"):
+        items = source_context_report.get(section)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, Mapping) and isinstance(item.get("path"), str):
+                scoped_paths.add(str(item["path"]).replace("\\", "/"))
+
+    topology = source_context_report.get("deviceTuTopology")
+    if isinstance(topology, Mapping):
+        device_tus = topology.get("deviceTranslationUnits")
+        if isinstance(device_tus, list):
+            for item in device_tus:
+                if isinstance(item, Mapping) and isinstance(item.get("path"), str):
+                    scoped_paths.add(str(item["path"]).replace("\\", "/"))
+
+    if not scoped_paths:
+        return file_map
+
+    normalized_file_map = {str(path).replace("\\", "/"): source for path, source in file_map.items()}
+    return {
+        path: normalized_file_map[path]
+        for path in sorted(scoped_paths)
+        if path in normalized_file_map
+    }
+
+
 # ══════════════════════════════════════════════════════════════
 # Diff-patch prompt builder (full 4-module mode)
 # ══════════════════════════════════════════════════════════════
@@ -2239,7 +2274,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     split_model = (
         req.model
         or os.getenv("SYNTHI_GEMINI_MODEL")
-        or "gemini-3.1-flash-lite-preview"
+        or "gemini-3.5-flash"
     )
     split_prompt = req.prompt
     max_split_attempts = 3
@@ -2457,6 +2492,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 or os.getenv("SYNTHI_GPU_ARCH")
                 or None
             ),
+            focus_path=req.focus,
         )
         manifest_parsed = parse_manifest(manifest_raw)
         validate_manifest_v1(manifest_parsed)
@@ -2468,7 +2504,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         validate_manifest_v1(manifest_parsed)
         manifest_out = manifest_to_dict(manifest_parsed)
         device_mapping_report = build_device_mapping_report(
-            source_files=file_map,
+            source_files=_device_mapping_source_scope(file_map, split.source_context_report),
             generated_files=split_files_out,
             manifest=manifest_out,
         )
@@ -2726,6 +2762,19 @@ async def refactor_heal(req: HealRequest):
         if result.endswith("```"):
             result = result[:-3]
         result = _unwrap_heal_content(result.strip())
+        try:
+            from agents.gpu_split_repair import sanitize_generated_heal_output
+
+            sanitized, sanitized_changed = sanitize_generated_heal_output(
+                module=req.module_name,
+                source=result,
+                errors=req.error_messages,
+            )
+            if sanitized_changed:
+                print(f"[Heal] deterministic generated-role sanitizer adjusted {req.module_name}")
+                result = sanitized
+        except Exception as sanitizer_error:
+            print(f"[Heal] sanitizer skipped for {req.module_name}: {sanitizer_error}")
 
         elapsed = time.time() - start_time
         print(f"[Heal] {req.module_name} fixed in {elapsed:.2f}s")

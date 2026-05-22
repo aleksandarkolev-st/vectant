@@ -7,6 +7,7 @@ import re
 import shlex
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+from agents.abi_stamper import mask_comments_for_parsing
 from gpu_hmr.canonical import canonical_hash
 
 
@@ -127,26 +128,30 @@ def _drop_reason(path: str) -> Optional[str]:
 def _reason_and_priority(path: str, source: str, focus: Optional[str]) -> Tuple[int, str]:
     normalized = normalize_path(path)
     focus_path = normalize_path(focus or "")
+    parsed_source = mask_comments_for_parsing(source or "")
     if focus_path and normalized == focus_path:
         return (0, "entry_translation_unit")
-    if _is_build_metadata(normalized):
+    base = normalized.rsplit("/", 1)[-1]
+    if base == "CMakeLists.txt" or normalized.endswith("/CMakeLists.txt"):
         return (1, "build_metadata")
-    if normalized.lower().endswith((".cu", ".cuh", ".hip")) and _KERNEL_DECL_RE.search(source):
+    if normalized.lower().endswith((".cu", ".cuh", ".hip")) and _KERNEL_DECL_RE.search(parsed_source):
         return (2, "device_translation_unit")
-    if looks_like_source_file(normalized) and _KERNEL_DECL_RE.search(source):
+    if looks_like_source_file(normalized) and _KERNEL_DECL_RE.search(parsed_source):
         if "/kernels/" in normalized:
             return (3, "kernel_declaration")
         return (4, "kernel_declaration")
-    if "<<<" in source and ">>>" in source:
+    if "<<<" in parsed_source and ">>>" in parsed_source:
         return (5, "kernel_launch_site")
-    if _RENDER_RE.search(source):
+    if _RENDER_RE.search(parsed_source):
         return (6, "render_backend")
-    if _STATE_RE.search(source):
+    if _STATE_RE.search(parsed_source):
         return (7, "state_type_definition")
     if normalized.startswith("src/") and looks_like_source_file(normalized):
         return (8, "transitive_source_context")
     if looks_like_source_file(normalized):
         return (9, "source_context")
+    if _is_build_metadata(normalized):
+        return (10, "build_metadata")
     return (99, "unsupported_file_type")
 
 
@@ -197,8 +202,9 @@ def _graphics_backend_report(
             continue
         if not looks_like_source_file(normalized) and not normalized.endswith("CMakeLists.txt"):
             continue
+        parsed_source = mask_comments_for_parsing(source or "")
         for backend, pattern in _BACKEND_PATTERNS.items():
-            if pattern.search(source or ""):
+            if pattern.search(parsed_source):
                 detected.add(backend)
                 evidence.append(
                     {
@@ -775,10 +781,11 @@ def build_source_context_report(
             or not looks_like_source_file(path)
             or any(_path_matches(path, scoped) for scoped in selected_target_scope)
         )
+        parsed_source = mask_comments_for_parsing(source or "")
         is_device_like_source = (
             normalize_path(path).lower().endswith((".cu", ".cuh", ".hip"))
-            or _KERNEL_DECL_RE.search(source or "") is not None
-            or ("<<<" in (source or "") and ">>>" in (source or ""))
+            or _KERNEL_DECL_RE.search(parsed_source) is not None
+            or ("<<<" in parsed_source and ">>>" in parsed_source)
         )
         record = {
             "path": path,
@@ -837,7 +844,9 @@ def build_source_context_report(
         or (
             item.get("path") == normalize_path(focus or "")
             and normalize_path(item.get("path") or "").lower().endswith((".cu", ".cuh", ".hip"))
-            and _KERNEL_DECL_RE.search(normalized_files.get(item.get("path") or "", "") or "")
+            and _KERNEL_DECL_RE.search(
+                mask_comments_for_parsing(normalized_files.get(item.get("path") or "", "") or "")
+            )
         )
     ]
     multi_device_tu = len(device_translation_units) > 1

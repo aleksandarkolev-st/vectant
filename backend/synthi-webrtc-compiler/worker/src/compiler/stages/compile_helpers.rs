@@ -301,7 +301,7 @@ pub fn object_path_for_exec(exec_path: &std::path::Path) -> std::path::PathBuf {
     parent.join(format!("{}.o", stem))
 }
 
-fn filter_unresolved_manifest_library_flags(
+pub(crate) fn filter_unresolved_manifest_library_flags(
     compiler_exe: &str,
     link_flags: &[String],
     workspace_dir: &Path,
@@ -313,8 +313,47 @@ fn filter_unresolved_manifest_library_flags(
     while i < link_flags.len() {
         let flag = &link_flags[i];
 
+        if contains_unresolved_build_placeholder(flag) {
+            eprintln!(
+                "[LinkFlags] skipping unresolved manifest link placeholder {}",
+                flag
+            );
+            i += 1;
+            continue;
+        }
+
+        if flag == "-L" {
+            if let Some(dir) = link_flags.get(i + 1) {
+                if contains_unresolved_build_placeholder(dir) {
+                    eprintln!(
+                        "[LinkFlags] skipping unresolved manifest library path -L {}",
+                        dir
+                    );
+                    i += 2;
+                    continue;
+                }
+            }
+        } else if let Some(dir) = flag.strip_prefix("-L") {
+            if !dir.is_empty() && contains_unresolved_build_placeholder(dir) {
+                eprintln!(
+                    "[LinkFlags] skipping unresolved manifest library path {}",
+                    flag
+                );
+                i += 1;
+                continue;
+            }
+        }
+
         if flag == "-l" {
             if let Some(name) = link_flags.get(i + 1) {
+                if contains_unresolved_build_placeholder(name) {
+                    eprintln!(
+                        "[LinkFlags] skipping unresolved manifest library flag -l {}",
+                        name
+                    );
+                    i += 2;
+                    continue;
+                }
                 if library_resolves(compiler_exe, name, &search_dirs, workspace_dir) {
                     filtered.push(flag.clone());
                     filtered.push(name.clone());
@@ -342,11 +381,28 @@ fn filter_unresolved_manifest_library_flags(
             continue;
         }
 
+        if is_library_file_argument(flag) {
+            if library_file_argument_resolves(flag, workspace_dir) {
+                filtered.push(flag.clone());
+            } else {
+                eprintln!(
+                    "[LinkFlags] skipping unresolved manifest library path {}",
+                    flag
+                );
+            }
+            i += 1;
+            continue;
+        }
+
         filtered.push(flag.clone());
         i += 1;
     }
 
     filtered
+}
+
+fn contains_unresolved_build_placeholder(flag: &str) -> bool {
+    flag.contains("${") || flag.contains("$<")
 }
 
 fn library_name_from_link_flag(flag: &str) -> Option<&str> {
@@ -421,16 +477,36 @@ fn library_candidate_names(name: &str) -> Vec<String> {
         || name.contains(".so")
         || name.ends_with(".a")
         || name.ends_with(".dylib")
+        || name.ends_with(".lib")
     {
         return vec![name.to_string()];
     }
     vec![format!("lib{}.so", name), format!("lib{}.a", name)]
 }
 
+fn is_library_file_argument(flag: &str) -> bool {
+    if flag.starts_with('-') {
+        return false;
+    }
+    let lower = flag.to_ascii_lowercase();
+    lower.ends_with(".a")
+        || lower.ends_with(".so")
+        || lower.contains(".so.")
+        || lower.ends_with(".dylib")
+        || lower.ends_with(".lib")
+}
+
+fn library_file_argument_resolves(flag: &str, workspace_dir: &Path) -> bool {
+    let path = PathBuf::from(flag);
+    if path.is_absolute() {
+        path.is_file()
+    } else {
+        workspace_dir.join(path).is_file()
+    }
+}
+
 fn library_exists_in_dirs(candidate: &str, search_dirs: &[PathBuf]) -> bool {
-    search_dirs
-        .iter()
-        .any(|dir| dir.join(candidate).is_file())
+    search_dirs.iter().any(|dir| dir.join(candidate).is_file())
 }
 
 fn compiler_reports_library(
@@ -559,17 +635,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&workspace);
     }
 
+    #[test]
+    fn filters_unresolved_cmake_placeholders_and_missing_library_paths() {
+        let workspace = temp_workspace("synthi-link-filter-paths");
+        let lib_dir = workspace.join("thirdparty");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::write(lib_dir.join("libpresent.a"), b"").unwrap();
+
+        let flags = vec![
+            "-L".to_string(),
+            "${UNRESOLVED_LIB_DIR}".to_string(),
+            "-L${OTHER_UNRESOLVED_LIB_DIR}".to_string(),
+            "${CLIP_X11_PNG_LIBRARY}".to_string(),
+            "${CMAKE_CURRENT_SOURCE_DIR}/contrib/embree/win/embree4.lib".to_string(),
+            "thirdparty/libpresent.a".to_string(),
+            "missing/libmissing.a".to_string(),
+            "-Wl,--as-needed".to_string(),
+        ];
+
+        let filtered = filter_unresolved_manifest_library_flags(
+            "compiler-that-does-not-exist",
+            &flags,
+            &workspace,
+        );
+
+        assert!(!filtered.iter().any(|flag| flag.contains("${")));
+        assert!(filtered.contains(&"thirdparty/libpresent.a".to_string()));
+        assert!(!filtered.contains(&"missing/libmissing.a".to_string()));
+        assert!(filtered.contains(&"-Wl,--as-needed".to_string()));
+
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
     fn temp_workspace(prefix: &str) -> std::path::PathBuf {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "{}-{}-{}",
-            prefix,
-            std::process::id(),
-            stamp
-        ));
+        let dir = std::env::temp_dir().join(format!("{}-{}-{}", prefix, std::process::id(), stamp));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }

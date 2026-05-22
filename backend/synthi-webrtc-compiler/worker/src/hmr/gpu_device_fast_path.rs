@@ -67,7 +67,9 @@ pub fn try_direct_device_body_patch(
     generated_device_source: &str,
 ) -> DeviceFastPathResult {
     let user_path = normalize_path(user_path);
-    if !is_device_source_path(&user_path) {
+    if !is_device_source_path(&user_path)
+        && !is_device_header_kernel_source_path(&user_path, new_user_source)
+    {
         return DeviceFastPathResult::rejected(vec!["edit.not_device_source"], &user_path);
     }
     if let Some(reason) = device_only_capability_rejection_reason(sidecar) {
@@ -579,9 +581,12 @@ fn parse_device_cpp_ast(source: &str) -> Result<(), String> {
 }
 
 fn sanitize_gpu_annotations_for_cpp_parser(source: &str) -> String {
+    let global_signature = Regex::new(r"GLOBAL_KERNEL_SIGNATURE\s*\(([^)]*)\)")
+        .expect("global kernel signature sanitizer regex");
+    let mut out = global_signature.replace_all(source, "$1").into_owned();
     let launch_bounds = Regex::new(r"__launch_bounds__\s*\([^)]*\)")
         .expect("launch bounds sanitizer regex");
-    let mut out = launch_bounds.replace_all(source, "").into_owned();
+    out = launch_bounds.replace_all(&out, "").into_owned();
     let launch_config =
         Regex::new(r"(?s)<<<.*?>>>").expect("CUDA/HIP launch config sanitizer regex");
     out = launch_config.replace_all(&out, "").into_owned();
@@ -593,6 +598,9 @@ fn sanitize_gpu_annotations_for_cpp_parser(source: &str) -> String {
         "__managed__",
         "__shared__",
         "__restrict__",
+        "HIPRT_DEVICE",
+        "HIPRT_HOST_DEVICE",
+        "HIPRT_INLINE",
     ] {
         out = out.replace(token, "");
     }
@@ -786,10 +794,39 @@ fn kernel_signatures(source: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+pub(crate) fn device_header_kernel_body_only_edit_symbol(
+    old_source: &str,
+    new_source: &str,
+) -> Option<String> {
+    if kernel_signatures(old_source) != kernel_signatures(new_source) {
+        return None;
+    }
+    if constant_global_layout_hash(old_source) != constant_global_layout_hash(new_source) {
+        return None;
+    }
+    let delta = changed_span(old_source, new_source)?;
+    let old_regions = kernel_regions(old_source);
+    let new_regions = kernel_regions(new_source);
+    for (name, old_region) in old_regions {
+        let Some(new_region) = new_regions.get(&name) else {
+            continue;
+        };
+        if delta.old_start >= old_region.body_start
+            && delta.old_end <= old_region.body_end
+            && delta.new_start >= new_region.body_start
+            && delta.new_end <= new_region.body_end
+        {
+            return Some(name);
+        }
+    }
+    None
+}
+
 fn kernel_regions(source: &str) -> BTreeMap<String, KernelRegion> {
-    let re =
-        Regex::new(r#"(?:extern\s+"C"\s+)?__global__\s+(?:void\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\("#)
-            .expect("kernel regex");
+    let re = Regex::new(
+        r#"(?:extern\s+"C"\s+)?(?:__global__\s+(?:void\s+)?|GLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+(?:__launch_bounds__\s*\([^)]*\)\s*)?)([A-Za-z_][A-Za-z0-9_]*)\s*\("#,
+    )
+    .expect("kernel regex");
     let mut out = BTreeMap::new();
     for captures in re.captures_iter(source) {
         let Some(matched) = captures.get(0) else {
@@ -802,12 +839,9 @@ fn kernel_regions(source: &str) -> BTreeMap<String, KernelRegion> {
         let Some((params, after_params)) = read_balanced(source, open, b'(', b')') else {
             continue;
         };
-        let Some(body_open) = next_non_ws(source, after_params) else {
+        let Some(body_open) = next_function_body_open(source, after_params) else {
             continue;
         };
-        if source.as_bytes().get(body_open) != Some(&b'{') {
-            continue;
-        }
         let Some((_body, body_close)) = read_balanced(source, body_open, b'{', b'}') else {
             continue;
         };
@@ -821,6 +855,16 @@ fn kernel_regions(source: &str) -> BTreeMap<String, KernelRegion> {
         );
     }
     out
+}
+
+fn next_function_body_open(source: &str, after_params: usize) -> Option<usize> {
+    let rest = source.get(after_params..)?;
+    let brace = rest.find('{')?;
+    let semicolon = rest.find(';');
+    if semicolon.is_some_and(|index| index < brace) {
+        return None;
+    }
+    Some(after_params + brace)
 }
 
 fn constant_global_layout_hash(source: &str) -> String {
@@ -1151,6 +1195,24 @@ fn is_device_source_path(path: &str) -> bool {
     lower.ends_with(".cu") || lower.ends_with(".hip")
 }
 
+fn is_device_header_path(path: &str) -> bool {
+    let lower = normalize_path(path).to_ascii_lowercase();
+    lower.ends_with(".cuh")
+        || lower.ends_with(".h")
+        || lower.ends_with(".hh")
+        || lower.ends_with(".hpp")
+        || lower.ends_with(".hxx")
+}
+
+fn is_device_header_kernel_source_path(path: &str, source: &str) -> bool {
+    is_device_header_path(path)
+        && (source.contains("__global__")
+            || source.contains("__device__")
+            || source.contains("GLOBAL_KERNEL_SIGNATURE")
+            || source.contains("HIPRT_DEVICE")
+            || source.contains("HIPRT_HOST_DEVICE"))
+}
+
 fn rejection_plan(reason_codes: &[String]) -> &'static str {
     if reason_codes.iter().any(|code| {
         matches!(
@@ -1242,6 +1304,44 @@ mod tests {
         "extern \"C\" __global__ void flow(float* x, int n) {\n  x[0] += gain[0];\n}\n"
     }
 
+    fn macro_header_sidecar() -> Value {
+        let source = "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)\nCameraRays(HIPRTRenderData render_data) {\n  render_data.random_number += 1;\n}\n";
+        json!({
+            "selectedCompileCommand": {
+                "schemaVersion": "synthi.gpu.selected_compile_command.v1",
+                "source": "compile_commands.json",
+                "identity": "compile-command-id",
+                "effectiveFlagsHash": "flags-hash"
+            },
+            "effectiveFlagsHash": "flags-hash",
+            "toolchainCapabilities": {
+                "status": "current",
+                "supportsDeviceOnlyReload": true
+            },
+            "fastPathPolicy": {
+                "deviceOnlyAllowed": true
+            },
+            "sourceBaselineContents": {
+                "src/Device/kernels/CameraRays.h": source
+            },
+            "sourceBaselineHashes": {
+                "src/Device/kernels/CameraRays.h": sha256_hex(source)
+            },
+            "deviceMappings": [
+                {
+                    "kind": "kernel",
+                    "symbol": "CameraRays",
+                    "sourcePath": "src/Device/kernels/CameraRays.h",
+                    "generatedPath": ".synthi/generated/gpu/device.hip"
+                }
+            ]
+        })
+    }
+
+    fn generated_macro_header_source() -> &'static str {
+        "extern \"C\" __global__ void CameraRays(HIPRTRenderData render_data) {\n  render_data.random_number += 1;\n}\n"
+    }
+
     #[test]
     fn arithmetic_kernel_body_edit_is_device_only() {
         let next = "__constant__ float gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += gain[0] * 2.0f;\n}\n";
@@ -1299,6 +1399,44 @@ mod tests {
             .pointer("/evidence/mappedGeneratedSpan/startByte")
             .and_then(Value::as_u64)
             .is_some());
+    }
+
+    #[test]
+    fn macro_wrapped_runtime_kernel_header_body_edit_is_device_only() {
+        let next = "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)\nCameraRays(HIPRTRenderData render_data) {\n  render_data.random_number += 3;\n}\n";
+
+        let result = try_direct_device_body_patch(
+            &macro_header_sidecar(),
+            "src/Device/kernels/CameraRays.h",
+            next,
+            generated_macro_header_source(),
+        );
+
+        assert!(
+            result.accepted,
+            "reason_codes={:?} verifier={}",
+            result.reason_codes, result.verifier_report
+        );
+        assert_eq!(
+            result.reload_plan.get("plan").and_then(Value::as_str),
+            Some("device_only")
+        );
+        assert!(result
+            .patched_device_source
+            .as_deref()
+            .unwrap_or_default()
+            .contains("random_number += 3"));
+    }
+
+    #[test]
+    fn macro_wrapped_ifdef_kernel_header_body_edit_is_detected() {
+        let before = "#ifdef __KERNELCC__\nGLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) CameraRays(HIPRTRenderData render_data)\n#else\nGLOBAL_KERNEL_SIGNATURE(void) inline CameraRays(HIPRTRenderData render_data, int x, int y)\n#endif\n{\n  render_data.random_number += 1;\n}\n";
+        let after = before.replace("random_number += 1", "random_number += 3");
+
+        assert_eq!(
+            device_header_kernel_body_only_edit_symbol(before, &after).as_deref(),
+            Some("CameraRays")
+        );
     }
 
     #[test]
