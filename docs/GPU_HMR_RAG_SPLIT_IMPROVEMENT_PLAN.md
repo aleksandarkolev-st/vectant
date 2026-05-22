@@ -1,1124 +1,1954 @@
-# GPU HMR CodeIntel/RAG Split Orchestration Plan
+# GPU HMR CodeIntel Split Broker Implementation Plan
 
 Draft date: 2026-05-21
 
-Status: final architecture plan for the next GPU HMR branch. This document
-supersedes the earlier `GPU_HMR_RAG_SPLIT_IMPROVEMENT_PLAN.md` draft.
+Status: ready to start the next GPU HMR branch through Milestones 1-3, but not
+frozen as the final implementation spec. This version is intentionally stricter
+than the previous architecture draft. It defines the state machine, identity
+model, retrieval identity, API semantics, broker packages, verifier contracts,
+and promotion rules tightly enough to begin implementation while later
+milestones continue to harden verifier detail and real validation.
 
-## 1. Executive Recommendation
+## 1. Recommendation
 
-Merge the current GPU HMR production-orchestrator PR after review and CI, but
-do not continue expanding it with the work below.
-
-Open a new branch for this architecture pass:
+Merge the current GPU HMR production-orchestrator PR after review and CI, then
+start this work on a separate branch:
 
 ```text
 feature/gpu-hmr-codeintel-split-broker
 ```
 
-Reason:
+Do not continue expanding the current stabilization PR with this architecture
+work. The current PR should stay focused on hardening the existing GPU HMR
+path. This plan changes the split pipeline itself.
 
-- The current PR is a stabilization PR: GPU verifier hardening, direct
-  device-body HMR improvements, generated-role contract fixes, real-repo
-  validation harnesses, and matrix evidence.
-- The next step changes the split architecture: GPU HMR should become a
-  consumer of the existing CodeIntel/RAG system and should add a deterministic
-  split broker. That is a separate review surface.
-- Keeping the current PR focused makes it easier to merge, and gives the next
-  PR a clean base.
+Do not call GPU HMR production ready until `docs/GPU_HMR_PROD_NEXT.md` has
+current reproducible validation artifacts for every claimed backend/path.
 
-Do not claim "GPU HMR production ready" in either PR until the validation
-matrix in `docs/GPU_HMR_PROD_NEXT.md` has current reproducible artifacts.
+## Architecture Intent
 
-## 2. What I Audited
+GPU HMR should become a transactional split-and-reload pipeline over a real
+build target, not a prompt that happens to emit compilable files.
 
-This plan is based on a local code audit of the current CodeIntel/RAG system
-and GPU split path.
-
-Primary docs:
-
-- `docs/AI_SYSTEM_ARCHITECTURE.md`
-- `docs/AI_OUTPUT_QUALITY_FIX.md`
-- `docs/synthi-diff-patch-training-plan.md`
-- `ai-backend/ai-engine/code_intel/rag/README.md`
-- `ai-backend/ai-engine/code_intel/rag/PLAN.md`
-- `docs/GPU_HMR_PROD_NEXT.md`
-
-Primary CodeIntel/RAG implementation:
-
-- `ai-backend/ai-engine/code_intel/api.py`
-- `ai-backend/ai-engine/code_intel/engine.py`
-- `ai-backend/ai-engine/code_intel/core/config.py`
-- `ai-backend/ai-engine/code_intel/core/types.py`
-- `ai-backend/ai-engine/code_intel/indexer/dual_indexer.py`
-- `ai-backend/ai-engine/code_intel/indexer/structural_index.py`
-- `ai-backend/ai-engine/code_intel/indexer/vector_index.py`
-- `ai-backend/ai-engine/code_intel/indexer/lexical_index.py`
-- `ai-backend/ai-engine/code_intel/retrieval/pipeline.py`
-- `ai-backend/ai-engine/code_intel/retrieval/controller.py`
-- `ai-backend/ai-engine/code_intel/retrieval/graph_expander.py`
-- `ai-backend/ai-engine/code_intel/retrieval/grounding_verifier.py`
-- `ai-backend/ai-engine/code_intel/rag/pipeline.py`
-- `ai-backend/ai-engine/code_intel/rag/config.py`
-- `ai-backend/ai-engine/code_intel/rag/observability/tracing.py`
-
-Primary GPU HMR split implementation:
-
-- `ai-backend/ai-engine/agents/kernel_splitter.py`
-- `ai-backend/ai-engine/agents/gpu_source_context.py`
-- `ai-backend/ai-engine/verifier_gpu.py`
-- `ai-backend/ai-engine/main.py`
-- `backend/synthi-webrtc-compiler/worker/src/compiler/stages/ai_utils.rs`
-- `backend/synthi-webrtc-compiler/worker/src/compiler/stages/compile_helpers.rs`
-
-## 3. What The Existing CodeIntel/RAG System Already Provides
-
-The repository already has most of the primitives needed for production-grade
-GPU HMR split preparation. We should not build a second RAG system.
-
-### 3.1 Tiered Code Intelligence Model
-
-`docs/AI_SYSTEM_ARCHITECTURE.md` describes the intended model:
-
-- workspace filesystem is authoritative
-- metadata index is cheap and complete
-- lexical/BM25 index catches names, paths, errors, identifiers
-- vector index handles semantic retrieval
-- blob/chunk store keeps raw content out of the vector DB
-- repo intelligence cache stores summaries, facts, graphs
-- retrieval combines BM25, vector search, symbol graph expansion, rerank, and
-  deterministic context assembly
-
-This matches the GPU HMR production requirement:
+The intended architecture is:
 
 ```text
-deterministic source context, not prompt truncation
+CodeIntel index + build metadata authority
+  -> target-scoped projection
+  -> phased readiness
+  -> broker-issued role scope packages
+  -> deterministic RAG-backed role context packages
+  -> AI proposals inside explicit scope
+  -> immutable candidate artifacts
+  -> deterministic verifier promotion
+  -> direct non-agentic HMR where locally provable
 ```
 
-### 3.2 Engine And API
+The key design choice is authority separation:
 
-`code_intel/api.py` exposes:
+- CodeIntel and build metadata decide what source and target facts exist.
+- The broker decides what each generated role may see, include, adapt, and
+  write.
+- RAG provides cited context and explanations, not safety decisions.
+- AI proposes generated artifacts only inside a role generation package.
+- Verifiers and the Arbiter decide whether a candidate can compile, run,
+  reload, and be promoted.
 
-- `/code-intel/index`
-- `/code-intel/index/file`
-- `/code-intel/index/file/delete`
-- `/code-intel/index/file/rename`
-- `/code-intel/context`
-- `/code-intel/context/fast`
+This means the system can do background preparation for large projects without
+touching active state, and it can reject unsafe or underspecified cases with
+actionable reason codes instead of discovering scope errors through failed
+compiles.
 
-`code_intel/engine.py` owns:
+## 2. Non-Negotiable Design Rules
 
-- engine cache per resolved workspace
-- full and incremental indexing
-- dual indexer setup
-- summary/facts sync
-- background RAG ingestion after index
-- single-file reindex
-- RAG query surface
+1. GPU HMR must not build a second RAG or indexing system.
+2. GPU HMR consumes target-scoped projections over CodeIntel and build metadata.
+3. RAG retrieves and explains; it never proves safety.
+4. The broker owns source scope and generated write scope.
+5. AI proposes artifacts only inside broker-issued packages.
+6. Generated artifacts remain candidates until deterministic verifiers pass.
+7. Promotion is an atomic pointer update to immutable candidate artifacts.
+8. Direct `.hip` / `.cu` body-only edits stay non-agentic when local proof
+   succeeds.
+9. AI delta is a verifier-gated fallback, not the normal hot path.
+10. Small-project single-call split cannot bypass readiness, broker packages,
+    candidate spec manifests, verifiers, or promotion.
 
-This is the correct place to attach a GPU-specific workspace intelligence
-artifact.
+## 3. Ownership Boundaries
 
-### 3.3 Dual Indexer
+### CodeIntel Owns
 
-`DualIndexer` already maintains:
-
+- workspace file metadata
+- index generations
 - vector index
-- structural index
-- lexical index
-- atomic generation pointer for index rebuilds
-- chunking version invalidation
-- per-file locks
-- atomic delete-then-insert reindex semantics
-- file hash tracking
-- import resolution into structural index
+- lexical/BM25 index
+- structural index and symbol graph
+- edge confidence metadata
+- RAG stores and retrieval traces
+- grounding spans
+- file reindexing on save/delete/rename
 
-This matters for GPU HMR because background split preparation needs the same
-properties:
+### Build Metadata Layer Owns
 
-- no stale chunks after edits
-- reproducible source context
-- index generation IDs
-- atomic promotion of generated metadata
+- build system discovery
+- selected target identity
+- compile command identity
+- effective flags hash
+- include roots
+- generated header roots
+- link libraries and link directories
+- runtime library paths
+- compiler/toolchain probes
+- dependency scan evidence
 
-### 3.4 Structural Index
+### GPU HMR Owns
 
-`StructuralIndex` and `SymbolGraph` already support:
+- target-scoped projections
+- readiness reports
+- role scope packages
+- role generation packages
+- candidate spec manifests
+- candidate artifact directories
+- verifier reports
+- accepted candidate pointer
+- reload plan and Arbiter integration
 
-- file -> symbols
-- symbol -> chunk
-- stable symbol IDs
-- import graph
-- call graph where available
-- outgoing/incoming edges
-- edge confidence tracking: LSP > parser/AST > heuristic
-- expansion limits by confidence
-- file deletion cleanup
+### AI Owns
 
-This is directly reusable for:
+- proposal text for the assigned generation package only
 
-- kernel declaration discovery
-- launch-site discovery
-- state type discovery
-- render ownership discovery
-- affected-file reports
-- routing candidate files into split stages
+AI never owns:
 
-But the C/C++ parser is currently pattern-based and explicitly says production
-should use tree-sitter or libclang. Therefore, CodeIntel graph evidence is
-excellent for retrieval and ranking, but compiler-compatible parsing still owns
-GPU HMR safety.
+- target selection
+- source scope
+- generated write scope
+- dependency availability
+- ABI safety
+- runtime safety
+- promotion
 
-### 3.5 Retrieval Controller
+## 4. API Surface
 
-`RetrievalController` is important because it already encodes the right
-philosophy:
-
-```text
-The LLM never decides what context it receives.
-```
-
-It provides:
-
-- deterministic include/exclude decisions
-- hard per-file/module/token limits
-- insufficiency signaling
-- refusal reasons
-- decision hashes
-
-GPU HMR should use the same pattern. The split broker should decide the role
-packages and source context. The model should only propose artifacts inside
-that scope.
-
-### 3.6 Retrieval Pipeline
-
-`RetrievalPipeline` already provides:
-
-- query processing
-- vector retrieval
-- lexical retrieval
-- graph expansion
-- ranking
-- RRF/MMR fusion
-- budget enforcement
-- context assembly
-- retrieval cache
-- fast path support
-
-This is suitable for role-specific split retrieval queries such as:
-
-- "find device kernels and launch sites for target X"
-- "find render/window ownership for target X"
-- "find host/device shared state types"
-- "find compile/link dependencies for generated GUI role"
-
-### 3.7 RAG Pipeline
-
-`RAGPipeline` already provides:
-
-- document/code ingestion
-- content-hash skip path
-- async ingestion jobs
-- summary index
-- keyword index
-- ToC/section stores
-- query rewriting / HyDE
-- macro retrieval
-- micro navigation
-- section reranking
-- citation-capable synthesis
-- query cache
-- structured trace trees
-
-For GPU HMR, RAG should be used for retrieval, summaries, and citations. It
-should not certify reload safety.
-
-### 3.8 Observability
-
-`code_intel/rag/observability/tracing.py` provides nested span traces with
-attributes, errors, events, and optional OpenTelemetry mirroring.
-
-GPU HMR split preparation should reuse the same trace shape instead of adding
-more ad hoc logs.
-
-## 4. Current GPU HMR Gap
-
-The current GPU split flow is still mostly independent from CodeIntel/RAG:
+GPU HMR needs explicit APIs. The worker should not infer readiness from
+`/refactor/split/gpu`.
 
 ```text
-worker sends file map
-  -> /refactor/split/gpu
-  -> gpu_source_context.py builds source report with local heuristics
-  -> kernel_splitter.py builds one big prompt
-  -> provider.ask_llm one split proposal per attempt
-  -> verify_split_output
-  -> deterministic generated artifact repair
-  -> worker compile/runtime verifies later
+POST /gpu-hmr/readiness
+POST /gpu-hmr/projections
+GET  /gpu-hmr/projections/{hash}
+POST /gpu-hmr/prepare-candidate
+GET  /gpu-hmr/candidates?selectedTargetIdentityHash=...
+GET  /gpu-hmr/candidates/{id}
+GET  /gpu-hmr/candidates/{id}/trace
+POST /gpu-hmr/candidates/{id}/verify
+POST /gpu-hmr/candidates/{id}/promote
+POST /gpu-hmr/candidates/{id}/cancel
+POST /gpu-hmr/candidates/{id}/diagnose
+GET  /gpu-hmr/jobs/{id}
+GET  /gpu-hmr/jobs/{id}/trace
+POST /gpu-hmr/jobs/{id}/cancel
+GET  /gpu-hmr/accepted/current
 ```
 
-This is better than prompt truncation, but not yet the production architecture.
+### API Semantics
 
-Main gaps:
+`POST /gpu-hmr/readiness`
 
-- `gpu_source_context.py` uses regex and path heuristics as primary selection
-  authority.
-- CodeIntel index freshness is not part of GPU split readiness.
-- The RAG retrieval pipeline is not used to build role-specific context.
-- `RetrievalController` sufficiency/refusal semantics are not used by GPU HMR.
-- GPU split is still one large coordinated AI response.
-- Generated role dependency availability is caught too late, often at compile.
-- There is no split broker that owns scopes, write sets, candidate states, and
-  atomic promotion.
+- synchronous
+- no AI calls
+- idempotent for the same identity inputs
+- returns readiness phases and blocking/advisory reason codes
 
-The real HIPRT validation showed the failure mode clearly:
+`POST /gpu-hmr/projections`
 
-- a large real project produced plausible generated roles
-- model output depended on unavailable ImGui headers
-- the issue was not just output-token budget
-- dependency/render ownership should have been rejected before compile repair
+- synchronous for small workspaces when CodeIntel/build metadata are fresh
+- may return `202 Accepted` and a job ID for large workspaces
+- idempotent by projection identity
+- never scans independently from CodeIntel/build metadata authority
 
-## 5. Design Principle
+`POST /gpu-hmr/prepare-candidate`
 
-Do not make the AI smarter by giving it one giant prompt.
+- asynchronous by default
+- idempotent by candidate identity
+- cancellable
+- resumable only if all referenced generations still match
+- returns candidate ID and current state
 
-Use the existing CodeIntel/RAG stack to build a controlled project intelligence
-layer:
+`GET /gpu-hmr/jobs/{id}`
+
+- returns status for asynchronous projection, preparation, verification, or
+  diagnostic jobs
+- includes linked resource identity when the job created a projection or
+  candidate
+- idempotent and safe to poll
+
+`GET /gpu-hmr/jobs/{id}/trace`
+
+- returns bounded trace events, reason codes, and phase timings
+- redacts raw source unless debug capture is explicitly enabled
+
+`POST /gpu-hmr/jobs/{id}/cancel`
+
+- marks cancellable jobs as cancelled
+- does not delete immutable candidates or verified artifacts
+- verification/promotion must fail closed if a dependent job is cancelled
+
+`POST /gpu-hmr/candidates/{id}/verify`
+
+- asynchronous when compile/runtime verification is requested
+- fails closed on stale source, CodeIntel, retrieval, target, or runtime
+  identity
+
+`POST /gpu-hmr/candidates/{id}/promote`
+
+- synchronous atomic pointer update
+- requires promotion readiness
+- rejects if another promotion transaction is active
+
+Candidate list queries must use identity hashes, not display target names.
+Target names collide across build roots, configurations, and manually selected
+profiles.
+
+Compatibility rule:
+
+- `/refactor/split/gpu` may call these APIs internally during transition.
+- readiness failure must not silently fall back to the old one-shot split path.
+- unsupported target/project states permit only diagnostics, not generation.
+
+### Minimum API Payloads
+
+All mutating requests require an idempotency key:
+
+```json
+{
+  "idempotencyKey": "workspace-id:operation:identity-hash"
+}
+```
+
+Common error shape:
+
+```json
+{
+  "error": {
+    "code": "target_resolution_ambiguous",
+    "message": "Selected file belongs to more than one executable target.",
+    "phase": "preflight_readiness",
+    "severity": "blocking",
+    "safeFallbackMode": "diagnostics_only",
+    "remediation": "Select an explicit target."
+  }
+}
+```
+
+Status code policy:
 
 ```text
-workspace index
-  -> build metadata
-  -> GPU workspace intelligence
-  -> split readiness gate
-  -> deterministic split broker
-  -> role-scoped retrieval packages
-  -> staged AI proposals
-  -> deterministic verifiers
-  -> atomic candidate promotion
+200 OK: synchronous operation completed
+202 Accepted: asynchronous job started or resumed
+400 Bad Request: malformed request
+404 Not Found: candidate/projection/job not found
+409 Conflict: stale identity, concurrent promotion, or cancelled dependency
+422 Unprocessable Entity: valid request blocked by readiness/verifier policy
+500 Internal Server Error: infrastructure failure without a safe verifier result
 ```
 
-RAG retrieves and explains.
+`POST /gpu-hmr/readiness`
 
-Verifiers decide.
+Request:
 
-The broker owns scope.
+```json
+{
+  "workspaceRootDigest": "...",
+  "entryFile": "src/app/main.cpp",
+  "selectedTargetIdentityHash": null,
+  "operationMode": "normal",
+  "idempotencyKey": "..."
+}
+```
 
-## 6. Target Architecture
+Response `200 OK`:
 
-### 6.1 New Component: GPU Workspace Intelligence
+```json
+{
+  "schemaVersion": "gpu-hmr-readiness-response-v1",
+  "readiness": {
+    "preflight": "pass",
+    "projection": "pass",
+    "scope": "blocked",
+    "generation": "blocked",
+    "compile": "blocked",
+    "promotion": "blocked"
+  },
+  "blockingReasonCodes": [],
+  "advisoryReasonCodes": [],
+  "selectedTargetIdentityHash": "...",
+  "projectionHash": "..."
+}
+```
 
-Add a GPU-specific intelligence artifact built on top of CodeIntel/RAG.
+`POST /gpu-hmr/projections`
+
+Request:
+
+```json
+{
+  "sourceSplitIdentityHash": "...",
+  "selectedTargetIdentityHash": "...",
+  "codeIntelGeneration": "...",
+  "buildMetadataHash": "...",
+  "idempotencyKey": "..."
+}
+```
+
+Response `200 OK` or `202 Accepted`:
+
+```json
+{
+  "projectionHash": "...",
+  "jobId": null,
+  "status": "ready"
+}
+```
+
+`POST /gpu-hmr/prepare-candidate`
+
+Request:
+
+```json
+{
+  "projectionHash": "...",
+  "sourceSplitIdentityHash": "...",
+  "requestedRoles": ["shared", "core", "gui", "host_runner", "device.main"],
+  "operationMode": "normal",
+  "idempotencyKey": "..."
+}
+```
+
+Response `202 Accepted`:
+
+```json
+{
+  "candidateId": "...",
+  "candidateSpecManifestHash": null,
+  "jobId": "...",
+  "state": "prepared_candidate"
+}
+```
+
+`POST /gpu-hmr/candidates/{id}/verify`
+
+Request:
+
+```json
+{
+  "candidateSpecManifestHash": "...",
+  "verificationKinds": ["schema", "scope", "dependency", "mapping", "abi", "compile", "runtime"],
+  "runtimeVerificationIdentityHash": "...",
+  "idempotencyKey": "..."
+}
+```
+
+Response `200 OK` or `202 Accepted`:
+
+```json
+{
+  "candidateId": "...",
+  "candidateVerificationRecordHash": "...",
+  "jobId": null,
+  "state": "compile_verified_candidate",
+  "verifierReportHashes": []
+}
+```
+
+`POST /gpu-hmr/candidates/{id}/promote`
+
+Request:
+
+```json
+{
+  "candidateSpecManifestHash": "...",
+  "candidateVerificationRecordHash": "...",
+  "promotionIdentityHash": "...",
+  "idempotencyKey": "..."
+}
+```
+
+Response `200 OK`:
+
+```json
+{
+  "acceptedPromotionRecordHash": "...",
+  "acceptedPointerPath": ".synthi/gpu_hmr/accepted/current.json",
+  "state": "active_promoted_candidate"
+}
+```
+
+`GET /gpu-hmr/jobs/{id}`
+
+Response `200 OK`:
+
+```json
+{
+  "jobId": "...",
+  "jobKind": "prepare_candidate",
+  "status": "running",
+  "linkedResource": {
+    "candidateId": "...",
+    "projectionHash": null
+  },
+  "phase": "role_generation",
+  "reasonCodes": [],
+  "startedAt": "...",
+  "updatedAt": "..."
+}
+```
+
+## 5. Identity Model
+
+Do not use one large candidate identity for everything. Split identity by
+phase so source-level split work is not invalidated by unrelated runtime
+changes, and runtime-sensitive work is not reused unsafely.
+
+### 5.1 Source Split Identity
+
+Used for projection, broker scoping, source-to-role mapping, and AI source
+generation. It contains target-level input identity only; broker-selected role
+spans are recorded later as `roleSourceSpanHash`.
+
+```json
+{
+  "schemaVersion": "gpu-hmr-source-split-identity-v1",
+  "workspaceRootDigest": "...",
+  "gitCommit": "...",
+  "dirtyTreeHash": "...",
+  "targetInputFileHash": "...",
+  "buildConfigInputHash": "...",
+  "generatedHeaderContentHash": "...",
+  "buildSelectionEnvironmentHash": "...",
+  "selectedTargetIdentityHash": "...",
+  "codeIntelGeneration": "...",
+  "splitSchemaVersion": "...",
+  "promptSchemaVersion": "..."
+}
+```
+
+### 5.2 Compile Candidate Identity
+
+Used for generated artifact compile/cache validity.
+
+```json
+{
+  "schemaVersion": "gpu-hmr-compile-candidate-identity-v1",
+  "sourceSplitIdentityHash": "...",
+  "selectedTargetIdentityHash": "...",
+  "targetCompileMetadataHash": "...",
+  "toolchainProbeHash": "...",
+  "compilerToolchainIdentityHash": "...",
+  "gpuExecutionProfileHash": "...",
+  "buildWorkerEnvironmentHash": "...",
+  "generatedArtifactHash": "..."
+}
+```
+
+### 5.3 Runtime Verification Identity
+
+Used for runtime/frame verification validity.
+
+```json
+{
+  "schemaVersion": "gpu-hmr-runtime-verification-identity-v1",
+  "compileCandidateIdentityHash": "...",
+  "runtimeVerificationEnvironmentHash": "...",
+  "verificationRuntimeEnvironmentHash": "...",
+  "deploymentRuntimeEnvironmentHash": "...",
+  "gpuRuntimeDriverHash": "...",
+  "graphicsOwnershipState": "...",
+  "displayBackend": "..."
+}
+```
+
+### 5.4 AI Generation Identity
+
+Used for AI stage cache validity.
+
+```json
+{
+  "schemaVersion": "gpu-hmr-ai-generation-identity-v1",
+  "roleGenerationPackageHash": "...",
+  "modelProfileHash": "...",
+  "modelName": "...",
+  "temperaturePolicy": "...",
+  "promptHash": "...",
+  "promptSchemaVersion": "...",
+  "retrievalTraceHash": "...",
+  "retrievalProfileHash": "...",
+  "queryHash": "...",
+  "rankerVersion": "...",
+  "rrfMmrSettingsHash": "...",
+  "contextBudgetHash": "...",
+  "citationFilterHash": "...",
+  "hydeQueryRewriteSettingHash": "...",
+  "topKAndCandidateBudgetHash": "..."
+}
+```
+
+### 5.5 Promotion Identity
+
+Used to decide whether a verified candidate may become active.
+
+```json
+{
+  "schemaVersion": "gpu-hmr-promotion-identity-v1",
+  "candidateId": "...",
+  "candidateSpecManifestHash": "...",
+  "candidateVerificationRecordHash": "...",
+  "requiredVerifierReportSetHash": "...",
+  "sourceSplitIdentityHash": "...",
+  "compileCandidateIdentityHash": "...",
+  "runtimeVerificationIdentityHash": "...",
+  "promotionVerifierReportHash": "..."
+}
+```
+
+### 5.6 Hash Definitions
+
+- `targetInputFileHash`: target-owned user input files known from build
+  metadata before projection. Excludes `.synthi/`, generated roles, candidate
+  directories, build outputs, and logs.
+- `roleSourceSpanHash`: broker-selected source spans after role scoping. This
+  is not part of `sourceSplitIdentityHash`, because projection is created
+  before broker role spans exist.
+- `buildConfigInputHash`: `CMakeLists.txt`, `CMakePresets.json`, toolchain
+  files, manually selected target config, build-system project files, and
+  environment inputs used by configuration.
+- `generatedHeaderContentHash`: generated headers required by selected target
+  before split generation.
+- `targetCompileMetadataHash`: compile command entries, effective flags,
+  include roots, system include roots, generated header roots, link flags, and
+  runtime paths for the selected target.
+- `toolchainProbeHash`: compiler/toolkit/runtime probe results.
+- `buildSelectionEnvironmentHash`: environment variables that affect target
+  selection, build configuration, compile commands, generated headers, or
+  toolchain selection.
+- `runtimeVerificationEnvironmentHash`: environment variables that affect
+  display, GPU visibility, runtime libraries, capture, or driver/session
+  verification. Runtime-only changes invalidate runtime verification, not
+  source split work.
+- `compilerToolchainIdentityHash`: canonical compiler, toolkit, runtime, and
+  language-mode identity derived from selected target metadata and toolchain
+  probes.
+- `gpuExecutionProfileHash`: canonical GPU vendor, architecture, RDC/device-link
+  mode, and device runtime capability identity.
+- `generatedArtifactHash`: generated role files only. It does not include
+  candidate spec manifests, verifier reports, status ledgers, or promotion
+  records.
+- `candidateSpecManifestHash`: immutable candidate spec manifest containing
+  identities, role artifact refs, package hashes, and mapping refs.
+- `candidateVerificationRecordHash`: verifier reports, runtime identity,
+  current derived state, and transition history.
+- `acceptedPromotionRecordHash`: candidate spec manifest hash plus required
+  verifier report hashes and promotion identity.
+
+### 5.7 Canonical Hashing Rules
+
+Milestone 1 must implement one canonical hashing library and use it for every
+identity, manifest, package, verifier report, and promotion record.
+
+Canonicalization rules:
+
+- JSON is serialized as UTF-8 without insignificant whitespace.
+- Object keys are sorted lexicographically by Unicode code point.
+- Arrays preserve semantic order when order is meaningful, such as ordered
+  context spans, verifier transition history, and compiler arguments.
+- Arrays are sorted by stable key when order is not meaningful, such as reason
+  code sets, role package hash sets, verifier report hash sets, and dependency
+  allowlists.
+- Paths are workspace-relative, slash-normalized, dot-segment-normalized, and
+  NFC-normalized.
+- Filesystem identity records whether the workspace is case-sensitive or
+  case-insensitive. Case-insensitive collisions are rejected before hashing.
+- Symlinks are resolved according to the path-scope verifier policy before
+  hashing. Symlink escapes are rejected.
+- Source text is UTF-8 normalized to NFC before hashing.
+- Line endings are normalized to `\n` for source/content hashes unless a file is
+  classified as binary.
+- Timestamps are excluded from identity hashes unless the field is explicitly
+  part of an audit record, such as `createdAt` or `promotedAt`.
+- Environment variables are sorted by key, include only allowlisted variables,
+  and store redacted values when secrets are possible.
+- Numeric values use canonical JSON number formatting.
+- Null and omitted field semantics must be schema-defined. Do not treat them as
+  equivalent by default.
+
+If any producer cannot apply canonicalization, it must not emit a production
+identity hash.
+
+### 5.8 Candidate ID Derivation
+
+Candidate lookup is keyed by `candidateSpecManifestHash`.
+
+`candidateId` should be deterministic when all inputs are available:
+
+```text
+candidateId =
+  hash(
+    schemaVersion
+    + sourceSplitIdentityHash
+    + ordered(roleGenerationPackageHashes)
+    + generatedArtifactHash
+  )
+```
+
+If a UUID is used for in-progress asynchronous work before generated artifacts
+exist, the final candidate resource must still publish and be retrievable by
+`candidateSpecManifestHash`. Idempotent requests must resolve to the same
+resource when the spec manifest hash matches.
+
+## 6. Build Metadata Hierarchy
+
+Manual config is high-priority when explicit, but must be validated.
+
+Target resolution order:
+
+1. explicit user/project target config
+2. CMake File API
+3. `compile_commands.json`
+4. inferred fallback
+5. unsupported
+
+Metadata enrichment order after a target or compile command is known:
+
+1. compiler dependency scan
+2. toolchain probe
+3. runtime probe
+4. generated header content scan
+5. link/runtime library resolution
+
+Reason codes:
+
+```text
+target.explicit_project_config
+target.cmake_file_api_selected
+target.compile_commands_only
+target.inferred_fallback
+metadata.compiler_dependency_scan
+metadata.toolchain_probe
+metadata.runtime_probe
+metadata.generated_header_scan
+metadata.link_runtime_resolution
+target_resolution_ambiguous
+target_resolution_unmatched
+target_config_invalid
+build_metadata_missing
+unsupported.build_system_unmodeled
+```
+
+Selected target identity must include:
+
+- build system
+- build root
+- build configuration
+- target name
+- target type
+- compiler path
+- compiler ID/version
+- language standards
+- defines/undefines
+- include/system include roots
+- generated header roots
+- source files
+- link libraries/directories
+- runtime library paths
+- GPU vendor and arch
+- RDC/device-link mode
+- worker runtime/toolchain identity
+
+## 7. Compile-Aware Metadata
+
+This is an early milestone, not a nice-to-have.
+
+Pattern parsing and tree-sitter are not enough for HIP/CUDA split safety.
+Macros, compile flags, include paths, generated headers, and vendor dialects
+matter.
+
+Required capabilities:
+
+- parse selected target files with selected compile commands
+- use clangd/libclang/clang tooling where possible
+- support compile-commands-backed macro expansion
+- resolve quoted and angle includes with actual include roots
+- integrate `clang-scan-deps` or equivalent where available
+- record parser status and exact effective flags hash
+- classify evidence source
+
+Evidence classes:
+
+```text
+compiler_ast
+compiler_dep_scan
+lsp
+codeintel_structural
+rag_retrieval
+regex_hint
+manual_config
+```
+
+Only compiler-derived or verified build metadata evidence can participate in
+ABI/layout safety. RAG and regex evidence can route or explain only.
+
+Minimum evidence by operation:
+
+```text
+preflight/projection:
+  selected target identity or blocking ambiguity reason
+  targetInputFileHash
+  CodeIntel generation
+  build metadata identity
+
+scope/generation:
+  codeintel_structural evidence
+  selected target metadata
+  compile_commands-backed include/link roots
+  no regex-only ownership decisions
+
+compile:
+  selected compile command
+  compiler_dep_scan or compile_commands-backed include resolution
+  generated header content hash
+  toolchain probe hash
+
+promotion for ABI-sensitive paths:
+  compiler_ast or compiler-generated ABI probe
+  vendor compiler artifact evidence where available
+  launch-mode-specific ABI verifier report
+```
+
+If the minimum evidence for an operation is missing, that operation is blocked
+with a precise reason code. The system may still produce diagnostics.
+
+## 8. Target-Scoped Projection
+
+Projection comes before readiness.
 
 Suggested module:
 
 ```text
-ai-backend/ai-engine/gpu_hmr/workspace_intelligence.py
+ai-backend/ai-engine/gpu_hmr/projection.py
 ```
 
-Suggested persisted artifact:
+Suggested persisted path:
 
 ```text
-.synthi/gpu_hmr/workspace_intelligence.json
+.synthi/gpu_hmr/projections/<projection_hash>.json
 ```
 
-It should be derived from:
-
-- CodeIntel file metadata
-- DualIndexer generation ID
-- structural index
-- lexical/vector retrieval
-- RAG summaries/citations
-- compile database
-- CMake File API
-- selected target information
-- include/link metadata
-- GPU toolchain capability probes
-- template evidence artifacts when present
+The projection is immutable and content-addressed. It is a compact view over
+CodeIntel/build metadata, not copied RAG context and not an independent index.
 
 Minimum shape:
 
 ```json
 {
-  "schemaVersion": "gpu-hmr-workspace-intelligence-v1",
-  "workspaceRoot": "...",
-  "indexGeneration": "...",
-  "sourceHash": "...",
-  "codeIntel": {
-    "status": "fresh",
-    "filesIndexed": 1817,
-    "chunksIndexed": 4200,
-    "symbolsTracked": 900,
-    "ragStatus": "fresh"
+  "schemaVersion": "gpu-hmr-target-projection-v1",
+  "projectionHash": "...",
+  "sourceSplitIdentityHash": "...",
+  "codeIntelGeneration": "...",
+  "buildMetadataHash": "...",
+  "selectedTargetIdentity": {},
+  "sourceSets": {
+    "targetOwned": [],
+    "deviceReachable": [],
+    "renderReachable": [],
+    "stateReachable": []
   },
-  "targetCandidates": [],
-  "selectedTarget": null,
-  "compileCommandIdentities": [],
-  "deviceTranslationUnits": [],
-  "kernelSymbols": [],
-  "launchSites": [],
-  "hostDeviceStateTypes": [],
-  "graphicsOwnership": {
-    "status": "unknown",
-    "backendCandidates": [],
-    "evidence": []
+  "retrievalEvidence": {
+    "device": {
+      "retrievalTraceHash": "...",
+      "retrievalProfileHash": "...",
+      "citationSpanIds": [],
+      "sufficiency": "retrieval_context_sufficient"
+    }
   },
-  "dependencies": {
-    "includeRoots": [],
-    "linkLibraries": [],
-    "availableHeaders": [],
-    "unresolvedHeaders": []
-  },
-  "templateEvidence": {
-    "status": "missing",
-    "reasonCodes": ["template_evidence_missing"]
-  },
+  "buildEvidenceRefs": [],
+  "toolchainEvidenceRef": "...",
   "reasonCodes": []
 }
 ```
 
-This artifact is not proof of reload safety. It is the input to split
-readiness and broker role packaging.
+Do not store large retrieved chunks, summaries, or copied source text in the
+projection. Store pointers, span IDs, hashes, and sufficiency.
 
-### 6.2 New Component: Split Readiness Gate
+## 9. Readiness Model
 
-Before any full AI split, compute a readiness report.
-
-Suggested module:
+Readiness is phased.
 
 ```text
-ai-backend/ai-engine/gpu_hmr/split_readiness.py
+preflight_readiness
+projection_readiness
+scope_readiness
+generation_readiness
+compile_readiness
+promotion_readiness
 ```
 
-Suggested output:
+### preflight_readiness
+
+Allows metadata/index discovery.
+
+Requires:
+
+- workspace readable
+- CodeIntel engine available
+- build metadata discovery attempted
+
+### projection_readiness
+
+Allows creating a target-scoped projection.
+
+Requires:
+
+- selected target identity or target ambiguity/unsupported reason
+- CodeIntel generation known
+- build metadata identity known or explicit unsupported reason
+
+### scope_readiness
+
+Allows broker to create role scope packages.
+
+Requires:
+
+- fresh projection
+- selected target identity
+- source sets resolved
+- compiler metadata sufficient for source ownership
+
+Unsupported targets block scope readiness except in `diagnostics_only` mode.
+
+### generation_readiness
+
+Allows AI proposal for internal candidate artifacts.
+
+Requires:
+
+- role scope packages created
+- role generation packages created
+- required retrieval context sufficient
+- blocking dependency precheck failures absent
+- selected target identity present
+
+Unsupported reason does not allow generation. It allows only:
+
+```text
+diagnostics_only
+fallback_report
+advisory_output
+```
+
+### compile_readiness
+
+Allows compiling candidate artifacts.
+
+Requires:
+
+- candidate spec manifest exists
+- candidate verification record exists
+- role scope verifier passes
+- dependency verifier passes or all unresolved dependencies are non-blocking
+  with proof
+- compile candidate identity matches current generations
+
+### promotion_readiness
+
+Allows active split promotion.
+
+Requires:
+
+- schema verifier pass
+- role scope verifier pass
+- mapping verifier pass
+- dependency verifier pass
+- ABI/layout verifier pass where required
+- compile verifier pass
+- runtime/frame verifier pass where required
+- no source/target/CodeIntel/RAG/runtime generation changed during
+  verification
+
+Use precise reason names:
+
+```text
+retrieval_context_sufficient
+retrieval_context_partial
+retrieval_context_insufficient
+safety_not_proven
+compiler_metadata_sufficient
+promotion_safety_verified
+```
+
+RAG freshness or sufficiency is never a safety verdict.
+
+## 10. Broker Package Model
+
+Avoid circular dependencies by separating scope packages from generation
+packages.
+
+### 10.1 Role Scope Package
+
+Created by the broker from target projection and build/compiler evidence.
+
+It defines what may be touched, referenced, adapted, or generated.
 
 ```json
 {
-  "schemaVersion": "gpu-hmr-split-readiness-v1",
-  "status": "ready",
-  "workspaceIntelligenceHash": "...",
-  "selectedTargetStatus": "selected",
-  "compileMetadataStatus": "available",
-  "codeIntelStatus": "fresh",
-  "ragStatus": "fresh",
-  "deviceTopologyStatus": "single_device_tu",
-  "graphicsOwnershipStatus": "modeled",
-  "dependencyStatus": "available",
-  "reasonCodes": []
-}
-```
-
-Failure examples:
-
-```text
-split_readiness.target_ambiguous
-split_readiness.compile_db_missing
-split_readiness.cmake_file_api_missing
-split_readiness.codeintel_index_stale
-split_readiness.rag_index_stale
-split_readiness.graphics_ownership_unmodeled
-split_readiness.generated_header_missing
-split_readiness.dependency_unavailable
-```
-
-If readiness fails, do not call the AI split endpoint unless the failure is
-explicitly marked as a non-blocking advisory. Return an actionable failure.
-
-### 6.3 New Component: Split Broker
-
-The split broker is the critical control layer.
-
-Suggested module:
-
-```text
-ai-backend/ai-engine/gpu_hmr/split_broker.py
-```
-
-The broker is deterministic. It owns:
-
-- role boundaries
-- allowed source scope
-- allowed generated write set
-- role dependencies
-- stage order
-- candidate artifact state
-- cross-role transaction policy
-- promotion policy
-
-The AI never decides what it is allowed to touch.
-
-Role package example:
-
-```json
-{
-  "schemaVersion": "gpu-hmr-role-package-v1",
+  "schemaVersion": "gpu-hmr-role-scope-package-v1",
   "roleId": "device.main",
   "roleKind": "device",
-  "selectedTarget": "gpu_app",
-  "allowedSourceFiles": [
-    "src/gpu/raster.hip",
-    "src/gpu/raster_helpers.hpp"
-  ],
-  "allowedGeneratedFiles": [
-    ".synthi/generated/.../device_raster.hip"
-  ],
-  "requiredSymbols": [
-    "shade_pixels"
-  ],
-  "requiredCitations": [
-    {
-      "path": "src/gpu/raster.hip",
-      "reason": "kernel_definition"
-    }
-  ],
-  "forbiddenActions": [
-    "write_user_workspace",
-    "include_unowned_project_header",
-    "invent_external_dependency",
-    "rename_kernel_without_mapping"
-  ],
-  "dependencies": {
-    "generatedRoles": ["shared"],
-    "headers": [],
-    "libraries": []
+  "sourceSplitIdentityHash": "...",
+  "roleSourceSpanHash": "...",
+  "allowedSourceFiles": [],
+  "allowedSourceSpans": [],
+  "sourceSpanAnchors": [],
+  "writePathPolicy": {},
+  "includePolicy": {},
+  "sourceReferencePolicy": {},
+  "dependencyPolicy": {},
+  "crossRolePolicy": {},
+  "requiredSymbols": [],
+  "requiredVerifierRules": []
+}
+```
+
+`forbiddenActions` may exist as human-readable labels, but enforcement must be
+through structured constraints:
+
+```json
+{
+  "constraints": {
+    "writePaths": {},
+    "includePolicy": {},
+    "sourceReferencePolicy": {},
+    "crossRolePolicy": {}
   }
 }
 ```
 
-The broker should reject generated output that:
+### 10.2 Role Generation Package
 
-- writes into the user workspace
-- references source files outside the role package
-- invents includes or libraries not backed by metadata
-- touches another role without a broker-issued multi-role transaction
-- omits required citations
-- bypasses launch indirection in reloadable paths
+Created after retrieval fills the role context.
 
-### 6.4 Candidate Artifact Lifecycle
-
-Background split output must be stored as candidate state, not active state.
-
-Suggested states:
-
-```text
-draft
-  -> schema_verified
-  -> dependency_verified
-  -> mapping_verified
-  -> abi_verified
-  -> compile_verified
-  -> runtime_verified
-  -> accepted
-  -> promoted
+```json
+{
+  "schemaVersion": "gpu-hmr-role-generation-package-v1",
+  "roleScopePackageHash": "...",
+  "retrievalTraceHash": "...",
+  "retrievalProfileHash": "...",
+  "queryHash": "...",
+  "rankerVersion": "...",
+  "rrfMmrSettingsHash": "...",
+  "contextBudgetHash": "...",
+  "citationFilterHash": "...",
+  "hydeQueryRewriteSettingHash": "...",
+  "topKAndCandidateBudgetHash": "...",
+  "citationSpanIds": [],
+  "orderedContextSpanRefs": [],
+  "contextAssemblyHash": "...",
+  "contextSanitizerVersion": "...",
+  "promptTemplateVersion": "...",
+  "renderedPromptHash": "...",
+  "retrievalContextSufficiency": "retrieval_context_sufficient",
+  "promptInputsHash": "...",
+  "modelCapabilityProfileHash": "..."
+}
 ```
 
-Rejected candidates are kept with reason-coded evidence.
+AI receives the role generation package, not the whole project.
 
-Promotion is atomic and only allowed after required verifiers pass.
+### 10.3 Broker Escalation
 
-Suggested location:
+If AI or a verifier needs wider scope, it must emit an escalation:
 
-```text
-.synthi/gpu_hmr/candidates/<candidate_id>/
-.synthi/gpu_hmr/accepted/current.json
+```json
+{
+  "brokerEscalation": {
+    "type": "missing_source_scope",
+    "requestedFiles": ["src/render/presenter.cpp"],
+    "reason": "launch site references state type not in role scope package"
+  }
+}
 ```
 
-The active `.synthi_split_meta.json` can reference the accepted candidate, but
-should not be the only source of truth for in-progress split work.
+The broker approves or rejects deterministically. AI cannot widen its own
+scope.
 
-## 7. Background Modular Split Strategy
+## 11. Stable Source Span Anchors
 
-Yes, GPU HMR should split modules in the background.
+Line numbers are display data only.
 
-But "background" must mean:
+Every source span must include:
 
-```text
-prepare candidate internal artifacts
-```
-
-not:
-
-```text
-mutate user source or silently replace active generated roles
-```
-
-### 7.1 Why Background Split Helps
-
-Large projects are too complex for a compile-click-time full split:
-
-- RAG indexing and summaries can be expensive.
-- Render ownership may need several retrieval passes.
-- Device dependencies may need graph expansion.
-- Generated dependency availability should be checked before compile.
-- One giant split call makes repair imprecise.
-
-Background split lets the system do heavy discovery before the user presses
-compile.
-
-### 7.2 How It Avoids Touching The Wrong Files
-
-The broker controls write scope.
-
-Rules:
-
-- user workspace is read-only to split agents
-- generated write paths are broker-assigned
-- each role package has explicit allowed source files
-- every generated symbol must map back to source evidence
-- every include/library must be backed by build metadata or explicit generated
-  role output
-- cross-role changes require a broker transaction
-- active split is only updated by atomic promotion after verification
-
-The AI can propose. It cannot expand its own authority.
-
-## 8. Staged Split Orchestration
-
-Replace one full AI split call with coordinated stages for large projects.
-
-Small projects may still use a single-call path when readiness says it is safe
-and under budget, but the production path should support staged generation.
-
-Recommended stages:
-
-```text
-Stage 0: workspace intelligence and split readiness
-Stage 1: architecture summary
-Stage 2: shared ABI/state contract
-Stage 3: device role package(s)
-Stage 4: core role package
-Stage 5: GUI/render role package
-Stage 6: host runner/reload ABI role package
-Stage 7: integration manifest
-Stage 8: verifier/repair loop
-Stage 9: candidate promotion
-```
-
-Each stage receives:
-
-- role package
-- selected target metadata
-- CodeIntel/RAG citations
-- accepted previous stage outputs
-- relevant source snippets
-- verifier feedback from prior attempts
-
-Each stage emits:
-
-- structured role artifact
-- source citations
-- generated dependencies
-- assumptions
-- unsupported reason codes
-- verifier expectations
-
-Do not persist or promote partial outputs as active split artifacts.
-
-## 9. How To Use Existing RAG/CodeIntel
-
-### 9.1 Index Trigger
-
-Use existing CodeIntel indexing first:
-
-```text
-POST /code-intel/index
-```
-
-Then attach GPU workspace intelligence refresh to the same lifecycle.
-
-Triggers:
-
-- workspace open
-- compile database change
-- CMake File API reply change
-- selected target change
-- file save
-- branch checkout
-- explicit "refresh GPU HMR index"
-
-### 9.2 Retrieval Profiles
-
-Do not use one generic RAG query. Use role-specific retrieval profiles.
-
-Device role:
-
-```text
-Find HIP/CUDA device kernels, device helper functions, runtime compiler APIs,
-module launch calls, and target-owned device headers for selected target <T>.
-```
-
-Launch graph:
-
-```text
-Find host code that launches kernels or calls runtime module launch APIs for
-selected target <T>. Include argument construction and state dependencies.
-```
-
-Shared ABI:
-
-```text
-Find structs, constants, enums, buffers, and state types shared between host,
-device, core, GUI, and launch wrappers.
-```
-
-Render ownership:
-
-```text
-Find window/context creation, frame presentation, texture/display upload, GUI
-library setup, and ownership boundaries for selected target <T>.
-```
-
-Dependency availability:
-
-```text
-Find headers and libraries required by selected target <T>, including include
-roots, link libraries, generated headers, and optional GUI dependencies.
-```
-
-The output should be citations and ranked evidence, not final safety decisions.
-
-### 9.3 Use RetrievalController Semantics
-
-GPU HMR should produce sufficiency status like CodeIntel:
-
-```text
-sufficient
-partial
-insufficient
-empty
-```
-
-If required files/symbols cannot be included, the split readiness gate should
-block or degrade with explicit reason codes.
-
-### 9.4 Use Grounding Spans
-
-Generated split artifacts should carry citations to CodeIntel/RAG spans.
+- normalized path
+- file content hash
+- span text hash
+- stable symbol ID where available
+- CodeIntel generation
+- start/end line for display
+- start/end byte for exact same-generation lookup
+- compiler evidence ID if ABI/layout relevant
 
 Example:
 
 ```json
 {
-  "claim": "gui role owns GLFW frame presentation",
-  "evidence": [
+  "path": "src/gpu/raster.hip",
+  "fileContentHash": "...",
+  "spanTextHash": "...",
+  "stableSymbolId": "...",
+  "codeIntelGeneration": "...",
+  "startByte": 1024,
+  "endByte": 1890,
+  "displayStartLine": 44,
+  "displayEndLine": 79
+}
+```
+
+### Source-To-Generated Mapping Schema
+
+Milestone 1 must define this schema before AI delta or direct body-only HMR can
+depend on it.
+
+Minimum mapping entry:
+
+```json
+{
+  "schemaVersion": "gpu-hmr-source-generated-mapping-v1",
+  "mappingId": "kernel:shade_pixels(float*,int,int):device.main",
+  "candidateSpecManifestHash": "...",
+  "roleId": "device.main",
+  "mappingKind": "kernel_body",
+  "source": {
+    "path": "src/gpu/raster.hip",
+    "sourceSpanAnchorHash": "...",
+    "fileContentHash": "...",
+    "spanTextHash": "...",
+    "stableSymbolId": "kernel:shade_pixels(float*,int,int)",
+    "displayStartLine": 44,
+    "displayEndLine": 79
+  },
+  "generated": {
+    "path": ".synthi/gpu_hmr/candidates/<id>/device/main.hip",
+    "generatedArtifactHash": "...",
+    "startByte": 3400,
+    "endByte": 4266,
+    "spanTextHash": "..."
+  },
+  "abiRelevance": {
+    "kernelSignature": true,
+    "launchAbi": true,
+    "constantOrGlobalLayout": false,
+    "hostDeviceSharedLayout": false,
+    "stateLayout": false
+  },
+  "patchability": {
+    "directDeviceOnlyEligible": true,
+    "aiDeltaEligible": true,
+    "requiresWarmRebuild": false,
+    "requiresFullResplit": false
+  },
+  "confidence": "compiler_verified",
+  "evidenceRefs": [
     {
-      "file": "src/main.cpp",
-      "startLine": 120,
-      "endLine": 180,
-      "symbol": "main"
+      "kind": "compiler_ast",
+      "hash": "..."
     }
   ]
 }
 ```
 
-The grounding verifier can be extended from text output to generated role
-contracts.
+Allowed `mappingKind` values:
 
-## 10. Hardcoding To Remove Or Downgrade
+```text
+kernel_body
+device_helper_body
+kernel_signature
+launch_site
+constant_symbol
+device_global_symbol
+shared_type
+host_state_type
+render_entrypoint
+generated_dependency
+```
 
-### 10.1 `gpu_source_context.py`
+Allowed `confidence` values:
 
-Current hardcoded areas:
+```text
+compiler_verified
+codeintel_structural
+rag_cited_advisory
+regex_hint_only
+```
 
-- fixed context budgets
-- backend regex table
-- render regex authority
-- `HIPRT_DEVICE` / `HIPRT_HOST_DEVICE` project-family macro hints
-- `/kernels/` priority
-- `src/` priority
-- blanket omission of `examples/`, `tests/`, `vendor/`
+`regex_hint_only` and `rag_cited_advisory` mappings may route diagnostics or
+broker escalation, but cannot authorize direct device-only patching, ABI safety,
+or promotion.
 
-Replacement:
+## 12. Candidate Lifecycle
 
-- budgets come from model capability profile and broker policy
-- backend regexes become low-confidence hints only
-- macro evidence comes from compiler/preprocessor metadata or project
-  capability profiles
-- target-owned files override default omission policy
-- CodeIntel/RAG citations explain inclusion
-- compile/CMake metadata is authoritative when available
+Background split prepares candidates. It does not imply runtime acceptance.
 
-### 10.2 `kernel_splitter.py`
+States:
 
-Current issues:
+```text
+prepared_candidate
+schema_verified_candidate
+scope_verified_candidate
+dependency_verified_candidate
+mapping_verified_candidate
+abi_verified_candidate
+compile_verified_candidate
+runtime_verified_candidate
+active_promoted_candidate
+rejected_candidate
+stale_candidate
+cancelled_candidate
+```
 
-- still describes itself as a single LLM call
-- still builds custom project context locally
-- still has source-device preservation prompt budgets
-- still uses one large prompt plus deterministic repair
+Do not call a candidate accepted if runtime evidence is required but missing.
 
-Replacement:
+Candidate directories are immutable:
 
-- route through split broker for large/real projects
-- preserve single-call path only as a small-project optimization
-- move source/device preservation into role package contracts
-- use staged generation and per-stage verifier feedback
+```text
+.synthi/gpu_hmr/candidates/<candidate_id>/
+```
 
-### 10.3 `ai_utils.rs`
+Candidate state is not stored by rewriting the immutable candidate spec
+manifest.
+Use:
 
-Current issues:
+```text
+candidate_spec_manifest.json     immutable
+verification_record.jsonl        append-only or content-addressed snapshots
+promotion_record.json            immutable after promotion
+```
 
-- GPU marker detection includes project-family macros
-- split cache is source-hash oriented, not accepted-candidate oriented
-- worker call shape does not request CodeIntel readiness
+Active promotion is a single pointer file:
 
-Replacement:
+```text
+.synthi/gpu_hmr/accepted/current.json
+```
 
-- worker asks AI engine for split readiness/candidate status
-- accepted candidate IDs become cache keys
-- GPU marker detection is advisory only
-- source hash remains part of invalidation, not the only identity
+Minimum candidate spec manifest:
 
-### 10.4 Prompt Bias
+```json
+{
+  "schemaVersion": "gpu-hmr-candidate-spec-manifest-v1",
+  "candidateId": "...",
+  "sourceSplitIdentityHash": "...",
+  "compileCandidateIdentityHash": "...",
+  "generatedArtifactHash": "...",
+  "roleArtifacts": [
+    {
+      "roleId": "device.main",
+      "path": ".synthi/gpu_hmr/candidates/<id>/device/main.hip",
+      "sha256": "..."
+    }
+  ],
+  "roleScopePackageHashes": [],
+  "roleGenerationPackageHashes": [],
+  "aiGenerationIdentityHashes": [],
+  "sourceToGeneratedMappingHash": "...",
+  "createdAt": "...",
+  "createdBy": "gpu-hmr-prepare-candidate"
+}
+```
 
-Active production prompts should not contain fixture-shaped examples or
-backend-specific reference implementations that bias outputs.
+Minimum candidate verification record:
 
-Replacement:
+```json
+{
+  "schemaVersion": "gpu-hmr-candidate-verification-record-v1",
+  "candidateId": "...",
+  "candidateSpecManifestHash": "...",
+  "runtimeVerificationIdentityHash": null,
+  "state": "prepared_candidate",
+  "transitionHistory": [],
+  "verifierReportHashes": [],
+  "updatedAt": "..."
+}
+```
 
-- prompts generated from role package
-- backend capability profile inserts only relevant constraints
-- examples are abstract and contract-level
+Minimum accepted promotion record:
 
-## 11. AI Delta Policy
+```json
+{
+  "schemaVersion": "gpu-hmr-accepted-promotion-record-v1",
+  "candidateId": "...",
+  "candidateSpecManifestHash": "...",
+  "candidateVerificationRecordHash": "...",
+  "promotionIdentityHash": "...",
+  "requiredVerifierReportHashes": [],
+  "promotedAt": "..."
+}
+```
 
-AI delta is not the normal hot path.
+`acceptedPromotionRecordHash` is the content hash of this record. It is not a
+field inside the hashed record.
 
-Use AI delta only when:
+Verifier state transitions:
 
-- a verified split exists
-- mappings exist
-- user edit is localized
-- direct local patch cannot prove safety
-- deterministic warm rebuild is not sufficient or not cheaper
+| From | To | Required proof |
+| --- | --- | --- |
+| `prepared_candidate` | `schema_verified_candidate` | `schemaVerifierReport.pass` |
+| `schema_verified_candidate` | `scope_verified_candidate` | `roleScopeVerifierReport.pass` |
+| `scope_verified_candidate` | `dependency_verified_candidate` | `dependencyVerifierReport.pass` |
+| `dependency_verified_candidate` | `mapping_verified_candidate` | `mappingVerifierReport.pass` or `mappingNotRequiredReason` |
+| `mapping_verified_candidate` | `abi_verified_candidate` | `abiVerifierReport.pass` or `abiProofNotRequiredReason` |
+| `abi_verified_candidate` | `compile_verified_candidate` | `compileVerifierReport.pass` |
+| `compile_verified_candidate` | `runtime_verified_candidate` | `runtimeVerifierReport.pass` or `runtimeProofNotRequiredReason` |
+| `runtime_verified_candidate` | `active_promoted_candidate` | `promotionVerifierReport.pass` and atomic pointer update |
+
+Any verifier failure moves the candidate to `rejected_candidate` with the
+verifier report hash and reason code. Any identity/generation mismatch moves it
+to `stale_candidate`. These state changes append verification records; they do
+not mutate the candidate spec manifest.
+
+## 13. Verifier Report Schema
+
+Verifier reports are immutable and content-addressed. Promotion consumes report
+hashes; it does not re-interpret raw logs.
+
+Minimum shape:
+
+```json
+{
+  "schemaVersion": "gpu-hmr-verifier-report-v1",
+  "verifierName": "dependency",
+  "candidateId": "...",
+  "candidateSpecManifestHash": "...",
+  "inputIdentitySnapshot": {
+    "sourceSplitIdentityHash": "...",
+    "compileCandidateIdentityHash": "...",
+    "runtimeVerificationIdentityHash": null,
+    "codeIntelGeneration": "...",
+    "retrievalTraceHashes": []
+  },
+  "status": "pass",
+  "blocking": true,
+  "reasonCodes": [],
+  "proofRefs": [
+    {
+      "kind": "compiler_dep_scan",
+      "hash": "...",
+      "path": ".synthi/gpu_hmr/evidence/..."
+    }
+  ],
+  "createdAt": "...",
+  "toolVersion": "..."
+}
+```
+
+Allowed statuses:
+
+```text
+pass
+fail
+warning
+not_required
+skipped_blocked_by_prior_failure
+```
+
+Every transition in the candidate lifecycle must reference a verifier report
+hash or an explicit `not_required` report.
+
+## 14. Atomic Promotion Details
+
+Promotion must be implemented as:
+
+1. acquire single workspace promotion lock
+2. validate candidate spec manifest hash
+3. validate all identity inputs still match
+4. reject symlinked pointer path
+5. write `current.json.tmp`
+6. fsync temp file
+7. atomic rename temp to `current.json`
+8. fsync parent directory
+9. read back pointer
+10. verify candidate spec manifest hash after rename
+11. release promotion lock
+
+Crash recovery:
+
+- leftover temp pointer files are ignored or cleaned
+- previous `current.json` remains valid if rename did not complete
+- promoted candidate is immutable and can be revalidated by hash
+
+## 15. RAG Retrieval Identity And Policy
+
+RAG generation alone is insufficient.
+
+Candidate identity must include:
+
+- retrieval trace hash
+- retrieval profile hash
+- query hash
+- ranker version
+- RRF/MMR settings hash
+- context budget hash
+- citation filter hash
+- HyDE/query rewrite setting
+- top-k and candidate budget settings
+
+For GPU HMR critical retrieval:
+
+- disable HyDE/query rewriting by default
+- use deterministic retrieval profiles
+- allow LLM query expansion only as advisory evidence
+- record per-role retrieval generation IDs
+- store span IDs and hashes, not copied large chunks
+
+Retrieval profiles:
+
+```text
+device_definitions
+kernel_launch_sites
+shared_abi_state
+render_ownership
+generated_dependency_availability
+```
+
+## 16. Dependency Policy
+
+Dependency classes alone are too broad. Use class plus explicit allowlists.
+
+Example:
+
+```json
+{
+  "class": "toolchain_runtime",
+  "allowedHeaders": ["hip/hip_runtime.h"],
+  "allowedLibraries": ["amdhip64"],
+  "toolchainProbeHash": "..."
+}
+```
+
+Dependency classes:
+
+```text
+standard_library
+toolchain_runtime
+target_declared
+generated_role
+owned_project_header
+read_only_project_header
+adapted_project_header
+forbidden_project_header
+external_optional
+external_unavailable
+unmodeled
+```
+
+Policy:
+
+- `standard_library`: allowed only for the selected language mode and compiler
+  probe, for example C++20 plus libstdc++ probe hash.
+- `toolchain_runtime`: allowed only through explicit header/library allowlist
+  and toolchain probe.
+- `target_declared`: allowed when selected target metadata declares it.
+- `generated_role`: allowed when broker declared it.
+- `owned_project_header`: role package owns and may quote/include or adapt it.
+- `read_only_project_header`: may be cited/read for context, not included from
+  generated roles.
+- `adapted_project_header`: selected declarations may be copied/adapted with
+  source-span evidence.
+- `forbidden_project_header`: reject if generated role references it.
+- `external_optional`: warning unless role requires it for visible output.
+- `external_unavailable`: block.
+- `unmodeled`: block for promotion.
+
+Resolve:
+
+- quoted includes
+- angle includes
+- standard library headers
+- HIP/CUDA runtime headers
+- generated role headers
+- transitive project headers
+- generated headers
+- compile definitions
+- include directories
+- link libraries
+- runtime shared libraries
+
+Split environments:
+
+- `build_worker_environment`
+- `verification_runtime_environment`
+- `deployment_runtime_environment`
+
+A candidate may compile in the worker and still fail runtime verification if
+the verification runtime lacks a library/device/display capability.
+
+## 17. ABI Verifier By Launch Mode
+
+ABI checks depend on launch mechanism.
+
+Launch modes:
+
+```text
+direct_compiled_launch
+runtime_module_symbol_launch
+indirect_reload_trampoline
+device_only_body_patch
+```
+
+### direct_compiled_launch
+
+Required:
+
+- launch wrapper signature
+- kernel parameter order
+- parameter sizes/alignment
+- host launch argument layout
+- host/device shared struct parity
+
+Mangled-name proof may be advisory, not always blocking.
+
+### runtime_module_symbol_launch
+
+Required:
+
+- stable runtime symbol string
+- exported/mangled symbol availability where applicable
+- runtime module lookup proof
+- parameter layout and buffer ownership proof
+
+Symbol-name proof is blocking.
+
+### indirect_reload_trampoline
+
+Required:
+
+- launch indirection table entry
+- stable symbol ID
+- no stale direct launch pointer
+- generation/version tracking
+- old artifact lifetime handling
+
+### device_only_body_patch
+
+Required:
+
+- mapped source span unchanged outside body
+- kernel/helper signature unchanged
+- constants/device globals unchanged
+- host launch ABI unchanged
+- compiler artifact confirms ABI/layout where available
+
+Common checks:
+
+- `sizeof`
+- `alignof`
+- `offsetof`
+- `extern "C"` boundaries where used
+- calling convention where relevant
+- pointer ownership class
+- buffer lifetime expectations
+- RDC/device-link topology
+
+## 18. Graphics Ownership States
+
+Use explicit states:
+
+```text
+compute_only
+offscreen_render_only
+existing_window_owned_by_app
+generated_runner_may_own_window
+host_application_plugin
+remote_or_headless_display
+frame_adapter_only
+unsupported
+ambiguous
+```
+
+Notes:
+
+- `compute_only` is not unknown graphics; it means no GUI proof is expected.
+- `offscreen_render_only` may provide frame output without a window.
+- `host_application_plugin` means generated runner cannot own process/window
+  lifecycle.
+- `remote_or_headless_display` requires environment-specific frame capture.
+- `frame_adapter_only` is useful validation, but not full app GUI HMR.
+
+## 19. Multi-Target And Multi-TU Policy
+
+Device topology:
+
+```text
+single_tu
+multi_tu_supported
+multi_tu_unsupported
+```
+
+MVP may support only `single_tu`, but must report:
+
+```text
+unsupported.multi_device_tu_for_mvp
+```
+
+Multi-target projects must include target identity in every projection,
+candidate, role scope package, generation package, verifier report, and reload
+plan.
+
+## 20. AI Delta Policy
+
+AI delta is allowed only when:
+
+- an active promoted candidate exists
+- source-to-generated mappings exist
+- changed user source is localized
+- direct deterministic patch cannot prove safety
+- warm deterministic rebuild is insufficient or more disruptive
+- broker can issue bounded delta role packages
 - Arbiter policy allows the cost/risk
 
 AI delta receives:
 
-- accepted candidate manifest
-- role packages
+- active promotion record
+- accepted candidate spec manifest
+- affected role scope package
+- affected role generation package
 - source-to-generated mappings
 - user delta
-- relevant CodeIntel/RAG citations
+- relevant retrieval/citation span IDs
 - reload plan attempt
 - verifier/build/runtime failure feedback
 
-AI delta output is accepted only after:
+AI delta may not:
 
-- schema verifier
-- role scope verifier
-- mapping verifier
-- ABI verifier
+- widen source scope
+- write user source
+- touch unassigned generated roles
+- bypass dependency/ABI/verifier failures
+- silently fall back to full split
+
+Direct body-only patch wins when local proof succeeds.
+
+Blocking verifier failures:
+
+```text
+delta.scope_widening_attempt
+delta.mapping_missing
+delta.abi_safety_unproven
+delta.generated_dependency_unavailable
+delta.multi_role_transaction_unapproved
+```
+
+## 21. Concurrency And Staleness
+
+Required controls:
+
+- monotonic workspace generations
+- CodeIntel generation locks
+- candidate cancellation
+- stale job detection
+- branch/build-dir invalidation
+- one active promotion transaction per workspace
+- no promotion if source generation changed during verification
+- no promotion if target metadata changed during verification
+- no promotion if retrieval identity changed during verification
+- no promotion if runtime/toolchain identity changed during verification
+
+Reason codes:
+
+```text
+candidate.stale_source_generation
+candidate.stale_codeintel_generation
+candidate.stale_retrieval_identity
+candidate.verification_cancelled
+candidate.branch_changed
+candidate.build_dir_changed
+promotion.concurrent_transaction
+```
+
+## 22. Security And Path Scope
+
+Verifiers must reject:
+
+- absolute generated paths
+- `..` traversal
+- symlink escape
+- case-insensitive path collision
+- generated files outside `.synthi/gpu_hmr/candidates/<id>/`
+- generated CMake or post-build command injection
+- generated include of user private file outside broker scope
+- prompt-injection text in source comments that tries to override role package
+
+Reason codes:
+
+```text
+generated.absolute_path_rejected
+generated.path_traversal_rejected
+generated.symlink_escape_rejected
+generated.case_collision_rejected
+generated.command_injection_rejected
+source.prompt_injection_ignored
+```
+
+## 23. Reason Code Registry
+
+Reason codes must be registered in one versioned registry, not scattered as
+free-form strings.
+
+Suggested registry path:
+
+```text
+ai-backend/ai-engine/gpu_hmr/reason_codes.json
+```
+
+Minimum entry shape:
+
+```json
+{
+  "code": "target_resolution_ambiguous",
+  "phase": "preflight_readiness",
+  "severity": "blocking",
+  "blocking": true,
+  "message": "Selected file belongs to more than one executable target.",
+  "requiredRemediation": "Select an explicit target or project target config.",
+  "safeFallbackMode": "diagnostics_only",
+  "owner": "build_metadata"
+}
+```
+
+Required fields:
+
+- `code`
+- `phase`
+- `severity`: `blocking` / `advisory` / `info`
+- `blocking`
+- `message`
+- `requiredRemediation`
+- `safeFallbackMode`
+- `owner`
+
+Verifier reports, readiness responses, job traces, and UI cards must reference
+registered codes. Unknown reason codes are allowed only in debug builds and are
+treated as blocking in production.
+
+## 24. Cost And Provider Control
+
+Track:
+
+- model capability profile
+- model name/version
+- max output tokens
+- max context tokens
+- prompt hash
+- temperature policy
+- retry limit
+- per-workspace budget
+- per-candidate budget
+- stage cache hit/miss
+- AI call reason
+- user-visible reason when generation is skipped
+
+Reason codes:
+
+```text
+budget.candidate_ai_limit_exceeded
+budget.workspace_ai_limit_exceeded
+budget.stage_cache_hit
+budget.stage_cache_miss
+```
+
+## 25. Revised Milestones
+
+This order is intentional. Projection must exist before readiness can be
+meaningful. Full promotion-affecting verifiers need broker packages and
+candidate spec manifests, although verifier stubs and schemas can start
+earlier.
+
+### Milestone 1: Schemas And Identity
+
+Tasks:
+
+- selected target identity schema
+- source split identity schema
+- compile candidate identity schema
+- runtime verification identity schema
+- AI generation identity schema
+- promotion identity schema
+- candidate spec manifest schema
+- candidate verification record schema
+- role scope package schema
+- role generation package schema
+- source-to-generated mapping schema
+- accepted pointer schema
+- canonical hashing library and fixtures
+- deterministic candidate ID derivation
+
+Done when:
+
+- unsafe cache reuse is structurally blocked by identity mismatch
+- two implementations produce the same hashes for the same canonical fixture
+
+### Milestone 2: Compile-Aware Metadata
+
+Tasks:
+
+- compile database resolver
+- CMake File API adapter
+- explicit/manual target config validation
+- include/link extraction
+- toolchain/runtime/environment probes
+- compiler-aware parser/dependency scanner integration
+
+Done when:
+
+- selected target metadata can drive source scope and dependency checks
+
+### Milestone 3: Target-Scoped Projection
+
+Tasks:
+
+- projection builder over CodeIntel/build metadata
+- content-addressed projection files
+- compact retrieval evidence references
+- invalidation rules
+- no independent source scanning authority
+
+Done when:
+
+- projection fails closed on any referenced generation/hash mismatch
+
+### Milestone 4: Readiness Gate
+
+Tasks:
+
+- preflight/projection/scope/generation/compile/promotion readiness
+- blocking vs advisory reason codes
+- CodeIntel generation checks
+- retrieval identity checks
+- target ambiguity checks
+- dependency prechecks
+
+Done when:
+
+- GPU HMR can refuse discovery/generation/compile/promotion with precise reason
+  codes before unsafe work begins
+
+### Milestone 5: Split Broker
+
+Tasks:
+
+- role scope packages
+- role generation packages
+- deterministic source sets
+- deterministic write sets
+- dependency policies
+- broker escalation protocol
+- multi-role transaction policy
+
+Done when:
+
+- AI cannot choose its own source scope or generated write scope
+
+### Milestone 6: Verifiers
+
+Tasks:
+
 - dependency verifier
-- compile verifier
-- runtime/frame verifier where applicable
+- role scope verifier
+- citation verifier
+- mapping verifier
+- ABI verifier by launch mode
+- path/security verifier
+- promotion verifier
 
-Direct `.hip` / `.cu` body-only edits remain non-agentic when local proof
-succeeds.
+Done when:
 
-## 12. Verifiers To Add
+- generated dependency, wrong-scope, stale candidate, path escape, and ABI drift
+  failures are caught before unsafe promotion
 
-### 12.1 Generated Dependency Availability Verifier
+### Milestone 7: RAG-Backed Role Retrieval
 
-Before compile, inspect generated includes and link flags.
+Tasks:
 
-Reject with:
+- deterministic retrieval profiles
+- HyDE disabled for critical retrieval
+- source-span citations
+- retrieval identity hashes
+- context sufficiency reports
+
+Done when:
+
+- role generation packages receive indexed/cited context instead of ad hoc
+  prompt bundles
+
+### Milestone 8: Staged Generation
+
+Tasks:
+
+- deterministic evidence manifest
+- optional AI architecture summary over scoped evidence
+- role-by-role generation
+- failed-stage repair only
+- no active partial artifacts
+
+Done when:
+
+- large project split no longer depends on one giant AI response
+
+### Milestone 9: Real Validation
+
+Tasks:
+
+- pin named projects and commits
+- pin environment/toolchain
+- record screenshots/logs/hashes
+- validate stale-state and target-ambiguity failures
+- validate large repo and real GUI/frame output cases
+
+Done when:
+
+- validation artifacts prove each claimed workflow
+
+## 26. Validation Set
+
+Current named real project already exercised:
 
 ```text
-generated.include_unavailable
-generated.library_unavailable
-generated.backend_dependency_unmodeled
+project: HIPRT-Path-Tracer
+repo: https://github.com/TomClabault/HIPRT-Path-Tracer.git
+commit: d114ed0d4c1d4ff9ea4e2511841819ed9aa59e6e
+build system: CMake
+target observed: HIPRTPathTracer
+classification: real ROCm/HIP GUI/render project
+current result: split reached generated GUI compile, failed on unavailable ImGui dependency
+purpose: dependency/render ownership and large-project split validation
 ```
 
-This catches failures like generated ImGui includes missing from the worker
-image before compile repair loops.
-
-### 12.2 Role Scope Verifier
-
-Verify each generated role stays within its broker package:
-
-- generated path is allowed
-- referenced source files are allowed
-- generated includes are allowed
-- cross-role references are declared
-- no user workspace writes
-
-Reject with:
+Before implementation of Milestone 9, add at least two more pinned cases:
 
 ```text
-generated.role_scope_violation
-generated.unowned_source_reference
-generated.cross_role_dependency_unapproved
+project: TBD-real-rocm-gui-or-frame-app-2
+repo: TBD
+commit: TBD
+build system: TBD
+target: TBD
+expected output: visible frame or explicit unsupported fallback
 ```
-
-### 12.3 Citation Completeness Verifier
-
-Every critical generated claim should cite source evidence:
-
-- entrypoint
-- selected target
-- kernel definitions
-- launch sites
-- shared ABI state
-- render/window ownership
-- external dependencies
-
-Missing citations block production proof and can block promotion for critical
-roles.
-
-### 12.4 Graphics Ownership Verifier
-
-Verify:
-
-- who creates the window/context
-- who owns presentation/swap
-- whether generated runner may own a window
-- whether output is actual GUI or frame-like adapter
-- whether framework dependencies exist
-
-Reject with:
 
 ```text
-unsupported.graphics_ownership_unmodeled
-generated.render_dependency_unavailable
-generated.gui_role_no_visible_effect
+project: TBD-real-rocm-workload-with-generic-frame-adapter-3
+repo: TBD
+commit: TBD
+build system: TBD
+target: TBD
+expected output: frame-like observable output, clearly labeled adapter
 ```
 
-### 12.5 Split Candidate Promotion Verifier
+No production readiness claim is allowed until the TBD cases are resolved with
+real pinned repositories, commits, environment, outputs, and artifacts.
 
-Verify the candidate has passed all required stages before becoming active:
+## 27. Tests To Add
+
+Add tests for:
+
+- malicious source comment tries to override role package
+- absolute generated path rejected
+- symlink escape rejected
+- case-insensitive path collision rejected
+- candidate generated under `.synthi` tries to include user private file
+- retrieval profile changed but RAG generation unchanged
+- same RAG store generation but different top-k invalidates candidate
+- manual target config overrides ambiguous CMake target
+- compile command path points outside workspace
+- generated header content changes without source file change
+- runtime library available in worker but missing in runtime verifier
+- direct launch path does not require mangled-name proof
+- runtime module launch path requires symbol-name proof
+- AI delta cannot widen source scope
+- small-project single-call still produces candidate spec manifest
+- promotion interrupted between write and rename recovers safely
+- candidate stale after file save
+- candidate stale after branch checkout
+- promotion blocked by CodeIntel generation mismatch
+- promotion blocked by retrieval identity mismatch
+- standard library include allowed through compiler probe
+- ROCm/CUDA runtime include allowed only through toolchain probe
+- generated CMake/post-build command injection
+- multi-target project with same source file
+- multi-config build directory
+- duplicate kernel names in different namespaces/files
+- macro-generated kernel declarations
+- struct ABI drift after user edit
+- target-owned `examples/` file not dropped
+- target-owned vendor adapter not dropped
+- unsupported vendor dependency explicitly rejected
+
+## 28. Defer Or Downgrade
+
+### Defer Template Evidence
+
+Do not add `templateEvidence` as a broad field until producer, invalidation,
+and safety authority are defined.
+
+For now:
 
 ```text
-candidate.schema_verified
-candidate.mapping_verified
-candidate.dependency_verified
-candidate.compile_verified
-candidate.runtime_verified
+template_evidence_unavailable
 ```
 
-Promotion failure:
+blocks template-dependent warm rebuilds.
+
+### Downgrade Global RAG Freshness
+
+Global `ragStatus: fresh` is too coarse.
+
+Use per-role retrieval identity and per-role sufficiency.
+
+### Remove Project Capability Profiles As Authority
+
+Project capability profiles are allowed only if explicit, versioned, and
+user-visible. Otherwise they become hidden hardcoding.
+
+## 29. Acceptance Criteria
+
+This architecture is ready to implement when:
+
+1. identity is split into source, compile, runtime, AI, and promotion identities
+2. target-scoped projection precedes readiness
+3. readiness is phased and non-circular
+4. role scope package and role generation package are distinct
+5. retrieval identity includes trace/profile/query/ranker/budget hashes
+6. projections store compact evidence refs, not copied RAG cache content
+7. build metadata hierarchy prioritizes explicit validated config
+8. ABI checks are launch-mode-specific
+9. dependency policy uses explicit allowlists
+10. atomic promotion is specified at filesystem-operation level
+11. AI delta policy is explicit and verifier-gated
+12. canonical hashing and candidate ID derivation are specified
+13. source-to-generated mapping schema is explicit
+14. real validation set is pinned before production claims
+
+## 30. Final Flow
 
 ```text
-candidate_promotion.verifier_missing
-candidate_promotion.artifact_stale
-candidate_promotion.index_generation_mismatch
+CodeIntel index + build metadata
+  -> compile-aware metadata/probes
+  -> target-scoped projection
+  -> phased readiness
+  -> broker role scope packages
+  -> deterministic RAG-backed retrieval profiles
+  -> broker role generation packages
+  -> staged AI proposals inside scope
+  -> dependency/scope/citation/mapping/ABI/path/compile/runtime verifiers
+  -> immutable candidate directory
+  -> atomic accepted/current.json promotion
+  -> direct non-agentic device_only HMR where locally provable
+  -> AI delta only as verifier-gated fallback
 ```
 
-## 13. Implementation Milestones
-
-### Milestone 0: Keep Current PR Focused
-
-Tasks:
-
-- finish current PR review
-- do not add broker/RAG architecture to current PR
-- do not commit temp real-repo clones or local compose overrides
-- commit only intentional validation logs if reviewers need them
-
-Done when:
-
-- current GPU HMR hardening PR is mergeable
-
-### Milestone 1: Split Readiness And Model Capabilities
-
-Tasks:
-
-- add model capability profile for context/output budgets
-- add split readiness schema
-- report CodeIntel/RAG freshness in split readiness
-- downgrade regex context matches to fallback evidence
-- keep old source context behavior as compatibility fallback
-
-Done when:
-
-- GPU split can say "not ready" before calling AI
-- budgets are not hardcoded in `gpu_source_context.py`
-- readiness report is emitted in split responses and run reports
-
-### Milestone 2: Generated Dependency Verifier
-
-Tasks:
-
-- extract includes and link deps from generated roles
-- compare against selected target include/link metadata
-- classify optional vs required only with explicit evidence
-- reject unavailable generated deps before compile repair
-
-Done when:
-
-- HIPRT-style missing ImGui header is rejected before compile
-- verifier emits reason-coded dependency evidence
-
-### Milestone 3: GPU Workspace Intelligence Artifact
-
-Tasks:
-
-- add GPU intelligence builder on top of CodeIntel engine/indexes
-- persist `.synthi/gpu_hmr/workspace_intelligence.json`
-- include index generation, source hash, target metadata, device graph, render
-  ownership evidence, dependency availability, and RAG status
-- add invalidation rules
-
-Done when:
-
-- source context selection can cite workspace intelligence instead of redoing
-  prompt-time discovery
-
-### Milestone 4: Split Broker And Role Packages
-
-Tasks:
-
-- add role package schema
-- add deterministic broker for shared/device/core/gui/runner packages
-- add role scope verifier
-- store candidate artifacts separately from accepted artifacts
-- add atomic promotion
-
-Done when:
-
-- AI cannot expand its own source or write scope
-- generated artifacts remain internal and candidate-based until verified
-
-### Milestone 5: RAG-Backed Role Retrieval
-
-Tasks:
-
-- define retrieval profiles for device, launch, shared ABI, render ownership,
-  dependencies
-- call CodeIntel/RAG retrieval from broker
-- record citations and context sufficiency
-- feed role-scoped context into staged split prompts
-
-Done when:
-
-- large project split context comes from indexed retrieval and citations
-- every included/dropped file has a metadata/RAG reason
-
-### Milestone 6: Staged Split Generation
-
-Tasks:
-
-- split architecture summary from role generation
-- generate roles in stages
-- run stage contract verifier after each stage
-- pass accepted contracts forward
-- repair only failed stages where safe
-
-Done when:
-
-- a GUI dependency failure does not require rerunning every role
-- large real projects no longer depend on one giant AI response
-
-### Milestone 7: Real Project Validation
-
-Tasks:
-
-- validate at least two real ROCm GUI-ish projects or one real GUI project plus
-  one real ROCm workload with a generic frame adapter
-- record target resolution, index freshness, retrieval citations, split stage
-  timings, first frame, user `.hip` edit, reload plan, HMR timing, screenshots
-- explicitly record unsupported/fallback cases
-
-Done when:
-
-- failures are classified, not generic build errors
-- reproducible artifacts exist for each claimed backend/project
-
-## 14. Testing Strategy
-
-Unit tests:
-
-- split readiness blocks stale CodeIntel index
-- target-owned `examples/` or `tests/` source is not dropped
-- regex backend hints are low-confidence evidence
-- model capability profile controls context/output budgets
-- generated dependency verifier catches missing includes
-- role scope verifier catches unowned source references
-- candidate promotion requires verifier completion
-
-Integration tests:
-
-- existing SDL2/ROCm natural device-only path
-- GLFW/OpenGL ROCm path
-- ambiguous multi-target CMake project
-- duplicate compile command entries
-- Vulkan explicit unsupported fallback
-- missing generated dependency case
-- stale RAG index case
-
-Real project tests:
-
-- real ROCm GUI/render project if available
-- real ROCm workload with generic frame adapter
-- large project with more than 1,000 files
-
-Required metrics:
-
-- CodeIntel index time
-- RAG ingest freshness and time
-- split readiness time
-- role retrieval time
-- split stage times
-- first compile time
-- first frame time
-- direct HMR wall time
-- AI delta count
-- verifier failure reason codes
-- screenshot paths
-
-## 15. Branch And Commit Plan
-
-Branch:
-
-```text
-feature/gpu-hmr-codeintel-split-broker
-```
-
-Suggested commits:
-
-1. `docs(gpu-hmr): finalize codeintel split broker plan`
-2. `feat(gpu-hmr): add split readiness schema`
-3. `feat(gpu-hmr): add model capability split budgets`
-4. `feat(gpu-hmr): add generated dependency verifier`
-5. `feat(gpu-hmr): build gpu workspace intelligence artifact`
-6. `feat(gpu-hmr): add deterministic split broker packages`
-7. `feat(gpu-hmr): attach codeintel retrieval to role packages`
-8. `feat(gpu-hmr): stage gpu full split generation`
-9. `test(gpu-hmr): validate staged split on real rocm projects`
-
-Commit frequently, but keep validation artifacts intentional and reviewable.
-
-## 16. Acceptance Criteria
-
-This architecture is working when:
-
-1. GPU HMR uses CodeIntel/RAG as project intelligence, not a parallel scanner.
-2. Split readiness can block unsafe AI calls before generation.
-3. Source context is metadata-first and citation-backed.
-4. Regex heuristics are advisory, not authority.
-5. The split broker owns source scope and generated write scope.
-6. AI cannot silently touch unowned files or roles.
-7. Generated dependency failures are caught before compile repair loops.
-8. Large projects use staged split calls.
-9. Candidate split artifacts are promoted only after deterministic verification.
-10. Direct body-only device edits remain non-agentic when locally provable.
-11. AI delta remains a verifier-gated fallback, not the default edit path.
-12. Every production claim has reproducible validation artifacts.
-
-## 17. Final Architecture Summary
-
-The final shape should be:
-
-```text
-CodeIntel index + RAG ingest
-  -> GPU workspace intelligence artifact
-  -> split readiness gate
-  -> deterministic split broker
-  -> role-scoped retrieval packages
-  -> staged AI proposals
-  -> schema/dependency/mapping/ABI/compile/runtime verifiers
-  -> atomic candidate promotion
-  -> direct device-only HMR for safe body edits
-  -> AI delta only when local proof cannot safely patch
-```
-
-That uses the sophisticated system already in the repo instead of adding
-another RAG layer, and it aligns with `docs/GPU_HMR_PROD_NEXT.md`.
+This keeps GPU HMR aligned with `docs/GPU_HMR_PROD_NEXT.md` without building a
+parallel semi-indexing system or letting AI choose its own scope.
