@@ -1,7 +1,7 @@
 use regex::Regex;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tree_sitter::Parser;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,6 +9,7 @@ pub struct DeviceFastPathResult {
     pub accepted: bool,
     pub generated_path: Option<String>,
     pub patched_device_source: Option<String>,
+    pub affected_symbols: Vec<String>,
     pub reload_plan: Value,
     pub verifier_report: Value,
     pub reason_codes: Vec<String>,
@@ -38,6 +39,7 @@ impl DeviceFastPathResult {
             accepted: false,
             generated_path: None,
             patched_device_source: None,
+            affected_symbols: Vec::new(),
             reload_plan,
             verifier_report,
             reason_codes: codes,
@@ -48,8 +50,10 @@ impl DeviceFastPathResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct KernelRegion {
     signature: String,
+    start: usize,
     body_start: usize,
     body_end: usize,
+    end: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -387,6 +391,7 @@ pub fn try_direct_device_body_patch(
         accepted: true,
         generated_path,
         patched_device_source: Some(patched),
+        affected_symbols,
         reload_plan: plan,
         verifier_report,
         reason_codes: codes,
@@ -876,12 +881,70 @@ fn kernel_regions(source: &str) -> BTreeMap<String, KernelRegion> {
             name,
             KernelRegion {
                 signature: params,
+                start: matched.start(),
                 body_start: body_open + 1,
                 body_end: body_close.saturating_sub(1),
+                end: body_close,
             },
         );
     }
     out
+}
+
+pub fn build_device_partial_source(source: &str, symbols: &[String]) -> Option<String> {
+    let target_symbols = symbols
+        .iter()
+        .map(|symbol| symbol.trim())
+        .filter(|symbol| !symbol.is_empty())
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+    if target_symbols.is_empty() {
+        return None;
+    }
+
+    let regions = kernel_regions(source);
+    if regions.len() <= target_symbols.len() {
+        return None;
+    }
+    if !target_symbols
+        .iter()
+        .all(|symbol| regions.contains_key(symbol))
+    {
+        return None;
+    }
+
+    let mut ordered = regions.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|(_, region)| region.start);
+
+    let mut partial = String::with_capacity(source.len());
+    let mut cursor = 0usize;
+    for (name, region) in ordered {
+        if region.start < cursor || region.end < region.start || region.end > source.len() {
+            return None;
+        }
+        partial.push_str(source.get(cursor..region.start)?);
+        if target_symbols.contains(name) {
+            partial.push_str(source.get(region.start..region.end)?);
+        } else {
+            partial.push_str("\n// synthi-gpu-hmr: unchanged kernel omitted: ");
+            partial.push_str(name);
+            partial.push('\n');
+        }
+        cursor = region.end;
+    }
+    partial.push_str(source.get(cursor..)?);
+
+    if partial.len() >= source.len() {
+        return None;
+    }
+    let partial_symbols = kernel_regions(&partial)
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if partial_symbols != target_symbols {
+        return None;
+    }
+    Some(partial)
 }
 
 fn next_function_body_open(source: &str, after_params: usize) -> Option<usize> {
@@ -1510,6 +1573,34 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("2.0f"));
+    }
+
+    #[test]
+    fn partial_device_source_keeps_only_target_kernels() {
+        let source = r#"
+__device__ float helper(float x) { return x + 1.0f; }
+extern "C" __global__ void shade(float* x) {
+  x[0] = helper(x[0]);
+}
+extern "C" __global__ void trace(float* x) {
+  x[0] = x[0] * 2.0f;
+}
+"#;
+
+        let partial = build_device_partial_source(source, &["shade".to_string()]).unwrap();
+
+        assert!(partial.len() < source.len());
+        assert!(partial.contains("__device__ float helper"));
+        assert!(partial.contains("__global__ void shade"));
+        assert!(!partial.contains("__global__ void trace"));
+        assert!(partial.contains("unchanged kernel omitted: trace"));
+    }
+
+    #[test]
+    fn partial_device_source_declines_when_it_cannot_shrink() {
+        let source = "extern \"C\" __global__ void shade(float* x) {\n  x[0] = 1.0f;\n}\n";
+
+        assert!(build_device_partial_source(source, &["shade".to_string()]).is_none());
     }
 
     #[test]

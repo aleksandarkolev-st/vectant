@@ -63,6 +63,8 @@ pub struct DeviceCompileOutcome {
     /// Device source that was actually compiled after any internal generated
     /// role heal attempts.
     pub compiled_source: String,
+    pub partial_module: bool,
+    pub target_symbols: Vec<String>,
     /// Parsed ptxas/nvlink diagnostics — empty for ROCm (Phase 0).
     pub diagnostics: GpuToolchainDiagnostics,
     /// Raw stderr from the device compiler — preserved verbatim for the
@@ -228,6 +230,8 @@ async fn compile_device_inner(
             return Ok(Some(DeviceCompileOutcome {
                 artifact_path,
                 compiled_source: current_source,
+                partial_module: false,
+                target_symbols: Vec::new(),
                 diagnostics: compile.diagnostics,
                 stderr: compile.stderr,
             }));

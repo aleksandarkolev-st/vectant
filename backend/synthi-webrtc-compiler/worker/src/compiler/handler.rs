@@ -318,8 +318,9 @@ use crate::hmr::deterministic_compile::{
     DeterministicRebuildScope,
 };
 use crate::hmr::gpu_device_fast_path::{
-    device_header_kernel_body_only_edit_symbol, device_only_capability_rejection_reason,
-    device_source_hash, mapped_generated_device_path, try_direct_device_body_patch,
+    build_device_partial_source, device_header_kernel_body_only_edit_symbol,
+    device_only_capability_rejection_reason, device_source_hash, mapped_generated_device_path,
+    try_direct_device_body_patch,
 };
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
@@ -559,6 +560,133 @@ fn device_filename_for_vendor(vendor: DeviceVendor) -> &'static str {
         DeviceVendor::Cuda => "device.cu",
         DeviceVendor::Rocm => "device.hip",
     }
+}
+
+#[derive(Debug, Clone)]
+struct DeviceCompileSources {
+    full_source: String,
+    full_filename: Option<String>,
+    partial_source: Option<String>,
+    partial_filename: Option<String>,
+    partial_symbols: Vec<String>,
+}
+
+fn partial_device_filename(generated_path: &str, symbols: &[String], source: &str) -> String {
+    let normalized = generated_path.replace('\\', "/");
+    let (dir, file) = normalized
+        .rsplit_once('/')
+        .map(|(dir, file)| (dir.to_string(), file.to_string()))
+        .unwrap_or_else(|| (String::new(), normalized));
+    let (stem, ext) = file
+        .rsplit_once('.')
+        .map(|(stem, ext)| (stem.to_string(), format!(".{ext}")))
+        .unwrap_or((file, String::new()));
+    let hash = hash_content(&format!("{}:{source}", symbols.join(",")));
+    let filename = format!("{stem}.partial.{hash:016x}{ext}");
+    if dir.is_empty() {
+        filename
+    } else {
+        format!("{dir}/{filename}")
+    }
+}
+
+fn split_partial_device_source(
+    split_data: &serde_json::Value,
+) -> Option<(String, String, Vec<String>)> {
+    let partial = split_data.get("_synthi_device_partial")?;
+    let source = partial
+        .get("content")
+        .or_else(|| partial.get("source"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())?
+        .to_string();
+    let filename = partial
+        .get("filename")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())?
+        .to_string();
+    let symbols = partial
+        .get("symbols")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::trim)
+                .filter(|symbol| !symbol.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if symbols.is_empty() {
+        None
+    } else {
+        Some((source, filename, symbols))
+    }
+}
+
+async fn compile_device_sources_phase0(
+    workspace_path: &Path,
+    output_dir: &Path,
+    timestamp: i64,
+    sources: &DeviceCompileSources,
+    manifest: &CompileManifest,
+) -> Result<Option<DeviceCompileOutcome>> {
+    if let (Some(partial_source), Some(partial_filename)) = (
+        sources.partial_source.as_deref(),
+        sources.partial_filename.as_deref(),
+    ) {
+        if !sources.partial_symbols.is_empty() {
+            eprintln!(
+                "[compile-device] partial source candidate file={} bytes={} full_bytes={} symbols={}",
+                partial_filename,
+                partial_source.len(),
+                sources.full_source.len(),
+                sources.partial_symbols.join(",")
+            );
+            match compile_device_phase0(
+                workspace_path,
+                output_dir,
+                timestamp,
+                partial_source,
+                Some(partial_filename),
+                manifest,
+            )
+            .await
+            {
+                Ok(Some(mut outcome)) => {
+                    outcome.partial_module = true;
+                    outcome.target_symbols = sources.partial_symbols.clone();
+                    return Ok(Some(outcome));
+                }
+                Ok(None) => {
+                    eprintln!(
+                        "[compile-device] partial source compile returned no artifact; falling back to full generated device"
+                    );
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[compile-device] partial source compile failed; falling back to full generated device: {e:#}"
+                    );
+                }
+            }
+        }
+    }
+
+    let mut outcome = compile_device_phase0(
+        workspace_path,
+        output_dir,
+        timestamp,
+        &sources.full_source,
+        sources.full_filename.as_deref(),
+        manifest,
+    )
+    .await?;
+    if let Some(outcome) = outcome.as_mut() {
+        outcome.partial_module = false;
+        outcome.target_symbols.clear();
+    }
+    Ok(outcome)
 }
 
 fn is_device_source_request(filename: &str) -> bool {
@@ -1727,7 +1855,30 @@ pub async fn handle_compile_request(
                             generated_path,
                             device_patch.reason_codes.join(",")
                         );
-                        Some(serde_json::json!({
+                        let partial_device_payload = build_device_partial_source(
+                            &patched_device_source,
+                            &device_patch.affected_symbols,
+                        )
+                        .map(|partial_source| {
+                            let partial_filename = partial_device_filename(
+                                &generated_path,
+                                &device_patch.affected_symbols,
+                                &partial_source,
+                            );
+                            eprintln!(
+                                "[gpu-hmr] device_only partial source prepared: file={} bytes={} full_bytes={} symbols={}",
+                                partial_filename,
+                                partial_source.len(),
+                                patched_device_source.len(),
+                                device_patch.affected_symbols.join(",")
+                            );
+                            serde_json::json!({
+                                "content": partial_source,
+                                "filename": partial_filename,
+                                "symbols": device_patch.affected_symbols.clone(),
+                            })
+                        });
+                        let mut split_payload = serde_json::json!({
                             "shared": { "content": shared_content, "filename": shared_filename },
                             "core": { "content": core_content, "filename": core_filename },
                             "gui": { "content": gui_content, "filename": gui_filename },
@@ -1735,7 +1886,13 @@ pub async fn handle_compile_request(
                             "device": { "content": patched_device_source, "filename": generated_path },
                             "_synthi_manifest": sidecar_manifest_json.clone(),
                             "_synthi_reload_plan": device_patch.reload_plan.clone(),
-                        }))
+                        });
+                        if let (Some(obj), Some(partial)) =
+                            (split_payload.as_object_mut(), partial_device_payload)
+                        {
+                            obj.insert("_synthi_device_partial".to_string(), partial);
+                        }
+                        Some(split_payload)
                     } else {
                         let mut meta = sidecar_meta.as_object().cloned().unwrap_or_default();
                         meta.insert(
@@ -3155,7 +3312,7 @@ pub async fn handle_compile_request(
         );
     }
 
-    let device_source_content: Option<String> = if !req.prefer_gpu_pipeline {
+    let device_source_content: Option<DeviceCompileSources> = if !req.prefer_gpu_pipeline {
         if compile_manifest
             .as_ref()
             .and_then(|m| m.gpu.as_ref())
@@ -3184,12 +3341,26 @@ pub async fn handle_compile_request(
                     .map(|s| s.to_string())
             });
         if let Some(src) = from_split {
+            let (partial_source, partial_filename, partial_symbols) =
+                split_partial_device_source(&split_data)
+                    .map(|(source, filename, symbols)| (Some(source), Some(filename), symbols))
+                    .unwrap_or((None, None, Vec::new()));
             eprintln!(
-                "[compile-device] source resolved from split_data file={} bytes={}",
+                "[compile-device] source resolved from split_data file={} bytes={} partial={}",
                 device_filename,
-                src.len()
+                src.len(),
+                partial_source
+                    .as_ref()
+                    .map(|source| source.len().to_string())
+                    .unwrap_or_else(|| "none".to_string())
             );
-            Some(src)
+            Some(DeviceCompileSources {
+                full_source: src,
+                full_filename: Some(device_filename.to_string()),
+                partial_source,
+                partial_filename,
+                partial_symbols,
+            })
         } else {
             match tokio::fs::read_to_string(ctx.workspace_path.join(device_filename)).await {
                 Ok(src) if !src.trim().is_empty() => {
@@ -3198,7 +3369,13 @@ pub async fn handle_compile_request(
                         device_filename,
                         src.len()
                     );
-                    Some(src)
+                    Some(DeviceCompileSources {
+                        full_source: src,
+                        full_filename: Some(device_filename.to_string()),
+                        partial_source: None,
+                        partial_filename: None,
+                        partial_symbols: Vec::new(),
+                    })
                 }
                 Ok(_) => {
                     eprintln!("[compile-device] skipping — {device_filename} is empty");
@@ -3699,15 +3876,14 @@ pub async fn handle_compile_request(
             }
         };
         let device_fut = async {
-            if let (Some(source), Some(manifest)) =
-                (device_source_content.as_deref(), compile_manifest.as_ref())
+            if let (Some(sources), Some(manifest)) =
+                (device_source_content.as_ref(), compile_manifest.as_ref())
             {
-                compile_device_phase0(
+                compile_device_sources_phase0(
                     &ctx.workspace_path,
                     &output_dir,
                     timestamp,
-                    source,
-                    manifest.device_source_filename(),
+                    sources,
                     manifest,
                 )
                 .await
@@ -3791,15 +3967,14 @@ pub async fn handle_compile_request(
         } else {
             None
         };
-        let device_opt = if let (Some(source), Some(manifest)) =
-            (device_source_content.as_deref(), compile_manifest.as_ref())
+        let device_opt = if let (Some(sources), Some(manifest)) =
+            (device_source_content.as_ref(), compile_manifest.as_ref())
         {
-            compile_device_phase0(
+            compile_device_sources_phase0(
                 &ctx.workspace_path,
                 &output_dir,
                 timestamp,
-                source,
-                manifest.device_source_filename(),
+                sources,
                 manifest,
             )
             .await?
@@ -3818,10 +3993,12 @@ pub async fn handle_compile_request(
     }
     if let Some(ref out) = device_compile_outcome {
         eprintln!(
-            "[compile-device] sidecar ready artifact={} stderr_bytes={} register_records={}",
+            "[compile-device] sidecar ready artifact={} stderr_bytes={} register_records={} partial={} symbols={}",
             out.artifact_path.display(),
             out.stderr.len(),
-            out.diagnostics.register_pressure.len()
+            out.diagnostics.register_pressure.len(),
+            out.partial_module,
+            out.target_symbols.join(",")
         );
     }
 
@@ -4094,7 +4271,13 @@ pub async fn handle_compile_request(
             if !device_dirty_units.iter().any(|u| u == device_filename) {
                 device_dirty_units.push(device_filename.to_string());
             }
-            let kernel_symbols = extract_device_kernel_symbols(device_source);
+            let kernel_symbols = if device_outcome.partial_module
+                && !device_outcome.target_symbols.is_empty()
+            {
+                device_outcome.target_symbols.clone()
+            } else {
+                extract_device_kernel_symbols(device_source)
+            };
             let kernel_abi = kernel_abi_fingerprint_source(device_source);
             let artifact_path = device_outcome.artifact_path.to_string_lossy().to_string();
             let artifact_hash = format!(
@@ -4106,6 +4289,13 @@ pub async fn handle_compile_request(
                     kernel_abi
                 ))
             );
+            let mut capabilities = vec![
+                "gpu_sidecar_module".to_string(),
+                "synthi_gpu_launch".to_string(),
+            ];
+            if device_outcome.partial_module {
+                capabilities.push("gpu_sidecar_partial_module".to_string());
+            }
             let device_manifest = BuildManifest::for_language(session_id.clone(), gpu_language)
                 .with_slot(BuildSlot::Custom("device".into()))
                 .with_artifact(&artifact_path, &artifact_hash)
@@ -4114,10 +4304,7 @@ pub async fn handle_compile_request(
                 .with_build_time(build_time_ms)
                 .with_dirty_units(device_dirty_units)
                 .with_exported_symbols(kernel_symbols)
-                .with_capabilities(vec![
-                    "gpu_sidecar_module".to_string(),
-                    "synthi_gpu_launch".to_string(),
-                ])
+                .with_capabilities(capabilities)
                 .with_snapshot_modes(vec![SnapshotMode::Binary]);
 
             let (gpu_reload_result, gpu_notifications) = {
@@ -4284,13 +4471,25 @@ pub async fn handle_compile_request(
     ) {
         if let Some(gpu) = manifest.gpu.as_ref() {
             let device_source = device_outcome.compiled_source.as_str();
-            let kernel_symbols = extract_device_kernel_symbols(device_source);
+            let kernel_symbols = if device_outcome.partial_module
+                && !device_outcome.target_symbols.is_empty()
+            {
+                device_outcome.target_symbols.clone()
+            } else {
+                extract_device_kernel_symbols(device_source)
+            };
             let kernel_abi_hash = format!(
                 "{}",
                 hash_content(&kernel_abi_fingerprint_source(device_source))
             );
+            let marker = if device_outcome.partial_module {
+                "__gpu_device_partial"
+            } else {
+                "__gpu_device"
+            };
             let device_cmd = format!(
-                "__gpu_device:{}:{}:{}",
+                "{}:{}:{}:{}",
+                marker,
                 gpu.vendor.as_str(),
                 kernel_symbols.join(","),
                 kernel_abi_hash

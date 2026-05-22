@@ -465,6 +465,14 @@ impl GpuModuleAdapter {
 
     fn classify_plan(&self, req: &AdapterReloadRequest) -> GpuReloadPlan {
         let path_plan = Self::classify_plan_from_paths(req);
+        let partial_device_reload = req
+            .build_manifest
+            .capabilities
+            .iter()
+            .any(|capability| capability == "gpu_sidecar_partial_module");
+        if partial_device_reload {
+            return path_plan;
+        }
         let current_abi = req.build_manifest.abi_version.trim();
         if Self::request_touches_device(req) && !current_abi.is_empty() {
             if let Some(previous_abi) = self.last_device_abi_version.as_deref() {
@@ -477,6 +485,14 @@ impl GpuModuleAdapter {
     }
 
     fn remember_device_abi(&mut self, req: &AdapterReloadRequest) {
+        if req
+            .build_manifest
+            .capabilities
+            .iter()
+            .any(|capability| capability == "gpu_sidecar_partial_module")
+        {
+            return;
+        }
         let abi = req.build_manifest.abi_version.trim();
         if !abi.is_empty() {
             self.last_device_abi_version = Some(abi.to_string());
@@ -1440,6 +1456,44 @@ mod tests {
             .last_reload_log()
             .iter()
             .any(|l| l.contains("device_on_load invoked")));
+    }
+
+    #[test]
+    fn partial_reload_does_not_replace_full_device_abi() {
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-1").unwrap();
+        second.write_all(b"fake-cubin-2").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+
+        let mut a = adapter_with_symbols(stub_symbols());
+        assert!(matches!(
+            a.reload(&request_with_artifact_and_abi(
+                &first_path,
+                vec!["device.cu".into()],
+                "sig-v1"
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+
+        let mut partial =
+            request_with_artifact_and_abi(&second_path, vec!["device.cu".into()], "sig-v2");
+        partial
+            .build_manifest
+            .capabilities
+            .push("gpu_sidecar_partial_module".into());
+        assert!(matches!(
+            a.reload(&partial),
+            AdapterReloadResult::Success { .. }
+        ));
+
+        assert_eq!(a.module_manager.swap_count(), 2);
+        assert_eq!(a.last_device_abi_version.as_deref(), Some("sig-v1"));
+        assert!(a
+            .last_reload_log()
+            .iter()
+            .any(|l| l.contains("reason=device-partial-file-only-edit")));
     }
 
     #[test]
