@@ -42,6 +42,7 @@ from gpu_hmr.broker import (
     reset_gpu_hmr_broker_for_tests,
 )
 from gpu_hmr.metadata import resolve_target_metadata
+from gpu_hmr.projection import build_target_scoped_projection
 
 __all__ = [
     "AcceptedPointer",
@@ -71,6 +72,7 @@ __all__ = [
     "canonical_hash",
     "canonical_json_bytes",
     "canonicalize",
+    "build_target_scoped_projection",
     "get_reason_code",
     "get_gpu_hmr_broker",
     "load_reason_code_registry",
