@@ -76,6 +76,7 @@ const CFG = {
     process.env.SYNTHI_REAL_ROCM_DELTA_AFTER ??
     'd_y[global_idx] = (a + 0.25f) * d_x[global_idx] + d_y[global_idx];',
   maxFileBytes: Number(process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? 512 * 1024),
+  compileContextMaxBytes: Number(process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? 48 * 1024 * 1024),
   writeBatchSize: Number(process.env.SYNTHI_REAL_ROCM_WRITE_BATCH_SIZE ?? 200),
   slug: process.env.SLUG ?? `gpu-real-rocm-${configuredRepoName}-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`,
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
@@ -137,6 +138,7 @@ const report = {
       SYNTHI_REAL_ROCM_BUILD_UPSTREAM: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM ?? '',
       SYNTHI_REAL_ROCM_RUN_UPSTREAM: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM ?? '',
       SYNTHI_REAL_ROCM_MAX_FILE_BYTES: process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? '',
+      SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES: process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? '',
       SYNTHI_GEMINI_MODEL: process.env.SYNTHI_GEMINI_MODEL ?? '',
       SYNTHI_GPU_ARCH: process.env.SYNTHI_GPU_ARCH ?? '',
       MCP_CONTAINER: process.env.MCP_CONTAINER ?? '',
@@ -153,6 +155,7 @@ const report = {
   logs: {},
   docker: {},
   evidence: {},
+  compile_projection: {},
   started_at: new Date().toISOString(),
   finished_at: null,
 };
@@ -309,15 +312,68 @@ async function collectBuildMetadataFromWorker(buildPath) {
 
   const compileCommandsJson = normalizeCompileCommands(await readFile(compileHostPath, 'utf8'));
   const replyFiles = [];
+  const projectionHints = {
+    target_source_paths: new Set(),
+    target_include_dirs: new Set(),
+    matched_target_files: [],
+  };
   for (const name of (await readdir(replyHostPath)).sort()) {
     if (!name.endsWith('.json')) continue;
     const content = normalizeBuildMetadataText(await readFile(path.join(replyHostPath, name), 'utf8'));
     replyFiles.push({ path: `.cmake/api/v1/reply/${name}`, content });
+    collectProjectionHintsFromCmakeReply(name, content, projectionHints);
   }
   if (!replyFiles.length) {
     throw new Error('CMake File API reply directory did not contain JSON metadata');
   }
-  return { compileCommandsJson, cmakeReplyFiles: replyFiles };
+  return {
+    compileCommandsJson,
+    cmakeReplyFiles: replyFiles,
+    targetSourcePaths: [...projectionHints.target_source_paths].sort(),
+    targetIncludeDirs: [...projectionHints.target_include_dirs].sort(),
+    matchedTargetFiles: projectionHints.matched_target_files.sort(),
+  };
+}
+
+function collectProjectionHintsFromCmakeReply(name, content, projectionHints) {
+  let json;
+  try {
+    json = JSON.parse(content);
+  } catch {
+    return;
+  }
+  if (json?.kind !== 'target' && !name.startsWith(`target-${CFG.targetName}-`)) return;
+  if (json?.name !== CFG.targetName) return;
+  if (CFG.cmakeTargetType && json?.type && json.type !== CFG.cmakeTargetType) return;
+
+  projectionHints.matched_target_files.push(name);
+  for (const source of json.sources ?? []) {
+    const rel = repoRelativePath(source?.path);
+    if (rel) projectionHints.target_source_paths.add(rel);
+  }
+  for (const group of json.compileGroups ?? []) {
+    for (const include of group.includes ?? []) {
+      const rel = repoRelativePath(include?.path);
+      if (rel) projectionHints.target_include_dirs.add(rel);
+    }
+  }
+}
+
+function repoRelativePath(rawPath) {
+  if (!rawPath) return null;
+  const workerRoot = CFG.workerRepoPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  const workspaceRoot = CFG.workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  let value = String(rawPath)
+    .replace(/\\/g, '/')
+    .replaceAll(workerRoot, workspaceRoot);
+  if (value === workspaceRoot || value === `${workspaceRoot}/.`) return null;
+  if (value.startsWith(`${workspaceRoot}/`)) value = value.slice(workspaceRoot.length + 1);
+  if (path.posix.isAbsolute(value)) return null;
+  const normalized = path.posix.normalize(value);
+  if (!normalized || normalized === '.' || normalized.startsWith('../') || normalized === '..') {
+    return null;
+  }
+  return normalized;
 }
 
 function normalizeBuildMetadataText(raw) {
@@ -385,6 +441,72 @@ async function collectRepoFiles(buildMetadata) {
   report.skipped_files = skipped.slice(0, 50);
   record('collected real repo text files', 'pass', `seeded=${files.length} skipped=${skipped.length}`);
   return files;
+}
+
+function pathIsWithinDir(filePath, dirPath) {
+  const cleanDir = String(dirPath ?? '').replace(/\/+$/, '');
+  return cleanDir && (filePath === cleanDir || filePath.startsWith(`${cleanDir}/`));
+}
+
+function byteLength(text) {
+  return Buffer.byteLength(String(text ?? ''), 'utf8');
+}
+
+function buildCompileProjection(files, focusPath, buildMetadata, phaseName) {
+  const normalizedFocus = String(focusPath ?? '').replace(/\\/g, '/');
+  const targetSources = new Set(buildMetadata.targetSourcePaths ?? []);
+  const includeDirs = (buildMetadata.targetIncludeDirs ?? [])
+    .filter((dir) => dir && dir !== '.')
+    .sort((a, b) => b.length - a.length);
+  const candidates = [];
+
+  for (const file of files) {
+    if (file.path === normalizedFocus) continue;
+    const isMetadata = file.path === 'compile_commands.json' || file.path.startsWith('.cmake/api/v1/reply/');
+    const isTargetSource = targetSources.has(file.path);
+    const includeDir = includeDirs.find((dir) => pathIsWithinDir(file.path, dir));
+    if (!isMetadata && !isTargetSource && !includeDir) continue;
+    const priority = isMetadata ? 0 : isTargetSource ? 1 : 2;
+    candidates.push({
+      file,
+      priority,
+      reason: isMetadata ? 'build_metadata' : isTargetSource ? 'target_source' : `include_dir:${includeDir}`,
+      bytes: byteLength(file.content),
+    });
+  }
+
+  candidates.sort((a, b) => a.priority - b.priority || a.file.path.localeCompare(b.file.path));
+
+  const selected = [];
+  const omitted = [];
+  let totalBytes = 0;
+  for (const candidate of candidates) {
+    if (totalBytes + candidate.bytes > CFG.compileContextMaxBytes && candidate.priority > 1) {
+      omitted.push(candidate);
+      continue;
+    }
+    selected.push({ name: candidate.file.path, content: candidate.file.content });
+    totalBytes += candidate.bytes;
+  }
+
+  const summary = {
+    phase: phaseName,
+    selected_files: selected.length,
+    selected_bytes: totalBytes,
+    omitted_files: omitted.length,
+    omitted_bytes: omitted.reduce((sum, item) => sum + item.bytes, 0),
+    target_source_paths: targetSources.size,
+    target_include_dirs: includeDirs.length,
+    matched_target_files: buildMetadata.matchedTargetFiles ?? [],
+    max_bytes: CFG.compileContextMaxBytes,
+  };
+  report.compile_projection[phaseName] = summary;
+  record(
+    'compile projection',
+    'pass',
+    `${phaseName} selected=${summary.selected_files} bytes=${summary.selected_bytes} omitted=${summary.omitted_files}`,
+  );
+  return selected;
 }
 
 async function createWorkspace() {
@@ -795,6 +917,7 @@ async function writeResults() {
     `file_count: ${report.file_count}`,
     `seeded_file_count: ${report.seeded_file_count}`,
     `skipped_file_count: ${report.skipped_file_count}`,
+    `compile_projection: ${JSON.stringify(report.compile_projection)}`,
     '',
     ...report.checks.map((check) => `${check.status.toUpperCase()} ${check.name}${check.detail ? ` - ${check.detail}` : ''}`),
     '',
@@ -818,9 +941,12 @@ async function run() {
   if (!primary) throw new Error(`entry file missing from seeded files: ${CFG.entryFile}`);
   const deltaPrimary = files.find((file) => file.path === CFG.deltaFile);
   if (!deltaPrimary) throw new Error(`delta file missing from seeded files: ${CFG.deltaFile}`);
-  const firstAdditionalFiles = files
-    .filter((file) => file.path !== CFG.entryFile)
-    .map((file) => ({ name: file.path, content: file.content }));
+  const firstAdditionalFiles = buildCompileProjection(
+    files,
+    CFG.entryFile,
+    buildMetadata,
+    'first_real_repo_ai_split_compile',
+  );
 
   await createWorkspace();
   await writeFilesBatch(files);
@@ -843,9 +969,12 @@ async function run() {
   await captureScreenshot('first-compile');
 
   const edited = editConfiguredSource(deltaPrimary.content);
-  const hmrAdditionalFiles = files
-    .filter((file) => file.path !== CFG.deltaFile)
-    .map((file) => ({ name: file.path, content: file.content }));
+  const hmrAdditionalFiles = buildCompileProjection(
+    files,
+    CFG.deltaFile,
+    buildMetadata,
+    'real_repo_user_source_delta_hmr',
+  );
   await httpJson(
     'POST',
     `${CFG.collabUrl}/git/${CFG.slug}/write-files-batch`,
