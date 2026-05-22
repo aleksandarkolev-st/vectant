@@ -45,6 +45,8 @@ const CFG = {
   repoUrl: configuredRepoUrl,
   repoName: configuredRepoName,
   repoPath: path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_REPO_PATH ?? `tmp/real-rocm/${configuredRepoName}`),
+  repoCommit: process.env.SYNTHI_REAL_ROCM_COMMIT ?? '',
+  initSubmodules: process.env.SYNTHI_REAL_ROCM_INIT_SUBMODULES !== '0',
   entryFile: process.env.SYNTHI_REAL_ROCM_ENTRY ?? 'HIP-Basic/saxpy/main.hip',
   deltaFile: process.env.SYNTHI_REAL_ROCM_DELTA_FILE
     ?? process.env.SYNTHI_REAL_ROCM_ENTRY
@@ -164,13 +166,49 @@ async function httpJson(method, url, body, headers = {}) {
 async function ensureRepo() {
   if (!existsSync(CFG.repoPath)) {
     await mkdir(path.dirname(CFG.repoPath), { recursive: true });
-    await execText('git', ['clone', '--depth', '1', CFG.repoUrl, CFG.repoPath], 180000, true);
+    const cloneArgs = CFG.repoCommit
+      ? ['clone', CFG.repoUrl, CFG.repoPath]
+      : ['clone', '--depth', '1', CFG.repoUrl, CFG.repoPath];
+    await execText('git', cloneArgs, 300000, true);
+  }
+  if (CFG.repoCommit) {
+    const fetched = await execText(
+      'git',
+      ['-C', CFG.repoPath, 'fetch', '--depth', '1', 'origin', CFG.repoCommit],
+      300000,
+      false,
+    );
+    if (fetched === undefined) {
+      await execText('git', ['-C', CFG.repoPath, 'fetch', 'origin'], 300000, true);
+    }
+    await execText('git', ['-C', CFG.repoPath, 'checkout', '--force', CFG.repoCommit], 120000, true);
+  }
+  if (CFG.initSubmodules) {
+    const gitmodules = path.join(CFG.repoPath, '.gitmodules');
+    if (existsSync(gitmodules)) {
+      await execText(
+        'git',
+        ['-C', CFG.repoPath, 'submodule', 'update', '--init', '--recursive'],
+        600000,
+        true,
+      );
+    }
   }
   const commit = await execText('git', ['-C', CFG.repoPath, 'rev-parse', 'HEAD'], 30000, true);
   report.repo_commit = commit.trim();
-  const count = await execText('git', ['-C', CFG.repoPath, 'ls-files'], 30000, true);
-  report.file_count = count.split(/\r?\n/).filter(Boolean).length;
+  report.submodules = CFG.initSubmodules
+    ? await execText('git', ['-C', CFG.repoPath, 'submodule', 'status', '--recursive'], 60000, false)
+    : 'submodule initialization disabled';
+  const files = await listTrackedFiles();
+  report.file_count = files.length;
   record('real ROCm repo', 'pass', `${CFG.repoUrl} @ ${report.repo_commit.slice(0, 12)} files=${report.file_count}`);
+}
+
+async function listTrackedFiles() {
+  const args = ['-C', CFG.repoPath, 'ls-files', '-z'];
+  if (CFG.initSubmodules) args.push('--recurse-submodules');
+  const raw = await execText('git', args, 120000, true);
+  return raw.split('\0').filter(Boolean).sort();
 }
 
 async function prepareUpstreamBuild() {
@@ -287,8 +325,7 @@ function shQuote(value) {
 }
 
 async function collectRepoFiles(buildMetadata) {
-  const raw = await execText('git', ['-C', CFG.repoPath, 'ls-files', '-z'], 30000, true);
-  const rels = raw.split('\0').filter(Boolean).sort();
+  const rels = await listTrackedFiles();
   const files = [];
   const skipped = [];
   for (const rel of rels) {
