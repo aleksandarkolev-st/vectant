@@ -385,8 +385,15 @@ const TerminalManager = memo(function TerminalManager({ visible, onCloseAll, wor
               }}
             >
               <div className={`h-full w-full ${t.split ? 'grid grid-cols-2 gap-0' : ''}`}>
-                <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} workspaceName={workspaceName} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} shellType={t.shellType || null} />
-                {t.split && (
+                {/* TerminalPane is memo-frozen + its WS init effect runs once.
+                    Wait for a real workspaceName before mounting so the PTY
+                    prompt is correct on first frame and never shows the slug. */}
+                {workspaceName ? (
+                  <TerminalPane key={`${t.id}-main`} terminalId={t.id} paneSide="main" workspaceSlug={workspaceSlug} workspaceName={workspaceName} onFsChange={handleFsChange} fixedSessionId={t.fixedSessionId || null} shellType={t.shellType || null} />
+                ) : (
+                  <div className="h-full w-full" style={{ background: 'var(--bg-app)' }} />
+                )}
+                {t.split && workspaceName && (
                   <TerminalPane key={`${t.id}-split`} terminalId={t.id} paneSide="split" workspaceSlug={workspaceSlug} workspaceName={workspaceName} onFsChange={handleFsChange} shellType={t.shellType || null} />
                 )}
               </div>

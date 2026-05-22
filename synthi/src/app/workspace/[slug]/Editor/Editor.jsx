@@ -58,6 +58,7 @@ import { takeLastChars, useCustomScrollbar } from './utils';
 import { SYNTHI_THEME } from './theme';
 import { useTheme } from '@/components/ThemeProvider';
 import { ConflictBanner } from './ConflictBanner';
+import SelectionContextMenu from './SelectionContextMenu';
 import MergeConflictEditor from '@/components/git/MergeConflictEditor';
 import UnsavedChangesDialog from '@/components/ui/UnsavedChangesDialog';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
@@ -4793,6 +4794,10 @@ const EditorPanel = ({
                                                     }, 100);
                                                 }}
                                             />
+                                            {/* Selection-only context menu. Opens ONLY when right-clicking
+                                                on a non-empty selection; right-clicks elsewhere fall through
+                                                to the wrapping Radix ContextMenu (Run File / Format / Save). */}
+                                            <SelectionContextMenu editor={editorInstance} />
                                         </div>
                                         </>)}
                                     </div>
