@@ -41,6 +41,7 @@ from gpu_hmr.broker import (
     get_gpu_hmr_broker,
     reset_gpu_hmr_broker_for_tests,
 )
+from gpu_hmr.metadata import resolve_target_metadata
 
 __all__ = [
     "AcceptedPointer",
@@ -75,5 +76,6 @@ __all__ = [
     "load_reason_code_registry",
     "reason_code_map",
     "reset_gpu_hmr_broker_for_tests",
+    "resolve_target_metadata",
     "unknown_reason_codes",
 ]

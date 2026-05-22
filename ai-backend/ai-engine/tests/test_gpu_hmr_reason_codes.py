@@ -23,6 +23,10 @@ def test_reason_code_registry_loads_required_metadata():
     assert "candidate.spec_manifest_missing" in by_code
     assert "verifier.proof_unavailable" in by_code
     assert "generated.path_traversal_rejected" in by_code
+    assert "target.cmake_file_api_selected" in by_code
+    assert "target.compile_commands_only" in by_code
+    assert "target_config_invalid" in by_code
+    assert "cmake_targets_missing" in by_code
     assert by_code["toolchain_capability_missing"].blocking is True
     assert by_code["cmake_file_api_missing"].blocking is False
     assert by_code["abi.kernel_signature_changed"].safeFallbackMode == "abi_breaking"

@@ -32,6 +32,116 @@
       "owner": "build_metadata"
     },
     {
+      "code": "target.explicit_project_config",
+      "phase": "target_resolution",
+      "severity": "info",
+      "blocking": false,
+      "message": "Target identity was selected from explicit project configuration.",
+      "requiredRemediation": "No remediation required; keep the explicit target config fresh.",
+      "safeFallbackMode": "continue",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "target.cmake_file_api_selected",
+      "phase": "target_resolution",
+      "severity": "info",
+      "blocking": false,
+      "message": "Target identity was selected from CMake File API codemodel metadata.",
+      "requiredRemediation": "No remediation required; refresh CMake File API replies after build graph changes.",
+      "safeFallbackMode": "continue",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "target.compile_commands_only",
+      "phase": "target_resolution",
+      "severity": "advisory",
+      "blocking": false,
+      "message": "Target identity was derived from compile_commands.json without CMake target ownership metadata.",
+      "requiredRemediation": "Provide CMake File API replies or explicit target config for stronger target ownership.",
+      "safeFallbackMode": "compile_commands_only",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "target.inferred_fallback",
+      "phase": "target_resolution",
+      "severity": "advisory",
+      "blocking": false,
+      "message": "Target identity used an inferred fallback because stronger build metadata was unavailable.",
+      "requiredRemediation": "Provide compile_commands.json, CMake File API replies, or explicit target config.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "metadata.compiler_dependency_scan",
+      "phase": "metadata_enrichment",
+      "severity": "info",
+      "blocking": false,
+      "message": "Compiler dependency scan evidence was attached to target metadata.",
+      "requiredRemediation": "No remediation required unless the dependency scan hash is stale.",
+      "safeFallbackMode": "continue",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "metadata.toolchain_probe",
+      "phase": "metadata_enrichment",
+      "severity": "info",
+      "blocking": false,
+      "message": "Toolchain probe evidence was attached to target metadata.",
+      "requiredRemediation": "No remediation required unless the toolchain probe hash is stale.",
+      "safeFallbackMode": "continue",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "metadata.runtime_probe",
+      "phase": "metadata_enrichment",
+      "severity": "info",
+      "blocking": false,
+      "message": "Runtime probe evidence was attached to target metadata.",
+      "requiredRemediation": "No remediation required unless the runtime probe hash is stale.",
+      "safeFallbackMode": "continue",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "metadata.generated_header_scan",
+      "phase": "metadata_enrichment",
+      "severity": "info",
+      "blocking": false,
+      "message": "Generated header content evidence was attached to target metadata.",
+      "requiredRemediation": "No remediation required unless generated headers changed.",
+      "safeFallbackMode": "continue",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "metadata.link_runtime_resolution",
+      "phase": "metadata_enrichment",
+      "severity": "info",
+      "blocking": false,
+      "message": "Link and runtime library resolution evidence was attached to target metadata.",
+      "requiredRemediation": "No remediation required unless link/runtime roots changed.",
+      "safeFallbackMode": "continue",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "target_config_invalid",
+      "phase": "target_resolution",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Selected target configuration could not be converted into safe workspace-relative identity material.",
+      "requiredRemediation": "Refresh build metadata or provide explicit workspace-relative target config.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "unsupported.build_system_unmodeled",
+      "phase": "target_resolution",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The build system is not modeled well enough to produce a selected target identity.",
+      "requiredRemediation": "Provide explicit project target config or supported CMake/compile_commands metadata.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "build_metadata"
+    },
+    {
       "code": "cmake_file_api_missing",
       "phase": "preflight_readiness",
       "severity": "advisory",
@@ -39,6 +149,36 @@
       "message": "CMake File API replies were not available.",
       "requiredRemediation": "Configure the CMake build directory with File API query files when target ambiguity exists.",
       "safeFallbackMode": "compile_commands_only",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "cmake_file_api_parse_failed",
+      "phase": "target_resolution",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "CMake File API replies could not be parsed into target metadata.",
+      "requiredRemediation": "Regenerate CMake File API replies from a clean configure step.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "cmake_codemodel_missing",
+      "phase": "target_resolution",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "CMake File API replies did not include a codemodel object.",
+      "requiredRemediation": "Create a codemodel-v2 query and rerun CMake configure.",
+      "safeFallbackMode": "compile_commands_only",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "cmake_targets_missing",
+      "phase": "target_resolution",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "CMake File API codemodel did not expose selectable targets.",
+      "requiredRemediation": "Refresh the CMake build directory or provide explicit target config.",
+      "safeFallbackMode": "diagnostics_only",
       "owner": "build_metadata"
     },
     {
