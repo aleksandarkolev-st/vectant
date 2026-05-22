@@ -92,7 +92,9 @@ pub fn try_direct_device_body_patch(
     }
     let parser_status =
         device_ast_status_report(&old_user_source, new_user_source, generated_device_source);
-    if !parser_status.failures.is_empty() {
+    let parser_lexical_fallback = !parser_status.failures.is_empty()
+        && parser_status_allows_lexical_kernel_region_fallback(&parser_status.report);
+    if !parser_status.failures.is_empty() && !parser_lexical_fallback {
         let mut reason_codes = vec!["parser.device_ast_parse_failed".to_string()];
         reason_codes.extend(parser_status.failures.clone());
         let evidence = fast_path_verifier_evidence(
@@ -344,13 +346,19 @@ pub fn try_direct_device_body_patch(
         "abi.kernel_signature_unchanged".to_string(),
         "abi.constant_global_layout_unchanged".to_string(),
         "mapping.device_role_valid".to_string(),
-        "parser.user_baseline_ast_passed".to_string(),
-        "parser.user_candidate_ast_passed".to_string(),
-        "parser.generated_device_ast_passed".to_string(),
         "build.selected_compile_command_present".to_string(),
         "build.effective_flags_hash_present".to_string(),
         "build.device_sidecar_only".to_string(),
     ];
+    if parser_lexical_fallback {
+        codes.push("parser.lexical_kernel_region_fallback".to_string());
+    } else {
+        codes.extend([
+            "parser.user_baseline_ast_passed".to_string(),
+            "parser.user_candidate_ast_passed".to_string(),
+            "parser.generated_device_ast_passed".to_string(),
+        ]);
+    }
     codes.extend(
         affected_symbols
             .iter()
@@ -561,6 +569,25 @@ fn device_ast_status_report(
         report: Value::Object(report),
         failures,
     }
+}
+
+fn parser_status_allows_lexical_kernel_region_fallback(report: &Value) -> bool {
+    let status = |key: &str| {
+        report
+            .get(key)
+            .and_then(|item| item.get("status"))
+            .and_then(Value::as_str)
+    };
+    let baseline_failed = status("userBaseline") == Some("fail");
+    let candidate_failed = status("userCandidate") == Some("fail");
+    let generated_failed = status("generatedDevice") == Some("fail");
+
+    // If the old user source and generated device role both parsed cleanly,
+    // a candidate-only parser failure is strong evidence of a newly invalid
+    // edit. Macro-heavy runtime-compiled GPU headers often fail parsing before
+    // and after the edit, so the lexical kernel-region verifier below is the
+    // deterministic authority in that project shape.
+    baseline_failed || (candidate_failed && generated_failed) || generated_failed
 }
 
 fn parse_device_cpp_ast(source: &str) -> Result<(), String> {
@@ -1455,6 +1482,29 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "parser.user_candidate_ast_passed"));
+        assert!(result
+            .patched_device_source
+            .as_deref()
+            .unwrap_or_default()
+            .contains("2.0f"));
+    }
+
+    #[test]
+    fn macro_heavy_generated_parse_failure_can_use_lexical_kernel_region_fallback() {
+        let source = "__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n";
+        let next = "__global__ void flow(float* x, int n) {\n  x[0] += 2.0f;\n}\n";
+        let generated = "#if defined(__KERNELCC__)\nextern \"C\" __global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n";
+        let mut meta = sidecar();
+        meta["sourceBaselineContents"]["src/gpu/flow.hip"] = Value::String(source.to_string());
+        meta["sourceBaselineHashes"]["src/gpu/flow.hip"] = Value::String(sha256_hex(source));
+
+        let result = try_direct_device_body_patch(&meta, "src/gpu/flow.hip", next, generated);
+
+        assert!(result.accepted, "{:?}", result.reason_codes);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "parser.lexical_kernel_region_fallback"));
         assert!(result
             .patched_device_source
             .as_deref()
