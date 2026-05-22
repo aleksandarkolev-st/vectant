@@ -626,6 +626,35 @@ fn split_partial_device_source(
     }
 }
 
+fn split_reload_plan_name(split_data: &serde_json::Value) -> Option<&str> {
+    split_data
+        .get("_synthi_reload_plan")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            split_data
+                .pointer("/_synthi_reload_plan/selectedPlan")
+                .and_then(serde_json::Value::as_str)
+        })
+        .or_else(|| {
+            split_data
+                .pointer("/_synthi_reload_plan/plan")
+                .and_then(serde_json::Value::as_str)
+        })
+}
+
+fn can_compile_device_only_stage(
+    split_data: &serde_json::Value,
+    has_gpu_device_stage: bool,
+    has_previous_core: bool,
+    has_previous_gui: bool,
+    is_gui: bool,
+) -> bool {
+    has_gpu_device_stage
+        && split_reload_plan_name(split_data) == Some("device_only")
+        && has_previous_core
+        && (!is_gui || has_previous_gui)
+}
+
 async fn compile_device_sources_phase0(
     workspace_path: &Path,
     output_dir: &Path,
@@ -3873,8 +3902,19 @@ pub async fn handle_compile_request(
         .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false);
     let use_parallel = num_cpus::get() >= 3 && !has_gpu_device_stage && !parallel_disabled_by_env;
+    let device_only_compile_stage = can_compile_device_only_stage(
+        &split_data,
+        has_gpu_device_stage,
+        prev_core_path.is_some(),
+        prev_gui_path.is_some(),
+        req.is_gui,
+    );
     if !tier0_bypassed {
-        if use_parallel {
+        if device_only_compile_stage {
+            eprintln!(
+                "[HMR] device-only compile stage: reusing previous core/gui and compiling device sidecar only"
+            );
+        } else if use_parallel {
             eprintln!(
                 "[HMR] parallel compile enabled (num_cpus={}) — dispatching core/gui/runner concurrently",
                 num_cpus::get()
@@ -3912,6 +3952,22 @@ pub async fn handle_compile_request(
             }
         }
         (core_opt, gui_opt, None, None)
+    } else if device_only_compile_stage {
+        let device_opt = if let (Some(sources), Some(manifest)) =
+            (device_source_content.as_ref(), compile_manifest.as_ref())
+        {
+            compile_device_sources_phase0(
+                &ctx.workspace_path,
+                &output_dir,
+                timestamp,
+                sources,
+                manifest,
+            )
+            .await?
+        } else {
+            None
+        };
+        (prev_core_path.clone(), prev_gui_path.clone(), None, device_opt)
     } else if use_parallel {
         // ─── Parallel path ──────────────────────────────────────────
         // Three futures run concurrently on the tokio runtime. The
@@ -5351,6 +5407,62 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
 
         assert_eq!(targets, vec!["src/Device/kernels/CameraRays.h".to_string()]);
         assert_eq!(omitted, vec!["src/Device/kernels/Megakernel.h".to_string()]);
+    }
+
+    #[test]
+    fn device_only_compile_stage_reuses_host_modules_after_initial_load() {
+        let split_data = serde_json::json!({
+            "_synthi_reload_plan": "device_only",
+            "_synthi_device_partial": {
+                "content": "__global__ void CameraRays() {}",
+                "filename": ".synthi/generated/gpu/device.partial.hip",
+                "symbols": ["CameraRays"]
+            }
+        });
+
+        assert!(can_compile_device_only_stage(
+            &split_data,
+            true,
+            true,
+            true,
+            true
+        ));
+        assert!(!can_compile_device_only_stage(
+            &split_data,
+            true,
+            false,
+            true,
+            true
+        ));
+        assert!(!can_compile_device_only_stage(
+            &split_data,
+            false,
+            true,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn device_only_compile_stage_requires_gui_path_for_gui_session() {
+        let split_data = serde_json::json!({
+            "_synthi_reload_plan": { "selectedPlan": "device_only" }
+        });
+
+        assert!(!can_compile_device_only_stage(
+            &split_data,
+            true,
+            true,
+            false,
+            true
+        ));
+        assert!(can_compile_device_only_stage(
+            &split_data,
+            true,
+            true,
+            false,
+            false
+        ));
     }
 
     #[test]
