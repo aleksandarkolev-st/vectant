@@ -1,6 +1,6 @@
 # GPU HMR CodeIntel Split Broker Implementation Plan
 
-Draft date: 2026-05-22
+Draft date: 2026-05-21
 
 Status: ready to start the next GPU HMR branch through Milestones 1-3, but not
 frozen as the final implementation spec. This version is intentionally stricter
@@ -72,7 +72,7 @@ compiles.
    succeeds.
 9. AI delta is a verifier-gated fallback, not the normal hot path.
 10. Small-project single-call split cannot bypass readiness, broker packages,
-    candidate manifests, verifiers, or promotion.
+    candidate spec manifests, verifiers, or promotion.
 
 ## 3. Ownership Boundaries
 
@@ -107,7 +107,7 @@ compiles.
 - readiness reports
 - role scope packages
 - role generation packages
-- candidate manifests
+- candidate spec manifests
 - candidate artifact directories
 - verifier reports
 - accepted candidate pointer
@@ -215,6 +215,194 @@ Compatibility rule:
 - readiness failure must not silently fall back to the old one-shot split path.
 - unsupported target/project states permit only diagnostics, not generation.
 
+### Minimum API Payloads
+
+All mutating requests require an idempotency key:
+
+```json
+{
+  "idempotencyKey": "workspace-id:operation:identity-hash"
+}
+```
+
+Common error shape:
+
+```json
+{
+  "error": {
+    "code": "target_resolution_ambiguous",
+    "message": "Selected file belongs to more than one executable target.",
+    "phase": "preflight_readiness",
+    "severity": "blocking",
+    "safeFallbackMode": "diagnostics_only",
+    "remediation": "Select an explicit target."
+  }
+}
+```
+
+Status code policy:
+
+```text
+200 OK: synchronous operation completed
+202 Accepted: asynchronous job started or resumed
+400 Bad Request: malformed request
+404 Not Found: candidate/projection/job not found
+409 Conflict: stale identity, concurrent promotion, or cancelled dependency
+422 Unprocessable Entity: valid request blocked by readiness/verifier policy
+500 Internal Server Error: infrastructure failure without a safe verifier result
+```
+
+`POST /gpu-hmr/readiness`
+
+Request:
+
+```json
+{
+  "workspaceRootDigest": "...",
+  "entryFile": "src/app/main.cpp",
+  "selectedTargetIdentityHash": null,
+  "operationMode": "normal",
+  "idempotencyKey": "..."
+}
+```
+
+Response `200 OK`:
+
+```json
+{
+  "schemaVersion": "gpu-hmr-readiness-response-v1",
+  "readiness": {
+    "preflight": "pass",
+    "projection": "pass",
+    "scope": "blocked",
+    "generation": "blocked",
+    "compile": "blocked",
+    "promotion": "blocked"
+  },
+  "blockingReasonCodes": [],
+  "advisoryReasonCodes": [],
+  "selectedTargetIdentityHash": "...",
+  "projectionHash": "..."
+}
+```
+
+`POST /gpu-hmr/projections`
+
+Request:
+
+```json
+{
+  "sourceSplitIdentityHash": "...",
+  "selectedTargetIdentityHash": "...",
+  "codeIntelGeneration": "...",
+  "buildMetadataHash": "...",
+  "idempotencyKey": "..."
+}
+```
+
+Response `200 OK` or `202 Accepted`:
+
+```json
+{
+  "projectionHash": "...",
+  "jobId": null,
+  "status": "ready"
+}
+```
+
+`POST /gpu-hmr/prepare-candidate`
+
+Request:
+
+```json
+{
+  "projectionHash": "...",
+  "sourceSplitIdentityHash": "...",
+  "requestedRoles": ["shared", "core", "gui", "host_runner", "device.main"],
+  "operationMode": "normal",
+  "idempotencyKey": "..."
+}
+```
+
+Response `202 Accepted`:
+
+```json
+{
+  "candidateId": "...",
+  "candidateSpecManifestHash": null,
+  "jobId": "...",
+  "state": "prepared_candidate"
+}
+```
+
+`POST /gpu-hmr/candidates/{id}/verify`
+
+Request:
+
+```json
+{
+  "candidateSpecManifestHash": "...",
+  "verificationKinds": ["schema", "scope", "dependency", "mapping", "abi", "compile", "runtime"],
+  "runtimeVerificationIdentityHash": "...",
+  "idempotencyKey": "..."
+}
+```
+
+Response `200 OK` or `202 Accepted`:
+
+```json
+{
+  "candidateId": "...",
+  "candidateVerificationRecordHash": "...",
+  "jobId": null,
+  "state": "compile_verified_candidate",
+  "verifierReportHashes": []
+}
+```
+
+`POST /gpu-hmr/candidates/{id}/promote`
+
+Request:
+
+```json
+{
+  "candidateSpecManifestHash": "...",
+  "candidateVerificationRecordHash": "...",
+  "promotionIdentityHash": "...",
+  "idempotencyKey": "..."
+}
+```
+
+Response `200 OK`:
+
+```json
+{
+  "acceptedPromotionRecordHash": "...",
+  "acceptedPointerPath": ".synthi/gpu_hmr/accepted/current.json",
+  "state": "active_promoted_candidate"
+}
+```
+
+`GET /gpu-hmr/jobs/{id}`
+
+Response `200 OK`:
+
+```json
+{
+  "jobId": "...",
+  "jobKind": "prepare_candidate",
+  "status": "running",
+  "linkedResource": {
+    "candidateId": "...",
+    "projectionHash": null
+  },
+  "phase": "role_generation",
+  "reasonCodes": [],
+  "startedAt": "...",
+  "updatedAt": "..."
+}
+```
+
 ## 5. Identity Model
 
 Do not use one large candidate identity for everything. Split identity by
@@ -258,7 +446,7 @@ Used for generated artifact compile/cache validity.
   "compilerToolchainIdentityHash": "...",
   "gpuExecutionProfileHash": "...",
   "buildWorkerEnvironmentHash": "...",
-  "generatedCandidateHash": "..."
+  "generatedArtifactHash": "..."
 }
 ```
 
@@ -312,7 +500,9 @@ Used to decide whether a verified candidate may become active.
 {
   "schemaVersion": "gpu-hmr-promotion-identity-v1",
   "candidateId": "...",
-  "acceptedManifestHash": "...",
+  "candidateSpecManifestHash": "...",
+  "candidateVerificationRecordHash": "...",
+  "requiredVerifierReportSetHash": "...",
   "sourceSplitIdentityHash": "...",
   "compileCandidateIdentityHash": "...",
   "runtimeVerificationIdentityHash": "...",
@@ -349,9 +539,70 @@ Used to decide whether a verified candidate may become active.
   probes.
 - `gpuExecutionProfileHash`: canonical GPU vendor, architecture, RDC/device-link
   mode, and device runtime capability identity.
-- `generatedCandidateHash`: immutable generated role files plus candidate
-  manifest.
-- `acceptedManifestHash`: immutable accepted candidate manifest.
+- `generatedArtifactHash`: generated role files only. It does not include
+  candidate spec manifests, verifier reports, status ledgers, or promotion
+  records.
+- `candidateSpecManifestHash`: immutable candidate spec manifest containing
+  identities, role artifact refs, package hashes, and mapping refs.
+- `candidateVerificationRecordHash`: verifier reports, runtime identity,
+  current derived state, and transition history.
+- `acceptedPromotionRecordHash`: candidate spec manifest hash plus required
+  verifier report hashes and promotion identity.
+
+### 5.7 Canonical Hashing Rules
+
+Milestone 1 must implement one canonical hashing library and use it for every
+identity, manifest, package, verifier report, and promotion record.
+
+Canonicalization rules:
+
+- JSON is serialized as UTF-8 without insignificant whitespace.
+- Object keys are sorted lexicographically by Unicode code point.
+- Arrays preserve semantic order when order is meaningful, such as ordered
+  context spans, verifier transition history, and compiler arguments.
+- Arrays are sorted by stable key when order is not meaningful, such as reason
+  code sets, role package hash sets, verifier report hash sets, and dependency
+  allowlists.
+- Paths are workspace-relative, slash-normalized, dot-segment-normalized, and
+  NFC-normalized.
+- Filesystem identity records whether the workspace is case-sensitive or
+  case-insensitive. Case-insensitive collisions are rejected before hashing.
+- Symlinks are resolved according to the path-scope verifier policy before
+  hashing. Symlink escapes are rejected.
+- Source text is UTF-8 normalized to NFC before hashing.
+- Line endings are normalized to `\n` for source/content hashes unless a file is
+  classified as binary.
+- Timestamps are excluded from identity hashes unless the field is explicitly
+  part of an audit record, such as `createdAt` or `promotedAt`.
+- Environment variables are sorted by key, include only allowlisted variables,
+  and store redacted values when secrets are possible.
+- Numeric values use canonical JSON number formatting.
+- Null and omitted field semantics must be schema-defined. Do not treat them as
+  equivalent by default.
+
+If any producer cannot apply canonicalization, it must not emit a production
+identity hash.
+
+### 5.8 Candidate ID Derivation
+
+Candidate lookup is keyed by `candidateSpecManifestHash`.
+
+`candidateId` should be deterministic when all inputs are available:
+
+```text
+candidateId =
+  hash(
+    schemaVersion
+    + sourceSplitIdentityHash
+    + ordered(roleGenerationPackageHashes)
+    + generatedArtifactHash
+  )
+```
+
+If a UUID is used for in-progress asynchronous work before generated artifacts
+exist, the final candidate resource must still publish and be retrievable by
+`candidateSpecManifestHash`. Idempotent requests must resolve to the same
+resource when the spec manifest hash matches.
 
 ## 6. Build Metadata Hierarchy
 
@@ -599,7 +850,8 @@ Allows compiling candidate artifacts.
 
 Requires:
 
-- candidate manifest exists
+- candidate spec manifest exists
+- candidate verification record exists
 - role scope verifier passes
 - dependency verifier passes or all unresolved dependencies are non-blocking
   with proof
@@ -758,6 +1010,87 @@ Example:
 }
 ```
 
+### Source-To-Generated Mapping Schema
+
+Milestone 1 must define this schema before AI delta or direct body-only HMR can
+depend on it.
+
+Minimum mapping entry:
+
+```json
+{
+  "schemaVersion": "gpu-hmr-source-generated-mapping-v1",
+  "mappingId": "kernel:shade_pixels(float*,int,int):device.main",
+  "candidateSpecManifestHash": "...",
+  "roleId": "device.main",
+  "mappingKind": "kernel_body",
+  "source": {
+    "path": "src/gpu/raster.hip",
+    "sourceSpanAnchorHash": "...",
+    "fileContentHash": "...",
+    "spanTextHash": "...",
+    "stableSymbolId": "kernel:shade_pixels(float*,int,int)",
+    "displayStartLine": 44,
+    "displayEndLine": 79
+  },
+  "generated": {
+    "path": ".synthi/gpu_hmr/candidates/<id>/device/main.hip",
+    "generatedArtifactHash": "...",
+    "startByte": 3400,
+    "endByte": 4266,
+    "spanTextHash": "..."
+  },
+  "abiRelevance": {
+    "kernelSignature": true,
+    "launchAbi": true,
+    "constantOrGlobalLayout": false,
+    "hostDeviceSharedLayout": false,
+    "stateLayout": false
+  },
+  "patchability": {
+    "directDeviceOnlyEligible": true,
+    "aiDeltaEligible": true,
+    "requiresWarmRebuild": false,
+    "requiresFullResplit": false
+  },
+  "confidence": "compiler_verified",
+  "evidenceRefs": [
+    {
+      "kind": "compiler_ast",
+      "hash": "..."
+    }
+  ]
+}
+```
+
+Allowed `mappingKind` values:
+
+```text
+kernel_body
+device_helper_body
+kernel_signature
+launch_site
+constant_symbol
+device_global_symbol
+shared_type
+host_state_type
+render_entrypoint
+generated_dependency
+```
+
+Allowed `confidence` values:
+
+```text
+compiler_verified
+codeintel_structural
+rag_cited_advisory
+regex_hint_only
+```
+
+`regex_hint_only` and `rag_cited_advisory` mappings may route diagnostics or
+broker escalation, but cannot authorize direct device-only patching, ABI safety,
+or promotion.
+
 ## 12. Candidate Lifecycle
 
 Background split prepares candidates. It does not imply runtime acceptance.
@@ -787,21 +1120,31 @@ Candidate directories are immutable:
 .synthi/gpu_hmr/candidates/<candidate_id>/
 ```
 
+Candidate state is not stored by rewriting the immutable candidate spec
+manifest.
+Use:
+
+```text
+candidate_spec_manifest.json     immutable
+verification_record.jsonl        append-only or content-addressed snapshots
+promotion_record.json            immutable after promotion
+```
+
 Active promotion is a single pointer file:
 
 ```text
 .synthi/gpu_hmr/accepted/current.json
 ```
 
-Minimum candidate manifest:
+Minimum candidate spec manifest:
 
 ```json
 {
-  "schemaVersion": "gpu-hmr-candidate-manifest-v1",
+  "schemaVersion": "gpu-hmr-candidate-spec-manifest-v1",
   "candidateId": "...",
   "sourceSplitIdentityHash": "...",
   "compileCandidateIdentityHash": "...",
-  "runtimeVerificationIdentityHash": null,
+  "generatedArtifactHash": "...",
   "roleArtifacts": [
     {
       "roleId": "device.main",
@@ -813,12 +1156,42 @@ Minimum candidate manifest:
   "roleGenerationPackageHashes": [],
   "aiGenerationIdentityHashes": [],
   "sourceToGeneratedMappingHash": "...",
-  "verifierReportHashes": [],
   "createdAt": "...",
-  "createdBy": "gpu-hmr-prepare-candidate",
-  "state": "prepared_candidate"
+  "createdBy": "gpu-hmr-prepare-candidate"
 }
 ```
+
+Minimum candidate verification record:
+
+```json
+{
+  "schemaVersion": "gpu-hmr-candidate-verification-record-v1",
+  "candidateId": "...",
+  "candidateSpecManifestHash": "...",
+  "runtimeVerificationIdentityHash": null,
+  "state": "prepared_candidate",
+  "transitionHistory": [],
+  "verifierReportHashes": [],
+  "updatedAt": "..."
+}
+```
+
+Minimum accepted promotion record:
+
+```json
+{
+  "schemaVersion": "gpu-hmr-accepted-promotion-record-v1",
+  "candidateId": "...",
+  "candidateSpecManifestHash": "...",
+  "candidateVerificationRecordHash": "...",
+  "promotionIdentityHash": "...",
+  "requiredVerifierReportHashes": [],
+  "promotedAt": "..."
+}
+```
+
+`acceptedPromotionRecordHash` is the content hash of this record. It is not a
+field inside the hashed record.
 
 Verifier state transitions:
 
@@ -835,14 +1208,63 @@ Verifier state transitions:
 
 Any verifier failure moves the candidate to `rejected_candidate` with the
 verifier report hash and reason code. Any identity/generation mismatch moves it
-to `stale_candidate`.
+to `stale_candidate`. These state changes append verification records; they do
+not mutate the candidate spec manifest.
 
-## 13. Atomic Promotion Details
+## 13. Verifier Report Schema
+
+Verifier reports are immutable and content-addressed. Promotion consumes report
+hashes; it does not re-interpret raw logs.
+
+Minimum shape:
+
+```json
+{
+  "schemaVersion": "gpu-hmr-verifier-report-v1",
+  "verifierName": "dependency",
+  "candidateId": "...",
+  "candidateSpecManifestHash": "...",
+  "inputIdentitySnapshot": {
+    "sourceSplitIdentityHash": "...",
+    "compileCandidateIdentityHash": "...",
+    "runtimeVerificationIdentityHash": null,
+    "codeIntelGeneration": "...",
+    "retrievalTraceHashes": []
+  },
+  "status": "pass",
+  "blocking": true,
+  "reasonCodes": [],
+  "proofRefs": [
+    {
+      "kind": "compiler_dep_scan",
+      "hash": "...",
+      "path": ".synthi/gpu_hmr/evidence/..."
+    }
+  ],
+  "createdAt": "...",
+  "toolVersion": "..."
+}
+```
+
+Allowed statuses:
+
+```text
+pass
+fail
+warning
+not_required
+skipped_blocked_by_prior_failure
+```
+
+Every transition in the candidate lifecycle must reference a verifier report
+hash or an explicit `not_required` report.
+
+## 14. Atomic Promotion Details
 
 Promotion must be implemented as:
 
 1. acquire single workspace promotion lock
-2. validate candidate manifest hash
+2. validate candidate spec manifest hash
 3. validate all identity inputs still match
 4. reject symlinked pointer path
 5. write `current.json.tmp`
@@ -850,7 +1272,7 @@ Promotion must be implemented as:
 7. atomic rename temp to `current.json`
 8. fsync parent directory
 9. read back pointer
-10. verify candidate manifest hash after rename
+10. verify candidate spec manifest hash after rename
 11. release promotion lock
 
 Crash recovery:
@@ -859,7 +1281,7 @@ Crash recovery:
 - previous `current.json` remains valid if rename did not complete
 - promoted candidate is immutable and can be revalidated by hash
 
-## 14. RAG Retrieval Identity And Policy
+## 15. RAG Retrieval Identity And Policy
 
 RAG generation alone is insufficient.
 
@@ -893,7 +1315,7 @@ render_ownership
 generated_dependency_availability
 ```
 
-## 15. Dependency Policy
+## 16. Dependency Policy
 
 Dependency classes alone are too broad. Use class plus explicit allowlists.
 
@@ -965,7 +1387,7 @@ Split environments:
 A candidate may compile in the worker and still fail runtime verification if
 the verification runtime lacks a library/device/display capability.
 
-## 16. ABI Verifier By Launch Mode
+## 17. ABI Verifier By Launch Mode
 
 ABI checks depend on launch mechanism.
 
@@ -1032,7 +1454,7 @@ Common checks:
 - buffer lifetime expectations
 - RDC/device-link topology
 
-## 17. Graphics Ownership States
+## 18. Graphics Ownership States
 
 Use explicit states:
 
@@ -1057,7 +1479,7 @@ Notes:
 - `remote_or_headless_display` requires environment-specific frame capture.
 - `frame_adapter_only` is useful validation, but not full app GUI HMR.
 
-## 18. Multi-Target And Multi-TU Policy
+## 19. Multi-Target And Multi-TU Policy
 
 Device topology:
 
@@ -1077,7 +1499,7 @@ Multi-target projects must include target identity in every projection,
 candidate, role scope package, generation package, verifier report, and reload
 plan.
 
-## 19. AI Delta Policy
+## 20. AI Delta Policy
 
 AI delta is allowed only when:
 
@@ -1091,7 +1513,8 @@ AI delta is allowed only when:
 
 AI delta receives:
 
-- accepted candidate manifest
+- active promotion record
+- accepted candidate spec manifest
 - affected role scope package
 - affected role generation package
 - source-to-generated mappings
@@ -1120,7 +1543,7 @@ delta.generated_dependency_unavailable
 delta.multi_role_transaction_unapproved
 ```
 
-## 20. Concurrency And Staleness
+## 21. Concurrency And Staleness
 
 Required controls:
 
@@ -1147,7 +1570,7 @@ candidate.build_dir_changed
 promotion.concurrent_transaction
 ```
 
-## 21. Security And Path Scope
+## 22. Security And Path Scope
 
 Verifiers must reject:
 
@@ -1171,7 +1594,48 @@ generated.command_injection_rejected
 source.prompt_injection_ignored
 ```
 
-## 22. Cost And Provider Control
+## 23. Reason Code Registry
+
+Reason codes must be registered in one versioned registry, not scattered as
+free-form strings.
+
+Suggested registry path:
+
+```text
+ai-backend/ai-engine/gpu_hmr/reason_codes.json
+```
+
+Minimum entry shape:
+
+```json
+{
+  "code": "target_resolution_ambiguous",
+  "phase": "preflight_readiness",
+  "severity": "blocking",
+  "blocking": true,
+  "message": "Selected file belongs to more than one executable target.",
+  "requiredRemediation": "Select an explicit target or project target config.",
+  "safeFallbackMode": "diagnostics_only",
+  "owner": "build_metadata"
+}
+```
+
+Required fields:
+
+- `code`
+- `phase`
+- `severity`: `blocking` / `advisory` / `info`
+- `blocking`
+- `message`
+- `requiredRemediation`
+- `safeFallbackMode`
+- `owner`
+
+Verifier reports, readiness responses, job traces, and UI cards must reference
+registered codes. Unknown reason codes are allowed only in debug builds and are
+treated as blocking in production.
+
+## 24. Cost And Provider Control
 
 Track:
 
@@ -1197,11 +1661,12 @@ budget.stage_cache_hit
 budget.stage_cache_miss
 ```
 
-## 23. Revised Milestones
+## 25. Revised Milestones
 
 This order is intentional. Projection must exist before readiness can be
 meaningful. Full promotion-affecting verifiers need broker packages and
-candidate manifests, although verifier stubs and schemas can start earlier.
+candidate spec manifests, although verifier stubs and schemas can start
+earlier.
 
 ### Milestone 1: Schemas And Identity
 
@@ -1213,15 +1678,19 @@ Tasks:
 - runtime verification identity schema
 - AI generation identity schema
 - promotion identity schema
-- candidate manifest schema
+- candidate spec manifest schema
+- candidate verification record schema
 - role scope package schema
 - role generation package schema
 - source-to-generated mapping schema
 - accepted pointer schema
+- canonical hashing library and fixtures
+- deterministic candidate ID derivation
 
 Done when:
 
 - unsafe cache reuse is structurally blocked by identity mismatch
+- two implementations produce the same hashes for the same canonical fixture
 
 ### Milestone 2: Compile-Aware Metadata
 
@@ -1344,7 +1813,7 @@ Done when:
 
 - validation artifacts prove each claimed workflow
 
-## 24. Validation Set
+## 26. Validation Set
 
 Current named real project already exercised:
 
@@ -1382,7 +1851,7 @@ expected output: frame-like observable output, clearly labeled adapter
 No production readiness claim is allowed until the TBD cases are resolved with
 real pinned repositories, commits, environment, outputs, and artifacts.
 
-## 25. Tests To Add
+## 27. Tests To Add
 
 Add tests for:
 
@@ -1400,7 +1869,7 @@ Add tests for:
 - direct launch path does not require mangled-name proof
 - runtime module launch path requires symbol-name proof
 - AI delta cannot widen source scope
-- small-project single-call still produces candidate manifest
+- small-project single-call still produces candidate spec manifest
 - promotion interrupted between write and rename recovers safely
 - candidate stale after file save
 - candidate stale after branch checkout
@@ -1418,7 +1887,7 @@ Add tests for:
 - target-owned vendor adapter not dropped
 - unsupported vendor dependency explicitly rejected
 
-## 26. Defer Or Downgrade
+## 28. Defer Or Downgrade
 
 ### Defer Template Evidence
 
@@ -1444,7 +1913,7 @@ Use per-role retrieval identity and per-role sufficiency.
 Project capability profiles are allowed only if explicit, versioned, and
 user-visible. Otherwise they become hidden hardcoding.
 
-## 27. Acceptance Criteria
+## 29. Acceptance Criteria
 
 This architecture is ready to implement when:
 
@@ -1459,9 +1928,11 @@ This architecture is ready to implement when:
 9. dependency policy uses explicit allowlists
 10. atomic promotion is specified at filesystem-operation level
 11. AI delta policy is explicit and verifier-gated
-12. real validation set is pinned before production claims
+12. canonical hashing and candidate ID derivation are specified
+13. source-to-generated mapping schema is explicit
+14. real validation set is pinned before production claims
 
-## 28. Final Flow
+## 30. Final Flow
 
 ```text
 CodeIntel index + build metadata
