@@ -44,8 +44,12 @@ interface RawArgs {
   use_ai_split?: unknown;
   user_requested_ai?: unknown;
   user_requested_deterministic?: unknown;
+  force_gpu_ai_delta?: unknown;
+  use_gpu_ai_delta?: unknown;
+  force_ai_delta?: unknown;
   prefer_gpu_pipeline?: unknown;
   gpu_mode?: unknown;
+  gpu_arch?: unknown;
   compile_manifest?: unknown;
   manifest?: unknown;
   target?: unknown;
@@ -110,10 +114,15 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
   if (typeof a.user_requested_deterministic === "boolean") {
     payload["user_requested_deterministic"] = a.user_requested_deterministic;
   }
+  const forceGpuAiDelta = a.force_gpu_ai_delta ?? a.use_gpu_ai_delta ?? a.force_ai_delta;
+  if (typeof forceGpuAiDelta === "boolean") {
+    payload["force_gpu_ai_delta"] = forceGpuAiDelta;
+  }
   if (typeof a.prefer_gpu_pipeline === "boolean") {
     payload["prefer_gpu_pipeline"] = a.prefer_gpu_pipeline;
   }
   if (typeof a.gpu_mode === "string") payload["gpu_mode"] = a.gpu_mode;
+  if (typeof a.gpu_arch === "string") payload["gpu_arch"] = a.gpu_arch;
   const compileManifest = a.compile_manifest ?? a.manifest;
   if (compileManifest !== undefined) {
     if (!compileManifest || typeof compileManifest !== "object" || Array.isArray(compileManifest)) {
@@ -153,7 +162,9 @@ export async function compileTool(args: unknown): Promise<ToolResponse> {
       source_chars: (a.source as string).length,
       prefer_gpu_pipeline:
         typeof a.prefer_gpu_pipeline === "boolean" ? a.prefer_gpu_pipeline : undefined,
+      ...(typeof forceGpuAiDelta === "boolean" ? { force_gpu_ai_delta: forceGpuAiDelta } : {}),
       ...(typeof a.gpu_mode === "string" ? { gpu_mode: a.gpu_mode } : {}),
+      ...(typeof a.gpu_arch === "string" ? { gpu_arch: a.gpu_arch } : {}),
       ...(compileManifest !== undefined ? { compile_manifest: true } : {}),
       ...(typeof a.target === "string" ? { target: a.target } : {}),
     },

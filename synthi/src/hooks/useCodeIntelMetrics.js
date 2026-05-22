@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import sseClient from '@/services/sseClient';
 
-const CODE_INTEL_URL = process.env.NEXT_PUBLIC_CODE_INTEL_URL
-  || (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
-    ? window.location.origin
-    : 'http://localhost:8000');
+const CODE_INTEL_API_BASE = '/api/code-intel';
 
 /**
  * Hook for code-intel metrics.
@@ -31,7 +28,7 @@ export function useCodeIntelMetrics({ workspacePath, slug, enabled = true, fallb
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${CODE_INTEL_URL}/code-intel/metrics`, {
+      const res = await fetch(`${CODE_INTEL_API_BASE}/metrics`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ workspace_path: workspacePath, include_all: true }),

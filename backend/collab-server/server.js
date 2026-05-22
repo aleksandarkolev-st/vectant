@@ -498,7 +498,10 @@ async function flushDocToDisk(docName, options = {}) {
     try {
       fetchFunc(`${CODE_INTEL_URL}/code-intel/index/file`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          ...(config.AI_BACKEND_AUTH_TOKEN ? { 'x-synthi-internal-token': config.AI_BACKEND_AUTH_TOKEN } : {}),
+        },
         body: JSON.stringify({ workspace_path: slug, file_path: filePath }),
       }).catch(() => {});
     } catch (_) { /* non-fatal */ }

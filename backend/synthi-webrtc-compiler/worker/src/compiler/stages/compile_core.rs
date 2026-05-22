@@ -24,17 +24,13 @@ pub async fn compile_core(
 ) -> Result<Option<String>> {
     let dir_path = &ctx.workspace_path;
 
-    // ULTRAPLAN Phase 3: resolve the effective compile manifest.
-    // If the AI-synthesised manifest is present (universal split prompt
-    // path), use it to drive the g++ invocation. Otherwise fall back to
-    // the hardcoded SDL2 shape, which matches the pre-Phase-3 behavior
-    // exactly — so existing SDL2 projects compile identically whether or
-    // not a manifest is in the sidecar.
+    // Resolve the effective compile manifest. Missing manifests use a generic
+    // host fallback and do not infer framework-specific link flags.
     let owned_default_manifest;
     let effective_manifest: &CompileManifest = match compile_manifest {
         Some(m) => m,
         None => {
-            owned_default_manifest = CompileManifest::sdl2_default();
+            owned_default_manifest = CompileManifest::generic_fallback();
             &owned_default_manifest
         }
     };
@@ -48,6 +44,11 @@ pub async fn compile_core(
 
             // Content is already processed by guardrails in the orchestration layer
             let content = processed_core;
+            let source_path = dir_path.join(fname);
+            if let Some(parent) = source_path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::write(&source_path, content).await?;
 
             // Calculate hash for caching
             let content_hash = calculate_hash(&content);
@@ -80,8 +81,6 @@ pub async fn compile_core(
                 return Ok::<_, anyhow::Error>(Some(path));
             } else {
                 // Cache miss - need to compile
-                tokio::fs::write(dir_path.join(fname), content).await?;
-
                 let core_out = output_dir.join(format!("libcore_{}.{}", timestamp, ext));
 
                 // ULTRAPLAN Phase 9b: split compile+link into two steps
@@ -94,12 +93,11 @@ pub async fn compile_core(
                 // initial link step and the fallback fused command if
                 // the split compile step fails for any reason other
                 // than the user's source being broken.
-                let mut link_flags: Vec<String> = Vec::with_capacity(
-                    effective_manifest.core_link_flags.len() + 3,
-                );
+                let mut link_flags: Vec<String> =
+                    Vec::with_capacity(effective_manifest.core_link_flags.len() + 3);
                 link_flags.extend(effective_manifest.core_link_flags.iter().cloned());
                 link_flags.push("-ldl".to_string());
-                link_flags.push("-pthread".to_string());  // threaded adapters
+                link_flags.push("-pthread".to_string()); // threaded adapters
                 link_flags.push("-rdynamic".to_string());
 
                 let core_obj = object_path_for_so(&core_out);
@@ -144,8 +142,15 @@ pub async fn compile_core(
                     compile_cmd.as_std().get_args()
                 );
                 compile_cmd.kill_on_drop(true);
-                let compile_child = compile_cmd.spawn().context("Failed to spawn compile step")?;
-                let compile_out = match timeout(Duration::from_secs(30), compile_child.wait_with_output()).await {
+                let compile_child = compile_cmd
+                    .spawn()
+                    .context("Failed to spawn compile step")?;
+                let compile_out = match timeout(
+                    Duration::from_secs(30),
+                    compile_child.wait_with_output(),
+                )
+                .await
+                {
                     Ok(Ok(out)) => out,
                     Ok(Err(e)) => return Err(e.into()),
                     Err(_) => {
@@ -209,28 +214,30 @@ pub async fn compile_core(
                     // with the new flags. If the retry succeeds, we skip the
                     // source-heal loop entirely and proceed to cache.put.
                     // See ai_utils::try_manifest_heal_retry for the flow.
-                    let manifest_healed = crate::compiler::stages::ai_utils::try_manifest_heal_retry(
-                        &stderr_str,
-                        dir_path,
-                        "core",
-                        content,
-                        |m| {
-                            let mut cmd = cpp_compile_command(m.select_compiler(ModuleKind::Core));
-                            cmd.arg(format!("-std={}", m.std));
-                            for f in &m.common_flags {
-                                cmd.arg(f);
-                            }
-                            cmd.arg(fname).arg("-I.").arg("-o").arg(&core_out);
-                            for f in &m.core_link_flags {
-                                cmd.arg(f);
-                            }
-                            cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
-                            cmd.current_dir(dir_path);
-                            cmd
-                        },
-                    )
-                    .await
-                    .is_some();
+                    let manifest_healed =
+                        crate::compiler::stages::ai_utils::try_manifest_heal_retry(
+                            &stderr_str,
+                            dir_path,
+                            "core",
+                            content,
+                            |m| {
+                                let mut cmd =
+                                    cpp_compile_command(m.select_compiler(ModuleKind::Core));
+                                cmd.arg(format!("-std={}", m.std));
+                                for f in &m.common_flags {
+                                    cmd.arg(f);
+                                }
+                                cmd.arg(fname).arg("-I.").arg("-o").arg(&core_out);
+                                for f in &m.core_link_flags {
+                                    cmd.arg(f);
+                                }
+                                cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
+                                cmd.current_dir(dir_path);
+                                cmd
+                            },
+                        )
+                        .await
+                        .is_some();
 
                     if manifest_healed {
                         eprintln!("[CompileCore] manifest heal SUCCEEDED — skipping source heal");
@@ -238,96 +245,147 @@ pub async fn compile_core(
                         // The retry command wrote to `core_out` already.
                     } else {
                         // ── AI Heal Loop: let the AI fix its own compile errors ──
-                    let shared_for_heal = tokio::fs::read_to_string(dir_path.join("shared.h")).await.unwrap_or_default();
-                    // Read the cached split architecture from the sidecar so the
-                    // heal prompt has the same project-specific "Forbidden Patterns"
-                    // context that diff_patch uses. Empty string falls back to
-                    // the generic heal prompt.
-                    let heal_arch_md: String = {
-                        let sidecar = dir_path.join(".synthi_split_meta.json");
-                        match tokio::fs::read_to_string(&sidecar).await {
-                            Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
-                                .ok()
-                                .and_then(|v| v.get("architecture").and_then(|a| a.as_str()).map(|s| s.to_string()))
-                                .unwrap_or_default(),
-                            Err(_) => String::new(),
-                        }
-                    };
-                    let heal_arch_hint: Option<&str> = if heal_arch_md.is_empty() {
-                        None
-                    } else {
-                        Some(heal_arch_md.as_str())
-                    };
-                    let mut heal_content = content.to_string();
-                    let mut heal_stderr = stderr_str.clone();
-                    let mut healed = false;
+                        let shared_for_heal = tokio::fs::read_to_string(
+                            dir_path.join(
+                                effective_manifest
+                                    .module_file(ModuleKind::Shared)
+                                    .unwrap_or("shared.h"),
+                            ),
+                        )
+                        .await
+                        .unwrap_or_default();
+                        // Read the cached split architecture from the sidecar so the
+                        // heal prompt has the same project-specific "Forbidden Patterns"
+                        // context that diff_patch uses. Empty string falls back to
+                        // the generic heal prompt.
+                        let heal_arch_md: String = {
+                            let sidecar = dir_path.join(".synthi_split_meta.json");
+                            match tokio::fs::read_to_string(&sidecar).await {
+                                Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+                                    .ok()
+                                    .and_then(|v| {
+                                        v.get("architecture")
+                                            .and_then(|a| a.as_str())
+                                            .map(|s| s.to_string())
+                                    })
+                                    .unwrap_or_default(),
+                                Err(_) => String::new(),
+                            }
+                        };
+                        let heal_arch_hint: Option<&str> = if heal_arch_md.is_empty() {
+                            None
+                        } else {
+                            Some(heal_arch_md.as_str())
+                        };
+                        let mut heal_content = content.to_string();
+                        let mut heal_stderr = stderr_str.clone();
+                        let mut healed = false;
 
-                    for attempt in 0..2 {
-                        eprintln!("[CompileCore] AI heal attempt {} for core", attempt + 1);
-                        match crate::compiler::stages::ai_utils::perform_ai_heal(
-                            "core", &heal_content, &heal_stderr, &shared_for_heal, heal_arch_hint,
-                        ).await {
-                            Ok(fixed) => {
-                                tokio::fs::write(dir_path.join(fname), &fixed).await?;
-                                let mut retry_cmd = cpp_compile_command(compiler_exe);
-                                retry_cmd.arg(&std_flag);
-                                for f in &effective_manifest.common_flags {
-                                    retry_cmd.arg(f);
-                                }
-                                retry_cmd
-                                    .arg(fname)
-                                    .arg("-I.")
-                                    .arg("-o")
-                                    .arg(&core_out);
-                                for f in &effective_manifest.core_link_flags {
-                                    retry_cmd.arg(f);
-                                }
-                                retry_cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
-                                retry_cmd.current_dir(dir_path);
-                                retry_cmd.kill_on_drop(true);
-                                if let Ok(retry_child) = retry_cmd.spawn() {
-                                    if let Ok(Ok(retry_out)) = timeout(Duration::from_secs(30), retry_child.wait_with_output()).await {
-                                        if retry_out.status.success() {
-                                            eprintln!("[CompileCore] AI heal succeeded on attempt {}", attempt + 1);
-                                            healed = true;
-                                            break;
+                        for attempt in 0..2 {
+                            eprintln!("[CompileCore] AI heal attempt {} for core", attempt + 1);
+                            match crate::compiler::stages::ai_utils::perform_ai_heal(
+                                "core",
+                                &heal_content,
+                                &heal_stderr,
+                                &shared_for_heal,
+                                heal_arch_hint,
+                            )
+                            .await
+                            {
+                                Ok(fixed) => {
+                                    tokio::fs::write(dir_path.join(fname), &fixed).await?;
+                                    let mut retry_compile_cmd = compile_to_object_command(
+                                        compiler_exe,
+                                        fname,
+                                        &core_obj,
+                                        &std_flag,
+                                        &common_flags_with_pch,
+                                        dir_path,
+                                    );
+                                    retry_compile_cmd.kill_on_drop(true);
+                                    if let Ok(retry_child) = retry_compile_cmd.spawn() {
+                                        if let Ok(Ok(retry_out)) = timeout(
+                                            Duration::from_secs(30),
+                                            retry_child.wait_with_output(),
+                                        )
+                                        .await
+                                        {
+                                            if retry_out.status.success() {
+                                                let mut retry_link_cmd = link_object_to_so_command(
+                                                    compiler_exe,
+                                                    &core_obj,
+                                                    &core_out,
+                                                    &link_flags,
+                                                    dir_path,
+                                                );
+                                                retry_link_cmd.kill_on_drop(true);
+                                                if let Ok(link_child) = retry_link_cmd.spawn() {
+                                                    if let Ok(Ok(link_out)) = timeout(
+                                                        Duration::from_secs(30),
+                                                        link_child.wait_with_output(),
+                                                    )
+                                                    .await
+                                                    {
+                                                        if link_out.status.success() {
+                                                            eprintln!(
+                                                            "[CompileCore] AI heal succeeded on attempt {}",
+                                                            attempt + 1
+                                                        );
+                                                            healed = true;
+                                                            break;
+                                                        }
+                                                        heal_stderr = String::from_utf8_lossy(
+                                                            &link_out.stderr,
+                                                        )
+                                                        .to_string();
+                                                    }
+                                                }
+                                            } else {
+                                                heal_stderr =
+                                                    String::from_utf8_lossy(&retry_out.stderr)
+                                                        .to_string();
+                                            }
+                                            heal_content = fixed;
                                         }
-                                        heal_stderr = String::from_utf8_lossy(&retry_out.stderr).to_string();
-                                        heal_content = fixed;
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                eprintln!("[CompileCore] AI heal failed: {}", e);
-                                break;
+                                Err(e) => {
+                                    eprintln!("[CompileCore] AI heal failed: {}", e);
+                                    break;
+                                }
                             }
                         }
-                    }
 
-                    if !healed {
-                        // Send diagnostics and fail
-                        let report = parse_compiler_output(&heal_stderr, "core", CompilerType::Gcc, true);
-                        let diagnostics_json = report.to_json();
-                        let diag_payload = serde_json::json!({
-                            "sessionId": session_id.clone(),
-                            "type": "compile-diagnostics",
-                            "language": "cpp",
-                            "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json).unwrap_or_default(),
-                            "error_count": report.error_count,
-                            "warning_count": report.warning_count,
-                            "stage": "compile_core"
-                        });
-                        let _ = ctx.log_dc
-                            .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
-                            .await;
+                        if !healed {
+                            // Send diagnostics and fail
+                            let report = parse_compiler_output(
+                                &heal_stderr,
+                                "core",
+                                CompilerType::Gcc,
+                                true,
+                            );
+                            let diagnostics_json = report.to_json();
+                            let diag_payload = serde_json::json!({
+                                "sessionId": session_id.clone(),
+                                "type": "compile-diagnostics",
+                                "language": "cpp",
+                                "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json).unwrap_or_default(),
+                                "error_count": report.error_count,
+                                "warning_count": report.warning_count,
+                                "stage": "compile_core"
+                            });
+                            let _ = ctx
+                                .log_dc
+                                .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
+                                .await;
 
-                        let truncated = if heal_stderr.len() > 500 {
-                            format!("{}…", &heal_stderr[..500])
-                        } else {
-                            heal_stderr.clone()
-                        };
-                        anyhow::bail!("Core compilation failed: {}", truncated);
-                    }
+                            let truncated = if heal_stderr.len() > 500 {
+                                format!("{}…", &heal_stderr[..500])
+                            } else {
+                                heal_stderr.clone()
+                            };
+                            anyhow::bail!("Core compilation failed: {}", truncated);
+                        }
                     } // end source-heal else-branch (Phase 6 manifest_healed=false)
                 }
 

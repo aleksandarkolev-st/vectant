@@ -18,7 +18,7 @@ metadata:
     app.kubernetes.io/part-of: synthi-ide
 spec:
   serviceName: postgres
-  replicas: 0
+  replicas: 1
   selector:
     matchLabels:
       app: postgres
@@ -33,7 +33,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
           ports:
             - containerPort: 5432
           env:

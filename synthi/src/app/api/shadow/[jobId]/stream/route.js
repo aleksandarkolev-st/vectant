@@ -1,3 +1,5 @@
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
+
 /**
  * Synthi Genome — GET /api/shadow/[jobId]/stream
  *
@@ -23,7 +25,7 @@ export async function GET(_request, { params }) {
     let upstream;
     try {
         upstream = await fetch(`${AI_ENGINE_BASE}/shadow/${encodeURIComponent(jobId)}/stream`, {
-            headers: { accept: 'text/event-stream' },
+            headers: withInternalAiAuth({ accept: 'text/event-stream' }),
         });
     } catch (e) {
         return new Response(JSON.stringify({ error: String(e?.message || e) }), {

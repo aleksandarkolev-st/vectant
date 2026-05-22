@@ -5,8 +5,8 @@
 // The compile manifest is the machine-readable config the AI emits
 // inside the split response (via <synthi_build_manifest> XML tags) to
 // tell the worker HOW to compile the split modules for the user's
-// chosen library. Without it, the worker hardcodes `g++ -lSDL2` and
-// only SDL2 projects work.
+// chosen library. Without it, the worker uses a generic host fallback and
+// does not infer framework link flags.
 //
 // With it, the worker reads per-project:
 //   - compiler (g++ or clang++)
@@ -35,8 +35,7 @@
 // On Tier 2 / Tier 3 compile paths, handler.rs reads it back and threads
 // `Option<&CompileManifest>` into compile_core / compile_gui. If None
 // (pre-universal-prompt sidecars, manifest omitted, JSON parse failure),
-// the compile stages fall back to hardcoded SDL2 defaults — no regression
-// on existing projects.
+// the compile stages use `CompileManifest::generic_fallback()`.
 //
 // See HMR_AGNOSTIC_ULTRAPLAN.md §4 for the full schema and §5.4 for the
 // hot_reload_mode semantics.
@@ -233,6 +232,42 @@ pub enum FatbinStrategy {
     SidecarModule,
 }
 
+/// One generated device role. V1 still compiles the primary device sidecar,
+/// but the manifest preserves role topology for multi-device-TU and RDC
+/// decisions instead of inferring it from filenames.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GpuDeviceRole {
+    pub id: String,
+    pub path: String,
+    #[serde(default)]
+    pub source_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler: Option<String>,
+    #[serde(default)]
+    pub arch: Vec<String>,
+    #[serde(default)]
+    pub requires_rdc: bool,
+}
+
+/// Device-link topology and cost metadata. When `requires_rdc` is true,
+/// the Arbiter must treat warm/device paths as linker-bound unless a later
+/// vendor-specific probe proves otherwise.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GpuDeviceLink {
+    #[serde(default)]
+    pub requires_rdc: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
+    #[serde(default)]
+    pub affected_roles: Vec<String>,
+    #[serde(default)]
+    pub supports_incremental: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_ms: Option<u64>,
+}
+
 /// GPU-side build recipe. Mirrors Python `GpuBuildBlock`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GpuBuildBlock {
@@ -248,6 +283,10 @@ pub struct GpuBuildBlock {
     pub snapshot_mode: SnapshotMode,
     #[serde(default)]
     pub fatbin_strategy: FatbinStrategy,
+    #[serde(default)]
+    pub device_roles: Vec<GpuDeviceRole>,
+    #[serde(default)]
+    pub device_link: GpuDeviceLink,
 }
 
 /// Which compile stage a given module is destined for. Used by
@@ -262,6 +301,25 @@ pub enum ModuleKind {
     Shared,
     HostRunner,
     Device,
+}
+
+/// Role-to-file mapping for projects whose split modules do not use the
+/// legacy `shared.h/core.cpp/gui.cpp/host_runner.cpp/device.*` names.
+///
+/// `files` remains the full browser resend list; this block provides the
+/// semantic role mapping the worker needs for detection and compile dispatch.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModuleFiles {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gui: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_runner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
 }
 
 /// How to compile the split modules for this specific project.
@@ -294,6 +352,12 @@ pub struct CompileManifest {
     pub runner_link_flags: Vec<String>,
 
     #[serde(default)]
+    pub files: Vec<String>,
+
+    #[serde(default)]
+    pub module_files: ModuleFiles,
+
+    #[serde(default)]
     pub system_packages: Vec<String>,
 
     #[serde(default)]
@@ -322,11 +386,58 @@ fn default_std() -> String {
 }
 
 impl CompileManifest {
-    /// Construct a hardcoded SDL2 default for backward compatibility with
-    /// projects that predate the universal split prompt (sidecars without
-    /// a `compile_manifest` field). Matches the old hardcoded compile_core
-    /// / compile_gui behavior exactly.
-    pub fn sdl2_default() -> Self {
+    /// Construct a technology-agnostic fallback for old sidecars that do not
+    /// carry a compile manifest. It preserves the generic host-module compile
+    /// flags but intentionally does not infer framework or GPU link flags.
+    pub fn generic_fallback() -> Self {
+        Self {
+            compiler: Compiler::GccPlusPlus,
+            std: "c++26".to_string(),
+            common_flags: vec![
+                "-shared".to_string(),
+                "-fPIC".to_string(),
+                "-O0".to_string(),
+                "-fno-merge-constants".to_string(),
+                "-D_POSIX_C_SOURCE=199309L".to_string(),
+                "-g".to_string(),
+                "-gdwarf-4".to_string(),
+                "-fno-omit-frame-pointer".to_string(),
+                "-fdiagnostics-format=json".to_string(),
+            ],
+            core_link_flags: Vec::new(),
+            gui_link_flags: Vec::new(),
+            shared_link_flags: Vec::new(),
+            runner_link_flags: vec!["-ldl".to_string()],
+            files: vec![
+                "shared.h".to_string(),
+                "core.cpp".to_string(),
+                "gui.cpp".to_string(),
+                "host_runner.cpp".to_string(),
+            ],
+            module_files: ModuleFiles {
+                shared: Some("shared.h".to_string()),
+                core: Some("core.cpp".to_string()),
+                gui: Some("gui.cpp".to_string()),
+                host_runner: Some("host_runner.cpp".to_string()),
+                device: None,
+            },
+            system_packages: Vec::new(),
+            hot_reload_mode: HotReloadMode::Swap,
+            confidence: ConfidenceBlock {
+                overall: ConfidenceLevel::Low,
+                runner_synthesis: ConfidenceLevel::Low,
+                link_flags: ConfidenceLevel::Low,
+                notes: "Generic fallback: no framework or GPU link flags inferred.".to_string(),
+            },
+            build_steps: None,
+            gpu: None,
+        }
+    }
+
+    /// Legacy SDL2 fixture retained for unit tests that verify old manifest
+    /// shape handling. Production fallbacks must use `generic_fallback()`.
+    #[cfg(test)]
+    pub fn legacy_sdl2_fixture() -> Self {
         Self {
             compiler: Compiler::GccPlusPlus,
             std: "c++26".to_string(),
@@ -345,13 +456,26 @@ impl CompileManifest {
             gui_link_flags: vec!["-lSDL2".to_string()],
             shared_link_flags: Vec::new(),
             runner_link_flags: vec!["-lSDL2".to_string(), "-ldl".to_string()],
+            files: vec![
+                "shared.h".to_string(),
+                "core.cpp".to_string(),
+                "gui.cpp".to_string(),
+                "host_runner.cpp".to_string(),
+            ],
+            module_files: ModuleFiles {
+                shared: Some("shared.h".to_string()),
+                core: Some("core.cpp".to_string()),
+                gui: Some("gui.cpp".to_string()),
+                host_runner: Some("host_runner.cpp".to_string()),
+                device: None,
+            },
             system_packages: vec!["libsdl2-dev".to_string()],
             hot_reload_mode: HotReloadMode::Swap,
             confidence: ConfidenceBlock {
                 overall: ConfidenceLevel::High,
                 runner_synthesis: ConfidenceLevel::High,
                 link_flags: ConfidenceLevel::High,
-                notes: "Hardcoded SDL2 default (no manifest in sidecar).".to_string(),
+                notes: "Legacy SDL2 test fixture.".to_string(),
             },
             build_steps: None,
             gpu: None,
@@ -359,7 +483,8 @@ impl CompileManifest {
     }
 
     /// Parse a manifest from the sidecar's `compile_manifest` JSON field.
-    /// Returns `None` on parse failure — caller falls back to `sdl2_default()`.
+    /// Returns `None` on parse failure. Callers use a generic fallback or
+    /// request a verified re-split; missing manifests never infer link flags.
     pub fn from_json_value(value: &serde_json::Value) -> Option<Self> {
         serde_json::from_value(value.clone()).ok()
     }
@@ -368,10 +493,8 @@ impl CompileManifest {
     /// modules (`Core`, `Gui`, `Shared`, `HostRunner`) use the manifest's
     /// host `compiler` field (`g++` / `clang++`). The device module uses
     /// the GPU block's `device_compiler` (`nvcc` / `clang-cuda` / `hipcc`)
-    /// when present; falls back to `"nvcc"` if `Device` is requested on a
-    /// manifest without a `gpu` block (defensive — the orchestrator
-    /// shouldn't dispatch a Device build without the block, but the
-    /// fallback keeps the helper total).
+    /// when present. Requesting `Device` on a manifest without a `gpu` block is
+    /// a caller bug and is rejected before device compilation is dispatched.
     ///
     /// Spec: GPU_HMR_ULTRAPLAN §5.3.
     pub fn select_compiler(&self, kind: ModuleKind) -> &'static str {
@@ -380,9 +503,32 @@ impl CompileManifest {
                 .gpu
                 .as_ref()
                 .map(|g| g.device_compiler.executable())
-                .unwrap_or("nvcc"),
+                .expect("device compiler selection requires manifest.gpu"),
             _ => self.compiler.executable(),
         }
+    }
+
+    /// Return the manifest-declared source path for a semantic module role.
+    pub fn module_file(&self, kind: ModuleKind) -> Option<&str> {
+        match kind {
+            ModuleKind::Shared => self.module_files.shared.as_deref(),
+            ModuleKind::Core => self.module_files.core.as_deref(),
+            ModuleKind::Gui => self.module_files.gui.as_deref(),
+            ModuleKind::HostRunner => self.module_files.host_runner.as_deref(),
+            ModuleKind::Device => self.module_files.device.as_deref(),
+        }
+        .filter(|s| !s.trim().is_empty())
+    }
+
+    /// Device source path, falling back to the canonical extension for the
+    /// selected vendor when the manifest predates `module_files.device`.
+    pub fn device_source_filename(&self) -> Option<&str> {
+        self.module_file(ModuleKind::Device).or_else(|| {
+            self.gpu.as_ref().map(|gpu| match gpu.vendor {
+                DeviceVendor::Cuda => "device.cu",
+                DeviceVendor::Rocm => "device.hip",
+            })
+        })
     }
 
     /// Whether this manifest requires process-restart on hot-reload (either
@@ -523,8 +669,8 @@ mod tests {
     }
 
     #[test]
-    fn sdl2_default_is_buildable() {
-        let m = CompileManifest::sdl2_default();
+    fn legacy_sdl2_fixture_is_buildable() {
+        let m = CompileManifest::legacy_sdl2_fixture();
         assert_eq!(m.compiler.executable(), "g++");
         assert!(m.gui_link_flags.contains(&"-lSDL2".to_string()));
         assert_eq!(m.hot_reload_mode, HotReloadMode::Swap);
@@ -604,31 +750,31 @@ mod tests {
     }
 
     #[test]
-    fn sdl2_default_is_tier0_safe() {
-        let m = CompileManifest::sdl2_default();
+    fn legacy_sdl2_fixture_is_tier0_safe() {
+        let m = CompileManifest::legacy_sdl2_fixture();
         assert!(
             m.tier0_safe(),
-            "sdl2_default must include -O0 and -fno-merge-constants"
+            "legacy SDL2 fixture must include -O0 and -fno-merge-constants"
         );
     }
 
     #[test]
     fn tier0_safe_rejects_o2() {
-        let mut m = CompileManifest::sdl2_default();
+        let mut m = CompileManifest::legacy_sdl2_fixture();
         m.common_flags.push("-O2".to_string());
         assert!(!m.tier0_safe());
     }
 
     #[test]
     fn tier0_safe_rejects_missing_no_merge() {
-        let mut m = CompileManifest::sdl2_default();
+        let mut m = CompileManifest::legacy_sdl2_fixture();
         m.common_flags.retain(|f| f != "-fno-merge-constants");
         assert!(!m.tier0_safe());
     }
 
     #[test]
     fn with_tier0_flags_injects_missing() {
-        let mut m = CompileManifest::sdl2_default();
+        let mut m = CompileManifest::legacy_sdl2_fixture();
         m.common_flags
             .retain(|f| f != "-O0" && f != "-fno-merge-constants");
         assert!(!m.tier0_safe());
@@ -638,7 +784,7 @@ mod tests {
 
     #[test]
     fn with_tier0_flags_strips_o2() {
-        let mut m = CompileManifest::sdl2_default();
+        let mut m = CompileManifest::legacy_sdl2_fixture();
         m.common_flags.push("-O2".to_string());
         let fixed = m.with_tier0_flags();
         assert!(fixed.tier0_safe());
@@ -657,6 +803,7 @@ mod tests {
         "gui_link_flags": ["-lSDL2"],
         "shared_link_flags": [],
         "runner_link_flags": ["-lSDL2","-ldl","-lcudart","-lcuda"],
+        "files": ["shared.h","core.cpp","gui.cpp","host_runner.cpp","device.cu"],
         "system_packages": [],
         "hot_reload_mode": "swap",
         "confidence": {
@@ -683,6 +830,7 @@ mod tests {
         assert_eq!(gpu.vendor, DeviceVendor::Cuda);
         assert_eq!(gpu.device_compiler, DeviceCompiler::Nvcc);
         assert_eq!(gpu.arch, vec!["sm_80".to_string(), "sm_90".to_string()]);
+        assert_eq!(m.files.last().map(|s| s.as_str()), Some("device.cu"));
         assert_eq!(gpu.snapshot_mode, SnapshotMode::Auto);
         assert_eq!(gpu.fatbin_strategy, FatbinStrategy::SidecarModule);
     }
@@ -760,18 +908,16 @@ mod tests {
     }
 
     #[test]
-    fn select_compiler_falls_back_when_no_gpu_block() {
-        // Defensive: an orchestrator that wrongly dispatches a Device
-        // build on a host-only manifest still gets a sane default
-        // rather than a panic.
+    fn select_compiler_rejects_device_when_no_gpu_block() {
         let m: CompileManifest = serde_json::from_str(SAMPLE_SDL2_JSON).unwrap();
-        assert_eq!(m.select_compiler(ModuleKind::Device), "nvcc");
+        let result = std::panic::catch_unwind(|| m.select_compiler(ModuleKind::Device));
+        assert!(result.is_err());
         assert_eq!(m.select_compiler(ModuleKind::Core), "g++");
     }
 
     #[test]
-    fn sdl2_default_has_no_gpu_block() {
-        let m = CompileManifest::sdl2_default();
+    fn legacy_sdl2_fixture_has_no_gpu_block() {
+        let m = CompileManifest::legacy_sdl2_fixture();
         assert!(m.gpu.is_none());
     }
 
@@ -808,5 +954,61 @@ mod tests {
         }"#;
         let m: CompileManifest = serde_json::from_str(json).unwrap();
         assert_eq!(m.select_compiler(ModuleKind::Device), "clang++");
+    }
+
+    #[test]
+    fn parses_gpu_device_roles_and_device_link_topology() {
+        let json = r#"{
+            "compiler": "clang++",
+            "std": "c++26",
+            "common_flags": [],
+            "core_link_flags": [],
+            "gui_link_flags": [],
+            "shared_link_flags": [],
+            "runner_link_flags": [],
+            "system_packages": [],
+            "hot_reload_mode": "swap",
+            "confidence": {"overall":"high","runner_synthesis":"high","link_flags":"high","notes":""},
+            "gpu": {
+                "vendor": "rocm",
+                "device_compiler": "hipcc",
+                "arch": ["gfx1201"],
+                "device_flags": ["-O3", "-fgpu-rdc"],
+                "runtime_libs": ["amdhip64"],
+                "snapshot_mode": "auto",
+                "fatbin_strategy": "sidecar_module",
+                "device_roles": [
+                    {
+                        "id": "device.raster",
+                        "path": ".synthi/generated/gpu/device_raster.hip",
+                        "source_files": ["src/gpu/raster.hip"],
+                        "compiler": "hipcc",
+                        "arch": ["gfx1201"],
+                        "requires_rdc": true
+                    }
+                ],
+                "device_link": {
+                    "requires_rdc": true,
+                    "bundle_id": "bundle.raster",
+                    "affected_roles": ["device.raster"],
+                    "supports_incremental": false,
+                    "estimated_ms": 9000,
+                    "budget_ms": 5000
+                }
+            }
+        }"#;
+        let m: CompileManifest = serde_json::from_str(json).unwrap();
+        let gpu = m.gpu.expect("gpu block");
+
+        assert_eq!(gpu.device_roles.len(), 1);
+        assert_eq!(gpu.device_roles[0].id, "device.raster");
+        assert_eq!(
+            gpu.device_roles[0].source_files,
+            vec!["src/gpu/raster.hip".to_string()]
+        );
+        assert!(gpu.device_roles[0].requires_rdc);
+        assert!(gpu.device_link.requires_rdc);
+        assert_eq!(gpu.device_link.bundle_id.as_deref(), Some("bundle.raster"));
+        assert_eq!(gpu.device_link.estimated_ms, Some(9000));
     }
 }

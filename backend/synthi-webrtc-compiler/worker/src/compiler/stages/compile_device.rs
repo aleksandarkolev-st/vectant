@@ -15,9 +15,9 @@
 //   step 2:  nvcc --cubin -arch=<arch>  -o device_<ts>.cubin     device_<ts>.ptx
 //
 // The two-step is symmetric with the host two-step: PTX is the cacheable
-// intermediate, cubin is the load-time artifact. For ROCm we run a single
-// `hipcc --genco` invocation because HIP-side intermediates aren't
-// stabilised across driver versions.
+// intermediate, cubin is the load-time artifact. For ROCm we run
+// `hipcc --genco` and normalize clang's offload bundle output into the
+// raw AMDGPU code object expected by HIP's module loader.
 //
 // Phase 0 scope: produce the artifact, run the stderr through
 // `ptxas_info_parser`, attach `GpuToolchainDiagnostics` to the result.
@@ -39,7 +39,9 @@ use crate::hmr::compile_manifest::CompileManifest;
 #[cfg(feature = "gpu-hmr")]
 use anyhow::Context;
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+#[cfg(feature = "gpu-hmr")]
+use tokio::io::AsyncReadExt;
 #[cfg(feature = "gpu-hmr")]
 use tokio::time::{timeout, Duration};
 
@@ -54,6 +56,9 @@ pub const DEVICE_HIP_FILENAME: &str = "device.hip";
 pub struct DeviceCompileOutcome {
     /// Absolute path to the produced cubin (CUDA) or hsaco (ROCm).
     pub artifact_path: PathBuf,
+    /// Device source that was actually compiled after any internal generated
+    /// role heal attempts.
+    pub compiled_source: String,
     /// Parsed ptxas/nvlink diagnostics — empty for ROCm (Phase 0).
     pub diagnostics: GpuToolchainDiagnostics,
     /// Raw stderr from the device compiler — preserved verbatim for the
@@ -77,6 +82,7 @@ pub async fn compile_device_phase0(
     output_dir: &std::path::Path,
     timestamp: i64,
     device_source: &str,
+    source_filename_override: Option<&str>,
     manifest: &CompileManifest,
 ) -> Result<Option<DeviceCompileOutcome>> {
     if device_source.trim().is_empty() {
@@ -94,14 +100,30 @@ pub async fn compile_device_phase0(
             "[compile-device] gpu-hmr feature OFF — declining to compile (vendor={})",
             gpu.vendor.as_str()
         );
-        let _ = (workspace_dir, output_dir, timestamp, device_source, manifest, gpu);
+        let _ = (
+            workspace_dir,
+            output_dir,
+            timestamp,
+            device_source,
+            source_filename_override,
+            manifest,
+            gpu,
+        );
         return Ok(None);
     }
 
     #[cfg(feature = "gpu-hmr")]
     {
-        compile_device_inner(workspace_dir, output_dir, timestamp, device_source, manifest, gpu)
-            .await
+        compile_device_inner(
+            workspace_dir,
+            output_dir,
+            timestamp,
+            device_source,
+            source_filename_override,
+            manifest,
+            gpu,
+        )
+        .await
     }
 }
 
@@ -111,6 +133,7 @@ async fn compile_device_inner(
     output_dir: &std::path::Path,
     timestamp: i64,
     device_source: &str,
+    source_filename_override: Option<&str>,
     manifest: &CompileManifest,
     gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
 ) -> Result<Option<DeviceCompileOutcome>> {
@@ -119,22 +142,143 @@ async fn compile_device_inner(
     // log lines name the actual binary the worker spawned.
     let compiler_exe = manifest
         .select_compiler(crate::hmr::compile_manifest::ModuleKind::Device);
-    let (source_filename, artifact_ext) = match gpu.vendor {
+    let (default_source_filename, artifact_ext) = match gpu.vendor {
         DeviceVendor::Cuda => (DEVICE_CU_FILENAME, "cubin"),
         DeviceVendor::Rocm => (DEVICE_HIP_FILENAME, "hsaco"),
     };
+    let source_filename = source_filename_override
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(default_source_filename);
 
-    tokio::fs::write(workspace_dir.join(source_filename), device_source)
-        .await
-        .context("writing device source")?;
+    let source_path = workspace_dir.join(source_filename);
+    if let Some(parent) = source_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .context("creating device source parent dir")?;
+    }
     tokio::fs::create_dir_all(output_dir)
         .await
         .context("creating device output dir")?;
 
     let artifact_path = output_dir.join(format!("device_{}.{}", timestamp, artifact_ext));
+    let heal_allowed = is_internal_generated_device_source(source_filename);
+    let max_heal_attempts = if heal_allowed { 2 } else { 0 };
+    if !heal_allowed {
+        eprintln!(
+            "[compile-device] AI heal disabled - source is not an internal generated role: {}",
+            source_filename
+        );
+    }
 
+    let mut current_source = device_source.to_string();
+    for attempt in 0..=max_heal_attempts {
+        tokio::fs::write(&source_path, &current_source)
+            .await
+            .context("writing device source")?;
+
+        let compile = run_device_compile_once(
+            compiler_exe,
+            workspace_dir,
+            gpu,
+            source_filename,
+            &artifact_path,
+        )
+        .await?;
+
+        if compile.status.success() {
+            if gpu.vendor == DeviceVendor::Rocm {
+                normalize_rocm_artifact_if_bundled(&artifact_path).await?;
+            }
+
+            eprintln!(
+                "[compile-device] {} ok  artifact={}  diagnostics_kernels={}",
+                compiler_exe,
+                artifact_path.display(),
+                compile.diagnostics.register_pressure.len()
+            );
+
+            return Ok(Some(DeviceCompileOutcome {
+                artifact_path,
+                compiled_source: current_source,
+                diagnostics: compile.diagnostics,
+                stderr: compile.stderr,
+            }));
+        }
+
+        eprintln!(
+            "[compile-device] {} FAILED status={}\n{}",
+            compiler_exe, compile.status, compile.stderr
+        );
+
+        if attempt >= max_heal_attempts {
+            anyhow::bail!(
+                "device compile failed (exit {}): {}",
+                compile.status,
+                compile.stderr.trim()
+            );
+        }
+
+        let (shared_for_heal, heal_arch_md) =
+            read_device_heal_context(workspace_dir, &source_path).await;
+        let heal_arch_hint = heal_arch_md.as_deref().filter(|s| !s.trim().is_empty());
+
+        eprintln!(
+            "[compile-device] AI heal attempt {} for device",
+            attempt + 1
+        );
+        let fixed = match crate::compiler::stages::ai_utils::perform_ai_heal(
+            "device",
+            &current_source,
+            &compile.stderr,
+            &shared_for_heal,
+            heal_arch_hint,
+        )
+        .await
+        {
+            Ok(fixed) if !fixed.trim().is_empty() => fixed,
+            Ok(_) => {
+                anyhow::bail!(
+                    "device compile AI heal returned empty source after compiler error (exit {}): {}",
+                    compile.status,
+                    compile.stderr.trim()
+                );
+            }
+            Err(e) => {
+                anyhow::bail!(
+                    "device compile AI heal failed after compiler error (exit {}): {}; original compiler stderr: {}",
+                    compile.status,
+                    e,
+                    compile.stderr.trim()
+                );
+            }
+        };
+
+        tokio::fs::write(&source_path, &fixed)
+            .await
+            .context("writing healed device source")?;
+        current_source = fixed;
+    }
+
+    unreachable!("device compile loop always returns or bails")
+}
+
+#[cfg(feature = "gpu-hmr")]
+struct DeviceCompileAttempt {
+    status: std::process::ExitStatus,
+    diagnostics: GpuToolchainDiagnostics,
+    stderr: String,
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn run_device_compile_once(
+    compiler_exe: &str,
+    workspace_dir: &std::path::Path,
+    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+    source_filename: &str,
+    artifact_path: &Path,
+) -> Result<DeviceCompileAttempt> {
     let mut cmd = crate::infra::utils::system_command(compiler_exe);
-    populate_device_command(&mut cmd, gpu, source_filename, &artifact_path);
+    populate_device_command(&mut cmd, gpu, source_filename, artifact_path);
     cmd.current_dir(workspace_dir);
     cmd.kill_on_drop(true);
 
@@ -160,30 +304,180 @@ async fn compile_device_inner(
         DeviceVendor::Rocm => GpuToolchainDiagnostics::default(),
     };
 
-    if !out.status.success() {
-        eprintln!(
-            "[compile-device] {} FAILED status={}\n{}",
-            compiler_exe, out.status, stderr_str
-        );
+    Ok(DeviceCompileAttempt {
+        status: out.status,
+        diagnostics,
+        stderr: stderr_str,
+    })
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn is_internal_generated_device_source(source_filename: &str) -> bool {
+    let normalized = source_filename
+        .replace('\\', "/")
+        .trim()
+        .trim_start_matches("./")
+        .to_string();
+    normalized.starts_with(".synthi/generated/") || normalized.contains("/.synthi/generated/")
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn read_device_heal_context(
+    workspace_dir: &std::path::Path,
+    source_path: &std::path::Path,
+) -> (String, Option<String>) {
+    let mut shared_candidates: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = source_path.parent() {
+        shared_candidates.push(parent.join("shared.h"));
+    }
+    shared_candidates.push(workspace_dir.join(".synthi/generated/gpu/shared.h"));
+    shared_candidates.push(workspace_dir.join("shared.h"));
+
+    let mut shared_content = String::new();
+    for candidate in shared_candidates {
+        match tokio::fs::read_to_string(&candidate).await {
+            Ok(content) if !content.trim().is_empty() => {
+                shared_content = content;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let architecture = tokio::fs::read_to_string(workspace_dir.join(".synthi_split_meta.json"))
+        .await
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| {
+            value
+                .get("architecture")
+                .and_then(|architecture| architecture.as_str())
+                .map(|architecture| architecture.to_string())
+        });
+
+    (shared_content, architecture)
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn normalize_rocm_artifact_if_bundled(artifact_path: &Path) -> Result<()> {
+    if !has_clang_offload_bundle_header(artifact_path).await? {
+        return Ok(());
+    }
+
+    let bundler = std::env::var("SYNTHI_CLANG_OFFLOAD_BUNDLER")
+        .unwrap_or_else(|_| "clang-offload-bundler".to_string());
+
+    let mut list_cmd = crate::infra::utils::system_command(&bundler);
+    list_cmd
+        .arg("--list")
+        .arg("--type=o")
+        .arg(format!("--input={}", artifact_path.display()))
+        .kill_on_drop(true);
+    let list_out = match timeout(Duration::from_secs(15), list_cmd.output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(e).context("listing ROCm offload bundle targets"),
+        Err(_) => anyhow::bail!("listing ROCm offload bundle targets timed out after 15s"),
+    };
+    if !list_out.status.success() {
         anyhow::bail!(
-            "device compile failed (exit {}): {}",
-            out.status,
-            stderr_str.trim()
+            "clang-offload-bundler --list failed ({}): {}",
+            list_out.status,
+            String::from_utf8_lossy(&list_out.stderr).trim()
         );
     }
 
-    eprintln!(
-        "[compile-device] {} ok  artifact={}  diagnostics_kernels={}",
-        compiler_exe,
-        artifact_path.display(),
-        diagnostics.register_pressure.len()
-    );
+    let target_list = String::from_utf8_lossy(&list_out.stdout);
+    let target = parse_hip_offload_target(&target_list)
+        .ok_or_else(|| anyhow::anyhow!("no HIP target found in offload bundle: {target_list}"))?;
 
-    Ok(Some(DeviceCompileOutcome {
-        artifact_path,
-        diagnostics,
-        stderr: stderr_str,
-    }))
+    let stem = artifact_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("device");
+    let raw_path = artifact_path.with_file_name(format!("{stem}.raw.hsaco"));
+
+    let mut unbundle_cmd = crate::infra::utils::system_command(&bundler);
+    unbundle_cmd
+        .arg("--unbundle")
+        .arg("--type=o")
+        .arg(format!("--input={}", artifact_path.display()))
+        .arg(format!("--targets={target}"))
+        .arg(format!("--output={}", raw_path.display()))
+        .kill_on_drop(true);
+    let unbundle_out = match timeout(Duration::from_secs(15), unbundle_cmd.output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(e).context("extracting ROCm code object from offload bundle"),
+        Err(_) => anyhow::bail!("extracting ROCm code object timed out after 15s"),
+    };
+    if !unbundle_out.status.success() {
+        anyhow::bail!(
+            "clang-offload-bundler --unbundle failed ({}): {}",
+            unbundle_out.status,
+            String::from_utf8_lossy(&unbundle_out.stderr).trim()
+        );
+    }
+
+    let raw_len = tokio::fs::metadata(&raw_path)
+        .await
+        .with_context(|| format!("stat extracted ROCm code object {}", raw_path.display()))?
+        .len();
+    if raw_len == 0 {
+        anyhow::bail!(
+            "extracted ROCm code object is empty: {}",
+            raw_path.display()
+        );
+    }
+    if has_clang_offload_bundle_header(&raw_path).await? {
+        anyhow::bail!(
+            "extracted ROCm code object is still a clang offload bundle: {}",
+            raw_path.display()
+        );
+    }
+
+    tokio::fs::remove_file(artifact_path)
+        .await
+        .with_context(|| format!("replacing ROCm offload bundle {}", artifact_path.display()))?;
+    tokio::fs::rename(&raw_path, artifact_path)
+        .await
+        .with_context(|| {
+            format!(
+                "installing extracted ROCm code object {} -> {}",
+                raw_path.display(),
+                artifact_path.display()
+            )
+        })?;
+
+    eprintln!(
+        "[compile-device] normalized ROCm offload bundle target={} artifact={} bytes={}",
+        target,
+        artifact_path.display(),
+        raw_len
+    );
+    Ok(())
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn has_clang_offload_bundle_header(path: &Path) -> Result<bool> {
+    const HEADER: &[u8] = b"__CLANG_OFFLOAD_BUNDLE__";
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .with_context(|| format!("opening device artifact {}", path.display()))?;
+    let mut buf = [0u8; 24];
+    let n = file
+        .read(&mut buf)
+        .await
+        .with_context(|| format!("reading device artifact {}", path.display()))?;
+    Ok(n >= HEADER.len() && &buf[..HEADER.len()] == HEADER)
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn parse_hip_offload_target(target_list: &str) -> Option<String> {
+    target_list
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with("hip"))
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 /// Pure helper that builds the device-compiler command line from a
@@ -196,8 +490,8 @@ async fn compile_device_inner(
 /// optimisation for Phase 5 cross-TU device linking; Phase 0's
 /// monolithic device.cu doesn't need it.
 ///
-/// For hipcc we pass `--genco` to produce a code object suitable for
-/// `hipModuleLoad`.
+/// For hipcc we pass `--genco`, then the compile stage extracts the
+/// device bundle into a raw code object suitable for `hipModuleLoad`.
 #[cfg(feature = "gpu-hmr")]
 pub fn populate_device_command(
     cmd: &mut tokio::process::Command,
@@ -264,6 +558,8 @@ mod tests {
             runtime_libs: vec!["cudart".to_string()],
             snapshot_mode: SnapshotMode::Auto,
             fatbin_strategy: FatbinStrategy::SidecarModule,
+            device_roles: Vec::new(),
+            device_link: Default::default(),
         }
     }
 
@@ -276,6 +572,8 @@ mod tests {
             runtime_libs: vec!["amdhip64".to_string()],
             snapshot_mode: SnapshotMode::Userspace,
             fatbin_strategy: FatbinStrategy::SidecarModule,
+            device_roles: Vec::new(),
+            device_link: Default::default(),
         }
     }
 
@@ -318,6 +616,37 @@ mod tests {
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
+    fn device_heal_only_targets_internal_generated_roles() {
+        assert!(is_internal_generated_device_source(
+            ".synthi/generated/gpu/device.hip"
+        ));
+        assert!(is_internal_generated_device_source(
+            "/workspace/app/.synthi/generated/gpu/device.cu"
+        ));
+        assert!(!is_internal_generated_device_source("device.hip"));
+        assert!(!is_internal_generated_device_source("src/gpu/raster.hip"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn parse_hip_offload_target_prefers_device_bundle() {
+        let target = parse_hip_offload_target(
+            "host-x86_64-unknown-linux-gnu-\nhipv4-amdgcn-amd-amdhsa--gfx1201\n",
+        );
+        assert_eq!(
+            target.as_deref(),
+            Some("hipv4-amdgcn-amd-amdhsa--gfx1201")
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn parse_hip_offload_target_returns_none_without_device_bundle() {
+        assert!(parse_hip_offload_target("host-x86_64-unknown-linux-gnu-\n").is_none());
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
     fn clang_cuda_command_uses_cuda_gpu_arch() {
         let mut block = cuda_block();
         block.device_compiler = DeviceCompiler::ClangCuda;
@@ -331,22 +660,29 @@ mod tests {
 
     #[tokio::test]
     async fn empty_source_returns_none() {
-        let mut manifest = CompileManifest::sdl2_default();
+        let mut manifest = CompileManifest::generic_fallback();
         manifest.gpu = Some(cuda_block());
         let tmp = tempfile::tempdir().unwrap();
-        let out =
-            compile_device_phase0(tmp.path(), tmp.path(), 1, "", &manifest).await.unwrap();
+        let out = compile_device_phase0(tmp.path(), tmp.path(), 1, "", None, &manifest)
+            .await
+            .unwrap();
         assert!(out.is_none());
     }
 
     #[tokio::test]
     async fn missing_gpu_block_returns_none() {
-        let manifest = CompileManifest::sdl2_default();
+        let manifest = CompileManifest::generic_fallback();
         let tmp = tempfile::tempdir().unwrap();
-        let out =
-            compile_device_phase0(tmp.path(), tmp.path(), 1, "__global__ void k() {}", &manifest)
-                .await
-                .unwrap();
+        let out = compile_device_phase0(
+            tmp.path(),
+            tmp.path(),
+            1,
+            "__global__ void k() {}",
+            None,
+            &manifest,
+        )
+        .await
+        .unwrap();
         assert!(out.is_none());
     }
 
@@ -354,7 +690,7 @@ mod tests {
     #[tokio::test]
     async fn returns_none_when_feature_disabled() {
         // With gpu-hmr off the entry point declines regardless of input.
-        let mut manifest = CompileManifest::sdl2_default();
+        let mut manifest = CompileManifest::generic_fallback();
         manifest.gpu = Some(cuda_block());
         let tmp = tempfile::tempdir().unwrap();
         let out = compile_device_phase0(
@@ -362,6 +698,7 @@ mod tests {
             tmp.path(),
             1,
             "__global__ void k() {}",
+            None,
             &manifest,
         )
         .await

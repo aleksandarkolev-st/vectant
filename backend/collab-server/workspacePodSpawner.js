@@ -333,7 +333,11 @@ async function ensurePod(sessionId, userId) {
         spec: {
           terminationGracePeriodSeconds: 15,
           securityContext: {
-            runAsUser: 0,
+            runAsNonRoot: true,
+            runAsUser: 1000,
+            runAsGroup: 1000,
+            fsGroup: 1000,
+            seccompProfile: { type: 'RuntimeDefault' },
           },
           ...(workspaceScheduling.nodeSelector ? { nodeSelector: workspaceScheduling.nodeSelector } : {}),
           ...(workspaceScheduling.tolerations.length ? { tolerations: workspaceScheduling.tolerations } : {}),
@@ -341,9 +345,13 @@ async function ensurePod(sessionId, userId) {
             {
               name: 'worker',
               image: WORKER_IMAGE,
+              securityContext: {
+                allowPrivilegeEscalation: false,
+                capabilities: { drop: ['ALL'] },
+              },
               command: ['/bin/bash', '-c'],
               args: [
-                `export PATH="/root/.cargo/bin:/usr/local/bin:\${PATH}"
+                `export PATH="/usr/local/cargo/bin:/usr/local/bin:\${PATH}"
 exec worker`,
               ],
               env: [
@@ -360,6 +368,10 @@ exec worker`,
                 {
                   name: 'AI_BACKEND_URL',
                   valueFrom: { configMapKeyRef: { name: 'synthi-config', key: 'CODE_INTEL_URL' } },
+                },
+                {
+                  name: 'AI_BACKEND_AUTH_TOKEN',
+                  valueFrom: { secretKeyRef: { name: 'synthi-secrets', key: 'AI_BACKEND_AUTH_TOKEN' } },
                 },
                 {
                   name: 'GCP_PROJECT_ID',

@@ -51,6 +51,11 @@ const FileTreeView = ({ onToggleOrientation }) => {
   const inputRef = useRef(null);
   const [contextTarget, setContextTarget] = useState(null);
   const [isTreeHovered, setIsTreeHovered] = useState(false);
+  // Bumped on every contextmenu event so the menu Content remounts and
+  // Radix recomputes its position from the latest right-click coords.
+  // Without this, opening the menu at a new spot while the previous one
+  // is still mounted can keep it pinned to the old location.
+  const [menuOpenCount, setMenuOpenCount] = useState(0);
   const { mode, target, name } = uiActionState;
   const isCreating = mode.startsWith("create");
   const isRenaming = mode === "rename";
@@ -89,14 +94,33 @@ const FileTreeView = ({ onToggleOrientation }) => {
     return null;
   };
 
-  // Focus hook for root-level creation
+  // Focus hook for any creation (root or inside a folder). The create-input
+  // row is rendered by Virtuoso, which can mount the row a frame or two
+  // after the redux state flips, so we retry a few times to be robust.
   useEffect(() => {
-    if (isCreating && !target && inputRef.current) {
-      // Use requestAnimationFrame for better timing
-      requestAnimationFrame(() => {
-        inputRef.current?.focus();
-      });
-    }
+    if (!isCreating) return;
+
+    let cancelled = false;
+    const tryFocus = () => {
+      if (cancelled) return;
+      const el = inputRef.current;
+      if (el && document.activeElement !== el) {
+        el.focus();
+        try { el.select(); } catch (_) {}
+      }
+    };
+
+    tryFocus();
+    const raf = requestAnimationFrame(tryFocus);
+    const t1 = setTimeout(tryFocus, 50);
+    const t2 = setTimeout(tryFocus, 150);
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
   }, [isCreating, target]);
 
   // Dispatcher for context menu items
@@ -162,8 +186,19 @@ const FileTreeView = ({ onToggleOrientation }) => {
 
   const handleBlur = useCallback(async () => {
     if (isCreating) {
-      // For creation, blur acts as cancellation
-      dispatch(cancelUiAction());
+      // Commit the new item on blur when a name has been entered.
+      // Empty input (or whitespace) still cancels so an aborted create
+      // doesn't leave an orphan node behind.
+      if (name.trim()) {
+        const res = await dispatch(handleCreateItemThunk());
+        if (handleCreateItemThunk.rejected.match(res)) {
+          toast.error(
+            `Create failed: ${res.error?.message || "Unknown error"}`,
+          );
+        }
+      } else {
+        dispatch(cancelUiAction());
+      }
     } else if (isRenaming) {
       // For renaming, execute thunk or cancel
       if (name.trim() && target && name !== target.name) {
@@ -322,6 +357,7 @@ const FileTreeView = ({ onToggleOrientation }) => {
           onClick={() => {
             setContextTarget(null);
           }}
+          onContextMenu={() => setMenuOpenCount((c) => c + 1)}
           onDragOver={handleRootDragOver}
           onDrop={handleRootDrop}
           onMouseEnter={() => setIsTreeHovered(true)}
@@ -384,6 +420,14 @@ const FileTreeView = ({ onToggleOrientation }) => {
 
       {/* Context Menu */}
       <ContextMenuContent
+        key={menuOpenCount}
+        onCloseAutoFocus={(e) => {
+          // Don't let Radix yank focus back to the trigger when the menu
+          // closes — the New File / New Folder actions mount a rename
+          // input that needs to keep the focus it just acquired, otherwise
+          // the blur fires immediately and cancels the create.
+          e.preventDefault();
+        }}
         className="w-52 shadow-xl rounded-lg border"
         style={{
           background: "var(--bg-panel)",

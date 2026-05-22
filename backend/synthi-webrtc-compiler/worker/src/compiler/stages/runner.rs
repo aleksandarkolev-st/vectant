@@ -6,6 +6,7 @@ use gstreamer_app as gst_app;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -69,6 +70,191 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn x11_display_num() -> u32 {
+    const DEFAULT_DISPLAY_NUM: u32 = 99;
+    const MAX_DISPLAY_NUM: u32 = 65_535;
+
+    std::env::var("SYNTHI_XVFB_DISPLAY")
+        .ok()
+        .and_then(|raw| raw.parse::<u32>().ok())
+        .filter(|num| *num <= MAX_DISPLAY_NUM)
+        .unwrap_or(DEFAULT_DISPLAY_NUM)
+}
+
+async fn clear_stale_x11_processes(display_num: u32) {
+    let display = format!(":{}", display_num);
+    let xvfb_pattern = format!("Xvfb {}", display);
+    if let Ok(status) = Command::new("pkill")
+        .arg("-f")
+        .arg(&xvfb_pattern)
+        .status()
+        .await
+    {
+        if status.success() {
+            debug_log!("Killed stale Xvfb process for display {}", display);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    let display_env = format!("DISPLAY={}", display);
+    if let Ok(output) = Command::new("pgrep")
+        .arg("matchbox-window-manager")
+        .output()
+        .await
+    {
+        for pid in String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse::<u32>().ok())
+        {
+            let environ = std::fs::read(format!("/proc/{}/environ", pid)).unwrap_or_default();
+            let owns_display = environ
+                .split(|byte| *byte == 0)
+                .any(|item| item == display_env.as_bytes());
+            if owns_display {
+                if let Ok(status) = Command::new("kill").arg(pid.to_string()).status().await {
+                    if status.success() {
+                        debug_log!(
+                            "Killed stale matchbox-window-manager process {} for display {}",
+                            pid,
+                            display
+                        );
+                    }
+                }
+            }
+        }
+        if !output.stdout.is_empty() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+fn runner_load_command(name: &str, path: &str) -> Result<String> {
+    if let Some(rest) = name.strip_prefix("__gpu_device:") {
+        let mut fields = rest.splitn(3, ':');
+        let vendor = fields
+            .next()
+            .filter(|s| matches!(*s, "cuda" | "rocm"))
+            .with_context(|| {
+                format!(
+                    "GPU device module marker must include an explicit supported vendor: {}",
+                    name
+                )
+            })?;
+        let kernels = fields.next().filter(|s| !s.is_empty()).unwrap_or("-");
+        let abi = fields.next().filter(|s| !s.is_empty());
+        if let Some(abi) = abi {
+            Ok(format!(
+                "load_device {} {} {} {}\n",
+                vendor, path, kernels, abi
+            ))
+        } else {
+            Ok(format!("load_device {} {} {}\n", vendor, path, kernels))
+        }
+    } else {
+        Ok(format!("load {} {}\n", name, path))
+    }
+}
+
+fn runner_session_matches(current: Option<&str>, requested: Option<&str>) -> bool {
+    match (current, requested) {
+        (Some(current), Some(requested)) => current == requested,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RunnerReloadPolicy {
+    pub allow_existing_runner_reload: bool,
+    pub reason_codes: Vec<String>,
+}
+
+impl Default for RunnerReloadPolicy {
+    fn default() -> Self {
+        Self {
+            allow_existing_runner_reload: true,
+            reason_codes: Vec::new(),
+        }
+    }
+}
+
+impl RunnerReloadPolicy {
+    pub fn require_runner_restart(reason_codes: Vec<String>) -> Self {
+        Self {
+            allow_existing_runner_reload: false,
+            reason_codes,
+        }
+    }
+
+    fn reason_summary(&self) -> String {
+        if self.reason_codes.is_empty() {
+            "reload_policy".to_string()
+        } else {
+            self.reason_codes.join(",")
+        }
+    }
+}
+
+fn runner_reuse_allowed(
+    policy: &RunnerReloadPolicy,
+    runner_alive: bool,
+    gui_mode_same: bool,
+    resolution_same: bool,
+    session_same: bool,
+) -> bool {
+    policy.allow_existing_runner_reload
+        && runner_alive
+        && gui_mode_same
+        && resolution_same
+        && session_same
+}
+
+fn post_reload_crash_probe_duration() -> Duration {
+    const DEFAULT_MS: u64 = 1_000;
+    const MAX_MS: u64 = 10_000;
+    std::env::var("SYNTHI_RUNNER_POST_RELOAD_CRASH_PROBE_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map(|ms| ms.min(MAX_MS))
+        .filter(|ms| *ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(DEFAULT_MS))
+}
+
+fn exit_status_repr(status: std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        match (status.code(), status.signal()) {
+            (Some(code), _) => format!("code={}", code),
+            (None, Some(sig)) => format!("signal={}", sig),
+            _ => format!("{}", status),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        format!("{}", status)
+    }
+}
+
+async fn probe_runner_exit_after_reload(
+    child: &mut tokio::process::Child,
+    timeout: Duration,
+) -> Option<String> {
+    let started = tokio::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(exit_status_repr(status)),
+            Ok(None) => {}
+            Err(e) => return Some(format!("status_probe_failed={}", e)),
+        }
+        if started.elapsed() >= timeout {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 pub async fn handle_runner_execution(
     ctx: &CompileContext,
     req: &CompileRequest,
@@ -86,6 +272,7 @@ pub async fn handle_runner_execution(
     // main loop. Worker still manages Xvfb + GStreamer + WebRTC around
     // it (frame capture via ximagesrc on DISPLAY=:99 is unchanged).
     host_runner_bin_path: Option<String>,
+    reload_policy: RunnerReloadPolicy,
 ) -> Result<()> {
     // Unified Runner Logic
     if modules_to_load.is_empty() {
@@ -152,12 +339,21 @@ pub async fn handle_runner_execution(
         };
         let gui_mode_same = state.is_gui == req.is_gui;
         let resolution_same = state.width == req_width && state.height == req_height;
-        debug_log!("[Main] Existing runner: alive={}, is_gui={}, gui_mode_same={}, resolution_same={}, has_on_update={}",
-            runner_alive, state.is_gui, gui_mode_same, resolution_same, has_on_update);
+        let session_same =
+            runner_session_matches(state.session_id.as_deref(), session_id.as_deref());
+        debug_log!("[Main] Existing runner: alive={}, is_gui={}, gui_mode_same={}, resolution_same={}, session_same={}, current_session={:?}, requested_session={:?}, has_on_update={}, reload_policy_allow_existing={}, reload_policy_reasons={}",
+            runner_alive, state.is_gui, gui_mode_same, resolution_same, session_same, state.session_id.as_deref(), session_id.as_deref(), has_on_update, reload_policy.allow_existing_runner_reload, reload_policy.reason_summary());
 
         // HMR enabled: reuse running process when alive AND GUI mode and
-        // resolution match.
-        runner_alive && gui_mode_same && resolution_same
+        // resolution/session identity match. Reusing a runner across
+        // sessions can send HMR commands into the previous workspace.
+        runner_reuse_allowed(
+            &reload_policy,
+            runner_alive,
+            gui_mode_same,
+            resolution_same,
+            session_same,
+        )
     } else {
         false
     };
@@ -174,9 +370,10 @@ pub async fn handle_runner_execution(
         // We have an existing runner but can't do HMR - need to restart
         let gui_mode_changed = state.is_gui != req.is_gui;
         debug_log!(
-            "[Main] Restarting runner: gui_mode_changed={}, use_ai_split={}",
+            "[Main] Restarting runner: gui_mode_changed={}, use_ai_split={}, reload_policy_reasons={}",
             gui_mode_changed,
-            use_ai_split
+            use_ai_split,
+            reload_policy.reason_summary()
         );
 
         // If resolution matches and is_gui matches, we can reuse Xvfb/GStreamer
@@ -248,9 +445,11 @@ pub async fn handle_runner_execution(
                 }
 
                 // Start Xvfb (Virtual Framebuffer)
-                // Try finding a free display or use separate ones per worker?
-                // For simplified single-worker model, we can use :99
-                let display_num = 99;
+                // The default remains the historical single-worker display,
+                // but deployments can override it per worker.
+                let display_num = x11_display_num();
+
+                clear_stale_x11_processes(display_num).await;
 
                 // [Fix] Clean up stale lock files from previous runs
                 let lock_file = format!("/tmp/.X11-unix/X{}", display_num);
@@ -688,12 +887,20 @@ pub async fn handle_runner_execution(
 
         // Phase 12 — per-project runner needs cwd = build dir so its
         // `dlopen("./libcore.so")` resolves via the symlinks created
-        // after link. Shipped runner doesn't care about cwd.
+        // after link. GPU split sidecars are workspace-relative; the
+        // shipped runner reads ./.synthi_split_meta.json at startup to
+        // choose the backend and split-state path.
         if use_per_project_runner {
             if let Some(parent) = runner_path.parent() {
                 cmd.current_dir(parent);
                 eprintln!("[Main] per-project runner cwd: {}", parent.display());
             }
+        } else if ctx.workspace_path.join(".synthi_split_meta.json").exists() {
+            cmd.current_dir(&ctx.workspace_path);
+            eprintln!(
+                "[Main] shipped runner cwd: {}",
+                ctx.workspace_path.display()
+            );
         }
 
         if let Some(sid) = &session_id {
@@ -967,29 +1174,15 @@ pub async fn handle_runner_execution(
             // is useless for telling a SIGSEGV apart from a normal exit
             // apart from a SIGKILL from an OOM killer.
             let mut process_alive = true;
-            let mut exit_status_repr: Option<String> = None;
+            let mut exit_status_text: Option<String> = None;
             if let Some(child) = state.process.as_mut() {
                 if let Ok(Some(status)) = child.try_wait() {
-                    let repr = {
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::process::ExitStatusExt;
-                            match (status.code(), status.signal()) {
-                                (Some(code), _) => format!("code={}", code),
-                                (None, Some(sig)) => format!("signal={}", sig),
-                                _ => format!("{}", status),
-                            }
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            format!("{}", status)
-                        }
-                    };
+                    let repr = exit_status_repr(status);
                     debug_log!(
                         "[Main] Runner process has already exited ({})",
                         repr
                     );
-                    exit_status_repr = Some(repr);
+                    exit_status_text = Some(repr);
                     process_alive = false;
                 }
             }
@@ -1035,14 +1228,7 @@ pub async fn handle_runner_execution(
                 if !send_failed {
                     // Send all load commands back-to-back (no sleep between them)
                     for (name, path) in &modules_to_load {
-                        let cmd = if let Some(rest) = name.strip_prefix("__gpu_device:") {
-                            let mut fields = rest.splitn(2, ':');
-                            let vendor = fields.next().unwrap_or("cuda");
-                            let kernels = fields.next().filter(|s| !s.is_empty()).unwrap_or("-");
-                            format!("load_device {} {} {}\n", vendor, path, kernels)
-                        } else {
-                            format!("load {} {}\n", name, path)
-                        };
+                        let cmd = runner_load_command(name, path)?;
                         debug_log!("[Main] Sending command to runner: {}", cmd.trim());
                         if let Err(e) = stdin.write_all(cmd.as_bytes()).await {
                             eprintln!("[Main] Failed to write to runner stdin: {}", e);
@@ -1064,10 +1250,22 @@ pub async fn handle_runner_execution(
                     // Runner process likely crashed - report error to frontend
                     anyhow::bail!("Runner process stdin write failed (process may have crashed)");
                 }
+
+                if let Some(child) = state.process.as_mut() {
+                    if let Some(status) =
+                        probe_runner_exit_after_reload(child, post_reload_crash_probe_duration())
+                            .await
+                    {
+                        anyhow::bail!(
+                            "Runner process exited while applying reload commands ({})",
+                            status
+                        );
+                    }
+                }
             } else {
                 anyhow::bail!(
                     "Runner process exited before module loading could begin ({})",
-                    exit_status_repr.as_deref().unwrap_or("status unknown")
+                    exit_status_text.as_deref().unwrap_or("status unknown")
                 );
             }
         }
@@ -1097,4 +1295,72 @@ pub async fn handle_runner_execution(
         .await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{runner_load_command, runner_reuse_allowed, runner_session_matches, RunnerReloadPolicy};
+
+    #[test]
+    fn gpu_device_load_command_preserves_legacy_shape_without_abi() {
+        assert_eq!(
+            runner_load_command("__gpu_device:rocm:advance,init", "/tmp/device.hsaco")
+                .unwrap(),
+            "load_device rocm /tmp/device.hsaco advance,init\n"
+        );
+    }
+
+    #[test]
+    fn gpu_device_load_command_includes_signature_abi_when_present() {
+        assert_eq!(
+            runner_load_command("__gpu_device:rocm:advance,init:12345", "/tmp/device.hsaco")
+                .unwrap(),
+            "load_device rocm /tmp/device.hsaco advance,init 12345\n"
+        );
+    }
+
+    #[test]
+    fn gpu_device_load_command_rejects_missing_or_unknown_vendor() {
+        assert!(runner_load_command("__gpu_device::advance,init", "/tmp/device.hsaco").is_err());
+        assert!(runner_load_command("__gpu_device:vulkan:advance,init", "/tmp/device.hsaco")
+            .is_err());
+    }
+
+    #[test]
+    fn runner_session_match_allows_same_session() {
+        assert!(runner_session_matches(Some("session-a"), Some("session-a")));
+    }
+
+    #[test]
+    fn runner_session_match_rejects_cross_session_hmr() {
+        assert!(!runner_session_matches(Some("session-a"), Some("session-b")));
+    }
+
+    #[test]
+    fn runner_session_match_rejects_missing_requested_or_current_identity() {
+        assert!(!runner_session_matches(Some("session-a"), None));
+        assert!(!runner_session_matches(None, Some("session-a")));
+    }
+
+    #[test]
+    fn runner_session_match_preserves_sessionless_compatibility() {
+        assert!(runner_session_matches(None, None));
+    }
+
+    #[test]
+    fn runner_reuse_policy_allows_matching_warm_reload() {
+        assert!(runner_reuse_allowed(
+            &RunnerReloadPolicy::default(),
+            true,
+            true,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn runner_reuse_policy_blocks_non_inprocess_plan() {
+        let policy = RunnerReloadPolicy::require_runner_restart(vec!["process_swap".to_string()]);
+        assert!(!runner_reuse_allowed(&policy, true, true, true, true));
+    }
 }

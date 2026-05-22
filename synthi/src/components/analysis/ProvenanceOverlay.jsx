@@ -2,10 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 
-const DEFAULT_AI_ENGINE_BASE = process.env.NEXT_PUBLIC_AI_ENGINE_URL
-  || (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
-    ? window.location.origin
-    : 'http://localhost:8000');
+const DEFAULT_AI_ENGINE_BASE = '/api/provenance';
 
 /**
  * AI Change Provenance Overlay
@@ -52,7 +49,7 @@ export function ProvenanceOverlay({
     
     try {
       // Call API to rollback
-      const response = await fetch(`${apiBaseUrl}/provenance/${record.record_id}/rollback`, {
+      const response = await fetch(`${apiBaseUrl}/${record.record_id}/rollback`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -90,7 +87,7 @@ export function ProvenanceOverlay({
     setActionError(null);
     
     try {
-      const response = await fetch(`${apiBaseUrl}/provenance/${record.record_id}/pin`, {
+      const response = await fetch(`${apiBaseUrl}/${record.record_id}/pin`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -130,7 +127,7 @@ export function ProvenanceOverlay({
     setActionError(null);
     
     try {
-      const response = await fetch(`${apiBaseUrl}/provenance/${record.record_id}/revert`, {
+      const response = await fetch(`${apiBaseUrl}/${record.record_id}/revert`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -163,14 +160,14 @@ export function ProvenanceOverlay({
       try {
         let url;
         if (recordId) {
-          url = `${apiBaseUrl}/provenance/${recordId}`;
+          url = `${apiBaseUrl}/${recordId}`;
           const response = await fetch(url);
           if (!response.ok) throw new Error('Failed to fetch provenance');
           const data = await response.json();
           setRecords([data]);
           setSelectedRecord(data);
         } else if (filePath) {
-          url = `${apiBaseUrl}/provenance/file/${encodeURIComponent(filePath)}`;
+          url = `${apiBaseUrl}/file/${encodeURIComponent(filePath)}`;
           const response = await fetch(url);
           if (!response.ok) throw new Error('Failed to fetch provenance');
           const data = await response.json();

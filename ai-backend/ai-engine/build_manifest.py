@@ -24,6 +24,14 @@ Manifest format (emitted by the AI inside <synthi_build_manifest>):
       "gui_link_flags": ["-lSDL2"],
       "shared_link_flags": [],
       "runner_link_flags": ["-lSDL2", "-ldl"],
+      "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"],
+      "module_files": {
+        "shared": "shared.h",
+        "core": "core.cpp",
+        "gui": "gui.cpp",
+        "host_runner": "host_runner.cpp",
+        "device": "device.cu"
+      },
       "system_packages": ["libsdl2-dev"],
       "hot_reload_mode": "swap" | "process_restart" | "auto",
       "confidence": {
@@ -42,7 +50,7 @@ See HMR_AGNOSTIC_ULTRAPLAN.md §5.3 for the full Point 3 design.
 from __future__ import annotations
 
 import re
-from typing import Any, List, Literal, Optional, Set, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Set, Tuple
 
 try:
     from pydantic import BaseModel, Field, field_validator, ConfigDict
@@ -67,6 +75,7 @@ DeviceCompiler = Literal["nvcc", "clang-cuda", "hipcc"]
 DeviceVendor   = Literal["cuda", "rocm"]
 SnapshotMode   = Literal["driver_checkpoint", "userspace", "auto"]
 FatbinStrategy = Literal["sidecar_module"]
+SUPPORTED_GPU_VENDORS = {"cuda", "rocm"}
 
 
 class GpuBuildBlock(BaseModel):
@@ -85,6 +94,11 @@ class GpuBuildBlock(BaseModel):
     runtime_libs: List[str] = Field(default_factory=list)
     snapshot_mode: SnapshotMode = "auto"
     fatbin_strategy: FatbinStrategy = "sidecar_module"
+    # Production GPU HMR metadata. V1 still compiles a single generated
+    # sidecar, but the manifest must carry role/link topology so RDC and
+    # future multi-device-TU paths are explicit instead of inferred.
+    device_roles: List[dict] = Field(default_factory=list)
+    device_link: dict = Field(default_factory=dict)
 
     if _PYDANTIC_V2:
         model_config = ConfigDict(extra="ignore")
@@ -109,6 +123,24 @@ class ConfidenceBlock(BaseModel):
         model_config = ConfigDict(extra="ignore")
 
 
+class ModuleFilesBlock(BaseModel):
+    """Semantic split-module role paths.
+
+    `files` is the full set of source files the browser should resend after
+    adaptation. `module_files` tells the worker which arbitrary path owns each
+    compile role, so projects are not coupled to core.cpp/gui.cpp/shared.h.
+    """
+
+    shared: Optional[str] = None
+    core: Optional[str] = None
+    gui: Optional[str] = None
+    host_runner: Optional[str] = None
+    device: Optional[str] = None
+
+    if _PYDANTIC_V2:
+        model_config = ConfigDict(extra="ignore")
+
+
 class BuildManifest(BaseModel):
     """Everything the Rust worker needs to know to compile a user's project.
 
@@ -125,6 +157,12 @@ class BuildManifest(BaseModel):
     gui_link_flags: List[str] = Field(default_factory=list)
     shared_link_flags: List[str] = Field(default_factory=list)
     runner_link_flags: List[str] = Field(default_factory=list)
+    # Source modules that browser-side compile requests should resend once
+    # a workspace has already been adapted. The worker still owns the compile
+    # stages; this prevents the browser from guessing split-project shape.
+    files: List[str] = Field(default_factory=list)
+    # Semantic module role paths for dynamically named split projects.
+    module_files: ModuleFilesBlock = Field(default_factory=ModuleFilesBlock)
     system_packages: List[str] = Field(default_factory=list)
     hot_reload_mode: HotReloadMode = "swap"
     confidence: ConfidenceBlock
@@ -288,6 +326,594 @@ def manifest_to_dict(manifest: BuildManifest) -> dict:
     if _PYDANTIC_V2:
         return manifest.model_dump(exclude_none=False)
     return manifest.dict()  # type: ignore[attr-defined]
+
+
+GPU_GENERATED_ROLE_ROOT = ".synthi/generated/gpu"
+
+
+def _gpu_internal_role_paths(vendor: str) -> dict[str, str]:
+    device_ext = "hip" if vendor == "rocm" else "cu"
+    return {
+        "shared": f"{GPU_GENERATED_ROLE_ROOT}/shared.h",
+        "core": f"{GPU_GENERATED_ROLE_ROOT}/core.cpp",
+        "gui": f"{GPU_GENERATED_ROLE_ROOT}/gui.cpp",
+        "host_runner": f"{GPU_GENERATED_ROLE_ROOT}/host_runner.cpp",
+        "device": f"{GPU_GENERATED_ROLE_ROOT}/device.{device_ext}",
+    }
+
+
+def _normalize_gpu_vendor(raw: Any) -> Optional[str]:
+    vendor = str(raw or "").strip().lower()
+    if vendor in {"hip", "amd", "amdhip"}:
+        return "rocm"
+    if vendor in SUPPORTED_GPU_VENDORS:
+        return vendor
+    return None
+
+
+def _gpu_device_role_id(path: str) -> str:
+    normalized = str(path or "device").replace("\\", "/").rsplit("/", 1)[-1]
+    stem = normalized.rsplit(".", 1)[0] or "device"
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", stem).strip("_") or "device"
+    return f"device.{slug}"
+
+
+def _gpu_device_link_bundle_id(raw_bundle_id: Any, affected_roles: List[str]) -> str:
+    if raw_bundle_id:
+        return str(raw_bundle_id)
+    role_seed = "__".join(role for role in affected_roles if role) or "device"
+    role_seed = role_seed.replace("device.", "")
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", role_seed).strip("_") or "device"
+    return f"device.bundle.{slug[:96]}"
+
+
+def _gpu_rdc_required(device_flags: Any) -> bool:
+    flags = _normalize_str_list(device_flags)
+    return any(
+        flag in {"-fgpu-rdc", "--device-c", "--gpu-rdc"}
+        or flag.startswith("--relocatable-device-code")
+        or flag == "-rdc=true"
+        or (flag.startswith("-rdc=") and flag.rsplit("=", 1)[-1].lower() in {"1", "true", "on"})
+        for flag in flags
+    )
+
+
+def _normalize_gpu_device_roles(
+    raw_roles: Any,
+    *,
+    device_path: str,
+    compiler: str,
+    arch: List[str],
+    device_flags: List[str],
+) -> List[dict]:
+    roles: List[dict] = []
+    if isinstance(raw_roles, list):
+        for item in raw_roles:
+            if not isinstance(item, Mapping):
+                continue
+            path = str(item.get("path") or item.get("generated_path") or "").replace("\\", "/")
+            if not path:
+                continue
+            role_arch = _normalize_str_list(item.get("arch")) or list(arch)
+            roles.append(
+                {
+                    "id": str(item.get("id") or _gpu_device_role_id(path)),
+                    "path": path,
+                    "source_files": _normalize_str_list(
+                        item.get("source_files") or item.get("sourceFiles")
+                    ),
+                    "compiler": str(item.get("compiler") or compiler),
+                    "arch": role_arch,
+                    "requires_rdc": bool(item.get("requires_rdc"))
+                    or bool(item.get("requiresRdc"))
+                    or _gpu_rdc_required(device_flags),
+                }
+            )
+    if not roles:
+        roles.append(
+            {
+                "id": _gpu_device_role_id(device_path),
+                "path": device_path,
+                "source_files": [],
+                "compiler": compiler,
+                "arch": list(arch),
+                "requires_rdc": _gpu_rdc_required(device_flags),
+            }
+        )
+    return roles
+
+
+def _normalize_gpu_device_link(raw_link: Any, *, device_roles: List[dict], device_flags: List[str]) -> dict:
+    link = dict(raw_link) if isinstance(raw_link, Mapping) else {}
+    affected_roles = _normalize_str_list(link.get("affected_roles") or link.get("affectedRoles")) or [
+        str(role.get("id")) for role in device_roles
+    ]
+    requires_rdc = bool(
+        link.get("requires_rdc")
+        or link.get("requiresRdc")
+        or _gpu_rdc_required(device_flags)
+        or any(role.get("requires_rdc") for role in device_roles)
+    )
+    return {
+        "requires_rdc": requires_rdc,
+        "bundle_id": _gpu_device_link_bundle_id(
+            link.get("bundle_id") or link.get("bundleId"),
+            affected_roles,
+        ),
+        "affected_roles": affected_roles,
+        "supports_incremental": bool(
+            link.get("supports_incremental") or link.get("supportsIncremental")
+        ),
+        "estimated_ms": int(link.get("estimated_ms") or link.get("estimatedMs") or (8000 if requires_rdc else 0)),
+        "budget_ms": int(link.get("budget_ms") or link.get("budgetMs") or 5000),
+    }
+
+
+def _lookup_generated_role_content(
+    split_files: Mapping[str, str],
+    *,
+    role: str,
+    declared_path: Optional[str],
+    vendor: str,
+) -> tuple[Optional[str], Optional[str]]:
+    normalized_files = {str(k).replace("\\", "/"): v for k, v in split_files.items()}
+    default_device = "device.hip" if vendor == "rocm" else "device.cu"
+    fallback_names = {
+        "shared": ["shared.h"],
+        "core": ["core.cpp"],
+        "gui": ["gui.cpp"],
+        "host_runner": ["host_runner.cpp"],
+        "device": [default_device, "device.cu", "device.hip"],
+    }
+    candidates = []
+    if declared_path:
+        normalized = str(declared_path).replace("\\", "/")
+        candidates.extend([normalized, normalized.rsplit("/", 1)[-1]])
+    candidates.extend([role, *fallback_names.get(role, [])])
+    if role == "device":
+        candidates.extend(
+            path
+            for path in normalized_files
+            if path.lower().endswith((".cu", ".hip"))
+        )
+    for candidate in candidates:
+        if candidate in normalized_files:
+            value = normalized_files[candidate]
+            return (value if isinstance(value, str) else str(value), candidate)
+    return None, None
+
+
+def internalize_gpu_generated_artifacts(
+    split_files: Mapping[str, str],
+    manifest: Mapping[str, Any],
+) -> tuple[dict[str, str], dict, dict]:
+    """Move generated GPU role filenames under Synthi-owned internal paths."""
+
+    manifest_out = dict(manifest)
+    gpu = dict(manifest_out.get("gpu") if isinstance(manifest_out.get("gpu"), dict) else {})
+    vendor = _normalize_gpu_vendor(gpu.get("vendor"))
+    if not vendor:
+        raise ManifestRejection(
+            "GPU generated artifact internalization requires an explicit supported "
+            "gpu.vendor from the verified compile manifest; refusing to default to CUDA."
+        )
+    declared_roles = dict(
+        manifest_out.get("module_files")
+        if isinstance(manifest_out.get("module_files"), Mapping)
+        else {}
+    )
+    internal_roles = _gpu_internal_role_paths(vendor)
+    internal_files: dict[str, str] = {}
+    mappings = []
+    missing_roles = []
+
+    for role, internal_path in internal_roles.items():
+        content, source_path = _lookup_generated_role_content(
+            split_files,
+            role=role,
+            declared_path=declared_roles.get(role),
+            vendor=vendor,
+        )
+        if content is None:
+            missing_roles.append(role)
+            continue
+        internal_files[internal_path] = content
+        mappings.append(
+            {
+                "role": role,
+                "sourcePath": source_path,
+                "internalPath": internal_path,
+            }
+        )
+
+    if missing_roles:
+        raise ManifestRejection(
+            "GPU split is missing required generated role content: "
+            + ", ".join(sorted(missing_roles))
+        )
+
+    manifest_out["module_files"] = internal_roles
+    manifest_out["files"] = list(internal_roles.values())
+    if gpu:
+        arch = _normalize_str_list(gpu.get("arch"))
+        device_flags = _normalize_gpu_device_flags(gpu.get("device_flags"), vendor)
+        compiler = str(gpu.get("device_compiler") or ("hipcc" if vendor == "rocm" else "nvcc"))
+        gpu["device_roles"] = _normalize_gpu_device_roles(
+            gpu.get("device_roles"),
+            device_path=internal_roles["device"],
+            compiler=compiler,
+            arch=arch,
+            device_flags=device_flags,
+        )
+        for role in gpu["device_roles"]:
+            role["path"] = internal_roles["device"]
+        gpu["device_link"] = _normalize_gpu_device_link(
+            gpu.get("device_link"),
+            device_roles=gpu["device_roles"],
+            device_flags=device_flags,
+        )
+        manifest_out["gpu"] = gpu
+    consumed_paths = {m["sourcePath"] for m in mappings if m["sourcePath"]}
+    report = {
+        "schemaVersion": "synthi.gpu.generated_artifact_purity.v1",
+        "rolesAreInternal": True,
+        "internalRoot": GPU_GENERATED_ROLE_ROOT,
+        "userWorkspaceMaterialization": "forbidden",
+        "mappings": mappings,
+        "missingRoles": missing_roles,
+        "droppedExtraGeneratedFiles": sorted(
+            str(path).replace("\\", "/")
+            for path in split_files
+            if str(path).replace("\\", "/") not in consumed_paths
+        ),
+    }
+    return internal_files, manifest_out, report
+
+
+def normalize_gpu_split_manifest(
+    raw: Mapping[str, Any] | None,
+    *,
+    split_files: Mapping[str, str],
+    link_hint_sources: Optional[Mapping[str, str]] = None,
+    vendor_hint: Optional[str] = None,
+    arch_hint: Optional[str] = None,
+) -> dict:
+    """Fill mechanical defaults the GPU splitter prompt may omit.
+
+    The LLM owns source code and semantic split choices; this helper owns the
+    boilerplate needed by the worker's manifest validator/compile pipeline.
+    """
+
+    manifest = dict(raw or {})
+    file_names = [str(k) for k in split_files.keys()]
+
+    def file_by(predicate, fallback: Optional[str] = None) -> Optional[str]:
+        for name in file_names:
+            if predicate(name.replace("\\", "/").split("/")[-1].lower(), name.lower()):
+                return name
+        return fallback
+
+    gpu = dict(manifest.get("gpu") if isinstance(manifest.get("gpu"), dict) else {})
+    vendor = _normalize_gpu_vendor(gpu.get("vendor") or vendor_hint)
+    if not vendor:
+        raise ManifestRejection(
+            "GPU split manifest is missing a supported gpu.vendor from selected "
+            "target metadata; refusing to infer vendor from filenames."
+        )
+
+    arch_values = _normalize_str_list(gpu.get("arch"))
+    if arch_hint:
+        arch_values = [arch_hint]
+    elif not arch_values:
+        raise ManifestRejection(
+            "GPU split manifest is missing gpu.arch and no selected-target "
+            "architecture hint was supplied; refusing to default the GPU arch."
+        )
+
+    default_device = "device.hip" if vendor == "rocm" else "device.cu"
+    roles = dict(manifest.get("module_files") if isinstance(manifest.get("module_files"), dict) else {})
+    roles.setdefault("shared", file_by(lambda base, _: base == "shared.h" or "shared" in base, "shared.h"))
+    roles.setdefault("core", file_by(lambda base, _: base == "core.cpp" or "core" in base, "core.cpp"))
+    roles.setdefault("gui", file_by(lambda base, _: base == "gui.cpp" or "gui" in base, "gui.cpp"))
+    roles.setdefault("host_runner", file_by(lambda base, _: "runner" in base, "host_runner.cpp"))
+    roles.setdefault(
+        "device",
+        file_by(lambda base, full: base.endswith((".cu", ".hip")) or "device" in full, default_device),
+    )
+    manifest["module_files"] = roles
+
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        files = file_names
+    for path in roles.values():
+        if path and path not in files:
+            files.append(path)
+    manifest["files"] = [str(p) for p in files]
+
+    manifest["compiler"] = manifest.get("compiler") if manifest.get("compiler") in {"g++", "clang++"} else "g++"
+    manifest["std"] = str(manifest.get("std") or "c++26")
+    for field in (
+        "common_flags",
+        "core_link_flags",
+        "gui_link_flags",
+        "shared_link_flags",
+        "runner_link_flags",
+        "system_packages",
+    ):
+        manifest[field] = _normalize_str_list(manifest.get(field))
+    if manifest.get("hot_reload_mode") not in {"swap", "process_restart", "auto"}:
+        manifest["hot_reload_mode"] = "swap"
+    manifest["confidence"] = _normalize_confidence_block(manifest.get("confidence"))
+    # The GPU splitter emits the generated 5-role module pipeline, which the
+    # worker compiles directly. Build-system hints copied from the user's
+    # original CMake/make project are stale after splitting and should not trip
+    # V1's host-project multi-step rejection.
+    manifest["build_steps"] = []
+
+    common_flags = list(manifest["common_flags"])
+    host_link_fields = ("core_link_flags", "gui_link_flags", "runner_link_flags")
+    if vendor == "rocm":
+        compiler = "hipcc"
+        manifest["compiler"] = "clang++"
+        include_flags = ["-D__HIP_PLATFORM_AMD__", "-I/opt/rocm/include"]
+        link_flags = ["-L/opt/rocm/lib", "-lamdhip64"]
+        runtime_libs = ["amdhip64"]
+    else:
+        compiler = "nvcc"
+        include_flags = ["-I/usr/local/cuda/include"]
+        link_flags = ["-L/usr/local/cuda/lib64", "-L/usr/local/cuda/lib64/stubs", "-lcudart", "-lcuda"]
+        runtime_libs = ["cudart", "cuda"]
+
+    for flag in include_flags:
+        if flag not in common_flags:
+            common_flags.append(flag)
+    if "-shared" not in common_flags:
+        common_flags.append("-shared")
+    if "-fPIC" not in common_flags:
+        common_flags.append("-fPIC")
+    manifest["common_flags"] = common_flags
+    for field in host_link_fields:
+        values = list(manifest.get(field) or [])
+        for flag in link_flags:
+            if flag not in values:
+                values.append(flag)
+        manifest[field] = values
+
+    def add_host_link_flags(flags: List[str]) -> None:
+        for field in ("gui_link_flags", "runner_link_flags"):
+            values = list(manifest.get(field) or [])
+            for flag in flags:
+                if flag not in values:
+                    values.append(flag)
+            manifest[field] = values
+
+    project_sources = link_hint_sources or {}
+    metadata_flags = _extract_build_metadata_link_flags(project_sources)
+    if metadata_flags:
+        add_host_link_flags(metadata_flags)
+
+    source_blobs = [str(v) for v in split_files.values()]
+    source_blobs.extend(str(v) for v in project_sources.values())
+    source_blob = "\n".join(source_blobs)
+    hinted_flags = _extract_source_link_hints(source_blob)
+    if hinted_flags:
+        add_host_link_flags(hinted_flags)
+
+    runner_flags = list(manifest.get("runner_link_flags") or [])
+    for flag in ("-ldl", "-pthread", "-rdynamic"):
+        if flag not in runner_flags:
+            runner_flags.append(flag)
+    manifest["runner_link_flags"] = runner_flags
+
+    gpu["vendor"] = vendor
+    gpu["device_compiler"] = compiler
+    gpu["arch"] = arch_values
+    gpu["device_flags"] = _normalize_gpu_device_flags(gpu.get("device_flags"), vendor)
+    gpu["device_roles"] = _normalize_gpu_device_roles(
+        gpu.get("device_roles"),
+        device_path=str(roles.get("device") or default_device),
+        compiler=compiler,
+        arch=_normalize_str_list(gpu.get("arch")),
+        device_flags=gpu["device_flags"],
+    )
+    gpu["device_link"] = _normalize_gpu_device_link(
+        gpu.get("device_link"),
+        device_roles=gpu["device_roles"],
+        device_flags=gpu["device_flags"],
+    )
+    if not isinstance(gpu.get("runtime_libs"), list) or not gpu.get("runtime_libs"):
+        gpu["runtime_libs"] = runtime_libs
+    gpu.setdefault("snapshot_mode", "auto")
+    gpu["fatbin_strategy"] = "sidecar_module"
+    manifest["gpu"] = gpu
+    return manifest
+
+
+def _link_token_to_flag(token: str) -> Optional[str]:
+    token = token.strip().strip('"').strip("'")
+    if not token:
+        return None
+    if token in {"PRIVATE", "PUBLIC", "INTERFACE", "debug", "optimized", "general"}:
+        return None
+    if token.startswith("$<"):
+        return None
+    if token.startswith("${"):
+        return token
+    if token.startswith(("-", "/LIBPATH:")):
+        return token
+    if token.endswith((".a", ".so", ".dylib", ".lib")) or "/" in token or "\\" in token:
+        return token
+    if "::" in token:
+        token = token.rsplit("::", 1)[-1]
+    if re.match(r"^[A-Za-z0-9_.+-]+$", token):
+        return f"-l{token}"
+    return None
+
+
+def _extract_cmake_set_variables(text: str) -> Dict[str, List[str]]:
+    variables: Dict[str, List[str]] = {}
+    for match in re.finditer(
+        r"\bset\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s+([^)]+)\)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        name = match.group(1)
+        body = re.sub(r"#.*", " ", match.group(2))
+        values = [token for token in re.split(r"[\s\r\n]+", body) if token]
+        if values:
+            variables[name] = values
+    return variables
+
+
+def _expand_cmake_link_token(token: str, variables: Mapping[str, List[str]]) -> List[str]:
+    token = token.strip()
+    if not (token.startswith("${") and token.endswith("}")):
+        return [token]
+    name = token[2:-1].strip()
+    if not name:
+        return []
+    if name in variables:
+        return variables[name]
+    for suffix in ("_LIBRARIES", "_LIBRARY", "_LIBS", "_LIB"):
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return [name[: -len(suffix)]]
+    return [token]
+
+
+def _extract_build_metadata_link_flags(source_files: Mapping[str, str]) -> List[str]:
+    """Extract linker flags from project build metadata.
+
+    This is intentionally generic. It reads user-owned build files such as
+    CMakeLists.txt instead of requiring source comments or a framework catalog.
+    """
+
+    flags: List[str] = []
+    seen: Set[str] = set()
+
+    def add(flag: Optional[str]) -> None:
+        if not flag or flag in seen:
+            return
+        flags.append(flag)
+        seen.add(flag)
+
+    for path, text in source_files.items():
+        normalized = str(path).replace("\\", "/")
+        if normalized.rsplit("/", 1)[-1] != "CMakeLists.txt":
+            continue
+        variables = _extract_cmake_set_variables(str(text))
+        for match in re.finditer(
+            r"target_link_libraries\s*\(\s*([A-Za-z0-9_.:+-]+)\s+([^)]+)\)",
+            str(text),
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            body = re.sub(r"#.*", " ", match.group(2))
+            for token in re.split(r"[\s\r\n]+", body):
+                for expanded in _expand_cmake_link_token(token, variables):
+                    add(_link_token_to_flag(expanded))
+    return flags
+
+
+def _extract_source_link_hints(source: str) -> List[str]:
+    """Extract optional explicit linker hints embedded in project sources.
+
+    These are accepted for compatibility with existing fixtures and MSVC-style
+    pragmas, but production correctness must not depend on users writing them.
+    """
+
+    flags: List[str] = []
+    seen: Set[str] = set()
+
+    def add(flag: str) -> None:
+        flag = flag.strip()
+        if not flag:
+            return
+        normalized = _link_token_to_flag(flag)
+        if normalized and normalized not in seen:
+            flags.append(normalized)
+            seen.add(normalized)
+
+    for match in re.finditer(r"(?im)^\s*//\s*LINK:\s*(.+)$", source):
+        for token in match.group(1).split():
+            add(token)
+    for match in re.finditer(r'#\s*pragma\s+comment\s*\(\s*lib\s*,\s*"([^"]+)"\s*\)', source):
+        lib = match.group(1).strip()
+        if lib.lower().endswith(".lib"):
+            lib = lib[:-4]
+        add(lib)
+    return flags
+
+
+def _normalize_str_list(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw] if raw.strip() else []
+    if isinstance(raw, list):
+        return [str(item) for item in raw if str(item).strip()]
+    return []
+
+
+def _normalize_confidence_block(raw: Any) -> dict:
+    default = {
+        "overall": "high",
+        "runner_synthesis": "high",
+        "link_flags": "high",
+        "notes": "GPU manifest defaults normalized by ai-engine.",
+    }
+    if not isinstance(raw, Mapping):
+        return default
+
+    confidence = dict(default)
+    for key in ("overall", "runner_synthesis", "link_flags"):
+        value = str(raw.get(key) or "").lower()
+        if value in {"high", "medium", "low"}:
+            confidence[key] = value
+    notes = raw.get("notes")
+    if notes is not None:
+        confidence["notes"] = str(notes)
+    return confidence
+
+
+def _normalize_gpu_device_flags(raw_flags: Any, vendor: str) -> List[str]:
+    """Keep AI-emitted device flags compatible with the selected backend."""
+
+    if not isinstance(raw_flags, list):
+        raw_flags = []
+
+    normalized: List[str] = []
+    seen: Set[str] = set()
+
+    def add(flag: str) -> None:
+        if flag and flag not in seen:
+            normalized.append(flag)
+            seen.add(flag)
+
+    for raw in raw_flags:
+        flag = str(raw).strip()
+        if not flag:
+            continue
+        if vendor == "rocm" and flag in {"--use_fast_math", "--use-fast-math"}:
+            # hipcc's clang device path rejects nvcc's CUDA-only spelling.
+            continue
+        if vendor == "rocm" and (
+            flag.startswith("-arch=sm_")
+            or flag.startswith("--gpu-architecture=sm_")
+            or flag.startswith("-gencode")
+            or flag.startswith("--generate-code")
+        ):
+            continue
+        if vendor == "cuda" and (
+            flag.startswith("--offload-arch=gfx")
+            or flag.startswith("--amdgpu-target=")
+            or flag.startswith("--rocm-path")
+        ):
+            continue
+        add(flag)
+
+    for default in ("-O3", "-lineinfo"):
+        add(default)
+
+    return normalized
 
 
 # ─────────────────────────────────────────────────────────────────────────────

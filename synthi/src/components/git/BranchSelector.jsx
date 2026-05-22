@@ -1,6 +1,16 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { fetchGitStatus, checkoutBranch, clearCheckoutConflict, clearError } from '@/redux/gitSlice';
+import {
+    fetchGitStatus,
+    checkoutBranch,
+    clearCheckoutConflict,
+    clearError,
+    pushChanges,
+    pullChanges,
+    fetchRemote,
+    forceRefreshGitStatus,
+    mergeBranchForConflicts,
+} from '@/redux/gitSlice';
 import { refreshWorkspaceThunk } from '@/redux/workspaceSlice';
 import { GitBranch, Plus, ChevronDown, AlertTriangle, Archive, Trash2, X } from 'lucide-react';
 import { toast } from 'sonner';
@@ -13,6 +23,10 @@ import {
     SelectTrigger,
     SelectValue,
 } from '@/components/ui/select';
+import {
+    ContextMenu,
+    useContextMenu,
+} from '@/components/docking-wm/components/ContextMenu';
 
 /* ─── Checkout Conflict Dialog ─────────────────────── */
 function CheckoutConflictDialog({ slug, branch, create, onClose }) {
@@ -108,6 +122,7 @@ function CheckoutConflictDialog({ slug, branch, create, onClose }) {
 export function BranchSelector({ slug }) {
     const dispatch = useDispatch();
     const { branches, currentBranch, loading, checkoutConflict } = useSelector(state => state.git);
+    const { menuState, openMenu, closeMenu } = useContextMenu();
 
     useEffect(() => {
         if (slug) {
@@ -137,13 +152,105 @@ export function BranchSelector({ slug }) {
         dispatch(clearError());
     }, [dispatch]);
 
+    const copy = useCallback((text) => {
+        if (!text) return;
+        navigator.clipboard.writeText(text).then(
+            () => toast.success(`Copied "${text}"`),
+            () => toast.error('Copy failed'),
+        );
+    }, []);
+
+    // Right-click on the branch pill itself → operate on the CURRENT branch.
+    const handleTriggerContextMenu = useCallback((e) => {
+        openMenu(e, [
+            {
+                id: 'push',
+                label: 'Push',
+                disabled: !currentBranch,
+                action: () => dispatch(pushChanges({ slug, force: false })),
+            },
+            {
+                id: 'pull',
+                label: 'Pull',
+                disabled: !currentBranch,
+                action: () => dispatch(pullChanges(slug)),
+            },
+            {
+                id: 'fetch',
+                label: 'Fetch',
+                dividerAfter: true,
+                action: () => dispatch(fetchRemote(slug)),
+            },
+            {
+                id: 'copy-current',
+                label: 'Copy Branch Name',
+                disabled: !currentBranch,
+                action: () => copy(currentBranch),
+            },
+            {
+                id: 'refresh',
+                label: 'Refresh',
+                dividerAfter: true,
+                action: () => dispatch(forceRefreshGitStatus(slug)),
+            },
+            {
+                id: 'create-new',
+                label: 'Create Branch…',
+                action: () => handleValueChange('create-new'),
+            },
+        ]);
+    }, [currentBranch, slug, dispatch, openMenu, handleValueChange, copy]);
+
+    // Right-click on a branch row in the dropdown → operate on THAT branch.
+    const handleBranchContextMenu = useCallback((e, branch) => {
+        const isCurrent = branch === currentBranch;
+        const target = currentBranch || 'current';
+        openMenu(e, [
+            {
+                id: 'checkout',
+                label: 'Checkout',
+                disabled: isCurrent,
+                action: () => handleValueChange(branch),
+            },
+            {
+                id: 'copy-name',
+                label: 'Copy Branch Name',
+                dividerAfter: true,
+                action: () => copy(branch),
+            },
+            {
+                id: 'merge',
+                label: `Merge into ${target}`,
+                disabled: isCurrent || !currentBranch,
+                action: async () => {
+                    const ok = window.confirm(`Merge "${branch}" into "${currentBranch}"?`);
+                    if (!ok) return;
+                    const result = await dispatch(mergeBranchForConflicts({ slug, branch }));
+                    if (mergeBranchForConflicts.fulfilled.match(result)) {
+                        if (result.payload?.hasConflicts) {
+                            toast.warning(`Merge of ${branch} produced conflicts`);
+                        } else {
+                            toast.success(`Merged ${branch} into ${currentBranch}`);
+                        }
+                    } else {
+                        toast.error(result.payload?.message || result.error?.message || 'Merge failed');
+                    }
+                },
+            },
+        ]);
+    }, [currentBranch, slug, dispatch, openMenu, handleValueChange, copy]);
+
     // Ensure branches.local is an array
     const localBranches = Array.isArray(branches?.local) ? branches.local : [];
 
     return (
         <>
             <Select value={currentBranch || ''} onValueChange={handleValueChange} disabled={loading}>
-                <SelectTrigger className="h-5 w-auto gap-1.5 border-none bg-transparent px-1.5 text-[11px] rounded-full focus:ring-0 focus:ring-offset-0 data-[size=default]:h-5 data-[size=default]:px-1.5 data-[size=default]:py-0 [&>svg:last-child]:w-3 [&>svg:last-child]:h-3 [&>svg:last-child]:opacity-50 duration-300 hover:-translate-y-0.5 transition-all cursor-pointer" style={{ color: 'var(--text-primary)' }}>
+                <SelectTrigger
+                    onContextMenu={handleTriggerContextMenu}
+                    className="h-5 w-auto gap-1.5 border-none bg-transparent px-1.5 text-[11px] rounded-full focus:ring-0 focus:ring-offset-0 data-[size=default]:h-5 data-[size=default]:px-1.5 data-[size=default]:py-0 [&>svg:last-child]:w-3 [&>svg:last-child]:h-3 [&>svg:last-child]:opacity-50 duration-300 hover:-translate-y-0.5 transition-all cursor-pointer"
+                    style={{ color: 'var(--text-primary)' }}
+                >
                     <GitBranch className="w-3.5 h-3.5" style={{ color: 'var(--accent-primary)' }} strokeWidth={1.5} />
                     <SelectValue placeholder="Select branch" />
                 </SelectTrigger>
@@ -151,9 +258,10 @@ export function BranchSelector({ slug }) {
                     <SelectGroup>
                         <SelectLabel className="text-xs" style={{ color: 'var(--text-muted)' }}>{localBranches.length > 0 ? 'Local Branches' : 'No branches'}</SelectLabel>
                         {localBranches.map(b => (
-                            <SelectItem 
-                                key={b} 
+                            <SelectItem
+                                key={b}
                                 value={b}
+                                onContextMenu={(e) => handleBranchContextMenu(e, b)}
                                 className="text-xs cursor-pointer rounded"
                                 style={{ color: 'var(--text-primary)' }}
                             >
@@ -161,8 +269,8 @@ export function BranchSelector({ slug }) {
                             </SelectItem>
                         ))}
                     </SelectGroup>
-                    <SelectItem 
-                        value="create-new" 
+                    <SelectItem
+                        value="create-new"
                         className="text-xs cursor-pointer rounded"
                         style={{ color: 'var(--accent-primary)' }}
                     >
@@ -173,6 +281,8 @@ export function BranchSelector({ slug }) {
                     </SelectItem>
                 </SelectContent>
             </Select>
+
+            {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
 
             {/* Checkout conflict dialog */}
             {checkoutConflict && (

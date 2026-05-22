@@ -1,0 +1,3 @@
+artifacts/
+*.o
+*_probe

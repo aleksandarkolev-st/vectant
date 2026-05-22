@@ -17,10 +17,10 @@ import urllib.error
 import urllib.request
 
 MODEL = os.environ.get("SYNTHI_GEMINI_MODEL", "gemini-3.1-flash-lite-preview")
-API_KEY = "AIzaSyDaOUxXavFUVYkVHM8cD65svGU0sYKaxqQ"
+API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
 
 if not API_KEY:
-    print("❌ GEMINI_API_KEY not set in environment")
+    print("GEMINI_API_KEY or GOOGLE_API_KEY not set in environment")
     print("   Run:  export GEMINI_API_KEY=<your-key>  and try again")
     sys.exit(1)
 

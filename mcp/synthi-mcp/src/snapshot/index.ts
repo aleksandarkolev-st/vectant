@@ -28,6 +28,19 @@ import { randomUUID, createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
+export const SNAPSHOT_ID_PATTERN_SOURCE = "snap_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+export const SNAPSHOT_ID_PATTERN = new RegExp(`^${SNAPSHOT_ID_PATTERN_SOURCE}$`);
+
+export function isSnapshotId(value: unknown): value is string {
+  return typeof value === "string" && SNAPSHOT_ID_PATTERN.test(value);
+}
+
+export function assertSnapshotId(value: unknown): asserts value is string {
+  if (!isSnapshotId(value)) {
+    throw new Error("invalid_snapshot_id");
+  }
+}
+
 export interface SnapshotSourceState {
   last_changed_files: string[];
   content_hash: string | null;
@@ -95,14 +108,24 @@ export class MemorySnapshotPersistor implements SnapshotPersistor {
  * configured directory, atomic rename to avoid torn writes.
  */
 export class FileSnapshotPersistor implements SnapshotPersistor {
-  constructor(private readonly baseDir: string) {}
+  private readonly resolvedBaseDir: string;
+
+  constructor(private readonly baseDir: string) {
+    this.resolvedBaseDir = path.resolve(baseDir);
+  }
 
   private async ensureDir(): Promise<void> {
-    await fs.mkdir(this.baseDir, { recursive: true });
+    await fs.mkdir(this.resolvedBaseDir, { recursive: true });
   }
 
   private fileFor(id: string): string {
-    return path.join(this.baseDir, `${id}.json`);
+    assertSnapshotId(id);
+    const filePath = path.resolve(this.resolvedBaseDir, `${id}.json`);
+    const relative = path.relative(this.resolvedBaseDir, filePath);
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("invalid_snapshot_path");
+    }
+    return filePath;
   }
 
   async save(record: SnapshotRecord): Promise<void> {
@@ -125,12 +148,14 @@ export class FileSnapshotPersistor implements SnapshotPersistor {
 
   async list(): Promise<SnapshotRecord[]> {
     try {
-      const files = await fs.readdir(this.baseDir);
+      const files = await fs.readdir(this.resolvedBaseDir);
       const records: SnapshotRecord[] = [];
       for (const f of files) {
         if (!f.endsWith(".json")) continue;
+        const id = f.slice(0, -".json".length);
+        if (!isSnapshotId(id)) continue;
         try {
-          const text = await fs.readFile(path.join(this.baseDir, f), "utf8");
+          const text = await fs.readFile(this.fileFor(id), "utf8");
           records.push(JSON.parse(text) as SnapshotRecord);
         } catch {
           // skip malformed files rather than failing the whole list

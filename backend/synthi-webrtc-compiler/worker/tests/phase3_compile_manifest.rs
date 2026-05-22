@@ -12,8 +12,8 @@
 // What this covers:
 //   - round-trip: serialize a BuildManifest shape from Python side,
 //     deserialize on the Rust side, compare fields.
-//   - sdl2_default(): confirm the backward-compat fallback produces
-//     the exact flags compile_core/compile_gui used to hardcode.
+//   - generic_fallback(): confirm manifest-less sidecars do not infer
+//     framework-specific link flags.
 //   - hot_reload_mode semantics: process_restart toggles
 //     requires_process_restart().
 //   - low confidence: runner_synthesis == "low" deserializes, so the
@@ -21,14 +21,16 @@
 //   - extra-fields tolerance: a V2 manifest with unknown fields still
 //     parses (serde default(extra=ignore) behavior).
 //   - missing confidence: from_json_value returns None (so handler.rs
-//     falls back to sdl2_default instead of panicking).
+//     can use generic_fallback instead of panicking).
 //   - build_steps forward-compat: accepts-but-ignores.
 //
 // Run with:
 //   cargo test --test phase3_compile_manifest
 // from `backend/synthi-webrtc-compiler/worker/`.
 
-use worker::hmr::compile_manifest::{CompileManifest, ConfidenceLevel, HotReloadMode};
+use worker::hmr::compile_manifest::{
+    CompileManifest, ConfidenceLevel, HotReloadMode, ModuleKind,
+};
 
 const SAMPLE_SDL2_JSON: &str = r#"{
     "compiler": "g++",
@@ -66,15 +68,10 @@ fn parses_sdl2_sample_from_python_wire_format() {
 }
 
 #[test]
-fn sdl2_default_matches_legacy_hardcoded_shape() {
-    // The pre-Phase-3 compile_core / compile_gui commands hardcoded:
-    //   g++ -shared -fPIC -D_POSIX_C_SOURCE=199309L -g -gdwarf-4
-    //       -fno-omit-frame-pointer -fdiagnostics-format=json ... -lSDL2
-    // sdl2_default() MUST produce that exact flag set so existing
-    // projects compile identically with manifest=None.
-    let m = CompileManifest::sdl2_default();
+fn generic_fallback_does_not_infer_framework_links() {
+    let m = CompileManifest::generic_fallback();
     assert_eq!(m.compiler.executable(), "g++");
-    assert_eq!(m.std, "c++17");
+    assert_eq!(m.std, "c++26");
     assert!(m.common_flags.contains(&"-shared".to_string()));
     assert!(m.common_flags.contains(&"-fPIC".to_string()));
     assert!(m
@@ -88,10 +85,11 @@ fn sdl2_default_matches_legacy_hardcoded_shape() {
     assert!(m
         .common_flags
         .contains(&"-fdiagnostics-format=json".to_string()));
-    assert!(m.gui_link_flags.contains(&"-lSDL2".to_string()));
+    assert!(m.gui_link_flags.is_empty());
+    assert_eq!(m.runner_link_flags, vec!["-ldl".to_string()]);
     assert!(m.core_link_flags.is_empty());
     assert_eq!(m.hot_reload_mode, HotReloadMode::Swap);
-    assert_eq!(m.confidence.overall, ConfidenceLevel::High);
+    assert_eq!(m.confidence.overall, ConfidenceLevel::Low);
     assert!(!m.requires_process_restart());
 }
 
@@ -182,9 +180,60 @@ fn from_json_value_tolerates_extra_fields() {
 }
 
 #[test]
+fn module_files_map_dynamic_split_paths() {
+    let json = r#"{
+        "compiler": "g++",
+        "std": "c++20",
+        "common_flags": ["-shared", "-fPIC"],
+        "core_link_flags": [],
+        "gui_link_flags": ["-lSDL2"],
+        "shared_link_flags": [],
+        "runner_link_flags": ["-lSDL2", "-ldl"],
+        "files": [
+            "include/dyn_shared_a.h",
+            "src/dyn_core_a.cpp",
+            "src/dyn_gui_a.cpp",
+            "run/dyn_runner_a.cpp",
+            "gpu/dyn_device_a.hip"
+        ],
+        "module_files": {
+            "shared": "include/dyn_shared_a.h",
+            "core": "src/dyn_core_a.cpp",
+            "gui": "src/dyn_gui_a.cpp",
+            "host_runner": "run/dyn_runner_a.cpp",
+            "device": "gpu/dyn_device_a.hip"
+        },
+        "system_packages": ["libsdl2-dev"],
+        "hot_reload_mode": "swap",
+        "confidence": {
+            "overall": "high",
+            "runner_synthesis": "high",
+            "link_flags": "high",
+            "notes": ""
+        },
+        "gpu": {
+            "vendor": "rocm",
+            "device_compiler": "hipcc",
+            "arch": ["gfx1201"],
+            "device_flags": ["-O2"],
+            "runtime_libs": ["amdhip64"],
+            "snapshot_mode": "auto",
+            "fatbin_strategy": "sidecar_module"
+        }
+    }"#;
+    let m: CompileManifest = serde_json::from_str(json).unwrap();
+    assert_eq!(m.module_file(ModuleKind::Core), Some("src/dyn_core_a.cpp"));
+    assert_eq!(
+        m.module_file(ModuleKind::HostRunner),
+        Some("run/dyn_runner_a.cpp")
+    );
+    assert_eq!(m.device_source_filename(), Some("gpu/dyn_device_a.hip"));
+}
+
+#[test]
 fn from_json_value_returns_none_on_missing_confidence() {
     // `confidence` is the ONLY non-default field. Without it, handler.rs
-    // must see None and fall back to sdl2_default(), not panic.
+    // must see None and use generic_fallback(), not panic.
     let v: serde_json::Value = serde_json::json!({
         "compiler": "g++",
         "common_flags": [],
@@ -262,7 +311,7 @@ fn build_steps_forward_compat_parses() {
 fn round_trip_serialize_deserialize() {
     // Round-trip: serialize the default, deserialize, compare. Catches
     // any asymmetry between serde renames on the read vs write side.
-    let original = CompileManifest::sdl2_default();
+    let original = CompileManifest::generic_fallback();
     let serialized = serde_json::to_string(&original).unwrap();
     let decoded: CompileManifest = serde_json::from_str(&serialized).unwrap();
     assert_eq!(

@@ -324,6 +324,8 @@ fn make_test_manifest(
         gui_link_flags: vec![],
         shared_link_flags: vec![],
         runner_link_flags: runner_link_flags.into_iter().map(String::from).collect(),
+        files: vec![],
+        module_files: Default::default(),
         system_packages: vec![],
         hot_reload_mode: HotReloadMode::Swap,
         confidence: ConfidenceBlock {
@@ -333,6 +335,7 @@ fn make_test_manifest(
             notes: String::new(),
         },
         build_steps: None,
+        gpu: None,
     }
 }
 
@@ -440,16 +443,13 @@ fn flag_list_clang_glfw_c20_scenario() {
 }
 
 #[test]
-fn flag_list_sdl2_default_round_trip() {
-    // The legacy SDL2 default must produce a flag list compatible with
-    // a real SDL2 runner build. Verifies sdl2_default's runner_link_flags
-    // has both -lSDL2 and -ldl.
-    let m = CompileManifest::sdl2_default();
+fn flag_list_generic_fallback_round_trip() {
+    let m = CompileManifest::generic_fallback();
     let flags = build_runner_flag_list(&m);
-    assert!(flags.contains(&"-std=c++17".to_string()));
-    assert!(flags.contains(&"-lSDL2".to_string()));
+    assert!(flags.contains(&"-std=c++26".to_string()));
+    assert!(!flags.contains(&"-lSDL2".to_string()));
     assert!(flags.contains(&"-ldl".to_string()));
-    // sdl2_default common_flags has -shared/-fPIC, both must be stripped
+    // generic fallback common_flags has -shared/-fPIC, both must be stripped
     assert!(!flags.contains(&"-shared".to_string()));
     assert!(!flags.contains(&"-fPIC".to_string()));
     // -D_POSIX_C_SOURCE etc. should pass through

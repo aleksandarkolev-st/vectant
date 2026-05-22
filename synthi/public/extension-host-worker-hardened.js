@@ -977,7 +977,7 @@ class HardenedExtensionHost {
 
     try {
       const exports = {};
-      const module = { exports };
+      const moduleRecord = { exports };
 
       // Shim require() for bundled Node.js extensions.
       // Many marketplace extensions are webpack/esbuild bundles that call
@@ -1117,14 +1117,14 @@ var __x = function(v){ if(v===void 0) return __SafeBase; if(v===null) return nul
       const factory = new Function('vscode', 'exports', 'module', 'require', 'process', 'Buffer', '__dirname', '__filename', wrappedCode);
       console.log(`[ExtensionHost] ${extensionId}: Function compiled in ${(performance.now() - _loadStart).toFixed(0)}ms, evaluating...`);
       try {
-        factory(vscode, exports, module, shimRequire, processImpl, BufferImpl, '/', '/extension.js');
+        factory(vscode, exports, moduleRecord, shimRequire, processImpl, BufferImpl, '/', '/extension.js');
       } catch (evalErr) {
         console.error(`[ExtensionHost] ${extensionId}: eval crashed:`, evalErr.message);
         throw evalErr;
       }
       console.log(`[ExtensionHost] ${extensionId}: eval complete in ${(performance.now() - _loadStart).toFixed(0)}ms`);
       
-      const extensionModule = module.exports || exports;
+      const extensionModule = moduleRecord.exports || exports;
 
       if (typeof extensionModule.activate !== 'function') {
         throw new Error('Extension must export an activate() function');

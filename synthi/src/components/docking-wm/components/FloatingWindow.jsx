@@ -21,6 +21,7 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import { MoreHorizontal, ArrowDownToLine, X, Minimize2, Maximize2 } from 'lucide-react';
+import { ContextMenu, useContextMenu } from './ContextMenu';
 
 /**
  * @param {Object} props
@@ -30,7 +31,8 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
   const { id, tabId, x, y, width, height, zIndex, isMinimized } = floatingWindow;
   const tabs = useSelector(selectTabs);
   const tab = tabs[tabId];
-  const { dockFloat, closeTab, registry } = useDockingActions();
+  const { dockFloat, closeTab, popoutTab, updateFloat, registry } = useDockingActions();
+  const { menuState, openMenu, closeMenu } = useContextMenu();
 
   const {
     isDragging,
@@ -48,6 +50,53 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
   const panelDef = tab ? registry.get(tab.panelType) : null;
 
   if (!tab) return null;
+
+  const handleTitleContextMenu = (e) => {
+    // Re-centre on a sensible default size — does not depend on viewport
+    // measurements, so it's safe to run anywhere.
+    const resetToDefaults = () => {
+      const defaultWidth = 480;
+      const defaultHeight = 360;
+      updateFloat(id, {
+        width: defaultWidth,
+        height: defaultHeight,
+        x: Math.max(0, Math.round((window.innerWidth - defaultWidth) / 2)),
+        y: Math.max(0, Math.round((window.innerHeight - defaultHeight) / 2)),
+        isMinimized: false,
+      });
+    };
+
+    openMenu(e, [
+      {
+        id: 'minimize',
+        label: isMinimized ? 'Restore' : 'Minimize',
+        action: () => updateFloat(id, { isMinimized: !isMinimized }),
+      },
+      {
+        id: 'reset',
+        label: 'Reset Size & Position',
+        dividerAfter: true,
+        action: resetToDefaults,
+      },
+      {
+        id: 'dock',
+        label: 'Dock Back',
+        action: () => dockFloat(id, null),
+      },
+      {
+        id: 'popout',
+        label: 'Pop Out to Window',
+        dividerAfter: true,
+        action: () => popoutTab(tabId),
+      },
+      {
+        id: 'close',
+        label: 'Close',
+        disabled: tab.closable === false,
+        action: () => closeTab(tabId),
+      },
+    ]);
+  };
 
   // Resize handle positions
   const resizeHandles = ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'];
@@ -87,6 +136,7 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
       <div
         className="dock-floating-window__titlebar"
         onMouseDown={handleTitleMouseDown}
+        onContextMenu={handleTitleContextMenu}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -197,6 +247,8 @@ export const FloatingWindow = memo(function FloatingWindow({ floatingWindow }) {
             }}
           />
         ))}
+
+      {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
     </div>
   );
 });

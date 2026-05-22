@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, memo } from 'react';
+import DOMPurify from 'dompurify';
 import { codeToHtml } from 'shiki';
 import { useTheme } from '@/components/ThemeProvider';
 
@@ -60,6 +61,13 @@ const escapeHtml = (str) => str
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
+const sanitizeHighlightedHtml = (html) => DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ['pre', 'code', 'span'],
+    ALLOWED_ATTR: ['class', 'style', 'tabindex'],
+    ALLOW_DATA_ATTR: false,
+    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed'],
+});
+
 const CodeBlock = memo(({ code, language = '' }) => {
     const [highlightedHtml, setHighlightedHtml] = useState(null);
     const [error, setError] = useState(false);
@@ -78,7 +86,7 @@ const CodeBlock = memo(({ code, language = '' }) => {
                     theme: activeTheme,
                 });
                 if (!cancelled) {
-                    setHighlightedHtml(html);
+                    setHighlightedHtml(sanitizeHighlightedHtml(html));
                     setError(false);
                 }
             } catch (err) {
@@ -90,7 +98,7 @@ const CodeBlock = memo(({ code, language = '' }) => {
                             theme: activeTheme,
                         });
                         if (!cancelled) {
-                            setHighlightedHtml(html);
+                            setHighlightedHtml(sanitizeHighlightedHtml(html));
                             setError(false);
                         }
                     } catch {

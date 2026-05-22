@@ -75,6 +75,8 @@ _HEAL_GENERIC_RULES = """RULES:
   "Forbidden Patterns" list — those are the project-specific
   don'ts you must respect while healing.
 - Return the COMPLETE file content, not a partial diff
+- Do NOT wrap the file in JSON; do NOT return {"content": ...} or
+  {"file_content": ...}
 
 Return ONLY the fixed code. No explanation, no markdown fences."""
 

@@ -61,6 +61,7 @@ import { restoreTool } from "./tools/restore.js";
 import { listSnapshotsTool } from "./tools/list_snapshots.js";
 import { answerEscapeHatchTool } from "./tools/answer_escape_hatch.js";
 import type { ToolContext } from "./tools/shared.js";
+import { SNAPSHOT_ID_PATTERN_SOURCE } from "./snapshot/index.js";
 
 export interface SynthiServerOptions {
   defaultSessionId?: string;
@@ -137,6 +138,10 @@ const TOOLS = [
           description: "Maximum wait in milliseconds. Default 60000 (accommodates Tier 3 AI-split + compile latency).",
           default: 60000,
         },
+        module: {
+          type: "string",
+          description: "Optional terminal HMR module filter, for example 'device' to wait for GPU sidecar HMR instead of the first core/gui status.",
+        },
       },
       required: [],
     },
@@ -190,6 +195,19 @@ const TOOLS = [
           type: "boolean",
           description: "Explicit opt-in to deterministic split (Loop A). Default false.",
         },
+        force_gpu_ai_delta: {
+          type: "boolean",
+          description:
+            "Force GPU source edits through the verifier-gated GPU AI delta path instead of the local direct-device fast path.",
+        },
+        use_gpu_ai_delta: {
+          type: "boolean",
+          description: "Alias for force_gpu_ai_delta.",
+        },
+        force_ai_delta: {
+          type: "boolean",
+          description: "Alias for force_gpu_ai_delta.",
+        },
         prefer_gpu_pipeline: {
           type: "boolean",
           description: "Forward the compile through the GPU HMR detector/pipeline when a GPU manifest or source is present. Defaults true in the worker.",
@@ -198,6 +216,10 @@ const TOOLS = [
           type: "string",
           enum: ["auto", "disabled"],
           description: "GPU mode from the IDE toggle. 'auto' lets the worker detect/use GPU HMR; 'disabled' routes through the host-only path.",
+        },
+        gpu_arch: {
+          type: "string",
+          description: "Optional target GPU architecture forwarded to the worker, for example gfx1201 or sm_80.",
         },
         compile_manifest: {
           type: "object",
@@ -781,7 +803,11 @@ const TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        snapshot_id: { type: "string", description: "Snapshot id returned by synthi_snapshot." },
+        snapshot_id: {
+          type: "string",
+          pattern: `^${SNAPSHOT_ID_PATTERN_SOURCE}$`,
+          description: "Snapshot id returned by synthi_snapshot.",
+        },
         recompile_source: { type: "boolean" },
         include_frame: { type: "boolean" },
         compile: {

@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { EMULATOR_STATES } from './emulatorStates';
+import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
 
 function StatusBar() {
   return (
@@ -151,6 +152,7 @@ export default function EmulatorScreen({
   const pointerStateRef = React.useRef(null);
   const containerRef = React.useRef(null);
   const [ripples, setRipples] = React.useState([]);
+  const { menuState, openMenu, closeMenu } = useContextMenu();
 
   const hasVideoTrack =
     !!mediaStream &&
@@ -381,6 +383,84 @@ export default function EmulatorScreen({
     }
   };
 
+  const captureFrameBlob = async () => {
+    const video = videoRef?.current;
+    if (!video || !video.videoWidth || !video.videoHeight) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  };
+
+  const downloadScreenshot = async () => {
+    const blob = await captureFrameBlob();
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    a.download = `emulator-${stamp}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const copyScreenshotToClipboard = async () => {
+    try {
+      const blob = await captureFrameBlob();
+      if (!blob) return;
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+        // Clipboard image API unavailable — fall back to download.
+        return downloadScreenshot();
+      }
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+    } catch (_) {
+      // Permission denied or other failure — fall back to download.
+      downloadScreenshot();
+    }
+  };
+
+  const onContextMenu = (e) => {
+    const hasStream = !!sessionId && hasVideoTrack;
+    openMenu(e, [
+      {
+        id: 'home',
+        label: 'Press Home',
+        disabled: !sessionId,
+        action: () => emitInput({ type: 'key', keycode: 'HOME' }),
+      },
+      {
+        id: 'back',
+        label: 'Press Back',
+        disabled: !sessionId,
+        action: () => emitInput({ type: 'key', keycode: 'BACK' }),
+      },
+      {
+        id: 'recents',
+        label: 'Recent Apps',
+        disabled: !sessionId,
+        dividerAfter: true,
+        action: () => emitInput({ type: 'key', keycode: 'APP_SWITCH' }),
+      },
+      {
+        id: 'screenshot',
+        label: 'Copy Screenshot',
+        disabled: !hasStream,
+        action: copyScreenshotToClipboard,
+      },
+      {
+        id: 'download',
+        label: 'Save Screenshot…',
+        disabled: !hasStream,
+        action: downloadScreenshot,
+      },
+    ]);
+  };
+
   if (state === EMULATOR_STATES.BOOTING) {
     return <BootingScreen message={bootStatus} detail={bootDetail} />;
   }
@@ -402,13 +482,14 @@ export default function EmulatorScreen({
 
   if (state === EMULATOR_STATES.STREAMING) {
     return (
-      <div 
+      <div
         ref={containerRef}
-        className="h-full w-full bg-black relative flex items-center justify-center outline-none focus:ring-1 focus:ring-green-500/50" 
-        tabIndex={0} 
+        className="h-full w-full bg-black relative flex items-center justify-center outline-none focus:ring-1 focus:ring-green-500/50"
+        tabIndex={0}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
-        onClick={onContainerClick}        onWheel={onWheel}      >
+        onClick={onContainerClick}        onWheel={onWheel}
+        onContextMenu={onContextMenu}      >
         {/* Video element - uses flex centering and max dimensions to strictly match aspect ratio without math */}
         <video
           ref={videoRef}
@@ -433,13 +514,15 @@ export default function EmulatorScreen({
 
         {/* Client Prediction: Render input ripples overlay */}
         {ripples.map(r => (
-          <Ripple 
-            key={r.id} 
-            x={r.x} 
-            y={r.y} 
-            onComplete={() => setRipples(prev => prev.filter(rx => rx.id !== r.id))} 
+          <Ripple
+            key={r.id}
+            x={r.x}
+            y={r.y}
+            onComplete={() => setRipples(prev => prev.filter(rx => rx.id !== r.id))}
           />
         ))}
+
+        {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
       </div>
     );
   }

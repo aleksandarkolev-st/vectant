@@ -2720,6 +2720,27 @@ def _needs_code_changes(prompt: str) -> bool:
     return _detect_query_intent(prompt) == "change"
 
 
+def build_split_mode_prompt(
+    code: str,
+    lang: str,
+    split_prompt: str = "",
+) -> str:
+    """Build the transport wrapper for split prompts.
+
+    Split prompts define their own strict response format. Do not reuse the
+    general JSON-only suffix here: GPU splits must return both the generated
+    role file block and the architecture cache block.
+    """
+
+    return (
+        (split_prompt or "")
+        + f"\n\nHere is the code to split (language: {lang}):\n```{lang}\n{code}\n```"
+        + "\n\nRespond exactly in the split prompt's required format: "
+        + "<JSON>...</JSON> first, followed by <synthi_arch_cache>...</synthi_arch_cache>. "
+        + "No prose before, between, or after those blocks."
+    )
+
+
 def build_prompt(
     code: str,
     lang: str,
@@ -3603,19 +3624,22 @@ shared.h:
 host_runner.cpp:
   - Owns EVERYTHING the split modules are forbidden from.
 
-# BUILD HINT SCANNING (read user source before guessing flags)
+# BUILD METADATA SCANNING (do not force source annotations)
 
-Before synthesizing link flags, SCAN the user's source for explicit build
-hints. If present, copy them VERBATIM into the manifest rather than guessing:
+Before synthesizing link flags, read project build metadata first:
+CMakeLists.txt, compile_commands.json, presets, package config output already
+present in the request, and any explicit compile/link command the user project
+already owns. Copy those flags into the manifest rather than guessing.
+
+Optional source hints are accepted for compatibility, but they are not required
+from users and must never be the only production path:
 
   #pragma comment(lib, "X")          -> add "-lX" to gui_link_flags
-  // LINK: -lX -L/path -I/path       -> parse, copy verbatim into gui_link_flags
+  // LINK: -lX -L/path -I/path       -> parse only when already present
   // REQUIRES: libx-dev              -> add to system_packages
   // BUILD: g++ main.cpp -lfoo       -> treat as authoritative
 
-User hints ALWAYS override your inference. Copy them VERBATIM.
-If a hint is present, set confidence.link_flags = "high" because the user
-told you what they need.
+Never invent framework link flags from include names alone.
 
 # INCLUDE → LINK RULE (mandatory, generic — applies to ALL libraries)
 
@@ -3688,9 +3712,9 @@ confidence.runner_synthesis:
              pattern that prevents a clean rewrite
 
 confidence.link_flags:
-  "high"   - well-known library OR user provided explicit // LINK: hint
-  "medium" - library identified but standard flags vary by distro
-  "low"    - couldn't identify library; guessed from header names
+  "high"   - link flags came from build metadata or existing explicit hints
+  "medium" - library identified but build metadata is partial
+  "low"    - link flags could not be proven; request manifest repair or fallback
 
 confidence.overall: minimum of the two above
 confidence.notes: free-form explanation of any low confidences
@@ -3766,6 +3790,13 @@ AppState* state = (AppState*)state_ptr;
   "gui_link_flags": ["-lSDL2"],
   "shared_link_flags": [],
   "runner_link_flags": ["-lSDL2", "-ldl"],
+  "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"],
+  "module_files": {
+    "shared": "shared.h",
+    "core": "core.cpp",
+    "gui": "gui.cpp",
+    "host_runner": "host_runner.cpp"
+  },
   "system_packages": ["libsdl2-dev"],
   "hot_reload_mode": "swap",
   "confidence": {
@@ -3785,6 +3816,8 @@ AppState* state = (AppState*)state_ptr;
 - NO markdown headers outside the arch cache.
 - The build manifest MUST be valid JSON parseable by Python json.loads.
 - All four files must be present in the JSON, even if some are nearly empty.
+- The build manifest `module_files` object MUST map `shared`, `core`,
+  `gui`, and `host_runner` to the exact JSON filenames.
 - Preserve the user's intent: button colors, sizes, frame timing, etc. must
   survive the split unchanged.
 
@@ -3806,8 +3839,8 @@ AppState* state = (AppState*)state_ptr;
 # MEMSET / HotApi v2 rules, same <JSON>...</JSON> + <synthi_arch_cache>
 # response format. Adds:
 #
-#   - a 5th `device.cu` (CUDA) or `device.hip` (HIP) file containing every
-#     `__global__`/`__device__` kernel,
+#   - one manifest-declared device role containing every `__global__` /
+#     `__device__` kernel,
 #   - a `gpu` sub-block inside <synthi_build_manifest>,
 #   - HotApi v2.1 GPU fields (`device_descriptor`, `device_on_load`,
 #     `device_save_size`/`device_save_write`, `device_kernel_sig_hash`),
@@ -3821,36 +3854,47 @@ AppState* state = (AppState*)state_ptr;
 GPU_SPLIT_PROMPT = r"""
 You are a C++ + CUDA/HIP Hot-Module-Reload (HMR) Splitter+Adapter.
 
-You will be given a single-file C++ application that contains GPU kernels
-(CUDA `__global__` / HIP `__global__`). Refactor it into **5 files** that
-work with a dynamic-linking HMR system extended for GPU device modules.
+You will be given a C++ application that contains GPU kernels (CUDA
+`__global__` / HIP `__global__`). It may arrive as one primary source file
+plus additional workspace files. Use every provided file as source context,
+but refactor the application into the current Synthi GPU HMR semantic roles.
+The role names are fixed runtime slots, but source filenames are not: emit
+appropriate paths and map each role in
+`compile_manifest.module_files`.
 
-# THE 5 OUTPUT FILES
+# OUTPUT ROLES
 
-1. shared.h          - AppState struct + shared types + extern "C" prototypes.
+1. shared role       - AppState struct + shared types + extern "C" prototypes.
                        Header-only. No executable code except inline accessors.
+                       Default filename: `shared.h`.
 
-2. core.cpp          - logic and state mutation. Compiles to libcore.so.
+2. core role         - logic and state mutation. Compiles to libcore.so.
                        Calls into the device module through the Synthi
-                       GPU launch boundary declared in shared.h. NO
+                       GPU launch boundary declared in the shared role. NO
                        windowing, NO rendering, NO main(), NO library init.
+                       Default filename: `core.cpp`.
 
-3. gui.cpp           - rendering and UI. Compiles to libgui.so.
+3. gui role          - rendering and UI. Compiles to libgui.so.
                        Reads from AppState (filled by core + device); never
                        directly launches kernels. NO main().
+                       Default filename: `gui.cpp`.
 
-4. host_runner.cpp   - process entry point. Owns the CUDA/HIP context and
-                       the window. dlopens libcore/libgui, dlsyms the
-                       lifecycle functions including the new GPU ones,
-                       calls them every frame. Owns the Synthi-managed
-                       device allocation registry used by tier-B
-                       userspace snapshots.
+4. host_runner role  - process entry point. Owns the CUDA/HIP context and
+                       the window. dlopens libcore/libgui, dlsyms
+                       core_on_load/core_on_update and
+                       gui_on_load/gui_on_render, then calls update+render
+                       every frame. Do not call `synthi_register`,
+                       `synthi_gpu_register_buffer`, or redeclare Synthi GPU
+                       runtime functions here.
+                       Default filename: `host_runner.cpp`.
 
-5. device.cu (CUDA) **OR** device.hip (ROCm) - every `__global__` and
-                       `__device__` symbol. Builds to a sidecar `cubin`
-                       (CUDA) / `hsaco` (HIP) loaded by `cuModuleLoadData`
-                       / `hipModuleLoad`. **Exactly one device file** —
-                       multi-TU splits are reserved for a later phase.
+5. device role       - every `__global__` and `__device__` symbol. Builds to
+                       a sidecar `cubin` (CUDA) / `hsaco` (HIP) loaded by the
+                       Synthi CUDA/HIP sidecar loader. The current
+                       runtime supports one device translation unit role;
+                       multi-TU device builds require a later manifest/runtime
+                       contract. Default filename: `device.cu` for CUDA or
+                       `device.hip` for ROCm.
 
 Pick the device extension based on the vendor:
   - `device.cu` for CUDA (`#include <cuda_runtime.h>` etc.),
@@ -3869,6 +3913,240 @@ core.cpp / gui.cpp / host_runner.cpp:
   - SHARED.H is HEADER-ONLY,
   - the `<synthi_arch_cache>` and `<synthi_build_manifest>` response shape.
 
+# SYNTHI RUNNER LIFECYCLE ABI — REQUIRED SYMBOLS
+
+The generated host modules are loaded by Synthi's runner through fixed
+`extern "C"` symbols. Emit these exact exports and signatures. Do not invent
+shorter variants such as `core_update`, `core_on_load(AppState*)`,
+`gui_render`, or `gui_on_load(AppState*)`.
+
+In `core.cpp`:
+
+```cpp
+extern "C" void* core_on_load(void* prev_state, void* renderer);
+extern "C" void core_on_update(void* state_ptr, double dt);
+```
+
+In `gui.cpp`:
+
+```cpp
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_state_ptr);
+extern "C" void gui_on_render(void* state_ptr);
+```
+
+`core_on_load` returns the `AppState*` pointer that the runner will pass back
+to `core_on_update` and `gui_on_render`. `gui_on_load` may return its own GUI
+state, but `gui_on_render` must be able to render from the core state pointer.
+Do not allocate `AppState` with `new` or `malloc`; use static storage on the
+first load and reuse `prev_state` on hot reload. The safe shape is:
+
+```cpp
+static AppState g_state{};
+
+extern "C" void* core_on_load(void* prev_state, void* renderer) {
+    if (prev_state) {
+        g_state = *reinterpret_cast<AppState*>(prev_state);
+    } else {
+        g_state = AppState{};
+        // initialize first-load fields here
+    }
+    g_state.renderer = renderer;
+    return &g_state;
+}
+```
+
+Never return `new AppState`, `malloc(...)`, `calloc(...)`,
+`std::make_unique<AppState>()`, `std::make_shared<AppState>()`, or the address
+of a stack-local `AppState`.
+
+The second load argument is an opaque host render surface supplied by the
+runner for the selected window backend. Treat it the same way
+`UNIVERSAL_SPLIT_PROMPT` treats backend handles: preserve the rendering
+library from the user's source, store the supplied handle/context in state when
+that backend needs it, and render through that stored backend handle. Do not
+invent a different graphics library, do not create replacement windows or
+renderers in `gui.cpp`, and do not recover global/synthetic window handles by
+id. If the original source's backend normally derives one handle from another,
+move that ownership/setup to the backend-owning runner path and pass only the
+stable render surface into the hot module.
+
+The hot module must not rediscover a window, renderer, graphics context, or
+swapchain through implicit "current", default, global-id, singleton, or newly
+created backend handles. All rendering must flow through the host render
+surface/context supplied by the runner and preserved in the generated state.
+If `gui_on_render` calls rendering APIs, their target handle/context must be a
+field read from that preserved state, typed according to the user's original
+backend.
+When `gui_on_render` uses `state->renderer` or `app_state.renderer`, the core
+role must store the runner-provided render surface into that same field in
+`core_on_load` before returning the core state. Do not leave the renderer field
+null, stale, or only initialized in `gui_on_load`; the runner passes the core
+state pointer to `gui_on_render`.
+
+`gui_on_render` must be complete executable drawing code. Never leave comments
+such as "rendering logic here", TODOs, placeholders, omitted drawing code, or
+empty render functions. The first rendered frames must be visibly non-black.
+Preserve the user's rendering/windowing backend exactly. Do not translate a
+GLFW/OpenGL, raylib, SFML, Vulkan, SDL2, or other source project into a
+different backend just because an example uses that backend. Use the supplied
+host render surface/context for the backend already present in the user's
+source and issue concrete drawing calls for that backend.
+
+Screenshot validation expects substantial visible pixels for every backend.
+Do not rely on a single point, an all-black clear, or a sparse marker. Draw
+filled particle rectangles/quads, lines, textures, geometry, or another
+non-black representation that covers hundreds of pixels on the first frame.
+The hot GUI module never owns presentation: never call backend present/swap
+APIs such as `SDL_RenderPresent`, `SDL_GL_SwapWindow`, `glfwSwapBuffers`,
+`glXSwapBuffers`, `eglSwapBuffers`, `SwapBuffers`, `glutSwapBuffers`,
+`EndDrawing`, or an SFML display call. The Synthi runner presents after
+`gui_on_render` returns.
+
+If the original source uses SDL/SDL2, use the supplied `SDL_Renderer*` render
+surface and concrete SDL drawing calls. For particle-like SDL output, this
+shape is acceptable and should be preferred over point drawing:
+
+    SDL_SetRenderDrawColor(renderer, 10, 16, 24, 255);
+    SDL_RenderClear(renderer);
+    SDL_SetRenderDrawColor(renderer, 240, 245, 255, 255);
+    for (int i = 0; i < state->num_particles; ++i) {
+        SDL_Rect r{(int)state->particles[i].x, (int)state->particles[i].y, 4, 4};
+        SDL_RenderFillRect(renderer, &r);
+    }
+
+If the original source uses GLFW/OpenGL, preserve GLFW/OpenGL. Store the
+runner-supplied `GLFWwindow*` or OpenGL context handle in state, draw into the
+current OpenGL context with calls such as `glViewport`, `glClearColor`,
+`glClear`, `glBegin`/`glEnd` quads or vertex-buffer drawing, and let the runner
+swap buffers. Do not call `glfwCreateWindow`, `glfwGetCurrentContext`, or
+`glfwSwapBuffers` in `gui.cpp`.
+Preserve the source coordinate system. If the user source draws in pixel/window
+coordinates, `gui_on_render` must establish the same OpenGL transform before
+drawing, for example `glViewport(...)`, `glMatrixMode(GL_PROJECTION)`,
+`glLoadIdentity()`, `glOrtho(0, width, height, 0, -1, 1)`, then
+`glMatrixMode(GL_MODELVIEW)` / `glLoadIdentity()`. Do not pass pixel-space
+positions such as `state->x[i]` and `state->y[i]` directly to `glVertex*`
+under OpenGL's default -1..1 clip-space projection; that compiles but renders
+only the clear color.
+
+If the GPU state is not directly drawable, maintain or copy enough
+host-visible render data, or draw a faithful visible representation from the
+preserved state using the user's backend. Do not compile a blank renderer.
+
+When a generated device kernel updates positions, colors, or other values that
+the GUI must display, keep host-visible mirror arrays in `AppState` and copy
+the device outputs back only after `synthi_gpu_launch` returns true. If the
+sidecar dispatcher is not installed yet or the launch fails, keep the previous
+host-visible mirror for that frame. Device-only HMR edits must be able to
+change what `gui_on_render` draws without changing the host ABI.
+
+Use an explicit guarded launch/readback shape, not a fire-and-forget launch:
+
+    bool launched = synthi_gpu_launch(nullptr, "update_particles", grid, block,
+                                      0, nullptr,
+                                      { &state->d_particles, &count_arg, &dt_arg });
+    if (launched) {
+        hipMemcpy(state->particles, state->d_particles, bytes,
+                  hipMemcpyDeviceToHost);
+    }
+
+Never dereference or index CUDA/HIP device pointers in `gui_on_render`.
+Pointers named like `d_particles`, `device_x`, or other cudaMalloc/hipMalloc
+results are GPU addresses and will crash when read by SDL/OpenGL/CPU drawing
+code. Store host mirrors such as `particles`, `x`, `y`, or `rgba` in `AppState`
+and update those mirrors in `core_on_update` with `cudaMemcpy`/`hipMemcpy` only
+inside the success branch of the corresponding `synthi_gpu_launch(...)`.
+
+Do not leave GPU buffers uninitialized. In `core_on_load`, preserve the user's
+constructor or setup logic that creates initial positions, velocities, colors,
+counts, bounds, and constants. Fill the host mirrors with those values, then
+return quickly so the first render can draw those host mirrors. Do not call
+`cudaMemcpyHostToDevice` or `hipMemcpyHostToDevice` inside `core_on_load`; that
+blocks first-frame rendering and bypasses the sidecar HMR boundary. Allocate and
+register device buffers in `core_on_load`, then initialize GPU-side contents
+through a dedicated init/seed kernel launched from `core_on_update`. Track a
+`device_initialized` flag and retry the init launch until `synthi_gpu_launch`
+returns true; only then run the update kernel and copy device outputs back. The
+first frame must have on-screen, non-overlapping data from the host mirrors,
+not uninitialized zeros or offscreen values.
+
+When preserving an existing user kernel such as `advance_particle_field`, still
+emit a generated init/seed kernel for the Synthi device role if the original
+project initialized arrays on the host. For separate arrays, that init kernel
+must fill every device buffer (`x`, `y`, `vx`, `vy`, `rgba`, etc.) with the same
+math used by the user's constructor/setup code. For struct buffers, it must fill
+every displayed field. Include the init kernel in `device_descriptor`, launch it
+from `core_on_update` while `!device_initialized`, and do not mark
+`device_initialized = true` unless that launch returns true.
+The init launch argument list must include every device buffer passed to update
+kernels, and the init kernel body must write the buffers it receives.
+
+For separate-array kernels, do not collapse initialization to a single struct
+buffer or to only the displayed coordinates. If the update launch passes
+`d_x`, `d_y`, `d_vx`, `d_vy`, and `d_rgba`, the init launch must pass all of
+those device pointers too:
+
+    if (!state->device_initialized) {
+        bool initialized = synthi_gpu_launch(nullptr, "init_particle_field",
+                                             grid, block, 0, nullptr,
+                                             { &state->d_x, &state->d_y,
+                                               &state->d_vx, &state->d_vy,
+                                               &state->d_rgba, &count_arg });
+        if (initialized) state->device_initialized = true;
+        return;
+    }
+
+The matching device kernel must receive and write every pointer it is given:
+
+    extern "C" __global__ void init_particle_field(float* x, float* y,
+                                                   float* vx, float* vy,
+                                                   unsigned int* rgba,
+                                                   int count) {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if (i < count) {
+            x[i] = float((i % 32) * 20 + 12);
+            y[i] = float((i / 32) * 16 + 12);
+            vx[i] = 0.0f;
+            vy[i] = 0.0f;
+            rgba[i] = 0xffffffffu;
+        }
+    }
+
+A valid first-frame host mirror setup is:
+
+    state->particles = new Particle[state->num_particles];
+    for (int i = 0; i < state->num_particles; ++i) {
+        state->particles[i] = Particle{
+            float((i % 32) * 20 + 12),
+            float((i / 32) * 16 + 12),
+            initial_vx,
+            initial_vy
+        };
+    }
+
+Do this immediately after allocating displayed mirrors such as `particles`,
+`points`, `positions`, `vertices`, `colors`, `rgba`, or `pixels`. Do not leave
+them for an init kernel to populate later; `gui_on_render` must have meaningful
+host data before the sidecar dispatcher is available.
+
+A valid update shape is:
+
+    if (!state->device_initialized) {
+        bool initialized = synthi_gpu_launch(nullptr, "init_particles", grid,
+                                             block, 0, nullptr,
+                                             { &state->d_particles, &count_arg });
+        if (initialized) state->device_initialized = true;
+        return;
+    }
+
+    bool updated = synthi_gpu_launch(nullptr, "update_particles", grid, block,
+                                     0, nullptr,
+                                     { &state->d_particles, &count_arg, &dt_arg });
+    if (updated) {
+        hipMemcpy(state->particles, state->d_particles, bytes,
+                  hipMemcpyDeviceToHost);
+    }
+
 # GPU CONTRACT — ABI LIVES IN RUNTIME CODE, PROMPT TEACHES IT
 
 Synthi does not hot-swap arbitrary raw CUDA/HIP source as-is. Your job
@@ -3883,15 +4161,69 @@ real runtime code/header surface, not prose:
     Do not redeclare this ABI by hand. The worker writes this header into
     the workspace before compiling GPU-enabled projects.
 
+    The header already defines `DeviceDescriptor`, `SynthiGpuRuntime`,
+    `synthi_gpu_launch`, and `synthi_register`. Never redeclare those
+    structs/functions in `shared.h` or any other file.
+
   - raw `kernel<<<grid, block, shared, stream>>>(args...)` launch sites
     in host code MUST become calls to:
 
-        synthi_gpu_launch(gpu, "kernel", grid, block, shared, stream,
+        synthi_gpu_launch(nullptr, "kernel", grid, block, shared, stream,
                           { &arg0, &arg1, ... });
+
+    The final argument must be an initializer-list literal. Do not create
+    `void* args[]` and pass that array; it will not match the runtime helper.
+    The first argument is a `SynthiGpuRuntime*`. The current runtime boundary
+    does not expose a getter; pass `nullptr` unless a real ABI-provided handle
+    is already available. Never call or invent `synthi_get_gpu_context()`,
+    `synthi_get_context()`, or similar helpers.
+
+    Every initializer-list entry must be the address of a real host-side
+    argument variable (`&devicePtr`, `&count`, `&dt`). Never cast scalar
+    values or bit patterns to `const void*` / `uintptr_t`; that creates fake
+    pointers and will crash the GPU runtime.
+
+    Kernel arguments that were literals, macros, constexprs, arithmetic
+    expressions, field/index expressions, or pre/post-increment expressions in
+    the original launch must be copied into named local variables immediately
+    before `synthi_gpu_launch(...)`, then passed by address. Do not pass the
+    expression itself and do not take the address of a temporary.
+
+    Example conversion:
+
+        // user source
+        particle_flow<<<grid, block>>>(deviceX, deviceY, BALLS,
+                                       WIDTH * 0.5f, HEIGHT * 0.5f,
+                                       2.35f, frame++);
+
+        // generated core.cpp
+        int balls_arg = BALLS;
+        float cx_arg = WIDTH * 0.5f;
+        float cy_arg = HEIGHT * 0.5f;
+        float speed_arg = 2.35f;
+        unsigned long long frame_arg = state->frame++;
+        synthi_gpu_launch(nullptr, "particle_flow", grid, block, 0, stream,
+                          { &state->deviceX, &state->deviceY, &balls_arg,
+                            &cx_arg, &cy_arg, &speed_arg, &frame_arg });
 
   - Synthi-managed device allocations MUST be registered through the
     runtime registry so the worker can preserve them across sidecar
     cubin/hsaco swaps.
+    Allocate buffers in `core_on_load` with the original
+    `cudaMalloc`/`hipMalloc` calls, fill host mirrors for first-frame drawing,
+    and register the allocated pointer value. Do not perform HostToDevice copies
+    in `core_on_load`; seed GPU contents through a Synthi-launched init kernel
+    that can be retried from `core_on_update`.
+    Register buffers from `core.cpp` lifecycle code, not `host_runner.cpp`.
+    Never register the address of a pointer field:
+
+        // wrong: registers the CPU slot that stores the pointer
+        synthi_register(&state->deviceX, bytes, "persistent");
+
+        // right: allocates the GPU buffer, then registers the GPU pointer
+        hipMalloc(&state->deviceX, bytes);
+        synthi_register(state->deviceX, bytes, "persistent");
+
   - This runtime boundary is allowed and required. Forbidden shims are
     wrapper kernels, extra migration files, and bypass modules that hide
     the actual source change.
@@ -3900,24 +4232,23 @@ real runtime code/header surface, not prose:
 
 The ABI is defined in the worker's `plugin_contract.rs`: the host module's
 `HotApi` table has five optional GPU callbacks mirroring the C exports below.
-Emit these exports in the host module (core.cpp) verbatim, replacing the
-kernel-name placeholders with the real kernel names from the project:
+Emit these exports in the host module (`core.cpp`) verbatim, replacing the
+kernel-name placeholders with the real kernel names from the project. Do not
+emit these host lifecycle exports in `device.cu` / `device.hip`; the device
+file is for kernels/device helpers only:
 
 ```cpp
 // 1. device_descriptor — what does the GPU side need at load time?
-//    Returned as a flat struct so the worker can serialise it without
-//    needing a schema lookup.
-extern "C" {
-  struct DeviceDescriptor {
-    const char* vendor;            // "cuda" or "rocm"
-    const char* const* arches;     // null-terminated list, e.g. {"sm_80", nullptr}
-    const char* const* kernels;    // null-terminated list of __global__ names
-    int num_arches;
-    int num_kernels;
-    int constant_layout_bytes;     // total size of declared __constant__ memory
-  };
-  const DeviceDescriptor* device_descriptor();
-}
+//    DeviceDescriptor is already declared by synthi_gpu_runtime.h.
+extern "C" const DeviceDescriptor* device_descriptor();
+
+//    Required DeviceDescriptor field order from synthi_gpu_runtime.h:
+//    { vendor, arches, kernels, num_arches, num_kernels, constant_layout_bytes }
+//    The first field is const char*, not an integer. Use the runtime vendor
+//    macro and static arch/kernel string arrays:
+//    static const char* arches[] = { "gfx1201" };  // use the target arch
+//    static const char* kernels[] = { "update_particles" };
+//    static DeviceDescriptor d = { SYNTHI_GPU_VENDOR, arches, kernels, 1, 1, 0 };
 
 // 2. device_on_load — natively patch deserialisation across an ABI edit.
 //    `prev_blob`/`len` is the bytes produced by the OLD module's
@@ -3945,6 +4276,26 @@ extern "C" unsigned long long device_kernel_sig_hash(const char* name);
     `device.hip`). Host files launch them only through
     `synthi_gpu_launch(...)`; do not leave raw triple-chevron host
     launch sites in the split output.
+  - Every kernel that will be loaded by name MUST be exported with C
+    linkage so the sidecar loader can resolve the exact symbol:
+
+        extern "C" __global__ void particle_flow(...);
+
+    Do not emit plain `__global__ void particle_flow(...)`; C++ name
+    mangling makes `hipModuleGetFunction` / `cuModuleGetFunction` fail.
+  - Preserve every user-authored `__global__` kernel name in the generated
+    device role. Do not replace `advance_particle_field` or similar source
+    kernels with simplified substitutes like `update_particles`; wrap the
+    original signature for Synthi dispatch instead.
+  - Preserve device constants and identifiers used by those kernels, including
+    tokenized values such as `kHmrScaleDirection`, `kHmrScaleColorBias`,
+    `kResetPadding`, color constants, bounds constants, and helper functions.
+    Do not fold them into unrelated literals or rename them, because
+    device-only HMR needs the generated device file to expose the same
+    editable semantics as the user source. Declaring unused `__constant__`
+    variables or empty kernels does not satisfy this: the generated kernel body
+    must contain the original math, branches, reset logic, color writes, and
+    reads of those constants.
   - **No `cuMalloc`/`hipMalloc` outside the Synthi allocation registry**
     in host_runner.cpp. The registry records `(ptr, size, owner_module,
     semantic_name, lifetime_hint, dirty)` for every live Synthi-managed
@@ -3956,13 +4307,36 @@ extern "C" unsigned long long device_kernel_sig_hash(const char* name);
     `cuCtxDestroy`/`hipCtxDestroy`.
   - **Constants accessed via `cuModuleGetGlobal` only.** Direct symbol
     references to `__constant__` memory break across a cubin swap.
-  - **No new `.cu`/`.hip` files.** This split produces exactly one
-    device file. Multi-TU device builds are a later phase.
+  - **No extra `.cu`/`.hip` translation units.** This split produces exactly
+    one device role. Multi-TU device builds require a later manifest/runtime
+    contract.
   - Tag every `cudaMalloc`/`hipMalloc` call with a one-token lifetime
     hint at registration time:
 
         synthi_register(ptr, size, "scratch");    // skipped during snapshot
         synthi_register(ptr, size, "persistent"); // copied during snapshot
+
+# GENERATED ROLE FILES ARE SELF-CONTAINED
+
+Provided workspace files are context, not compilation inputs for the generated
+hot modules. Do not include original user project headers or sources from the
+generated roles. Quoted includes in generated role files may only refer to
+other emitted Synthi role files, usually the shared role, or to
+`"synthi_gpu_runtime.h"`. Standard library and GPU runtime includes must use
+angle brackets.
+
+Invalid generated output:
+
+```cpp
+#include "src/app/simulation.hpp"
+#include "simulation.hpp"
+#include "src/gpu/particle_api.hpp"
+```
+
+Instead, copy or adapt the necessary structs, constants, function bodies, and
+kernel declarations into the generated `shared`, `core`, `gui`, and `device`
+roles. The split must compile after Synthi writes only the generated role files
+plus its runtime header.
 
 # ABI HASH STAMP
 
@@ -3998,12 +4372,22 @@ extractor can keep them aligned across edits.
 # GPU BUILD MANIFEST SUB-BLOCK
 
 Inside `<synthi_build_manifest>`, in addition to the standard host
-fields, emit a `gpu` sub-object:
+fields, emit a `files` array plus a `gpu` sub-object:
+
+    "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp", "device.cu"],
+
+    "module_files": {
+      "shared": "shared.h",
+      "core": "core.cpp",
+      "gui": "gui.cpp",
+      "host_runner": "host_runner.cpp",
+      "device": "device.cu"
+    },
 
     "gpu": {
       "vendor": "cuda",                       // or "rocm"
       "device_compiler": "nvcc",              // or "clang-cuda" or "hipcc"
-      "arch": ["sm_80"],                      // ["gfx90a"] for ROCm
+      "arch": ["<selected-target-arch>"],
       "device_flags": ["-O3", "-lineinfo", "--use_fast_math"],
       "runtime_libs": ["cudart", "cuda"],     // ["amdhip64"] for ROCm
       "snapshot_mode": "auto",
@@ -4011,9 +4395,39 @@ fields, emit a `gpu` sub-object:
     }
 
 `fatbin_strategy` must be `"sidecar_module"` — embedded fatbins are
-not HMR-compatible. Pick `arch` from the source's targeting hints
-(comments, `#pragma`, etc.) or default to `sm_80` (CUDA) /
-`gfx90a` (ROCm) when the source doesn't specify.
+not HMR-compatible. Pick `arch` only from selected-target build
+metadata, explicit request metadata, or source targeting hints. Do not
+invent a CUDA or ROCm default when the target architecture is missing;
+emit a verifier-readable manifest failure instead.
+Use vendor-correct device flags: CUDA may use `--use_fast_math`, but
+ROCm/HIP must not. A ROCm `device_flags` list should usually be
+`["-O3", "-lineinfo"]`.
+
+# GENERATED-MODULE LINK MANIFEST SCOPE
+
+Build metadata describes the user's original target; the generated hot
+modules are smaller adapter modules. Do not blindly copy every transitive
+CMake target library into `core_link_flags`, `gui_link_flags`, or
+`runner_link_flags`.
+
+Only include link flags that are required by the generated role source you
+emit:
+
+  - `core_link_flags`: libraries directly referenced by generated core.cpp.
+  - `gui_link_flags`: libraries directly referenced by generated gui.cpp.
+  - `runner_link_flags`: libraries directly referenced by generated
+    host_runner.cpp.
+  - `gpu.runtime_libs`: GPU runtime libraries needed by the selected vendor
+    loader path.
+
+If a dependency appears only in the original application but your generated
+role source does not include its headers or call its symbols, omit it from the
+generated module manifest. If build metadata contains semantic CMake imported
+target names such as `Pkg::Target`, `OpenGL::GL`, or package component names,
+do not convert those names into guessed `-l...` flags. Use concrete linker
+flags already present in the metadata, package-config output, or explicit
+toolchain evidence. Otherwise leave the role flag out and set
+`confidence.link_flags` below high with an explanation.
 
 # NO-SHIM CONTRACT
 
@@ -4044,7 +4458,7 @@ not HMR-compatible. Pick `arch` from the source's targeting hints
 ...
 <synthi_kernel_hashes>{...}</synthi_kernel_hashes>
 <synthi_launch_graph>[...]</synthi_launch_graph>
-<synthi_build_manifest>{ ...host fields..., "gpu": { ... } }</synthi_build_manifest>
+<synthi_build_manifest>{ ...host fields..., "files": [...], "module_files": {...}, "gpu": { ... } }</synthi_build_manifest>
 </synthi_arch_cache>
 ```
 
@@ -4052,16 +4466,61 @@ not HMR-compatible. Pick `arch` from the source's targeting hints
 
 - Respond with the <JSON>...</JSON> block FIRST, then <synthi_arch_cache>.
 - NO prose before, between, or after the two blocks.
-- All five files must be present in the JSON.
+- Every required semantic role must be present in the JSON as filename keys whose
+  values are raw source-code strings. Do not emit nested
+  `{ "filename": ..., "content": ... }` objects, role objects, or JSON inside
+  file contents.
 - The build manifest MUST include both the host fields and a non-null
   `gpu` sub-object.
+- The build manifest `files` array MUST list the exact split files emitted
+  in the JSON so browser HMR compiles resend the full adapted project instead
+  of guessing fixed filenames.
+- The build manifest `module_files` object MUST map the semantic roles
+  (`shared`, `core`, `gui`, `host_runner`, `device`) to the exact JSON
+  filenames. This is required even when you choose nonstandard names.
 - Every kernel referenced in any `synthi_gpu_launch(...)` call must be
   declared in device.cu/device.hip. Raw `kernel<<<...>>>` host launches
   are invalid split output.
+- Do not call invented GPU runtime accessors such as
+  `synthi_get_gpu_context()` or `synthi_get_context()`. Pass `nullptr` as the
+  `SynthiGpuRuntime*` argument unless a real ABI-provided handle exists.
 - Every kernel declared in device.cu/device.hip must appear in
   <synthi_kernel_hashes>.
+- `shared.h` MUST NOT redeclare `DeviceDescriptor`; it comes from
+  `synthi_gpu_runtime.h`.
+- Generated role files MUST NOT quote-include original user project
+  headers/sources. Only quote-include emitted Synthi role files or
+  `"synthi_gpu_runtime.h"`; inline/adapt user project definitions into the
+  generated roles instead.
+- `core.cpp` MUST export `core_on_load` and `core_on_update`.
+- `core.cpp` MUST export `device_descriptor`, `device_on_load`,
+  `device_save_size`, `device_save_write`, and `device_kernel_sig_hash`.
+  These are host-side GPU lifecycle exports; do not put them in the
+  device file.
+- `core.cpp` MUST keep `AppState` in static module storage and return that
+  stable address from `core_on_load`. Do not allocate AppState with
+  `new`, `malloc`, `calloc`, or smart-pointer factories.
+- `gui.cpp` MUST export `gui_on_load` and `gui_on_render`.
+- `gui_on_render` MUST perform concrete drawing that produces visible
+  non-black frames. Placeholder comments, TODOs, and empty render bodies are
+  invalid.
+- If `gui_on_render` draws from host-visible mirror arrays copied from GPU
+  buffers, those mirrors must contain varied, on-screen values before the
+  first render. Do not `memset` rendered positions/pixels to all zeroes or
+  update every particle/pixel with the same constant so primitives overlap.
+  After allocating displayed mirrors such as `particles`, `points`,
+  `positions`, `vertices`, `colors`, `rgba`, or `pixels`, immediately fill
+  every rendered x/y/color/pixel field from the user's constructor/setup math.
+  Do not rely on a device init kernel to populate the host mirror before the
+  first render.
 - Preserve the user's intent: kernel logic, buffer sizes, launch
   shapes, frame timing — all unchanged.
+- Preserve device-source semantics exactly. Every original kernel branch,
+  guard, boundary condition, constant, reset path, and host/device copy that
+  can affect output must survive the split unchanged unless it is only being
+  mechanically routed through the Synthi GPU launch/runtime ABI.
+  Original `__global__` kernel names and device constants must remain visible
+  in the generated device role for device-only HMR edits.
 
 # USER SOURCE
 
@@ -4104,9 +4563,35 @@ Rules:
   unchanged, set `reload_plan` to `device_only`.
 - If both host and device files change without ABI drift, set
   `reload_plan` to `mixed`.
+- Edits are applied to the CURRENT generated role files below, not to the
+  original user source. Every `anchor` must be copied verbatim from the
+  matching CURRENT FILES block and must appear exactly once there. For
+  `module: "device"`, use an anchor from the CURRENT generated `device`
+  block, even when the USER DIFF line has a different spelling in the
+  original `.cu` / `.hip` source.
+- Generated role files must stay self-contained. Do not add quoted
+  `#include "..."` lines for original workspace or project headers. Quoted
+  includes may only target emitted Synthi role files such as `shared.h` or
+  `synthi_gpu_runtime.h`. Copy or adapt required structs, constants, and
+  helpers into the generated roles instead.
 
 ARCHITECTURE CACHE:
 {ARCHITECTURE}
+
+USER-TO-GENERATED DEVICE MAPPING REPORT:
+```json
+{MAPPING_REPORT}
+```
+
+COMPILE MANIFEST:
+```json
+{COMPILE_MANIFEST}
+```
+
+CURRENT RELOAD PLAN REPORT:
+```json
+{RELOAD_PLAN_REPORT}
+```
 
 CURRENT FILES:
 shared.h:

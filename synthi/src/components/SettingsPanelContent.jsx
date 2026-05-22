@@ -16,6 +16,8 @@ import {
   selectAutoSaveEnabled,
   toggleAutoCompletion,
   selectAutoCompletionEnabled,
+  setGpuTarget,
+  selectGpuTarget,
   toggleBringYourOwnRunner,
   selectBringYourOwnRunnerEnabled,
   toggleSidebarAutoCollapse,
@@ -199,6 +201,7 @@ export function SettingsPanelContent() {
   const sidebarAutoCollapseEnabled = useAppSelector(selectSidebarAutoCollapseEnabled);
   const sidebarAutoCollapseDelay = useAppSelector(selectSidebarAutoCollapseDelay);
   const autoCompletionEnabled = useAppSelector(selectAutoCompletionEnabled);
+  const gpuTarget = useAppSelector(selectGpuTarget);
   const byorEnabled = useAppSelector(selectBringYourOwnRunnerEnabled);
   const { open: openThemePicker } = useThemePicker();
   const { data: session, status: sessionStatus, update: refreshSession } = useSession();
@@ -622,6 +625,31 @@ export function SettingsPanelContent() {
             }`}
           />
         </button>
+      </div>
+
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-col">
+          <span className="text-sm">GPU Target</span>
+          <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+            Select the preferred GPU HMR backend for new compile requests.
+          </span>
+        </div>
+        <div className="inline-flex rounded-md border p-0.5 flex-shrink-0" style={{ borderColor: 'var(--border-subtle)' }}>
+          {['auto', 'cuda', 'rocm'].map((target) => (
+            <button
+              key={target}
+              type="button"
+              onClick={() => {
+                dispatch(setGpuTarget(target));
+                toast(`GPU target set to ${target.toUpperCase()}`, { duration: 1600 });
+              }}
+              className={`px-2 py-1 text-[11px] rounded transition-colors ${gpuTarget === target ? 'th-btn-active' : 'th-btn-ghost'}`}
+              title={`Use ${target.toUpperCase()} for GPU HMR compile requests`}
+            >
+              {target.toUpperCase()}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* ULTRAPLAN Phase 8: Bring Your Own Runner toggle. When ON, the

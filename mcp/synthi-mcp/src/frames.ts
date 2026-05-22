@@ -103,6 +103,21 @@ function fsDbg(msg: string): void {
   process.stderr.write(`[mcp ${ts}] frames: ${msg}\n`);
 }
 
+const activeFrameSinks = new Set<FrameSink>();
+let processCleanupRegistered = false;
+
+function stopAllActiveFrameSinks(): void {
+  for (const sink of [...activeFrameSinks]) {
+    sink.stop();
+  }
+}
+
+function registerProcessCleanup(): void {
+  if (processCleanupRegistered) return;
+  processCleanupRegistered = true;
+  process.once("exit", stopAllActiveFrameSinks);
+}
+
 export class FrameSink {
   private readonly ffmpeg: ChildProcessByStdio<Writable, Readable, Readable>;
   private readonly trackSub: { unSubscribe: () => void } | null;
@@ -130,7 +145,12 @@ export class FrameSink {
   private diagTimer: NodeJS.Timeout | null = null;
   private lastDiagSnapshot = { rtp: 0 };
 
+  static stopAll(): void {
+    stopAllActiveFrameSinks();
+  }
+
   constructor(track: MediaStreamTrack) {
+    registerProcessCleanup();
     fsDbg(`FrameSink constructed for track id=${track.id ?? track.uuid} kind=${track.kind}`);
     this.ffmpeg = spawn(
       FFMPEG_PATH,
@@ -151,9 +171,13 @@ export class FrameSink {
     this.ffmpeg.on("error", (err) => {
       process.stderr.write(`[mcp] frames: ffmpeg spawn error: ${err.message}\n`);
     });
+    this.ffmpeg.once("close", () => {
+      activeFrameSinks.delete(this);
+    });
     this.ffmpeg.stdin.on("error", () => {
       // ignore broken-pipe on shutdown
     });
+    activeFrameSinks.add(this);
 
     this.trackSub = track.onReceiveRtp.subscribe((rtp) => {
       if (this.stopped) return;
@@ -327,6 +351,7 @@ export class FrameSink {
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
+    activeFrameSinks.delete(this);
     if (this.diagTimer) {
       clearInterval(this.diagTimer);
       this.diagTimer = null;

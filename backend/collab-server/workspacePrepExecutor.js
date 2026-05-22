@@ -252,7 +252,7 @@ function renderShellScript(task, runtime) {
 
   const lines = [
     'set -euo pipefail',
-    'export PATH="/root/.cargo/bin:/usr/local/bin:${PATH}"',
+    'export PATH="/usr/local/cargo/bin:/usr/local/bin:${PATH}"',
   ];
   if (recipe.checkTool) lines.push(renderToolCheck(recipe.checkTool, runtime));
   lines.push(...recipe.lines.filter(Boolean));
@@ -579,12 +579,22 @@ async function runK8sJobTask(task, runtime, shellCommand, timeoutMs, scope) {
         },
         spec: {
           restartPolicy: 'Never',
-          securityContext: { runAsUser: 0 },
+          securityContext: {
+            runAsNonRoot: true,
+            runAsUser: 1000,
+            runAsGroup: 1000,
+            fsGroup: 1000,
+            seccompProfile: { type: 'RuntimeDefault' },
+          },
           ...(scheduling.nodeSelector ? { nodeSelector: scheduling.nodeSelector } : {}),
           ...(scheduling.tolerations.length ? { tolerations: scheduling.tolerations } : {}),
           containers: [{
             name: 'prep',
             image: WORKER_IMAGE,
+            securityContext: {
+              allowPrivilegeEscalation: false,
+              capabilities: { drop: ['ALL'] },
+            },
             command: ['/bin/bash', '-lc', shellCommand],
             workingDir: runtime.taskCwd,
             env: Object.entries(commonRuntimeEnv()).map(([name, value]) => ({ name, value })),

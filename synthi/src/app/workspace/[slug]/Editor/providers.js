@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { canHandleTabIntent, TAB_INTENT_OWNER, updateTabIntentState } from './tabIntentRouter';
 
 export const useEditorProviders = ({
     editorInstance,
@@ -7,8 +8,6 @@ export const useEditorProviders = ({
     aiCompletionState,
     aiCompletionCacheRef,
     aiCompletionCursorRef,
-    inlineAcceptCommandIdRef,
-    applyAiCompletionText,
     rawFiles = [],
     fileCacheEntries = new Map(),
     activeFile,
@@ -101,6 +100,7 @@ export const useEditorProviders = ({
 
         // Clear pending fix state
         pendingFixRef.current = null;
+        updateTabIntentState({ hasDiagnosticFix: false });
         isPreviewingRef.current = false;
         hideFixPreview();
     };
@@ -202,15 +202,35 @@ export const useEditorProviders = ({
 
                 if (!cached?.suggestion || !cursor) return { items: [] };
                 if (position.lineNumber !== cursor.lineNumber) return { items: [] };
+                if (position.column < cursor.column) return { items: [] };
+
+                let insertText = cached.suggestion;
+                let end = cached.suggestionRange?.end || null;
+                try {
+                    const startOffset = model.getOffsetAt({
+                        lineNumber: cursor.lineNumber,
+                        column: cursor.column,
+                    });
+                    const liveOffset = model.getOffsetAt(position);
+                    const typedSince = model.getValue().slice(startOffset, liveOffset);
+                    if (typedSince) {
+                        if (!cached.suggestion.startsWith(typedSince)) return { items: [] };
+                        insertText = cached.suggestion.slice(typedSince.length);
+                    }
+                    if (end && position.lineNumber === end.lineNumber && position.column > end.column) {
+                        return { items: [] };
+                    }
+                } catch (_) { /* fall back to full suggestion */ }
+                if (!insertText) return { items: [] };
 
                 return {
                     items: [{
-                        insertText: cached.suggestion,
+                        insertText,
                         range: new monacoInstance.Range(
                             position.lineNumber, position.column,
-                            position.lineNumber, position.column
-                        ),
-                        command: inlineAcceptCommandIdRef.current ? { id: inlineAcceptCommandIdRef.current } : undefined
+                            end?.lineNumber || position.lineNumber,
+                            end?.column || position.column
+                        )
                     }]
                 };
             },
@@ -220,7 +240,7 @@ export const useEditorProviders = ({
         inlineCompletionProviderRef.current = provider;
 
         return () => inlineCompletionProviderRef.current?.dispose();
-    }, [editorInstance, monacoInstance, activeLanguage, aiCompletionState, aiCompletionCacheRef, aiCompletionCursorRef, inlineAcceptCommandIdRef]);
+    }, [editorInstance, monacoInstance, activeLanguage, aiCompletionState, aiCompletionCacheRef, aiCompletionCursorRef]);
 
     // 1b. Tokenized ghost text overlay
     //
@@ -328,6 +348,10 @@ export const useEditorProviders = ({
             if (!requestCursor) return suggestion;
             if (livePos.lineNumber !== requestCursor.lineNumber) return '';
             if (livePos.column < requestCursor.column) return '';
+            const rangeEnd = cached?.suggestionRange?.end;
+            if (rangeEnd && livePos.lineNumber === rangeEnd.lineNumber && livePos.column > rangeEnd.column) {
+                return '';
+            }
             const model = editorInstance.getModel();
             if (!model) return suggestion;
             try {
@@ -509,18 +533,6 @@ export const useEditorProviders = ({
         };
     }, [editorInstance, monacoInstance, activeLanguage, aiCompletionCacheRef, aiCompletionCursorRef]);
 
-    // 2. Register Command for Accept
-    useEffect(() => {
-        if (!editorInstance) return;
-        const commandId = editorInstance.addCommand(0, () => {
-            const cached = aiCompletionCacheRef.current;
-            if (cached?.suggestion) {
-                applyAiCompletionText(cached.suggestion);
-            }
-        });
-        inlineAcceptCommandIdRef.current = commandId;
-    }, [editorInstance, applyAiCompletionText, aiCompletionCacheRef, inlineAcceptCommandIdRef]);
-
     // 3. Hover Provider (Diagnostics with Fix Preview)
     useEffect(() => {
         if (!editorInstance || !monacoInstance) return;
@@ -549,6 +561,7 @@ export const useEditorProviders = ({
                 
                 if (!hits.length) {
                     pendingFixRef.current = null;
+                    updateTabIntentState({ hasDiagnosticFix: false });
                     return null;
                 }
 
@@ -629,11 +642,15 @@ export const useEditorProviders = ({
 
                     // Store pending fix so Tab + Ctrl+. shortcuts can act on it.
                     pendingFixRef.current = { fix, range: firstFixRange, diagnostic: firstFixDiagnostic };
+                    updateTabIntentState({ hasDiagnosticFix: true });
 
                     const fixTitle = fix.description || 'Quick fix available';
                     contents.push({
                         value: `\n\n**💡 ${fixTitle}**\n\nPress \`Tab\` to apply, or \`Ctrl+Shift+.\` to preview.`,
                     });
+                } else {
+                    pendingFixRef.current = null;
+                    updateTabIntentState({ hasDiagnosticFix: false });
                 }
 
                 const range = new monacoInstance.Range(
@@ -652,6 +669,9 @@ export const useEditorProviders = ({
             
             // Tab = Apply fix immediately
             if (e.code === 'Tab') {
+                updateTabIntentState({ hasDiagnosticFix: true });
+                if (!canHandleTabIntent(TAB_INTENT_OWNER.DIAGNOSTIC_FIX)) return;
+
                 e.preventDefault();
                 e.stopPropagation();
                 
@@ -669,6 +689,7 @@ export const useEditorProviders = ({
                 
                 // Clear pending fix state
                 pendingFixRef.current = null;
+                updateTabIntentState({ hasDiagnosticFix: false });
                 isPreviewingRef.current = false;
                 hideFixPreview();
                 
@@ -703,6 +724,7 @@ export const useEditorProviders = ({
             // Clear preview when cursor moves to a different line
             if (e.position.lineNumber !== pending.range.startLineNumber) {
                 pendingFixRef.current = null;
+                updateTabIntentState({ hasDiagnosticFix: false });
                 hideFixPreview();
                 isPreviewingRef.current = false;
             }
@@ -711,6 +733,7 @@ export const useEditorProviders = ({
         // Clear pending fix when typing (content changes)
         const contentListener = editorInstance.onDidChangeModelContent(() => {
             pendingFixRef.current = null;
+            updateTabIntentState({ hasDiagnosticFix: false });
             hideFixPreview();
             isPreviewingRef.current = false;
         });
@@ -738,6 +761,7 @@ export const useEditorProviders = ({
             cursorListener?.dispose();
             contentListener?.dispose();
             editorDomNode?.removeEventListener('mouseleave', handleMouseLeave);
+            updateTabIntentState({ hasDiagnosticFix: false });
         };
     }, [monacoInstance, editorInstance, activeLanguage]);
 
@@ -853,12 +877,14 @@ export const useEditorProviders = ({
         const previewCommandDisposable = editorInstance.addCommand(0, (ctx, fixInfo) => {
             if (fixInfo?.fix && fixInfo?.range) {
                 pendingFixRef.current = fixInfo;
+                updateTabIntentState({ hasDiagnosticFix: true });
                 showFixPreview(fixInfo.fix, fixInfo.range);
             }
         }, 'synthi.showFixPreview');
         
         return () => {
             codeActionProviderRef.current?.dispose();
+            updateTabIntentState({ hasDiagnosticFix: false });
         };
     }, [monacoInstance, editorInstance, activeLanguage, removeDiagnosticByLocation]);
 

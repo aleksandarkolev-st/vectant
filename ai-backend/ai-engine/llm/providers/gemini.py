@@ -23,7 +23,7 @@ def _count_tokens(text: str) -> int:
     return len(text.split())
 
 
-from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt
+from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt, build_split_mode_prompt
 
 load_dotenv()  # Load once at import
 
@@ -104,7 +104,7 @@ class GeminiProvider(AiProvider):
             # Split mode: send the split prompt directly with the code embedded.
             # Do NOT wrap in build_prompt() — that adds general-analysis framing
             # which causes the LLM to emit explanation prose before the JSON.
-            full_prompt = (prompt or '') + f"\n\nHere is the code to split (language: {lang}):\n```{lang}\n{code}\n```\n\nRespond with ONLY the JSON object. No explanation."
+            full_prompt = build_split_mode_prompt(code, lang, prompt or '')
         elif mode_lower == 'delta':
             # Delta mode: structural addition/deletion prompt already fully formed.
             # Do NOT wrap in build_prompt() — it adds analysis framing that makes

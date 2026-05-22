@@ -770,7 +770,7 @@ class CollabClient {
         }
       }
     }
-    return Array.from(seen.values()).map((v) => ({ clientId: v.clientId, state: v.state }));
+    return Array.from(seen.values()).map((v) => ({ clientId: v.clientId, state: v.state, key: v.key }));
   }
 
   // ── Awareness listeners ───────────────────────────────────────────────────
