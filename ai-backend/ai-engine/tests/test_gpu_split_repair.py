@@ -387,6 +387,61 @@ def test_repair_bridge_derives_device_prelude_and_guarded_option_defaults():
     )
 
 
+def test_repair_prefers_source_device_bridge_without_verifier_failure():
+    source_files = {
+        "thirdparty/runtime/impl/device_impl.h": "#pragma once\nnamespace rt { __device__ int dot(int v) { return v; } }\n",
+        "src/options/KernelOptions.h": (
+            "#pragma once\n"
+            "#define MODE_A 7\n"
+            "#ifndef __KERNELCC__\n"
+            "#define RuntimeMode MODE_A\n"
+            "#define WorkgroupSize 64\n"
+            "#endif\n"
+        ),
+        "src/kernels/Step.h": (
+            "#pragma once\n"
+            '#include "options/KernelOptions.h"\n'
+            '#include <runtime/impl/device_impl.h>\n'
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) extern \"C\" returnType __global__\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) step(int* out) { out[0] = RuntimeMode + WorkgroupSize; }\n"
+        ),
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\n',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": '#include "src/kernels/Step.h"\n',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule.startswith("source_device_") for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    device = repaired["device.hip"]
+    assert report["repaired"] is True
+    assert "repair.source_device_include_bridge" in report["repairRules"]
+    assert "#include <runtime/impl/device_impl.h>" in device
+    assert "#ifndef RuntimeMode\n#define RuntimeMode MODE_A\n#endif" in device
+    assert "#ifndef WorkgroupSize\n#define WorkgroupSize 64\n#endif" in device
+    assert device.index("#ifndef RuntimeMode") < device.index('#include "src/kernels/Step.h"')
+
+
 def test_repair_bridge_includes_source_owned_device_callback_definitions():
     source_files = {
         "thirdparties/HIPRT-Fork/hiprt/impl/hiprt_device_impl.h": (

@@ -197,14 +197,10 @@ def repair_split_artifacts(
             repair_rules.append("repair.gpu_sdk_type_redeclarations")
 
     if device_path and device_path in repaired:
-        if any(
-            rule.startswith(
-                (
-                    "source_device_identifier_",
-                    "source_device_kernel_",
-                )
-            )
-            for rule in input_reason_codes
+        if _needs_source_device_semantics_repair(
+            repaired[device_path],
+            source_files,
+            input_reason_codes,
         ):
             device_after, changed = _repair_source_device_semantics(
                 repaired[device_path],
@@ -338,6 +334,29 @@ def repair_split_artifacts(
         "changedFiles": sorted(changed_files),
         "scope": "generated_artifacts_only",
     }
+
+
+def _needs_source_device_semantics_repair(
+    device_source: str,
+    source_files: Mapping[str, str],
+    input_reason_codes: Sequence[str],
+) -> bool:
+    if any(
+        rule.startswith(
+            (
+                "source_device_identifier_",
+                "source_device_kernel_",
+            )
+        )
+        for rule in input_reason_codes
+    ):
+        return True
+
+    reachable = _source_device_reachable_files(source_files)
+    if not reachable:
+        return False
+    bridge = _source_device_include_bridge(reachable, source_files)
+    return bool(bridge and bridge != device_source)
 
 
 def _source_device_files(source_files: Mapping[str, str]) -> Dict[str, str]:
@@ -1064,6 +1083,41 @@ def _source_device_transitive_include_paths(
     return included
 
 
+def _source_device_macro_context_files(
+    reachable: Mapping[str, str],
+    source_files: Mapping[str, str],
+) -> Dict[str, str]:
+    normalized_source_files = {
+        path.replace("\\", "/"): source for path, source in source_files.items()
+    }
+    context: Dict[str, str] = {
+        path.replace("\\", "/"): source for path, source in reachable.items()
+    }
+    queue = list(context.keys())
+    visited: Set[str] = set()
+    while queue and len(visited) < 512:
+        path = queue.pop(0)
+        if path in visited:
+            continue
+        visited.add(path)
+        source = normalized_source_files.get(path) or context.get(path)
+        if source is None:
+            continue
+        for match in _ANY_INCLUDE_RE.finditer(mask_comments_for_parsing(source)):
+            include_path = match.group("path").replace("\\", "/").lstrip("./")
+            if not include_path:
+                continue
+            resolved = _resolve_source_path_for_include(
+                include_path,
+                normalized_source_files,
+            )
+            if resolved is None or resolved in context:
+                continue
+            context[resolved] = normalized_source_files[resolved]
+            queue.append(resolved)
+    return context
+
+
 def _source_device_include_bridge(
     reachable: Mapping[str, str],
     source_files: Mapping[str, str],
@@ -1106,7 +1160,9 @@ def _source_device_include_bridge(
     prelude_includes = "\n".join(filtered_prelude_include_lines)
     if prelude_includes:
         prelude_includes += "\n"
-    default_macro_block = _source_device_default_macro_block(reachable)
+    default_macro_block = _source_device_default_macro_block(
+        _source_device_macro_context_files(reachable, source_files)
+    )
     if default_macro_block:
         default_macro_block += "\n\n"
     return (

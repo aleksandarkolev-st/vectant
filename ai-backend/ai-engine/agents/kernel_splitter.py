@@ -1121,7 +1121,23 @@ async def run_kernel_splitter(
         "changedFiles": [],
         "scope": "generated_artifacts_only",
     }
-    if not verification.ok:
+    repaired_files, repair_report = repair_split_artifacts(
+        files=parsed["files"],
+        manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
+        source_files=scoped_source_map,
+        verification=verification,
+    )
+    if repair_report.get("repaired"):
+        repaired_verification = verify_split_output(
+            files=repaired_files,
+            manifest_arch=arch_list,
+            manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
+            source_files=scoped_source_map,
+        )
+        parsed["files"] = repaired_files
+        verification = repaired_verification
+
+    if not verification.ok and not repair_report.get("repaired"):
         repaired_files, repair_report = repair_split_artifacts(
             files=parsed["files"],
             manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
