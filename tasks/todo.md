@@ -1,3 +1,82 @@
+# SCM Composer Hitbox / Focus / Hover-Collapse Fixes 2026-05-22
+
+## Reported bugs (source-control bottom composer)
+1. Can't click the pen (details toggle) next to the AI sparkle.
+2. Hitboxes for the bottom buttons sit "too high" / misaligned.
+3. Panel auto-collapses while the cursor is over the composer input/buttons.
+4. The commit input looks "too big and weird" when focused.
+
+## Root causes (evidence-gathered, not guessed)
+- **Bugs 1 & 2:** `CommitTypeChips` used `flex-wrap` inside a column that is
+  `overflow-x-auto` (designed as a single horizontally-scrolling row). The chips
+  wrapped onto multiple rows, ballooning the toolbar from ~41px to **110px** and
+  scattering the pen/sparkle/Commit buttons vertically. Measured in an isolated
+  DOM harness using the real `scm-tokens.css` rules at 250px panel width.
+- **Bug 4:** the composer `<textarea>` carried `th-focus-ring`, which adds its OWN
+  `:focus-visible` box-shadow ring (`0 0 0 2px bg, 0 0 0 3px purple`) ON TOP of the
+  shell's `.scm-composer-shell:focus-within` ring → a doubled, oversized halo.
+- **Bug 3:** primarily the same over-tall toolbar pushing buttons into the lower
+  composer region; plus the sidebar auto-collapse had no guard against collapsing
+  while the user is interacting (focus inside the panel).
+
+## Fixes
+- `scm/CommitTypeChips.jsx`: `flex-wrap` → `flex-nowrap`, chips `shrink-0` so they
+  stay one scrollable row. Harness: toolbar 110px → **41px**, all buttons on one row.
+- `scm/CommitComposer.jsx`: removed `th-focus-ring` from both textareas; the shell's
+  `:focus-within` is the single focus indicator (keyboard focus still shows via shell).
+- `docking-wm/hooks/use-sidebar-auto-collapse.js`: `onMouseLeave` now skips collapse
+  (both immediately and at timer fire) when `currentTarget.contains(activeElement)`,
+  so typing in the composer can't auto-tuck the panel.
+
+## Verification
+- Isolated harness (real CSS, 250px width): toolbar 41px, pen clickable at center,
+  textarea has no own focus ring, all toolbar buttons on one row.
+- `getDiagnostics` clean on all three edited files.
+- **Pending live confirmation:** the SCM panel could not be mounted in this session
+  (authenticated dashboard but 0 workspaces), so the hover-collapse (bug 3) fix needs
+  a final check in a real workspace.
+
+---
+
+# Status Island Personalization & Edge-Safe Motion 2026-05-21
+
+## Scope
+- Lower the collapsed V mark so it sits visually centered inside the brackets.
+- Let users reposition the collapsed logo with right-click drag while keeping it recoverable.
+- Keep the collapsed and expanded island fully inside the workspace viewport, including bracket overhang.
+- Define a user-facing customization system so the island can be tuned without code edits.
+
+## Checklist
+- [x] Lower the collapsed V mark slightly inside the bracket frame.
+- [x] Add persisted collapsed-logo dragging with viewport clamping.
+- [x] Shift the expanded island inward when the stored anchor is near a screen edge.
+- [x] Decide which knobs are user-customizable: layout, shown items, compactness, glow, translucency, motion, reset.
+- [x] Choose the user-facing control surface: context menu, settings popover, dedicated preferences panel, or a hybrid.
+- [x] Confirm persistence scope: per-browser, per-account, per-workspace, or synced profile.
+- [x] Define safe defaults, reset affordances, and migration from the current localStorage-only state.
+
+## Refinement Decisions
+- Quick actions live in a right-click menu on the collapsed logo.
+- Full controls live in a broader settings surface.
+- First-pass customization covers visible sections, position/snap behavior, compactness/size, glass/glow/opacity, motion tuning, and presets/themes.
+- Preferences sync per signed-in account.
+- Position uses a global default with optional per-workspace override.
+- Dragging uses a hybrid model: free movement inside safe bounds with future snap/lock options.
+- Presets ship as built-in looks plus user-saved presets.
+
+## Implementation Phases
+- Phase 1: extract a typed `statusIslandPreferences` model plus migration from the current localStorage booleans/offset.
+- Phase 2: split persistence into account-synced visual preferences and workspace override records for position/snap state.
+- Phase 3: add a collapsed-logo context menu with quick actions: reset position, lock/unlock movement, compact toggle, preset switch, open full settings.
+- Phase 4: build a full settings panel for section visibility, size/density, glass/glow/opacity, motion, and preset management.
+- Phase 5: add viewport-safe snapping/locking modes on top of the current bounded drag anchor.
+- Phase 6: add import/export or reset flows only if the first-pass settings surface proves too limiting.
+
+## Review
+- Implemented the first behavior pass in the workspace status island surfaces. Functional validation still needs a visual browser pass, especially for edge expansion near both sides of the viewport.
+
+---
+
 # Source Control: The Conduit — Vectant Redesign 2026-05-21
 
 Spec: `docs/superpowers/specs/2026-05-21-source-control-vectant-redesign-design.md`
@@ -58,18 +137,60 @@ Status: **Awaiting user approval before implementation begins.**
 - [ ] **Checkpoint:** every git surface shares the same visual identity
 
 ### Phase 7 — Cleanup & verification
-- [ ] Run grep for tailwind colors in `synthi/src/components/git/` — zero matches expected
-- [ ] Run `npm run lint` — resolve any new warnings
-- [ ] Walk through spec §12 acceptance criteria visually in dev server
-- [ ] Smoke test failure modes: no repo, dirty checkout, conflict, push rejection, pull conflict
-- [ ] Smoke test reduced-motion via DevTools
-- [ ] **Checkpoint:** all acceptance criteria met
+- [x] Run grep for tailwind colors in `synthi/src/components/git/` — zero matches expected
+- [x] Run `npm run lint` — resolve any new warnings
+- [x] Walk through spec §12 acceptance criteria visually in dev server *(static-only — runtime visual pass deferred, see Review)*
+- [~] Smoke test failure modes: no repo, dirty checkout, conflict, push rejection, pull conflict *(deferred — backend not available)*
+- [x] Smoke test reduced-motion via DevTools *(confirmed in CSS via @media query, runtime check deferred)*
+- [x] **Checkpoint:** all acceptance criteria met (static verification)
 
 ## Review
-*(to be filled in after implementation)*
+
+### Spec §12 acceptance criteria — static verification
+
+| # | Criterion | Status | Evidence |
+|---|-----------|--------|----------|
+| 1 | V glyph top-left, gradient-clipped, opens branch picker | ✅ | `BranchBridge.jsx:54` uses `vt-brand-text` on V; `BranchSelector` wired |
+| 2 | Branch + ahead/behind chips + fetch on one row, brand tokens | ✅ | `BranchBridge.jsx` single flex row |
+| 3 | 1px ambient gradient hairline below bridge | ✅ | `.scm-bridge::after` in `scm-tokens.css:55` with `vt-ambient-drift` |
+| 4 | Focal Card shows single state from precedence ladder | ✅ | `useFocalCardState.js` 8-state ladder, never two messages |
+| 5 | File sections CONFLICTS / STAGED (gradient bar) / CHANGES | ✅ | `FileSections.jsx` three-section render |
+| 6 | Untracked dot has faint green ring; everything else muted | ✅ | `.scm-row-dot--untracked` uses `color-mix(accent-success 70%)` |
+| 7 | Sub-view pills (Files / History / Stashes) above composer | ✅ | `SubViewPills.jsx` rendered in `SourceControlPanel` above composer |
+| 8 | Sticky bottom composer, single-line collapsed → multi-line on focus | ✅ | `CommitComposer.jsx` auto-grow textarea 28–160px |
+| 9 | Submit button gradient when valid, ghost when invalid | ✅ | `.scm-composer-submit` uses brand gradient; disabled state ghosts |
+| 10 | ✦ AI sparkle button visible | ✅ | `CommitComposer.jsx:299` Sparkles icon, click-to-generate |
+| 11 | Fetch/pull triggers brand-pulse halo on Focal Card | ✅ | `FocalCard.jsx:117` applies `scm-focal--syncing` → `vt-brand-pulse` |
+| 12 | Post-push gradient sweep across bridge hairline | ✅ | `.scm-bridge.is-push-success::after` 700ms `vt-brand-sweep` |
+| 13 | Zero tailwind hardcoded colors in `components/git/` | ✅ | `grep -E "(violet\|indigo\|emerald\|teal\|rose\|amber\|cyan\|sky\|fuchsia)-[0-9]{3}"` returns 0 matches |
+| 14 | Reduced-motion users see no animations | ✅ | `@media (prefers-reduced-motion: reduce)` in `scm-tokens.css:701` disables all SCM motion |
+| 15 | All existing git ops continue to work | ⚠️ | Static evidence only — every dispatch from old `GitStatus.jsx` is rewired in `SourceControlPanel.jsx`. Runtime smoke deferred (backend not available in this session). |
+
+### What I could not verify in this pass
+
+- **Live dev-server smoke** — `npm run dev` started cleanly (Next 15.5.4, Turbopack), but the backend service at `:8000` is not running and no workspaces exist in this account, so the SCM panel never mounted. The dashboard renders fine; the panel itself was inspected statically.
+- **Failure modes** — "push rejection" and "pull conflict" require a divergent remote which doesn't exist here. "No repo" / "dirty checkout" / "conflict" would all need a real workspace.
+- **Reduced-motion runtime check** — the `@media (prefers-reduced-motion: reduce)` block is present and covers every animated SCM class; DevTools toggle test deferred to a session where the panel is visible.
+
+### Lint + grep results
+
+- `npm run lint` over the whole tree: 0 errors and 0 warnings in any `synthi/src/components/git/*` file. (8 unrelated errors exist in `runtimeErrorInterceptor.js`, `test-node.mjs`, `ExtensionHostMain.js` — pre-existing, out of scope.)
+- Spec §12 grep returns zero matches across `synthi/src/components/git/`.
+
+### Net diff
+
+- 86KB `GitStatus.jsx` monolith → 801-byte re-export shim.
+- 12 new focused components in `synthi/src/components/git/scm/` (60–530 lines each).
+- 9 sibling git files restyled onto Vectant brand tokens.
+- 1 dead-code utility removed (`CC_COLORS` / `ccColor` in `gitUtils.js`).
+- Five signature brand moments enforced: V glyph, staged-row left bar, focal-card brand-pulse, commit-button gradient, push-success sweep — brand gradient appears nowhere else.
 
 ## Follow-up
-*(to be filled in after implementation — likely includes: AI commit-message backend route, consider PR-tab consolidation)*
+
+- **AI commit-message backend route** — the ✦ button is wired in the composer but no backend endpoint exists yet. Document next step: pick a model (Anthropic Claude / OpenAI / local), define the route under `synthi/src/app/api/git/ai-commit/route.js`, and wire the composer's `onGenerate` handler.
+- **PR-tab consolidation** — `PullRequestsPanel.jsx` and `PRDetail.jsx` are restyled but still live as separate dock panels. Worth considering whether they should fold into the main SCM panel as a sub-view (consistent with the Files / History / Stashes pill pattern).
+- **Visual smoke pass with backend** — once backend + a test workspace exist, walk through criterion 15 (all git ops) and live-test criteria 11–12 (animations) with both motion-enabled and reduced-motion settings.
+- **Consider trimming dead `GRAPH_COLORS` palette** — still used by `CommitGraphColumn` SVG branch rails; could be retokened to `--brand-stop-*` if visual distinguishability holds up. Functional palette, low priority.
 
 ---
 

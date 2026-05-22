@@ -212,7 +212,7 @@ function CommitComposerImpl({
       <div className={shellClass}>
         <textarea
           ref={textareaRef}
-          className="scm-composer-textarea th-focus-ring"
+          className="scm-composer-textarea"
           value={message}
           onChange={(e) => { onMessageChange?.(e.target.value); }}
           onInput={autoGrow}
@@ -226,7 +226,7 @@ function CommitComposerImpl({
 
         {showCommitBody && (
           <textarea
-            className="scm-composer-textarea th-focus-ring"
+            className="scm-composer-textarea"
             value={commitBody}
             onChange={(e) => { onCommitBodyChange?.(e.target.value); }}
             placeholder="Extended description (optional)…"

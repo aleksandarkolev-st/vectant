@@ -51,12 +51,12 @@ function CommitTypeChipsImpl({ message, onChange }) {
   }, [active, message, onChange]);
 
   return (
-    <div className="flex items-center gap-1.5 flex-wrap" role="group" aria-label="Commit type">
+    <div className="flex items-center gap-1.5 flex-nowrap" role="group" aria-label="Commit type">
       {TYPES.map(({ type, label }) => (
         <button
           key={type}
           type="button"
-          className="scm-type-chip"
+          className="scm-type-chip shrink-0"
           data-state={active === type ? 'active' : 'inactive'}
           aria-pressed={active === type}
           onClick={() => handleClick(type)}
