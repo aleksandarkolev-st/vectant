@@ -116,18 +116,20 @@ export const ExplorerPanelWrapper = memo(function ExplorerPanelWrapper({ data })
 //  Editor Panel Wrapper
 // ────────────────────────────────────────────────────────
 
-export const EditorPanelWrapper = memo(function EditorPanelWrapper({ data }) {
+export const EditorPanelWrapper = memo(function EditorPanelWrapper({ data, tabGroupId }) {
   const ctx = useWorkspacePanelContext();
 
   return (
     <div
       data-panel-type="editor"
-      className="h-full w-full min-w-0 overflow-hidden"
+      data-pane-id={tabGroupId}
+      className="h-full w-full min-w-0 overflow-hidden flex flex-col"
       style={{ background: 'var(--bg-editor)' }}
     >
       <EditorPanel
         {...(ctx?.editorProps || {})}
         filePath={data?.filePath}
+        paneId={tabGroupId}
         dockingMode={true}
       />
     </div>

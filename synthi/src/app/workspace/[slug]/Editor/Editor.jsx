@@ -222,6 +222,8 @@ const EditorPanel = ({
     chatVisible = false,
     collabHostId = null,
     dockingMode = false,
+    filePath = null,
+    paneId = null,
     selfEditFlagRef = null,
 }) => {
     const dispatch = useAppDispatch();
@@ -252,7 +254,21 @@ const EditorPanel = ({
     const presenceGranularity = useAppSelector(selectPresenceGranularity);
     const diffMode = useAppSelector(state => state.workspace.diffMode);
     const originalContent = useAppSelector(state => state.workspace.originalContent);
-    
+
+    // In docking mode each pane renders its OWN file (props.filePath); fall back
+    // to the global activeFile only outside docking (single-editor mode).
+    const paneFile = useMemo(() => {
+        if (dockingMode && filePath) {
+            return openFiles.find((f) => f.path === filePath)
+                || { path: filePath, name: filePath.split('/').pop() };
+        }
+        return activeFile;
+    }, [dockingMode, filePath, openFiles, activeFile]);
+
+    // Focused pane drives the global content/save buffer; unfocused panes edit
+    // their own Monaco model only.
+    const isFocusedPane = !dockingMode || (!!paneFile?.path && activeFile?.path === paneFile.path);
+
     // Git status for conflict detection
     const gitStatus = useAppSelector(state => state.git?.status);
     const conflictedFiles = gitStatus?.conflictedFiles || [];
@@ -2420,7 +2436,7 @@ const EditorPanel = ({
 
     // Hook up Yjs-based collaboration when an editor and activeFile are present.
     useEffect(() => {
-        if (!editorInstance || !monacoInstance || !activeFile || !slug || isPrivateMode) {
+        if (!editorInstance || !monacoInstance || !paneFile || !slug || isPrivateMode) {
             // Clear collab connected state if dependencies are missing
             setCollabConnected(false);
             boundFilePathRef.current = null;
@@ -2441,11 +2457,11 @@ const EditorPanel = ({
         // Skip Yjs collaboration for files with merge conflicts
         // This ensures the editor shows the actual filesystem content with conflict markers
         // rather than stale content from Yjs persistence
-        const isConflicted = conflictedFiles.includes(activeFile.path);
+        const isConflicted = conflictedFiles.includes(paneFile.path);
         if (isConflicted) {
-            console.log('[Collab] Skipping Yjs binding for conflicted file:', activeFile.path);
+            console.log('[Collab] Skipping Yjs binding for conflicted file:', paneFile.path);
             // Destroy any existing collab doc for this file to ensure fresh content
-            try { collabClient.destroyDocument(slug, activeFile.path); } catch (e) { /* ignore */ }
+            try { collabClient.destroyDocument(slug, paneFile.path); } catch (e) { /* ignore */ }
             setCollabConnected(false);
             boundFilePathRef.current = null;
             return;
@@ -2469,20 +2485,20 @@ const EditorPanel = ({
         try {
             const showLineDecorations = (presenceGranularity === 'line');
             // Get content specifically for this file from the cache
-            const cachedContent = fileCacheEntries.find(([path]) => path === activeFile.path)?.[1];
-            const initialContent = typeof cachedContent === 'string' ? cachedContent : (typeof code === 'string' ? code : '');
+            const cachedContent = fileCacheEntries.find(([path]) => path === paneFile.path)?.[1];
+            const initialContent = typeof cachedContent === 'string' ? cachedContent : (isFocusedPane && typeof code === 'string' ? code : '');
             
             const bindingHandle = collabClient.attachEditor({ 
                 editor: editorInstance, 
                 monaco: monacoInstance, 
                 slug, 
-                path: activeFile.path, 
+                path: paneFile.path,
                 user, 
                 initialContent,
                 options: { showLineDecorations } 
             });
             collabBindingRef.current = bindingHandle;
-            boundFilePathRef.current = activeFile.path; // Track which file we're bound to
+            boundFilePathRef.current = paneFile.path; // Track which file we're bound to
             setCollabConnected(true); // Mark collab as connected
             
             // CRITICAL: After the binding is established, the model content
@@ -2491,7 +2507,7 @@ const EditorPanel = ({
             // our isFlush guard intentionally skips).  Do a one-time sync
             // so Redux currentContent matches what the user sees.
             const modelContent = editorInstance.getModel()?.getValue() ?? '';
-            if (modelContent && modelContent !== code) {
+            if (isFocusedPane && modelContent && modelContent !== code) {
                 dispatch(updateContent(modelContent));
             }
             
@@ -2499,7 +2515,7 @@ const EditorPanel = ({
             bindingHandle.updateLocalUnsaved(isUnsaved);
 
             // Listen for remote unsaved changes
-            const awarenessUnsub = collabClient.addAwarenessListener(slug, activeFile.path, (states) => {
+            const awarenessUnsub = collabClient.addAwarenessListener(slug, paneFile.path, (states) => {
                 const anyRemoteUnsaved = states.some(s => s.state && s.state.isUnsaved && s.clientId !== collabClient.docs.get(bindingHandle.key)?.provider?.awareness?.clientID);
                 setRemoteUnsaved(anyRemoteUnsaved);
             });
@@ -2523,7 +2539,7 @@ const EditorPanel = ({
             setCollabConnected(false);
             setRemoteUnsaved(false);
         };
-    }, [editorInstance, monacoInstance, activeFile, slug, session, authUserId, presenceGranularity, isPrivateMode, conflictedFiles, collabHostId]);
+    }, [editorInstance, monacoInstance, paneFile, slug, session, authUserId, presenceGranularity, isPrivateMode, conflictedFiles, collabHostId]);
 
     // ── Ghost-revert fix ─────────────────────────────────────────────────
     // Listen for server-side 'file-reverted' events (emitted after discard,
@@ -2750,29 +2766,34 @@ const EditorPanel = ({
             }
         }
     }, [onClearCompletion]);
-    const activeLanguage = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
-    const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
-    const activeFileIcon = activeFile ? getFileIcon(activeFile.name || activeFile.path || '') : null;
+    // File-identity derivations follow the PANE'S file (paneFile), not the
+    // global activeFile — so each docked editor view tokenizes, re-keys its
+    // model, and renders the icon for the file IT is showing.
+    const activeLanguage = paneFile ? getMonacoLanguage(paneFile.name) : 'plaintext';
+    const activeFileIdentity = paneFile ? `${paneFile.path ?? ''}-${paneFile.name ?? ''}` : 'no-file';
+    const activeFileIcon = paneFile ? getFileIcon(paneFile.name || paneFile.path || '') : null;
 
     // Pre-create/switch Monaco models when activeFile changes.
     // This eliminates the 1-second blank flash by reusing cached models
     // instead of destroying and recreating the editor.
     useEffect(() => {
-        if (!editorInstance || !monacoInstance || !activeFile) return;
+        if (!editorInstance || !monacoInstance || !paneFile) return;
         // System headers (isSystem=true, e.g. /usr/include/c++/11/iostream)
         // live in the worker's filesystem, not under /synthi/. Use URI.file
         // so the model URI matches what SynthiFileSystemProvider registered
         // via registerSystemFile — otherwise Monaco's default file service
         // tries to read /synthi/usr/include/... from local disk and fails.
-        const uri = activeFile.isSystem
-            ? monacoInstance.Uri.file(activeFile.path)
-            : monacoInstance.Uri.parse(`file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}`);
+        const uri = paneFile.isSystem
+            ? monacoInstance.Uri.file(paneFile.path)
+            : monacoInstance.Uri.parse(`file:///synthi/${paneFile.path.startsWith('/') ? paneFile.path.slice(1) : paneFile.path}`);
         let model = monacoInstance.editor.getModel(uri);
         if (!model) {
-            // Pre-create the model with cached content so there's no blank
-            const cachedContent = fileCacheEntries.find(([p]) => p === activeFile.path)?.[1];
-            const initialContent = typeof cachedContent === 'string' ? cachedContent : (code ?? '');
-            const lang = getMonacoLanguage(activeFile.name);
+            // Pre-create the model with cached content so there's no blank.
+            // Only the focused pane may seed from the global `code` buffer; an
+            // unfocused pane showing a different file must NOT inherit it.
+            const cachedContent = fileCacheEntries.find(([p]) => p === paneFile.path)?.[1];
+            const initialContent = typeof cachedContent === 'string' ? cachedContent : (isFocusedPane ? (code ?? '') : '');
+            const lang = getMonacoLanguage(paneFile.name);
             model = monacoInstance.editor.createModel(initialContent, lang || 'plaintext', uri);
         }
         // Switch to the model atomically — no blank flash
@@ -3105,8 +3126,8 @@ const EditorPanel = ({
         // CRITICAL: Only process changes if we're bound to the correct file
         // This prevents stale onChange handlers from writing content to the wrong file
         // during file transitions.
-        if (activeFile && collabConnected && boundFilePathRef.current && boundFilePathRef.current !== activeFile.path) {
-            console.warn('[Editor] Skipping — boundFilePathRef mismatch:', boundFilePathRef.current, '!==', activeFile.path);
+        if (paneFile && collabConnected && boundFilePathRef.current && boundFilePathRef.current !== paneFile.path) {
+            console.warn('[Editor] Skipping — boundFilePathRef mismatch:', boundFilePathRef.current, '!==', paneFile.path);
             return;
         }
 
@@ -3131,7 +3152,9 @@ const EditorPanel = ({
             clearTimeout(reduxSyncTimerRef.current);
             reduxSyncTimerRef.current = null;
         }
-        dispatch(updateContent(newCode));
+        // Only the focused pane writes the global content/save buffer; an
+        // unfocused pane editing a different file must not clobber it.
+        if (isFocusedPane) dispatch(updateContent(newCode));
 
         // ── Background HMR classification ───────────────────────────
         // Stream the edit to the worker so it can classify what changed
@@ -3139,10 +3162,10 @@ const EditorPanel = ({
         // the user saves, the compile handler reads the cached classification
         // and dispatches instantly without re-analyzing.  300ms debounce
         // to avoid flooding the DataChannel on fast typing.
-        if (compilerClient && activeFile?.path) {
+        if (isFocusedPane && compilerClient && paneFile?.path) {
             if (editDeltaTimerRef.current) clearTimeout(editDeltaTimerRef.current);
             editDeltaTimerRef.current = setTimeout(() => {
-                compilerClient.sendEditDelta(activeFile.path, newCode);
+                compilerClient.sendEditDelta(paneFile.path, newCode);
             }, 300);
         }
 
@@ -3153,9 +3176,9 @@ const EditorPanel = ({
         // persisting to disk is the host's responsibility.
         // Debounced via requestAnimationFrame to coalesce rapid remote
         // character edits into a single Redux dispatch per frame.
-        if (remoteApplying && collabRole === 'guest' && activeFile?.path) {
+        if (remoteApplying && collabRole === 'guest' && paneFile?.path) {
             if (!remoteSaveRAFRef.current) {
-                const pathToSync = activeFile.path;
+                const pathToSync = paneFile.path;
                 remoteSaveRAFRef.current = requestAnimationFrame(() => {
                     remoteSaveRAFRef.current = null;
                     dispatch(markFileSavedRemotely(pathToSync));
@@ -3189,7 +3212,7 @@ const EditorPanel = ({
                 requestAiCompletion(true, latestCodeRef.current, { reason: 'pause', pauseTrigger: true, recentEditSnippet: takeLastChars(latestCodeRef.current, 512) });
             }
         }, 350);
-    }, [activeFile, aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion, collabConnected]);
+    }, [activeFile, paneFile, isFocusedPane, aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion, collabConnected]);
 
     // Keep a ref to the latest handleCodeChange to avoid stale closures in the editor onMount listener
     const handleCodeChangeRef = useRef(handleCodeChange);
@@ -4629,15 +4652,16 @@ const EditorPanel = ({
                                         <div className="h-full w-full" style={{ display: diffMode ? 'none' : undefined }}>
                                             <Editor
                                                 height="100%"
-                                                path={activeFile
-                                                    ? (activeFile.isSystem && monacoInstance
-                                                        ? monacoInstance.Uri.file(activeFile.path).toString()
-                                                        : `file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}`)
+                                                path={paneFile
+                                                    ? (paneFile.isSystem && monacoInstance
+                                                        ? monacoInstance.Uri.file(paneFile.path).toString()
+                                                        : `file:///synthi/${paneFile.path.startsWith('/') ? paneFile.path.slice(1) : paneFile.path}`)
                                                     : undefined}
                                                 // Model caching: the editor instance stays alive across file switches.
                                                 // Models are pre-created and switched via editor.setModel() in the
                                                 // useEffect above, so there is no blank flash between tab switches.
-                                                defaultValue={code ?? ''}
+                                                // Only the focused pane may seed a new model from the global buffer.
+                                                defaultValue={isFocusedPane ? (code ?? '') : ''}
                                                 language={activeLanguage}
                                                 theme="synthi-theme"
                                                 options={{
