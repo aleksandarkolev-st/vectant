@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import shlex
 from typing import Any, Dict, List, Mapping, Optional, Tuple
+
+from gpu_hmr.canonical import canonical_hash
 
 
 SOURCE_CONTEXT_SCHEMA_VERSION = "synthi.gpu.source_context.v1"
@@ -61,11 +62,12 @@ def normalize_path(path: str) -> str:
 
 
 def stable_hash(value: Any) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return canonical_hash(value)
 
 
 def content_hash(text: str) -> str:
+    import hashlib
+
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
