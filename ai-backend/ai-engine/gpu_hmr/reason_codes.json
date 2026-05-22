@@ -1,0 +1,375 @@
+{
+  "schemaVersion": "gpu-hmr-reason-code-registry-v1",
+  "codes": [
+    {
+      "code": "target_resolution_ambiguous",
+      "phase": "preflight_readiness",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Selected file belongs to more than one executable target.",
+      "requiredRemediation": "Select an explicit target or project target config.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "target_resolution_unmatched",
+      "phase": "preflight_readiness",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Selected file does not match any known executable target.",
+      "requiredRemediation": "Select a target whose source set contains the entry file.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "build_metadata_missing",
+      "phase": "preflight_readiness",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Build metadata is unavailable for the selected target.",
+      "requiredRemediation": "Provide compile_commands.json, CMake File API replies, or explicit project target config.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "cmake_file_api_missing",
+      "phase": "preflight_readiness",
+      "severity": "advisory",
+      "blocking": false,
+      "message": "CMake File API replies were not available.",
+      "requiredRemediation": "Configure the CMake build directory with File API query files when target ambiguity exists.",
+      "safeFallbackMode": "compile_commands_only",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "unsupported.graphics_backend_vulkan",
+      "phase": "preflight_readiness",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Vulkan GPU HMR is unsupported without modeled context, swapchain, descriptor, and synchronization ownership.",
+      "requiredRemediation": "Use an explicitly supported render path or run diagnostics only.",
+      "safeFallbackMode": "unsupported",
+      "owner": "source_context"
+    },
+    {
+      "code": "unsupported_project_shape",
+      "phase": "preflight_readiness",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The project shape is unsupported for GPU HMR generation.",
+      "requiredRemediation": "Use diagnostics to identify the unsupported build, render, or device topology.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "source_context"
+    },
+    {
+      "code": "split_response_unparseable",
+      "phase": "generation",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "AI split output could not be parsed into the required generated-role response shape.",
+      "requiredRemediation": "Retry within the bounded split/repair loop or fall back to diagnostics.",
+      "safeFallbackMode": "full_resplit",
+      "owner": "split_broker"
+    },
+    {
+      "code": "split_missing_device_file",
+      "phase": "schema_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Generated split output did not include the required device role.",
+      "requiredRemediation": "Repair generated artifacts only and rerun schema verification.",
+      "safeFallbackMode": "repair",
+      "owner": "verifier"
+    },
+    {
+      "code": "ai_provider_timeout",
+      "phase": "generation",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "AI provider timed out before producing a verifier-gated proposal.",
+      "requiredRemediation": "Retry within budget or choose a non-agentic fallback.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "ai_generation"
+    },
+    {
+      "code": "ai_provider_error",
+      "phase": "generation",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "AI provider failed before producing a verifier-gated proposal.",
+      "requiredRemediation": "Retry if provider state allows or choose a deterministic fallback.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "ai_generation"
+    },
+    {
+      "code": "ai_provider_rate_limited",
+      "phase": "generation",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "AI provider rejected generation due to rate limits.",
+      "requiredRemediation": "Retry after backoff or choose a deterministic fallback.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "ai_generation"
+    },
+    {
+      "code": "ai_provider_unavailable",
+      "phase": "generation",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "AI provider is unavailable or overloaded.",
+      "requiredRemediation": "Retry when provider health recovers or choose a deterministic fallback.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "ai_generation"
+    },
+    {
+      "code": "raw_launch_not_rewritten",
+      "phase": "schema_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Generated host code still contains a raw GPU kernel launch.",
+      "requiredRemediation": "Route generated launch sites through the Synthi GPU launch boundary.",
+      "safeFallbackMode": "repair",
+      "owner": "verifier"
+    },
+    {
+      "code": "launch_indirection_bypassed",
+      "phase": "schema_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Generated code bypasses the launch indirection boundary.",
+      "requiredRemediation": "Route all reloadable launch sites through the stable launch table wrapper.",
+      "safeFallbackMode": "repair",
+      "owner": "verifier"
+    },
+    {
+      "code": "loader_symbol_lookup_bypassed",
+      "phase": "schema_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Generated role owns symbol lookup that should belong to the loader.",
+      "requiredRemediation": "Move dlsym/GetProcAddress/vendor module lookup behind the loader boundary.",
+      "safeFallbackMode": "repair",
+      "owner": "verifier"
+    },
+    {
+      "code": "toolchain_capability_missing",
+      "phase": "reload_planning",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Toolchain capability profile is missing.",
+      "requiredRemediation": "Derive a selected-target capability profile before allowing device_only or warm_rebuild.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "arbiter"
+    },
+    {
+      "code": "toolchain_capability_stale",
+      "phase": "reload_planning",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Toolchain capability profile is stale for the selected target or flags.",
+      "requiredRemediation": "Refresh toolchain probes and effective flags before unsafe fast paths.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "arbiter"
+    },
+    {
+      "code": "abi.kernel_signature_changed",
+      "phase": "abi_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Kernel signature changed and device_only reload is unsafe.",
+      "requiredRemediation": "Use ABI-changing fallback or regenerate affected roles through verifier gates.",
+      "safeFallbackMode": "abi_breaking",
+      "owner": "abi_verifier"
+    },
+    {
+      "code": "abi.constant_global_layout_changed",
+      "phase": "abi_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Constant or global device symbol layout changed.",
+      "requiredRemediation": "Use ABI-changing fallback or regenerate affected roles through verifier gates.",
+      "safeFallbackMode": "abi_breaking",
+      "owner": "abi_verifier"
+    },
+    {
+      "code": "stale_launch_pointer_detected",
+      "phase": "promotion",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Reload could leave a stale launch pointer active.",
+      "requiredRemediation": "Regenerate roles to use verified launch indirection before promotion.",
+      "safeFallbackMode": "cold_restart",
+      "owner": "promotion_verifier"
+    },
+    {
+      "code": "stale_launch_pointer_check_missing",
+      "phase": "promotion",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Stale launch pointer verification did not run.",
+      "requiredRemediation": "Run launch indirection verification before allowing reload.",
+      "safeFallbackMode": "cold_restart",
+      "owner": "promotion_verifier"
+    },
+    {
+      "code": "template_evidence_missing",
+      "phase": "reload_planning",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Compiler-derived template evidence is missing.",
+      "requiredRemediation": "Collect fresh template evidence before warm_rebuild of template-dependent edits.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "template_evidence"
+    },
+    {
+      "code": "template_evidence_stale",
+      "phase": "reload_planning",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Compiler-derived template evidence is stale.",
+      "requiredRemediation": "Refresh template evidence for the selected target and effective flags.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "template_evidence"
+    },
+    {
+      "code": "template_instantiation_unbounded",
+      "phase": "reload_planning",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Template instantiation impact is unbounded.",
+      "requiredRemediation": "Use AI delta, full resplit, or unsupported fallback; do not use direct device_only.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "template_evidence"
+    },
+    {
+      "code": "header_dependency_unbounded",
+      "phase": "reload_planning",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Header dependency impact is unbounded.",
+      "requiredRemediation": "Use bounded warm rebuild only after dependency evidence is available.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "dependency_analyzer"
+    },
+    {
+      "code": "warm_rebuild_budget_exceeded",
+      "phase": "arbiter",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Warm rebuild exceeded the configured latency budget.",
+      "requiredRemediation": "Ask developer consent or choose a cheaper fallback.",
+      "safeFallbackMode": "ask_developer",
+      "owner": "arbiter"
+    },
+    {
+      "code": "device_linker_bound",
+      "phase": "arbiter",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Device-link path is linker-bound and not a hot HMR path.",
+      "requiredRemediation": "Ask developer consent or choose a clearer fallback.",
+      "safeFallbackMode": "ask_developer",
+      "owner": "arbiter"
+    },
+    {
+      "code": "rdc_link_over_budget",
+      "phase": "arbiter",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "RDC device-link estimate exceeds budget.",
+      "requiredRemediation": "Ask developer consent or isolate hot kernels to avoid linker-bound reloads.",
+      "safeFallbackMode": "ask_developer",
+      "owner": "arbiter"
+    },
+    {
+      "code": "incremental_device_link_unsupported",
+      "phase": "compile_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Selected toolchain does not support modeled incremental device linking.",
+      "requiredRemediation": "Use full rebuild/relink or unsupported fallback for this topology.",
+      "safeFallbackMode": "ask_developer",
+      "owner": "toolchain_probe"
+    },
+    {
+      "code": "multi_role_ai_delta_requires_consent",
+      "phase": "arbiter",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "AI delta would touch multiple generated roles.",
+      "requiredRemediation": "Ask developer consent before applying the multi-role transaction.",
+      "safeFallbackMode": "ask_developer",
+      "owner": "arbiter"
+    },
+    {
+      "code": "state_loss_requires_consent",
+      "phase": "arbiter",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Selected fallback may lose runner state.",
+      "requiredRemediation": "Ask developer consent before cold restart or state-losing fallback.",
+      "safeFallbackMode": "ask_developer",
+      "owner": "arbiter"
+    },
+    {
+      "code": "gpu_device_tainted",
+      "phase": "runtime_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "GPU device or preview session is tainted by a suspected driver fault.",
+      "requiredRemediation": "Restart the runner/session or reset the device before accepting screenshots as proof.",
+      "safeFallbackMode": "cold_restart",
+      "owner": "runtime_verifier"
+    },
+    {
+      "code": "gpu_driver_tdr",
+      "phase": "runtime_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "GPU driver timeout or reset marker was detected.",
+      "requiredRemediation": "Treat the session as tainted and require recovery before continuing.",
+      "safeFallbackMode": "cold_restart",
+      "owner": "runtime_verifier"
+    },
+    {
+      "code": "screenshot_not_ready",
+      "phase": "runtime_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Screenshot verifier did not capture a visible frame.",
+      "requiredRemediation": "Do not mark runtime verification passed until a visible frame is captured.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "runtime_verifier"
+    },
+    {
+      "code": "arbiter_user_consent_required",
+      "phase": "arbiter",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Arbiter selected a path that requires developer consent.",
+      "requiredRemediation": "Request consent or select a non-disruptive fallback.",
+      "safeFallbackMode": "ask_developer",
+      "owner": "arbiter"
+    },
+    {
+      "code": "multi_device_tu_requires_topology_verification",
+      "phase": "preflight_readiness",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Multiple device translation units require explicit topology verification.",
+      "requiredRemediation": "Model per-TU compile and device-link topology before device_only reload.",
+      "safeFallbackMode": "unsupported",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "include_not_found",
+      "phase": "dependency_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A referenced include could not be resolved.",
+      "requiredRemediation": "Refresh dependency evidence or add the missing header to target metadata.",
+      "safeFallbackMode": "ai_delta",
+      "owner": "dependency_analyzer"
+    }
+  ]
+}

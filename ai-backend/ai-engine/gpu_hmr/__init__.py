@@ -25,6 +25,16 @@ from gpu_hmr.contracts import (
     SourceToGeneratedMapping,
     VerifierReport,
 )
+from gpu_hmr.reason_codes import (
+    ReasonCodeEntry,
+    ReasonCodeRegistry,
+    UnknownReasonCodeError,
+    assert_registered_reason_codes,
+    get_reason_code,
+    load_reason_code_registry,
+    reason_code_map,
+    unknown_reason_codes,
+)
 
 __all__ = [
     "AcceptedPointer",
@@ -44,8 +54,16 @@ __all__ = [
     "SelectedTargetIdentity",
     "SourceSplitIdentity",
     "SourceToGeneratedMapping",
+    "ReasonCodeEntry",
+    "ReasonCodeRegistry",
+    "UnknownReasonCodeError",
     "VerifierReport",
+    "assert_registered_reason_codes",
     "canonical_hash",
     "canonical_json_bytes",
     "canonicalize",
+    "get_reason_code",
+    "load_reason_code_registry",
+    "reason_code_map",
+    "unknown_reason_codes",
 ]
