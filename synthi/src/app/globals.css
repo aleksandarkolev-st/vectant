@@ -1719,6 +1719,17 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
 /* Master timeline lives on the stage. Children read from CSS custom
    properties driven by this single animation so we never have multiple
    keyframes competing for compositor wakeups in the same frame. */
+.status-island {
+  /* Keep the shell on the same compositor treatment in steady and
+    animated phases. Otherwise the end of expand / start of collapse
+    can raster-snap by ~1px when the temporary animation classes add
+    and remove translateZ(0). */
+  transform: translateZ(0);
+  transform-origin: center center;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
 .status-island-entrance-shell {
   animation: status-island-shell 720ms cubic-bezier(0.32, 0.72, 0, 1) both;
   transform-origin: center center;
@@ -1998,7 +2009,7 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
      ratio. Overflows the 28px button by 4px — fine, the button has
      no overflow clip.
 
-    translateY(+2px) aligns the V's *visual mass* with the bracket
+    translateY(+3px) aligns the V's *visual mass* with the bracket
      interior centre. Measured centroid of the V's opaque pixels sits
      at y=45.7% of the source PNG (i.e. ~1.4px ABOVE the rendered
      bbox centre at 32px), because the V is wide on top and narrows
@@ -2011,7 +2022,7 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
   z-index: 2;
   user-select: none;
   pointer-events: none;
-  transform: translateY(2px);
+  transform: translateY(3px);
   transition: opacity 160ms ease-out, filter 200ms ease-out, transform 200ms ease-out;
 }
 
@@ -2117,14 +2128,14 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
    the V is essentially gone before the pill's shell-morph and content
    fade-in animations get going — earlier we ran this at 380ms which
    left the V visible across most of the shell's growth and read as
-  too much overlap between two unrelated motions. The translateY(+2px)
+  too much overlap between two unrelated motions. The translateY(+3px)
   from the steady-state rule is preserved so the V doesn't jump at the
   start of the fade. */
 .vectant-logo-v.is-fading {
   opacity: 0;
-  /* Preserve the +2px mass-center nudge while scaling down so the V
+  /* Preserve the +3px mass-center nudge while scaling down so the V
      shrinks around its visual centre, not its bbox centre. */
-  transform: translateY(2px) scale(0.92);
+  transform: translateY(3px) scale(0.92);
   transition: opacity 180ms ease-out, transform 180ms ease-out;
 }
 
@@ -2275,6 +2286,16 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
 }
 .status-island-phase--logo .status-island-pill-wrapper * {
   pointer-events: none;
+}
+
+/* The collapsed V now lives inside the stage so it shares the brackets'
+   centreline. Re-enable pointer events after the blanket pill shutdown
+   above so the button and its context-menu trigger remain interactive. */
+.status-island-phase--logo .vectant-logo-wrapper {
+  pointer-events: auto;
+}
+.status-island-phase--logo .vectant-logo-wrapper * {
+  pointer-events: auto;
 }
 
 /* Logo opacity gating during collapse — start invisible, fade in only

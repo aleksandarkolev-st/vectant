@@ -777,39 +777,6 @@ function StatusBarInner({
           transition: positionerTransition,
         }}
       >
-        {/* Logo — rendered for all transition phases so the V fade-out
-            and bracket-slide animations are visible. Unmounted only
-            during the steady 'expanded' state. The wrapper is absolute-
-            centered over the pill so the morph happens in-place. */}
-        {hasCollapsedOnce && phase !== 'expanded' && (
-          <div className="vectant-logo-wrapper" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 25 }}>
-            <VectantLogoCollapsed
-              state={logoState}
-              phase={phase}
-              pendingCount={healingPending}
-              onActivate={triggerExpand}
-              onSecondaryDragStart={handleLogoRightMouseDown}
-              isCompact={isCompact}
-              onSetCompact={setCompactMode}
-              isPositionLocked={isPositionLocked}
-              onSetPositionLocked={setPositionLocked}
-              dockPreset={dockPreset}
-              onDockPresetChange={applyDockPreset}
-              activePresetId={currentMenuPresetId}
-              onPresetChange={applyMenuPreset}
-              savedPresets={savedPresets}
-              activeSavedPresetId={activeSavedPreset?.id || ''}
-              activeSavedPresetLabel={activeSavedPreset?.label || ''}
-              onApplySavedPreset={applySavedPreset}
-              onSaveCurrentPreset={openSavePresetDialog}
-              onDeleteSavedPreset={deleteActiveSavedPreset}
-              canResetPosition={hasOffset}
-              onResetPosition={resetOffset}
-              onOpenFullSettings={openFullSettings}
-              isDragging={isDragging}
-            />
-          </div>
-        )}
         <div className="status-island-pill-wrapper relative mx-auto w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))]">
           {/* Stage — owns the entrance scaleX. Wraps halo + pill + the
               two brackets so they morph together. The stage is inline-
@@ -858,6 +825,39 @@ function StatusBarInner({
                     <RotateCw className="w-3 h-3" strokeWidth={2.25} />
                   </button>
                 </div>
+              </div>
+            )}
+            {/* Logo — rendered for all transition phases so the V fade-out
+                and bracket-slide animations are visible. Unmounted only
+                during the steady 'expanded' state. Keeping it inside the
+                stage makes the V and bracket pair share one centerline. */}
+            {hasCollapsedOnce && phase !== 'expanded' && (
+              <div className="vectant-logo-wrapper" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 25 }}>
+                <VectantLogoCollapsed
+                  state={logoState}
+                  phase={phase}
+                  pendingCount={healingPending}
+                  onActivate={triggerExpand}
+                  onSecondaryDragStart={handleLogoRightMouseDown}
+                  isCompact={isCompact}
+                  onSetCompact={setCompactMode}
+                  isPositionLocked={isPositionLocked}
+                  onSetPositionLocked={setPositionLocked}
+                  dockPreset={dockPreset}
+                  onDockPresetChange={applyDockPreset}
+                  activePresetId={currentMenuPresetId}
+                  onPresetChange={applyMenuPreset}
+                  savedPresets={savedPresets}
+                  activeSavedPresetId={activeSavedPreset?.id || ''}
+                  activeSavedPresetLabel={activeSavedPreset?.label || ''}
+                  onApplySavedPreset={applySavedPreset}
+                  onSaveCurrentPreset={openSavePresetDialog}
+                  onDeleteSavedPreset={deleteActiveSavedPreset}
+                  canResetPosition={hasOffset}
+                  onResetPosition={resetOffset}
+                  onOpenFullSettings={openFullSettings}
+                  isDragging={isDragging}
+                />
               </div>
             )}
             {hasCollapsedOnce && (
