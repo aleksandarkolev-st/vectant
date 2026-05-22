@@ -1,2 +1,51 @@
 """GPU HMR contract helpers for identity, hashing, and projections."""
 
+from gpu_hmr.canonical import (
+    GPU_HMR_IDENTITY_POLICY,
+    CanonicalHashPolicy,
+    CanonicalizationError,
+    canonical_hash,
+    canonical_json_bytes,
+    canonicalize,
+)
+from gpu_hmr.contracts import (
+    AcceptedPointer,
+    AcceptedPromotionRecord,
+    AiGenerationIdentity,
+    CandidateSpecManifest,
+    CandidateVerificationRecord,
+    CompileCandidateIdentity,
+    GeneratedRoleRef,
+    PromotionIdentity,
+    RoleGenerationPackage,
+    RoleScopePackage,
+    RuntimeVerificationIdentity,
+    SelectedTargetIdentity,
+    SourceSplitIdentity,
+    SourceToGeneratedMapping,
+    VerifierReport,
+)
+
+__all__ = [
+    "AcceptedPointer",
+    "AcceptedPromotionRecord",
+    "AiGenerationIdentity",
+    "CandidateSpecManifest",
+    "CandidateVerificationRecord",
+    "CanonicalHashPolicy",
+    "CanonicalizationError",
+    "CompileCandidateIdentity",
+    "GPU_HMR_IDENTITY_POLICY",
+    "GeneratedRoleRef",
+    "PromotionIdentity",
+    "RoleGenerationPackage",
+    "RoleScopePackage",
+    "RuntimeVerificationIdentity",
+    "SelectedTargetIdentity",
+    "SourceSplitIdentity",
+    "SourceToGeneratedMapping",
+    "VerifierReport",
+    "canonical_hash",
+    "canonical_json_bytes",
+    "canonicalize",
+]

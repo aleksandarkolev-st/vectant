@@ -44,16 +44,26 @@ GPU_HMR_IDENTITY_POLICY = CanonicalHashPolicy(
         {
             "acceptedPointerPath",
             "buildRoot",
+            "candidatePath",
             "directory",
             "entryFile",
             "file",
             "focus",
             "generatedPath",
+            "generatedHeaderRoots",
+            "generatedRolePaths",
+            "includeRoots",
             "internalPath",
+            "linkDirectories",
             "path",
+            "runtimeLibraryPaths",
             "sourcePath",
+            "sourceFiles",
+            "systemIncludeRoots",
             "targetInputFile",
             "workspaceRelativePath",
+            "writableGeneratedPaths",
+            "writeScope",
         }
     ),
     source_text_keys=frozenset({"content", "source", "sourceText"}),
@@ -230,4 +240,3 @@ def hash_many(
     """Hash an ordered sequence of canonical identity fragments."""
 
     return canonical_hash(list(values), policy=policy)
-
