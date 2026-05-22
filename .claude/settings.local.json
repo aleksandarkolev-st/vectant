@@ -105,7 +105,8 @@
       "Bash(node --check synthi/src/components/ThemePicker.jsx)",
       "Bash(npx --prefix synthi babel synthi/src/components/ThemePicker.jsx --presets=@babel/preset-env,@babel/preset-react -o /dev/null)",
       "PowerShell(Get-Process *)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(node *)"
     ]
   }
 }
