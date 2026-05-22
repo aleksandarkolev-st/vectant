@@ -105,6 +105,21 @@
       "Bash(node --check synthi/src/components/ThemePicker.jsx)",
       "Bash(npx --prefix synthi babel synthi/src/components/ThemePicker.jsx --presets=@babel/preset-env,@babel/preset-react -o /dev/null)",
       "PowerShell(Get-Process *)",
+      "Bash(git -C \"C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade\" grep -n \"workspaceName\" -- \"synthi/src/app/workspace\")",
+      "Bash(git -C \"C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade\" add synthi/src/app/workspace/TerminalManager.jsx \"synthi/src/app/workspace/[slug]/page.jsx\")",
+      "Bash(git -C 'C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade' commit -m ' *)",
+      "Bash(git -C \"C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade\" push)",
+      "Bash(git -C \"C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade\" status --short)",
+      "Bash(git -C \"C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade\" log --oneline -3)",
+      "Bash(git -C \"C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade\" add synthi/src/app/workspace/TerminalPane.jsx)",
+      "PowerShell(Resolve-DnsName *)",
+      "PowerShell(Get-NetIPConfiguration *)",
+      "PowerShell(Out-Null *)",
+      "PowerShell(Get-Service *)",
+      "Bash(git -C \"C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade\" grep -n \"export function useContextMenu\\\\|export function openMenu\\\\|openMenu:\" -- \"synthi/src/components/docking-wm/components/ContextMenu.jsx\")",
+      "Bash(git -C \"C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade\" diff HEAD~3 -- synthi/src/app/workspace/TerminalPane.jsx)",
+      "Bash(git -C \"C:\\\\Users\\\\rafat\\\\Documents\\\\vsc-repos\\\\vectant-ade\" grep -n \"contextmenu\" -- \"synthi/src/app/workspace/TerminalManager.jsx\")",
+      "Bash(git *)"
       "Bash(git *)",
       "Bash(node *)"
     ]
