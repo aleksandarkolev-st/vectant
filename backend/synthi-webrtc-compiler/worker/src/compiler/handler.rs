@@ -649,8 +649,13 @@ fn can_compile_device_only_stage(
     has_previous_gui: bool,
     is_gui: bool,
 ) -> bool {
+    let device_reload_package = matches!(
+        split_reload_plan_name(split_data),
+        Some("device_only" | "warm_rebuild")
+    ) || split_data.get("_synthi_device_partial").is_some();
+
     has_gpu_device_stage
-        && split_reload_plan_name(split_data) == Some("device_only")
+        && device_reload_package
         && has_previous_core
         && (!is_gui || has_previous_gui)
 }
@@ -3902,11 +3907,23 @@ pub async fn handle_compile_request(
         .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(false);
     let use_parallel = num_cpus::get() >= 3 && !has_gpu_device_stage && !parallel_disabled_by_env;
+    let mut reusable_core_path = prev_core_path.clone();
+    let mut reusable_gui_path = prev_gui_path.clone();
+    if reusable_core_path.is_none() || reusable_gui_path.is_none() {
+        for p in crate::hmr::tier0_literal_patch::candidate_so_paths(&output_dir) {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            if name.contains("core") && reusable_core_path.is_none() {
+                reusable_core_path = Some(p.to_string_lossy().to_string());
+            } else if name.contains("gui") && reusable_gui_path.is_none() {
+                reusable_gui_path = Some(p.to_string_lossy().to_string());
+            }
+        }
+    }
     let device_only_compile_stage = can_compile_device_only_stage(
         &split_data,
         has_gpu_device_stage,
-        prev_core_path.is_some(),
-        prev_gui_path.is_some(),
+        reusable_core_path.is_some(),
+        reusable_gui_path.is_some(),
         req.is_gui,
     );
     if !tier0_bypassed {
@@ -3967,7 +3984,12 @@ pub async fn handle_compile_request(
         } else {
             None
         };
-        (prev_core_path.clone(), prev_gui_path.clone(), None, device_opt)
+        (
+            reusable_core_path.clone(),
+            reusable_gui_path.clone(),
+            None,
+            device_opt,
+        )
     } else if use_parallel {
         // ─── Parallel path ──────────────────────────────────────────
         // Three futures run concurrently on the tokio runtime. The
@@ -5462,6 +5484,21 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
             true,
             false,
             false
+        ));
+    }
+
+    #[test]
+    fn device_only_compile_stage_accepts_verified_warm_rebuild_package() {
+        let split_data = serde_json::json!({
+            "_synthi_reload_plan": { "plan": "warm_rebuild" }
+        });
+
+        assert!(can_compile_device_only_stage(
+            &split_data,
+            true,
+            true,
+            true,
+            true
         ));
     }
 
