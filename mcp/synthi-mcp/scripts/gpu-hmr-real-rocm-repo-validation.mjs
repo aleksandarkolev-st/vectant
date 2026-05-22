@@ -116,7 +116,34 @@ const report = {
   entry_file: CFG.entryFile,
   delta_file: CFG.deltaFile,
   target_name: CFG.targetName,
+  model: CFG.geminiModel,
+  gpu_vendor: CFG.gpuMode,
   gpu_arch: CFG.gpuArch,
+  containers: {
+    mcp: CFG.mcpContainer,
+    worker: CFG.workerContainer,
+    ai_engine: CFG.aiEngineContainer,
+  },
+  command: {
+    cwd: process.cwd(),
+    argv: process.argv,
+    env: {
+      SYNTHI_REAL_ROCM_REPO_URL: process.env.SYNTHI_REAL_ROCM_REPO_URL ?? '',
+      SYNTHI_REAL_ROCM_COMMIT: process.env.SYNTHI_REAL_ROCM_COMMIT ?? '',
+      SYNTHI_REAL_ROCM_ENTRY: process.env.SYNTHI_REAL_ROCM_ENTRY ?? '',
+      SYNTHI_REAL_ROCM_DELTA_FILE: process.env.SYNTHI_REAL_ROCM_DELTA_FILE ?? '',
+      SYNTHI_REAL_ROCM_TARGET: process.env.SYNTHI_REAL_ROCM_TARGET ?? '',
+      SYNTHI_REAL_ROCM_BUILD_SUBDIR: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? '',
+      SYNTHI_REAL_ROCM_BUILD_UPSTREAM: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM ?? '',
+      SYNTHI_REAL_ROCM_RUN_UPSTREAM: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM ?? '',
+      SYNTHI_REAL_ROCM_MAX_FILE_BYTES: process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? '',
+      SYNTHI_GEMINI_MODEL: process.env.SYNTHI_GEMINI_MODEL ?? '',
+      SYNTHI_GPU_ARCH: process.env.SYNTHI_GPU_ARCH ?? '',
+      MCP_CONTAINER: process.env.MCP_CONTAINER ?? '',
+      WORKER_CONTAINER: process.env.WORKER_CONTAINER ?? '',
+      AI_ENGINE_CONTAINER: process.env.AI_ENGINE_CONTAINER ?? '',
+    },
+  },
   file_count: 0,
   seeded_file_count: 0,
   skipped_file_count: 0,
@@ -124,6 +151,7 @@ const report = {
   phases: [],
   screenshots: [],
   logs: {},
+  docker: {},
   evidence: {},
   started_at: new Date().toISOString(),
   finished_at: null,
@@ -672,6 +700,11 @@ function countMatches(lines, pattern) {
 
 async function collectRuntimeEvidence() {
   if (CFG.mcpTransport !== 'docker') return;
+  report.docker = {
+    mcp: await dockerContainerSnapshot(CFG.mcpContainer),
+    worker: await dockerContainerSnapshot(CFG.workerContainer),
+    ai_engine: await dockerContainerSnapshot(CFG.aiEngineContainer),
+  };
   const workerLogs = await execText(
     'docker',
     ['logs', '--timestamps', '--since', report.started_at, CFG.workerContainer],
@@ -719,6 +752,29 @@ async function collectRuntimeEvidence() {
   );
 }
 
+async function dockerContainerSnapshot(containerName) {
+  const raw = await execText(
+    'docker',
+    [
+      'inspect',
+      containerName,
+      '--format',
+      '{{.Name}}|{{.Config.Image}}|{{.Image}}|{{.State.Status}}',
+    ],
+    30000,
+    false,
+  );
+  if (!raw) return { container: containerName, available: false };
+  const [name, config_image, image_id, status] = raw.split('|');
+  return {
+    container: containerName,
+    name: name?.replace(/^\//, '') ?? containerName,
+    config_image,
+    image_id,
+    status,
+  };
+}
+
 async function writeResults() {
   report.finished_at = new Date().toISOString();
   await mkdir(LOG_DIR, { recursive: true });
@@ -730,6 +786,12 @@ async function writeResults() {
     `repo_commit: ${report.repo_commit}`,
     `entry_file: ${report.entry_file}`,
     `delta_file: ${report.delta_file}`,
+    `model: ${report.model}`,
+    `gpu_vendor: ${report.gpu_vendor}`,
+    `gpu_arch: ${report.gpu_arch}`,
+    `containers: ${JSON.stringify(report.containers)}`,
+    `docker: ${JSON.stringify(report.docker)}`,
+    `command: ${JSON.stringify(report.command)}`,
     `file_count: ${report.file_count}`,
     `seeded_file_count: ${report.seeded_file_count}`,
     `skipped_file_count: ${report.skipped_file_count}`,
