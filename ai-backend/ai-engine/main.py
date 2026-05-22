@@ -2846,6 +2846,17 @@ except ImportError as e:
 
 
 # =============================================================================
+# GPU HMR split-broker contract API
+# =============================================================================
+try:
+    from gpu_hmr.api import router as gpu_hmr_router
+    app.include_router(gpu_hmr_router)
+    logger.info("GPU HMR split-broker module loaded")
+except ImportError as e:
+    logger.warning(f"GPU HMR split-broker module not available: {e}")
+
+
+# =============================================================================
 # Synthi Genome — shadow verification subsystem (Wave 1)
 # =============================================================================
 try:

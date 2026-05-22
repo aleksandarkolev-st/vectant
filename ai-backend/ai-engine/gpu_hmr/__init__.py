@@ -35,11 +35,18 @@ from gpu_hmr.reason_codes import (
     reason_code_map,
     unknown_reason_codes,
 )
+from gpu_hmr.broker import (
+    BrokerError,
+    GpuHmrBroker,
+    get_gpu_hmr_broker,
+    reset_gpu_hmr_broker_for_tests,
+)
 
 __all__ = [
     "AcceptedPointer",
     "AcceptedPromotionRecord",
     "AiGenerationIdentity",
+    "BrokerError",
     "CandidateSpecManifest",
     "CandidateVerificationRecord",
     "CanonicalHashPolicy",
@@ -47,6 +54,7 @@ __all__ = [
     "CompileCandidateIdentity",
     "GPU_HMR_IDENTITY_POLICY",
     "GeneratedRoleRef",
+    "GpuHmrBroker",
     "PromotionIdentity",
     "RoleGenerationPackage",
     "RoleScopePackage",
@@ -63,7 +71,9 @@ __all__ = [
     "canonical_json_bytes",
     "canonicalize",
     "get_reason_code",
+    "get_gpu_hmr_broker",
     "load_reason_code_registry",
     "reason_code_map",
+    "reset_gpu_hmr_broker_for_tests",
     "unknown_reason_codes",
 ]

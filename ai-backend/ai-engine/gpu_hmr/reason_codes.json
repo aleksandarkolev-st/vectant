@@ -370,6 +370,276 @@
       "requiredRemediation": "Refresh dependency evidence or add the missing header to target metadata.",
       "safeFallbackMode": "ai_delta",
       "owner": "dependency_analyzer"
+    },
+    {
+      "code": "gpu_hmr.request_invalid",
+      "phase": "api_contract",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "GPU HMR request payload is valid JSON but violates the split-broker contract.",
+      "requiredRemediation": "Send the required identity fields for the requested GPU HMR operation.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "gpu_hmr.idempotency_key_missing",
+      "phase": "api_contract",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A mutating GPU HMR request did not include an idempotency key.",
+      "requiredRemediation": "Retry with an idempotency key derived from the workspace, operation, and identity hash.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "gpu_hmr.idempotency_key_conflict",
+      "phase": "api_contract",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The idempotency key was reused for different GPU HMR identity material.",
+      "requiredRemediation": "Use a new idempotency key when the operation input changes.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "projection_not_found",
+      "phase": "projection",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The requested target-scoped projection does not exist.",
+      "requiredRemediation": "Create or refresh the projection for the selected target identity.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "projection.identity_mismatch",
+      "phase": "projection",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Projection identity material does not match the referenced source, target, CodeIntel, or build metadata generation.",
+      "requiredRemediation": "Refresh the projection with matching CodeIntel and build metadata identities.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "candidate_not_found",
+      "phase": "candidate_lookup",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The requested GPU HMR candidate does not exist.",
+      "requiredRemediation": "Prepare a candidate from a fresh projection before verification or promotion.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "candidate.spec_manifest_missing",
+      "phase": "candidate_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate has no immutable candidate spec manifest.",
+      "requiredRemediation": "Complete broker-issued generation and produce a candidate spec manifest before verification.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "candidate.spec_manifest_mismatch",
+      "phase": "candidate_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The supplied candidate spec manifest hash does not match the candidate resource.",
+      "requiredRemediation": "Fetch the candidate again and verify the current immutable manifest hash.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "candidate.verification_record_missing",
+      "phase": "promotion",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate has no verification record for promotion.",
+      "requiredRemediation": "Run deterministic verification and use the returned verification record hash.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "promotion_verifier"
+    },
+    {
+      "code": "candidate.verification_record_mismatch",
+      "phase": "promotion",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The supplied candidate verification record hash does not match the candidate state.",
+      "requiredRemediation": "Fetch the latest candidate verification record before promotion.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "promotion_verifier"
+    },
+    {
+      "code": "candidate.verification_failed_closed",
+      "phase": "candidate_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A deterministic verifier could not prove the candidate safe.",
+      "requiredRemediation": "Inspect verifier reports, repair the candidate, and rerun verification.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "verifier"
+    },
+    {
+      "code": "candidate.stale_source_generation",
+      "phase": "candidate_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate references a stale source split identity or source generation.",
+      "requiredRemediation": "Refresh projection and candidate scope after the source or CodeIntel generation changes.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "candidate.stale_codeintel_generation",
+      "phase": "candidate_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate references a stale CodeIntel generation.",
+      "requiredRemediation": "Refresh CodeIntel and rebuild the target-scoped projection.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "code_intel"
+    },
+    {
+      "code": "candidate.stale_retrieval_identity",
+      "phase": "candidate_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The candidate references stale retrieval identity material.",
+      "requiredRemediation": "Regenerate role packages with current retrieval identities.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "rag"
+    },
+    {
+      "code": "candidate.verification_cancelled",
+      "phase": "candidate_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Candidate verification or generation was cancelled.",
+      "requiredRemediation": "Prepare a fresh candidate or resume only after referenced identities still match.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "candidate.branch_changed",
+      "phase": "candidate_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The workspace branch changed while the candidate was in progress.",
+      "requiredRemediation": "Refresh source identities on the current branch and prepare a new candidate.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "candidate.build_dir_changed",
+      "phase": "candidate_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The selected build directory changed while the candidate was in progress.",
+      "requiredRemediation": "Refresh build metadata and prepare a candidate for the current build directory.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "build_metadata"
+    },
+    {
+      "code": "promotion.concurrent_transaction",
+      "phase": "promotion",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Another GPU HMR promotion transaction is active for the workspace.",
+      "requiredRemediation": "Wait for the active promotion transaction to finish, then retry with current identities.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "promotion_verifier"
+    },
+    {
+      "code": "verifier.proof_unavailable",
+      "phase": "candidate_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Required deterministic verifier proof is unavailable.",
+      "requiredRemediation": "Run the concrete verifier that produces the required compile, dependency, ABI, or runtime proof.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "verifier"
+    },
+    {
+      "code": "job_not_found",
+      "phase": "job_lookup",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The requested GPU HMR job does not exist.",
+      "requiredRemediation": "Use the job ID returned by the projection, candidate, verification, or diagnostics operation.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "job_not_cancellable",
+      "phase": "job_lookup",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "The requested GPU HMR job can no longer be cancelled.",
+      "requiredRemediation": "Inspect the completed job trace and prepare a new operation if needed.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "split_broker"
+    },
+    {
+      "code": "generated.absolute_path_rejected",
+      "phase": "path_scope_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A generated artifact path was absolute.",
+      "requiredRemediation": "Write generated artifacts only under the broker-owned candidate directory.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "path_scope_verifier"
+    },
+    {
+      "code": "generated.path_traversal_rejected",
+      "phase": "path_scope_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A generated artifact path escaped the workspace or candidate directory.",
+      "requiredRemediation": "Use workspace-relative generated paths inside the broker-owned candidate directory.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "path_scope_verifier"
+    },
+    {
+      "code": "generated.symlink_escape_rejected",
+      "phase": "path_scope_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "A generated artifact path resolved through a symlink outside the allowed candidate directory.",
+      "requiredRemediation": "Remove symlink escapes and regenerate artifacts under the broker-owned candidate directory.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "path_scope_verifier"
+    },
+    {
+      "code": "generated.case_collision_rejected",
+      "phase": "path_scope_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Generated artifact paths collide on a case-insensitive filesystem.",
+      "requiredRemediation": "Use unique generated paths that do not collide under the workspace filesystem policy.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "path_scope_verifier"
+    },
+    {
+      "code": "generated.command_injection_rejected",
+      "phase": "path_scope_verification",
+      "severity": "blocking",
+      "blocking": true,
+      "message": "Generated build metadata attempted to add a command or post-build action outside the broker contract.",
+      "requiredRemediation": "Remove generated commands and keep generation inside declared role artifact files.",
+      "safeFallbackMode": "diagnostics_only",
+      "owner": "path_scope_verifier"
+    },
+    {
+      "code": "source.prompt_injection_ignored",
+      "phase": "scope_verification",
+      "severity": "info",
+      "blocking": false,
+      "message": "Prompt-like text in source comments was ignored in favor of the broker-issued role package.",
+      "requiredRemediation": "No remediation required unless the broker package itself is stale.",
+      "safeFallbackMode": "continue",
+      "owner": "split_broker"
     }
   ]
 }

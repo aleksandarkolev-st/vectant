@@ -19,6 +19,10 @@ def test_reason_code_registry_loads_required_metadata():
     assert "abi.kernel_signature_changed" in by_code
     assert "ai_provider_rate_limited" in by_code
     assert "ai_provider_unavailable" in by_code
+    assert "projection_not_found" in by_code
+    assert "candidate.spec_manifest_missing" in by_code
+    assert "verifier.proof_unavailable" in by_code
+    assert "generated.path_traversal_rejected" in by_code
     assert by_code["toolchain_capability_missing"].blocking is True
     assert by_code["cmake_file_api_missing"].blocking is False
     assert by_code["abi.kernel_signature_changed"].safeFallbackMode == "abi_breaking"
