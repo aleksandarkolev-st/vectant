@@ -1,6 +1,6 @@
 use crate::debug_log;
 use anyhow::{Context, Result};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use crate::compiler::builder::{
@@ -15,6 +15,7 @@ use crate::infra::messages::CompileRequest;
 static TIER0_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TIER0_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TIER0_INELIGIBLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const MAX_DEVICE_PARTIAL_ARTIFACTS: usize = 128;
 
 // Import our new modular stages
 use crate::compiler::stages::ai_utils::{
@@ -572,6 +573,17 @@ struct DeviceCompileSources {
     partial_symbols: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct DevicePartialArtifactSpec {
+    filename: String,
+    content: String,
+    kind: &'static str,
+    generated_path: String,
+    source_paths: Vec<String>,
+    symbols: Vec<String>,
+    omitted_source_includes: Vec<String>,
+}
+
 fn partial_device_filename(generated_path: &str, symbols: &[String], source: &str) -> String {
     let normalized = generated_path.replace('\\', "/");
     let (dir, file) = normalized
@@ -1115,6 +1127,206 @@ fn include_bridge_kernel_source_paths(
     }
 
     (targets.into_iter().collect(), omitted.into_iter().collect())
+}
+
+fn device_partial_artifact_specs(
+    sidecar: &serde_json::Value,
+    generated_path: &str,
+    full_source: &str,
+) -> Vec<DevicePartialArtifactSpec> {
+    let mut specs = include_bridge_partial_artifact_specs(sidecar, generated_path, full_source);
+    if specs.is_empty() {
+        specs = direct_kernel_partial_artifact_specs(generated_path, full_source);
+    }
+    specs.sort_by(|a, b| a.filename.cmp(&b.filename));
+    specs.dedup_by(|a, b| a.filename == b.filename);
+    specs
+}
+
+fn include_bridge_partial_artifact_specs(
+    sidecar: &serde_json::Value,
+    generated_path: &str,
+    full_source: &str,
+) -> Vec<DevicePartialArtifactSpec> {
+    let generated = normalized_request_filename(generated_path)
+        .unwrap_or_else(|| generated_path.replace('\\', "/"));
+    let mut by_source: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
+        let Some(items) = sidecar.pointer(pointer).and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for item in items {
+            if item.get("kind").and_then(serde_json::Value::as_str) != Some("kernel") {
+                continue;
+            }
+            let include_bridge_mapping =
+                item.get("generatedMappingMode").and_then(serde_json::Value::as_str)
+                    == Some("source_include_bridge")
+                    || item.get("mappingConfidence").and_then(serde_json::Value::as_str)
+                        == Some("generated_include_bridge_same_source");
+            if !include_bridge_mapping {
+                continue;
+            }
+            let Some(mapping_generated) = item
+                .get("generatedPath")
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename)
+            else {
+                continue;
+            };
+            if mapping_generated != generated {
+                continue;
+            }
+            let Some(source_path) = item
+                .get("sourcePath")
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename)
+            else {
+                continue;
+            };
+            let Some(symbol) = item
+                .get("symbol")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            by_source
+                .entry(source_path)
+                .or_default()
+                .insert(symbol.to_string());
+        }
+    }
+
+    if by_source.len() <= 1 {
+        return Vec::new();
+    }
+
+    let all_sources = by_source.keys().cloned().collect::<BTreeSet<_>>();
+    let mut specs = Vec::new();
+    for (source_path, symbols) in by_source {
+        let omitted = all_sources
+            .iter()
+            .filter(|path| *path != &source_path)
+            .cloned()
+            .collect::<Vec<_>>();
+        let target_paths = vec![source_path.clone()];
+        let Some(content) =
+            build_device_include_bridge_partial_source(full_source, &target_paths, &omitted)
+        else {
+            continue;
+        };
+        let symbols = symbols.into_iter().collect::<Vec<_>>();
+        let filename = partial_device_filename(&generated, &symbols, &content);
+        specs.push(DevicePartialArtifactSpec {
+            filename,
+            content,
+            kind: "source_include_bridge",
+            generated_path: generated.clone(),
+            source_paths: target_paths,
+            symbols,
+            omitted_source_includes: omitted,
+        });
+    }
+    specs
+}
+
+fn direct_kernel_partial_artifact_specs(
+    generated_path: &str,
+    full_source: &str,
+) -> Vec<DevicePartialArtifactSpec> {
+    let symbols = extract_device_kernel_symbols(full_source)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if symbols.len() <= 1 {
+        return Vec::new();
+    }
+
+    let generated = normalized_request_filename(generated_path)
+        .unwrap_or_else(|| generated_path.replace('\\', "/"));
+    symbols
+        .into_iter()
+        .filter_map(|symbol| {
+            let target = vec![symbol.clone()];
+            let content = build_device_partial_source(full_source, &target)?;
+            let filename = partial_device_filename(&generated, &target, &content);
+            Some(DevicePartialArtifactSpec {
+                filename,
+                content,
+                kind: "kernel_region",
+                generated_path: generated.clone(),
+                source_paths: Vec::new(),
+                symbols: target,
+                omitted_source_includes: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+async fn materialize_device_partial_artifacts(
+    workspace: &Path,
+    sidecar_path: &Path,
+    generated_path: &str,
+    full_source: &str,
+    session_id: &str,
+) -> Result<()> {
+    let raw = match tokio::fs::read_to_string(sidecar_path).await {
+        Ok(raw) => raw,
+        Err(_) => return Ok(()),
+    };
+    let mut meta = match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(meta) => meta,
+        Err(e) => {
+            eprintln!("[compile-device] partial artifact catalog skipped: sidecar parse failed: {e}");
+            return Ok(());
+        }
+    };
+    let specs = device_partial_artifact_specs(&meta, generated_path, full_source);
+    if specs.is_empty() {
+        return Ok(());
+    }
+
+    let total = specs.len();
+    let mut artifacts = Vec::new();
+    for spec in specs.iter().take(MAX_DEVICE_PARTIAL_ARTIFACTS) {
+        write_compile_request_file(workspace, &spec.filename, &spec.content).await?;
+        artifacts.push(serde_json::json!({
+            "kind": spec.kind,
+            "filename": spec.filename,
+            "generatedPath": spec.generated_path,
+            "sourcePaths": spec.source_paths,
+            "symbols": spec.symbols,
+            "omittedSourceIncludes": spec.omitted_source_includes,
+            "contentBytes": spec.content.len(),
+            "fullBytes": full_source.len(),
+            "contentHash": format!("{}", hash_content(&spec.content)),
+        }));
+    }
+    let materialized = artifacts.len();
+    let report = serde_json::json!({
+        "schemaVersion": "synthi.gpu.device_partial_artifacts.v1",
+        "generatedPath": generated_path.replace('\\', "/"),
+        "materialized": materialized,
+        "candidateCount": total,
+        "truncated": total > materialized,
+        "maxArtifacts": MAX_DEVICE_PARTIAL_ARTIFACTS,
+        "artifacts": artifacts,
+    });
+
+    if let Some(obj) = meta.as_object_mut() {
+        obj.insert("devicePartialArtifacts".to_string(), report.clone());
+        obj.insert("generatedDevicePartials".to_string(), report);
+    }
+    write_sidecar_logged(sidecar_path, &meta, session_id).await;
+    eprintln!(
+        "[compile-device] materialized partial device artifacts count={} candidates={} generated={}",
+        materialized,
+        total,
+        generated_path
+    );
+    Ok(())
 }
 
 fn ranked_option_reason_codes(sidecar: &serde_json::Value, plan: &str) -> Vec<String> {
@@ -3510,6 +3722,22 @@ pub async fn handle_compile_request(
         None
     };
 
+    if let Some(device_sources) = device_source_content.as_ref() {
+        if let Some(full_filename) = device_sources.full_filename.as_deref() {
+            if let Err(e) = materialize_device_partial_artifacts(
+                &ctx.workspace_path,
+                &sidecar_path,
+                full_filename,
+                &device_sources.full_source,
+                &session_id,
+            )
+            .await
+            {
+                eprintln!("[compile-device] partial artifact materialization skipped: {e:#}");
+            }
+        }
+    }
+
     // ULTRAPLAN Phase 8: forward the manifest + architecture cache to
     // the frontend over the log data channel. The frontend's
     // compilerClient.js bridges `{type: "compile-manifest", ...}` into
@@ -5280,6 +5508,84 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
             },
             "launch_indirection_report": warm_launch_indirection_report()
         }))
+    }
+
+    #[test]
+    fn include_bridge_partial_artifact_catalog_materializes_one_role_per_source_kernel() {
+        let sidecar = normalize_split_sidecar(&serde_json::json!({
+            "deviceMappingReport": {
+                "schemaVersion": "synthi.gpu.device_mapping.v1",
+                "generatedDevicePath": ".synthi/generated/gpu/device.hip",
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "CameraRays",
+                        "sourcePath": "src/Device/kernels/CameraRays.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_include_bridge_same_source",
+                        "generatedMappingMode": "source_include_bridge"
+                    },
+                    {
+                        "kind": "kernel",
+                        "symbol": "TraceTest",
+                        "sourcePath": "src/Device/kernels/TraceTest.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_include_bridge_same_source",
+                        "generatedMappingMode": "source_include_bridge"
+                    }
+                ]
+            }
+        }));
+        let source = r#"
+#include "src/Device/kernels/CameraRays.h"
+#include "src/Device/kernels/TraceTest.h"
+"#;
+
+        let specs = device_partial_artifact_specs(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            source,
+        );
+
+        assert_eq!(specs.len(), 2);
+        let camera = specs
+            .iter()
+            .find(|spec| spec.symbols == vec!["CameraRays".to_string()])
+            .expect("CameraRays partial");
+        assert_eq!(camera.kind, "source_include_bridge");
+        assert!(camera
+            .content
+            .contains("#include \"src/Device/kernels/CameraRays.h\""));
+        assert!(!camera
+            .content
+            .contains("#include \"src/Device/kernels/TraceTest.h\""));
+        assert_eq!(
+            camera.source_paths,
+            vec!["src/Device/kernels/CameraRays.h".to_string()]
+        );
+    }
+
+    #[test]
+    fn direct_device_partial_artifact_catalog_splits_monolithic_kernels_by_symbol() {
+        let source = r#"
+extern "C" __global__ void first(float* out) { out[0] = 1.0f; }
+extern "C" __global__ void second(float* out) { out[0] = 2.0f; }
+"#;
+
+        let specs = device_partial_artifact_specs(
+            &serde_json::json!({}),
+            ".synthi/generated/gpu/device.hip",
+            source,
+        );
+
+        assert_eq!(specs.len(), 2);
+        let first = specs
+            .iter()
+            .find(|spec| spec.symbols == vec!["first".to_string()])
+            .expect("first partial");
+        assert_eq!(first.kind, "kernel_region");
+        assert!(first.content.contains("void first"));
+        assert!(!first.content.contains("void second"));
     }
 
     #[test]
