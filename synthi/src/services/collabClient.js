@@ -961,7 +961,16 @@ class CollabClient {
         doSeed();
       }
     } else {
-      // Wait for sync before seeding
+      // Show the disk-provided content IMMEDIATELY so the editor isn't blank
+      // during the (sometimes multi-second) CRDT sync on load/reload. This is
+      // display-only and safe: it runs BEFORE the binding's local-change
+      // listener is attached below, so it is NEVER pushed into the CRDT, and
+      // doSeed() reconciles against the authoritative server state once synced
+      // (server content wins via a guarded applyEdits; the guest guard holds).
+      if (providedContent && model.getValue().length === 0) {
+        model.setValue(providedContent);
+      }
+      // Wait for sync before the authoritative seed / reconcile.
       const unsubSyncWait = bridge.onSynced(key, (_content) => {
         try { unsubSyncWait(); } catch (_) {}
         doSeed();
