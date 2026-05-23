@@ -78,6 +78,12 @@ const CFG = {
   deltaAfter:
     process.env.SYNTHI_REAL_ROCM_DELTA_AFTER ??
     'd_y[global_idx] = (a + 0.25f) * d_x[global_idx] + d_y[global_idx];',
+  secondDeltaFile: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_FILE
+    ?? process.env.SYNTHI_REAL_ROCM_DELTA_FILE
+    ?? process.env.SYNTHI_REAL_ROCM_ENTRY
+    ?? 'HIP-Basic/saxpy/main.hip',
+  secondDeltaBefore: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE ?? '',
+  secondDeltaAfter: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER ?? '',
   maxFileBytes: Number(process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? 512 * 1024),
   compileContextMaxBytes: Number(process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? 48 * 1024 * 1024),
   writeBatchSize: Number(process.env.SYNTHI_REAL_ROCM_WRITE_BATCH_SIZE ?? 200),
@@ -119,6 +125,7 @@ const report = {
   repo_commit: null,
   entry_file: CFG.entryFile,
   delta_file: CFG.deltaFile,
+  second_delta_file: CFG.secondDeltaBefore || CFG.secondDeltaAfter ? CFG.secondDeltaFile : null,
   target_name: CFG.targetName,
   model: CFG.geminiModel,
   gpu_vendor: CFG.gpuMode,
@@ -136,6 +143,7 @@ const report = {
       SYNTHI_REAL_ROCM_COMMIT: process.env.SYNTHI_REAL_ROCM_COMMIT ?? '',
       SYNTHI_REAL_ROCM_ENTRY: process.env.SYNTHI_REAL_ROCM_ENTRY ?? '',
       SYNTHI_REAL_ROCM_DELTA_FILE: process.env.SYNTHI_REAL_ROCM_DELTA_FILE ?? '',
+      SYNTHI_REAL_ROCM_SECOND_DELTA_FILE: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_FILE ?? '',
       SYNTHI_REAL_ROCM_TARGET: process.env.SYNTHI_REAL_ROCM_TARGET ?? '',
       SYNTHI_REAL_ROCM_BUILD_SUBDIR: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? '',
       SYNTHI_REAL_ROCM_BUILD_UPSTREAM: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM ?? '',
@@ -143,6 +151,8 @@ const report = {
       SYNTHI_REAL_ROCM_MAX_FILE_BYTES: process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? '',
       SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES: process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? '',
       SYNTHI_REAL_ROCM_BUILD_METADATA_DIR: process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR ?? '',
+      SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE ?? '',
+      SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER ?? '',
       SYNTHI_GEMINI_MODEL: process.env.SYNTHI_GEMINI_MODEL ?? '',
       SYNTHI_GPU_ARCH: process.env.SYNTHI_GPU_ARCH ?? '',
       MCP_CONTAINER: process.env.MCP_CONTAINER ?? '',
@@ -856,12 +866,22 @@ async function captureScreenshot(label) {
   return null;
 }
 
-function editConfiguredSource(source) {
-  const before = CFG.deltaBefore;
-  const after = CFG.deltaAfter;
-  if (!before || before === after) throw new Error('configured source delta must be non-empty and change the source');
-  if (!source.includes(before)) throw new Error('configured source delta did not match the selected entry file');
+function editSource(source, before, after, label) {
+  if (!before || before === after) throw new Error(`${label} source delta must be non-empty and change the source`);
+  if (!source.includes(before)) throw new Error(`${label} source delta did not match the selected file`);
   return source.replace(before, after);
+}
+
+function editConfiguredSource(source) {
+  return editSource(source, CFG.deltaBefore, CFG.deltaAfter, 'configured');
+}
+
+function hasSecondConfiguredSourceDelta() {
+  if (!CFG.secondDeltaBefore && !CFG.secondDeltaAfter) return false;
+  if (!CFG.secondDeltaBefore || !CFG.secondDeltaAfter) {
+    throw new Error('second source delta requires both SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE and SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER');
+  }
+  return true;
 }
 
 function evidenceLines(text, pattern) {
@@ -963,6 +983,7 @@ async function writeResults() {
     `repo_commit: ${report.repo_commit}`,
     `entry_file: ${report.entry_file}`,
     `delta_file: ${report.delta_file}`,
+    `second_delta_file: ${report.second_delta_file ?? ''}`,
     `model: ${report.model}`,
     `gpu_vendor: ${report.gpu_vendor}`,
     `gpu_arch: ${report.gpu_arch}`,
@@ -1052,6 +1073,46 @@ async function run() {
     height: CFG.height,
   }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr');
   await captureScreenshot('post-hmr');
+
+  if (hasSecondConfiguredSourceDelta()) {
+    const secondPrimary = files.find((file) => file.path === CFG.secondDeltaFile);
+    if (!secondPrimary) throw new Error(`second delta file missing from seeded files: ${CFG.secondDeltaFile}`);
+    const secondBase = CFG.secondDeltaFile === CFG.deltaFile ? edited : secondPrimary.content;
+    const secondEdited = editSource(
+      secondBase,
+      CFG.secondDeltaBefore,
+      CFG.secondDeltaAfter,
+      'second configured',
+    );
+    const secondAdditionalFiles = buildCompileProjection(
+      files,
+      CFG.secondDeltaFile,
+      buildMetadata,
+      'real_repo_second_user_source_delta_hmr',
+    );
+    await httpJson(
+      'POST',
+      `${CFG.collabUrl}/git/${CFG.slug}/write-files-batch`,
+      { files: [{ path: CFG.secondDeltaFile, encoding: 'utf8', content: secondEdited }], syncToGcs: CFG.syncToGcs },
+      { 'x-user-id': CFG.hostId },
+    );
+    await compileViaMcp({
+      language: 'cpp',
+      filename: CFG.secondDeltaFile,
+      source: secondEdited,
+      files: secondAdditionalFiles,
+      is_gui: CFG.expectScreenshot,
+      use_ai_split: true,
+      user_requested_ai: true,
+      prefer_gpu_pipeline: true,
+      gpu_mode: CFG.gpuMode,
+      gpu_arch: CFG.gpuArch,
+      slug: CFG.slug,
+      width: CFG.width,
+      height: CFG.height,
+    }, CFG.hmrTimeoutMs, 'real_repo_second_user_source_delta_hmr');
+    await captureScreenshot('post-second-hmr');
+  }
 }
 
 run()
