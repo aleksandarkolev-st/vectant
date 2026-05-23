@@ -270,6 +270,17 @@ const EditorPanel = ({
     // their own Monaco model only.
     const isFocusedPane = !dockingMode || (!!paneFile?.path && activeFile?.path === paneFile.path);
 
+    // Initial content for THIS pane's file — its own cached content. Never the
+    // global `code` buffer unless this is the focused pane, so an unfocused pane
+    // can't seed the (shared) model with the wrong file or empty.
+    const paneInitialContent = useMemo(() => {
+        const cached = paneFile?.path
+            ? fileCacheEntries.find(([p]) => p === paneFile.path)?.[1]
+            : undefined;
+        if (typeof cached === 'string') return cached;
+        return isFocusedPane ? (code ?? '') : '';
+    }, [paneFile?.path, fileCacheEntries, isFocusedPane, code]);
+
     // Git status for conflict detection
     const gitStatus = useAppSelector(state => state.git?.status);
     const conflictedFiles = gitStatus?.conflictedFiles || [];
@@ -4662,7 +4673,12 @@ const EditorPanel = ({
                                                 // Models are pre-created and switched via editor.setModel() in the
                                                 // useEffect above, so there is no blank flash between tab switches.
                                                 // Only the focused pane may seed a new model from the global buffer.
-                                                defaultValue={isFocusedPane ? (code ?? '') : ''}
+                                                defaultValue={paneInitialContent}
+                                                // Panes showing the SAME file share one Monaco model (same URI).
+                                                // Without keepCurrentModel, monaco-react disposes a pane's model when
+                                                // that pane navigates to another file or unmounts — which wipes every
+                                                // other pane still showing the original file. Keep models alive.
+                                                keepCurrentModel
                                                 language={activeLanguage}
                                                 theme="synthi-theme"
                                                 options={{
