@@ -52,6 +52,10 @@ use tokio::time::{timeout, Duration};
 /// Standard filenames for the AI-synthesised device source files.
 pub const DEVICE_CU_FILENAME: &str = "device.cu";
 pub const DEVICE_HIP_FILENAME: &str = "device.hip";
+#[cfg(feature = "gpu-hmr")]
+const DEFAULT_DEVICE_FULL_COMPILE_TIMEOUT_SECS: u64 = 180;
+#[cfg(feature = "gpu-hmr")]
+const DEFAULT_DEVICE_PARTIAL_COMPILE_TIMEOUT_SECS: u64 = 60;
 
 /// Compile result attached alongside the cubin/hsaco path. The
 /// diagnostics surface to the IDE (badges) and feed the Tier-2 healer
@@ -593,6 +597,53 @@ fn normalize_path_key(path: &Path) -> String {
 }
 
 #[cfg(feature = "gpu-hmr")]
+fn is_partial_device_source_filename(source_filename: &str) -> bool {
+    source_filename
+        .replace('\\', "/")
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.contains(".partial."))
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn positive_timeout_secs(value: Option<String>) -> Option<u64> {
+    value
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_compile_timeout_secs_for(
+    source_filename: &str,
+    global_override: Option<u64>,
+    partial_override: Option<u64>,
+    full_override: Option<u64>,
+) -> u64 {
+    if let Some(secs) = global_override {
+        return secs;
+    }
+    if is_partial_device_source_filename(source_filename) {
+        partial_override.unwrap_or(DEFAULT_DEVICE_PARTIAL_COMPILE_TIMEOUT_SECS)
+    } else {
+        full_override.unwrap_or(DEFAULT_DEVICE_FULL_COMPILE_TIMEOUT_SECS)
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_compile_timeout_secs(source_filename: &str) -> u64 {
+    device_compile_timeout_secs_for(
+        source_filename,
+        positive_timeout_secs(std::env::var("SYNTHI_GPU_HMR_DEVICE_COMPILE_TIMEOUT_SECS").ok()),
+        positive_timeout_secs(
+            std::env::var("SYNTHI_GPU_HMR_DEVICE_PARTIAL_COMPILE_TIMEOUT_SECS").ok(),
+        ),
+        positive_timeout_secs(
+            std::env::var("SYNTHI_GPU_HMR_DEVICE_FULL_COMPILE_TIMEOUT_SECS").ok(),
+        ),
+    )
+}
+
+#[cfg(feature = "gpu-hmr")]
 struct DeviceCompileAttempt {
     status: std::process::ExitStatus,
     diagnostics: GpuToolchainDiagnostics,
@@ -611,21 +662,28 @@ async fn run_device_compile_once(
     populate_device_command(&mut cmd, gpu, source_filename, artifact_path);
     cmd.current_dir(workspace_dir);
     cmd.kill_on_drop(true);
+    let timeout_secs = device_compile_timeout_secs(source_filename);
 
     eprintln!(
-        "[compile-device] {} -> {}  args={:?}",
+        "[compile-device] {} -> {}  timeout_secs={} args={:?}",
         compiler_exe,
         artifact_path.display(),
+        timeout_secs,
         cmd.as_std().get_args()
     );
 
     let child = cmd
         .spawn()
         .with_context(|| format!("spawning {compiler_exe}"))?;
-    let out = match timeout(Duration::from_secs(60), child.wait_with_output()).await {
+    let out = match timeout(
+        Duration::from_secs(timeout_secs),
+        child.wait_with_output(),
+    )
+    .await
+    {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => return Err(e.into()),
-        Err(_) => anyhow::bail!("Device compile timed out after 60s"),
+        Err(_) => anyhow::bail!("Device compile timed out after {timeout_secs}s"),
     };
 
     let stderr_str = String::from_utf8_lossy(&out.stderr).to_string();
@@ -912,6 +970,36 @@ mod tests {
             .get_args()
             .map(|s| s.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn device_compile_timeout_keeps_partial_compiles_tight() {
+        assert_eq!(
+            device_compile_timeout_secs_for(".synthi/generated/gpu/device.partial.abc.hip", None, None, None),
+            DEFAULT_DEVICE_PARTIAL_COMPILE_TIMEOUT_SECS
+        );
+        assert_eq!(
+            device_compile_timeout_secs_for(".synthi/generated/gpu/device.hip", None, None, None),
+            DEFAULT_DEVICE_FULL_COMPILE_TIMEOUT_SECS
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn device_compile_timeout_honors_scoped_overrides() {
+        assert_eq!(
+            device_compile_timeout_secs_for("device.partial.abc.hip", None, Some(12), Some(240)),
+            12
+        );
+        assert_eq!(
+            device_compile_timeout_secs_for("device.hip", None, Some(12), Some(240)),
+            240
+        );
+        assert_eq!(
+            device_compile_timeout_secs_for("device.hip", Some(30), Some(12), Some(240)),
+            30
+        );
     }
 
     #[cfg(feature = "gpu-hmr")]
