@@ -903,6 +903,41 @@ async fn compile_device_sources_phase0(
     Ok(outcome)
 }
 
+async fn compile_device_sources_phase0_and_refresh_catalog(
+    workspace_path: &Path,
+    output_dir: &Path,
+    timestamp: i64,
+    sources: &DeviceCompileSources,
+    manifest: &CompileManifest,
+    sidecar_path: &Path,
+    session_id: &str,
+) -> Result<Option<DeviceCompileOutcome>> {
+    let device = compile_device_sources_phase0(
+        workspace_path,
+        output_dir,
+        timestamp,
+        sources,
+        manifest,
+    )
+    .await?;
+    if let (Some(outcome), Some(partial_filename)) =
+        (device.as_ref(), sources.partial_filename.as_deref())
+    {
+        if outcome.partial_module {
+            refresh_device_partial_artifact_catalog(
+                sidecar_path,
+                partial_filename,
+                &outcome.compiled_source,
+                &outcome.target_symbols,
+                sources.full_filename.as_deref(),
+                session_id,
+            )
+            .await?;
+        }
+    }
+    Ok(device)
+}
+
 fn is_device_source_request(filename: &str) -> bool {
     normalized_request_filename(filename)
         .map(|name| {
@@ -1492,6 +1527,135 @@ async fn materialize_device_partial_artifacts(
         materialized,
         total,
         generated_path
+    );
+    Ok(())
+}
+
+fn refresh_device_partial_artifact_catalog_value(
+    meta: &mut serde_json::Value,
+    filename: &str,
+    source: &str,
+    symbols: &[String],
+    generated_path: Option<&str>,
+) -> bool {
+    let normalized = normalized_request_filename(filename)
+        .unwrap_or_else(|| filename.replace('\\', "/"));
+    let symbol_set = normalized_symbol_set(symbols);
+    let generated = generated_path.and_then(normalized_request_filename);
+    let mut updated = false;
+
+    for report_key in ["devicePartialArtifacts", "generatedDevicePartials"] {
+        let Some(artifacts) = meta
+            .get_mut(report_key)
+            .and_then(|report| report.get_mut("artifacts"))
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            continue;
+        };
+        let mut report_updated = false;
+        for artifact in &mut *artifacts {
+            let artifact_name = artifact
+                .get("filename")
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename);
+            let filename_matches = artifact_name.as_deref() == Some(normalized.as_str());
+            let symbol_matches = if symbol_set.is_empty() {
+                false
+            } else {
+                let artifact_symbols = string_array_field(artifact, "symbols");
+                let artifact_generated = artifact
+                    .get("generatedPath")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(normalized_request_filename);
+                normalized_symbol_set(&artifact_symbols) == symbol_set
+                    && generated
+                        .as_deref()
+                        .map(|expected| artifact_generated.as_deref() == Some(expected))
+                        .unwrap_or(true)
+            };
+            if !filename_matches && !symbol_matches {
+                continue;
+            }
+            if let Some(obj) = artifact.as_object_mut() {
+                obj.insert(
+                    "filename".to_string(),
+                    serde_json::Value::String(normalized.clone()),
+                );
+                obj.insert(
+                    "contentBytes".to_string(),
+                    serde_json::json!(source.len()),
+                );
+                obj.insert(
+                    "contentHash".to_string(),
+                    serde_json::Value::String(format!("{}", hash_content(source))),
+                );
+                obj.insert(
+                    "contentSource".to_string(),
+                    serde_json::Value::String("compiled_source".to_string()),
+                );
+                report_updated = true;
+            }
+        }
+        if !report_updated && !symbol_set.is_empty() {
+            let mut artifact = serde_json::json!({
+                "filename": normalized.clone(),
+                "symbols": symbols,
+                "contentBytes": source.len(),
+                "contentHash": format!("{}", hash_content(source)),
+                "contentSource": "compiled_source",
+                "kind": "compiled_partial"
+            });
+            if let (Some(obj), Some(generated)) = (artifact.as_object_mut(), generated.as_deref()) {
+                obj.insert(
+                    "generatedPath".to_string(),
+                    serde_json::Value::String(generated.to_string()),
+                );
+            }
+            artifacts.push(artifact);
+            report_updated = true;
+        }
+        updated |= report_updated;
+    }
+
+    updated
+}
+
+async fn refresh_device_partial_artifact_catalog(
+    sidecar_path: &Path,
+    filename: &str,
+    source: &str,
+    symbols: &[String],
+    generated_path: Option<&str>,
+    session_id: &str,
+) -> Result<()> {
+    let raw = match tokio::fs::read_to_string(sidecar_path).await {
+        Ok(raw) => raw,
+        Err(_) => return Ok(()),
+    };
+    let mut meta = match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(meta) => meta,
+        Err(e) => {
+            eprintln!(
+                "[compile-device] partial artifact catalog refresh skipped: sidecar parse failed: {e}"
+            );
+            return Ok(());
+        }
+    };
+    if !refresh_device_partial_artifact_catalog_value(
+        &mut meta,
+        filename,
+        source,
+        symbols,
+        generated_path,
+    ) {
+        return Ok(());
+    }
+    write_sidecar_logged(sidecar_path, &meta, session_id).await;
+    eprintln!(
+        "[compile-device] refreshed partial artifact catalog file={} bytes={} hash={}",
+        filename,
+        source.len(),
+        hash_content(source)
     );
     Ok(())
 }
@@ -4460,12 +4624,14 @@ pub async fn handle_compile_request(
         let device_opt = if let (Some(sources), Some(manifest)) =
             (device_source_content.as_ref(), compile_manifest.as_ref())
         {
-            compile_device_sources_phase0(
+            compile_device_sources_phase0_and_refresh_catalog(
                 &ctx.workspace_path,
                 &output_dir,
                 timestamp,
                 sources,
                 manifest,
+                &sidecar_path,
+                &session_id,
             )
             .await?
         } else {
@@ -4526,12 +4692,14 @@ pub async fn handle_compile_request(
             if let (Some(sources), Some(manifest)) =
                 (device_source_content.as_ref(), compile_manifest.as_ref())
             {
-                compile_device_sources_phase0(
+                compile_device_sources_phase0_and_refresh_catalog(
                     &ctx.workspace_path,
                     &output_dir,
                     timestamp,
                     sources,
                     manifest,
+                    &sidecar_path,
+                    &session_id,
                 )
                 .await
             } else {
@@ -4617,12 +4785,14 @@ pub async fn handle_compile_request(
         let device_opt = if let (Some(sources), Some(manifest)) =
             (device_source_content.as_ref(), compile_manifest.as_ref())
         {
-            compile_device_sources_phase0(
+            compile_device_sources_phase0_and_refresh_catalog(
                 &ctx.workspace_path,
                 &output_dir,
                 timestamp,
                 sources,
                 manifest,
+                &sidecar_path,
+                &session_id,
             )
             .await?
         } else {
@@ -5935,6 +6105,128 @@ extern "C" __global__ void second(float* out) { out[0] = 2.0f; }
         );
         assert_eq!(selected.kind, "kernel_region");
         assert!(!selected.source_path_match);
+    }
+
+    #[test]
+    fn partial_artifact_catalog_refresh_updates_matching_reports_only() {
+        let mut sidecar = serde_json::json!({
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "filename": ".synthi/generated/gpu/device.partial.target.hip",
+                        "contentBytes": 10,
+                        "contentHash": "old"
+                    },
+                    {
+                        "filename": ".synthi/generated/gpu/device.partial.other.hip",
+                        "contentBytes": 20,
+                        "contentHash": "old-other"
+                    }
+                ]
+            },
+            "generatedDevicePartials": {
+                "artifacts": [
+                    {
+                        "filename": ".synthi/generated/gpu/device.partial.target.hip",
+                        "contentBytes": 10,
+                        "contentHash": "old"
+                    }
+                ]
+            }
+        });
+        let source = "extern \"C\" __global__ void target() {}";
+
+        assert!(refresh_device_partial_artifact_catalog_value(
+            &mut sidecar,
+            ".synthi/generated/gpu/device.partial.target.hip",
+            source,
+            &["target".to_string()],
+            Some(".synthi/generated/gpu/device.hip"),
+        ));
+
+        let expected_hash = format!("{}", hash_content(source));
+        for pointer in [
+            "/devicePartialArtifacts/artifacts/0",
+            "/generatedDevicePartials/artifacts/0",
+        ] {
+            let artifact = sidecar.pointer(pointer).expect("updated artifact");
+            assert_eq!(
+                artifact.get("contentBytes").and_then(serde_json::Value::as_u64),
+                Some(source.len() as u64)
+            );
+            assert_eq!(
+                artifact.get("contentHash").and_then(serde_json::Value::as_str),
+                Some(expected_hash.as_str())
+            );
+            assert_eq!(
+                artifact.get("contentSource").and_then(serde_json::Value::as_str),
+                Some("compiled_source")
+            );
+        }
+
+        let other = sidecar
+            .pointer("/devicePartialArtifacts/artifacts/1")
+            .expect("unrelated artifact");
+        assert_eq!(
+            other.get("contentHash").and_then(serde_json::Value::as_str),
+            Some("old-other")
+        );
+    }
+
+    #[test]
+    fn partial_artifact_catalog_refresh_can_rekey_by_exact_symbol_set() {
+        let mut sidecar = serde_json::json!({
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "filename": ".synthi/generated/gpu/device.partial.old.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "symbols": ["MegaKernel"],
+                        "sourcePaths": ["src/Device/kernels/Megakernel.h"],
+                        "contentBytes": 12000,
+                        "contentHash": "old"
+                    }
+                ]
+            },
+            "generatedDevicePartials": {
+                "artifacts": [
+                    {
+                        "filename": ".synthi/generated/gpu/device.partial.old.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "symbols": ["MegaKernel"],
+                        "sourcePaths": ["src/Device/kernels/Megakernel.h"],
+                        "contentBytes": 12000,
+                        "contentHash": "old"
+                    }
+                ]
+            }
+        });
+        let source = "extern \"C\" __global__ void MegaKernel() { }";
+        let new_filename = ".synthi/generated/gpu/device.partial.new.hip";
+
+        assert!(refresh_device_partial_artifact_catalog_value(
+            &mut sidecar,
+            new_filename,
+            source,
+            &["MegaKernel".to_string()],
+            Some(".synthi/generated/gpu/device.hip"),
+        ));
+
+        let expected_hash = format!("{}", hash_content(source));
+        for pointer in [
+            "/devicePartialArtifacts/artifacts/0",
+            "/generatedDevicePartials/artifacts/0",
+        ] {
+            let artifact = sidecar.pointer(pointer).expect("updated artifact");
+            assert_eq!(
+                artifact.get("filename").and_then(serde_json::Value::as_str),
+                Some(new_filename)
+            );
+            assert_eq!(
+                artifact.get("contentHash").and_then(serde_json::Value::as_str),
+                Some(expected_hash.as_str())
+            );
+        }
     }
 
     #[test]
