@@ -31,6 +31,7 @@ use crate::compiler::stages::guardrails::{
 };
 use crate::compiler::stages::runner::{handle_runner_execution, RunnerReloadPolicy};
 use crate::runtime::capability::HmrStatus;
+use tokio::io::AsyncWriteExt;
 
 fn compile_request_relpath(path: &str) -> Result<PathBuf> {
     if path.trim().is_empty() {
@@ -903,8 +904,51 @@ async fn compile_device_sources_phase0(
     Ok(outcome)
 }
 
+async fn send_active_runner_runtime_command(
+    ctx: &CompileContext,
+    session_id: &str,
+    command: &str,
+    label: &str,
+) -> bool {
+    let stdin_arc = {
+        let mut guard = ctx.runner_store.lock().await;
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
+        if state.session_id.as_deref() != Some(session_id) {
+            return false;
+        }
+        let runner_alive = if let Some(child) = state.process.as_mut() {
+            matches!(child.try_wait(), Ok(None))
+        } else {
+            false
+        };
+        if !runner_alive {
+            return false;
+        }
+        state.stdin.clone()
+    };
+
+    let Some(stdin_arc) = stdin_arc else {
+        return false;
+    };
+
+    let mut stdin = stdin_arc.lock().await;
+    let line = format!("{command}\n");
+    if let Err(e) = stdin.write_all(line.as_bytes()).await {
+        eprintln!("[compile-device] runner {label} command failed: {e}");
+        return false;
+    }
+    if let Err(e) = stdin.flush().await {
+        eprintln!("[compile-device] runner {label} flush failed: {e}");
+        return false;
+    }
+    eprintln!("[compile-device] runner {label} command sent: {command}");
+    true
+}
+
 async fn compile_device_sources_phase0_and_refresh_catalog(
-    workspace_path: &Path,
+    ctx: &CompileContext,
     output_dir: &Path,
     timestamp: i64,
     sources: &DeviceCompileSources,
@@ -912,14 +956,32 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
     sidecar_path: &Path,
     session_id: &str,
 ) -> Result<Option<DeviceCompileOutcome>> {
-    let device = compile_device_sources_phase0(
+    let workspace_path = ctx.workspace_path.as_path();
+    let runtime_paused = send_active_runner_runtime_command(
+        ctx,
+        session_id,
+        "synthi_pause_runtime",
+        "pause",
+    )
+    .await;
+    let device_result = compile_device_sources_phase0(
         workspace_path,
         output_dir,
         timestamp,
         sources,
         manifest,
     )
-    .await?;
+    .await;
+    if runtime_paused {
+        send_active_runner_runtime_command(
+            ctx,
+            session_id,
+            "synthi_resume_runtime",
+            "resume",
+        )
+        .await;
+    }
+    let device = device_result?;
     if let (Some(outcome), Some(partial_filename)) =
         (device.as_ref(), sources.partial_filename.as_deref())
     {
@@ -4637,7 +4699,7 @@ pub async fn handle_compile_request(
             (device_source_content.as_ref(), compile_manifest.as_ref())
         {
             compile_device_sources_phase0_and_refresh_catalog(
-                &ctx.workspace_path,
+                ctx,
                 &output_dir,
                 timestamp,
                 sources,
@@ -4705,7 +4767,7 @@ pub async fn handle_compile_request(
                 (device_source_content.as_ref(), compile_manifest.as_ref())
             {
                 compile_device_sources_phase0_and_refresh_catalog(
-                    &ctx.workspace_path,
+                    ctx,
                     &output_dir,
                     timestamp,
                     sources,
@@ -4798,7 +4860,7 @@ pub async fn handle_compile_request(
             (device_source_content.as_ref(), compile_manifest.as_ref())
         {
             compile_device_sources_phase0_and_refresh_catalog(
-                &ctx.workspace_path,
+                ctx,
                 &output_dir,
                 timestamp,
                 sources,

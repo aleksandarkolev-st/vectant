@@ -737,6 +737,11 @@ fn main() {
     // Flicker prevention: skip render for one frame after a module load
     // so the new module's on_load has executed before on_render is called.
     let mut skip_render_frames: u32 = 0;
+    // GPU sidecar HMR can spend seconds in the device compiler while the
+    // current module keeps rendering. Let the worker quiesce user module
+    // update/render during that window without stopping stdin, status
+    // processing, frame presentation, or capture.
+    let mut runtime_paused: bool = false;
 
     // ============================================================
     // MODULE LOADER WITH ABI VALIDATION
@@ -1276,6 +1281,18 @@ fn main() {
                         }
                     }
                 }
+                "synthi_pause_runtime" | "pause_runtime" => {
+                    if !runtime_paused {
+                        runtime_paused = true;
+                        eprintln!("[Runner] Runtime update/render paused for external HMR work");
+                    }
+                }
+                "synthi_resume_runtime" | "resume_runtime" => {
+                    if runtime_paused {
+                        runtime_paused = false;
+                        eprintln!("[Runner] Runtime update/render resumed");
+                    }
+                }
                 "load" => {
                     // usage: load <name> <path>
                     // fallback: load <path> -> name="main"
@@ -1548,9 +1565,10 @@ fn main() {
             }
         });
 
-        for name in &keys {
-            if let Some(lib) = modules.get(name) {
-                unsafe {
+        if !runtime_paused {
+            for name in &keys {
+                if let Some(lib) = modules.get(name) {
+                    unsafe {
                     // Try new symbol names first, then legacy
                     let update_func: Option<Symbol<unsafe extern "C" fn(*mut c_void, f64)>> =
                         if name == "core" {
@@ -1659,6 +1677,7 @@ fn main() {
                             f(state_ptr, dt);
                         }
                     }
+                    }
                 }
             }
         }
@@ -1680,7 +1699,10 @@ fn main() {
         // Flicker prevention: after a module load, skip rendering for one
         // frame so on_load has time to initialize state.  The previous
         // frame stays visible on the X11 framebuffer (ximagesrc captures it).
-        if skip_render_frames > 0 {
+        if runtime_paused {
+            // Keep presenting/capturing the last completed frame while
+            // compile work happens outside the runner process.
+        } else if skip_render_frames > 0 {
             skip_render_frames -= 1;
         } else if let Some(lib) = modules.get("gui") {
             unsafe {
