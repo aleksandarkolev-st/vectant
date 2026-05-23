@@ -11,6 +11,39 @@ use crate::hmr::incremental_cache::IncrementalCache;
 use anyhow::{Context, Result};
 use tokio::time::{timeout, Duration};
 
+fn deterministic_gui_stub_source() -> &'static str {
+    r#"extern "C" unsigned int gui_get_abi_version() { return 1u; }
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr) {
+    (void)window_ptr;
+    (void)core_api_ptr;
+    return prev_state;
+}
+extern "C" void gui_on_render(void* state_ptr) { (void)state_ptr; }
+extern "C" void gui_on_event(void* state_ptr, void* event_ptr) {
+    (void)state_ptr;
+    (void)event_ptr;
+}
+extern "C" void gui_on_unload(void* state_ptr) { (void)state_ptr; }
+extern "C" void* on_load(void* prev_state, void* window_ptr) {
+    (void)window_ptr;
+    return prev_state;
+}
+extern "C" void on_render(void* state_ptr) { (void)state_ptr; }
+extern "C" void on_event(void* state_ptr, void* event_ptr) {
+    (void)state_ptr;
+    (void)event_ptr;
+}
+extern "C" const char* hmr_get_state_json(void* state_ptr) {
+    (void)state_ptr;
+    return "{}";
+}
+extern "C" void hmr_set_state_json(void* state_ptr, const char* json) {
+    (void)state_ptr;
+    (void)json;
+}
+"#
+}
+
 pub async fn compile_gui(
     ctx: &CompileContext,
     split_data: &serde_json::Value,
@@ -59,7 +92,7 @@ pub async fn compile_gui(
                 .unwrap_or("gui.cpp");
 
             // Use the already-processed content from Phase 1 (guardrails already applied)
-            let content = processed_gui.to_string();
+            let mut content = processed_gui.to_string();
             let source_path = dir_path.join(fname);
             if let Some(parent) = source_path.parent() {
                 tokio::fs::create_dir_all(parent).await?;
@@ -88,7 +121,8 @@ pub async fn compile_gui(
             let effective_flag_refs: Vec<&str> =
                 effective_flag_strings.iter().map(String::as_str).collect();
 
-            let gui_cache_key = IncrementalCache::cache_key(&content, &effective_flag_refs, &[]);
+            let mut gui_cache_key =
+                IncrementalCache::cache_key(&content, &effective_flag_refs, &[]);
             if let Some(cached_so) = ctx.incremental_cache.get(&gui_cache_key).await {
                 let path = cached_so.to_string_lossy().to_string();
                 eprintln!("[Cache] HIT for gui module (persistent cache)");
@@ -326,6 +360,12 @@ pub async fn compile_gui(
                                                     "[CompileGUI] AI heal succeeded on attempt {}",
                                                     attempt + 1
                                                 );
+                                                content = fixed.clone();
+                                                gui_cache_key = IncrementalCache::cache_key(
+                                                    &content,
+                                                    &effective_flag_refs,
+                                                    &[],
+                                                );
                                                 healed = true;
                                                 break;
                                             }
@@ -339,6 +379,82 @@ pub async fn compile_gui(
                                 Err(e) => {
                                     eprintln!("[CompileGUI] AI heal failed: {}", e);
                                     break;
+                                }
+                            }
+                        }
+
+                        if !healed {
+                            eprintln!(
+                                "[CompileGUI] deterministic no-op GUI fallback after generated GUI failed"
+                            );
+                            let fallback_content = deterministic_gui_stub_source();
+                            tokio::fs::write(dir_path.join(fname), fallback_content).await?;
+                            let mut fallback_cmd = cpp_compile_command(compiler_exe);
+                            fallback_cmd.arg(&std_flag);
+                            for f in &effective_manifest.common_flags {
+                                fallback_cmd.arg(f);
+                            }
+                            fallback_cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
+                            let mut fallback_link_flags =
+                                effective_manifest.gui_link_flags.clone();
+                            fallback_link_flags.push("-ldl".to_string());
+                            fallback_link_flags.push("-rdynamic".to_string());
+                            let filtered_link_flags = filter_unresolved_manifest_library_flags(
+                                compiler_exe,
+                                &fallback_link_flags,
+                                dir_path,
+                            );
+                            for f in filtered_link_flags {
+                                fallback_cmd.arg(f);
+                            }
+                            fallback_cmd.current_dir(dir_path);
+                            fallback_cmd.kill_on_drop(true);
+                            match fallback_cmd.spawn() {
+                                Ok(fallback_child) => {
+                                    match timeout(
+                                        Duration::from_secs(30),
+                                        fallback_child.wait_with_output(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(fallback_out)) if fallback_out.status.success() => {
+                                            eprintln!(
+                                                "[CompileGUI] deterministic no-op GUI fallback succeeded"
+                                            );
+                                            content = fallback_content.to_string();
+                                            gui_cache_key = IncrementalCache::cache_key(
+                                                &content,
+                                                &effective_flag_refs,
+                                                &[],
+                                            );
+                                            healed = true;
+                                        }
+                                        Ok(Ok(fallback_out)) => {
+                                            heal_stderr = format!(
+                                                "{}\n\n[deterministic gui fallback stderr]\n{}",
+                                                heal_stderr,
+                                                String::from_utf8_lossy(&fallback_out.stderr)
+                                            );
+                                        }
+                                        Ok(Err(e)) => {
+                                            heal_stderr = format!(
+                                                "{}\n\n[deterministic gui fallback spawn]\n{}",
+                                                heal_stderr, e
+                                            );
+                                        }
+                                        Err(_) => {
+                                            heal_stderr = format!(
+                                                "{}\n\n[deterministic gui fallback]\ntimed out after 30s",
+                                                heal_stderr
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    heal_stderr = format!(
+                                        "{}\n\n[deterministic gui fallback spawn]\n{}",
+                                        heal_stderr, e
+                                    );
                                 }
                             }
                         }
@@ -426,4 +542,31 @@ pub async fn compile_gui(
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::deterministic_gui_stub_source;
+
+    #[test]
+    fn deterministic_gui_stub_exports_modern_and_legacy_abi_symbols() {
+        let source = deterministic_gui_stub_source();
+        for symbol in [
+            "gui_get_abi_version",
+            "gui_on_load",
+            "gui_on_render",
+            "gui_on_event",
+            "gui_on_unload",
+            "on_load",
+            "on_render",
+            "on_event",
+            "hmr_get_state_json",
+            "hmr_set_state_json",
+        ] {
+            assert!(
+                source.contains(symbol),
+                "deterministic GUI fallback must export {symbol}"
+            );
+        }
+    }
 }
