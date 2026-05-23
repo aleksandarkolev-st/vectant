@@ -935,6 +935,20 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
             .await?;
         }
     }
+    if let Some(outcome) = device.as_ref() {
+        if !outcome.partial_module {
+            if let Some(full_filename) = sources.full_filename.as_deref() {
+                materialize_device_partial_artifacts(
+                    workspace_path,
+                    sidecar_path,
+                    full_filename,
+                    &outcome.compiled_source,
+                    session_id,
+                )
+                .await?;
+            }
+        }
+    }
     Ok(device)
 }
 
