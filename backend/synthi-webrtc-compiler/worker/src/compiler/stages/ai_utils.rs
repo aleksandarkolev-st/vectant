@@ -459,7 +459,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     // prompt/verifier contract, not just source text, so newly hardened
     // deterministic split verifiers do not reuse stale generated roles.
     const AI_SPLIT_CACHE_SCHEMA_VERSION: &str =
-        "gpu-strict-lifecycle-v14-gpu-sdk-type-gate";
+        "gpu-strict-lifecycle-v15-device-mapping-include-closure";
     let source_hash = calculate_hash(&(
         AI_SPLIT_CACHE_SCHEMA_VERSION,
         req.language.as_str(),
