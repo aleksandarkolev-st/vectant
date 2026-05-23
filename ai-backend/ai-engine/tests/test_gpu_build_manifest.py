@@ -17,6 +17,8 @@ import pytest
 from build_manifest import (
     BuildManifest,
     ManifestRejection,
+    internalize_gpu_generated_artifacts,
+    normalize_gpu_split_manifest,
     parse_manifest,
     validate_manifest_v1,
 )
@@ -30,6 +32,7 @@ HOST_ONLY_MANIFEST = {
     "gui_link_flags": ["-lSDL2"],
     "shared_link_flags": [],
     "runner_link_flags": ["-lSDL2", "-ldl"],
+    "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"],
     "system_packages": [],
     "hot_reload_mode": "swap",
     "confidence": {
@@ -60,7 +63,31 @@ def _with_gpu(**overrides):
 def test_host_only_manifest_still_validates():
     m = parse_manifest(HOST_ONLY_MANIFEST)
     assert m.gpu is None
+    assert m.files == ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp"]
     validate_manifest_v1(m)  # no raise
+
+
+def test_module_files_accept_dynamic_role_paths():
+    raw = dict(HOST_ONLY_MANIFEST)
+    raw["files"] = [
+        "include/flow_shared_x.h",
+        "src/flow_core_x.cpp",
+        "src/flow_gui_x.cpp",
+        "run/flow_runner_x.cpp",
+        "gpu/flow_device_x.hip",
+        "include/flow_palette_x.h",
+    ]
+    raw["module_files"] = {
+        "shared": "include/flow_shared_x.h",
+        "core": "src/flow_core_x.cpp",
+        "gui": "src/flow_gui_x.cpp",
+        "host_runner": "run/flow_runner_x.cpp",
+        "device": "gpu/flow_device_x.hip",
+    }
+    m = parse_manifest(raw)
+    assert m.module_files.core == "src/flow_core_x.cpp"
+    assert m.module_files.device == "gpu/flow_device_x.hip"
+    validate_manifest_v1(m)
 
 
 def test_cuda_manifest_validates():
@@ -126,3 +153,357 @@ def test_gpu_field_round_trips_through_json():
     m = parse_manifest(payload)
     assert m.gpu is not None
     assert m.gpu.device_compiler == "nvcc"
+
+
+def test_normalizes_ai_gpu_manifest_defaults_for_rocm():
+    raw = {
+        "compiler": "hipcc",
+        "files": ["shared.h", "core.cpp", "gui.cpp", "host_runner.cpp", "device.hip"],
+        "gpu": {
+            "vendor": "rocm",
+            "device_flags": [
+                "-O3",
+                "-lineinfo",
+                "--use_fast_math",
+                "--generate-code=arch=compute_80,code=sm_80",
+            ],
+        },
+    }
+    normalized = normalize_gpu_split_manifest(
+        raw,
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "// LINK: -lSDL2\n#include <SDL2/SDL.h>",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        vendor_hint="rocm",
+        arch_hint="gfx1201",
+    )
+    parsed = parse_manifest(normalized)
+    validate_manifest_v1(parsed)
+    assert parsed.compiler == "clang++"
+    assert parsed.gpu is not None
+    assert parsed.gpu.vendor == "rocm"
+    assert parsed.gpu.device_compiler == "hipcc"
+    assert parsed.gpu.arch == ["gfx1201"]
+    assert parsed.confidence.overall == "high"
+    assert "-I/opt/rocm/include" in parsed.common_flags
+    assert "-shared" in parsed.common_flags
+    assert "-fPIC" in parsed.common_flags
+    assert "-lamdhip64" in parsed.core_link_flags
+    assert "-lSDL2" in parsed.gui_link_flags
+    assert "-ldl" in parsed.runner_link_flags
+    assert "--use_fast_math" not in parsed.gpu.device_flags
+    assert "--generate-code=arch=compute_80,code=sm_80" not in parsed.gpu.device_flags
+    assert "-O3" in parsed.gpu.device_flags
+    assert "-lineinfo" in parsed.gpu.device_flags
+
+
+def test_normalizes_glfw_opengl_gpu_manifest_link_flags():
+    normalized = normalize_gpu_split_manifest(
+        {
+            "gpu": {"vendor": "rocm"},
+            "gui_link_flags": [],
+            "runner_link_flags": [],
+            "build_steps": [{"cmd": "cmake --build build"}],
+            "hot_reload_mode": "cmake",
+            "confidence": {"overall": "medium"},
+        },
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": """
+                // LINK: -lglfw -lGL
+                #include <GLFW/glfw3.h>
+                #include <GL/gl.h>
+                void render(GLFWwindow* window) {
+                    glClear(GL_COLOR_BUFFER_BIT);
+                    glBegin(GL_POINTS);
+                    glVertex2f(0.0f, 0.0f);
+                    glEnd();
+                }
+            """,
+            "host_runner.cpp": """
+                #include <GLFW/glfw3.h>
+                #pragma comment(lib, "glfw")
+                int main() {
+                    glfwInit();
+                    return 0;
+                }
+            """,
+            "device.hip": "",
+        },
+        vendor_hint="rocm",
+        arch_hint="gfx1201",
+    )
+    parsed = parse_manifest(normalized)
+    validate_manifest_v1(parsed)
+    assert parsed.build_steps == []
+    assert parsed.hot_reload_mode == "swap"
+    assert parsed.confidence.overall == "medium"
+    assert parsed.confidence.runner_synthesis == "high"
+    assert "-lglfw" in parsed.gui_link_flags
+    assert "-lglfw" in parsed.runner_link_flags
+    assert "-lGL" in parsed.gui_link_flags
+    assert "-lGL" in parsed.runner_link_flags
+
+
+def test_normalizes_ai_gpu_manifest_defaults_for_cuda_dynamic_paths():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "cuda"}},
+        split_files={
+            "include/flow_shared_x.h": "",
+            "src/flow_core_x.cpp": "",
+            "src/flow_gui_x.cpp": "",
+            "run/flow_runner_x.cpp": "",
+            "gpu/flow_device_x.cu": "",
+        },
+        vendor_hint="cuda",
+        arch_hint="sm_120",
+    )
+    parsed = parse_manifest(normalized)
+    validate_manifest_v1(parsed)
+    assert parsed.gpu is not None
+    assert parsed.gpu.arch == ["sm_120"]
+    assert parsed.module_files.device == "gpu/flow_device_x.cu"
+    assert parsed.module_files.host_runner == "run/flow_runner_x.cpp"
+    assert parsed.gpu.device_roles[0]["path"] == "gpu/flow_device_x.cu"
+    assert parsed.gpu.device_roles[0]["id"] == "device.flow_device_x"
+    assert parsed.gpu.device_link["requires_rdc"] is False
+    assert "-I/usr/local/cuda/include" in parsed.common_flags
+    assert "-lcudart" in parsed.runner_link_flags
+
+
+def test_runtime_arch_hint_overrides_ai_gpu_arch_guess():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx90a"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        vendor_hint="rocm",
+        arch_hint="gfx1201",
+    )
+    parsed = parse_manifest(normalized)
+    validate_manifest_v1(parsed)
+    assert parsed.gpu is not None
+    assert parsed.gpu.arch == ["gfx1201"]
+
+
+def test_gpu_manifest_rejects_missing_vendor_instead_of_guessing_cuda():
+    with pytest.raises(ManifestRejection, match="gpu.vendor"):
+        normalize_gpu_split_manifest(
+            {"gpu": {"arch": ["sm_120"]}},
+            split_files={
+                "shared.h": "",
+                "core.cpp": "",
+                "gui.cpp": "",
+                "host_runner.cpp": "",
+                "device.hip": "",
+            },
+            vendor_hint=None,
+            arch_hint=None,
+        )
+
+
+def test_gpu_manifest_rejects_missing_arch_instead_of_defaulting():
+    with pytest.raises(ManifestRejection, match="gpu.arch"):
+        normalize_gpu_split_manifest(
+            {"gpu": {"vendor": "rocm"}},
+            split_files={
+                "shared.h": "",
+                "core.cpp": "",
+                "gui.cpp": "",
+                "host_runner.cpp": "",
+                "device.hip": "",
+            },
+            vendor_hint="rocm",
+            arch_hint=None,
+        )
+
+
+def test_gpu_manifest_does_not_infer_host_link_flags_from_framework_names():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "#include <SDL2/SDL.h>\nvoid f() { SDL_Init(0); }",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+    )
+    assert "-lSDL2" not in normalized["gui_link_flags"]
+    assert "-lSDL2" not in normalized["runner_link_flags"]
+
+
+def test_gpu_manifest_uses_cmake_target_link_libraries_without_framework_catalog():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "#include <SDL2/SDL.h>\nvoid f() { SDL_Init(0); }",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        link_hint_sources={
+            "CMakeLists.txt": """
+                add_executable(particle_field src/app/main.cpp)
+                target_link_libraries(particle_field PRIVATE SDL2)
+            """,
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+    )
+    assert "-lSDL2" in normalized["gui_link_flags"]
+    assert "-lSDL2" in normalized["runner_link_flags"]
+
+
+def test_gpu_manifest_resolves_cmake_variable_link_items():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        link_hint_sources={
+            "CMakeLists.txt": """
+                find_package(SDL2 REQUIRED)
+                set(EXTRA_RENDER_LIBS glfw GL)
+                target_link_libraries(particle_field PRIVATE ${SDL2_LIBRARIES} ${EXTRA_RENDER_LIBS})
+            """,
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+    )
+    for flag in ("-lSDL2", "-lglfw", "-lGL"):
+        assert flag in normalized["gui_link_flags"]
+        assert flag in normalized["runner_link_flags"]
+
+
+def test_gpu_manifest_accepts_optional_source_link_hints_but_does_not_require_them():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        link_hint_sources={
+            "src/app/main.cpp": "// LINK: -lcustom_engine\n",
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+    )
+    assert "-lcustom_engine" in normalized["gui_link_flags"]
+    assert "-lcustom_engine" in normalized["runner_link_flags"]
+
+
+def test_internalize_rejects_missing_generated_gpu_role_content():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm"}},
+        split_files={
+            "shared.h": "shared",
+            "core.cpp": "core",
+            "gui.cpp": "gui",
+            "device.hip": "device",
+        },
+        vendor_hint="rocm",
+        arch_hint="gfx1201",
+    )
+
+    with pytest.raises(ManifestRejection, match="host_runner"):
+        internalize_gpu_generated_artifacts(
+            {
+                "shared.h": "shared",
+                "core.cpp": "core",
+                "gui.cpp": "gui",
+                "device.hip": "device",
+            },
+            normalized,
+        )
+
+
+def test_internalizes_generated_gpu_roles_out_of_user_tree():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm"}},
+        split_files={
+            "include/flow_shared_x.h": "shared",
+            "src/flow_core_x.cpp": "core",
+            "src/flow_gui_x.cpp": "gui",
+            "run/flow_runner_x.cpp": "runner",
+            "gpu/flow_device_x.hip": "device",
+            "src/user_owned.hpp": "extra",
+        },
+        vendor_hint="rocm",
+        arch_hint="gfx1201",
+    )
+
+    files, manifest, report = internalize_gpu_generated_artifacts(
+        {
+            "include/flow_shared_x.h": "shared",
+            "src/flow_core_x.cpp": "core",
+            "src/flow_gui_x.cpp": "gui",
+            "run/flow_runner_x.cpp": "runner",
+            "gpu/flow_device_x.hip": "device",
+            "src/user_owned.hpp": "extra",
+        },
+        normalized,
+    )
+    parsed = parse_manifest(manifest)
+    validate_manifest_v1(parsed)
+
+    assert parsed.module_files.shared == ".synthi/generated/gpu/shared.h"
+    assert parsed.module_files.core == ".synthi/generated/gpu/core.cpp"
+    assert parsed.module_files.device == ".synthi/generated/gpu/device.hip"
+    assert parsed.gpu is not None
+    assert parsed.gpu.device_roles[0]["path"] == ".synthi/generated/gpu/device.hip"
+    assert parsed.gpu.device_link["affected_roles"] == [parsed.gpu.device_roles[0]["id"]]
+    assert set(files) == set(parsed.files)
+    assert files[".synthi/generated/gpu/device.hip"] == "device"
+    assert report["rolesAreInternal"] is True
+    assert report["internalRoot"] == ".synthi/generated/gpu"
+    assert "src/user_owned.hpp" in report["droppedExtraGeneratedFiles"]
+
+
+def test_gpu_manifest_records_rdc_device_link_topology():
+    normalized = normalize_gpu_split_manifest(
+        {
+            "gpu": {
+                "vendor": "rocm",
+                "device_flags": ["-O3", "-fgpu-rdc"],
+                "device_link": {"estimated_ms": 9000, "budget_ms": 5000},
+            }
+        },
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        vendor_hint="rocm",
+        arch_hint="gfx1201",
+    )
+
+    parsed = parse_manifest(normalized)
+    validate_manifest_v1(parsed)
+
+    assert parsed.gpu is not None
+    assert parsed.gpu.device_roles[0]["requires_rdc"] is True
+    assert parsed.gpu.device_link["requires_rdc"] is True
+    assert parsed.gpu.device_link["estimated_ms"] == 9000
+    assert parsed.gpu.device_link["budget_ms"] == 5000

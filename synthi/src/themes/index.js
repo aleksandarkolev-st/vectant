@@ -2,6 +2,7 @@
  * @fileoverview Built-in theme barrel — imports all shipped themes.
  */
 import synthiDark from './builtin/synthi-dark.json';
+import synthiClassic from './builtin/synthi-classic.json';
 import synthiLight from './builtin/synthi-light.json';
 import midnight from './builtin/midnight.json';
 import highContrastDark from './builtin/high-contrast-dark.json';
@@ -15,6 +16,7 @@ import solarizedLight from './builtin/solarized-light.json';
  */
 export const BUILTIN_THEMES = {
   [synthiDark.id]:          synthiDark,
+  [synthiClassic.id]:       synthiClassic,
   [synthiLight.id]:         synthiLight,
   [midnight.id]:            midnight,
   [highContrastDark.id]:    highContrastDark,
@@ -29,6 +31,7 @@ export const BUILTIN_THEMES = {
  */
 export const BUILTIN_THEME_LIST = [
   synthiDark,
+  synthiClassic,
   midnight,
   solarizedDark,
   synthiLight,

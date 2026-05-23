@@ -257,9 +257,9 @@ export class Peer {
   private wireSignalingEvents(): void {
     this.signaling.onMessage((msg: SignalingMessage) => {
       if (msg.type === "answer") {
-        void this.handleAnswer(msg);
+        void this.handleAnswer(msg).catch((err) => this.handleSignalingHandlerError("answer", err));
       } else if (msg.type === "candidate") {
-        void this.handleCandidate(msg);
+        void this.handleCandidate(msg).catch((err) => this.handleSignalingHandlerError("candidate", err));
       }
     });
 
@@ -268,6 +268,14 @@ export class Peer {
         this.connectedD.reject(new Error("signaling_closed_before_connect"));
       }
     });
+  }
+
+  private handleSignalingHandlerError(kind: string, err: unknown): void {
+    const error = err instanceof Error ? err : new Error(String(err));
+    dbg(`peer: ${kind} signaling handler failed: ${error.stack ?? error.message}`);
+    if (!this.connectedD.settled) {
+      this.connectedD.reject(error);
+    }
   }
 
   private async handleAnswer(msg: SignalingMessage): Promise<void> {

@@ -15,8 +15,11 @@ import { getCurrentUser } from '@/services/userIdentity';
 import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw, GripVertical, X, Minimize2, Maximize2, Boxes } from 'lucide-react';
 import { HealingIndicator } from '@/components/healing/HealingIndicator';
 import StatusIslandPresetDialog from '@/components/StatusIslandPresetDialog';
+import PresenceList from '@/components/collaboration/PresenceList';
 import OperatorStatusBarButton from './OperatorStatusBarButton';
 import VectantLogoCollapsed from './VectantLogoCollapsed';
+import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
+import { toast } from 'sonner';
 import {
   selectHealingStatus,
   selectAppliedFixCount,
@@ -80,17 +83,53 @@ function clampWithinBounds(value, min, max) {
 const StatusBarCursorInfo = memo(function StatusBarCursorInfo() {
   const positionRaw = useSelector(selectCursorPosition);
   const position = useDeferredValue(positionRaw);
+  const { menuState, openMenu, closeMenu } = useContextMenu();
+
+  const copy = (text) => {
+    navigator.clipboard.writeText(text).then(
+      () => toast.success(`Copied "${text}"`),
+      () => toast.error('Copy failed'),
+    );
+  };
+
+  const onContextMenu = (e) => {
+    openMenu(e, [
+      {
+        id: 'copy-pair',
+        label: 'Copy "Ln:Col"',
+        action: () => copy(`${position.lineNumber}:${position.column}`),
+      },
+      {
+        id: 'copy-line',
+        label: 'Copy Line Number',
+        action: () => copy(String(position.lineNumber)),
+      },
+      {
+        id: 'copy-col',
+        label: 'Copy Column',
+        action: () => copy(String(position.column)),
+      },
+    ]);
+  };
+
   return (
-    <div className="status-island-cursor flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer transition-colors" title={`Line ${position.lineNumber}, Column ${position.column}`}>
-      {/* Wide form: "Ln 6 : Col 29" — only when the island can spare the room */}
-      <span className="hidden 2xl:inline font-medium" style={{ color: 'var(--text-secondary)' }}>Ln {position.lineNumber}</span>
-      <span className="hidden 2xl:inline" style={{ color: 'var(--text-dim)' }}>:</span>
-      <span className="hidden 2xl:inline font-medium" style={{ color: 'var(--text-secondary)' }}>Col {position.column}</span>
-      {/* Compact form: "6:29" — default on narrower islands */}
-      <span className="2xl:hidden font-medium tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-        {position.lineNumber}:{position.column}
-      </span>
-    </div>
+    <>
+      <div
+        className="status-island-cursor flex items-center gap-1 px-2 py-0.5 rounded-md cursor-pointer transition-colors"
+        title={`Line ${position.lineNumber}, Column ${position.column}`}
+        onContextMenu={onContextMenu}
+      >
+        {/* Wide form: "Ln 6 : Col 29" — only when the island can spare the room */}
+        <span className="hidden 2xl:inline font-medium" style={{ color: 'var(--text-secondary)' }}>Ln {position.lineNumber}</span>
+        <span className="hidden 2xl:inline" style={{ color: 'var(--text-dim)' }}>:</span>
+        <span className="hidden 2xl:inline font-medium" style={{ color: 'var(--text-secondary)' }}>Col {position.column}</span>
+        {/* Compact form: "6:29" — default on narrower islands */}
+        <span className="2xl:hidden font-medium tabular-nums" style={{ color: 'var(--text-secondary)' }}>
+          {position.lineNumber}:{position.column}
+        </span>
+      </div>
+      {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
+    </>
   );
 });
 
@@ -995,6 +1034,11 @@ function StatusBarInner({
               <span className="status-island-number font-semibold" style={{ color: 'var(--text-secondary)', fontVariantNumeric: 'tabular-nums' }}>{otherUserCount}</span>
             </span>
           )}
+        </div>
+
+        {/* Presence avatars — right-click for per-user quick actions */}
+        <div className="flex items-center ml-1">
+          <PresenceList slug={slug} />
         </div>
 
         {/* Operator */}

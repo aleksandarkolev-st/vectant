@@ -1,10 +1,26 @@
 'use client';
 import React, { useEffect, useRef, useState, useCallback, memo } from 'react';
+import { createPortal } from 'react-dom';
 import { useSession } from 'next-auth/react';
-import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff } from 'lucide-react';
+import { WifiOff, RefreshCw, Terminal, AlertCircle, Zap, EyeOff, ClipboardPaste, X, Palette, RotateCcw } from 'lucide-react';
+import { toast } from 'sonner';
 import { useTheme } from '@/components/ThemeProvider';
 import { useSessionPermissions } from '@/hooks/useCollabSession';
 import { resolveCollabWsUrl } from '@/lib/collab-url';
+import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
+import {
+  TERMINAL_COLOR_KEYS,
+  getTerminalOverrides,
+  setTerminalOverrides,
+  subscribeTerminalOverrides,
+  applyOverridesToTheme,
+} from '@/lib/terminal-color-overrides';
+
+// ─── Session-scoped paste auto-approve ───────────────────────────────────
+// When the user ticks "Don't ask again this session" in the multi-line
+// paste dialog, we set this module-level flag. It survives across all
+// terminal panes (memo-frozen) but resets on a full page reload.
+let sessionAutoApprovePaste = false;
 
 /**
  * TerminalPane — Renders a single interactive terminal backed by a real PTY
@@ -88,21 +104,44 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   // Live theme from ThemeProvider
   const { terminalTheme } = useTheme();
 
+  // Selection-mode context menu (only opens when right-click lands on a
+  // non-empty xterm selection — like the editor's SelectionContextMenu).
+  // Captured in a ref so the imperative DOM-level contextmenu listener
+  // inside init() can reach the latest openMenu.
+  const { menuState, openMenu, closeMenu } = useContextMenu();
+  const openMenuRef = useRef(openMenu);
+  openMenuRef.current = openMenu;
+
   const [state, setState] = useState('connecting'); // connecting | connected | error | closed
   const [shellInfo, setShellInfo] = useState('');
+  // Multi-line paste confirmation: null when no pending paste, otherwise
+  // { text, lineCount, charCount } describing the clipboard payload.
+  const [pasteConfirm, setPasteConfirm] = useState(null);
+  // Color customizer floating panel
+  const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  // Live overrides — re-renders when user tweaks colors
+  const [colorOverrides, setColorOverrides] = useState(() => getTerminalOverrides());
 
   // Stable session key: survives re-renders, unique per terminal tab + pane side
   const sessionKey = `${terminalId}-${paneSide}`;
 
-  // ─── Live terminal theme sync ─────────────────────────────────────────
+  // ─── Subscribe to override changes from other panes / the customizer ──
+  useEffect(() => {
+    const unsubscribe = subscribeTerminalOverrides((next) => {
+      setColorOverrides(next || {});
+    });
+    return unsubscribe;
+  }, []);
+
+  // ─── Live terminal theme sync (theme + user overrides) ────────────────
   useEffect(() => {
     if (terminalRef.current?.term && terminalTheme) {
       const term = terminalRef.current.term;
-      term.options.theme = terminalTheme;
+      term.options.theme = applyOverridesToTheme(terminalTheme, colorOverrides);
       // Force an immediate full repaint so colors apply without delay
       try { term.refresh(0, term.rows - 1); } catch (_) {}
     }
-  }, [terminalTheme]);
+  }, [terminalTheme, colorOverrides]);
 
   // ─── Cleanup helper ───────────────────────────────────────────────────
   const cleanup = useCallback(() => {
@@ -156,11 +195,15 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       if (disposed || !containerRef.current) return;
 
       // ── Create xterm instance ───────────────────────────────────────
+      const initialTheme = applyOverridesToTheme(
+        terminalTheme || SYNTHI_THEME_FALLBACK,
+        getTerminalOverrides(),
+      );
       const term = new Terminal({
         fontFamily: 'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Monaco, Consolas, monospace',
         fontSize: 13,
         lineHeight: 1.4,
-        theme: terminalTheme || SYNTHI_THEME_FALLBACK,
+        theme: initialTheme,
         cursorBlink: true,
         cursorStyle: 'bar',
         scrollback: 5000,
@@ -201,6 +244,135 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
 
       terminalRef.current = { term, fitAddon, webglAddon };
 
+      // ── Right-click → paste from clipboard ────────────────────────
+      // Mirrors the VS Code / Windows Terminal convention: a single
+      // right-click drops the OS clipboard text into the PTY. We route
+      // through term.paste() so bracketed-paste mode (zsh, fish, etc.)
+      // works correctly.
+      //
+      // Safety: a multi-line clipboard payload typically executes every
+      // line the moment it lands in the PTY (newline = Enter). We pop a
+      // confirmation modal in that case so the user sees what is about
+      // to run. A single trailing newline is fine — that's just `cmd\n`,
+      // which is what the user means when they copy a one-liner from a
+      // README.
+      // Wipe xterm selection across all three timings: synchronously now,
+      // on the next animation frame (after xterm finishes its own mouse
+      // selection bookkeeping from the right-click), and on a 50ms tail
+      // (after the PTY echoes the pasted chars). Without this, a prior
+      // double-click selection would be left highlighted on top of the
+      // pasted text.
+      const clearSelectionAggressive = () => {
+        try { term.clearSelection(); } catch (_) {}
+        requestAnimationFrame(() => {
+          try { term.clearSelection(); } catch (_) {}
+        });
+        setTimeout(() => {
+          try { term.clearSelection(); } catch (_) {}
+        }, 50);
+      };
+
+      // Track latest selection text. xterm can drop its selection on
+      // mousedown before our contextmenu handler runs, so we mirror the
+      // selection here and also snapshot it in a capture-phase mousedown
+      // handler before xterm sees the right-click. The contextmenu logic
+      // reads from this ref instead of calling term.getSelection() at
+      // event time.
+      const lastSelectionRef = { current: '' };
+      try {
+        term.onSelectionChange(() => {
+          try {
+            const s = term.getSelection() || '';
+            lastSelectionRef.current = s;
+          } catch {}
+        });
+      } catch {}
+
+      const pasteFromClipboard = async () => {
+        try {
+          const text = await navigator.clipboard.readText();
+          if (!text) return;
+          const hasEmbeddedNewline = text.replace(/\r?\n$/, '').includes('\n');
+          if (hasEmbeddedNewline && !sessionAutoApprovePaste) {
+            setPasteConfirm({ text, lineCount: text.split(/\r?\n/).length, charCount: text.length });
+          } else {
+            clearSelectionAggressive();
+            term.paste(text);
+            clearSelectionAggressive();
+          }
+        } catch {
+          // Clipboard read can fail (permission denied, insecure context,
+          // user gesture lost). Stay silent — fall back to Ctrl/Cmd+V.
+        }
+      };
+
+      const handleContextMenu = (e) => {
+        e.preventDefault();
+        if (!canTerminalRef.current && canTerminalRef.current !== undefined) {
+          return; // View-only guest
+        }
+
+        // Did the user right-click on selected text? If yes → menu.
+        // If no (no selection) → keep existing right-click-to-paste.
+        let selectedText = '';
+        try { selectedText = term.getSelection?.() || ''; } catch {}
+        if (!selectedText) selectedText = lastSelectionRef.current || '';
+
+        if (!selectedText) {
+          pasteFromClipboard();
+          return;
+        }
+
+        e.stopPropagation();
+        openMenuRef.current(e, [
+          {
+            id: 'copy',
+            label: 'Copy',
+            shortcut: 'Ctrl+Shift+C',
+            action: () => {
+              navigator.clipboard.writeText(selectedText).then(
+                () => toast.success('Copied'),
+                () => toast.error('Copy failed'),
+              );
+              clearSelectionAggressive();
+            },
+          },
+          {
+            id: 'paste',
+            label: 'Paste',
+            shortcut: 'Ctrl+Shift+V',
+            dividerAfter: true,
+            action: pasteFromClipboard,
+          },
+          {
+            id: 'google',
+            label: 'Search on Google',
+            action: () => {
+              try { window.open(`https://www.google.com/search?q=${encodeURIComponent(selectedText)}`, '_blank', 'noopener,noreferrer'); } catch {}
+            },
+          },
+          {
+            id: 'so',
+            label: 'Search on Stack Overflow',
+            action: () => {
+              try { window.open(`https://stackoverflow.com/search?q=${encodeURIComponent(selectedText)}`, '_blank', 'noopener,noreferrer'); } catch {}
+            },
+          },
+        ]);
+      };
+
+      // Snapshot selection on right-mousedown in CAPTURE phase, before
+      // xterm's own mousedown handler can possibly clear it.
+      const handleRightMouseDownCapture = (e) => {
+        if (e.button !== 2) return;
+        try {
+          const s = term.getSelection?.() || '';
+          if (s) lastSelectionRef.current = s;
+        } catch {}
+      };
+      containerRef.current.addEventListener('mousedown', handleRightMouseDownCapture, true);
+      containerRef.current.addEventListener('contextmenu', handleContextMenu, true);
+
       // ── Connect WebSocket ─────────────────────────────────────────
       connectWS(term, fitAddon);
 
@@ -226,10 +398,17 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       if (containerRef.current) resizeObserver.observe(containerRef.current);
       window.addEventListener('resize', scheduleResize);
 
+      // Capture for teardown: containerRef may be nulled before dispose runs.
+      const containerEl = containerRef.current;
+
       // Store teardown
       terminalRef.current.dispose = () => {
         resizeObserver.disconnect();
         window.removeEventListener('resize', scheduleResize);
+        if (containerEl) {
+          containerEl.removeEventListener('contextmenu', handleContextMenu, true);
+          containerEl.removeEventListener('mousedown', handleRightMouseDownCapture, true);
+        }
         if (resizeRaf) cancelAnimationFrame(resizeRaf);
         if (webglAddon) try { webglAddon.dispose(); } catch (_) {}
         linksAddon.dispose();
@@ -435,10 +614,68 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     window.location.reload();
   }, [cleanup]);
 
+  // ─── Multi-line paste confirmation actions ────────────────────────────
+  const confirmPaste = useCallback((opts) => {
+    const pending = pasteConfirm;
+    setPasteConfirm(null);
+    if (opts?.autoApprove) sessionAutoApprovePaste = true;
+    if (!pending) return;
+    const term = terminalRef.current?.term;
+    if (!term) return;
+    // Clear before + after + after-echo so no prior selection leaks through.
+    const clear = () => { try { term.clearSelection(); } catch (_) {} };
+    clear();
+    try { term.paste(pending.text); } catch (_) {}
+    clear();
+    requestAnimationFrame(clear);
+    setTimeout(clear, 50);
+    try { term.focus(); } catch (_) {}
+  }, [pasteConfirm]);
+
+  const cancelPaste = useCallback(() => {
+    setPasteConfirm(null);
+    try { terminalRef.current?.term?.focus(); } catch (_) {}
+  }, []);
+
   // ─── Render ───────────────────────────────────────────────────────────
   return (
     <div className="terminal-pane-shell h-full w-full overflow-hidden relative" style={{ background: 'var(--bg-app)' }}>
       <div ref={containerRef} className="h-full w-full" />
+
+      {/* Palette button — opens the terminal color customizer */}
+      <button
+        type="button"
+        onClick={() => setColorPickerOpen(true)}
+        title="Customize terminal colors"
+        aria-label="Customize terminal colors"
+        className="absolute top-1.5 right-1.5 z-10 rounded p-1 opacity-40 hover:opacity-100 transition-opacity"
+        style={{
+          color: 'var(--text-muted)',
+          background: 'color-mix(in srgb, var(--bg-app) 60%, transparent)',
+        }}
+      >
+        <Palette className="w-3.5 h-3.5" />
+      </button>
+
+      {pasteConfirm && (
+        <MultiLinePasteDialog
+          text={pasteConfirm.text}
+          lineCount={pasteConfirm.lineCount}
+          charCount={pasteConfirm.charCount}
+          onConfirm={confirmPaste}
+          onCancel={cancelPaste}
+        />
+      )}
+
+      {colorPickerOpen && (
+        <TerminalColorPanel
+          baseTheme={terminalTheme || SYNTHI_THEME_FALLBACK}
+          overrides={colorOverrides}
+          onClose={() => setColorPickerOpen(false)}
+        />
+      )}
+
+      {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
 
       {/* Session: View-only terminal overlay for guests without canTerminal */}
       {isGuest && !canTerminal && state === 'connected' && (
@@ -458,35 +695,12 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         </div>
       )}
 
-      {/* Connection status overlay */}
+      {/* Connection status — viewport-centred floating panel (portal to body) */}
       {(state === 'error' || state === 'closed') && (
-        <div className="absolute inset-0 backdrop-blur-sm flex items-center justify-center z-10" style={{ background: 'color-mix(in srgb, var(--bg-app) 95%, transparent)' }}>
-          <div className="flex flex-col items-center gap-4 p-8 max-w-sm text-center">
-            <div className="w-12 h-12 rounded-full flex items-center justify-center" style={{ background: 'var(--bg-elevated)' }}>
-              <WifiOff className="w-5 h-5" style={{ color: 'var(--text-muted)' }} />
-            </div>
-
-            <h3 className="text-base font-semibold" style={{ color: 'var(--text-primary)' }}>
-              {state === 'closed' ? 'Session Ended' : 'Terminal Disconnected'}
-            </h3>
-
-            <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted)' }}>
-              {state === 'closed'
-                ? 'The shell process has exited.'
-                : 'Unable to reach the terminal server. Make sure the collab-server is running.'}
-            </p>
-
-            <button
-              onClick={handleReconnect}
-              className="flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium
-                         text-white transition-colors"
-              style={{ background: 'var(--accent-primary)' }}
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              {state === 'closed' ? 'New Session' : 'Reconnect'}
-            </button>
-          </div>
-        </div>
+        <ConnectionStatusPanel
+          state={state}
+          onReconnect={handleReconnect}
+        />
       )}
 
       {/* Connecting indicator */}
@@ -499,5 +713,434 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     </div>
   );
 }, /* freeze — never re-render from parent */ () => true);
+
+/**
+ * Reusable: drag a panel by its titlebar within the viewport.
+ * Returns { pos, panelRef, onTitleMouseDown }. `pos === null` means the
+ * panel should centre itself via CSS until the user starts dragging.
+ */
+function useDraggableViewportPanel() {
+  const [pos, setPos] = useState(null); // { x, y } | null
+  const panelRef = useRef(null);
+  const dragRef = useRef(null);
+
+  const onTitleMouseDown = useCallback((e) => {
+    if (e.button !== 0) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: rect.left,
+      originY: rect.top,
+    };
+    e.preventDefault();
+  }, []);
+
+  useEffect(() => {
+    const onMove = (e) => {
+      const d = dragRef.current;
+      const panel = panelRef.current;
+      if (!d || !panel) return;
+      const w = panel.offsetWidth;
+      const h = panel.offsetHeight;
+      const x = Math.max(8, Math.min(d.originX + (e.clientX - d.startX), window.innerWidth - w - 8));
+      const y = Math.max(8, Math.min(d.originY + (e.clientY - d.startY), window.innerHeight - h - 8));
+      setPos({ x, y });
+    };
+    const onUp = () => { dragRef.current = null; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  return { pos, panelRef, onTitleMouseDown };
+}
+
+/**
+ * MultiLinePasteDialog — viewport-centred floating panel (portal to body)
+ * shown when the user right-clicks to paste a multi-line clipboard payload.
+ *
+ * No backdrop dim/blur — the IDE stays interactive behind it.
+ * Drag: mousedown on the titlebar.
+ * Keyboard: Escape cancels, Ctrl/Cmd+Enter confirms. Cancel autofocuses so
+ * a stray Enter doesn't accept a hostile clipboard payload.
+ * Auto-approve: a checkbox skips this dialog for the rest of the page
+ * session (resets on full reload).
+ */
+function MultiLinePasteDialog({ text, lineCount, charCount, onConfirm, onCancel }) {
+  const PREVIEW_LINE_LIMIT = 40;
+  const PREVIEW_CHAR_LIMIT = 4000;
+  const lines = text.split(/\r?\n/);
+  const previewLines = lines.slice(0, PREVIEW_LINE_LIMIT);
+  let preview = previewLines.join('\n');
+  if (preview.length > PREVIEW_CHAR_LIMIT) {
+    preview = preview.slice(0, PREVIEW_CHAR_LIMIT) + '…';
+  }
+  const truncated =
+    lines.length > PREVIEW_LINE_LIMIT || text.length > PREVIEW_CHAR_LIMIT;
+
+  const [autoApprove, setAutoApprove] = useState(false);
+  const { pos, panelRef, onTitleMouseDown } = useDraggableViewportPanel();
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+      else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        onConfirm({ autoApprove });
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onConfirm, onCancel, autoApprove]);
+
+  if (typeof document === 'undefined') return null;
+
+  const placement = pos
+    ? { left: pos.x, top: pos.y }
+    : { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' };
+
+  return createPortal(
+    <div
+      ref={panelRef}
+      className="fixed rounded-lg border shadow-2xl flex flex-col"
+      style={{
+        ...placement,
+        width: 460,
+        maxWidth: 'calc(100vw - 16px)',
+        maxHeight: 'calc(100vh - 16px)',
+        background: 'var(--bg-elevated, #18181b)',
+        borderColor: 'var(--border-medium, #3f3f46)',
+        zIndex: 2147483646,
+      }}
+    >
+      <div
+        onMouseDown={onTitleMouseDown}
+        className="flex items-center gap-2 px-3 py-2 border-b rounded-t-lg select-none"
+        style={{
+          borderColor: 'var(--border-subtle, #2a2b38)',
+          background: 'var(--bg-app, #0a0b10)',
+          cursor: 'move',
+        }}
+      >
+        <ClipboardPaste className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--accent-warning, #fbbf24)' }} />
+        <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
+          Paste multi-line text?
+        </span>
+        <button
+          type="button"
+          onClick={onCancel}
+          onMouseDown={(e) => e.stopPropagation()}
+          aria-label="Cancel paste"
+          className="rounded p-0.5 hover:bg-white/10"
+          style={{ color: 'var(--text-muted, #6b7089)' }}
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      <div className="p-3 overflow-auto flex-1 min-h-0">
+        <p className="text-xs mb-2 leading-relaxed" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+          {lineCount} lines ({charCount} chars). Each newline is sent as Enter
+          and may execute immediately.
+        </p>
+
+        <pre
+          className="font-mono text-[11px] leading-snug whitespace-pre overflow-auto rounded-md p-2 mb-2"
+          style={{
+            background: 'var(--bg-app, #0a0b10)',
+            border: '1px solid var(--border-subtle, #2a2b38)',
+            color: 'var(--text-primary, #e4e4e7)',
+            maxHeight: 200,
+          }}
+        >
+          {preview}
+        </pre>
+
+        {truncated && (
+          <p className="text-[10px] mb-2" style={{ color: 'var(--text-muted, #6b7089)' }}>
+            Preview truncated — full payload will still be pasted.
+          </p>
+        )}
+
+        <label
+          className="flex items-center gap-2 text-[11px] mb-3 cursor-pointer select-none"
+          style={{ color: 'var(--text-secondary, #a1a1aa)' }}
+        >
+          <input
+            type="checkbox"
+            checked={autoApprove}
+            onChange={(e) => setAutoApprove(e.target.checked)}
+            className="cursor-pointer"
+          />
+          Auto-approve multi-line pastes for the rest of this session
+        </label>
+
+        <div className="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            autoFocus
+            className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors border"
+            style={{ borderColor: 'var(--border-medium, #3f3f46)', color: 'var(--text-secondary, #a1a1aa)' }}
+          >
+            Cancel
+            <span className="ml-1.5 text-[10px] opacity-60">Esc</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm({ autoApprove })}
+            className="px-3 py-1.5 rounded-md text-xs font-semibold transition-colors text-white"
+            style={{ background: 'var(--accent-warning, #d97706)' }}
+          >
+            Paste
+            <span className="ml-1.5 text-[10px] opacity-80">Ctrl+Enter</span>
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+/**
+ * TerminalColorPanel — viewport-centred floating customizer for the xterm
+ * colors. Persists overrides to localStorage and broadcasts them to every
+ * mounted TerminalPane so the change is immediate. "Reset" wipes the
+ * override layer and falls back to the active ThemeProvider theme.
+ */
+const COLOR_LABELS = {
+  background: 'Background',
+  foreground: 'Foreground',
+  cursor: 'Cursor',
+  cursorAccent: 'Cursor Accent',
+  selectionBackground: 'Selection Bg',
+  selectionForeground: 'Selection Fg',
+  black: 'Black',
+  red: 'Red',
+  green: 'Green',
+  yellow: 'Yellow',
+  blue: 'Blue',
+  magenta: 'Magenta',
+  cyan: 'Cyan',
+  white: 'White',
+  brightBlack: 'Bright Black',
+  brightRed: 'Bright Red',
+  brightGreen: 'Bright Green',
+  brightYellow: 'Bright Yellow',
+  brightBlue: 'Bright Blue',
+  brightMagenta: 'Bright Magenta',
+  brightCyan: 'Bright Cyan',
+  brightWhite: 'Bright White',
+};
+
+// Strip "rgba(…)" / non-hex inputs that <input type=color> can't display.
+function toHexInputValue(value) {
+  if (typeof value !== 'string') return '#000000';
+  const m = value.trim().match(/^#([0-9a-f]{6})$/i);
+  return m ? `#${m[1]}` : '#000000';
+}
+
+function TerminalColorPanel({ baseTheme, overrides, onClose }) {
+  const { pos, panelRef, onTitleMouseDown } = useDraggableViewportPanel();
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const updateKey = (key, value) => {
+    const next = { ...overrides, [key]: value };
+    setTerminalOverrides(next);
+  };
+
+  const resetKey = (key) => {
+    const next = { ...overrides };
+    delete next[key];
+    setTerminalOverrides(next);
+  };
+
+  const resetAll = () => setTerminalOverrides({});
+
+  if (typeof document === 'undefined') return null;
+
+  const placement = pos
+    ? { left: pos.x, top: pos.y }
+    : { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' };
+
+  return createPortal(
+    <div
+      ref={panelRef}
+      className="fixed rounded-lg border shadow-2xl flex flex-col"
+      style={{
+        ...placement,
+        width: 460,
+        maxWidth: 'calc(100vw - 16px)',
+        maxHeight: 'calc(100vh - 16px)',
+        background: 'var(--bg-elevated, #18181b)',
+        borderColor: 'var(--border-medium, #3f3f46)',
+        zIndex: 2147483646,
+      }}
+    >
+      <div
+        onMouseDown={onTitleMouseDown}
+        className="flex items-center gap-2 px-3 py-2 border-b rounded-t-lg select-none"
+        style={{
+          borderColor: 'var(--border-subtle, #2a2b38)',
+          background: 'var(--bg-app, #0a0b10)',
+          cursor: 'move',
+        }}
+      >
+        <Palette className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--accent-primary, #b545ff)' }} />
+        <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
+          Terminal Colors
+        </span>
+        <button
+          type="button"
+          onClick={resetAll}
+          onMouseDown={(e) => e.stopPropagation()}
+          title="Reset all to theme defaults"
+          className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] hover:bg-white/10"
+          style={{ color: 'var(--text-muted, #6b7089)' }}
+        >
+          <RotateCcw className="w-3 h-3" />
+          Reset all
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          onMouseDown={(e) => e.stopPropagation()}
+          aria-label="Close"
+          className="rounded p-0.5 hover:bg-white/10"
+          style={{ color: 'var(--text-muted, #6b7089)' }}
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+
+      <div className="p-3 overflow-auto flex-1 min-h-0">
+        <p className="text-[11px] mb-3 leading-relaxed" style={{ color: 'var(--text-secondary, #a1a1aa)' }}>
+          Overrides apply on top of the active theme and persist on this device.
+          Click ↺ to revert a single color.
+        </p>
+
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+          {TERMINAL_COLOR_KEYS.map((key) => {
+            const effective = overrides[key] ?? baseTheme[key] ?? '#000000';
+            const overridden = Object.prototype.hasOwnProperty.call(overrides, key);
+            return (
+              <div key={key} className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={toHexInputValue(effective)}
+                  onChange={(e) => updateKey(key, e.target.value)}
+                  className="w-6 h-6 rounded cursor-pointer border-0 p-0 bg-transparent"
+                  title={effective}
+                />
+                <span
+                  className="text-[11px] flex-1 truncate"
+                  style={{
+                    color: overridden ? 'var(--text-primary, #e4e4e7)' : 'var(--text-secondary, #a1a1aa)',
+                    fontWeight: overridden ? 600 : 400,
+                  }}
+                >
+                  {COLOR_LABELS[key] || key}
+                </span>
+                {overridden && (
+                  <button
+                    type="button"
+                    onClick={() => resetKey(key)}
+                    title="Revert to theme default"
+                    className="rounded p-0.5 hover:bg-white/10"
+                    style={{ color: 'var(--text-muted, #6b7089)' }}
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+/**
+ * ConnectionStatusPanel — viewport-centred floating panel (portal to body)
+ * shown when the terminal disconnects or the shell exits. No backdrop, so
+ * the rest of the IDE stays usable; draggable by the titlebar.
+ */
+function ConnectionStatusPanel({ state, onReconnect }) {
+  const { pos, panelRef, onTitleMouseDown } = useDraggableViewportPanel();
+
+  if (typeof document === 'undefined') return null;
+
+  const placement = pos
+    ? { left: pos.x, top: pos.y }
+    : { left: '50%', top: '50%', transform: 'translate(-50%, -50%)' };
+
+  const title = state === 'closed' ? 'Session Ended' : 'Terminal Disconnected';
+  const body =
+    state === 'closed'
+      ? 'The shell process has exited.'
+      : 'Unable to reach the terminal server. Make sure the collab-server is running.';
+  const actionLabel = state === 'closed' ? 'New Session' : 'Reconnect';
+
+  return createPortal(
+    <div
+      ref={panelRef}
+      className="fixed rounded-lg border shadow-2xl flex flex-col"
+      style={{
+        ...placement,
+        width: 340,
+        maxWidth: 'calc(100vw - 16px)',
+        background: 'var(--bg-elevated, #18181b)',
+        borderColor: 'var(--border-medium, #3f3f46)',
+        zIndex: 2147483646,
+      }}
+    >
+      <div
+        onMouseDown={onTitleMouseDown}
+        className="flex items-center gap-2 px-3 py-2 border-b rounded-t-lg select-none"
+        style={{
+          borderColor: 'var(--border-subtle, #2a2b38)',
+          background: 'var(--bg-app, #0a0b10)',
+          cursor: 'move',
+        }}
+      >
+        <WifiOff className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--text-muted, #6b7089)' }} />
+        <span className="text-xs font-semibold flex-1" style={{ color: 'var(--text-primary, #e4e4e7)' }}>
+          {title}
+        </span>
+      </div>
+
+      <div className="p-4 flex flex-col items-center gap-3 text-center">
+        <p className="text-xs leading-relaxed" style={{ color: 'var(--text-muted, #6b7089)' }}>
+          {body}
+        </p>
+        <button
+          type="button"
+          onClick={onReconnect}
+          className="flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium text-white transition-colors"
+          style={{ background: 'var(--accent-primary, #b545ff)' }}
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          {actionLabel}
+        </button>
+      </div>
+    </div>,
+    document.body
+  );
+}
 
 export default TerminalPane;

@@ -9,11 +9,7 @@ import { setShowTerminal } from '@/redux/uiSlice';
 import { useContextWindow } from './useContextWindow';
 import { useAgentPipeline, PIPELINE_MODES } from './useAgentPipeline';
 
-// AI Engine base URL for intent classification
-const AI_ENGINE_BASE = process.env.NEXT_PUBLIC_AI_ENGINE_URL
-    || (typeof window !== 'undefined' && window.location.hostname !== 'localhost'
-        ? window.location.origin
-        : 'http://localhost:8000');
+const INTENT_CLASSIFY_URL = '/api/classify/intent';
 
 /**
  * Classify user query intent using the AI backend's LLM-based classifier.
@@ -26,7 +22,7 @@ const AI_ENGINE_BASE = process.env.NEXT_PUBLIC_AI_ENGINE_URL
 const classifyQueryIntent = async (query, context = null) => {
     let result = null;
     try {
-        const response = await fetch(`${AI_ENGINE_BASE}/classify/intent`, {
+        const response = await fetch(INTENT_CLASSIFY_URL, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ query, context }),

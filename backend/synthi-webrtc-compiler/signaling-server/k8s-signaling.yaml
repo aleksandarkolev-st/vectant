@@ -35,7 +35,7 @@ spec:
     spec:
       containers:
         - name: redis
-          image: redis:7-alpine
+          image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
           ports:
             - containerPort: 6379
           resources:
@@ -77,7 +77,7 @@ spec:
     spec:
       containers:
         - name: signaling
-          image: synthi/signaling-server:latest   # replace with your registry
+          image: synthi/signaling-server:build-tag-required   # replace with your immutable build tag
           ports:
             - containerPort: 9000
           env:

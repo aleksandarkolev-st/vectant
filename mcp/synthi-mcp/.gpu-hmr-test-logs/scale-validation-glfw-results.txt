@@ -1,0 +1,64 @@
+slug: gpu-scale-glfw-rocm-1200-natural-init-warm-fix-20260521
+repo_commit: 93681f9ada4951e0efa80cd9104ab0d5ce703f15
+model: gemini-3.1-flash-lite-preview
+vendor: rocm
+arch: gfx1201
+render_backend: glfw
+template_evidence_mode: fresh
+cmake_target_mode: single
+hmr_delta_mode: natural_user_delta
+validation_profile: natural
+source_file_mix: {"cpp":13,"hpp":18,"h":10,"hip":11,"cu":0,"total":52}
+workspace_file_count: 1200
+relevant_file_count: 58
+generated_roles: {"shared":".synthi/generated/gpu/shared.h","core":".synthi/generated/gpu/core.cpp","gui":".synthi/generated/gpu/gui.cpp","host_runner":".synthi/generated/gpu/host_runner.cpp","device":".synthi/generated/gpu/device.hip"}
+prod_run_report: {"schemaVersion":"synthi.gpu.run_report.v1","arbiterDecision":"skip","selectedPlan":null,"compileDbHash":"74da1bb7537dce11d2c43813f3d1416c7cc8a361f898a07cea22c3657166aa7d","cmakeCodemodelHash":"1c270f49d1bc846cf145756ff36ee75ef8988ece70bde0e54c26d5671cdf5fa6","targetResolutionMethod":"single_executable_target_containing_focus","cmakeTargetCount":1,"targetName":"particle_field","toolchainCapabilityProfileHash":"d4df149029054bbc4eac9e723a4a1470cd84e2b41b2dab68325d30f5b0aeb723","templateEvidenceStatus":"fresh","affectedTemplateInstantiationCount":2,"affectedHeaderGraphStatus":"bounded"}
+
+PASS gpu target - rocm arch=gfx1201 render_backend=glfw cmake_target_mode=single template_evidence=fresh hmr_delta_mode=natural_user_delta validation_profile=natural
+PASS source file mix - {"cpp":13,"hpp":18,"h":10,"hip":11,"cu":0,"total":52}
+PASS ordinary user project guard - 1200 files, no Synthi ABI or generated role filenames
+PASS render backend dependency preflight - GLFW + OpenGL: libglfw3-dev, libgl1-mesa-dev
+PASS create workspace - id=cmpfmu96a0025l20146ah9n7r slug=gpu-scale-glfw-rocm-1200-natural-init-warm-fix-20260521
+PASS seed scale workspace - 1200 files
+PASS mcp tools/list - count=42
+PASS mcp attach - attached
+PASS first compile via MCP - files=1200
+PASS worker saw full file set - [AI Split] ENTER (cache_key=1405641442016991125, src_len=377, files=1200, gpu_mode=rocm, gpu_arch=gfx1201
+PASS ai-engine saw full file set or split cache hit - [split/gpu] request file context count=1200
+PASS screenshot first-compile - 800x600 visible=45702 luma=19.7 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-glfw-rocm-1200-natural-init-warm-fix-20260521-first-compile.png
+PASS generated split preserved GLFW + OpenGL backend - framework markers present
+PASS generated split contains HMR ABI - .synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip
+PASS generated launch sites use indirection table - launchSites=2 tableVersion=1
+PASS stale launch pointer check passed - reload_failed.stale_launch_pointer
+PASS fresh template evidence enables bounded warm rebuild option - instantiations=2 warm=pass
+PASS production run report records target, capability, cache, and header graph - target=particle_field arbiter=skip headers=3
+PASS read generated split from worker - worker=/tmp/.tmpYCEvNn
+PASS generated split kept internal - .synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip supplied inline to HMR compile only
+PASS user device-source natural compile via MCP - src/gpu/particle_kernels.hip
+PASS workspace visible tree remains user files only - 1226 listed files; no generated split artifacts
+PASS natural body edit avoided full AI re-split - no full AI split marker after body edit
+PASS user_device_delta GPU AI delta worker not called - no GPU AI delta worker marker
+PASS user_device_delta GPU AI delta backend not called - no GpuDiffPatch marker
+PASS device-only GPU HMR observed - [gpu-reload] plan=device_only  reason=device-file-only-edit
+PASS screenshot post-hmr - 800x600 visible=39393 luma=18.7 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-glfw-rocm-1200-natural-init-warm-fix-20260521-post-hmr.png
+PASS runner stayed alive after GPU HMR - no runner crash marker
+PASS direct device-only sidecar report accepted body edit - edit.kernel_body_only,abi.kernel_signature_unchanged,abi.constant_global_layout_unchanged,mapping.device_role_valid,parser.user_baseline_ast_passed,parser.user_candidate_ast_passed,parser.generated_device_ast_passed,build.selected_compile_command_present,build.effective_flags_hash_present,build.device_sidecar_only,mapping.kernel.advance_particle_field
+PASS template header warm rebuild compile via MCP - src/gpu/particle_template_math.hpp
+PASS workspace visible tree remains user files only - 1226 listed files; no generated split artifacts
+PASS bounded template edit uses warm_rebuild - [gpu-hmr] warm_rebuild accepted: user=src/gpu/particle_template_math.hpp generated=.synthi/generated/gpu/device.hip reasons=build.device_sidecar_rebuild,build.warm_rebuild
+PASS warm rebuild compiles device sidecar - [compile-device] hipcc -> /tmp/.tmpYCEvNn/build/device_1779376577.hsaco  args=CommandArgs { inner: ["--genco", "--offload-arch=gfx1201", "-O3", "-lineinfo", "-o", "/tmp/.tmpYCEvNn/build/device_1779376577.hsaco", ".synthi/generated/gpu/device.hip"] }
+PASS warm rebuild reload observed - Device sidecar reload vendor=rocm artifact=/tmp/.tmpYCEvNn/build/device_1779376577.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 3, state_preserved: true }
+PASS warm rebuild avoided AI split and AI delta - no AI split/delta marker during warm rebuild
+PASS screenshot post-warm-rebuild - 800x600 visible=30472 luma=16.4 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-glfw-rocm-1200-natural-init-warm-fix-20260521-post-warm-rebuild.png
+PASS warm rebuild report accepted bounded template edit - build.device_sidecar_rebuild,build.warm_rebuild,edit.device_reachable_header,template_evidence_fresh,template_instantiation_bounded
+PASS natural validation skipped forced negative gates - ordinary first split, device body edit, and bounded header edit completed without forced AI delta
+
+PHASE first_ai_split_compile wait=applied source=hmr_status wait_ms=32510 terminal_wait_ms=32510 wall_ms=32569 detail={"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true} frame_gate={"status":"timeout","pipeline_budget_ms":80,"note":"no post-budget frame_advance observed; screenshot may reflect pre-reload frame"}
+PHASE natural_device_body_hmr wait=applied source=hmr_status wait_ms=6611 terminal_wait_ms=6493 wall_ms=7233 detail={"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true} frame_gate={"status":"satisfied","frame_seq":306,"ts_ms":1779376574616,"pipeline_budget_ms":80}
+PHASE template_warm_rebuild_hmr wait=applied source=hmr_status wait_ms=4264 terminal_wait_ms=4123 wall_ms=1859 detail={"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true} frame_gate={"status":"satisfied","frame_seq":420,"ts_ms":1779376581009,"pipeline_budget_ms":80}
+
+AI_DELTA user_device_delta mode=natural_user_delta profile=natural worker_called=false backend_called=false worker_marker= backend_marker=
+
+SCREENSHOT first-compile 800x600 visible=45702 luma=19.7 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-glfw-rocm-1200-natural-init-warm-fix-20260521-first-compile.png differs=
+SCREENSHOT post-hmr 800x600 visible=39393 luma=18.7 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-glfw-rocm-1200-natural-init-warm-fix-20260521-post-hmr.png differs=true
+SCREENSHOT post-warm-rebuild 800x600 visible=30472 luma=16.4 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-scale-glfw-rocm-1200-natural-init-warm-fix-20260521-post-warm-rebuild.png differs=true

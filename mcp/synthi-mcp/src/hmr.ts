@@ -123,6 +123,15 @@ export function classifyHmrMessage(msg: WireMessage): HmrClassification | null {
 
 type MessageHandler = (msg: WireMessage) => void;
 
+function terminalModule(detail: Record<string, unknown>): string | null {
+  if (typeof detail.module === "string") return detail.module;
+  const data = detail.data;
+  if (data && typeof data === "object" && typeof (data as Record<string, unknown>).module === "string") {
+    return (data as Record<string, unknown>).module as string;
+  }
+  return null;
+}
+
 export class HmrNormalizer {
   private readonly listeners = new Set<MessageHandler>();
   private readonly unbind: () => void;
@@ -166,8 +175,9 @@ export class HmrNormalizer {
    * discarded. This matches the implementation plan F2 guidance and the
    * `hmr_normalize.test.ts` dedupe expectation.
    */
-  async waitForTerminal(opts: { timeoutMs?: number } = {}): Promise<HmrTerminalEvent> {
+  async waitForTerminal(opts: { timeoutMs?: number; module?: string } = {}): Promise<HmrTerminalEvent> {
     const timeoutMs = opts.timeoutMs ?? 60_000;
+    const expectedModule = opts.module?.trim();
     const start = Date.now();
 
     return new Promise<HmrTerminalEvent>((resolve) => {
@@ -176,6 +186,13 @@ export class HmrNormalizer {
         if (settled) return;
         const cls = classifyHmrMessage(msg);
         if (!cls) return;
+        if (
+          expectedModule &&
+          cls.status === "applied" &&
+          terminalModule(cls.detail) !== expectedModule
+        ) {
+          return;
+        }
         settled = true;
         clearTimeout(timer);
         unsub();

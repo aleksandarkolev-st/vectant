@@ -40,8 +40,11 @@ import {
   resetNepBuffer,
   renderRecentEditsBlock,
 } from '@/utils/nepRecentEdits';
+import { buildNepContextPacket } from '@/utils/aiContextBroker';
 import { classifyEdit } from '@/lib/editKindClassifier';
 import { recordNepEvent, isNepKilled, checkServerKill } from '@/lib/nepTelemetry';
+import { recordAiReplaySample } from '@/lib/aiReplayHarness';
+import { canHandleTabIntent, TAB_INTENT_OWNER, updateTabIntentState } from './tabIntentRouter';
 import { gitClient } from '@/services/gitClient';
 import { fileCache } from '@/services/fileCache';
 import { loadScheduler } from '@/services/loadScheduler';
@@ -49,6 +52,7 @@ import { selectFileThunk } from '@/redux/workspaceSlice';
 
 const NEP_DEBOUNCE_MS = 400;
 const NEP_MIN_INTERVAL_MS = 800; // floor between auto-fires (rate limit)
+const NEP_MAX_REFINEMENT_PASSES = 1;
 // Per-session cap on NEP fires. Heavy refactor sessions could otherwise blow
 // API budget. Plan-grade gap "cost ceiling / rate limit per session is
 // absent" — addressed by this cap. Resets on workspace switch.
@@ -258,9 +262,11 @@ export const useNextEditPrediction = ({
   const [fireCapReached, setFireCapReached] = useState(false);
 
   const recentEditsRef = useRef([]);
+  const previousContentByPathRef = useRef(new Map());
   const lastFireRef = useRef(0);
   const debounceTimerRef = useRef(null);
   const abortRef = useRef(null);
+  const nepRequestSeqRef = useRef(0);
   const sessionFireCountRef = useRef(0);
 
   // Validated queue. Each entry is one of:
@@ -308,6 +314,7 @@ export const useNextEditPrediction = ({
   // ── lifecycle: workspace reset ──────────────────────────────────────────
   useEffect(() => {
     recentEditsRef.current = resetNepBuffer();
+    previousContentByPathRef.current = new Map();
     queueRef.current = [];
     queueIndexRef.current = 0;
     lastAppliedEditRef.current = null;
@@ -846,6 +853,27 @@ export const useNextEditPrediction = ({
   }, []);
 
   const resetToIdle = useCallback((reason = 'reset') => {
+    const remaining = Math.max(0, queueRef.current.length - queueIndexRef.current);
+    if (remaining > 0 && reason !== 'drained') {
+      const entry = queueRef.current[queueIndexRef.current];
+      recordNepEvent('dismissed', {
+        reason,
+        remaining,
+        kind: entry?.kind || null,
+        path: entry?.block?.path || entry?.location?.path || null,
+        request_id: entry?.requestId || null,
+      });
+      recordAiReplaySample({
+        feature: 'nep',
+        phase: 'dismissed',
+        requestId: entry?.requestId || null,
+        payload: {
+          reason,
+          remaining,
+          entry,
+        },
+      });
+    }
     cancelInflight(reason);
     queueRef.current = [];
     queueIndexRef.current = 0;
@@ -855,6 +883,14 @@ export const useNextEditPrediction = ({
     setPredictedPaths((prev) => (prev.size ? new Set() : prev));
     setNepState(STATE.IDLE);
   }, [cancelInflight, clearDecorations, clearEditPreview]);
+
+  useEffect(() => {
+    updateTabIntentState({ nepState: enabled ? nepState : STATE.IDLE });
+  }, [enabled, nepState]);
+
+  useEffect(() => () => {
+    updateTabIntentState({ nepState: STATE.IDLE });
+  }, []);
 
   // Cross-file jump completion. After Tab dispatches selectFileThunk for a
   // prediction in a non-active file, Editor.jsx remounts the editor with
@@ -902,6 +938,11 @@ export const useNextEditPrediction = ({
   // ── recent-edit capture ─────────────────────────────────────────────────
   useEffect(() => {
     if (!enabled || !editorInstance) return undefined;
+    try {
+      const path = activeFile?.path || activeFile?.name || null;
+      const model = editorInstance.getModel?.();
+      if (path && model) previousContentByPathRef.current.set(path, model.getValue?.() ?? '');
+    } catch (_) { /* seed is best-effort */ }
 
     const disposable = editorInstance.onDidChangeModelContent?.((event) => {
       try {
@@ -911,6 +952,8 @@ export const useNextEditPrediction = ({
         if (!model) return;
         const changes = Array.isArray(event?.changes) ? event.changes : [];
         if (!changes.length) return;
+        const previousContent = previousContentByPathRef.current.get(path);
+        const nextContent = model.getValue?.() ?? '';
 
         const sorted = [...changes].sort((a, b) => {
           const al = a?.range?.startLineNumber ?? 0;
@@ -919,7 +962,16 @@ export const useNextEditPrediction = ({
           return (a?.range?.startColumn ?? 0) - (b?.range?.startColumn ?? 0);
         });
         const insertedText = sorted.map((c) => c?.text || '').join('').replace(/\s+$/u, '');
-        if (!insertedText.trim()) return;
+        const deletedText = (typeof previousContent === 'string')
+          ? sorted.map((c) => {
+              const off = Number(c?.rangeOffset);
+              const len = Number(c?.rangeLength);
+              if (!Number.isFinite(off) || !Number.isFinite(len) || len <= 0) return '';
+              return previousContent.slice(off, off + len);
+            }).join('').replace(/\s+$/u, '')
+          : '';
+        previousContentByPathRef.current.set(path, nextContent);
+        if (!insertedText.trim() && !deletedText.trim()) return;
 
         const firstRange = sorted[0]?.range;
         const lastRange = sorted[sorted.length - 1]?.range || firstRange;
@@ -946,16 +998,20 @@ export const useNextEditPrediction = ({
         const before = readLines(ctxStart, Math.max(ctxStart, startLine - 1));
         const after = readLines(Math.min(totalLines, endLine + 1), ctxEnd);
 
-        const markInserted = (t) => t.split('\n').map((l) => `+ ${l}`).join('\n');
+        const markInserted = (t) => (t ? t.split('\n').map((l) => `+ ${l}`).join('\n') : '');
+        const markDeleted = (t) => (t ? t.split('\n').map((l) => `- ${l}`).join('\n') : '');
         const markContext = (t) => (t ? t.split('\n').map((l) => `  ${l}`).join('\n') : '');
         const headerLine = `@@ ${path} L${startLine}-${endLine} @@`;
         const snippet = [
           headerLine,
           markContext(before),
+          markDeleted(deletedText),
           markInserted(insertedText),
           markContext(after),
         ].filter(Boolean).join('\n');
 
+        const searchText = deletedText.trim() ? deletedText : insertedText;
+        const replaceText = deletedText.trim() ? insertedText : insertedText;
         recentEditsRef.current = pushNepEdit(recentEditsRef.current, {
           path,
           snippet,
@@ -965,6 +1021,8 @@ export const useNextEditPrediction = ({
           // fire (and every fire until an apply lands) skips edit-impact
           // and the model sees no cross-file candidates.
           insertedText,
+          searchText,
+          replaceText,
         });
 
         if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
@@ -1003,7 +1061,7 @@ export const useNextEditPrediction = ({
   }, [enabled, editorInstance, activeFile, nepState, cancelInflight, resetToIdle]);
 
   // ── fire NEP ────────────────────────────────────────────────────────────
-  const fireNep = useCallback(async () => {
+  const fireNep = useCallback(async (refinement = null) => {
     if (!enabled) return;
     if (!editorInstance || !activeFile) return;
     // Refresh server-kill cache (60s TTL — cheap on hit). Awaited so the
@@ -1024,7 +1082,9 @@ export const useNextEditPrediction = ({
     }
 
     const now = Date.now();
-    if (now - lastFireRef.current < NEP_MIN_INTERVAL_MS) return;
+    const isRefinement = Boolean(refinement?.feedback?.length);
+    const refinementPass = Number(refinement?.pass || 0);
+    if (!isRefinement && now - lastFireRef.current < NEP_MIN_INTERVAL_MS) return;
     lastFireRef.current = now;
     sessionFireCountRef.current += 1;
 
@@ -1033,6 +1093,7 @@ export const useNextEditPrediction = ({
 
     const controller = new AbortController();
     abortRef.current = controller;
+    const requestId = ++nepRequestSeqRef.current;
 
     const activePath = activeFile?.path || activeFile?.name || null;
     const liveActiveContent = getLiveFileContent
@@ -1093,18 +1154,12 @@ export const useNextEditPrediction = ({
 
     const cacheEntries = typeof getFileCacheEntries === 'function'
       ? getFileCacheEntries() : [];
-    const files = {};
-    if (activePath && typeof liveActiveContent === 'string') {
-      files[activePath] = liveActiveContent;
-    }
-    if (cacheEntries) {
-      const iter = Array.isArray(cacheEntries) ? cacheEntries : Array.from(cacheEntries);
-      for (const [p, content] of iter) {
-        if (!p || typeof content !== 'string') continue;
-        if (p === activePath) continue;
-        files[p] = content;
-      }
-    }
+    const { files, codeIntel } = buildNepContextPacket({
+      activePath,
+      activeContent: liveActiveContent,
+      cacheEntries,
+      recentEdits: recentEditsRef.current,
+    });
 
     if (typeof console !== 'undefined' && console.info) {
       console.info(`[NEP] fire — workspace=${workspaceSlug || '?'} active=${activePath} files=${Object.keys(files).length} recentEdits=${recentEditsRef.current.length}`);
@@ -1129,22 +1184,28 @@ export const useNextEditPrediction = ({
       const buf = recentEditsRef.current;
       if (Array.isArray(buf) && buf.length) {
         const last = buf[buf.length - 1];
-        const text = (typeof last?.insertedText === 'string' && last.insertedText.trim())
-          ? last.insertedText
+        const search = (typeof last?.searchText === 'string' && last.searchText.trim())
+          ? last.searchText
+          : ((typeof last?.insertedText === 'string' && last.insertedText.trim()) ? last.insertedText : null);
+        const replace = typeof last?.replaceText === 'string'
+          ? last.replaceText
           : null;
-        if (last?.path && text) {
-          appliedEdit = { path: last.path, search: text, replace: text, kind: null };
+        if (last?.path && search) {
+          appliedEdit = { path: last.path, search, replace: replace ?? search, kind: null };
         }
       }
     }
 
     const payload = {
+      requestId,
       workspaceSlug: workspaceSlug || null,
       language: activeLanguage || 'plaintext',
       activePath,
       cursor,
       recentEdits: recentEditsRef.current.map((e) => ({ path: e.path, snippet: e.snippet })),
       files,
+      codeIntel,
+      validationFeedback: isRefinement ? refinement.feedback : [],
       // Phase 2: send the last applied edit so the route can pull impact
       // candidates from the symbol graph and inject them into the prompt.
       // Falls back to a synthetic edit derived from the user's last
@@ -1156,6 +1217,26 @@ export const useNextEditPrediction = ({
     recordNepEvent('fire', {
       has_applied_edit: Boolean(lastAppliedEditRef.current),
       has_synthetic_edit: Boolean(appliedEdit) && !lastAppliedEditRef.current,
+      request_id: requestId,
+      refinement_pass: isRefinement ? refinementPass : 0,
+    });
+    recordAiReplaySample({
+      feature: 'nep',
+      phase: 'request',
+      requestId,
+      payload: {
+        workspaceSlug: workspaceSlug || null,
+        language: activeLanguage || 'plaintext',
+        activePath,
+        cursor,
+        recentEdits: payload.recentEdits,
+        filePaths: Object.keys(files),
+        files,
+        codeIntel,
+        appliedEdit,
+        validationFeedback: isRefinement ? refinement.feedback : [],
+        refinementPass: isRefinement ? refinementPass : 0,
+      },
     });
 
     let res;
@@ -1178,6 +1259,7 @@ export const useNextEditPrediction = ({
     const parser = createStreamParser();
     const decoder = new TextDecoder();
     let armedYet = false;
+    const validationFeedback = [];
 
     // Cross-file unblock (NEP plan §6, Phase 2): the validator must be able
     // to read any workspace file, not just ones the user has open. Falls
@@ -1222,6 +1304,22 @@ export const useNextEditPrediction = ({
           recordNepEvent('rejected', {
             reason: result.reason || REJECT_REASONS.PARSE_ERROR,
             detail: result.detail,
+            request_id: requestId,
+          });
+          recordAiReplaySample({
+            feature: 'nep',
+            phase: 'parse_rejected',
+            requestId,
+            payload: {
+              reason: result.reason || REJECT_REASONS.PARSE_ERROR,
+              detail: result.detail,
+              raw: result.raw,
+            },
+          });
+          validationFeedback.push({
+            reason: result.reason || REJECT_REASONS.PARSE_ERROR,
+            detail: result.detail,
+            raw: result.raw,
           });
           if (typeof console !== 'undefined' && console.info) {
             console.info(`[NEP] block parse-rejected: reason=${result.reason} detail=${result.detail || ''}`);
@@ -1230,6 +1328,12 @@ export const useNextEditPrediction = ({
         }
         recordNepEvent('emitted');
         const block = result.block;
+        recordAiReplaySample({
+          feature: 'nep',
+          phase: 'emitted',
+          requestId,
+          payload: { block },
+        });
         await hydrateFile(block.path);
         if (controller.signal.aborted) return;
         const v = validateBlock(block, liveReader);
@@ -1237,16 +1341,34 @@ export const useNextEditPrediction = ({
         let entry = null;
         if (block.kind === NEP_BLOCK_KIND.SEARCH) {
           if (!v.ok) {
-            recordNepEvent('rejected', { reason: v.reason, path: v.path || block.path });
+            recordNepEvent('rejected', { reason: v.reason, path: v.path || block.path, request_id: requestId });
+            recordAiReplaySample({
+              feature: 'nep',
+              phase: 'validate_rejected',
+              requestId,
+              payload: { reason: v.reason, path: v.path || block.path, block },
+            });
+            validationFeedback.push({
+              reason: v.reason,
+              path: v.path || block.path,
+              search: block.search,
+              replace: block.replace,
+            });
             if (typeof console !== 'undefined' && console.info) {
               console.info(`[NEP] block validate-rejected: path=${block.path} reason=${v.reason} cross_file=${block.path !== activePath}`);
             }
             continue;
           }
-          recordNepEvent('validated', { kind: block.kind });
           const line = locateBlock(block, liveReader);
           if (!line) continue;
-          entry = { kind: NEP_BLOCK_KIND.SEARCH, block, location: { path: block.path, line } };
+          recordNepEvent('validated', { kind: block.kind, request_id: requestId });
+          recordAiReplaySample({
+            feature: 'nep',
+            phase: 'validated',
+            requestId,
+            payload: { kind: block.kind, path: block.path, block, line },
+          });
+          entry = { kind: NEP_BLOCK_KIND.SEARCH, requestId, block, location: { path: block.path, line } };
           if (typeof console !== 'undefined' && console.info) {
             console.info(`[NEP] block validated: path=${block.path}:${line} cross_file=${block.path !== activePath}`);
           }
@@ -1254,16 +1376,34 @@ export const useNextEditPrediction = ({
           // Phase 2 treats phase2_required as the OPPORTUNITY to enter the
           // confirm flow — the validator's "reject" was the Phase 1 stub.
           if (!v.ok && v.reason !== REJECT_REASONS.PHASE2_REQUIRED) {
-            recordNepEvent('rejected', { reason: v.reason, path: v.path || block.path });
+            recordNepEvent('rejected', { reason: v.reason, path: v.path || block.path, request_id: requestId });
+            recordAiReplaySample({
+              feature: 'nep',
+              phase: 'validate_rejected',
+              requestId,
+              payload: { reason: v.reason, path: v.path || block.path, block },
+            });
+            validationFeedback.push({
+              reason: v.reason,
+              path: v.path || block.path,
+              search: block.search,
+              replace: block.replace,
+            });
             continue;
           }
-          recordNepEvent('validated', { kind: block.kind });
+          recordNepEvent('validated', { kind: block.kind, request_id: requestId });
           const live = liveReader(block.path);
           if (typeof live !== 'string') continue;
           const offsets = findAllOffsets(live, block.search);
           if (offsets.length === 0) continue;
           const sites = offsets.map((offset) => ({ offset, line: offsetToLine(live, offset) }));
-          entry = { kind: NEP_BLOCK_KIND.SEARCH_ALL, block, sites, cursor: 0 };
+          entry = { kind: NEP_BLOCK_KIND.SEARCH_ALL, requestId, block, sites, cursor: 0 };
+          recordAiReplaySample({
+            feature: 'nep',
+            phase: 'validated',
+            requestId,
+            payload: { kind: block.kind, path: block.path, block, sites },
+          });
           if (typeof console !== 'undefined' && console.info) {
             console.info(`[NEP] SEARCH ALL validated: path=${block.path} sites=${sites.length}`);
           }
@@ -1291,7 +1431,7 @@ export const useNextEditPrediction = ({
           return false;
         })();
         if (isDuplicate) {
-          recordNepEvent('rejected', { reason: 'duplicate', path: entry.block?.path });
+          recordNepEvent('rejected', { reason: 'duplicate', path: entry.block?.path, request_id: requestId });
           continue;
         }
         queueRef.current.push(entry);
@@ -1326,7 +1466,26 @@ export const useNextEditPrediction = ({
       // Stream tore mid-block — anything we already armed is still valid.
     }
 
-    if (!armedYet) setNepState(STATE.IDLE);
+    if (!armedYet) {
+      setNepState(STATE.IDLE);
+      if (!isRefinement && validationFeedback.length && refinementPass < NEP_MAX_REFINEMENT_PASSES) {
+        const feedback = validationFeedback.slice(0, 6);
+        recordAiReplaySample({
+          feature: 'nep',
+          phase: 'refinement_scheduled',
+          requestId,
+          payload: {
+            reason: 'validation_repair',
+            feedback,
+          },
+        });
+        setTimeout(() => {
+          try {
+            fireNepRef.current?.({ feedback, pass: refinementPass + 1 });
+          } catch (_) { /* best-effort repair */ }
+        }, 0);
+      }
+    }
   }, [
     enabled, editorInstance, activeFile, activeLanguage, workspaceSlug,
     getFileCacheEntries, getLiveFileContent, cancelInflight, renderJumpHint,
@@ -1467,7 +1626,18 @@ export const useNextEditPrediction = ({
         replace: entry.block.replace,
       };
     }
-    recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH, path, via: writeResult?.via });
+    recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH, path, via: writeResult?.via, request_id: entry.requestId || null });
+    recordAiReplaySample({
+      feature: 'nep',
+      phase: 'accepted',
+      requestId: entry.requestId || null,
+      payload: {
+        kind: NEP_BLOCK_KIND.SEARCH,
+        path,
+        via: writeResult?.via,
+        block: entry.block,
+      },
+    });
   }, [getLiveFileContent, writeFileContent, runOnApply]);
 
   /**
@@ -1503,6 +1673,12 @@ export const useNextEditPrediction = ({
       const idx = queueIndexRef.current;
       const entry = queueRef.current[idx];
       if (!entry) return;
+      if (
+        e.code === 'Tab'
+        && !canHandleTabIntent(TAB_INTENT_OWNER.NEP, { nepState })
+      ) {
+        return;
+      }
 
       const advanceQueue = () => {
         queueIndexRef.current += 1;
@@ -1532,7 +1708,22 @@ export const useNextEditPrediction = ({
           (async () => {
             try {
               await applySearchAllSite(entry, entry.cursor ?? 0);
-              recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH_ALL, path: entry.block.path });
+              recordNepEvent('accepted', {
+                kind: NEP_BLOCK_KIND.SEARCH_ALL,
+                path: entry.block.path,
+                request_id: entry.requestId || null,
+              });
+              recordAiReplaySample({
+                feature: 'nep',
+                phase: 'accepted',
+                requestId: entry.requestId || null,
+                payload: {
+                  kind: NEP_BLOCK_KIND.SEARCH_ALL,
+                  path: entry.block.path,
+                  site: entry.cursor ?? 0,
+                  block: entry.block,
+                },
+              });
             } catch (err) {
               recordNepEvent('rejected', { reason: 'apply_failed', detail: err?.message });
               resetToIdle('apply-failed');
@@ -1556,6 +1747,23 @@ export const useNextEditPrediction = ({
           // Shift+Tab → skip this site.
           e.preventDefault();
           e.stopPropagation();
+          recordNepEvent('skipped', {
+            kind: NEP_BLOCK_KIND.SEARCH_ALL,
+            path: entry.block.path,
+            site: entry.cursor ?? 0,
+            request_id: entry.requestId || null,
+          });
+          recordAiReplaySample({
+            feature: 'nep',
+            phase: 'skipped',
+            requestId: entry.requestId || null,
+            payload: {
+              kind: NEP_BLOCK_KIND.SEARCH_ALL,
+              path: entry.block.path,
+              site: entry.cursor ?? 0,
+              block: entry.block,
+            },
+          });
           entry.cursor = (entry.cursor ?? 0) + 1;
           if (entry.cursor < (entry.sites?.length ?? 0)) {
             renderJumpHint(entry, { confirm: true });
@@ -1580,25 +1788,40 @@ export const useNextEditPrediction = ({
               advanceQueue();
               return;
             }
-            let count = 0;
-            {
-              let pos = 0;
-              while ((pos = live.indexOf(search, pos)) !== -1) {
-                count += 1;
-                pos += search.length;
-              }
-            }
+            const offsets = findAllOffsets(live, search);
+            const remaining = offsets.slice(Math.max(0, entry.cursor ?? 0));
+            const count = remaining.length;
             if (count === 0) {
               advanceQueue();
               return;
             }
-            const next = live.split(search).join(replace);
+            let next = live;
+            for (let i = remaining.length - 1; i >= 0; i--) {
+              const offset = remaining[i];
+              next = next.slice(0, offset) + replace + next.slice(offset + search.length);
+            }
             try {
               await writeFileContent(path, next);
               await runOnApply(path, next);
               for (let i = 0; i < count; i++) {
-                recordNepEvent('accepted', { kind: NEP_BLOCK_KIND.SEARCH_ALL, path, batch: true });
+                recordNepEvent('accepted', {
+                  kind: NEP_BLOCK_KIND.SEARCH_ALL,
+                  path,
+                  batch: true,
+                  request_id: entry.requestId || null,
+                });
               }
+              recordAiReplaySample({
+                feature: 'nep',
+                phase: 'accepted_batch',
+                requestId: entry.requestId || null,
+                payload: {
+                  kind: NEP_BLOCK_KIND.SEARCH_ALL,
+                  path,
+                  count,
+                  block: entry.block,
+                },
+              });
             } catch (err) {
               recordNepEvent('rejected', { reason: 'apply_failed', detail: err?.message });
             }

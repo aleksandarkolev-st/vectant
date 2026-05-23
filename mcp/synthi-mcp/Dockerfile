@@ -7,7 +7,7 @@
 # The container is a long-running sleeper; live-test.mjs does `docker exec -i`
 # per run so stdio (MCP JSON-RPC) stays wired to the host harness.
 
-FROM node:22-slim
+FROM node:22-slim@sha256:689c11043dad91472750cd824c97dd5e2318e9dd6f954e492fe7af0135d33ceb
 
 WORKDIR /app
 

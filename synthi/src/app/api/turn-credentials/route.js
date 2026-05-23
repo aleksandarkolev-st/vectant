@@ -69,7 +69,11 @@ async function fetchCloudflareCredentials() {
 
 export async function GET(req) {
   // Auth gate — only logged-in users may obtain TURN creds.
-  const token = await getToken({ req, secret: process.env.NEXTAUTH_SECRET });
+  const authSecret = process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET;
+  if (!authSecret) {
+    return NextResponse.json({ error: 'Auth secret is not configured' }, { status: 500 });
+  }
+  const token = await getToken({ req, secret: authSecret });
   if (!token) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }

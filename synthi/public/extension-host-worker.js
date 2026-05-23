@@ -341,14 +341,14 @@ class ExtensionHostMain {
     // The code should use module.exports = { activate, deactivate }
     try {
       const exports = {};
-      const module = { exports };
+      const moduleRecord = { exports };
       
       // Create a function that takes vscode, exports, module and executes the extension code
       const factory = new Function('vscode', 'exports', 'module', code);
-      factory(vscode, exports, module);
+      factory(vscode, exports, moduleRecord);
       
       // Get the module exports (either from module.exports or exports directly)
-      const extensionModule = module.exports || exports;
+      const extensionModule = moduleRecord.exports || exports;
 
       if (typeof extensionModule.activate !== 'function') {
         throw new Error('Extension must export an activate() function');

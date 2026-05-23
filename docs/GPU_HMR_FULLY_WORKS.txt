@@ -1,0 +1,24 @@
+GPU HMR fully works for the validated end-to-end split path.
+
+Validated on 2026-05-18 on the local ROCm/RX 9070 XT stack using
+gemini-3.1-flash-lite-preview.
+
+What passed:
+- MCP-driven compile of ordinary monolithic user source with no Synthi ABI.
+- Worker GPU marker detection and /refactor/split/gpu routing.
+- AI-generated split files and manifest.
+- HIP sidecar compilation for gfx1201.
+- Persisting generated split files back into the workspace.
+- Device-only edit of generated device.hip.
+- Device-only GPU HMR reload without restarting runner state.
+- MCP screenshot capture after HMR with advancing frame sequence.
+- Baseline flow fixture and complex two-kernel flow fixture.
+
+Model notes:
+- gemini-3.1-flash-lite-preview passed.
+- gemini-3.0-flash-preview was unavailable to the configured Gemini API.
+- gemini-3.1-flash-ltie was unavailable; this appears to be a misspelled model id.
+
+Scope:
+- This proves the current Synthi C++ CUDA/HIP GPU split/HMR path on ROCm.
+- It does not claim CUDA runtime execution on this AMD host.

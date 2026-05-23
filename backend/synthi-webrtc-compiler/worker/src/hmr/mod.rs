@@ -53,6 +53,7 @@ pub mod dynlib_symbol_resolver;
 pub mod edit_applier;
 pub mod edit_classifier;
 pub mod fast_refresh;
+pub mod gpu_device_fast_path;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_dirty_bit;
 #[cfg(feature = "gpu-hmr")]
@@ -61,6 +62,7 @@ pub mod gpu_driver_loader;
 pub mod gpu_module_adapter;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_module_manager;
+pub mod gpu_prod_contracts;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_reload_orchestrator;
 #[cfg(feature = "gpu-hmr")]
@@ -99,6 +101,7 @@ pub mod reload_manager;
 pub mod reload_protocol;
 pub mod rollback_notification;
 pub mod rollout_flags;
+pub mod runtime_artifact_cache;
 pub mod scope_planner_bridge;
 pub mod shared_header_detect;
 pub mod slot_manager;

@@ -132,6 +132,7 @@ function saveUiPrefs(uiState) {
       autoCompletionEnabled: !!uiState.autoCompletionEnabled,
       autoSaveEnabled: !!uiState.autoSaveEnabled,
       gpuModeEnabled: uiState.gpuModeEnabled !== false,
+      gpuTarget: ['auto', 'cuda', 'rocm'].includes(uiState.gpuTarget) ? uiState.gpuTarget : 'auto',
       treeOnRight: !!uiState.treeOnRight,
       showTerminal: !!uiState.showTerminal,
     };
@@ -216,7 +217,7 @@ if (typeof window !== 'undefined') {
   // Initialize with default state values to prevent overwriting localStorage on startup
   // before hydration has occurred.
   const ui = initialUiState;
-  let lastUi = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.gpuModeEnabled}|${ui.treeOnRight}|${ui.showTerminal}`;
+  let lastUi = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.gpuModeEnabled}|${ui.gpuTarget}|${ui.treeOnRight}|${ui.showTerminal}`;
   
   let lastExpandedFolders = (ui.expandedFolders || []).join('|');
   
@@ -241,7 +242,7 @@ if (typeof window !== 'undefined') {
       const state = store.getState();
       const ui = state?.ui || {};
       // Simple shallow compare to avoid excessive writes
-      const snapshot = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.gpuModeEnabled}|${ui.treeOnRight}|${ui.showTerminal}`;
+      const snapshot = `${ui.autoCompletionEnabled}|${ui.autoSaveEnabled}|${ui.gpuModeEnabled}|${ui.gpuTarget}|${ui.treeOnRight}|${ui.showTerminal}`;
       if (snapshot !== lastUi) {
         lastUi = snapshot;
         saveUiPrefs(ui);

@@ -102,7 +102,14 @@ docker push $REGISTRY/synthi-worker:latest
 
 ### Configure Secrets
 
-Edit `k8s/secrets.yaml` — replace every `Q0hBTkdFTUU=` placeholder with your real base64-encoded values:
+Production deploys use `k8s/external-secrets.yaml`, which syncs the
+`synthi-secrets` Kubernetes Secret from GCP Secret Manager. Create the remote
+secrets named in that manifest before applying `k8s/`.
+
+For a local/manual deployment without External Secrets Operator, copy
+`k8s/secrets.yaml.example` to `k8s/secrets.yaml`, replace every placeholder with
+real base64-encoded values, and swap the foundation resource in
+`k8s/kustomization.yaml` from `external-secrets.yaml` to `secrets.yaml`:
 
 ```bash
 echo -n 'your-actual-secret' | base64
@@ -184,8 +191,10 @@ gcloud builds triggers create github \
 kubectl apply -k k8s/
 
 # Run Prisma migrations (via dedicated Job with Cloud SQL Auth Proxy)
+IMAGE_TAG=<immutable build tag>
 kubectl delete job prisma-migrate -n synthi --ignore-not-found
-kubectl apply -f k8s/prisma-migrate-job.yaml
+sed "s|synthi-prisma-migrate:build-tag-required|synthi-prisma-migrate:${IMAGE_TAG}|g" \
+  k8s/prisma-migrate-job.yaml | kubectl apply -f -
 kubectl wait --for=condition=complete job/prisma-migrate -n synthi --timeout=120s
 kubectl logs job/prisma-migrate -n synthi -c migrate
 

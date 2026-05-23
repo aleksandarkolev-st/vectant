@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/app/auth';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
 
 /**
  * Synthi Genome — POST /api/shadow/verify-only
@@ -41,7 +42,7 @@ export async function POST(request) {
     try {
         const res = await fetch(`${AI_ENGINE_BASE}/shadow/verify-only`, {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: withInternalAiAuth({ 'content-type': 'application/json' }),
             body: JSON.stringify({
                 workspace_path: body.workspace_path,
                 patches: body.patches,

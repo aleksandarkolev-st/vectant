@@ -4,7 +4,7 @@ from typing import Any, Mapping, Optional, Sequence, Dict
 
 from openai import AsyncOpenAI
 
-from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt
+from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt, build_split_mode_prompt
 from .base import AiProvider
 
 
@@ -62,7 +62,7 @@ class ChatGPTProvider(AiProvider):
             # Split mode: send the split prompt directly with the code embedded.
             # Do NOT wrap in build_prompt() — that adds general-analysis framing
             # which causes the LLM to emit explanation prose before the JSON.
-            full_prompt = (prompt or '') + f"\n\nHere is the code to split (language: {lang}):\n```{lang}\n{code}\n```\n\nRespond with ONLY the JSON object. No explanation."
+            full_prompt = build_split_mode_prompt(code, lang, prompt or '')
         else:
             if prompt and 'Respond only with the updated full file contents' in prompt:
                 full_prompt = build_fullfile_prompt(code, lang, prompt, files=files, focus=focus)

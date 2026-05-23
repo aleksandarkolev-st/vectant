@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { withInternalAiAuth } from '@/lib/internalAiAuth';
 
 /**
  * GET /api/shadow_continuous/state?workspace_path=...
@@ -24,7 +25,7 @@ export async function GET(request) {
     try {
         const res = await fetch(
             `${AI_ENGINE_BASE}/shadow_continuous/${encodeURIComponent(workspace_path)}/state`,
-            { method: 'GET' }
+            { method: 'GET', headers: withInternalAiAuth() }
         );
         const json = await res.json().catch(() => ({}));
         return NextResponse.json(json, { status: res.status });

@@ -23,6 +23,8 @@ function TopNav({
   setHmrEnabled,
   gpuModeEnabled,
   setGpuModeEnabled,
+  gpuTarget = 'auto',
+  setGpuTarget,
   onStop,
   onReload,
   isRunning,
@@ -262,7 +264,7 @@ function TopNav({
           aria-pressed={gpuModeEnabled}
           className={`hidden xl:inline-flex items-center gap-1.5 h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${gpuModeEnabled ? 'th-btn-active' : ''}`}
           onClick={() => setGpuModeEnabled(!gpuModeEnabled)}
-          title={gpuModeEnabled ? "GPU pipeline enabled — compile requests may use CUDA/ROCm HMR" : "GPU pipeline disabled — compile requests stay on the host path"}
+          title={gpuModeEnabled ? `GPU pipeline enabled (${gpuTarget.toUpperCase()})` : "GPU pipeline disabled"}
         >
           <span
             aria-hidden="true"
@@ -393,6 +395,26 @@ function TopNav({
                     }`}
                   />
                 </button>
+              </div>
+              <div className="border-t my-1" style={{ borderColor: 'var(--border-subtle)' }}></div>
+              <div className="flex items-center justify-between py-2 px-1 gap-3">
+                <span className="text-sm" style={{ color: 'var(--text-primary)' }}>GPU Target</span>
+                <div className="inline-flex rounded-md border p-0.5" style={{ borderColor: 'var(--border-subtle)' }}>
+                  {['auto', 'cuda', 'rocm'].map((target) => (
+                    <button
+                      key={target}
+                      type="button"
+                      onClick={() => {
+                        setGpuTarget?.(target);
+                        toast(`GPU target set to ${target.toUpperCase()}`, { duration: 1600 });
+                      }}
+                      className={`px-2 py-1 text-[11px] rounded transition-colors ${gpuTarget === target ? 'th-btn-active' : 'th-btn-ghost'}`}
+                      title={`Use ${target.toUpperCase()} for GPU HMR compile requests`}
+                    >
+                      {target.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
               </div>
               <div className="border-t my-1" style={{ borderColor: 'var(--border-subtle)' }}></div>
               <div className="text-xs font-semibold p-2" style={{ color: 'var(--text-muted)' }}>Quick actions</div>

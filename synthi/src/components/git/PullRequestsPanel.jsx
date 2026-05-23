@@ -12,6 +12,8 @@ import {
   GitMerge, XCircle, Circle, Clock, MessageSquare, Filter,
   ChevronDown, ExternalLink, GitBranch,
 } from 'lucide-react';
+import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
+import { toast } from 'sonner';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -68,13 +70,14 @@ function relativeTime(dateStr) {
 }
 
 // ── PR list item ───────────────────────────────────────────────────────────────
-function PRListItem({ pr, onClick }) {
+function PRListItem({ pr, onClick, onContextMenu }) {
   const pill = prStatePill(pr);
   const Icon = pill.icon;
 
   return (
     <button
       onClick={onClick}
+      onContextMenu={onContextMenu}
       className="w-full text-left px-3 py-2.5 border-b transition hover:opacity-90 group"
       style={{ borderColor: 'var(--border-subtle)', background: 'transparent' }}
     >
@@ -318,6 +321,59 @@ export function PullRequestsPanel({ slug }) {
     }
   };
 
+  const { menuState, openMenu, closeMenu } = useContextMenu();
+
+  const copyToClipboard = useCallback((text, label) => {
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(
+      () => toast.success(`Copied ${label}`),
+      () => toast.error('Copy failed'),
+    );
+  }, []);
+
+  const handlePRContextMenu = useCallback((e, pr) => {
+    const url = pr.html_url || (owner && repo ? `https://github.com/${owner}/${repo}/pull/${pr.number}` : null);
+    openMenu(e, [
+      {
+        id: 'open',
+        label: 'Open',
+        action: () => handleSelectPR(pr),
+      },
+      {
+        id: 'open-github',
+        label: 'Open on GitHub',
+        disabled: !url,
+        dividerAfter: true,
+        action: () => {
+          if (url) window.open(url, '_blank', 'noopener,noreferrer');
+        },
+      },
+      {
+        id: 'copy-url',
+        label: 'Copy URL',
+        disabled: !url,
+        action: () => copyToClipboard(url, 'PR URL'),
+      },
+      {
+        id: 'copy-branch',
+        label: 'Copy Branch Name',
+        disabled: !pr.head?.ref,
+        action: () => copyToClipboard(pr.head?.ref, `"${pr.head?.ref}"`),
+      },
+      {
+        id: 'copy-title',
+        label: 'Copy Title',
+        dividerAfter: true,
+        action: () => copyToClipboard(pr.title || '', 'title'),
+      },
+      {
+        id: 'refresh',
+        label: 'Refresh List',
+        action: handleRefresh,
+      },
+    ]);
+  }, [openMenu, handleSelectPR, copyToClipboard, owner, repo, handleRefresh]);
+
   // Filter PRs by search query
   const filteredPRs = searchQuery.trim()
     ? prList.filter(pr =>
@@ -555,7 +611,12 @@ export function PullRequestsPanel({ slug }) {
             ) : (
               <div className="flex-1">
                 {filteredPRs.map(pr => (
-                  <PRListItem key={pr.id} pr={pr} onClick={() => handleSelectPR(pr)} />
+                  <PRListItem
+                    key={pr.id}
+                    pr={pr}
+                    onClick={() => handleSelectPR(pr)}
+                    onContextMenu={(e) => handlePRContextMenu(e, pr)}
+                  />
                 ))}
                 {prListLoading && prList.length > 0 && (
                   <div className="flex items-center justify-center py-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
@@ -574,6 +635,8 @@ export function PullRequestsPanel({ slug }) {
       {showTokenModal && (
         <GitHubTokenModal onClose={() => setShowTokenModal(false)} />
       )}
+
+      {menuState && <ContextMenu {...menuState} onClose={closeMenu} />}
     </div>
   );
 }

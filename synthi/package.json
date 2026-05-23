@@ -8,6 +8,7 @@
     "build:turbopack": "node scripts/build-node-polyfills.js && next build --turbopack",
     "start": "next start",
     "lint": "eslint",
+    "test:ai-primitives": "node scripts/test-ai-primitives.mjs",
     "build:polyfills": "node scripts/build-node-polyfills.js",
     "build:polyfills:min": "node scripts/build-node-polyfills.js --minify",
     "test": "vitest run",

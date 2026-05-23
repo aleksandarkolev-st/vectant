@@ -241,6 +241,12 @@ def build_full_diff_patch_prompt(req: DiffPatchRequest) -> str:
         "   When host_runner.cpp is empty (legacy 3-file project), do NOT emit",
         "   host_runner edits — route those changes into the existing modules.",
         "",
+        "6. Generated-module include purity: do NOT introduce quoted includes",
+        "   for original workspace/project headers that are not already emitted",
+        "   split role files. Split modules must remain self-contained; copy or",
+        "   adapt required declarations/helpers into shared/core/gui/host_runner",
+        "   instead of adding `#include \"project/path.hpp\"`.",
+        "",
     ]
 
     arch = (req.architecture or "").strip()

@@ -13,8 +13,18 @@ export async function GET(_request, { params }) {
   }
 
   try {
-    workspaceSearchIndex.ensure(workspaceId).catch(() => {});
-  } catch (_) {}
+    workspaceSearchIndex.ensure(workspaceId).catch((err) => {
+      console.warn('search index build failed', {
+        workspaceId,
+        error: err?.message,
+      });
+    });
+  } catch (err) {
+    console.warn('search index build failed to start', {
+      workspaceId,
+      error: err?.message,
+    });
+  }
 
   return NextResponse.json(workspaceSearchIndex.status(workspaceId), { status: 200 });
 }

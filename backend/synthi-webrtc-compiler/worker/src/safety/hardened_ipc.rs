@@ -356,7 +356,43 @@ pub fn validate_msgpack_limits(data: &[u8], limits: &MsgPackDecodeLimits) -> Res
     let mut cursor = 0;
     let mut depth = 0u32;
 
-    validate_msgpack_value(data, &mut cursor, &mut depth, limits)
+    validate_msgpack_value(data, &mut cursor, &mut depth, limits)?;
+    if cursor != data.len() {
+        return Err(IpcError::ProtocolViolation {
+            reason: format!(
+                "Trailing bytes after MsgPack value: {}",
+                data.len().saturating_sub(cursor)
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn ensure_remaining(
+    data: &[u8],
+    cursor: usize,
+    needed: usize,
+    context: &str,
+) -> Result<(), IpcError> {
+    if data.len().saturating_sub(cursor) < needed {
+        Err(IpcError::DecodeError {
+            reason: format!("Unexpected EOF while reading {}", context),
+            offset: Some(cursor),
+        })
+    } else {
+        Ok(())
+    }
+}
+
+fn advance_cursor(
+    data: &[u8],
+    cursor: &mut usize,
+    needed: usize,
+    context: &str,
+) -> Result<(), IpcError> {
+    ensure_remaining(data, *cursor, needed, context)?;
+    *cursor += needed;
+    Ok(())
 }
 
 fn validate_msgpack_value(
@@ -390,6 +426,13 @@ fn validate_msgpack_value(
         // Fixmap (0x80 - 0x8f)
         0x80..=0x8f => {
             let len = (byte & 0x0f) as u32;
+            if len > limits.max_map_size {
+                return Err(IpcError::DecodeLimitExceeded {
+                    limit_type: "map_size".to_string(),
+                    value: len,
+                    max: limits.max_map_size,
+                });
+            }
             *depth += 1;
             for _ in 0..len {
                 validate_msgpack_value(data, cursor, depth, limits)?; // key
@@ -402,6 +445,13 @@ fn validate_msgpack_value(
         // Fixarray (0x90 - 0x9f)
         0x90..=0x9f => {
             let len = (byte & 0x0f) as u32;
+            if len > limits.max_array_size {
+                return Err(IpcError::DecodeLimitExceeded {
+                    limit_type: "array_size".to_string(),
+                    value: len,
+                    max: limits.max_array_size,
+                });
+            }
             *depth += 1;
             for _ in 0..len {
                 validate_msgpack_value(data, cursor, depth, limits)?;
@@ -420,8 +470,7 @@ fn validate_msgpack_value(
                     max: limits.max_string_len,
                 });
             }
-            *cursor += len as usize;
-            Ok(())
+            advance_cursor(data, cursor, len as usize, "fixstr payload")
         }
 
         // nil
@@ -438,12 +487,7 @@ fn validate_msgpack_value(
 
         // bin 8
         0xc4 => {
-            if *cursor >= data.len() {
-                return Err(IpcError::DecodeError {
-                    reason: "Unexpected EOF".to_string(),
-                    offset: Some(*cursor),
-                });
-            }
+            ensure_remaining(data, *cursor, 1, "bin8 length")?;
             let len = data[*cursor] as u32;
             *cursor += 1;
             if len > limits.max_bin_len {
@@ -453,18 +497,12 @@ fn validate_msgpack_value(
                     max: limits.max_bin_len,
                 });
             }
-            *cursor += len as usize;
-            Ok(())
+            advance_cursor(data, cursor, len as usize, "bin8 payload")
         }
 
         // bin 16
         0xc5 => {
-            if *cursor + 2 > data.len() {
-                return Err(IpcError::DecodeError {
-                    reason: "Unexpected EOF".to_string(),
-                    offset: Some(*cursor),
-                });
-            }
+            ensure_remaining(data, *cursor, 2, "bin16 length")?;
             let len = u16::from_be_bytes([data[*cursor], data[*cursor + 1]]) as u32;
             *cursor += 2;
             if len > limits.max_bin_len {
@@ -474,18 +512,12 @@ fn validate_msgpack_value(
                     max: limits.max_bin_len,
                 });
             }
-            *cursor += len as usize;
-            Ok(())
+            advance_cursor(data, cursor, len as usize, "bin16 payload")
         }
 
         // bin 32
         0xc6 => {
-            if *cursor + 4 > data.len() {
-                return Err(IpcError::DecodeError {
-                    reason: "Unexpected EOF".to_string(),
-                    offset: Some(*cursor),
-                });
-            }
+            ensure_remaining(data, *cursor, 4, "bin32 length")?;
             let len = u32::from_be_bytes([
                 data[*cursor],
                 data[*cursor + 1],
@@ -500,32 +532,31 @@ fn validate_msgpack_value(
                     max: limits.max_bin_len,
                 });
             }
-            *cursor += len as usize;
-            Ok(())
+            advance_cursor(data, cursor, len as usize, "bin32 payload")
         }
 
         // ext 8, 16, 32, fixext 1, 2, 4, 8, 16
         0xc7..=0xc9 | 0xd4..=0xd8 => {
             let len = match byte {
                 0xc7 => {
-                    let l = data.get(*cursor).copied().unwrap_or(0) as usize;
+                    ensure_remaining(data, *cursor, 1, "ext8 length")?;
+                    let l = data[*cursor] as usize;
                     *cursor += 1;
                     l
                 }
                 0xc8 => {
-                    let l = u16::from_be_bytes([
-                        data.get(*cursor).copied().unwrap_or(0),
-                        data.get(*cursor + 1).copied().unwrap_or(0),
-                    ]) as usize;
+                    ensure_remaining(data, *cursor, 2, "ext16 length")?;
+                    let l = u16::from_be_bytes([data[*cursor], data[*cursor + 1]]) as usize;
                     *cursor += 2;
                     l
                 }
                 0xc9 => {
+                    ensure_remaining(data, *cursor, 4, "ext32 length")?;
                     let l = u32::from_be_bytes([
-                        data.get(*cursor).copied().unwrap_or(0),
-                        data.get(*cursor + 1).copied().unwrap_or(0),
-                        data.get(*cursor + 2).copied().unwrap_or(0),
-                        data.get(*cursor + 3).copied().unwrap_or(0),
+                        data[*cursor],
+                        data[*cursor + 1],
+                        data[*cursor + 2],
+                        data[*cursor + 3],
                     ]) as usize;
                     *cursor += 4;
                     l
@@ -537,66 +568,30 @@ fn validate_msgpack_value(
                 0xd8 => 16,
                 _ => unreachable!(),
             };
-            *cursor += 1 + len; // type byte + data
-            Ok(())
+            advance_cursor(data, cursor, 1 + len, "ext type and payload")
         }
 
         // float 32
-        0xca => {
-            *cursor += 4;
-            Ok(())
-        }
+        0xca => advance_cursor(data, cursor, 4, "float32 payload"),
 
         // float 64
-        0xcb => {
-            *cursor += 8;
-            Ok(())
-        }
+        0xcb => advance_cursor(data, cursor, 8, "float64 payload"),
 
         // uint 8, 16, 32, 64
-        0xcc => {
-            *cursor += 1;
-            Ok(())
-        }
-        0xcd => {
-            *cursor += 2;
-            Ok(())
-        }
-        0xce => {
-            *cursor += 4;
-            Ok(())
-        }
-        0xcf => {
-            *cursor += 8;
-            Ok(())
-        }
+        0xcc => advance_cursor(data, cursor, 1, "uint8 payload"),
+        0xcd => advance_cursor(data, cursor, 2, "uint16 payload"),
+        0xce => advance_cursor(data, cursor, 4, "uint32 payload"),
+        0xcf => advance_cursor(data, cursor, 8, "uint64 payload"),
 
         // int 8, 16, 32, 64
-        0xd0 => {
-            *cursor += 1;
-            Ok(())
-        }
-        0xd1 => {
-            *cursor += 2;
-            Ok(())
-        }
-        0xd2 => {
-            *cursor += 4;
-            Ok(())
-        }
-        0xd3 => {
-            *cursor += 8;
-            Ok(())
-        }
+        0xd0 => advance_cursor(data, cursor, 1, "int8 payload"),
+        0xd1 => advance_cursor(data, cursor, 2, "int16 payload"),
+        0xd2 => advance_cursor(data, cursor, 4, "int32 payload"),
+        0xd3 => advance_cursor(data, cursor, 8, "int64 payload"),
 
         // str 8
         0xd9 => {
-            if *cursor >= data.len() {
-                return Err(IpcError::DecodeError {
-                    reason: "Unexpected EOF".to_string(),
-                    offset: Some(*cursor),
-                });
-            }
+            ensure_remaining(data, *cursor, 1, "str8 length")?;
             let len = data[*cursor] as u32;
             *cursor += 1;
             if len > limits.max_string_len {
@@ -606,18 +601,12 @@ fn validate_msgpack_value(
                     max: limits.max_string_len,
                 });
             }
-            *cursor += len as usize;
-            Ok(())
+            advance_cursor(data, cursor, len as usize, "str8 payload")
         }
 
         // str 16
         0xda => {
-            if *cursor + 2 > data.len() {
-                return Err(IpcError::DecodeError {
-                    reason: "Unexpected EOF".to_string(),
-                    offset: Some(*cursor),
-                });
-            }
+            ensure_remaining(data, *cursor, 2, "str16 length")?;
             let len = u16::from_be_bytes([data[*cursor], data[*cursor + 1]]) as u32;
             *cursor += 2;
             if len > limits.max_string_len {
@@ -627,18 +616,12 @@ fn validate_msgpack_value(
                     max: limits.max_string_len,
                 });
             }
-            *cursor += len as usize;
-            Ok(())
+            advance_cursor(data, cursor, len as usize, "str16 payload")
         }
 
         // str 32
         0xdb => {
-            if *cursor + 4 > data.len() {
-                return Err(IpcError::DecodeError {
-                    reason: "Unexpected EOF".to_string(),
-                    offset: Some(*cursor),
-                });
-            }
+            ensure_remaining(data, *cursor, 4, "str32 length")?;
             let len = u32::from_be_bytes([
                 data[*cursor],
                 data[*cursor + 1],
@@ -653,18 +636,12 @@ fn validate_msgpack_value(
                     max: limits.max_string_len,
                 });
             }
-            *cursor += len as usize;
-            Ok(())
+            advance_cursor(data, cursor, len as usize, "str32 payload")
         }
 
         // array 16
         0xdc => {
-            if *cursor + 2 > data.len() {
-                return Err(IpcError::DecodeError {
-                    reason: "Unexpected EOF".to_string(),
-                    offset: Some(*cursor),
-                });
-            }
+            ensure_remaining(data, *cursor, 2, "array16 length")?;
             let len = u16::from_be_bytes([data[*cursor], data[*cursor + 1]]) as u32;
             *cursor += 2;
             if len > limits.max_array_size {
@@ -684,12 +661,7 @@ fn validate_msgpack_value(
 
         // array 32
         0xdd => {
-            if *cursor + 4 > data.len() {
-                return Err(IpcError::DecodeError {
-                    reason: "Unexpected EOF".to_string(),
-                    offset: Some(*cursor),
-                });
-            }
+            ensure_remaining(data, *cursor, 4, "array32 length")?;
             let len = u32::from_be_bytes([
                 data[*cursor],
                 data[*cursor + 1],
@@ -714,12 +686,7 @@ fn validate_msgpack_value(
 
         // map 16
         0xde => {
-            if *cursor + 2 > data.len() {
-                return Err(IpcError::DecodeError {
-                    reason: "Unexpected EOF".to_string(),
-                    offset: Some(*cursor),
-                });
-            }
+            ensure_remaining(data, *cursor, 2, "map16 length")?;
             let len = u16::from_be_bytes([data[*cursor], data[*cursor + 1]]) as u32;
             *cursor += 2;
             if len > limits.max_map_size {
@@ -740,12 +707,7 @@ fn validate_msgpack_value(
 
         // map 32
         0xdf => {
-            if *cursor + 4 > data.len() {
-                return Err(IpcError::DecodeError {
-                    reason: "Unexpected EOF".to_string(),
-                    offset: Some(*cursor),
-                });
-            }
+            ensure_remaining(data, *cursor, 4, "map32 length")?;
             let len = u32::from_be_bytes([
                 data[*cursor],
                 data[*cursor + 1],
@@ -940,8 +902,48 @@ mod tests {
         data.extend(vec![0x01; 10]); // 10 elements (each is fixint 1)
 
         let result = validate_msgpack_limits(&data, &limits);
-        // fixarray only goes up to 15 elements, so we need array16 for bigger limits
-        // This test uses a small array that should pass
-        assert!(result.is_ok()); // fixarray 10 has len < 16, so it's 0x9a not a limit error
+        assert!(
+            matches!(result, Err(IpcError::DecodeLimitExceeded { limit_type, .. }) if limit_type == "array_size")
+        );
+    }
+
+    #[test]
+    fn test_msgpack_fixmap_size_limit() {
+        let limits = MsgPackDecodeLimits {
+            max_map_size: 1,
+            ..Default::default()
+        };
+
+        // fixmap 2: {1: 1, 2: 2}
+        let data = vec![0x82, 0x01, 0x01, 0x02, 0x02];
+
+        let result = validate_msgpack_limits(&data, &limits);
+        assert!(
+            matches!(result, Err(IpcError::DecodeLimitExceeded { limit_type, .. }) if limit_type == "map_size")
+        );
+    }
+
+    #[test]
+    fn test_msgpack_truncated_payload_rejected() {
+        let limits = MsgPackDecodeLimits::default();
+
+        // fixstr length 2 but only one payload byte.
+        let result = validate_msgpack_limits(&[0xa2, b'a'], &limits);
+        assert!(matches!(result, Err(IpcError::DecodeError { .. })));
+
+        // float64 marker with only two payload bytes.
+        let result = validate_msgpack_limits(&[0xcb, 0x00, 0x00], &limits);
+        assert!(matches!(result, Err(IpcError::DecodeError { .. })));
+
+        // ext8 length 4 but only type byte plus one payload byte.
+        let result = validate_msgpack_limits(&[0xc7, 0x04, 0x01, 0xff], &limits);
+        assert!(matches!(result, Err(IpcError::DecodeError { .. })));
+    }
+
+    #[test]
+    fn test_msgpack_trailing_bytes_rejected() {
+        let limits = MsgPackDecodeLimits::default();
+        let result = validate_msgpack_limits(&[0x01, 0x02], &limits);
+        assert!(matches!(result, Err(IpcError::ProtocolViolation { .. })));
     }
 }

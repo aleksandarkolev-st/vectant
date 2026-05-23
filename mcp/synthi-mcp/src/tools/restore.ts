@@ -17,7 +17,7 @@
 
 import { eventLog } from "../events/index.js";
 import { session } from "../session.js";
-import { snapshotStore } from "../snapshot/index.js";
+import { isSnapshotId, snapshotStore } from "../snapshot/index.js";
 import { compileTool } from "./compile.js";
 import {
   errorResponse,
@@ -36,8 +36,8 @@ interface RawArgs {
 
 export async function restoreTool(args: unknown): Promise<ToolResponse> {
   const a = (args ?? {}) as RawArgs;
-  if (typeof a.snapshot_id !== "string" || a.snapshot_id.length === 0) {
-    return errorResponse("invalid_args", { field: "snapshot_id", expected: "non-empty string" });
+  if (!isSnapshotId(a.snapshot_id)) {
+    return errorResponse("invalid_args", { field: "snapshot_id", expected: "snap_<uuid>" });
   }
   const attached = session.get();
   if (!attached) return errorResponse("not_attached");

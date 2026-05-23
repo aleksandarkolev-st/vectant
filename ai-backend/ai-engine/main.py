@@ -9,7 +9,9 @@ import sys
 import os
 import asyncio
 import logging
-from pathlib import Path
+import hmac
+from pathlib import Path, PurePosixPath
+from urllib.parse import quote
 
 from dotenv import load_dotenv
 
@@ -33,7 +35,7 @@ for module in ['analyzer.proactive', 'analyzer.proactive.semantic_analyzer', 'an
 import time
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Body
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from analyzer import get_analyzer
 from analyzer import supported_languages
@@ -44,6 +46,8 @@ from llm.structural_prompts import format_heal_prompt
 from build_manifest import (
     BuildManifest,
     ManifestRejection,
+    internalize_gpu_generated_artifacts,
+    normalize_gpu_split_manifest,
     parse_manifest,
     validate_manifest_v1,
     validate_include_link_coverage,
@@ -283,14 +287,60 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
+def _parse_allowed_origins() -> List[str]:
+    raw = os.environ.get(
+        "AI_ENGINE_ALLOWED_ORIGINS",
+        "http://localhost:3000,https://beta.synthi.app",
+    )
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 # Add CORS middleware to allow frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict to specific origins
+    allow_origins=_parse_allowed_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+AI_ENGINE_AUTH_TOKEN = os.environ.get("AI_BACKEND_AUTH_TOKEN") or os.environ.get("AI_ENGINE_AUTH_TOKEN") or ""
+AI_ENGINE_AUTH_DISABLED = (
+    os.environ.get("AI_ENGINE_AUTH_DISABLED", "false").lower() == "true"
+    and os.environ.get("ENV", "").lower() != "production"
+)
+AI_ENGINE_PUBLIC_PATHS = {"/health"}
+
+
+def _extract_bearer_token(value: str) -> str:
+    if not value:
+        return ""
+    parts = value.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    return ""
+
+
+@app.middleware("http")
+async def require_internal_auth(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path in AI_ENGINE_PUBLIC_PATHS:
+        return await call_next(request)
+    if AI_ENGINE_AUTH_DISABLED:
+        return await call_next(request)
+    if not AI_ENGINE_AUTH_TOKEN:
+        return JSONResponse(
+            {"detail": "AI engine auth token is not configured"},
+            status_code=503,
+        )
+
+    candidate = (
+        request.headers.get("x-synthi-internal-token")
+        or _extract_bearer_token(request.headers.get("authorization", ""))
+    )
+    if not candidate or not hmac.compare_digest(candidate, AI_ENGINE_AUTH_TOKEN):
+        return JSONResponse({"detail": "Authentication required"}, status_code=401)
+    return await call_next(request)
+
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -361,6 +411,62 @@ class AnalyzeAiRequest(BaseModel):
     focus: Optional[str] = None
     model: Optional[str] = None
     api_key: Optional[str] = None
+    gpu_arch: Optional[str] = None
+
+
+MAX_AI_REQUEST_CHARS = int(os.environ.get("AI_ENGINE_MAX_AI_REQUEST_CHARS", "32768"))
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_JAILBREAK_MARKERS = (
+    "ignore previous instructions",
+    "ignore all previous instructions",
+    "developer mode",
+    "dan mode",
+    "jailbreak",
+    "reveal your system prompt",
+    "print your system prompt",
+)
+
+
+def _strip_llm_text(value: Optional[str], field_name: str) -> Optional[str]:
+    if value is None:
+        return value
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a string")
+
+    return _CONTROL_CHARS_RE.sub("", value)
+
+
+def _sanitize_llm_instructions(value: Optional[str], field_name: str) -> Optional[str]:
+    sanitized = _strip_llm_text(value, field_name)
+    if sanitized is None:
+        return sanitized
+
+    lower = sanitized.lower()
+    if any(marker in lower for marker in _JAILBREAK_MARKERS):
+        raise HTTPException(status_code=400, detail=f"{field_name} contains disallowed prompt-injection markers")
+    return sanitized
+
+
+def enforce_ai_request_limits(req: AnalyzeAiRequest) -> None:
+    req.code = _CONTROL_CHARS_RE.sub("", req.code or "")
+    req.prompt = _sanitize_llm_instructions(req.prompt, "prompt")
+    req.focus = _strip_llm_text(req.focus, "focus")
+    total_chars = len(req.code) + len(req.prompt or "") + len(req.focus or "")
+
+    if req.files:
+        for file in req.files:
+            file.content = _strip_llm_text(file.content, "files.content") or ""
+            if file.path:
+                file.path = _strip_llm_text(file.path, "files.path")
+            if file.name:
+                file.name = _strip_llm_text(file.name, "files.name")
+            total_chars += len(file.content) + len(file.path or "") + len(file.name or "")
+
+    if total_chars > MAX_AI_REQUEST_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"AI analysis request exceeds {MAX_AI_REQUEST_CHARS} characters",
+        )
 
 
 class ProactiveAnalysisRequest(BaseModel):
@@ -397,6 +503,43 @@ class ContainerAnalysisRequest(BaseModel):
 COLLAB_SERVER_URL = os.environ.get('COLLAB_SERVER_URL', 'http://localhost:1234')
 
 
+def validate_workspace_relative_path(file_path: str) -> str:
+    if not isinstance(file_path, str) or not file_path.strip():
+        raise ValueError("file_path must be a non-empty workspace-relative path")
+    if "\\" in file_path:
+        raise ValueError("file_path must use POSIX separators")
+
+    path = PurePosixPath(file_path.strip())
+    if path.is_absolute():
+        raise ValueError("file_path must be relative")
+    if any(part in ("", ".", "..") for part in path.parts):
+        raise ValueError("file_path contains an unsafe path segment")
+
+    return path.as_posix()
+
+
+def encode_workspace_path(file_path: str) -> str:
+    safe_path = validate_workspace_relative_path(file_path)
+    return "/".join(quote(part, safe="") for part in PurePosixPath(safe_path).parts)
+
+
+_SAFE_MODULE_FILENAME_RE = re.compile(r"^[A-Za-z0-9_./-]+$")
+
+
+def resolve_under_workspace(workspace_root: str | Path, relative_path: str) -> Path:
+    safe_relative = validate_workspace_relative_path(relative_path)
+    if not _SAFE_MODULE_FILENAME_RE.match(safe_relative):
+        raise ValueError("path contains unsupported characters")
+
+    root = Path(workspace_root).expanduser().resolve()
+    resolved = root.joinpath(*PurePosixPath(safe_relative).parts).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("path escapes workspace root") from exc
+    return resolved
+
+
 async def fetch_file_from_container(slug: str, file_path: str) -> Optional[str]:
     """
     Fetch file content from the collab server (container filesystem).
@@ -408,10 +551,13 @@ async def fetch_file_from_container(slug: str, file_path: str) -> Optional[str]:
     import aiohttp
     
     try:
-        # Use the /file-content endpoint which reads directly from disk
-        url = f"{COLLAB_SERVER_URL}/file-content/{slug}/{file_path}"
+        # Use the /file-content endpoint which reads directly from disk.
+        encoded_slug = quote(slug, safe="")
+        encoded_path = encode_workspace_path(file_path)
+        url = f"{COLLAB_SERVER_URL}/file-content/{encoded_slug}/{encoded_path}"
         
-        async with aiohttp.ClientSession() as session:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as resp:
                 if resp.status == 200:
                     content = await resp.text()
@@ -621,26 +767,35 @@ async def analyze_from_container(req: ContainerAnalysisRequest):
     The client should NOT send content - only file paths.
     """
     import hashlib
-    
+
+    try:
+        file_path = validate_workspace_relative_path(req.file_path)
+        related_paths = [
+            validate_workspace_relative_path(path)
+            for path in (req.related_paths or [])
+        ]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
     # Fetch main file content from container
-    content = await fetch_file_from_container(req.slug, req.file_path)
+    content = await fetch_file_from_container(req.slug, file_path)
     if content is None:
-        raise HTTPException(status_code=404, detail=f"File not found: {req.file_path}")
+        raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
     
     content_hash = hashlib.md5(content.encode()).hexdigest()[:16]
-    logger.info(f"[CONTAINER] {req.file_path} | {len(content)} chars | hash={content_hash}")
+    logger.info(f"[CONTAINER] {file_path} | {len(content)} chars | hash={content_hash}")
     
     # Build file context
     file_context = FileContext(
-        path=req.file_path,
+        path=file_path,
         content=content,
         language=req.lang,
     )
     
     # Fetch related files from container
     related_files = []
-    if req.related_paths:
-        for rpath in req.related_paths:
+    if related_paths:
+        for rpath in related_paths:
             rcontent = await fetch_file_from_container(req.slug, rpath)
             if rcontent is not None:
                 related_files.append(FileContext(
@@ -1271,6 +1426,8 @@ async def clear_workspace(workspace_id: str):
 
 @app.post("/analyze/ai")
 async def analyze_code_ai(req: AnalyzeAiRequest):
+    enforce_ai_request_limits(req)
+
     def select_provider_name() -> str | None:
         if req.api_key:
             model_name = (req.model or '').lower()
@@ -1341,15 +1498,25 @@ async def refactor_split(req: AnalyzeAiRequest):
     }
 
 @app.post("/refactor/split_file")
-def split_file(file_path: str, api_url: str = "http://localhost:8000/refactor/split"):
-    if not os.path.exists(file_path):
+def split_file(
+    file_path: str,
+    api_url: str = "http://localhost:8000/refactor/split",
+    workspace_root: Optional[str] = None,
+):
+    root = workspace_root or os.environ.get("SPLIT_WORKSPACE_ROOT") or os.getcwd()
+    try:
+        source_path = resolve_under_workspace(root, file_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if not source_path.exists() or not source_path.is_file():
         print(f"File not found: {file_path}")
         return
 
-    with open(file_path, 'r') as f:
+    with source_path.open('r') as f:
         content = f.read()
     
-    ext = os.path.splitext(file_path)[1][1:]
+    ext = source_path.suffix[1:]
     lang = "cpp"
     if ext == "rs": lang = "rust"
     elif ext == "ts": lang = "typescript"
@@ -1362,9 +1529,9 @@ def split_file(file_path: str, api_url: str = "http://localhost:8000/refactor/sp
         "mode": "split"
     }
     
-    print(f"Sending {file_path} to AI for analysis...")
+    print(f"Sending {source_path} to AI for analysis...")
     try:
-        response = requests.post(api_url, json=payload)
+        response = requests.post(api_url, json=payload, timeout=30)
         response.raise_for_status()
         result = response.json().get("result")
         
@@ -1389,8 +1556,13 @@ def split_file(file_path: str, api_url: str = "http://localhost:8000/refactor/sp
         for key, module in data.items():
             if isinstance(module, dict) and "filename" in module and "content" in module:
                 fname = module["filename"]
-                print(f"Writing {fname}...")
-                with open(fname, 'w') as f:
+                try:
+                    target_path = resolve_under_workspace(root, fname)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=f"Unsafe module filename: {exc}")
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                print(f"Writing {target_path}...")
+                with target_path.open('w') as f:
                     f.write(module["content"])
                     
         print("Split complete!")
@@ -1617,8 +1789,8 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             )
 
         # Parse + validate the manifest (Phase 2). If malformed, log and
-        # return `manifest=None` so the Rust worker falls back to hardcoded
-        # SDL2 defaults (backward compat with pre-universal sidecars).
+        # return `manifest=None` so the Rust worker uses a generic fallback
+        # without inferring framework link flags.
         manifest_parsed: Optional[BuildManifest] = None
         manifest_out: Optional[dict] = None
         if manifest_dict is not None:
@@ -1652,13 +1824,13 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             except Exception as e:
                 logger.warning(
                     f"[split/verified] manifest validation failed: {e}. "
-                    "Proceeding with None (worker will fall back to SDL2 default)."
+                    "Proceeding with None (worker will use generic fallback)."
                 )
                 manifest_out = None
         else:
             logger.info(
                 "[split/verified] no <synthi_build_manifest> in response "
-                "(pre-universal prompt? worker falls back to SDL2 default)"
+                "(pre-universal prompt? worker uses generic fallback)"
             )
 
         # Clean up markdown if present
@@ -1719,8 +1891,8 @@ async def refactor_split_verified(req: VerifiedAiRequest):
             # hot_reload_mode, and confidence fields — emitted by the AI
             # inside <synthi_build_manifest>...</synthi_build_manifest>. May
             # be None if the response didn't contain one (pre-universal
-            # prompt, or model failed to emit the block) — worker falls
-            # back to hardcoded SDL2 defaults.
+            # prompt, or model failed to emit the block) — worker uses
+            # a generic fallback and does not infer framework link flags.
             "manifest": manifest_out,
             "lang": req.lang,
             "verified": True,
@@ -1902,12 +2074,24 @@ from diff_patch_helpers import (  # noqa: E402 — late import is intentional
 )
 from agents.gpu_detect import detect_project as _detect_gpu_project  # noqa: E402
 from agents.kernel_splitter import (  # noqa: E402
+    KernelSplitProviderError as _KernelSplitProviderError,
     KernelSplitterError as _KernelSplitterError,
+    KernelSplitterUnsupportedProjectError as _KernelSplitterUnsupportedProjectError,
+    build_split_retry_prompt as _build_split_retry_prompt,
     run_kernel_splitter as _run_kernel_splitter,
+    split_failure_verification as _split_failure_verification,
+    split_provider_failure_verification as _split_provider_failure_verification,
+    split_agentic_report as _split_agentic_report,
+    split_attempt_record as _split_attempt_record,
 )
+from agents.gpu_device_mapping import build_device_mapping_report  # noqa: E402
+from agents.gpu_launch_indirection import build_launch_indirection_report  # noqa: E402
 from agents.gpu_mod_delta import (  # noqa: E402
     GpuDiffPatchRequest,
+    build_gpu_diff_patch_retry_prompt as _build_gpu_diff_patch_retry_prompt,
     build_gpu_diff_patch_prompt as _build_gpu_diff_patch_prompt,
+    gpu_diff_patch_anchor_failures as _gpu_diff_patch_anchor_failures,
+    gpu_diff_patch_content_failures as _gpu_diff_patch_content_failures,
     parse_gpu_diff_response as _parse_gpu_diff_response,
 )
 from agents.gpu_healer import (  # noqa: E402
@@ -1922,8 +2106,8 @@ def _file_map_from_request(req: AnalyzeAiRequest) -> dict[str, str]:
     for f in req.files or []:
         path = getattr(f, "path", None) or getattr(f, "name", None) or "input.cpp"
         files[path] = f.content
-    if not files and req.code:
-        files[req.focus or "input.cpp"] = req.code
+    if req.code:
+        files.setdefault(req.focus or "input.cpp", req.code)
     return files
 
 
@@ -2041,34 +2225,257 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
 
     provider = get_provider(provider_name=select_provider_name(), use_custom=bool(req.api_key))
     file_map = _file_map_from_request(req)
+    logger.info(
+        "[split/gpu] request file context count=%s focus=%s names=%s",
+        len(file_map),
+        req.focus or "",
+        list(file_map.keys())[:30],
+    )
     detection = _detect_gpu_project(file_map or {req.focus or "input.cpp": req.code})
     if not detection.is_gpu:
         raise HTTPException(status_code=422, detail="GPU split requested for source with no GPU markers")
 
-    try:
-        split = await _run_kernel_splitter(
-            provider=provider,
-            user_code=req.code,
-            lang=req.lang,
-            detection=detection,
-            extra_instructions=req.prompt,
-            model=req.model or "gemini-3.1-flash-lite-preview",
-            api_key=req.api_key,
-            files=req.files,
-            focus=req.focus,
+    split = None
+    split_model = (
+        req.model
+        or os.getenv("SYNTHI_GEMINI_MODEL")
+        or "gemini-3.1-flash-lite-preview"
+    )
+    split_prompt = req.prompt
+    max_split_attempts = 3
+    split_attempts = []
+    rejection_notes_history: list[str] = []
+    for attempt in range(1, max_split_attempts + 1):
+        try:
+            split = await _run_kernel_splitter(
+                provider=provider,
+                user_code=req.code,
+                lang=req.lang,
+                detection=detection,
+                extra_instructions=split_prompt,
+                model=split_model,
+                api_key=req.api_key,
+                files=req.files,
+                focus=req.focus,
+            )
+        except _KernelSplitterUnsupportedProjectError as e:
+            verification = _split_failure_verification(
+                e.reason_code,
+                str(e),
+            )
+            logger.info("[split/gpu] deterministic unsupported project rejection: %s", e)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "GPU split unsupported for this project shape",
+                    "verification": verification.to_dict(),
+                    "source_context_report": e.source_context_report,
+                    "agentic_report": _split_agentic_report(
+                        attempts=[],
+                        accepted=False,
+                        max_attempts=0,
+                    ),
+                },
+            )
+        except _KernelSplitterError as e:
+            verification = _split_failure_verification(
+                "split_response_unparseable",
+                str(e),
+            )
+            split_attempts.append(
+                _split_attempt_record(
+                    attempt=attempt,
+                    max_attempts=max_split_attempts,
+                    model=split_model,
+                    prompt=split_prompt,
+                    source_files=file_map.keys(),
+                    verification=verification,
+                    repair_prompt=attempt > 1,
+                    repair_report={
+                        "schemaVersion": "synthi.gpu.split_repair.v1",
+                        "repaired": False,
+                        "inputReasonCodes": [v.rule for v in verification.violations],
+                        "repairRules": [],
+                        "changedFiles": [],
+                        "scope": "generated_artifacts_only",
+                    },
+                )
+            )
+            notes = "\n".join(
+                f"- {v.rule}: {v.message}" for v in verification.violations
+            )
+            logger.info(
+                "[split/gpu] splitter rejected split attempt %s/%s before verifier: %s",
+                attempt,
+                max_split_attempts,
+                notes,
+            )
+            if attempt == max_split_attempts:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": "GPU split failed before verification after retries",
+                        "verification": verification.to_dict(),
+                        "agentic_report": _split_agentic_report(
+                            attempts=split_attempts,
+                            accepted=False,
+                            max_attempts=max_split_attempts,
+                        ),
+                    },
+                )
+            rejection_notes_history.append(notes)
+            split_prompt = _build_split_retry_prompt(req.prompt, rejection_notes_history)
+            continue
+        except _KernelSplitProviderError as e:
+            verification = _split_provider_failure_verification(e)
+            split_attempts.append(
+                _split_attempt_record(
+                    attempt=attempt,
+                    max_attempts=max_split_attempts,
+                    model=split_model,
+                    prompt=split_prompt,
+                    source_files=file_map.keys(),
+                    verification=verification,
+                    repair_prompt=attempt > 1,
+                    repair_report={
+                        "schemaVersion": "synthi.gpu.split_repair.v1",
+                        "repaired": False,
+                        "inputReasonCodes": [v.rule for v in verification.violations],
+                        "repairRules": [],
+                        "changedFiles": [],
+                        "scope": "generated_artifacts_only",
+                    },
+                )
+            )
+            notes = "\n".join(
+                f"- {v.rule}: {v.message}" for v in verification.violations
+            )
+            logger.info(
+                "[split/gpu] provider failed split attempt %s/%s before verifier: %s",
+                attempt,
+                max_split_attempts,
+                notes,
+            )
+            rule = (
+                verification.violations[0].rule
+                if verification.violations
+                else "ai_provider_error"
+            )
+            raise HTTPException(
+                status_code=504 if rule == "ai_provider_timeout" else 503,
+                detail={
+                    "message": "GPU split AI provider failed before verification",
+                    "verification": verification.to_dict(),
+                    "agentic_report": _split_agentic_report(
+                        attempts=split_attempts,
+                        accepted=False,
+                        max_attempts=max_split_attempts,
+                    ),
+                },
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        if split.repair_report and split.repair_report.get("inputReasonCodes"):
+            post_repair_codes = (
+                [v.rule for v in split.verification.violations]
+                if split.verification
+                else []
+            )
+            logger.info(
+                "[split/gpu] split attempt %s/%s deterministic repair: repaired=%s rules=%s changed=%s remaining=%s",
+                attempt,
+                max_split_attempts,
+                split.repair_report.get("repaired"),
+                split.repair_report.get("repairRules", []),
+                split.repair_report.get("changedFiles", []),
+                post_repair_codes,
+            )
+
+        split_attempts.append(
+            _split_attempt_record(
+                attempt=attempt,
+                max_attempts=max_split_attempts,
+                model=split_model,
+                prompt=split_prompt,
+                source_files=file_map.keys(),
+                verification=split.verification,
+                repair_prompt=attempt > 1,
+                repair_report=split.repair_report,
+            )
         )
-    except _KernelSplitterError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
-    if not split.manifest or not isinstance(split.manifest.get("gpu"), dict):
-        raise HTTPException(status_code=422, detail="GPU split response missing manifest.gpu block")
+        if not (split.verification and not split.verification.ok):
+            break
 
+        notes = "\n".join(
+            f"- {v.rule}: {v.message}" for v in split.verification.violations
+        )
+        logger.info(
+            "[split/gpu] verifier rejected split attempt %s/%s: %s",
+            attempt,
+            max_split_attempts,
+            notes,
+        )
+        if attempt == max_split_attempts:
+            break
+        rejection_notes_history.append(notes)
+        split_prompt = _build_split_retry_prompt(req.prompt, rejection_notes_history)
+
+    if split is None:
+        raise HTTPException(status_code=400, detail="GPU split did not produce a result")
+
+    if split.verification and not split.verification.ok:
+        verification = split.verification.to_dict()
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "GPU split failed Synthi verifier after retries",
+                "verification": verification,
+                "agentic_report": _split_agentic_report(
+                    attempts=split_attempts,
+                    accepted=False,
+                    max_attempts=max_split_attempts,
+                ),
+            },
+        )
+
+    request_arch_hint = (
+        req.gpu_arch.strip()
+        if req.gpu_arch and req.gpu_arch.strip().lower() != "auto"
+        else None
+    )
     try:
-        manifest_parsed = parse_manifest(split.manifest)
+        manifest_raw = normalize_gpu_split_manifest(
+            split.manifest if isinstance(split.manifest, dict) else {},
+            split_files=split.files,
+            link_hint_sources=file_map,
+            vendor_hint=detection.vendor_hint,
+            arch_hint=(
+                request_arch_hint
+                or os.getenv("SYNTHI_GPU_ARCH_HINT")
+                or os.getenv("SYNTHI_GPU_ARCH")
+                or None
+            ),
+        )
+        manifest_parsed = parse_manifest(manifest_raw)
         validate_manifest_v1(manifest_parsed)
         manifest_out = manifest_to_dict(manifest_parsed)
+        split_files_out, manifest_out, generated_artifact_report = (
+            internalize_gpu_generated_artifacts(split.files, manifest_out)
+        )
+        manifest_parsed = parse_manifest(manifest_out)
+        validate_manifest_v1(manifest_parsed)
+        manifest_out = manifest_to_dict(manifest_parsed)
+        device_mapping_report = build_device_mapping_report(
+            source_files=file_map,
+            generated_files=split_files_out,
+            manifest=manifest_out,
+        )
+        launch_indirection_report = build_launch_indirection_report(
+            generated_files=split_files_out,
+            verification=split.verification.to_dict() if split.verification else None,
+        )
     except ManifestRejection as e:
         raise HTTPException(status_code=422, detail=e.message)
     except Exception as e:
@@ -2080,12 +2487,22 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         logger.info("[split/gpu] verifier rejected GPU split: %s", verification)
 
     return {
-        "result": json.dumps(split.files),
+        "result": json.dumps(split_files_out),
         "architecture": split.architecture_md,
         "manifest": manifest_out,
         "kernel_hashes": split.kernel_hashes,
         "launch_graph": split.launch_graph,
+        "source_context_report": split.source_context_report,
         "gpu_detection": detection.to_dict(),
+        "generated_artifact_report": generated_artifact_report,
+        "device_mapping_report": device_mapping_report,
+        "launch_indirection_report": launch_indirection_report,
+        "agentic_report": _split_agentic_report(
+            attempts=split_attempts,
+            accepted=True,
+            max_attempts=max_split_attempts,
+        ),
+        "split_repair_report": split.repair_report,
         "lang": req.lang,
         "verified": bool(split.verification.ok if split.verification else True),
         "verification": verification,
@@ -2110,22 +2527,50 @@ async def refactor_diff_patch_gpu(req: GpuDiffPatchRequest):
         if provider_name == "openai"
         else "gemini-3.1-flash-lite-preview"
     )
+    max_delta_attempts = 2
     try:
-        ai_response = await provider.ask_llm(
-            prompt,
-            "cpp",
-            None,
-            mode="delta",
-            model=req.model or default_model,
-            api_key=req.api_key,
-        )
-        parsed = _parse_gpu_diff_response(ai_response)
+        last_parsed = None
+        last_failures = []
+        for attempt in range(1, max_delta_attempts + 1):
+            ai_response = await provider.ask_llm(
+                prompt,
+                "cpp",
+                None,
+                mode="delta",
+                model=req.model or default_model,
+                api_key=req.api_key,
+            )
+            parsed = _parse_gpu_diff_response(ai_response)
+            failures = _gpu_diff_patch_anchor_failures(req, parsed["edits"])
+            failures.extend(_gpu_diff_patch_content_failures(req, parsed["edits"]))
+            if not failures:
+                elapsed = time.time() - start_time
+                print(
+                    f"[GpuDiffPatch] plan={parsed['reload_plan']} "
+                    f"edits={len(parsed['edits'])} attempt={attempt}/{max_delta_attempts} "
+                    f"elapsed={elapsed:.2f}s"
+                )
+                return {**parsed, "elapsed_seconds": elapsed, "attempt_count": attempt}
+
+            last_parsed = parsed
+            last_failures = failures
+            print(
+                f"[GpuDiffPatch] verifier rejected attempt={attempt}/{max_delta_attempts} "
+                f"failures={failures}"
+            )
+            if attempt < max_delta_attempts:
+                prompt = _build_gpu_diff_patch_retry_prompt(prompt, failures)
+
         elapsed = time.time() - start_time
-        print(
-            f"[GpuDiffPatch] plan={parsed['reload_plan']} "
-            f"edits={len(parsed['edits'])} elapsed={elapsed:.2f}s"
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "GPU diff patch verifier rejected AI edits after retries",
+                "reload_plan": (last_parsed or {}).get("reload_plan"),
+                "failures": last_failures,
+                "elapsed_seconds": elapsed,
+            },
         )
-        return {**parsed, "elapsed_seconds": elapsed}
     except HTTPException:
         raise
     except json.JSONDecodeError as e:
@@ -2199,6 +2644,44 @@ class HealRequest(BaseModel):
     language: str = "cpp"     # defaults to cpp for back-compat
 
 
+def _unwrap_heal_content(result: str) -> str:
+    """Recover complete-file content if the model wrapped it in JSON."""
+
+    stripped = result.strip()
+    if not stripped.startswith("{"):
+        return result
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        for key in ("content", "file_content", "source"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    match = re.search(
+        r'"(?:content|file_content|source)"\s*:\s*"(?P<body>.*)"\s*(?:,|\})',
+        stripped,
+        re.DOTALL,
+    )
+    if not match:
+        return result
+    body = match.group("body")
+    try:
+        return json.loads('"' + body.replace("\n", "\\n").replace("\r", "\\r") + '"').strip()
+    except json.JSONDecodeError:
+        return (
+            body
+            .replace(r"\\", "\\")
+            .replace(r"\"", '"')
+            .replace(r"\n", "\n")
+            .replace(r"\r", "\r")
+            .replace(r"\t", "\t")
+            .strip()
+        )
+
+
 @app.post("/refactor/heal")
 async def refactor_heal(req: HealRequest):
     """
@@ -2242,7 +2725,7 @@ async def refactor_heal(req: HealRequest):
             result = result[3:]
         if result.endswith("```"):
             result = result[:-3]
-        result = result.strip()
+        result = _unwrap_heal_content(result.strip())
 
         elapsed = time.time() - start_time
         print(f"[Heal] {req.module_name} fixed in {elapsed:.2f}s")

@@ -11,7 +11,7 @@
 // returns a list of edits of the form:
 //
 //   {
-//     "module": "core" | "gui" | "shared",
+//     "module": "core" | "gui" | "shared" | "host_runner" | "device",
 //     "operation": "insert_after" | "insert_before" | "replace" | "delete",
 //     "anchor":    "<exact unique substring from the current module>",
 //     "content":   "<new code to insert or replacement>"
@@ -55,7 +55,7 @@ pub enum EditOperation {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edit {
-    /// Which split module this edit targets. One of "core", "gui", "shared".
+    /// Which split module this edit targets.
     pub module: String,
     pub operation: EditOperation,
     /// A substring of the current module content that locates the edit.
@@ -210,6 +210,47 @@ pub fn apply_edit_list(
     Ok((c, g, s, h))
 }
 
+/// GPU-aware edit-list application. This preserves the legacy four-module API
+/// above while allowing `/refactor/diff_patch/gpu` to patch the internal device
+/// role without exposing that role as a normal workspace file.
+pub fn apply_edit_list_with_device(
+    edits: &[Edit],
+    core: &str,
+    gui: &str,
+    shared: &str,
+    host_runner: &str,
+    device: &str,
+) -> Result<(String, String, String, String, String)> {
+    let mut c = core.to_string();
+    let mut g = gui.to_string();
+    let mut s = shared.to_string();
+    let mut h = host_runner.to_string();
+    let mut d = device.to_string();
+
+    for (i, edit) in edits.iter().enumerate() {
+        let updated = match edit.module.as_str() {
+            "core" => apply_edit(&c, edit)?,
+            "gui" => apply_edit(&g, edit)?,
+            "shared" => apply_edit(&s, edit)?,
+            "host_runner" => apply_edit(&h, edit)?,
+            "device" => apply_edit(&d, edit)?,
+            other => {
+                bail!("edit #{} targets unknown module {:?}", i, other);
+            }
+        };
+        match edit.module.as_str() {
+            "core" => c = updated,
+            "gui" => g = updated,
+            "shared" => s = updated,
+            "host_runner" => h = updated,
+            "device" => d = updated,
+            _ => unreachable!(),
+        }
+    }
+
+    Ok((c, g, s, h, d))
+}
+
 // ────────────────────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────────────────────
@@ -267,6 +308,19 @@ mod tests {
             apply_edit(content, &e).unwrap(),
             "begin\nnew1\nnew2\nnew3\nend\n"
         );
+    }
+
+    #[test]
+    fn gpu_edit_list_can_patch_device_role() {
+        let edits = vec![make(
+            "device",
+            EditOperation::Replace,
+            "x[i] += 1.0f;",
+            "x[i] -= 1.0f;",
+        )];
+        let (_core, _gui, _shared, _host_runner, device) =
+            apply_edit_list_with_device(&edits, "", "", "", "", "x[i] += 1.0f;\n").unwrap();
+        assert_eq!(device, "x[i] -= 1.0f;\n");
     }
 
     #[test]
