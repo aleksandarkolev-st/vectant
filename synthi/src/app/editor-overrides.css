@@ -78,6 +78,17 @@
 .collab-remote-cursor { display:inline-block; width:2px; height:1em; vertical-align:bottom; }
 .collab-remote-selection { /* color injected per-client at runtime */ }
 
+/* Multi-pane: dim collaborator cursors/selections rendered inside an UNFOCUSED
+   editor pane so it's clear which pane is active. Scoped by the pane container's
+   data-pane-unfocused marker (set in EditorPanelWrapper). */
+[data-pane-unfocused="true"] .synthi-cursor-widget,
+[data-pane-unfocused="true"] .synthi-cursor-label,
+[data-pane-unfocused="true"] [class*="collab-remote-cursor"],
+[data-pane-unfocused="true"] [class*="collab-remote-selection"] {
+  opacity: 0.35 !important;
+  transition: opacity 0.15s ease;
+}
+
 /* Base glyph margin style used by per-line presence badges. Specific content and
     color are injected per-client at runtime by the collab client. */
 .monaco-editor .glyph-margin .collab-line-badge { display: inline-block; height: 14px; width: 14px; border-radius: 14px; margin-left: 2px; box-sizing: border-box; }

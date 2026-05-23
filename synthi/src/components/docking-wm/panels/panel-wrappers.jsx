@@ -15,6 +15,8 @@
 import { memo } from 'react';
 import dynamic from 'next/dynamic';
 import { useWorkspacePanelContext } from '../context/workspace-panel-context';
+import { useAppSelector } from '@/redux/hooks';
+import { selectFocusedEditorPaneId } from '../state/layout-slice';
 import { SettingsPanelContent } from '@/components/SettingsPanelContent';
 
 // ────────────────────────────────────────────────────────
@@ -118,11 +120,16 @@ export const ExplorerPanelWrapper = memo(function ExplorerPanelWrapper({ data })
 
 export const EditorPanelWrapper = memo(function EditorPanelWrapper({ data, tabGroupId }) {
   const ctx = useWorkspacePanelContext();
+  const focusedPaneId = useAppSelector(selectFocusedEditorPaneId);
+  // Mark unfocused editor panes by paneId (not file path) so that two panes
+  // showing the SAME file still dim the non-focused one's collaborator cursors.
+  const unfocused = !!tabGroupId && focusedPaneId != null && tabGroupId !== focusedPaneId;
 
   return (
     <div
       data-panel-type="editor"
       data-pane-id={tabGroupId}
+      data-pane-unfocused={unfocused ? 'true' : undefined}
       className="h-full w-full min-w-0 overflow-hidden flex flex-col"
       style={{ background: 'var(--bg-editor)' }}
     >
