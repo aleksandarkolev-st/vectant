@@ -2111,6 +2111,73 @@ def _file_map_from_request(req: AnalyzeAiRequest) -> dict[str, str]:
     return files
 
 
+_DEVICE_MAPPING_LOCAL_INCLUDE_RE = re.compile(
+    r'^\s*#\s*include\s+"(?P<path>[^"]+)"',
+    re.MULTILINE,
+)
+
+
+def _normalize_device_mapping_path(path: str) -> str:
+    normalized = str(path).replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    parts: list[str] = []
+    for part in normalized.split("/"):
+        if not part or part == ".":
+            continue
+        if part == ".." and parts and parts[-1] != "..":
+            parts.pop()
+        elif part == "..":
+            parts.append(part)
+        else:
+            parts.append(part)
+    return "/".join(parts)
+
+
+def _resolve_device_mapping_include(
+    source_path: str,
+    include_path: str,
+    file_map: Mapping[str, str],
+) -> Optional[str]:
+    include = _normalize_device_mapping_path(include_path)
+    candidates: list[str] = []
+    if not include.startswith("/"):
+        parent = str(PurePosixPath(source_path).parent)
+        if parent == ".":
+            parent = ""
+        candidates.append(
+            _normalize_device_mapping_path(f"{parent}/{include}" if parent else include)
+        )
+    candidates.append(include)
+    for candidate in candidates:
+        if candidate in file_map:
+            return candidate
+    return None
+
+
+def _expand_device_mapping_local_include_scope(
+    scoped_paths: set[str],
+    file_map: Mapping[str, str],
+) -> set[str]:
+    expanded = set(scoped_paths)
+    stack = sorted(scoped_paths)
+    while stack:
+        current = stack.pop()
+        source = file_map.get(current)
+        if source is None:
+            continue
+        for match in _DEVICE_MAPPING_LOCAL_INCLUDE_RE.finditer(source):
+            resolved = _resolve_device_mapping_include(
+                current,
+                match.group("path"),
+                file_map,
+            )
+            if resolved and resolved not in expanded:
+                expanded.add(resolved)
+                stack.append(resolved)
+    return expanded
+
+
 def _device_mapping_source_scope(
     file_map: Mapping[str, str],
     source_context_report: Optional[Mapping[str, Any]],
@@ -2138,7 +2205,17 @@ def _device_mapping_source_scope(
     if not scoped_paths:
         return file_map
 
-    normalized_file_map = {str(path).replace("\\", "/"): source for path, source in file_map.items()}
+    normalized_file_map = {
+        _normalize_device_mapping_path(path): source
+        for path, source in file_map.items()
+    }
+    scoped_paths = _expand_device_mapping_local_include_scope(
+        {
+            _normalize_device_mapping_path(path)
+            for path in scoped_paths
+        },
+        normalized_file_map,
+    )
     return {
         path: normalized_file_map[path]
         for path in sorted(scoped_paths)
