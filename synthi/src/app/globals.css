@@ -38,6 +38,15 @@
   --brand-stop-2: #ff3737;  /*  40%  red    */
   --brand-stop-3: #a23dff;  /*  71%  purple */
   --brand-stop-4: #3d6dff;  /* 100%  blue   */
+
+  /* Editor split-pane palette. Pane 1 keeps the existing muted gray so the
+     original editor looks unchanged; later panes get distinct hues. Consumed
+     by the shared tab strip (EditorTabStrip) and per-pane header strips. */
+  --pane-color-1: var(--text-muted);
+  --pane-color-2: #4c9aff;
+  --pane-color-3: #2bb8a3;
+  --pane-color-4: #e0a64e;
+  --pane-color-5: #b07cf0;
   --brand-gradient: linear-gradient(
     135deg,
     var(--brand-stop-1) 17%,
