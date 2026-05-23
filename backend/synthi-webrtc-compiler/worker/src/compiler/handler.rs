@@ -1351,9 +1351,7 @@ fn device_partial_artifact_specs(
     full_source: &str,
 ) -> Vec<DevicePartialArtifactSpec> {
     let mut specs = include_bridge_partial_artifact_specs(sidecar, generated_path, full_source);
-    if specs.is_empty() {
-        specs = direct_kernel_partial_artifact_specs(generated_path, full_source);
-    }
+    specs.extend(direct_kernel_partial_artifact_specs(generated_path, full_source));
     specs.sort_by(|a, b| a.filename.cmp(&b.filename));
     specs.dedup_by(|a, b| a.filename == b.filename);
     specs
@@ -6030,6 +6028,64 @@ extern "C" __global__ void second(float* out) { out[0] = 2.0f; }
         assert_eq!(first.kind, "kernel_region");
         assert!(first.content.contains("void first"));
         assert!(!first.content.contains("void second"));
+    }
+
+    #[test]
+    fn partial_artifact_catalog_keeps_include_bridge_and_direct_kernel_regions() {
+        let sidecar = normalize_split_sidecar(&serde_json::json!({
+            "deviceMappingReport": {
+                "schemaVersion": "synthi.gpu.device_mapping.v1",
+                "generatedDevicePath": ".synthi/generated/gpu/device.hip",
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "CameraRays",
+                        "sourcePath": "src/Device/kernels/CameraRays.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_include_bridge_same_source",
+                        "generatedMappingMode": "source_include_bridge"
+                    },
+                    {
+                        "kind": "kernel",
+                        "symbol": "TraceTest",
+                        "sourcePath": "src/Device/kernels/TraceTest.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_include_bridge_same_source",
+                        "generatedMappingMode": "source_include_bridge"
+                    }
+                ]
+            }
+        }));
+        let source = r#"
+#include "src/Device/kernels/CameraRays.h"
+#include "src/Device/kernels/TraceTest.h"
+extern "C" __global__ void generated_one(float* out) { out[0] = 1.0f; }
+extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
+"#;
+
+        let specs = device_partial_artifact_specs(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            source,
+        );
+
+        assert_eq!(specs.len(), 4);
+        assert!(specs.iter().any(|spec| {
+            spec.kind == "source_include_bridge"
+                && spec.symbols == vec!["CameraRays".to_string()]
+        }));
+        assert!(specs.iter().any(|spec| {
+            spec.kind == "source_include_bridge"
+                && spec.symbols == vec!["TraceTest".to_string()]
+        }));
+        assert!(specs.iter().any(|spec| {
+            spec.kind == "kernel_region"
+                && spec.symbols == vec!["generated_one".to_string()]
+        }));
+        assert!(specs.iter().any(|spec| {
+            spec.kind == "kernel_region"
+                && spec.symbols == vec!["generated_two".to_string()]
+        }));
     }
 
     #[test]
