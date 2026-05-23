@@ -49,6 +49,7 @@ function TopNav({
   const filesTree = useAppSelector(selectFilesTree);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchText, setSearchText] = useState('');
+  const [splitMenuOpen, setSplitMenuOpen] = useState(false);
 
   // Flatten files tree for search
   const allFiles = useMemo(() => {
@@ -83,8 +84,9 @@ function TopNav({
     setSearchOpen(false);
   };
 
-  const handleSplitEditor = () => {
-    dispatch(splitEditorPanel());
+  const handleSplit = (zone) => {
+    dispatch(splitEditorPanel({ zone }));
+    setSplitMenuOpen(false);
   };
 
   // Compact placeholder for the search field. When idle, prefer the
@@ -168,19 +170,53 @@ function TopNav({
         )}
 
         <div className="flex items-center gap-2 flex-shrink-0">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="hidden sm:inline-flex h-7 w-7 p-0 th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 transition-all rounded-md"
-          onClick={handleSplitEditor}
-          title="Split editor in two"
-          aria-label="Split editor in two"
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <rect x="1.25" y="2" width="11.5" height="10" rx="1.25" stroke="currentColor" strokeWidth="1.2" />
-            <path d="M7 2.6V11.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-          </svg>
-        </Button>
+        <Popover open={splitMenuOpen} onOpenChange={setSplitMenuOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="hidden sm:inline-flex h-7 w-7 p-0 th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 transition-all rounded-md"
+              title="Split editor"
+              aria-label="Split editor"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <rect x="1.25" y="2" width="11.5" height="10" rx="1.25" stroke="currentColor" strokeWidth="1.2" />
+                <path d="M7 2.6V11.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              </svg>
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            sideOffset={6}
+            className="w-40 p-1"
+            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}
+          >
+            <button
+              type="button"
+              onClick={() => handleSplit('right')}
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-[12px] rounded-md cursor-pointer hover:bg-white/5 transition-colors"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <rect x="1.25" y="2" width="11.5" height="10" rx="1.25" stroke="currentColor" strokeWidth="1.2" />
+                <path d="M7 2.6V11.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              </svg>
+              Split right
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSplit('bottom')}
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-[12px] rounded-md cursor-pointer hover:bg-white/5 transition-colors"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <rect x="1.25" y="2" width="11.5" height="10" rx="1.25" stroke="currentColor" strokeWidth="1.2" />
+                <path d="M2.6 7H11.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              </svg>
+              Split down
+            </button>
+          </PopoverContent>
+        </Popover>
 
         {/* Terminal Toggle - Icon Only */}
         <Button
