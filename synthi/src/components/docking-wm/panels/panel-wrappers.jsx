@@ -18,6 +18,7 @@ import { useWorkspacePanelContext } from '../context/workspace-panel-context';
 import { useAppSelector } from '@/redux/hooks';
 import { selectFocusedEditorPaneId } from '../state/layout-slice';
 import { SettingsPanelContent } from '@/components/SettingsPanelContent';
+import EditorPaneHeader from '@/components/EditorPaneHeader';
 
 // ────────────────────────────────────────────────────────
 //  Lazy component imports (code-split, no SSR)
@@ -133,12 +134,15 @@ export const EditorPanelWrapper = memo(function EditorPanelWrapper({ data, tabGr
       className="h-full w-full min-w-0 overflow-hidden flex flex-col"
       style={{ background: 'var(--bg-editor)' }}
     >
-      <EditorPanel
-        {...(ctx?.editorProps || {})}
-        filePath={data?.filePath}
-        paneId={tabGroupId}
-        dockingMode={true}
-      />
+      <EditorPaneHeader paneId={tabGroupId} filePath={data?.filePath} />
+      <div className="flex-1 min-h-0 min-w-0">
+        <EditorPanel
+          {...(ctx?.editorProps || {})}
+          filePath={data?.filePath}
+          paneId={tabGroupId}
+          dockingMode={true}
+        />
+      </div>
     </div>
   );
 });

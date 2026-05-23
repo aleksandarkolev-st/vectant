@@ -47,6 +47,7 @@
   --pane-color-3: #2bb8a3;
   --pane-color-4: #e0a64e;
   --pane-color-5: #b07cf0;
+  --editor-pane-header-h: 20px;  /* per-pane breadcrumb strip height (split mode) */
   --brand-gradient: linear-gradient(
     135deg,
     var(--brand-stop-1) 17%,
