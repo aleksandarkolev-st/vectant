@@ -5,7 +5,7 @@ import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { useAppDispatch, useAppSelector, useAppStore } from '@/redux/hooks';
-import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, markFileSavedRemotely } from '@/redux/workspaceSlice';
+import { fetchFilesThunk, selectActiveFile, setSlug, selectFileThunk, markFileSavedRemotely, selectOpenFiles } from '@/redux/workspaceSlice';
 import { fetchGitStatus, forceRefreshGitStatus } from '@/redux/gitSlice';
 import collabClient from '@/services/collabClient';
 import collabSessionService from '@/services/collabSessionService';
@@ -100,7 +100,7 @@ import { DockableWorkspace } from '@/components/docking-wm/DockableWorkspace';
 import { useActivityBarDocking } from '@/components/docking-wm/hooks/use-activity-bar-docking';
 import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
 import { DROP_ZONE } from '@/components/docking-wm/types';
-import { activateTabAction, openTab, setFocusedTabGroup, splitNodeAction } from '@/components/docking-wm/state/layout-slice';
+import { activateTabAction, openTab, setFocusedTabGroup, splitNodeAction, selectFocusedEditorPaneId, selectFocusedPaneFilePath } from '@/components/docking-wm/state/layout-slice';
 
 // ─── Responsive: viewport observer + breakpoint-driven CSS ─────────────
 import { useViewport } from '@/hooks/useViewport';
@@ -280,6 +280,7 @@ export default function EditorPage({ params }) {
     const [runInGuiMode, setRunInGuiMode] = useState(false);
     const [editor, setEditor] = useState(null);
     const editorRef = useRef(null); // Ref wrapper for editor state (used by useSelfHealing)
+    const editorsByPaneRef = useRef(new Map()); // paneId -> monaco editor instance (multi-pane focus tracking)
     // Track editor content version to force re-analysis on every change (including remote/undo)
     const triggerAnalysisRef = useRef(null);
     const gateway = useAnalyzerGateway();
@@ -326,6 +327,9 @@ export default function EditorPage({ params }) {
     }, []);
 
     const activeFile = useAppSelector(selectActiveFile);
+    const openFiles = useAppSelector(selectOpenFiles);
+    const focusedPaneId = useAppSelector(selectFocusedEditorPaneId);
+    const focusedPaneFilePath = useAppSelector(selectFocusedPaneFilePath);
 
     // ─── Self-Healing system ───────────────────────────────
     const activeFilePath = activeFile?.path || '';
@@ -2691,16 +2695,43 @@ export default function EditorPage({ params }) {
         } catch (_) { /* never let healing break save */ }
     }, [activeFile, rawFiles, slug, compile, hmrEnabled, runInGuiMode, isGuiRunning, client, getLatestCurrentContent, preferGpuPipeline, augmentAdaptedCompileFiles]);
 
-    const handleEditorMount = useCallback((editorInstance) => {
-        setEditor(editorInstance);
-        editorRef.current = editorInstance; // Keep ref in sync for useSelfHealing
+    const handleEditorMount = useCallback((editorInstance, paneId) => {
+        if (paneId) editorsByPaneRef.current.set(paneId, editorInstance);
+        // Promote to the shell's active editor when this is the focused pane
+        // (or when there's no focus/paneId yet — single-editor mode).
+        if (!paneId || !focusedPaneId || paneId === focusedPaneId) {
+            setEditor(editorInstance);
+            editorRef.current = editorInstance; // Keep ref in sync for useSelfHealing
+        }
         // Wait until file is loaded, then capture snapshot
         if (activeFile && !hasInitialSnapshot) {
             const currentValue = editorInstance.getValue();
             setInitialContent(currentValue);
             setHasInitialSnapshot(true);
         }
-    }, [activeFile, hasInitialSnapshot]);
+    }, [activeFile, hasInitialSnapshot, focusedPaneId]);
+
+    // When focus moves between editor panes, point the shell at that pane's
+    // editor instance (drives healing, completions, command palette, etc.).
+    useEffect(() => {
+        if (!focusedPaneId) return;
+        const inst = editorsByPaneRef.current.get(focusedPaneId);
+        if (inst) {
+            setEditor(inst);
+            editorRef.current = inst;
+        }
+    }, [focusedPaneId]);
+
+    // Mirror the global activeFile to the focused pane's file so the file tree,
+    // breadcrumb, git, AI and healing all follow the focused pane. selectFileThunk
+    // hits the cache for an already-open file, so this is cheap (no network).
+    useEffect(() => {
+        const path = focusedPaneFilePath;
+        if (path && path !== activeFile?.path) {
+            const f = openFiles.find((o) => o.path === path) || { path, name: path.split('/').pop() };
+            dispatch(selectFileThunk(f));
+        }
+    }, [focusedPaneFilePath, activeFile?.path, openFiles, dispatch]);
 
     const handleToggleChat = useCallback(() => {
         setFloatingChatVisible((v) => !v);

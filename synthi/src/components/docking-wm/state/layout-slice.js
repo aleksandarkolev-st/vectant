@@ -550,6 +550,16 @@ export const selectFocusedEditorPaneId = createSelector([selectLayout], (layout)
   return focused && ids.includes(focused) ? focused : (ids[0] ?? null);
 });
 
+/**
+ * The focused editor pane's current file path (a string), so consumers can
+ * mirror it without subscribing to the whole pane array (which churns a new
+ * reference on every layout mutation, e.g. splitter drags).
+ */
+export const selectFocusedPaneFilePath = createSelector(
+  [selectEditorPanes, selectFocusedEditorPaneId],
+  (panes, paneId) => (paneId ? (panes.find((p) => p.paneId === paneId)?.filePath ?? null) : null),
+);
+
 // ─── Reducer ────────────────────────────────────────────
 
 export default layoutSlice.reducer;

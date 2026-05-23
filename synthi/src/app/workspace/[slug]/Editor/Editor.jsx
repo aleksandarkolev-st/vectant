@@ -24,6 +24,7 @@ import {
 } from '@/redux/workspaceSlice';
 import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition, selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { fetchGitStatus, closeConflictResolver } from '@/redux/gitSlice';
+import { setFocusedTabGroup } from '@/components/docking-wm/state/layout-slice';
 import { Circle, Save, Sparkles, Loader2, X, Plus, TerminalSquare } from 'lucide-react';
 import { getFileIcon } from '@/utils/fileIcons';
 import {
@@ -4698,7 +4699,13 @@ const EditorPanel = ({
 
                                                     setEditorInstance(editor);
                                                     setMonacoInstance(monaco);
-                                                    if (onEditorMount) onEditorMount(editor);
+                                                    if (onEditorMount) onEditorMount(editor, paneId);
+                                                    // In docking mode, focusing this editor view marks its pane
+                                                    // as the focused editor pane — this drives the shell editor,
+                                                    // healing/completions, and the global activeFile mirror.
+                                                    if (dockingMode && paneId) {
+                                                        editor.onDidFocusEditorWidget(() => dispatch(setFocusedTabGroup(paneId)));
+                                                    }
 
                                                     // Wire Monaco into ThemeProvider for live theme switching
                                                     if (themeMonacoRef) {
