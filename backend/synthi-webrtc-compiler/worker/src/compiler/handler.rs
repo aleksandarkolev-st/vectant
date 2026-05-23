@@ -4381,8 +4381,9 @@ pub async fn handle_compile_request(
     }
     if let Some(ref out) = device_compile_outcome {
         eprintln!(
-            "[compile-device] sidecar ready artifact={} stderr_bytes={} register_records={} partial={} symbols={}",
+            "[compile-device] sidecar ready artifact={} compiler_ms={} stderr_bytes={} register_records={} partial={} symbols={}",
             out.artifact_path.display(),
+            out.compiler_elapsed_ms,
             out.stderr.len(),
             out.diagnostics.register_pressure.len(),
             out.partial_module,
@@ -4689,7 +4690,7 @@ pub async fn handle_compile_request(
                 .with_artifact(&artifact_path, &artifact_hash)
                 .with_abi_version(&format!("{}", hash_content(&kernel_abi)))
                 .with_state_schema_hash(&format!("{}", hash_content(device_source)))
-                .with_build_time(build_time_ms)
+                .with_build_time(device_outcome.compiler_elapsed_ms)
                 .with_dirty_units(device_dirty_units)
                 .with_exported_symbols(kernel_symbols)
                 .with_capabilities(capabilities)

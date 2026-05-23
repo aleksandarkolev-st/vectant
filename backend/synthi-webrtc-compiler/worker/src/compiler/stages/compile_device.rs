@@ -67,6 +67,10 @@ pub struct DeviceCompileOutcome {
     /// Device source that was actually compiled after any internal generated
     /// role heal attempts.
     pub compiled_source: String,
+    /// Wall-clock time spent inside the device compiler process for the
+    /// successful attempt. This excludes source generation, host rebuild,
+    /// runner reload, and artifact unbundling.
+    pub compiler_elapsed_ms: u64,
     pub partial_module: bool,
     pub target_symbols: Vec<String>,
     /// Parsed ptxas/nvlink diagnostics — empty for ROCm (Phase 0).
@@ -225,15 +229,17 @@ async fn compile_device_inner(
             }
 
             eprintln!(
-                "[compile-device] {} ok  artifact={}  diagnostics_kernels={}",
+                "[compile-device] {} ok  artifact={}  compiler_ms={} diagnostics_kernels={}",
                 compiler_exe,
                 artifact_path.display(),
+                compile.elapsed_ms,
                 compile.diagnostics.register_pressure.len()
             );
 
             return Ok(Some(DeviceCompileOutcome {
                 artifact_path,
                 compiled_source: current_source,
+                compiler_elapsed_ms: compile.elapsed_ms,
                 partial_module: false,
                 target_symbols: Vec::new(),
                 diagnostics: compile.diagnostics,
@@ -242,8 +248,8 @@ async fn compile_device_inner(
         }
 
         eprintln!(
-            "[compile-device] {} FAILED status={}\n{}",
-            compiler_exe, compile.status, compile.stderr
+            "[compile-device] {} FAILED status={} compiler_ms={}\n{}",
+            compiler_exe, compile.status, compile.elapsed_ms, compile.stderr
         );
 
         if attempt >= max_heal_attempts {
@@ -648,6 +654,7 @@ struct DeviceCompileAttempt {
     status: std::process::ExitStatus,
     diagnostics: GpuToolchainDiagnostics,
     stderr: String,
+    elapsed_ms: u64,
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -672,6 +679,7 @@ async fn run_device_compile_once(
         cmd.as_std().get_args()
     );
 
+    let started = std::time::Instant::now();
     let child = cmd
         .spawn()
         .with_context(|| format!("spawning {compiler_exe}"))?;
@@ -687,6 +695,7 @@ async fn run_device_compile_once(
     };
 
     let stderr_str = String::from_utf8_lossy(&out.stderr).to_string();
+    let elapsed_ms = started.elapsed().as_millis() as u64;
     let diagnostics = match gpu.vendor {
         DeviceVendor::Cuda => parse_ptxas(&stderr_str),
         DeviceVendor::Rocm => GpuToolchainDiagnostics::default(),
@@ -696,6 +705,7 @@ async fn run_device_compile_once(
         status: out.status,
         diagnostics,
         stderr: stderr_str,
+        elapsed_ms,
     })
 }
 
