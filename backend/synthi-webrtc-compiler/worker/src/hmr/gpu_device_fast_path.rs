@@ -923,8 +923,9 @@ fn kernel_regions(source: &str) -> BTreeMap<String, KernelRegion> {
         r#"(?:extern\s+"C"\s+)?(?:__global__\s+(?:void\s+)?|GLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+(?:__launch_bounds__\s*\([^)]*\)\s*)?)([A-Za-z_][A-Za-z0-9_]*)\s*\("#,
     )
     .expect("kernel regex");
+    let masked = mask_comments_preserving_len(source);
     let mut out = BTreeMap::new();
-    for captures in re.captures_iter(source) {
+    for captures in re.captures_iter(&masked) {
         let Some(matched) = captures.get(0) else {
             continue;
         };
@@ -953,6 +954,61 @@ fn kernel_regions(source: &str) -> BTreeMap<String, KernelRegion> {
         );
     }
     out
+}
+
+fn mask_comments_preserving_len(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut masked = bytes.to_vec();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' | b'\'' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i = (i + 2).min(bytes.len());
+                        continue;
+                    }
+                    if bytes[i] == quote {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                masked[i] = b' ';
+                masked[i + 1] = b' ';
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    if bytes[i] != b'\r' {
+                        masked[i] = b' ';
+                    }
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                masked[i] = b' ';
+                masked[i + 1] = b' ';
+                i += 2;
+                while i < bytes.len() {
+                    if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        masked[i] = b' ';
+                        masked[i + 1] = b' ';
+                        i += 2;
+                        break;
+                    }
+                    if bytes[i] != b'\n' && bytes[i] != b'\r' {
+                        masked[i] = b' ';
+                    }
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    String::from_utf8(masked).unwrap_or_else(|_| source.to_string())
 }
 
 pub fn build_device_partial_source(source: &str, symbols: &[String]) -> Option<String> {
@@ -1703,6 +1759,21 @@ mod tests {
             device_header_kernel_body_only_edit_symbol(before, &after).as_deref(),
             Some("CameraRays")
         );
+    }
+
+    #[test]
+    fn kernel_region_detection_ignores_commented_macro_examples() {
+        let source = r#"
+// GLOBAL_KERNEL_SIGNATURE(void) CommentLine(RenderData data) {}
+/* GLOBAL_KERNEL_SIGNATURE(void) CommentBlock(RenderData data) {} */
+GLOBAL_KERNEL_SIGNATURE(void) LiveKernel(RenderData data) {
+  data.value += 1;
+}
+"#;
+
+        let regions = kernel_regions(source);
+
+        assert_eq!(regions.keys().cloned().collect::<Vec<_>>(), vec!["LiveKernel"]);
     }
 
     #[test]
