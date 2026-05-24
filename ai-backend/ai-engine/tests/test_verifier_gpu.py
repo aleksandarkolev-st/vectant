@@ -618,6 +618,49 @@ def test_split_rejects_invented_gpu_runtime_accessor():
     )
 
 
+def test_split_rejects_inert_device_kernels_without_host_launch():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { bool launched = false; if (launched) { ++n; } }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.cu": 'extern "C" __global__ void vec_add(const float*, const float*, float*, int) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert any(v.rule == "device_kernels_not_launched" for v in r.violations)
+
+
+def test_split_rejects_constant_false_launch_guard():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { bool device_initialized; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* p, double) { auto* state = (AppState*)p; '
+            'if (!state->device_initialized) { bool launched = false; '
+            'if (launched) { state->device_initialized = true; } } '
+            'else { synthi_gpu_launch(nullptr, "vec_add", 1, 256, 0, nullptr, { &p }); } }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.cu": 'extern "C" __global__ void vec_add(void*) {}',
+    }
+    r = verify_split_output(files=files, manifest_arch=["sm_80"])
+    assert any(
+        v.rule == "constant_false_launch_guard"
+        and v.offending_symbol == "launched"
+        for v in r.violations
+    )
+
+
 def test_split_rejects_placeholder_gui_render():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',

@@ -312,6 +312,8 @@ def repair_split_artifacts(
             device_source=repaired[device_path],
             source_files=source_files,
         )
+        if host_launch_symbols and host_launch_symbols.issubset(removable_symbols):
+            removable_symbols = set()
         if removable_symbols:
             for host_path in (core_path, gui_path, host_runner_path):
                 if not host_path or host_path not in repaired:

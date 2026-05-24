@@ -1776,6 +1776,28 @@ def verify_split_output(
                 offending_symbol="core_on_update",
             )
         )
+    core_update_body = _function_body(core_source, "core_on_update")
+    for match in re.finditer(
+        r"\b(?:bool|auto)(?:\s+const)?\s+"
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*false\s*;\s*"
+        r"if\s*\(\s*(?P=name)\s*\)",
+        core_update_body,
+    ):
+        violations.append(
+            Violation(
+                rule="constant_false_launch_guard",
+                message=(
+                    f"core_on_update initializes launch guard {match.group('name')!r} "
+                    "to false and immediately guards runtime state updates on that "
+                    "constant. This makes later GPU launch paths unreachable and can "
+                    "compile into a black preview. Assign the guard from a real "
+                    "synthi_gpu_launch(...) result, or remove the dead branch and "
+                    "preserve a reachable source launch path."
+                ),
+                offending_module=core_path,
+                offending_symbol=match.group("name"),
+            )
+        )
     if (
         re.search(r"\bsynthi_gpu_launch\s*\(", core_source)
         and re.search(r"\b(?:cuda|hip)Memcpy\s*\(", core_source)
@@ -2339,6 +2361,7 @@ def verify_split_output(
             )
         )
 
+    synthi_launch_count = 0
     for host_path in (core_path, gui_path, host_runner_path):
         src = files.get(host_path)
         if not src:
@@ -2375,6 +2398,7 @@ def verify_split_output(
                 )
             )
         for match in _SYNTHI_LAUNCH_CALL_RE.finditer(src):
+            synthi_launch_count += 1
             kernel = match.group("name")
             if kernel not in declared_kernels:
                 violations.append(
@@ -2390,6 +2414,22 @@ def verify_split_output(
                         offending_symbol=kernel,
                     )
                 )
+
+    if declared_kernels and synthi_launch_count == 0:
+        violations.append(
+            Violation(
+                rule="device_kernels_not_launched",
+                message=(
+                    "The generated device role declares GPU kernels, but no "
+                    "generated host role launches them through synthi_gpu_launch(...). "
+                    "A split that only advertises kernels can compile and reload "
+                    "yet produce an inert or black preview; preserve at least one "
+                    "reachable source launch path through the Synthi launch "
+                    "indirection table."
+                ),
+                offending_module=core_path,
+            )
+        )
 
     return SplitVerificationResult(ok=not violations, violations=violations)
 

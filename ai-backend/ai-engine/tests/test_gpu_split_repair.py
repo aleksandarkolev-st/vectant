@@ -704,16 +704,20 @@ def test_repair_removes_unbacked_launches_when_source_device_headers_are_authori
 
     assert report["repaired"] is True
     assert "repair.source_device_include_bridge" in report["repairRules"]
-    assert "repair.unresolved_generated_launches" in report["repairRules"]
-    assert 'synthi_gpu_launch(nullptr, "init_buffers"' not in repaired["core.cpp"]
-    assert 'synthi_gpu_launch(nullptr, "my_function"' not in repaired["core.cpp"]
-    assert "bool launched = false;" in repaired["core.cpp"]
+    assert "repair.unresolved_generated_launches" not in report["repairRules"]
+    assert 'synthi_gpu_launch(nullptr, "init_buffers"' in repaired["core.cpp"]
+    assert 'synthi_gpu_launch(nullptr, "my_function"' in repaired["core.cpp"]
+    assert "bool launched = false;" not in repaired["core.cpp"]
     after = verify_split_output(
         files=repaired,
         manifest_arch=["gfx1201"],
         source_files=source_files,
     )
-    assert not any(v.rule == "launch_site_unresolved" for v in after.violations)
+    assert {
+        v.offending_symbol
+        for v in after.violations
+        if v.rule == "launch_site_unresolved"
+    } == {"init_buffers", "my_function"}
     assert not any(v.rule.startswith("source_device_kernel_") for v in after.violations)
 
 
@@ -740,6 +744,7 @@ def test_repair_rechecks_launches_after_source_device_bridge_replaces_fake_kerne
         "core.cpp": (
             'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
             'extern "C" void core_on_update(void*, double) { '
+            'synthi_gpu_launch(nullptr, "CameraRays", 1, 64, 0, nullptr, { &frame }); '
             'synthi_gpu_launch(nullptr, "my_function", 1, 64, 0, nullptr, { &frame }); }\n'
             'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
             'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
@@ -773,6 +778,7 @@ def test_repair_rechecks_launches_after_source_device_bridge_replaces_fake_kerne
     assert "repair.source_device_include_bridge" in report["repairRules"]
     assert "repair.unresolved_generated_launches" in report["repairRules"]
     assert "my_function" not in repaired["core.cpp"]
+    assert "CameraRays" in repaired["core.cpp"]
     after = verify_split_output(
         files=repaired,
         manifest_arch=["gfx1201"],
