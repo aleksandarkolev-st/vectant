@@ -763,7 +763,7 @@ def _extract_build_metadata_device_flags(
     ]
     project_roots = _infer_compile_command_project_roots(entries, source_keys)
     flags: List[str] = []
-    for entry in entries:
+    for entry in _compile_database_entries_for_focus(entries, project_roots, focus_path):
         if not isinstance(entry, Mapping):
             continue
         args = entry.get("arguments")
@@ -779,6 +779,31 @@ def _extract_build_metadata_device_flags(
                 continue
         flags.extend(_device_flags_from_compile_tokens(tokens, project_roots, vendor))
     return _dedupe_preserve_order(flags)
+
+
+def _compile_database_entries_for_focus(
+    entries: Any,
+    project_roots: List[str],
+    focus_path: Optional[str],
+) -> List[Mapping[str, Any]]:
+    normalized_entries = [
+        entry for entry in (entries if isinstance(entries, list) else []) if isinstance(entry, Mapping)
+    ]
+    if not focus_path:
+        return normalized_entries
+    focused: List[Mapping[str, Any]] = []
+    for entry in normalized_entries:
+        entry_file = _compile_database_entry_file(entry, project_roots)
+        if entry_file and _path_matches(entry_file, focus_path):
+            focused.append(entry)
+    return focused
+
+
+def _compile_database_entry_file(entry: Mapping[str, Any], project_roots: List[str]) -> str:
+    raw_file = str(entry.get("file") or "").strip()
+    if not raw_file:
+        return ""
+    return _normalize_project_path(_rewrite_compile_metadata_path(raw_file, project_roots))
 
 
 def _infer_compile_command_project_roots(entries: Any, source_keys: List[str]) -> List[str]:

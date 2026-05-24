@@ -478,6 +478,49 @@ def test_gpu_manifest_derives_device_include_and_define_flags_from_compile_datab
     assert "-DNDEBUG" in flags
 
 
+def test_gpu_manifest_restricts_compile_database_device_flags_to_focus_entry():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        link_hint_sources={
+            "src/main.cpp": "int main(){return 0;}",
+            "tools/helper.cpp": "int helper(){return 0;}",
+            "compile_commands.json": json.dumps(
+                [
+                    {
+                        "directory": "/repo/app/build",
+                        "command": "/usr/bin/c++ -DMAIN_TARGET=1 -I/repo/app/src -std=gnu++20 -c /repo/app/src/main.cpp",
+                        "file": "/repo/app/src/main.cpp",
+                    },
+                    {
+                        "directory": "/repo/app/build",
+                        "command": "/usr/bin/c++ -DHELPER_ONLY=1 -I/repo/app/tools -std=gnu++14 -c /repo/app/tools/helper.cpp",
+                        "file": "/repo/app/tools/helper.cpp",
+                    },
+                ]
+            ),
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+        focus_path="src/main.cpp",
+    )
+
+    flags = normalized["gpu"]["device_flags"]
+
+    assert "-DMAIN_TARGET=1" in flags
+    assert "-Isrc" in flags
+    assert "-std=gnu++20" in flags
+    assert "-DHELPER_ONLY=1" not in flags
+    assert "-Itools" not in flags
+    assert "-std=gnu++14" not in flags
+
+
 def test_gpu_manifest_prefers_focus_cmake_target_device_flags_over_repo_compile_database():
     normalized = normalize_gpu_split_manifest(
         {
