@@ -2795,6 +2795,30 @@ def _unwrap_heal_content(result: str) -> str:
         )
 
 
+_EXTERN_C_FUNCTION_RE = re.compile(
+    r'extern\s+"C"\s+(?:[A-Za-z_][A-Za-z0-9_:<>\s*&]*\s+)*'
+    r'(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(',
+    re.DOTALL,
+)
+
+
+def _extern_c_function_names(source: str) -> set[str]:
+    """Return exported C ABI function names from generated role source."""
+
+    if not source:
+        return set()
+    masked = re.sub(r"//.*?$|/\*.*?\*/", "", source, flags=re.MULTILINE | re.DOTALL)
+    return {match.group("name") for match in _EXTERN_C_FUNCTION_RE.finditer(masked)}
+
+
+def _missing_preserved_exports(original: str, candidate: str) -> list[str]:
+    required = _extern_c_function_names(original)
+    if not required:
+        return []
+    present = _extern_c_function_names(candidate)
+    return sorted(required - present)
+
+
 @app.post("/refactor/heal")
 async def refactor_heal(req: HealRequest):
     """
@@ -2822,36 +2846,70 @@ async def refactor_heal(req: HealRequest):
         print(f"[Heal] architecture hint ({len(req.architecture)} chars) injected into prompt")
 
     try:
-        ai_response = await provider.ask_llm(
-            prompt,
-            "cpp",
-            None,
-            mode="delta",
-            model="gemini-3.1-flash-lite-preview",
-        )
-
-        # Strip markdown fences if present
-        result = ai_response.strip()
-        if result.startswith("```cpp"):
-            result = result[6:]
-        elif result.startswith("```"):
-            result = result[3:]
-        if result.endswith("```"):
-            result = result[:-3]
-        result = _unwrap_heal_content(result.strip())
-        try:
-            from agents.gpu_split_repair import sanitize_generated_heal_output
-
-            sanitized, sanitized_changed = sanitize_generated_heal_output(
-                module=req.module_name,
-                source=result,
-                errors=req.error_messages,
+        async def run_heal_once(heal_prompt: str) -> str:
+            ai_response = await provider.ask_llm(
+                heal_prompt,
+                "cpp",
+                None,
+                mode="delta",
+                model="gemini-3.1-flash-lite-preview",
             )
-            if sanitized_changed:
-                print(f"[Heal] deterministic generated-role sanitizer adjusted {req.module_name}")
-                result = sanitized
-        except Exception as sanitizer_error:
-            print(f"[Heal] sanitizer skipped for {req.module_name}: {sanitizer_error}")
+
+            # Strip markdown fences if present
+            result = ai_response.strip()
+            if result.startswith("```cpp"):
+                result = result[6:]
+            elif result.startswith("```"):
+                result = result[3:]
+            if result.endswith("```"):
+                result = result[:-3]
+            result = _unwrap_heal_content(result.strip())
+            try:
+                from agents.gpu_split_repair import sanitize_generated_heal_output
+
+                sanitized, sanitized_changed = sanitize_generated_heal_output(
+                    module=req.module_name,
+                    source=result,
+                    errors=req.error_messages,
+                )
+                if sanitized_changed:
+                    print(f"[Heal] deterministic generated-role sanitizer adjusted {req.module_name}")
+                    result = sanitized
+            except Exception as sanitizer_error:
+                print(f"[Heal] sanitizer skipped for {req.module_name}: {sanitizer_error}")
+            return result
+
+        result = await run_heal_once(prompt)
+        missing_exports = _missing_preserved_exports(req.module_content, result)
+        if missing_exports:
+            print(
+                f"[Heal] rejected {req.module_name} repair because it removed exports: "
+                f"{','.join(missing_exports)}"
+            )
+            retry_prompt = "\n".join(
+                [
+                    prompt,
+                    "",
+                    "PREVIOUS REPAIR WAS REJECTED BY A DETERMINISTIC ABI CHECK.",
+                    "It removed these existing extern C exports:",
+                    ", ".join(missing_exports),
+                    "",
+                    "Return a new complete fixed file that preserves every listed export.",
+                    "Do not replace the module with a header or a different role.",
+                    "",
+                    "REJECTED REPAIR:",
+                    "```",
+                    result,
+                    "```",
+                ]
+            )
+            result = await run_heal_once(retry_prompt)
+            missing_exports = _missing_preserved_exports(req.module_content, result)
+            if missing_exports:
+                raise ValueError(
+                    "AI heal removed required exports after retry: "
+                    + ",".join(missing_exports)
+                )
 
         elapsed = time.time() - start_time
         print(f"[Heal] {req.module_name} fixed in {elapsed:.2f}s")

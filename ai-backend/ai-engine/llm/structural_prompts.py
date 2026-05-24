@@ -71,6 +71,13 @@ _HEAL_GENERIC_RULES = """RULES:
 - Do NOT change any other code
 - Do NOT add new features or refactor
 - Do NOT introduce new top-level entrypoints or lifecycle callbacks
+- Preserve every existing externally-visible function and lifecycle
+  callback from CURRENT CODE with the same symbol name and compatible
+  signature. Do not remove ABI exports just to make compilation succeed.
+- If the compiler error originates in the shared header, do not replace
+  this module with the shared header. Return this module's complete file
+  content and make the smallest local declaration needed for this module
+  to compile.
 - If an ARCHITECTURE section is provided above, follow its
   "Forbidden Patterns" list — those are the project-specific
   don'ts you must respect while healing.
