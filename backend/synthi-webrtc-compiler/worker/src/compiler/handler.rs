@@ -16,6 +16,7 @@ static TIER0_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 static TIER0_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TIER0_INELIGIBLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 const MAX_DEVICE_PARTIAL_ARTIFACTS: usize = 128;
+const MAX_WARM_SOURCE_BRIDGE_TUS: usize = 16;
 
 // Import our new modular stages
 use crate::compiler::stages::ai_utils::{
@@ -572,6 +573,7 @@ struct DeviceCompileSources {
     partial_source: Option<String>,
     partial_filename: Option<String>,
     partial_symbols: Vec<String>,
+    partial_required: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -613,6 +615,28 @@ fn partial_device_filename(generated_path: &str, symbols: &[String], source: &st
     } else {
         format!("{dir}/{filename}")
     }
+}
+
+fn build_source_include_partial_source(source_paths: &[String]) -> Option<String> {
+    let mut normalized = BTreeSet::new();
+    for path in source_paths {
+        let path = normalized_request_filename(path)?;
+        if path.contains('"') || path.contains('\n') || path.contains('\r') {
+            return None;
+        }
+        normalized.insert(path);
+    }
+    if normalized.is_empty() || normalized.len() > MAX_WARM_SOURCE_BRIDGE_TUS {
+        return None;
+    }
+
+    let mut source = String::from("// synthi-gpu-hmr: source include partial\n");
+    for path in normalized {
+        source.push_str("#include \"");
+        source.push_str(&path);
+        source.push_str("\"\n");
+    }
+    Some(source)
 }
 
 fn normalized_symbol_set(symbols: &[String]) -> BTreeSet<String> {
@@ -773,7 +797,7 @@ async fn read_selected_device_partial_artifact(
 
 fn split_partial_device_source(
     split_data: &serde_json::Value,
-) -> Option<(String, String, Vec<String>)> {
+) -> Option<(String, String, Vec<String>, bool)> {
     let partial = split_data.get("_synthi_device_partial")?;
     let source = partial
         .get("content")
@@ -799,10 +823,14 @@ fn split_partial_device_source(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let required = partial
+        .get("requirePartial")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     if symbols.is_empty() {
         None
     } else {
-        Some((source, filename, symbols))
+        Some((source, filename, symbols, required))
     }
 }
 
@@ -875,11 +903,31 @@ async fn compile_device_sources_phase0(
                     return Ok(Some(outcome));
                 }
                 Ok(None) => {
+                    if sources.partial_required {
+                        eprintln!(
+                            "[compile-device] required partial source compile returned no artifact; refusing stale full generated fallback"
+                        );
+                        anyhow::bail!(
+                            "required GPU partial source compile returned no artifact: {}",
+                            partial_filename
+                        );
+                    }
                     eprintln!(
                         "[compile-device] partial source compile returned no artifact; falling back to full generated device"
                     );
                 }
                 Err(e) => {
+                    if sources.partial_required {
+                        eprintln!(
+                            "[compile-device] required partial source compile failed; refusing stale full generated fallback: {e:#}"
+                        );
+                        return Err(e).with_context(|| {
+                            format!(
+                                "required GPU partial source compile failed: {}",
+                                partial_filename
+                            )
+                        });
+                    }
                     eprintln!(
                         "[compile-device] partial source compile failed; falling back to full generated device: {e:#}"
                     );
@@ -1287,6 +1335,7 @@ struct WarmRebuildDecision {
     reason_codes: Vec<String>,
     generated_device_path: Option<String>,
     affected_symbols: Vec<String>,
+    affected_source_paths: Vec<String>,
 }
 
 fn is_device_header_request(filename: &str) -> bool {
@@ -1343,6 +1392,67 @@ fn template_evidence_mentions_source(sidecar: &serde_json::Value, path: &str) ->
             })
         })
         .unwrap_or(false)
+}
+
+fn kernel_symbol_from_signature(signature: &str) -> Option<String> {
+    let head = signature.split('(').next()?.trim();
+    let token = head.split_whitespace().last()?.trim();
+    let name = token.rsplit("::").next().unwrap_or(token).trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn template_rebuild_impacts(
+    sidecar: &serde_json::Value,
+    path: &str,
+) -> (Vec<String>, Vec<String>) {
+    let normalized = normalized_request_filename(path).unwrap_or_else(|| path.replace('\\', "/"));
+    let mut symbols = BTreeSet::new();
+    let mut source_paths = BTreeSet::new();
+    let Some(entries) = sidecar
+        .get("affectedTemplateInstantiations")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return (Vec::new(), Vec::new());
+    };
+
+    for entry in entries {
+        let mentions_header = entry
+            .get("sourceHeaders")
+            .and_then(serde_json::Value::as_array)
+            .map(|headers| {
+                headers.iter().any(|header| {
+                    header
+                        .as_str()
+                        .and_then(normalized_request_filename)
+                        .as_deref()
+                        == Some(normalized.as_str())
+                })
+            })
+            .unwrap_or(false);
+        if !mentions_header {
+            continue;
+        }
+        if let Some(symbol) = entry
+            .get("reachableFromKernel")
+            .and_then(serde_json::Value::as_str)
+            .and_then(kernel_symbol_from_signature)
+        {
+            symbols.insert(symbol);
+        }
+        if let Some(path) = entry
+            .get("owningTU")
+            .and_then(serde_json::Value::as_str)
+            .and_then(normalized_request_filename)
+        {
+            source_paths.insert(path);
+        }
+    }
+
+    (symbols.into_iter().collect(), source_paths.into_iter().collect())
 }
 
 fn device_include_graph_mentions_source(sidecar: &serde_json::Value, path: &str) -> bool {
@@ -1902,6 +2012,10 @@ fn try_warm_rebuild_header_plan(
         .filter(|code| !code.starts_with("template_"))
         .cloned()
         .collect();
+    let (template_symbols, template_source_paths) =
+        template_rebuild_impacts(&normalized_candidate, user_path);
+    let template_source_projection_available = source_included_by_generated_role
+        || (!template_symbols.is_empty() && !template_source_paths.is_empty());
     let deterministic_body_rebuild = preflight_reasons.is_empty()
         && body_only_kernel.is_some()
         && non_template_warm_reasons.is_empty();
@@ -1918,17 +2032,25 @@ fn try_warm_rebuild_header_plan(
     } else if preflight_reasons.is_empty()
         && arbiter_decision == "auto_run"
         && selected_plan == "warm_rebuild"
+        && template_source_projection_available
     {
         vec![
             "edit.device_reachable_header".to_string(),
             "template_evidence_fresh".to_string(),
             "template_instantiation_bounded".to_string(),
+            "template_impact_projection_available".to_string(),
             "build.warm_rebuild".to_string(),
             "build.device_sidecar_rebuild".to_string(),
         ]
     } else {
         let mut reasons = preflight_reasons;
         reasons.extend(ranked_warm_reasons.clone());
+        if arbiter_decision == "auto_run"
+            && selected_plan == "warm_rebuild"
+            && !template_source_projection_available
+        {
+            reasons.push("template_impact_projection_missing".to_string());
+        }
         if arbiter_decision != "auto_run" {
             reasons.push("arbiter_path_not_worth_running".to_string());
         }
@@ -1941,7 +2063,9 @@ fn try_warm_rebuild_header_plan(
         .iter()
         .any(|code| code == "build.warm_rebuild")
         && (deterministic_body_rebuild
-            || (arbiter_decision == "auto_run" && selected_plan == "warm_rebuild"));
+            || (arbiter_decision == "auto_run"
+                && selected_plan == "warm_rebuild"
+                && template_source_projection_available));
     let estimated_ms = ranked_option_estimate_ms(&normalized_candidate, "warm_rebuild");
     let plan = warm_rebuild_reload_plan(
         if accepted { "warm_rebuild" } else { "unsupported" },
@@ -1964,7 +2088,11 @@ fn try_warm_rebuild_header_plan(
         verifier_report: verifier,
         reason_codes,
         generated_device_path: generated_device_path.map(str::to_string),
-        affected_symbols: body_only_kernel.into_iter().collect(),
+        affected_symbols: body_only_kernel
+            .into_iter()
+            .chain(template_symbols)
+            .collect(),
+        affected_source_paths: template_source_paths,
     })
 }
 
@@ -2828,14 +2956,49 @@ pub async fn handle_compile_request(
                         let partial_device_payload = if warm.affected_symbols.is_empty() {
                             None
                         } else {
-                            let catalog_payload = if let Some(selection) =
+                            let source_bridge_payload = build_source_include_partial_source(
+                                &warm.affected_source_paths,
+                            )
+                            .map(|partial_source| {
+                                let partial_filename = partial_device_filename(
+                                    &generated_path,
+                                    &warm.affected_symbols,
+                                    &partial_source,
+                                );
+                                eprintln!(
+                                    "[gpu-hmr] warm_rebuild source bridge partial prepared: file={} bytes={} full_bytes={} symbols={} source_tus={}",
+                                    partial_filename,
+                                    partial_source.len(),
+                                    generated_device_source.len(),
+                                    warm.affected_symbols.join(","),
+                                    warm.affected_source_paths.join(",")
+                                );
+                                serde_json::json!({
+                                    "content": partial_source,
+                                    "filename": partial_filename,
+                                    "symbols": warm.affected_symbols.clone(),
+                                    "source": "sourceIncludeBridge",
+                                    "sourcePaths": warm.affected_source_paths.clone(),
+                                    "artifactKind": "source_include_bridge",
+                                    "requirePartial": true,
+                                })
+                            });
+                            let catalog_payload = if source_bridge_payload.is_some() {
+                                None
+                            } else if let Some(selection) =
                                 select_device_partial_artifact(
                                     &sidecar_meta,
                                     &generated_path,
                                     Some(&request_name),
                                     &warm.affected_symbols,
                                 ) {
-                                read_selected_device_partial_artifact(&ctx.workspace_path, &selection)
+                                if selection.kind == "source_include_bridge"
+                                    && selection.source_path_match
+                                {
+                                    read_selected_device_partial_artifact(
+                                        &ctx.workspace_path,
+                                        &selection,
+                                    )
                                     .await?
                                     .map(|partial_source| {
                                         eprintln!(
@@ -2852,12 +3015,22 @@ pub async fn handle_compile_request(
                                             "symbols": warm.affected_symbols.clone(),
                                             "source": "devicePartialArtifacts",
                                             "artifactKind": selection.kind,
+                                            "requirePartial": true,
                                         })
                                     })
+                                } else {
+                                    eprintln!(
+                                        "[gpu-hmr] warm_rebuild partial artifact skipped: file={} kind={} source_path_match={} reason=not_header_source_bridge",
+                                        selection.filename,
+                                        selection.kind,
+                                        selection.source_path_match
+                                    );
+                                    None
+                                }
                             } else {
                                 None
                             };
-                            catalog_payload.or_else(|| {
+                            source_bridge_payload.or(catalog_payload).or_else(|| {
                                 let (target_paths, omit_paths) =
                                     include_bridge_kernel_source_paths(&sidecar_meta, &request_name);
                                 build_device_include_bridge_partial_source(
@@ -2883,6 +3056,7 @@ pub async fn handle_compile_request(
                                         "content": partial_source,
                                         "filename": partial_filename,
                                         "symbols": warm.affected_symbols.clone(),
+                                        "requirePartial": true,
                                     })
                                 })
                             })
@@ -4166,18 +4340,21 @@ pub async fn handle_compile_request(
                     .map(|s| s.to_string())
             });
         if let Some(src) = from_split {
-            let (partial_source, partial_filename, partial_symbols) =
+            let (partial_source, partial_filename, partial_symbols, partial_required) =
                 split_partial_device_source(&split_data)
-                    .map(|(source, filename, symbols)| (Some(source), Some(filename), symbols))
-                    .unwrap_or((None, None, Vec::new()));
+                    .map(|(source, filename, symbols, required)| {
+                        (Some(source), Some(filename), symbols, required)
+                    })
+                    .unwrap_or((None, None, Vec::new(), false));
             eprintln!(
-                "[compile-device] source resolved from split_data file={} bytes={} partial={}",
+                "[compile-device] source resolved from split_data file={} bytes={} partial={} partial_required={}",
                 device_filename,
                 src.len(),
                 partial_source
                     .as_ref()
                     .map(|source| source.len().to_string())
-                    .unwrap_or_else(|| "none".to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                partial_required
             );
             Some(DeviceCompileSources {
                 full_source: src,
@@ -4185,6 +4362,7 @@ pub async fn handle_compile_request(
                 partial_source,
                 partial_filename,
                 partial_symbols,
+                partial_required,
             })
         } else {
             match tokio::fs::read_to_string(ctx.workspace_path.join(device_filename)).await {
@@ -4200,6 +4378,7 @@ pub async fn handle_compile_request(
                         partial_source: None,
                         partial_filename: None,
                         partial_symbols: Vec::new(),
+                        partial_required: false,
                     })
                 }
                 Ok(_) => {
@@ -6396,6 +6575,17 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             .reason_codes
             .iter()
             .any(|code| code == "template_evidence_fresh"));
+        assert_eq!(decision.affected_symbols, vec!["flow".to_string()]);
+        assert_eq!(
+            decision.affected_source_paths,
+            vec!["src/gpu/flow.hip".to_string()]
+        );
+        let bridge = build_source_include_partial_source(&decision.affected_source_paths)
+            .expect("source bridge partial");
+        assert_eq!(
+            bridge,
+            "// synthi-gpu-hmr: source include partial\n#include \"src/gpu/flow.hip\"\n"
+        );
         assert_eq!(
             decision
                 .verifier_report
