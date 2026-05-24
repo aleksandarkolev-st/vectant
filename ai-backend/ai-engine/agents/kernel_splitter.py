@@ -414,6 +414,13 @@ def _extract_embedded_source_object(value: str) -> Optional[str]:
         )
 
 
+def _is_file_map_like(value: Mapping[str, Any]) -> bool:
+    return any(
+        key in _ROLE_FILENAMES or _looks_like_source_file(str(key))
+        for key in value.keys()
+    )
+
+
 def _normalise_file_map(files: Mapping[str, Any]) -> Dict[str, str]:
     """Accept common LLM file-map variants and return filename -> source."""
 
@@ -429,6 +436,11 @@ def _normalise_file_map(files: Mapping[str, Any]) -> Dict[str, str]:
             except json.JSONDecodeError:
                 decoded = None
             if isinstance(decoded, Mapping):
+                if _is_file_map_like(decoded):
+                    for nested_name, nested_value in decoded.items():
+                        if nested_name in _ROLE_FILENAMES or _looks_like_source_file(str(nested_name)):
+                            add(str(nested_name), nested_value)
+                    return
                 add(clean_name, decoded)
                 return
             embedded = _extract_embedded_source_object(value)
@@ -441,9 +453,38 @@ def _normalise_file_map(files: Mapping[str, Any]) -> Dict[str, str]:
             filename = value.get("filename") or value.get("path") or value.get("name")
             content = value.get("content") or value.get("file_content") or value.get("source")
             if filename and isinstance(content, str) and content.strip():
-                out[str(filename).strip().replace("\\", "/")] = content
+                target_name = str(filename).strip().replace("\\", "/")
+                if content.strip().startswith("{"):
+                    try:
+                        decoded = json.loads(content)
+                    except json.JSONDecodeError:
+                        decoded = None
+                    if isinstance(decoded, Mapping) and _is_file_map_like(decoded):
+                        for nested_name, nested_value in decoded.items():
+                            if nested_name in _ROLE_FILENAMES or _looks_like_source_file(str(nested_name)):
+                                add(str(nested_name), nested_value)
+                        return
+                    embedded = _extract_embedded_source_object(content)
+                    if embedded:
+                        out[target_name] = embedded
+                        return
+                out[target_name] = content
                 return
             if isinstance(content, str) and content.strip() and _looks_like_source_file(clean_name):
+                if content.strip().startswith("{"):
+                    try:
+                        decoded = json.loads(content)
+                    except json.JSONDecodeError:
+                        decoded = None
+                    if isinstance(decoded, Mapping) and _is_file_map_like(decoded):
+                        for nested_name, nested_value in decoded.items():
+                            if nested_name in _ROLE_FILENAMES or _looks_like_source_file(str(nested_name)):
+                                add(str(nested_name), nested_value)
+                        return
+                    embedded = _extract_embedded_source_object(content)
+                    if embedded:
+                        out[clean_name] = embedded
+                        return
                 out[clean_name] = content
                 return
             for nested_name, nested_value in value.items():

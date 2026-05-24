@@ -5,8 +5,10 @@ provider; the parser + verifier composition is exhaustively tested
 through `parse_kernel_split_response` + `verify_split_output`.
 """
 
-import pytest
 import asyncio
+import json
+
+import pytest
 
 import agents.kernel_splitter as kernel_splitter
 from agents.gpu_detect import GpuDetectionResult, GpuDetectionEvidence
@@ -269,6 +271,39 @@ def test_normalizes_json_like_file_content_with_literal_newlines():
     parsed = parse_kernel_split_response(raw)
     assert parsed["files"]["core.cpp"].startswith('#include "shared.h"')
     assert 'extern "C" void core_on_update' in parsed["files"]["core.cpp"]
+
+
+def test_normalizes_embedded_file_map_inside_role_content():
+    raw = r'''
+<JSON>{
+  "core": {
+    "filename": "core.cpp",
+    "content": "{\"shared.h\":\"#pragma once\\n#include \\\"synthi_gpu_runtime.h\\\"\",\"core.cpp\":\"#include \\\"shared.h\\\"\\nextern \\\"C\\\" void core_on_update(void*, double) {}\"}"
+  },
+  "gui.cpp": "extern \"C\" void gui_on_render(void*) {}",
+  "host_runner.cpp": "int main(){return 0;}",
+  "device.hip": "__global__ void particle_flow(float* x) {}"
+}</JSON>
+'''
+    parsed = parse_kernel_split_response(raw)
+    assert parsed["files"]["shared.h"].startswith("#pragma once")
+    assert parsed["files"]["core.cpp"].startswith('#include "shared.h"')
+    assert "extern \"C\" void core_on_update" in parsed["files"]["core.cpp"]
+
+
+def test_does_not_compile_embedded_file_map_as_role_source():
+    embedded = json.dumps({"shared.h": "#pragma once\n"})
+    raw = f'''
+<JSON>{{
+  "core": {{"filename": "core.cpp", "content": {json.dumps(embedded)}}},
+  "gui.cpp": "extern \\"C\\" void gui_on_render(void*) {{}}",
+  "host_runner.cpp": "int main(){{return 0;}}",
+  "device.hip": "__global__ void particle_flow(float* x) {{}}"
+}}</JSON>
+'''
+    parsed = parse_kernel_split_response(raw)
+    assert parsed["files"]["shared.h"].startswith("#pragma once")
+    assert "core.cpp" not in parsed["files"]
 
 
 def test_build_prompt_substitutes_user_code():
