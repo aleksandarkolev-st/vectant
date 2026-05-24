@@ -20,6 +20,10 @@ import {
   selectGpuTarget,
   toggleBringYourOwnRunner,
   selectBringYourOwnRunnerEnabled,
+  toggleSidebarAutoCollapse,
+  selectSidebarAutoCollapseEnabled,
+  setSidebarAutoCollapseDelay,
+  selectSidebarAutoCollapseDelay,
 } from '@/redux/uiSlice';
 import { useThemePicker } from '@/components/ThemePicker';
 import { toast } from 'sonner';
@@ -181,6 +185,8 @@ async function runTokenTestPlan(token, onStep) {
 export function SettingsPanelContent() {
   const dispatch = useAppDispatch();
   const autoSaveEnabled = useAppSelector(selectAutoSaveEnabled);
+  const sidebarAutoCollapseEnabled = useAppSelector(selectSidebarAutoCollapseEnabled);
+  const sidebarAutoCollapseDelay = useAppSelector(selectSidebarAutoCollapseDelay);
   const autoCompletionEnabled = useAppSelector(selectAutoCompletionEnabled);
   const gpuTarget = useAppSelector(selectGpuTarget);
   const byorEnabled = useAppSelector(selectBringYourOwnRunnerEnabled);
@@ -275,6 +281,55 @@ export function SettingsPanelContent() {
           />
         </button>
       </div>
+
+      {/* Sidebar auto-collapse — Phase B */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col">
+          <span className="text-sm">Auto-collapse sidebars</span>
+          <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+            Sidebar panels slide closed after your cursor leaves them for a while. Hover back or click an activity-bar icon to bring them back.
+          </span>
+        </div>
+        <button
+          onClick={() => dispatch(toggleSidebarAutoCollapse())}
+          className={`shrink-0 relative inline-flex h-5 w-9 items-center rounded-full transition-all ${sidebarAutoCollapseEnabled ? 'th-toggle-on' : 'th-toggle-off'}`}
+          aria-label={sidebarAutoCollapseEnabled ? 'Disable sidebar auto-collapse' : 'Enable sidebar auto-collapse'}
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm ${
+              sidebarAutoCollapseEnabled ? 'translate-x-5' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
+      {sidebarAutoCollapseEnabled && (
+        <div className="flex items-center justify-between gap-3 pl-0">
+          <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>Collapse delay</span>
+          <div className="flex items-center gap-1">
+            {[
+              { label: 'Fast', ms: 1500 },
+              { label: 'Default', ms: 2500 },
+              { label: 'Slow', ms: 4000 },
+            ].map((opt) => {
+              const active = sidebarAutoCollapseDelay === opt.ms;
+              return (
+                <button
+                  key={opt.ms}
+                  onClick={() => dispatch(setSidebarAutoCollapseDelay(opt.ms))}
+                  className="text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded transition-colors"
+                  style={{
+                    background: active ? 'color-mix(in srgb, var(--attention-purple) 14%, transparent)' : 'transparent',
+                    color: active ? 'var(--attention-purple)' : 'var(--text-muted)',
+                    border: active ? '1px solid color-mix(in srgb, var(--attention-purple) 30%, transparent)' : '1px solid var(--border-subtle)',
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* AI Auto-completion toggle */}
       <div className="flex items-center justify-between">

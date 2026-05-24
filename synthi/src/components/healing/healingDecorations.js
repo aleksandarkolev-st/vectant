@@ -1,19 +1,21 @@
 // src/components/healing/healingDecorations.js
 // Monaco editor decorations for self-healing.
-// Shows subtle visual indicators on lines that were auto-healed,
-// giving the user awareness of what changed without being intrusive.
+// On each fix, we add a brand-tinted sweep across the healed line range
+// and a matching gutter glow. Both auto-decay so the editor returns to
+// calm — no permanent visual debt. Animations and colours live in
+// globals.css under .heal-line-sweep / .heal-gutter-glow.
 
 /**
  * Create decorations for recently healed lines.
- * Shows a small gutter icon and a faint line highlight that fades
- * after a short time.
  *
  * @param {import('monaco-editor').editor.IStandaloneCodeEditor} editor
  * @param {Array<{startLine: number, endLine?: number}>} healedRanges – 1-indexed lines
- * @param {number} [fadeDurationMs=3000] – how long the decoration stays visible
+ * @param {number} [fadeDurationMs=2500] – how long the decoration stays visible.
+ *   Aligned with the 2400ms CSS animation so the decoration is removed
+ *   right as the opacity hits zero, no flash.
  * @returns {{ dispose: () => void }} disposable
  */
-export function showHealingDecorations(editor, healedRanges, fadeDurationMs = 3000) {
+export function showHealingDecorations(editor, healedRanges, fadeDurationMs = 2500) {
   if (!editor || !healedRanges?.length) return { dispose: () => {} };
 
   const monaco = window.monaco || globalThis?.monaco;
@@ -22,30 +24,30 @@ export function showHealingDecorations(editor, healedRanges, fadeDurationMs = 30
   const model = editor.getModel();
   if (!model) return { dispose: () => {} };
 
-  // Build decoration descriptors
+  // Build decoration descriptors. We use BOTH className (for the line
+  // background sweep) and linesDecorationsClassName (for the gutter
+  // glow column) so the eye gets a coordinated signal from two surfaces
+  // without us touching the gutter rendering pipeline directly.
   const decorations = healedRanges.map(({ startLine, endLine }) => ({
     range: new monaco.Range(startLine, 1, endLine || startLine, 1),
     options: {
       isWholeLine: true,
-      className: 'self-healing-line-highlight',
-      glyphMarginClassName: 'self-healing-glyph',
-      glyphMarginHoverMessage: { value: '🩹 Auto-healed by Self-Healing' },
+      className: 'heal-line-sweep',
+      linesDecorationsClassName: 'heal-gutter-glow',
       overviewRuler: {
-        color: 'rgba(74, 222, 128, 0.4)', // green tint
+        color: 'rgba(162, 61, 255, 0.45)', // --brand-stop-3
         position: monaco.editor.OverviewRulerLane.Right,
       },
       minimap: {
-        color: 'rgba(74, 222, 128, 0.3)',
+        color: 'rgba(162, 61, 255, 0.32)',
         position: monaco.editor.MinimapPosition.Inline,
       },
       stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
     },
   }));
 
-  // Apply decorations
   const decorationIds = editor.deltaDecorations([], decorations);
 
-  // Auto-fade after duration
   const timer = setTimeout(() => {
     try {
       editor.deltaDecorations(decorationIds, []);
@@ -67,35 +69,17 @@ export function showHealingDecorations(editor, healedRanges, fadeDurationMs = 30
 }
 
 /**
- * CSS that should be injected into the page for healing decorations.
- * Call once when the editor mounts.
+ * No-op kept for callers — animations and styling now live in
+ * globals.css (`.heal-line-sweep`, `.heal-gutter-glow`). Retained so
+ * existing import sites don't break.
  */
 export function injectHealingStyles() {
-  if (typeof document === 'undefined') return;
-  const STYLE_ID = 'self-healing-decorations-css';
-  if (document.getElementById(STYLE_ID)) return;
-
-  const style = document.createElement('style');
-  style.id = STYLE_ID;
-  style.textContent = `
-    .self-healing-line-highlight {
-      background: rgba(74, 222, 128, 0.06) !important;
-      border-left: 2px solid rgba(74, 222, 128, 0.4);
-      transition: opacity 0.5s ease-out;
-    }
-    .self-healing-glyph {
-      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Ctext x='2' y='13' font-size='12'%3E🩹%3C/text%3E%3C/svg%3E") center center no-repeat;
-      background-size: 14px 14px;
-    }
-  `;
-  document.head.appendChild(style);
+  // Styles are bundled with the app's globals.css; nothing to inject.
 }
 
 /**
- * Remove the injected CSS for healing decorations.
+ * No-op kept for callers — see injectHealingStyles.
  */
 export function removeHealingStyles() {
-  if (typeof document === 'undefined') return;
-  const el = document.getElementById('self-healing-decorations-css');
-  if (el) el.remove();
+  // Styles are bundled with the app's globals.css; nothing to remove.
 }

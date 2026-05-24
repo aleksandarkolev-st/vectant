@@ -5,7 +5,7 @@
 
 "use client";
 
-import React, { useCallback, memo } from "react";
+import React, { useCallback, useEffect, useRef, memo } from "react";
 import { useDragPanel } from "../hooks/use-drag-panel";
 import { useDockingActions } from "../hooks/use-docking";
 
@@ -90,9 +90,41 @@ export const Tab = memo(function Tab({
   // Get icon from registry
   const icon = tab.icon || panelDef?.icon;
 
+  // The editor panel is a meta-container; its content already provides
+  // its own file-tab strip. We never want the docking system to show
+  // an "Editor" tab on top of it, regardless of whatever title may have
+  // been persisted to localStorage from earlier sessions.
+  if (tab.panelType === 'editor') {
+    return null;
+  }
+
+  // Scroll the tab into view whenever it becomes active — covers the case
+  // where the user clicks an ActivityBar icon while that panel's tab is
+  // off-screen in an overflowing sidebar tab bar.
+  const tabElRef = useRef(null);
+  useEffect(() => {
+    if (isActive && tabElRef.current?.scrollIntoView) {
+      tabElRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'nearest',
+      });
+    }
+  }, [isActive]);
+
+  const composedRef = (el) => {
+    tabElRef.current = el;
+    if (typeof dragProps.ref === 'function') dragProps.ref(el);
+    else if (dragProps.ref) dragProps.ref.current = el;
+  };
+
+  // Strip ref from dragProps so we can compose our own
+  const { ref: _dropDragRef, ...restDragProps } = dragProps;
+
   return (
     <div
-      {...dragProps}
+      {...restDragProps}
+      ref={composedRef}
       data-tab-id={tab.id}
       className={`dock-tab ${isActive ? "dock-tab--active" : ""} ${
         isDragging ? "dock-tab--dragging" : ""
@@ -107,8 +139,9 @@ export const Tab = memo(function Tab({
         display: "flex",
         alignItems: "center",
         gap: "6px",
-        height: "100%",
-        padding: "0 10px",
+        height: "calc(100% - 4px)",
+        margin: "4px 0 0",
+        padding: "0 12px",
         fontSize: "12px",
         color: isActive
           ? "var(--dock-tab-active-fg, #fff)"
@@ -116,11 +149,14 @@ export const Tab = memo(function Tab({
         backgroundColor: isActive
           ? "var(--dock-tab-active-bg, #1e1e1e)"
           : "transparent",
-        borderBottom:
-          isActive && isFocusedGroup
-            ? "1px solid var(--dock-accent, #007acc)"
-            : "1px solid transparent",
-        cursor: "pointer",
+        border: isActive
+          ? "1px solid var(--dock-tab-active-border, rgba(58, 133, 116, 0.24))"
+          : "1px solid transparent",
+        borderRadius: 0,
+        boxShadow: isActive
+          ? "inset 0 1px 0 color-mix(in srgb, white 6%, transparent)"
+          : "none",
+        cursor: isFixed ? "pointer" : isDragging ? "grabbing" : "grab",
         userSelect: "none",
         opacity: isDragging ? 0.5 : 1,
         whiteSpace: "nowrap",
@@ -137,15 +173,19 @@ export const Tab = memo(function Tab({
         />
       )}
 
-      {/* Title */}
-      <span
-        style={{
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}
-      >
-        {tab.title}
-      </span>
+      {/* Title — hidden when empty (meta-container panels like the
+          Editor wrapper rely only on the icon since their content
+          carries its own tab strip). */}
+      {tab.title && (
+        <span
+          style={{
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {tab.title}
+        </span>
+      )}
 
       {/* Pin indicator */}
       {tab.pinned && (
@@ -167,19 +207,19 @@ export const Tab = memo(function Tab({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            width: "18px",
-            height: "18px",
+            width: "16px",
+            height: "16px",
             padding: 0,
             border: "none",
             borderRadius: "3px",
             backgroundColor: "transparent",
             color: "inherit",
             cursor: "pointer",
-            opacity: isActive ? 0.7 : 0,
+            opacity: isActive ? 0.72 : 0,
             flexShrink: 0,
             marginLeft: "2px",
             marginRight: "-4px",
-            transition: "opacity 0.1s",
+            transition: "opacity 0.16s ease",
           }}
         >
           <svg width="10" height="10" viewBox="0 0 10 10">

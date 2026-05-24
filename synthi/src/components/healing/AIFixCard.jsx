@@ -82,6 +82,13 @@ function ConfidenceBadge({ confidence }) {
 export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
   const [expanded, setExpanded] = useState(false);
   const [richDiff, setRichDiff] = useState(false);
+  // `applied` gates the brief celebratory state between user click and
+  // parent unmount. The card flashes the brand glow, the Apply button
+  // morphs from spinner-ready to a drawn check, then the parent removes
+  // the card from the list. We delay the parent call so the animation
+  // is visible — total window is ~400ms which is well under the user's
+  // "rapid-fire fix" threshold of 500ms per acknowledgement.
+  const [applied, setApplied] = useState(false);
 
   const severity = fix.severity || 'moderate';
   const meta = getSeverityMeta(severity);
@@ -96,7 +103,12 @@ export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
   const originalText = fix.original_text || fix.originalText || '';
   const replacementText = fix.replacement_text || fix.replacementText || '';
 
-  const handleApply = useCallback(() => onApply?.(fix), [fix, onApply]);
+  const handleApply = useCallback(() => {
+    if (applied) return;
+    setApplied(true);
+    // Let the check-draw + flash play before the parent removes us.
+    window.setTimeout(() => onApply?.(fix), 380);
+  }, [applied, fix, onApply]);
   const handleDismiss = useCallback(() => onDismiss?.(fix), [fix, onDismiss]);
   const handleSuppressRule = useCallback(() => {
     if (ruleId) onSuppressRule?.(ruleId, fix);
@@ -105,7 +117,7 @@ export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
 
   return (
     <div
-      className={`rounded-md border ${meta.border} ${meta.bg} p-3 mb-2 transition-all`}
+      className={`rounded-md border ${meta.border} ${meta.bg} p-3 mb-2 transition-all ${applied ? 'heal-applied-flash' : ''}`}
       role="listitem"
     >
       {/* ── Header ──────────────────────────────────────────────── */}
@@ -198,11 +210,30 @@ export function AIFixCard({ fix, onApply, onDismiss, onSuppressRule, index }) {
       <div className="flex items-center gap-2 mt-2">
         <button
           onClick={handleApply}
-          className="flex items-center gap-1 text-xs bg-green-600/30 hover:bg-green-600/50 text-green-300 px-2.5 py-1 rounded transition-colors"
+          disabled={applied}
+          className="flex items-center gap-1 text-xs bg-green-600/30 hover:bg-green-600/50 text-green-300 px-2.5 py-1 rounded transition-colors disabled:cursor-default"
           title="Apply this fix"
         >
-          <Check size={12} />
-          Apply
+          {applied ? (
+            /* Drawn check — SVG stroke animates via .heal-check-morph */
+            <svg
+              className="heal-check-morph"
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M5 12l5 5L20 7" />
+            </svg>
+          ) : (
+            <Check size={12} />
+          )}
+          {applied ? 'Applied' : 'Apply'}
         </button>
         <button
           onClick={handleDismiss}

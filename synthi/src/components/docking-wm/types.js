@@ -183,5 +183,5 @@ export const DROP_ZONE_EDGE_THRESHOLD = 0.25; // 25% from edge triggers split
 export const DRAG_START_THRESHOLD = 8; // pixels before drag starts
 export const FLOATING_MIN_WIDTH = 200;
 export const FLOATING_MIN_HEIGHT = 150;
-export const TAB_HEIGHT = 35; // pixels
+export const TAB_HEIGHT = 30; // pixels
 export const POPOUT_CHANNEL_NAME = 'synthi-docking-popout';
