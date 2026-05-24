@@ -45,7 +45,7 @@ use regex::Regex;
 #[cfg(feature = "gpu-hmr")]
 use sha2::{Digest, Sha256};
 #[cfg(feature = "gpu-hmr")]
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 #[cfg(feature = "gpu-hmr")]
 use tokio::io::AsyncReadExt;
@@ -100,6 +100,7 @@ pub struct DeviceCompileOutcome {
     pub selected_artifact_kind: Option<String>,
     pub selected_artifact_bytes: Option<usize>,
     pub full_device_bytes: Option<usize>,
+    pub artifact_exported_symbols: Vec<String>,
     /// Parsed ptxas/nvlink diagnostics — empty for ROCm (Phase 0).
     pub diagnostics: GpuToolchainDiagnostics,
     /// Raw stderr from the device compiler — preserved verbatim for the
@@ -269,6 +270,8 @@ async fn compile_device_inner(
             if restore_cached_device_artifact(workspace_dir, &cache_key.cache_key, &artifact_path)
                 .await?
             {
+                let artifact_exported_symbols =
+                    inspect_device_artifact_exported_symbols(gpu.vendor, &artifact_path).await;
                 eprintln!(
                     "[compile-device] artifact cache hit key={} dependency_hash={} dependency_method={} compile_command_hash={} artifact={}",
                     cache_key.cache_key,
@@ -289,6 +292,7 @@ async fn compile_device_inner(
                     selected_artifact_kind: None,
                     selected_artifact_bytes: None,
                     full_device_bytes: None,
+                    artifact_exported_symbols,
                     diagnostics: GpuToolchainDiagnostics::default(),
                     stderr: String::new(),
                 }));
@@ -316,6 +320,8 @@ async fn compile_device_inner(
                 compile.elapsed_ms,
                 compile.diagnostics.register_pressure.len()
             );
+            let artifact_exported_symbols =
+                inspect_device_artifact_exported_symbols(gpu.vendor, &artifact_path).await;
 
             if let Some(cache_key) = cache_key.as_ref() {
                 if let Err(e) =
@@ -337,6 +343,7 @@ async fn compile_device_inner(
                 selected_artifact_kind: None,
                 selected_artifact_bytes: None,
                 full_device_bytes: None,
+                artifact_exported_symbols,
                 diagnostics: compile.diagnostics,
                 stderr: compile.stderr,
             }));
@@ -2119,6 +2126,129 @@ async fn normalize_rocm_artifact_if_bundled(artifact_path: &Path) -> Result<()> 
 }
 
 #[cfg(feature = "gpu-hmr")]
+async fn inspect_device_artifact_exported_symbols(
+    vendor: DeviceVendor,
+    artifact_path: &Path,
+) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if vendor == DeviceVendor::Rocm {
+        candidates.push("/opt/rocm/llvm/bin/llvm-readobj".to_string());
+    }
+    candidates.push("llvm-readobj".to_string());
+
+    for tool in candidates {
+        let mut cmd = crate::infra::utils::system_command(&tool);
+        cmd.arg("--symbols").arg(artifact_path).kill_on_drop(true);
+        let output = match timeout(Duration::from_secs(10), cmd.output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(_)) => continue,
+            Err(_) => {
+                eprintln!(
+                    "[compile-device] artifact symbol inspection timed out tool={} artifact={}",
+                    tool,
+                    artifact_path.display()
+                );
+                continue;
+            }
+        };
+        if !output.status.success() {
+            continue;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut symbols = parse_llvm_readobj_exported_function_symbols(&stdout);
+        if symbols.is_empty() {
+            symbols = parse_llvm_readobj_exported_function_symbols(&stderr);
+        }
+        eprintln!(
+            "[compile-device] artifact symbol inspection producer={} exported_symbols={} artifact={}",
+            tool,
+            if symbols.is_empty() {
+                "-".to_string()
+            } else {
+                symbols.join(",")
+            },
+            artifact_path.display()
+        );
+        if !symbols.is_empty() {
+            return symbols;
+        }
+    }
+
+    eprintln!(
+        "[compile-device] artifact symbol inspection unavailable vendor={} artifact={}",
+        vendor.as_str(),
+        artifact_path.display()
+    );
+    Vec::new()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn parse_llvm_readobj_exported_function_symbols(raw: &str) -> Vec<String> {
+    let mut symbols = BTreeSet::new();
+    let mut in_symbol = false;
+    let mut name: Option<String> = None;
+    let mut is_global = false;
+    let mut is_function = false;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed == "Symbol {" {
+            in_symbol = true;
+            name = None;
+            is_global = false;
+            is_function = false;
+            continue;
+        }
+        if !in_symbol {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("Name:") {
+            name = readobj_symbol_name(rest);
+        } else if let Some(rest) = trimmed.strip_prefix("Binding:") {
+            is_global = rest.contains("Global") || rest.contains("Weak");
+        } else if let Some(rest) = trimmed.strip_prefix("Type:") {
+            is_function = rest.contains("Function");
+        } else if trimmed == "}" {
+            if is_global && is_function {
+                if let Some(symbol) = name.take().filter(|symbol| is_device_export_symbol(symbol)) {
+                    symbols.insert(symbol);
+                }
+            }
+            in_symbol = false;
+        }
+    }
+
+    symbols.into_iter().collect()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn readobj_symbol_name(rest: &str) -> Option<String> {
+    let trimmed = rest.trim();
+    if trimmed.is_empty() || trimmed.starts_with('(') {
+        return None;
+    }
+    let name = trimmed
+        .split_once(" (")
+        .map(|(name, _)| name)
+        .unwrap_or(trimmed)
+        .trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn is_device_export_symbol(symbol: &str) -> bool {
+    !symbol.is_empty()
+        && symbol != "_DYNAMIC"
+        && !symbol.starts_with("__hip_cuid_")
+        && !symbol.ends_with(".kd")
+}
+
+#[cfg(feature = "gpu-hmr")]
 async fn has_clang_offload_bundle_header(path: &Path) -> Result<bool> {
     const HEADER: &[u8] = b"__CLANG_OFFLOAD_BUNDLE__";
     let mut file = tokio::fs::File::open(path)
@@ -2399,6 +2529,45 @@ mod tests {
                 "src/kernel body.h",
                 "/opt/rocm/include/hip/hip_runtime.h",
             ]
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn readobj_symbol_parser_keeps_only_exported_functions() {
+        let raw = r#"
+Symbols [
+  Symbol {
+    Name: helper (1)
+    Binding: Local (0x0)
+    Type: Function (0x2)
+  }
+  Symbol {
+    Name: shade.private_seg_size (12)
+    Binding: Local (0x0)
+    Type: None (0x0)
+  }
+  Symbol {
+    Name: shade (32)
+    Binding: Global (0x1)
+    Type: Function (0x2)
+  }
+  Symbol {
+    Name: shade.kd (45)
+    Binding: Global (0x1)
+    Type: Object (0x1)
+  }
+  Symbol {
+    Name: __hip_cuid_deadbeef (52)
+    Binding: Global (0x1)
+    Type: Object (0x1)
+  }
+]
+"#;
+
+        assert_eq!(
+            parse_llvm_readobj_exported_function_symbols(raw),
+            vec!["shade".to_string()]
         );
     }
 

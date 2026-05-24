@@ -1699,6 +1699,7 @@ async fn compile_device_sources_phase0(
                         .or_else(|| Some("partial_device".to_string()));
                     outcome.selected_artifact_bytes = Some(partial_source.len());
                     outcome.full_device_bytes = Some(sources.full_source.len());
+                    validate_partial_device_artifact_exports(&outcome)?;
                     return Ok(Some(outcome));
                 }
                 Ok(None) => {
@@ -1781,6 +1782,49 @@ async fn compile_device_sources_phase0(
         outcome.full_device_bytes = Some(sources.full_source.len());
     }
     Ok(outcome)
+}
+
+fn validate_partial_device_artifact_exports(outcome: &DeviceCompileOutcome) -> Result<()> {
+    if !outcome.partial_module {
+        return Ok(());
+    }
+    let expected = normalized_symbol_set(&outcome.target_symbols);
+    if expected.is_empty() {
+        anyhow::bail!("partial GPU artifact has no expected symbols");
+    }
+    let exported = normalized_symbol_set(&outcome.artifact_exported_symbols);
+    if exported.is_empty() {
+        anyhow::bail!("partial GPU artifact symbol inspection unavailable or empty");
+    }
+
+    let missing = expected
+        .difference(&exported)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "partial GPU artifact missing expected symbols: {}",
+            missing.join(",")
+        );
+    }
+
+    let unexpected = exported
+        .difference(&expected)
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unexpected.is_empty() {
+        anyhow::bail!(
+            "partial GPU artifact exports unexpected symbols: {}",
+            unexpected.join(",")
+        );
+    }
+
+    eprintln!(
+        "[compile-device] artifact symbol ownership status=ok expected_symbols={} exported_symbols={}",
+        expected.into_iter().collect::<Vec<_>>().join(","),
+        exported.into_iter().collect::<Vec<_>>().join(",")
+    );
+    Ok(())
 }
 
 fn device_hmr_result_label(outcome: &DeviceCompileOutcome) -> &'static str {
@@ -7101,6 +7145,7 @@ mod gpu_host_contract_tests {
             selected_artifact_kind: Some("full_device".to_string()),
             selected_artifact_bytes: Some(4096),
             full_device_bytes: Some(4096),
+            artifact_exported_symbols: Vec::new(),
             diagnostics:
                 crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
             stderr: String::new(),
@@ -7114,6 +7159,30 @@ mod gpu_host_contract_tests {
             outcome.fallback_reason.as_deref(),
             Some("partial_compile_failed")
         );
+    }
+
+    #[test]
+    fn partial_artifact_export_validation_rejects_unknown_symbols() {
+        let outcome = DeviceCompileOutcome {
+            artifact_path: std::path::PathBuf::from("/tmp/device.hsaco"),
+            compiled_source: String::new(),
+            compiler_elapsed_ms: 0,
+            partial_module: true,
+            target_symbols: vec!["shade".to_string()],
+            fallback_used: false,
+            fallback_reason: None,
+            requested_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_bytes: Some(128),
+            full_device_bytes: Some(1024),
+            artifact_exported_symbols: vec!["shade".to_string(), "foreign".to_string()],
+            diagnostics:
+                crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
+            stderr: String::new(),
+        };
+
+        let err = validate_partial_device_artifact_exports(&outcome).unwrap_err();
+        assert!(err.to_string().contains("unexpected symbols"));
     }
 
     #[test]
