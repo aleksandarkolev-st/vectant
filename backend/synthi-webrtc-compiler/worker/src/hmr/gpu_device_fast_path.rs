@@ -163,6 +163,25 @@ pub fn try_direct_device_body_patch(
         );
     }
 
+    if let Some(reason) = strict_body_only_rejection(&old_user_source, new_user_source) {
+        let evidence = fast_path_verifier_evidence(
+            sidecar,
+            Some(&old_user_source),
+            Some(new_user_source),
+            Some(generated_device_source),
+            Some(parser_status.report.clone()),
+            changed_span(&old_user_source, new_user_source).as_ref(),
+            None,
+            Some(reason),
+        );
+        return DeviceFastPathResult::rejected_strings_with_evidence(
+            vec![reason.to_string()],
+            &user_path,
+            mapped_generated_device_path(sidecar, &user_path).as_deref(),
+            evidence,
+        );
+    }
+
     let mappings = mappings_for_source(sidecar, &user_path);
     if mappings.is_empty() {
         let evidence = fast_path_verifier_evidence(
@@ -273,21 +292,37 @@ pub fn try_direct_device_body_patch(
         let mut replacement_text = new_segment.to_string();
         let mut replaced_len = old_segment.len();
         let generated_relative = if !old_segment.is_empty() {
-            unique_substr_offset(generated_body, old_segment).or_else(|| {
+            let statement_anchor = new_regions.get(symbol).and_then(|new_region| {
                 statement_patch_anchor(
                     &old_user_source,
                     new_user_source,
                     generated_body,
                     old_region,
-                    new_regions.get(symbol)?,
+                    new_region,
                     &delta,
                 )
-                .map(|anchor| {
+            });
+            let statement_anchor_matches_generated_drift =
+                statement_anchor.as_ref().is_some_and(|anchor| {
+                    generated_body
+                        .get(anchor.relative_start..anchor.relative_start + anchor.old_len)
+                        .is_some_and(|generated_statement| generated_statement != anchor.source_old)
+                });
+            if old_segment.trim().len() <= 2 && statement_anchor_matches_generated_drift {
+                statement_anchor.map(|anchor| {
                     replacement_text = anchor.replacement;
                     replaced_len = anchor.old_len;
                     anchor.relative_start
                 })
-            })
+            } else {
+                unique_substr_offset(generated_body, old_segment).or_else(|| {
+                    statement_anchor.map(|anchor| {
+                        replacement_text = anchor.replacement;
+                        replaced_len = anchor.old_len;
+                        anchor.relative_start
+                    })
+                })
+            }
         } else if body_offset <= generated_body.len() {
             Some(body_offset)
         } else {
@@ -679,6 +714,22 @@ fn fast_path_verifier_report(
     generated_path: Option<&str>,
     evidence: Value,
 ) -> Value {
+    let verifier_evidence_id = sha256_hex(&format!(
+        "{}|{}|{}|{}|{}",
+        status,
+        selected_plan,
+        user_path,
+        generated_path.unwrap_or(""),
+        evidence
+    ));
+    let include_graph_root_changed = evidence
+        .pointer("/includeGraphRoot/changed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let macro_controlled_abi_uncertain = evidence
+        .pointer("/directiveDiff/macroDirectivesChanged")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     json!({
         "schemaVersion": "synthi.gpu.device_fast_path_verifier.v1",
         "status": status,
@@ -687,6 +738,9 @@ fn fast_path_verifier_report(
         "reasonCodes": reason_codes,
         "userFile": user_path,
         "generatedRole": generated_path,
+        "verifierEvidenceId": verifier_evidence_id,
+        "includeGraphRootChanged": include_graph_root_changed,
+        "macroControlledAbiUncertain": macro_controlled_abi_uncertain,
         "evidence": evidence,
     })
 }
@@ -703,7 +757,14 @@ fn fast_path_verifier_evidence(
 ) -> Value {
     json!({
         "kernelSignature": kernel_signature_evidence(old_user_source, new_user_source),
+        "deviceFunctionSignature": device_function_signature_evidence(old_user_source, new_user_source),
+        "typeLayout": type_layout_evidence(old_user_source, new_user_source),
         "constantGlobalLayout": constant_global_layout_evidence(old_user_source, new_user_source),
+        "staticConstexprData": static_constexpr_data_evidence(old_user_source, new_user_source),
+        "directiveDiff": directive_diff_evidence(old_user_source, new_user_source),
+        "includeGraphRoot": include_graph_root_evidence(old_user_source, new_user_source),
+        "declarationSurface": declaration_surface_evidence(old_user_source, new_user_source),
+        "affectedSymbols": affected_symbol_evidence(old_user_source, new_user_source),
         "generatedDeviceSourceHash": generated_device_source.map(sha256_hex),
         "changedUserSpan": changed_user_span.map(body_delta_json).unwrap_or(Value::Null),
         "mappedGeneratedSpan": mapped_generated_span.unwrap_or(Value::Null),
@@ -758,6 +819,130 @@ fn constant_global_layout_evidence(before: Option<&str>, after: Option<&str>) ->
         "beforeHash": before_hash,
         "afterHash": after_hash,
     })
+}
+
+fn device_function_signature_evidence(before: Option<&str>, after: Option<&str>) -> Value {
+    let before_snapshot = before
+        .map(device_function_signature_snapshot)
+        .unwrap_or(Value::Null);
+    let after_snapshot = after
+        .map(device_function_signature_snapshot)
+        .unwrap_or(Value::Null);
+    let changed = match (before, after) {
+        (Some(before), Some(after)) => {
+            Value::Bool(device_function_signature_hash(before) != device_function_signature_hash(after))
+        }
+        _ => Value::Null,
+    };
+    json!({
+        "changed": changed,
+        "before": before_snapshot,
+        "after": after_snapshot,
+    })
+}
+
+fn device_function_signature_snapshot(source: &str) -> Value {
+    json!({
+        "hash": device_function_signature_hash(source),
+        "signatures": device_function_signatures(source),
+    })
+}
+
+fn type_layout_evidence(before: Option<&str>, after: Option<&str>) -> Value {
+    let before_hash = before.map(type_layout_hash);
+    let after_hash = after.map(type_layout_hash);
+    let changed = match (&before_hash, &after_hash) {
+        (Some(before), Some(after)) => Value::Bool(before != after),
+        _ => Value::Null,
+    };
+    json!({
+        "changed": changed,
+        "beforeHash": before_hash,
+        "afterHash": after_hash,
+    })
+}
+
+fn static_constexpr_data_evidence(before: Option<&str>, after: Option<&str>) -> Value {
+    let before_hash = before.map(static_constexpr_data_hash);
+    let after_hash = after.map(static_constexpr_data_hash);
+    let changed = match (&before_hash, &after_hash) {
+        (Some(before), Some(after)) => Value::Bool(before != after),
+        _ => Value::Null,
+    };
+    json!({
+        "changed": changed,
+        "beforeHash": before_hash,
+        "afterHash": after_hash,
+    })
+}
+
+fn directive_diff_evidence(before: Option<&str>, after: Option<&str>) -> Value {
+    let before_summary = before.map(directive_summary).unwrap_or(Value::Null);
+    let after_summary = after.map(directive_summary).unwrap_or(Value::Null);
+    let include_changed = match (before, after) {
+        (Some(before), Some(after)) => {
+            Value::Bool(include_directive_hash(before) != include_directive_hash(after))
+        }
+        _ => Value::Null,
+    };
+    let macro_changed = match (before, after) {
+        (Some(before), Some(after)) => {
+            Value::Bool(macro_directive_hash(before) != macro_directive_hash(after))
+        }
+        _ => Value::Null,
+    };
+    json!({
+        "includeDirectivesChanged": include_changed,
+        "macroDirectivesChanged": macro_changed,
+        "before": before_summary,
+        "after": after_summary,
+    })
+}
+
+fn include_graph_root_evidence(before: Option<&str>, after: Option<&str>) -> Value {
+    let before_roots = before.map(include_graph_roots).unwrap_or_default();
+    let after_roots = after.map(include_graph_roots).unwrap_or_default();
+    let changed = match (before, after) {
+        (Some(_), Some(_)) => Value::Bool(before_roots != after_roots),
+        _ => Value::Null,
+    };
+    json!({
+        "changed": changed,
+        "beforeRoots": before_roots,
+        "afterRoots": after_roots,
+    })
+}
+
+fn declaration_surface_evidence(before: Option<&str>, after: Option<&str>) -> Value {
+    let snapshot = |source: &str| {
+        json!({
+            "templateHash": template_declaration_hash(source),
+            "usingHash": using_declaration_hash(source),
+            "typeAliasHash": type_alias_hash(source),
+            "externHash": extern_declaration_hash(source),
+            "namespaceHash": namespace_declaration_hash(source),
+        })
+    };
+    let before_snapshot = before.map(snapshot).unwrap_or(Value::Null);
+    let after_snapshot = after.map(snapshot).unwrap_or(Value::Null);
+    let changed = match (before, after) {
+        (Some(before), Some(after)) => {
+            Value::Bool(declaration_surface_hash(before) != declaration_surface_hash(after))
+        }
+        _ => Value::Null,
+    };
+    json!({
+        "changed": changed,
+        "before": before_snapshot,
+        "after": after_snapshot,
+    })
+}
+
+fn affected_symbol_evidence(before: Option<&str>, after: Option<&str>) -> Value {
+    match (before, after) {
+        (Some(before), Some(after)) => json!(changed_kernel_body_symbols(before, after)),
+        _ => Value::Null,
+    }
 }
 
 fn compile_metadata_evidence(sidecar: &Value) -> Value {
@@ -890,6 +1075,76 @@ pub fn changed_kernel_body_symbols(old_source: &str, new_source: &str) -> Vec<St
     changed
 }
 
+fn device_function_signatures(source: &str) -> BTreeMap<String, Vec<String>> {
+    let mut signatures: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (region_key, region) in device_function_regions(source) {
+        let name = region_key
+            .split('@')
+            .next()
+            .unwrap_or(region_key.as_str())
+            .to_string();
+        signatures
+            .entry(name)
+            .or_default()
+            .push(normalize_signature(&region.signature));
+    }
+    for values in signatures.values_mut() {
+        values.sort();
+    }
+    signatures
+}
+
+fn device_function_signature_hash(source: &str) -> String {
+    let material = device_function_signatures(source)
+        .into_iter()
+        .map(|(symbol, signatures)| format!("{symbol}:{}", signatures.join(",")))
+        .collect::<Vec<_>>()
+        .join("|");
+    sha256_hex(&material)
+}
+
+fn device_function_regions(source: &str) -> BTreeMap<String, KernelRegion> {
+    let re = Regex::new(
+        r#"(?:(?:__host__\s+__device__|__device__\s+__host__|__device__|HIPRT_DEVICE|HIPRT_HOST_DEVICE|HIPRT_INLINE)\s+)+(?:[A-Za-z_][A-Za-z0-9_:<>,\s*&~]*\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\("#,
+    )
+    .expect("device function regex");
+    let masked = mask_comments_preserving_len(source);
+    let mut out = BTreeMap::new();
+    for captures in re.captures_iter(&masked) {
+        let Some(matched) = captures.get(0) else {
+            continue;
+        };
+        let Some(name) = captures.get(1).map(|m| m.as_str().to_string()) else {
+            continue;
+        };
+        if name == "if" || name == "for" || name == "while" || name == "switch" {
+            continue;
+        }
+        let open = matched.end() - 1;
+        let Some((params, after_params)) = read_balanced(source, open, b'(', b')') else {
+            continue;
+        };
+        let Some(body_open) = next_function_body_open(source, after_params) else {
+            continue;
+        };
+        let Some((_body, body_close)) = read_balanced(source, body_open, b'{', b'}') else {
+            continue;
+        };
+        let key = format!("{name}@{}", matched.start());
+        out.insert(
+            key,
+            KernelRegion {
+                signature: params,
+                start: matched.start(),
+                body_start: body_open + 1,
+                body_end: body_close.saturating_sub(1),
+                end: body_close,
+            },
+        );
+    }
+    out
+}
+
 pub(crate) fn device_header_kernel_body_only_edit_symbol(
     old_source: &str,
     new_source: &str,
@@ -898,6 +1153,9 @@ pub(crate) fn device_header_kernel_body_only_edit_symbol(
         return None;
     }
     if constant_global_layout_hash(old_source) != constant_global_layout_hash(new_source) {
+        return None;
+    }
+    if strict_body_only_rejection(old_source, new_source).is_some() {
         return None;
     }
     let delta = changed_span(old_source, new_source)?;
@@ -1009,6 +1267,156 @@ fn mask_comments_preserving_len(source: &str) -> String {
         }
     }
     String::from_utf8(masked).unwrap_or_else(|_| source.to_string())
+}
+
+fn source_without_function_regions(source: &str) -> String {
+    let mut ranges = kernel_regions(source)
+        .into_values()
+        .chain(device_function_regions(source).into_values())
+        .map(|region| (region.start, region.end))
+        .collect::<Vec<_>>();
+    ranges.sort();
+    let mut bytes = source.as_bytes().to_vec();
+    for (start, end) in ranges {
+        let start = start.min(bytes.len());
+        let end = end.min(bytes.len());
+        if start >= end {
+            continue;
+        }
+        for byte in &mut bytes[start..end] {
+            if *byte != b'\n' && *byte != b'\r' {
+                *byte = b' ';
+            }
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|_| source.to_string())
+}
+
+fn normalized_surface_lines_matching(source: &str, pattern: &Regex) -> Vec<String> {
+    let surface = source_without_function_regions(source);
+    let masked = mask_comments_preserving_len(&surface);
+    surface
+        .lines()
+        .zip(masked.lines())
+        .filter_map(|(line, masked_line)| {
+            if pattern.is_match(masked_line) {
+                Some(collapse_ws(line.trim()))
+            } else {
+                None
+            }
+        })
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
+fn hash_lines(lines: Vec<String>) -> String {
+    sha256_hex(&lines.join("\n"))
+}
+
+fn include_graph_roots(source: &str) -> Vec<String> {
+    let include_re =
+        Regex::new(r#"^\s*#\s*include\s*(?P<path><[^>]+>|"[^"]+")"#).expect("include regex");
+    let mut roots = source
+        .lines()
+        .filter_map(|line| {
+            include_re
+                .captures(line)
+                .and_then(|caps| caps.name("path"))
+                .map(|m| m.as_str().trim_matches(['<', '>', '"']).replace('\\', "/"))
+        })
+        .collect::<Vec<_>>();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn include_directive_hash(source: &str) -> String {
+    let re = Regex::new(r#"^\s*#\s*include\b"#).expect("include directive regex");
+    hash_lines(normalized_surface_lines_matching(source, &re))
+}
+
+fn macro_directive_hash(source: &str) -> String {
+    let re = Regex::new(r#"^\s*#\s*(define|undef)\b"#).expect("macro directive regex");
+    hash_lines(normalized_surface_lines_matching(source, &re))
+}
+
+fn directive_summary(source: &str) -> Value {
+    let include_re = Regex::new(r#"^\s*#\s*include\b"#).expect("include directive regex");
+    let macro_re = Regex::new(r#"^\s*#\s*(define|undef)\b"#).expect("macro directive regex");
+    json!({
+        "includeHash": include_directive_hash(source),
+        "macroHash": macro_directive_hash(source),
+        "includeCount": normalized_surface_lines_matching(source, &include_re).len(),
+        "macroCount": normalized_surface_lines_matching(source, &macro_re).len(),
+    })
+}
+
+fn template_declaration_hash(source: &str) -> String {
+    let re = Regex::new(r#"\btemplate\s*<"#).expect("template regex");
+    hash_lines(normalized_surface_lines_matching(source, &re))
+}
+
+fn using_declaration_hash(source: &str) -> String {
+    let re = Regex::new(r#"\busing\b"#).expect("using regex");
+    hash_lines(normalized_surface_lines_matching(source, &re))
+}
+
+fn type_alias_hash(source: &str) -> String {
+    let re = Regex::new(r#"\b(typedef|using\b[^;{]*=)"#).expect("type alias regex");
+    hash_lines(normalized_surface_lines_matching(source, &re))
+}
+
+fn extern_declaration_hash(source: &str) -> String {
+    let re = Regex::new(r#"\bextern\b"#).expect("extern regex");
+    hash_lines(normalized_surface_lines_matching(source, &re))
+}
+
+fn namespace_declaration_hash(source: &str) -> String {
+    let re = Regex::new(r#"\bnamespace\b"#).expect("namespace regex");
+    hash_lines(normalized_surface_lines_matching(source, &re))
+}
+
+fn declaration_surface_hash(source: &str) -> String {
+    sha256_hex(&format!(
+        "{}|{}|{}|{}|{}",
+        template_declaration_hash(source),
+        using_declaration_hash(source),
+        type_alias_hash(source),
+        extern_declaration_hash(source),
+        namespace_declaration_hash(source),
+    ))
+}
+
+fn static_constexpr_data_hash(source: &str) -> String {
+    let re =
+        Regex::new(r#"\b(static|constexpr)\b[^;{()]*;"#).expect("static constexpr data regex");
+    hash_lines(normalized_surface_lines_matching(source, &re))
+}
+
+fn type_layout_hash(source: &str) -> String {
+    let surface = source_without_function_regions(source);
+    let masked = mask_comments_preserving_len(&surface);
+    let re = Regex::new(r#"\b(struct|class|union)\s+[A-Za-z_][A-Za-z0-9_]*[^;{]*\{"#)
+        .expect("type layout regex");
+    let mut layouts = Vec::new();
+    for matched in re.find_iter(&masked) {
+        let open = matched.end().saturating_sub(1);
+        let Some((_body, close)) = read_balanced(&surface, open, b'{', b'}') else {
+            continue;
+        };
+        let mut end = close;
+        while end < surface.len() && surface.as_bytes().get(end).is_some_and(u8::is_ascii_whitespace) {
+            end += 1;
+        }
+        if surface.as_bytes().get(end) == Some(&b';') {
+            end += 1;
+        }
+        if let Some(layout) = surface.get(matched.start()..end) {
+            layouts.push(collapse_ws(layout));
+        }
+    }
+    layouts.sort();
+    sha256_hex(&layouts.join("\n"))
 }
 
 pub fn build_device_partial_source(source: &str, symbols: &[String]) -> Option<String> {
@@ -1146,6 +1554,53 @@ fn constant_global_layout_hash(source: &str) -> String {
     sha256_hex(&decls.join(";"))
 }
 
+fn strict_body_only_rejection(old_source: &str, new_source: &str) -> Option<&'static str> {
+    if include_directive_hash(old_source) != include_directive_hash(new_source) {
+        return Some("abi.include_directive_changed");
+    }
+    if macro_directive_hash(old_source) != macro_directive_hash(new_source) {
+        return Some("abi.macro_directive_changed");
+    }
+    if template_declaration_hash(old_source) != template_declaration_hash(new_source) {
+        return Some("abi.template_declaration_changed");
+    }
+    if using_declaration_hash(old_source) != using_declaration_hash(new_source) {
+        return Some("abi.using_declaration_changed");
+    }
+    if type_alias_hash(old_source) != type_alias_hash(new_source) {
+        return Some("abi.type_alias_changed");
+    }
+    if extern_declaration_hash(old_source) != extern_declaration_hash(new_source) {
+        return Some("abi.extern_declaration_changed");
+    }
+    if type_layout_hash(old_source) != type_layout_hash(new_source) {
+        return Some("abi.type_layout_changed");
+    }
+    if namespace_declaration_hash(old_source) != namespace_declaration_hash(new_source) {
+        return Some("abi.namespace_changed");
+    }
+    if static_constexpr_data_hash(old_source) != static_constexpr_data_hash(new_source) {
+        return Some("abi.static_constexpr_data_changed");
+    }
+    let old_device_signatures = device_function_signatures(old_source);
+    let new_device_signatures = device_function_signatures(new_source);
+    if old_device_signatures != new_device_signatures {
+        if old_device_signatures.keys().collect::<Vec<_>>()
+            != new_device_signatures.keys().collect::<Vec<_>>()
+        {
+            return Some("abi.device_function_set_changed");
+        }
+        if old_device_signatures
+            .iter()
+            .any(|(name, signatures)| new_device_signatures.get(name).map(Vec::len) != Some(signatures.len()))
+        {
+            return Some("abi.overload_set_changed");
+        }
+        return Some("abi.device_function_signature_changed");
+    }
+    None
+}
+
 fn changed_span(old: &str, new: &str) -> Option<BodyDelta> {
     if old == new {
         return None;
@@ -1193,6 +1648,7 @@ fn unique_substr_offset(haystack: &str, needle: &str) -> Option<usize> {
 struct StatementPatchAnchor {
     relative_start: usize,
     old_len: usize,
+    source_old: String,
     replacement: String,
 }
 
@@ -1234,6 +1690,7 @@ fn statement_patch_anchor(
             return Some(StatementPatchAnchor {
                 relative_start: relative,
                 old_len: old_text.len(),
+                source_old: old_text.to_string(),
                 replacement: new_text.to_string(),
             });
         }
@@ -1245,6 +1702,7 @@ fn statement_patch_anchor(
         return Some(StatementPatchAnchor {
             relative_start: relative,
             old_len,
+            source_old: old_text.to_string(),
             replacement: new_text.to_string(),
         });
     }
@@ -1480,7 +1938,20 @@ fn rejection_plan(reason_codes: &[String]) -> &'static str {
     if reason_codes.iter().any(|code| {
         matches!(
             code.as_str(),
-            "abi.kernel_signature_changed" | "abi.constant_global_layout_changed"
+            "abi.kernel_signature_changed"
+                | "abi.constant_global_layout_changed"
+                | "abi.include_directive_changed"
+                | "abi.macro_directive_changed"
+                | "abi.template_declaration_changed"
+                | "abi.using_declaration_changed"
+                | "abi.type_alias_changed"
+                | "abi.extern_declaration_changed"
+                | "abi.type_layout_changed"
+                | "abi.namespace_changed"
+                | "abi.static_constexpr_data_changed"
+                | "abi.device_function_set_changed"
+                | "abi.device_function_signature_changed"
+                | "abi.overload_set_changed"
         )
     }) {
         "abi_breaking"
@@ -1561,6 +2032,13 @@ mod tests {
                 }
             ]
         })
+    }
+
+    fn sidecar_with_source(source: &str) -> Value {
+        let mut meta = sidecar();
+        meta["sourceBaselineContents"]["src/gpu/flow.hip"] = Value::String(source.to_string());
+        meta["sourceBaselineHashes"]["src/gpu/flow.hip"] = Value::String(sha256_hex(source));
+        meta
     }
 
     fn generated_source() -> &'static str {
@@ -1943,6 +2421,117 @@ extern "C" __global__ void trace(float* x) {
             .as_deref()
             .unwrap_or_default()
             .contains("x[0] -= ::scale_template::gain<float>(1.0f);"));
+    }
+
+    #[test]
+    fn direct_fast_path_rejects_translation_unit_surface_changes() {
+        let kernel = "__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n";
+        let cases = vec![
+            (
+                "include",
+                "#include \"a.h\"\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "#include \"b.h\"\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "abi.include_directive_changed",
+            ),
+            (
+                "define",
+                "#define SCALE 1\n__global__ void flow(float* x, int n) {\n  x[0] += SCALE;\n}\n",
+                "#define SCALE 2\n__global__ void flow(float* x, int n) {\n  x[0] += SCALE;\n}\n",
+                "abi.macro_directive_changed",
+            ),
+            (
+                "using",
+                "using Scalar = float;\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "using Scalar = double;\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "abi.using_declaration_changed",
+            ),
+            (
+                "typedef",
+                "typedef float Scalar;\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "typedef double Scalar;\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "abi.type_alias_changed",
+            ),
+            (
+                "extern",
+                "extern float table[];\n__global__ void flow(float* x, int n) {\n  x[0] += table[0];\n}\n",
+                "extern double table[];\n__global__ void flow(float* x, int n) {\n  x[0] += table[0];\n}\n",
+                "abi.extern_declaration_changed",
+            ),
+            (
+                "type layout",
+                "struct Params { float a; };\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "struct Params { float a; float b; };\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "abi.type_layout_changed",
+            ),
+            (
+                "namespace",
+                "namespace gpu { }\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "namespace gpu2 { }\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "abi.namespace_changed",
+            ),
+            (
+                "static constexpr",
+                "static constexpr float kGain = 1.0f;\n__global__ void flow(float* x, int n) {\n  x[0] += kGain;\n}\n",
+                "static constexpr float kGain = 2.0f;\n__global__ void flow(float* x, int n) {\n  x[0] += kGain;\n}\n",
+                "abi.static_constexpr_data_changed",
+            ),
+            (
+                "device function signature",
+                "__device__ float helper(float x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "__device__ float helper(float x, float y) { return x + y; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f, 2.0f);\n}\n",
+                "abi.device_function_signature_changed",
+            ),
+            (
+                "overload set",
+                "__device__ float helper(float x) { return x; }\n__device__ int helper(int x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "__device__ float helper(float x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "abi.overload_set_changed",
+            ),
+            (
+                "template",
+                "template <typename T> __device__ T helper(T x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "template <typename T, typename U> __device__ T helper(T x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "abi.template_declaration_changed",
+            ),
+        ];
+
+        for (name, before, after, reason) in cases {
+            let result = try_direct_device_body_patch(
+                &sidecar_with_source(before),
+                "src/gpu/flow.hip",
+                after,
+                kernel,
+            );
+            assert!(
+                !result.accepted,
+                "case {name} unexpectedly accepted: {:?}",
+                result.reason_codes
+            );
+            assert!(
+                result.reason_codes.iter().any(|code| code == reason),
+                "case {name} expected {reason}, got {:?}",
+                result.reason_codes
+            );
+        }
+    }
+
+    #[test]
+    fn direct_fast_path_rejects_device_and_constant_global_changes() {
+        let device_global =
+            "__device__ float gain;\n__global__ void flow(float* x, int n) {\n  x[0] += gain;\n}\n";
+        let changed_device_global =
+            "__device__ double gain;\n__global__ void flow(float* x, int n) {\n  x[0] += gain;\n}\n";
+        let result = try_direct_device_body_patch(
+            &sidecar_with_source(device_global),
+            "src/gpu/flow.hip",
+            changed_device_global,
+            generated_source(),
+        );
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "abi.constant_global_layout_changed"));
     }
 
     #[test]
