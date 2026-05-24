@@ -1250,11 +1250,15 @@ fn device_function_regions(source: &str) -> BTreeMap<String, KernelRegion> {
         let Some((_body, body_close)) = read_balanced(source, body_open, b'{', b'}') else {
             continue;
         };
+        let signature = source
+            .get(matched.start()..body_open)
+            .unwrap_or(params.as_str())
+            .to_string();
         let key = format!("{name}@{}", matched.start());
         out.insert(
             key,
             KernelRegion {
-                signature: params,
+                signature,
                 start: matched.start(),
                 body_start: body_open + 1,
                 body_end: body_close.saturating_sub(1),
@@ -1320,10 +1324,14 @@ fn kernel_regions(source: &str) -> BTreeMap<String, KernelRegion> {
         let Some((_body, body_close)) = read_balanced(source, body_open, b'{', b'}') else {
             continue;
         };
+        let signature = source
+            .get(matched.start()..body_open)
+            .unwrap_or(params.as_str())
+            .to_string();
         out.insert(
             name,
             KernelRegion {
-                signature: params,
+                signature,
                 start: matched.start(),
                 body_start: body_open + 1,
                 body_end: body_close.saturating_sub(1),
@@ -2852,6 +2860,18 @@ extern "C" __global__ void trace(float* x) {
                 "abi.device_function_signature_changed",
             ),
             (
+                "device function return type",
+                "__device__ float helper(float x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "__device__ double helper(float x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "abi.device_function_signature_changed",
+            ),
+            (
+                "device function default argument",
+                "__device__ float helper(float x = 1.0f) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper();\n}\n",
+                "__device__ float helper(float x = 2.0f) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper();\n}\n",
+                "abi.device_function_signature_changed",
+            ),
+            (
                 "overload set",
                 "__device__ float helper(float x) { return x; }\n__device__ int helper(int x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
                 "__device__ float helper(float x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
@@ -2862,6 +2882,18 @@ extern "C" __global__ void trace(float* x) {
                 "template <typename T> __device__ T helper(T x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
                 "template <typename T, typename U> __device__ T helper(T x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
                 "abi.template_declaration_changed",
+            ),
+            (
+                "kernel extern c linkage",
+                "extern \"C\" __global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "abi.kernel_signature_changed",
+            ),
+            (
+                "kernel launch bounds",
+                "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)\nflow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(128)\nflow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "abi.kernel_signature_changed",
             ),
         ];
 
