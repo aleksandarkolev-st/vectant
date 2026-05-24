@@ -34,9 +34,9 @@
 #[cfg(feature = "gpu-hmr")]
 use crate::compiler::stages::ptxas_info_parser::parse as parse_ptxas;
 use crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics;
+use crate::hmr::compile_manifest::CompileManifest;
 #[cfg(feature = "gpu-hmr")]
 use crate::hmr::compile_manifest::{DeviceCompiler, DeviceVendor};
-use crate::hmr::compile_manifest::CompileManifest;
 #[cfg(feature = "gpu-hmr")]
 use anyhow::Context;
 use anyhow::Result;
@@ -45,7 +45,7 @@ use regex::Regex;
 #[cfg(feature = "gpu-hmr")]
 use sha2::{Digest, Sha256};
 #[cfg(feature = "gpu-hmr")]
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 #[cfg(feature = "gpu-hmr")]
 use tokio::io::AsyncReadExt;
@@ -62,6 +62,8 @@ const DEFAULT_DEVICE_PARTIAL_COMPILE_TIMEOUT_SECS: u64 = 60;
 #[cfg(feature = "gpu-hmr")]
 const DEVICE_ARTIFACT_CACHE_SCHEMA: &str = "synthi.gpu.device_artifact_cache.v1";
 #[cfg(feature = "gpu-hmr")]
+const DEVICE_ARTIFACT_CACHE_KEY_SCHEMA: &str = "synthi.gpu.device_artifact_cache_key.v2";
+#[cfg(feature = "gpu-hmr")]
 const DEVICE_ARTIFACT_CACHE_DIR_ENV: &str = "SYNTHI_GPU_HMR_DEVICE_ARTIFACT_CACHE_DIR";
 #[cfg(feature = "gpu-hmr")]
 const DEVICE_ARTIFACT_CACHE_SCOPE_ENV: &str = "SYNTHI_GPU_HMR_DEVICE_ARTIFACT_CACHE_SCOPE";
@@ -73,6 +75,8 @@ const DEVICE_CACHE_MAX_INCLUDED_FILES: usize = 8192;
 const DEVICE_CACHE_MAX_INCLUDED_BYTES: u64 = 256 * 1024 * 1024;
 #[cfg(feature = "gpu-hmr")]
 const DEVICE_CACHE_MAX_SINGLE_INCLUDE_BYTES: u64 = 64 * 1024 * 1024;
+#[cfg(feature = "gpu-hmr")]
+const DEVICE_DEPFILE_TIMEOUT_SECS: u64 = 15;
 
 /// Compile result attached alongside the cubin/hsaco path. The
 /// diagnostics surface to the IDE (badges) and feed the Tier-2 healer
@@ -171,8 +175,7 @@ async fn compile_device_inner(
     // Pick filename + executable from the manifest. `select_compiler`
     // owns the dispatch; we resolve to the canonical name here so the
     // log lines name the actual binary the worker spawned.
-    let compiler_exe = manifest
-        .select_compiler(crate::hmr::compile_manifest::ModuleKind::Device);
+    let compiler_exe = manifest.select_compiler(crate::hmr::compile_manifest::ModuleKind::Device);
     let (default_source_filename, artifact_ext) = match gpu.vendor {
         DeviceVendor::Cuda => (DEVICE_CU_FILENAME, "cubin"),
         DeviceVendor::Rocm => (DEVICE_HIP_FILENAME, "hsaco"),
@@ -239,9 +242,7 @@ async fn compile_device_inner(
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    eprintln!(
-                        "[compile-device] source-owned declaration cleanup skipped: {e}"
-                    );
+                    eprintln!("[compile-device] source-owned declaration cleanup skipped: {e}");
                 }
             }
         }
@@ -258,11 +259,16 @@ async fn compile_device_inner(
             &current_source,
         )
         .await?;
-        if let Some(cache_key) = cache_key.as_deref() {
-            if restore_cached_device_artifact(workspace_dir, cache_key, &artifact_path).await? {
+        if let Some(cache_key) = cache_key.as_ref() {
+            if restore_cached_device_artifact(workspace_dir, &cache_key.cache_key, &artifact_path)
+                .await?
+            {
                 eprintln!(
-                    "[compile-device] artifact cache hit key={} artifact={}",
-                    cache_key,
+                    "[compile-device] artifact cache hit key={} dependency_hash={} dependency_method={} compile_command_hash={} artifact={}",
+                    cache_key.cache_key,
+                    cache_key.dependency_hash,
+                    cache_key.dependency_method,
+                    cache_key.compile_command_hash,
                     artifact_path.display()
                 );
                 return Ok(Some(DeviceCompileOutcome {
@@ -299,7 +305,7 @@ async fn compile_device_inner(
                 compile.diagnostics.register_pressure.len()
             );
 
-            if let Some(cache_key) = cache_key.as_deref() {
+            if let Some(cache_key) = cache_key.as_ref() {
                 if let Err(e) =
                     store_cached_device_artifact(workspace_dir, cache_key, &artifact_path).await
                 {
@@ -451,9 +457,7 @@ async fn prune_redundant_generated_device_includes(
             output.push('\n');
         }
         cursor = end;
-        eprintln!(
-            "[compile-device] pruned redundant generated device include path={include_path}"
-        );
+        eprintln!("[compile-device] pruned redundant generated device include path={include_path}");
     }
     output.push_str(&source[cursor..]);
     Ok(output)
@@ -518,9 +522,8 @@ struct RawTopLevelDeviceInclude {
 
 #[cfg(feature = "gpu-hmr")]
 fn parse_top_level_device_includes(source: &str) -> Vec<RawTopLevelDeviceInclude> {
-    let include_re =
-        Regex::new(r#"^\s*#\s*include\s*(?P<delim>[<"])(?P<path>[^>"]+)[>"]"#)
-            .expect("valid include regex");
+    let include_re = Regex::new(r#"^\s*#\s*include\s*(?P<delim>[<"])(?P<path>[^>"]+)[>"]"#)
+        .expect("valid include regex");
     let mut includes = Vec::new();
     let mut offset = 0usize;
     for line in source.split_inclusive('\n') {
@@ -751,9 +754,8 @@ struct DeviceInclude {
 
 #[cfg(feature = "gpu-hmr")]
 fn parse_includes(source: &str) -> Vec<DeviceInclude> {
-    let include_re =
-        Regex::new(r#"(?m)^\s*#\s*include\s*(?P<delim>[<"])(?P<path>[^>"]+)[>"]"#)
-            .expect("valid include regex");
+    let include_re = Regex::new(r#"(?m)^\s*#\s*include\s*(?P<delim>[<"])(?P<path>[^>"]+)[>"]"#)
+        .expect("valid include regex");
     include_re
         .captures_iter(&strip_cpp_comments_for_device_compile(source))
         .filter_map(|caps| {
@@ -775,7 +777,9 @@ fn device_include_dirs(workspace_dir: &Path, device_flags: &[String]) -> Vec<Pat
     let mut iter = device_flags.iter().peekable();
     while let Some(flag) = iter.next() {
         let candidates: Vec<String> = if flag == "-I" || flag == "-isystem" {
-            iter.next().map(|next| vec![next.clone()]).unwrap_or_default()
+            iter.next()
+                .map(|next| vec![next.clone()])
+                .unwrap_or_default()
         } else if let Some(rest) = flag.strip_prefix("-I") {
             vec![rest.to_string()]
         } else if let Some(rest) = flag.strip_prefix("-isystem") {
@@ -900,9 +904,8 @@ fn remove_forward_decls_for_names(source: &str, source_owned_names: &HashSet<Str
         })
         .into_owned();
 
-    let empty_extern_c_re =
-        Regex::new(r#"(?ms)^[ \t]*extern\s+"C"\s*\{\s*\}\s*(?:\r?\n)?"#)
-            .expect("valid empty extern C regex");
+    let empty_extern_c_re = Regex::new(r#"(?ms)^[ \t]*extern\s+"C"\s*\{\s*\}\s*(?:\r?\n)?"#)
+        .expect("valid empty extern C regex");
     empty_extern_c_re.replace_all(&out, "").into_owned()
 }
 
@@ -1026,24 +1029,62 @@ fn cache_hex(hasher: Sha256) -> String {
 }
 
 #[cfg(feature = "gpu-hmr")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeviceArtifactCacheKey {
+    cache_key: String,
+    dependency_hash: String,
+    dependency_method: String,
+    compile_command_hash: String,
+}
+
+#[cfg(feature = "gpu-hmr")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeviceDependencyDigest {
+    hash: String,
+    method: String,
+}
+
+#[cfg(feature = "gpu-hmr")]
 async fn device_artifact_cache_key(
     workspace_dir: &Path,
     compiler_exe: &str,
     gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
     source_filename: &str,
     source: &str,
-) -> Result<Option<String>> {
+) -> Result<Option<DeviceArtifactCacheKey>> {
     if device_artifact_cache_disabled() {
         return Ok(None);
     }
 
+    let normalized_command =
+        normalized_device_compile_command_tokens(workspace_dir, compiler_exe, gpu, source_filename);
+    let compile_command_hash = hash_string_sequence("compile_command", &normalized_command);
+
+    let Some(dependency_digest) =
+        device_dependency_cache_hash(workspace_dir, compiler_exe, gpu, source_filename, source)
+            .await?
+    else {
+        return Ok(None);
+    };
+
     let mut hasher = Sha256::new();
-    cache_update_str(&mut hasher, "schema", DEVICE_ARTIFACT_CACHE_SCHEMA);
+    cache_update_str(&mut hasher, "cache_key_schema", DEVICE_ARTIFACT_CACHE_KEY_SCHEMA);
+    cache_update_str(&mut hasher, "artifact_schema", DEVICE_ARTIFACT_CACHE_SCHEMA);
+    cache_update_str(
+        &mut hasher,
+        "artifact_kind",
+        if is_partial_device_source_filename(source_filename) {
+            "partial"
+        } else {
+            "full"
+        },
+    );
     cache_update_str(&mut hasher, "compiler_exe", compiler_exe);
     let Some(compiler_identity) = device_compiler_identity(compiler_exe).await? else {
         return Ok(None);
     };
     cache_update_str(&mut hasher, "compiler_identity", &compiler_identity);
+    cache_update_str(&mut hasher, "sdk_version", &gpu_sdk_version_fingerprint(gpu));
     cache_update_str(&mut hasher, "vendor", gpu.vendor.as_str());
     cache_update_str(
         &mut hasher,
@@ -1053,28 +1094,386 @@ async fn device_artifact_cache_key(
     for arch in &gpu.arch {
         cache_update_str(&mut hasher, "arch", arch);
     }
+    cache_update_str(&mut hasher, "target_triple", &target_triple_fingerprint(gpu));
+    for (name, value) in device_compiler_env_fingerprint(gpu) {
+        cache_update_str(&mut hasher, "env_name", &name);
+        cache_update_str(&mut hasher, "env_value", &value);
+    }
     for flag in &gpu.device_flags {
         cache_update_str(&mut hasher, "flag", flag);
     }
+    for token in &normalized_command {
+        cache_update_str(&mut hasher, "compile_token", token);
+    }
+    for classified in classified_device_flags(&gpu.device_flags) {
+        cache_update_str(&mut hasher, "classified_flag", &classified);
+    }
+    cache_update_str(&mut hasher, "compile_command_hash", &compile_command_hash);
     cache_update_str(
         &mut hasher,
         "source_filename",
         &source_filename.replace('\\', "/"),
     );
     cache_update_bytes(&mut hasher, "source", source.as_bytes());
+    cache_update_str(&mut hasher, "dependency_method", &dependency_digest.method);
+    cache_update_str(&mut hasher, "dependency_hash", &dependency_digest.hash);
 
-    let Some(include_hash) = reachable_device_include_cache_hash(
-        workspace_dir,
-        source_filename,
-        source,
-        &gpu.device_flags,
-    )
-    .await?
-    else {
+    Ok(Some(DeviceArtifactCacheKey {
+        cache_key: cache_hex(hasher),
+        dependency_hash: dependency_digest.hash,
+        dependency_method: dependency_digest.method,
+        compile_command_hash,
+    }))
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn hash_string_sequence(label: &str, values: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    cache_update_str(&mut hasher, "sequence", label);
+    for value in values {
+        cache_update_str(&mut hasher, "value", value);
+    }
+    cache_hex(hasher)
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn normalized_device_compile_command_tokens(
+    workspace_dir: &Path,
+    compiler_exe: &str,
+    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+    source_filename: &str,
+) -> Vec<String> {
+    let mut cmd = tokio::process::Command::new(compiler_exe);
+    let artifact_placeholder = PathBuf::from("__synthi_device_artifact__");
+    populate_device_command(&mut cmd, gpu, source_filename, &artifact_placeholder);
+    std::iter::once(compiler_exe.to_string())
+        .chain(
+            cmd.as_std()
+                .get_args()
+                .map(|arg| normalize_compile_command_token(workspace_dir, &arg.to_string_lossy())),
+        )
+        .collect()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn normalize_compile_command_token(workspace_dir: &Path, token: &str) -> String {
+    let token = token.replace('\\', "/");
+    if token == "__synthi_device_artifact__" {
+        return token;
+    }
+    for prefix in ["-I", "-isystem", "-iquote", "--include-directory=", "--system-include="] {
+        if let Some(rest) = token.strip_prefix(prefix).filter(|rest| !rest.is_empty()) {
+            let path = PathBuf::from(rest);
+            let normalized = if path.is_absolute() {
+                normalize_path_key(&path)
+            } else {
+                normalize_path_key(&workspace_dir.join(path))
+            };
+            return format!("{prefix}{normalized}");
+        }
+    }
+    token
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn classified_device_flags(device_flags: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut iter = device_flags.iter().peekable();
+    while let Some(flag) = iter.next() {
+        let class = if matches!(flag.as_str(), "-I" | "-isystem" | "-iquote" | "-idirafter") {
+            iter.peek()
+                .map(|next| format!("include_path:{flag}:{}", next.replace('\\', "/")))
+        } else if matches!(flag.as_str(), "-D" | "-U") {
+            iter.peek().map(|next| format!("define:{flag}:{next}"))
+        } else if matches!(flag.as_str(), "-std" | "--std") {
+            iter.peek().map(|next| format!("std:{flag}:{next}"))
+        } else if flag.starts_with("-I")
+            || flag.starts_with("-isystem")
+            || flag.starts_with("-iquote")
+            || flag.starts_with("-idirafter")
+            || flag.starts_with("--include-directory=")
+            || flag.starts_with("--system-include=")
+        {
+            Some(format!("include_path:{}", flag.replace('\\', "/")))
+        } else if flag.starts_with("-D") || flag.starts_with("-U") {
+            Some(format!("define:{flag}"))
+        } else if flag.starts_with("-std=") || flag.starts_with("--std=") {
+            Some(format!("std:{flag}"))
+        } else {
+            None
+        };
+        if let Some(class) = class {
+            out.push(class);
+        }
+    }
+    out
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn target_triple_fingerprint(gpu: &crate::hmr::compile_manifest::GpuBuildBlock) -> String {
+    let mut parts = Vec::new();
+    let mut iter = gpu.device_flags.iter().peekable();
+    while let Some(flag) = iter.next() {
+        if flag == "--target" || flag == "-target" {
+            if let Some(next) = iter.next() {
+                parts.push(format!("{flag}={next}"));
+            }
+        } else if flag.starts_with("--target=") || flag.starts_with("-target=") {
+            parts.push(flag.clone());
+        }
+    }
+    if parts.is_empty() {
+        format!("{}:{}", gpu.vendor.as_str(), gpu.arch.join(","))
+    } else {
+        parts.join("|")
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_compiler_env_fingerprint(
+    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+) -> Vec<(String, String)> {
+    let mut names = vec![
+        "CPATH",
+        "CPLUS_INCLUDE_PATH",
+        "HIP_PATH",
+        "HIP_PLATFORM",
+        "HIPCC_VERBOSE",
+        "HSA_OVERRIDE_GFX_VERSION",
+        "ROCM_HOME",
+        "ROCM_PATH",
+    ];
+    if gpu.vendor == DeviceVendor::Cuda {
+        names.extend(["CUDA_HOME", "CUDA_PATH"]);
+    }
+    let mut out = names
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok().map(|value| (name.to_string(), value)))
+        .collect::<Vec<_>>();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn gpu_sdk_version_fingerprint(gpu: &crate::hmr::compile_manifest::GpuBuildBlock) -> String {
+    match gpu.vendor {
+        DeviceVendor::Rocm => {
+            let root = std::env::var("ROCM_PATH")
+                .or_else(|_| std::env::var("ROCM_HOME"))
+                .unwrap_or_else(|_| "/opt/rocm".to_string());
+            let version_file = PathBuf::from(root).join(".info/version");
+            std::fs::read_to_string(&version_file)
+                .map(|raw| format!("rocm:{}", raw.trim()))
+                .unwrap_or_else(|_| "rocm:unavailable".to_string())
+        }
+        DeviceVendor::Cuda => {
+            let root = std::env::var("CUDA_HOME")
+                .or_else(|_| std::env::var("CUDA_PATH"))
+                .unwrap_or_else(|_| "/usr/local/cuda".to_string());
+            let version_file = PathBuf::from(root).join("version.txt");
+            std::fs::read_to_string(&version_file)
+                .map(|raw| format!("cuda:{}", raw.trim()))
+                .unwrap_or_else(|_| "cuda:unavailable".to_string())
+        }
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn device_dependency_cache_hash(
+    workspace_dir: &Path,
+    compiler_exe: &str,
+    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+    source_filename: &str,
+    source: &str,
+) -> Result<Option<DeviceDependencyDigest>> {
+    if let Some(depfile_hash) =
+        compiler_depfile_dependency_cache_hash(workspace_dir, compiler_exe, gpu, source_filename)
+            .await?
+    {
+        return Ok(Some(depfile_hash));
+    }
+
+    reachable_device_include_cache_hash(workspace_dir, source_filename, source, &gpu.device_flags)
+        .await
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn compiler_depfile_dependency_cache_hash(
+    workspace_dir: &Path,
+    compiler_exe: &str,
+    gpu: &crate::hmr::compile_manifest::GpuBuildBlock,
+    source_filename: &str,
+) -> Result<Option<DeviceDependencyDigest>> {
+    if std::env::var("SYNTHI_GPU_HMR_DEVICE_DEPFILE_CACHE")
+        .ok()
+        .is_some_and(|value| matches!(value.trim(), "0" | "false" | "False" | "FALSE"))
+    {
         return Ok(None);
+    }
+
+    let dep_dir = device_artifact_cache_dir(workspace_dir).join("depfiles");
+    tokio::fs::create_dir_all(&dep_dir)
+        .await
+        .with_context(|| format!("creating device depfile cache {}", dep_dir.display()))?;
+    let dep_stem = hex_sha256(
+        format!(
+            "{}|{}|{}|{}",
+            compiler_exe,
+            source_filename,
+            gpu.vendor.as_str(),
+            gpu.arch.join(",")
+        )
+        .as_bytes(),
+    );
+    let depfile = dep_dir.join(format!("{dep_stem}.d"));
+
+    let mut cmd = crate::infra::utils::system_command(compiler_exe);
+    cmd.current_dir(workspace_dir)
+        .arg("-M")
+        .arg("-MT")
+        .arg("synthi_device_artifact")
+        .arg("-MF")
+        .arg(&depfile);
+    for flag in dependency_probe_flags(gpu) {
+        cmd.arg(flag);
+    }
+    cmd.arg(source_filename).kill_on_drop(true);
+
+    let out = match timeout(Duration::from_secs(DEVICE_DEPFILE_TIMEOUT_SECS), cmd.output()).await {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => {
+            eprintln!("[compile-device] dependency depfile probe unavailable: {e}");
+            return Ok(None);
+        }
+        Err(_) => {
+            eprintln!(
+                "[compile-device] dependency depfile probe timed out after {}s",
+                DEVICE_DEPFILE_TIMEOUT_SECS
+            );
+            return Ok(None);
+        }
     };
-    cache_update_str(&mut hasher, "reachable_includes", &include_hash);
-    Ok(Some(cache_hex(hasher)))
+    if !out.status.success() {
+        eprintln!(
+            "[compile-device] dependency depfile probe failed status={} stderr={}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        return Ok(None);
+    }
+
+    let raw = match tokio::fs::read_to_string(&depfile).await {
+        Ok(raw) => raw,
+        Err(e) => {
+            eprintln!("[compile-device] dependency depfile missing: {e}");
+            return Ok(None);
+        }
+    };
+    let paths = parse_make_depfile_paths(&raw);
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    hash_dependency_paths(workspace_dir, paths, Vec::new(), "depfile").await
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn dependency_probe_flags(gpu: &crate::hmr::compile_manifest::GpuBuildBlock) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut iter = gpu.device_flags.iter().peekable();
+    while let Some(flag) = iter.next() {
+        if matches!(
+            flag.as_str(),
+            "-I"
+                | "-isystem"
+                | "-iquote"
+                | "-idirafter"
+                | "-D"
+                | "-U"
+                | "-include"
+                | "--include"
+                | "-std"
+                | "--std"
+                | "-x"
+                | "--sysroot"
+                | "-isysroot"
+        ) {
+            out.push(flag.clone());
+            if let Some(next) = iter.next() {
+                out.push(next.clone());
+            }
+            continue;
+        }
+        if flag.starts_with("-I")
+            || flag.starts_with("-isystem")
+            || flag.starts_with("-iquote")
+            || flag.starts_with("-idirafter")
+            || flag.starts_with("-D")
+            || flag.starts_with("-U")
+            || flag.starts_with("-std=")
+            || flag.starts_with("--std=")
+            || flag.starts_with("-x")
+            || flag.starts_with("--include=")
+            || flag.starts_with("--include-directory=")
+            || flag.starts_with("--system-include=")
+            || flag.starts_with("--sysroot=")
+            || flag.starts_with("-isysroot")
+        {
+            out.push(flag.clone());
+        }
+    }
+    match gpu.device_compiler {
+        DeviceCompiler::Hipcc => {
+            for arch in &gpu.arch {
+                out.push(format!("--offload-arch={arch}"));
+            }
+        }
+        DeviceCompiler::Nvcc => {
+            for arch in &gpu.arch {
+                out.push(format!("-arch={arch}"));
+            }
+        }
+        DeviceCompiler::ClangCuda => {
+            for arch in &gpu.arch {
+                out.push(format!("--cuda-gpu-arch={arch}"));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn parse_make_depfile_paths(raw: &str) -> Vec<String> {
+    let Some((_, deps)) = raw.split_once(':') else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    for ch in deps.chars() {
+        if escaped {
+            if ch != '\n' && ch != '\r' {
+                current.push(ch);
+            }
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !current.is_empty() {
+                paths.push(current.clone());
+                current.clear();
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        paths.push(current);
+    }
+    paths
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -1110,7 +1509,7 @@ async fn reachable_device_include_cache_hash(
     source_filename: &str,
     source: &str,
     device_flags: &[String],
-) -> Result<Option<String>> {
+) -> Result<Option<DeviceDependencyDigest>> {
     let mut include_dirs = device_include_dirs(workspace_dir, device_flags);
     include_dirs.push(workspace_dir.to_path_buf());
     if let Some(parent) = workspace_dir.join(source_filename).parent() {
@@ -1128,9 +1527,8 @@ async fn reachable_device_include_cache_hash(
     }
 
     let mut visited = HashSet::new();
-    let mut total_bytes = 0u64;
-    let mut hasher = Sha256::new();
-    cache_update_str(&mut hasher, "include_schema", DEVICE_ARTIFACT_CACHE_SCHEMA);
+    let mut dependency_paths = vec![source_filename.replace('\\', "/")];
+    let mut unresolved_includes = Vec::new();
 
     while let Some((including_dir, include)) = queue.pop_front() {
         let Some(path) = resolve_device_include(
@@ -1140,7 +1538,7 @@ async fn reachable_device_include_cache_hash(
             include.quoted,
             &include_dirs,
         ) else {
-            cache_update_str(&mut hasher, "unresolved_include", &include.path);
+            unresolved_includes.push(include.path);
             continue;
         };
 
@@ -1150,7 +1548,7 @@ async fn reachable_device_include_cache_hash(
         }
         if visited.len() > DEVICE_CACHE_MAX_INCLUDED_FILES {
             eprintln!(
-                "[compile-device] artifact cache disabled - include graph exceeds {} files",
+                "[compile-device] artifact cache disabled reason=cache.disabled.dependency_scan_unbounded files>{}",
                 DEVICE_CACHE_MAX_INCLUDED_FILES
             );
             return Ok(None);
@@ -1160,32 +1558,22 @@ async fn reachable_device_include_cache_hash(
             .await
             .with_context(|| format!("stat device include {}", path.display()))?;
         if !metadata.is_file() {
-            cache_update_str(&mut hasher, "non_file_include", &normalized);
+            unresolved_includes.push(normalized);
             continue;
         }
         if metadata.len() > DEVICE_CACHE_MAX_SINGLE_INCLUDE_BYTES {
             eprintln!(
-                "[compile-device] artifact cache disabled - include too large: {} bytes={} limit={}",
+                "[compile-device] artifact cache disabled reason=cache.disabled.dependency_scan_unbounded include_too_large={} bytes={} limit={}",
                 path.display(),
                 metadata.len(),
                 DEVICE_CACHE_MAX_SINGLE_INCLUDE_BYTES
             );
             return Ok(None);
         }
-        total_bytes = total_bytes.saturating_add(metadata.len());
-        if total_bytes > DEVICE_CACHE_MAX_INCLUDED_BYTES {
-            eprintln!(
-                "[compile-device] artifact cache disabled - include graph exceeds {} bytes",
-                DEVICE_CACHE_MAX_INCLUDED_BYTES
-            );
-            return Ok(None);
-        }
-
+        dependency_paths.push(normalized);
         let content = tokio::fs::read(&path)
             .await
             .with_context(|| format!("read device include {}", path.display()))?;
-        cache_update_str(&mut hasher, "include_path", &normalized);
-        cache_update_bytes(&mut hasher, "include_content", &content);
 
         let including_dir = path
             .parent()
@@ -1197,7 +1585,103 @@ async fn reachable_device_include_cache_hash(
         }
     }
 
-    Ok(Some(cache_hex(hasher)))
+    hash_dependency_paths(
+        workspace_dir,
+        dependency_paths,
+        unresolved_includes,
+        "bounded_include_scanner",
+    )
+    .await
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn hash_dependency_paths(
+    workspace_dir: &Path,
+    raw_paths: Vec<String>,
+    unresolved_entries: Vec<String>,
+    method: &str,
+) -> Result<Option<DeviceDependencyDigest>> {
+    let mut paths = BTreeMap::<String, PathBuf>::new();
+    for raw in raw_paths {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(raw);
+        let path = if path.is_absolute() {
+            path
+        } else {
+            workspace_dir.join(path)
+        };
+        paths.insert(normalize_path_key(&path), path);
+    }
+
+    if paths.len() > DEVICE_CACHE_MAX_INCLUDED_FILES {
+        eprintln!(
+            "[compile-device] artifact cache disabled reason=cache.disabled.dependency_scan_unbounded files>{}",
+            DEVICE_CACHE_MAX_INCLUDED_FILES
+        );
+        return Ok(None);
+    }
+
+    let mut total_bytes = 0u64;
+    let mut hasher = Sha256::new();
+    cache_update_str(&mut hasher, "dependency_schema", DEVICE_ARTIFACT_CACHE_KEY_SCHEMA);
+    cache_update_str(&mut hasher, "dependency_method", method);
+    for unresolved in unresolved_entries {
+        cache_update_str(&mut hasher, "unresolved_dependency", &unresolved);
+    }
+    for (normalized, path) in paths {
+        let metadata = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                cache_update_str(&mut hasher, "missing_dependency", &normalized);
+                continue;
+            }
+        };
+        if !metadata.is_file() {
+            cache_update_str(&mut hasher, "non_file_dependency", &normalized);
+            continue;
+        }
+        if metadata.len() > DEVICE_CACHE_MAX_SINGLE_INCLUDE_BYTES {
+            eprintln!(
+                "[compile-device] artifact cache disabled reason=cache.disabled.dependency_scan_unbounded dependency_too_large={} bytes={} limit={}",
+                path.display(),
+                metadata.len(),
+                DEVICE_CACHE_MAX_SINGLE_INCLUDE_BYTES
+            );
+            return Ok(None);
+        }
+        total_bytes = total_bytes.saturating_add(metadata.len());
+        if total_bytes > DEVICE_CACHE_MAX_INCLUDED_BYTES {
+            eprintln!(
+                "[compile-device] artifact cache disabled reason=cache.disabled.dependency_scan_unbounded bytes>{}",
+                DEVICE_CACHE_MAX_INCLUDED_BYTES
+            );
+            return Ok(None);
+        }
+        cache_update_str(&mut hasher, "dependency_path", &normalized);
+        cache_update_str(&mut hasher, "dependency_size", &metadata.len().to_string());
+        match tokio::fs::read(&path).await {
+            Ok(content) => {
+                cache_update_str(&mut hasher, "dependency_content_hash", &hex_sha256(&content));
+            }
+            Err(_) => {
+                let modified = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_nanos().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                cache_update_str(&mut hasher, "dependency_mtime", &modified);
+            }
+        }
+    }
+
+    Ok(Some(DeviceDependencyDigest {
+        hash: cache_hex(hasher),
+        method: method.to_string(),
+    }))
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -1277,11 +1761,15 @@ async fn restore_cached_device_artifact(
         .get("artifactBytes")
         .and_then(serde_json::Value::as_u64)
     else {
-        eprintln!("[compile-device] artifact cache miss key={cache_key} reason=metadata_missing_bytes");
+        eprintln!(
+            "[compile-device] artifact cache miss key={cache_key} reason=metadata_missing_bytes"
+        );
         return Ok(false);
     };
     if expected_bytes != metadata.len() {
-        eprintln!("[compile-device] artifact cache miss key={cache_key} reason=byte_count_mismatch");
+        eprintln!(
+            "[compile-device] artifact cache miss key={cache_key} reason=byte_count_mismatch"
+        );
         return Ok(false);
     }
     let cached_content = tokio::fs::read(&cached_path)
@@ -1292,11 +1780,15 @@ async fn restore_cached_device_artifact(
         .get("artifactSha256")
         .and_then(serde_json::Value::as_str)
     else {
-        eprintln!("[compile-device] artifact cache miss key={cache_key} reason=metadata_missing_hash");
+        eprintln!(
+            "[compile-device] artifact cache miss key={cache_key} reason=metadata_missing_hash"
+        );
         return Ok(false);
     };
     if expected_hash != cached_hash {
-        eprintln!("[compile-device] artifact cache miss key={cache_key} reason=artifact_hash_mismatch");
+        eprintln!(
+            "[compile-device] artifact cache miss key={cache_key} reason=artifact_hash_mismatch"
+        );
         return Ok(false);
     }
     if let Some(parent) = artifact_path.parent() {
@@ -1319,7 +1811,7 @@ async fn restore_cached_device_artifact(
 #[cfg(feature = "gpu-hmr")]
 async fn store_cached_device_artifact(
     workspace_dir: &Path,
-    cache_key: &str,
+    cache_key: &DeviceArtifactCacheKey,
     artifact_path: &Path,
 ) -> Result<()> {
     let metadata = tokio::fs::metadata(artifact_path)
@@ -1336,8 +1828,8 @@ async fn store_cached_device_artifact(
     tokio::fs::create_dir_all(&cache_dir)
         .await
         .with_context(|| format!("creating device artifact cache {}", cache_dir.display()))?;
-    let cached_path = cache_dir.join(format!("{cache_key}.{ext}"));
-    let cached_tmp = cache_dir.join(format!("{cache_key}.{ext}.tmp"));
+    let cached_path = cache_dir.join(format!("{}.{ext}", cache_key.cache_key));
+    let cached_tmp = cache_dir.join(format!("{}.{ext}.tmp", cache_key.cache_key));
     let artifact_content = tokio::fs::read(artifact_path)
         .await
         .with_context(|| format!("reading device artifact {}", artifact_path.display()))?;
@@ -1360,11 +1852,15 @@ async fn store_cached_device_artifact(
                 cached_path.display()
             )
         })?;
-    let metadata_path = cache_dir.join(format!("{cache_key}.json"));
-    let metadata_tmp = cache_dir.join(format!("{cache_key}.json.tmp"));
+    let metadata_path = cache_dir.join(format!("{}.json", cache_key.cache_key));
+    let metadata_tmp = cache_dir.join(format!("{}.json.tmp", cache_key.cache_key));
     let metadata = serde_json::json!({
         "schemaVersion": DEVICE_ARTIFACT_CACHE_SCHEMA,
-        "cacheKey": cache_key,
+        "keySchemaVersion": DEVICE_ARTIFACT_CACHE_KEY_SCHEMA,
+        "cacheKey": cache_key.cache_key,
+        "dependencyHash": cache_key.dependency_hash,
+        "dependencyMethod": cache_key.dependency_method,
+        "compileCommandHash": cache_key.compile_command_hash,
         "artifact": cached_path.file_name().and_then(|name| name.to_str()).unwrap_or_default(),
         "artifactBytes": metadata.len(),
         "artifactSha256": artifact_hash,
@@ -1387,8 +1883,11 @@ async fn store_cached_device_artifact(
             )
         })?;
     eprintln!(
-        "[compile-device] artifact cache stored key={} artifact={}",
-        cache_key,
+        "[compile-device] artifact cache stored key={} dependency_hash={} dependency_method={} compile_command_hash={} artifact={}",
+        cache_key.cache_key,
+        cache_key.dependency_hash,
+        cache_key.dependency_method,
+        cache_key.compile_command_hash,
         cached_path.display()
     );
     Ok(())
@@ -1435,12 +1934,7 @@ async fn run_device_compile_once(
     let child = cmd
         .spawn()
         .with_context(|| format!("spawning {compiler_exe}"))?;
-    let out = match timeout(
-        Duration::from_secs(timeout_secs),
-        child.wait_with_output(),
-    )
-    .await
-    {
+    let out = match timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await {
         Ok(Ok(out)) => out,
         Ok(Err(e)) => return Err(e.into()),
         Err(_) => anyhow::bail!("Device compile timed out after {timeout_secs}s"),
@@ -1745,7 +2239,12 @@ mod tests {
     #[test]
     fn device_compile_timeout_keeps_partial_compiles_tight() {
         assert_eq!(
-            device_compile_timeout_secs_for(".synthi/generated/gpu/device.partial.abc.hip", None, None, None),
+            device_compile_timeout_secs_for(
+                ".synthi/generated/gpu/device.partial.abc.hip",
+                None,
+                None,
+                None
+            ),
             DEFAULT_DEVICE_PARTIAL_COMPILE_TIMEOUT_SECS
         );
         assert_eq!(
@@ -1847,8 +2346,11 @@ mod tests {
     #[test]
     fn device_artifact_cache_dir_can_be_overridden() {
         let workspace = PathBuf::from("/workspace/project");
-        let cache_dir =
-            device_artifact_cache_dir_from_config(&workspace, Some("/cache/gpu"), Some("workspace"));
+        let cache_dir = device_artifact_cache_dir_from_config(
+            &workspace,
+            Some("/cache/gpu"),
+            Some("workspace"),
+        );
 
         assert_eq!(cache_dir, PathBuf::from("/cache/gpu"));
     }
@@ -1862,6 +2364,23 @@ mod tests {
         assert_eq!(
             cache_dir,
             workspace.join(".synthi/cache/gpu-device-artifacts")
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn depfile_parser_handles_continuations_and_escaped_spaces() {
+        let paths = parse_make_depfile_paths(
+            "synthi_device_artifact: .synthi/generated/gpu/device.partial.hip \\\nsrc/kernel\\ body.h /opt/rocm/include/hip/hip_runtime.h\n",
+        );
+
+        assert_eq!(
+            paths,
+            vec![
+                ".synthi/generated/gpu/device.partial.hip",
+                "src/kernel body.h",
+                "/opt/rocm/include/hip/hip_runtime.h",
+            ]
         );
     }
 
@@ -1904,7 +2423,89 @@ extern "C" __global__ void shade(int* out) { *out = LIMIT; }
         .unwrap()
         .unwrap();
 
-        assert_ne!(first, second);
+        assert_ne!(first.cache_key, second.cache_key);
+        assert_ne!(first.dependency_hash, second.dependency_hash);
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[tokio::test]
+    async fn unchanged_include_wrapper_changed_source_emits_new_cache_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(tmp.path().join("src"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(tmp.path().join(".synthi/generated/gpu"))
+            .await
+            .unwrap();
+        let wrapper_path = tmp
+            .path()
+            .join(".synthi/generated/gpu/device.partial.test.hip");
+        let wrapper_source = "#include \"src/kernel_body.h\"\n";
+        tokio::fs::write(&wrapper_path, wrapper_source)
+            .await
+            .unwrap();
+        tokio::fs::write(
+            tmp.path().join("src/kernel_body.h"),
+            "extern \"C\" __global__ void shade(int* out) { *out = 1; }\n",
+        )
+        .await
+        .unwrap();
+
+        let first = device_artifact_cache_key(
+            tmp.path(),
+            "rustc",
+            &rocm_block(),
+            ".synthi/generated/gpu/device.partial.test.hip",
+            wrapper_source,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let artifact = tmp.path().join("build/device_1.hsaco");
+        tokio::fs::create_dir_all(artifact.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&artifact, b"old-hsaco").await.unwrap();
+        store_cached_device_artifact(tmp.path(), &first, &artifact)
+            .await
+            .unwrap();
+
+        tokio::fs::write(
+            tmp.path().join("src/kernel_body.h"),
+            "extern \"C\" __global__ void shade(int* out) { *out = 2; }\n",
+        )
+        .await
+        .unwrap();
+        let second = device_artifact_cache_key(
+            tmp.path(),
+            "rustc",
+            &rocm_block(),
+            ".synthi/generated/gpu/device.partial.test.hip",
+            wrapper_source,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(&wrapper_path).await.unwrap(),
+            wrapper_source
+        );
+        assert_ne!(first.dependency_hash, second.dependency_hash);
+        assert_ne!(first.cache_key, second.cache_key);
+
+        tokio::fs::write(&artifact, b"new-hsaco").await.unwrap();
+        store_cached_device_artifact(tmp.path(), &second, &artifact)
+            .await
+            .unwrap();
+        tokio::fs::remove_file(&artifact).await.unwrap();
+        assert!(
+            restore_cached_device_artifact(tmp.path(), &second.cache_key, &artifact)
+                .await
+                .unwrap()
+        );
+        let restored = tokio::fs::read(&artifact).await.unwrap();
+        assert_eq!(restored, b"new-hsaco");
     }
 
     #[cfg(feature = "gpu-hmr")]
@@ -1938,7 +2539,8 @@ extern "C" __global__ void shade(int* out) { *out = LIMIT; }
         .unwrap()
         .unwrap();
 
-        assert_ne!(first, second);
+        assert_ne!(first.cache_key, second.cache_key);
+        assert_ne!(first.compile_command_hash, second.compile_command_hash);
     }
 
     #[cfg(feature = "gpu-hmr")]
@@ -1968,9 +2570,17 @@ extern "C" __global__ void shade(int* out) { *out = LIMIT; }
         tokio::fs::create_dir_all(artifact.parent().unwrap())
             .await
             .unwrap();
-        tokio::fs::write(&artifact, b"compiled-device").await.unwrap();
+        tokio::fs::write(&artifact, b"compiled-device")
+            .await
+            .unwrap();
 
-        store_cached_device_artifact(tmp.path(), "abc123", &artifact)
+        let cache_key = DeviceArtifactCacheKey {
+            cache_key: "abc123".to_string(),
+            dependency_hash: "dep".to_string(),
+            dependency_method: "test".to_string(),
+            compile_command_hash: "cmd".to_string(),
+        };
+        store_cached_device_artifact(tmp.path(), &cache_key, &artifact)
             .await
             .unwrap();
         tokio::fs::remove_file(&artifact).await.unwrap();
@@ -2126,15 +2736,15 @@ extern "C" __global__ void CameraRays(int* out) { *out = 1; }
         tokio::fs::create_dir_all(tmp.path().join("thirdparty/pkg"))
             .await
             .unwrap();
-        tokio::fs::write(tmp.path().join("thirdparty/pkg/impl.h"), "struct Helper {};\n")
-            .await
-            .unwrap();
         tokio::fs::write(
-            tmp.path().join("bridge.h"),
-            "#include <pkg/impl.h>\n",
+            tmp.path().join("thirdparty/pkg/impl.h"),
+            "struct Helper {};\n",
         )
         .await
         .unwrap();
+        tokio::fs::write(tmp.path().join("bridge.h"), "#include <pkg/impl.h>\n")
+            .await
+            .unwrap();
 
         let source = "#include \"bridge.h\"\n#include \"thirdparty/pkg/impl.h\"\n";
         let cleaned = prune_redundant_generated_device_includes(
@@ -2193,10 +2803,7 @@ extern "C" __global__ void apply(float* out) { *out = 1.0f; }
         let target = parse_hip_offload_target(
             "host-x86_64-unknown-linux-gnu-\nhipv4-amdgcn-amd-amdhsa--gfx1201\n",
         );
-        assert_eq!(
-            target.as_deref(),
-            Some("hipv4-amdgcn-amd-amdhsa--gfx1201")
-        );
+        assert_eq!(target.as_deref(), Some("hipv4-amdgcn-amd-amdhsa--gfx1201"));
     }
 
     #[cfg(feature = "gpu-hmr")]
@@ -2263,6 +2870,9 @@ extern "C" __global__ void apply(float* out) { *out = 1.0f; }
         )
         .await
         .unwrap();
-        assert!(out.is_none(), "device compile must be a no-op without gpu-hmr feature");
+        assert!(
+            out.is_none(),
+            "device compile must be a no-op without gpu-hmr feature"
+        );
     }
 }
