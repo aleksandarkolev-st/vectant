@@ -17,6 +17,8 @@ static TIER0_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 static TIER0_INELIGIBLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 const MAX_DEVICE_PARTIAL_ARTIFACTS: usize = 128;
 const MAX_WARM_SOURCE_BRIDGE_TUS: usize = 16;
+const MAX_SOURCE_BRIDGE_SUPPORT_INLINE_DEPTH: usize = 6;
+const MAX_SOURCE_BRIDGE_SUPPORT_INLINE_BYTES: usize = 256 * 1024;
 
 // Import our new modular stages
 use crate::compiler::stages::ai_utils::{
@@ -620,6 +622,13 @@ struct DevicePartialArtifactSpec {
     mapping_confidence: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct DeviceIncludeGraphIndex {
+    edges: BTreeMap<String, BTreeSet<String>>,
+    known_paths: BTreeSet<String>,
+    mapped_source_paths: BTreeSet<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DevicePartialArtifactSelection {
     filename: String,
@@ -705,6 +714,331 @@ fn build_source_include_partial_source(source_paths: &[String]) -> Option<String
         source.push_str("\"\n");
     }
     Some(source)
+}
+
+fn add_json_string_array_paths(
+    value: &serde_json::Value,
+    key: &str,
+    paths: &mut BTreeSet<String>,
+) {
+    if let Some(items) = value.get(key).and_then(serde_json::Value::as_array) {
+        for item in items {
+            if let Some(path) = item
+                .as_str()
+                .map(normalize_generated_include_path)
+                .filter(|path| !path.is_empty())
+            {
+                paths.insert(path);
+            }
+        }
+    }
+}
+
+fn add_device_include_graph(index: &mut DeviceIncludeGraphIndex, graph: &serde_json::Value) {
+    add_json_string_array_paths(graph, "deviceTranslationUnits", &mut index.known_paths);
+    add_json_string_array_paths(graph, "generatedDeviceIncludes", &mut index.known_paths);
+    add_json_string_array_paths(graph, "reachableHeaders", &mut index.known_paths);
+
+    let Some(edges) = graph.get("edges").and_then(serde_json::Value::as_array) else {
+        return;
+    };
+    for edge in edges {
+        let Some(source) = edge
+            .get("source")
+            .and_then(serde_json::Value::as_str)
+            .map(normalize_generated_include_path)
+            .filter(|path| !path.is_empty())
+        else {
+            continue;
+        };
+        index.known_paths.insert(source.clone());
+        let entry = index.edges.entry(source).or_default();
+        if let Some(includes) = edge.get("includes").and_then(serde_json::Value::as_array) {
+            for include in includes {
+                if let Some(path) = include
+                    .as_str()
+                    .map(normalize_generated_include_path)
+                    .filter(|path| !path.is_empty())
+                {
+                    index.known_paths.insert(path.clone());
+                    entry.insert(path);
+                }
+            }
+        }
+    }
+}
+
+fn device_include_graph_index(sidecar: &serde_json::Value) -> DeviceIncludeGraphIndex {
+    let mut index = DeviceIncludeGraphIndex::default();
+    for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
+        let Some(items) = sidecar
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for item in items {
+            if let Some(path) = item
+                .get("sourcePath")
+                .and_then(serde_json::Value::as_str)
+                .map(normalize_generated_include_path)
+                .filter(|path| !path.is_empty())
+            {
+                index.known_paths.insert(path.clone());
+                index.mapped_source_paths.insert(path);
+            }
+            if let Some(path) = item
+                .get("generatedPath")
+                .and_then(serde_json::Value::as_str)
+                .map(normalize_generated_include_path)
+                .filter(|path| !path.is_empty())
+            {
+                index.known_paths.insert(path);
+            }
+        }
+    }
+    for pointer in [
+        "/deviceMappingReport/deviceIncludeGraph",
+        "/affectedHeaderGraph",
+    ] {
+        if let Some(graph) = sidecar.pointer(pointer) {
+            add_device_include_graph(&mut index, graph);
+        }
+    }
+    index
+}
+
+fn include_resolution_candidates(base_path: &str, include_path: &str) -> Vec<String> {
+    let include = normalize_generated_include_path(include_path);
+    if include.is_empty() {
+        return Vec::new();
+    }
+    let mut candidates = vec![include.clone()];
+    let base_dir = role_dir(base_path);
+    if !base_dir.is_empty() {
+        let resolved = normalize_generated_include_path(&format!("{base_dir}/{include}"));
+        if !resolved.is_empty() && !candidates.contains(&resolved) {
+            candidates.push(resolved);
+        }
+    }
+    candidates
+}
+
+fn resolve_include_path(
+    base_path: &str,
+    include_path: &str,
+    known_paths: &BTreeSet<String>,
+) -> String {
+    let candidates = include_resolution_candidates(base_path, include_path);
+    for candidate in &candidates {
+        if known_paths.contains(candidate) {
+            return candidate.clone();
+        }
+    }
+    candidates.into_iter().next().unwrap_or_default()
+}
+
+fn include_reaches_any(
+    source_path: &str,
+    targets: &BTreeSet<String>,
+    index: &DeviceIncludeGraphIndex,
+) -> bool {
+    let source = normalize_generated_include_path(source_path);
+    if targets.contains(&source) {
+        return true;
+    }
+    let mut stack = vec![source];
+    let mut seen = BTreeSet::new();
+    while let Some(path) = stack.pop() {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        if targets.contains(&path) {
+            return true;
+        }
+        if let Some(next) = index.edges.get(&path) {
+            for item in next {
+                stack.push(item.clone());
+            }
+        }
+    }
+    false
+}
+
+fn source_bridge_line_is_safe_trivia(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.is_empty()
+        || trimmed.starts_with("//")
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with('*')
+        || trimmed.starts_with("*/")
+        || trimmed.starts_with('#')
+}
+
+fn inline_source_bridge_support_include(
+    workspace: &Path,
+    include_path: &str,
+    target_paths: &BTreeSet<String>,
+    omit_paths: &BTreeSet<String>,
+    index: &DeviceIncludeGraphIndex,
+    depth: usize,
+    inlined_bytes: &mut usize,
+) -> Option<String> {
+    if depth > MAX_SOURCE_BRIDGE_SUPPORT_INLINE_DEPTH {
+        return None;
+    }
+    let normalized = normalize_generated_include_path(include_path);
+    if normalized.is_empty() || index.mapped_source_paths.contains(&normalized) {
+        return None;
+    }
+    let rel = compile_request_relpath(&normalized).ok()?;
+    let source = std::fs::read_to_string(workspace.join(rel)).ok()?;
+    *inlined_bytes = inlined_bytes.saturating_add(source.len());
+    if *inlined_bytes > MAX_SOURCE_BRIDGE_SUPPORT_INLINE_BYTES {
+        return None;
+    }
+
+    let mut partial = String::new();
+    for line in source.split_inclusive('\n') {
+        if let Some(included) = quoted_include_from_line(line) {
+            let resolved = resolve_include_path(&normalized, &included, &index.known_paths);
+            if target_paths.contains(&resolved) || omit_paths.contains(&resolved) {
+                partial.push_str(
+                    "// synthi-gpu-hmr: omitted mapped source include from support prelude\n",
+                );
+                continue;
+            }
+            if include_reaches_any(&resolved, omit_paths, index) {
+                if let Some(inlined) = inline_source_bridge_support_include(
+                    workspace,
+                    &resolved,
+                    target_paths,
+                    omit_paths,
+                    index,
+                    depth + 1,
+                    inlined_bytes,
+                ) {
+                    partial.push_str("// synthi-gpu-hmr: inlined source bridge support include: ");
+                    partial.push_str(&resolved);
+                    partial.push('\n');
+                    partial.push_str(&inlined);
+                    if !inlined.ends_with('\n') {
+                        partial.push('\n');
+                    }
+                } else {
+                    partial.push_str(
+                        "// synthi-gpu-hmr: omitted source bridge support include from partial artifact\n",
+                    );
+                }
+                continue;
+            }
+        }
+        partial.push_str(line);
+    }
+    Some(partial)
+}
+
+fn build_contextual_source_include_partial_source(
+    workspace: Option<&Path>,
+    sidecar: &serde_json::Value,
+    generated_path: &str,
+    full_source: &str,
+    target_source_paths: &[String],
+    omit_source_paths: &[String],
+) -> Option<String> {
+    let target_paths = target_source_paths
+        .iter()
+        .map(|path| normalize_generated_include_path(path))
+        .filter(|path| !path.is_empty())
+        .collect::<BTreeSet<_>>();
+    if target_paths.is_empty() || target_paths.len() > MAX_WARM_SOURCE_BRIDGE_TUS {
+        return None;
+    }
+    let omit_paths = omit_source_paths
+        .iter()
+        .map(|path| normalize_generated_include_path(path))
+        .filter(|path| !path.is_empty() && !target_paths.contains(path))
+        .collect::<BTreeSet<_>>();
+    let index = device_include_graph_index(sidecar);
+    let generated = normalize_generated_include_path(generated_path);
+
+    let mut partial = String::from("// synthi-gpu-hmr: source include partial\n");
+    let mut kept_target = false;
+    let mut saw_source_include = false;
+    let mut saw_body_after_source_includes = false;
+    let mut wrote_nontrivia = false;
+    let mut inlined_bytes = 0usize;
+
+    for line in full_source.split_inclusive('\n') {
+        if !wrote_nontrivia && line.trim().is_empty() {
+            continue;
+        }
+        if let Some(included) = quoted_include_from_line(line) {
+            let resolved = resolve_include_path(&generated, &included, &index.known_paths);
+            if target_paths.contains(&resolved) {
+                kept_target = true;
+                saw_source_include = true;
+                partial.push_str(line);
+                wrote_nontrivia = true;
+                continue;
+            }
+            if omit_paths.contains(&resolved) {
+                saw_source_include = true;
+                partial.push_str(
+                    "// synthi-gpu-hmr: omitted source include from partial artifact\n",
+                );
+                wrote_nontrivia = true;
+                continue;
+            }
+            if include_reaches_any(&resolved, &omit_paths, &index) {
+                if let Some(workspace) = workspace {
+                    if let Some(inlined) = inline_source_bridge_support_include(
+                        workspace,
+                        &resolved,
+                        &target_paths,
+                        &omit_paths,
+                        &index,
+                        0,
+                        &mut inlined_bytes,
+                    ) {
+                        partial.push_str("// synthi-gpu-hmr: inlined source bridge support include: ");
+                        partial.push_str(&resolved);
+                        partial.push('\n');
+                        partial.push_str(&inlined);
+                        if !inlined.ends_with('\n') {
+                            partial.push('\n');
+                        }
+                    } else {
+                        partial.push_str(
+                            "// synthi-gpu-hmr: omitted source bridge support include from partial artifact\n",
+                        );
+                    }
+                } else {
+                    partial.push_str(
+                        "// synthi-gpu-hmr: omitted source bridge support include from partial artifact\n",
+                    );
+                }
+                wrote_nontrivia = true;
+                continue;
+            }
+        } else if saw_source_include && !source_bridge_line_is_safe_trivia(line) {
+            saw_body_after_source_includes = true;
+            break;
+        }
+        partial.push_str(line);
+        wrote_nontrivia = wrote_nontrivia || !line.trim().is_empty();
+    }
+
+    if !kept_target {
+        if saw_body_after_source_includes {
+            return None;
+        }
+        if let Some(source) = build_source_include_partial_source(target_source_paths) {
+            partial.push_str(&source);
+            kept_target = true;
+        }
+    }
+    kept_target.then_some(partial)
 }
 
 fn normalized_symbol_set(symbols: &[String]) -> BTreeSet<String> {
@@ -2037,8 +2371,10 @@ fn device_partial_artifact_specs(
     sidecar: &serde_json::Value,
     generated_path: &str,
     full_source: &str,
+    workspace: Option<&Path>,
 ) -> Vec<DevicePartialArtifactSpec> {
-    let mut specs = include_bridge_partial_artifact_specs(sidecar, generated_path, full_source);
+    let mut specs =
+        include_bridge_partial_artifact_specs(sidecar, generated_path, full_source, workspace);
     specs.extend(direct_kernel_partial_artifact_specs(
         generated_path,
         full_source,
@@ -2052,6 +2388,7 @@ fn include_bridge_partial_artifact_specs(
     sidecar: &serde_json::Value,
     generated_path: &str,
     full_source: &str,
+    workspace: Option<&Path>,
 ) -> Vec<DevicePartialArtifactSpec> {
     let generated = normalized_request_filename(generated_path)
         .unwrap_or_else(|| generated_path.replace('\\', "/"));
@@ -2131,9 +2468,16 @@ fn include_bridge_partial_artifact_specs(
             .cloned()
             .collect::<Vec<_>>();
         let target_paths = vec![source_path.clone()];
-        let content = build_source_include_partial_source(&target_paths).or_else(|| {
-            build_device_include_bridge_partial_source(full_source, &target_paths, &omitted)
-        });
+        let content = build_contextual_source_include_partial_source(
+            workspace,
+            sidecar,
+            generated_path,
+            full_source,
+            &target_paths,
+            &omitted,
+        )
+        .or_else(|| build_source_include_partial_source(&target_paths))
+        .or_else(|| build_device_include_bridge_partial_source(full_source, &target_paths, &omitted));
         let Some(content) = content else { continue };
         let symbols = symbols.into_iter().collect::<Vec<_>>();
         let filename = partial_device_filename(&generated, &symbols, &content);
@@ -2210,7 +2554,7 @@ async fn materialize_device_partial_artifacts(
             return Ok(());
         }
     };
-    let specs = device_partial_artifact_specs(&meta, generated_path, full_source);
+    let specs = device_partial_artifact_specs(&meta, generated_path, full_source, Some(workspace));
     if specs.is_empty() {
         return Ok(());
     }
@@ -7096,7 +7440,7 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
 "#;
 
         let specs =
-            device_partial_artifact_specs(&sidecar, ".synthi/generated/gpu/device.hip", source);
+            device_partial_artifact_specs(&sidecar, ".synthi/generated/gpu/device.hip", source, None);
 
         assert_eq!(specs.len(), 2);
         let camera = specs
@@ -7139,7 +7483,7 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
 "#;
 
         let specs =
-            device_partial_artifact_specs(&sidecar, ".synthi/generated/gpu/device.hip", source);
+            device_partial_artifact_specs(&sidecar, ".synthi/generated/gpu/device.hip", source, None);
 
         assert_eq!(specs.len(), 1);
         let spec = specs.first().expect("single source bridge partial");
@@ -7156,6 +7500,92 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
     }
 
     #[test]
+    fn include_bridge_partial_artifact_inlines_support_context_without_sibling_kernels() {
+        let temp = std::env::temp_dir().join(format!(
+            "synthi-source-bridge-support-{}-{}",
+            std::process::id(),
+            hash_content("support-context-test")
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join("src/kernels")).expect("create temp source tree");
+        std::fs::write(
+            temp.join("src/support.h"),
+            "#ifndef SUPPORT_H\n#define SUPPORT_H\n#include \"kernels/Other.h\"\n__device__ int bridge_helper() { return 7; }\n#endif\n",
+        )
+        .expect("write support header");
+
+        let sidecar = normalize_split_sidecar(&serde_json::json!({
+            "deviceMappingReport": {
+                "schemaVersion": "synthi.gpu.device_mapping.v1",
+                "generatedDevicePath": ".synthi/generated/gpu/device.hip",
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "TargetKernel",
+                        "sourcePath": "src/kernels/Target.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_include_bridge_same_source",
+                        "generatedMappingMode": "source_include_bridge"
+                    },
+                    {
+                        "kind": "kernel",
+                        "symbol": "OtherKernel",
+                        "sourcePath": "src/kernels/Other.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_include_bridge_same_source",
+                        "generatedMappingMode": "source_include_bridge"
+                    }
+                ],
+                "deviceIncludeGraph": {
+                    "schemaVersion": "synthi.gpu.device_include_graph.v1",
+                    "status": "bounded",
+                    "generatedDeviceIncludes": [
+                        "src/support.h",
+                        "src/kernels/Target.h",
+                        "src/kernels/Other.h"
+                    ],
+                    "edges": [
+                        {
+                            "source": "src/support.h",
+                            "includes": ["src/kernels/Other.h"]
+                        }
+                    ],
+                    "missingIncludes": [],
+                    "reasonCodes": []
+                }
+            }
+        }));
+        let source = r#"
+#include <hip/hip_runtime.h>
+#define OPTION 1
+#include "src/support.h"
+#include "src/kernels/Target.h"
+#include "src/kernels/Other.h"
+extern "C" __global__ void generated_extra(float* out) { out[0] = 1.0f; }
+"#;
+
+        let specs = device_partial_artifact_specs(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            source,
+            Some(temp.as_path()),
+        );
+
+        let target = specs
+            .iter()
+            .find(|spec| spec.symbols == vec!["TargetKernel".to_string()])
+            .expect("target source bridge partial");
+        assert_eq!(target.kind, "source_include_bridge");
+        assert!(target.content.contains("__device__ int bridge_helper()"));
+        assert!(target.content.contains("#include \"src/kernels/Target.h\""));
+        assert!(!target.content.contains("kernels/Other.h\""));
+        assert!(!target.content.contains("src/kernels/Other.h\""));
+        assert!(!target.content.contains("generated_extra"));
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
     fn direct_device_partial_artifact_catalog_splits_monolithic_kernels_by_symbol() {
         let source = r#"
 extern "C" __global__ void first(float* out) { out[0] = 1.0f; }
@@ -7166,6 +7596,7 @@ extern "C" __global__ void second(float* out) { out[0] = 2.0f; }
             &serde_json::json!({}),
             ".synthi/generated/gpu/device.hip",
             source,
+            None,
         );
 
         assert_eq!(specs.len(), 2);
@@ -7212,7 +7643,7 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
 "#;
 
         let specs =
-            device_partial_artifact_specs(&sidecar, ".synthi/generated/gpu/device.hip", source);
+            device_partial_artifact_specs(&sidecar, ".synthi/generated/gpu/device.hip", source, None);
 
         assert_eq!(specs.len(), 4);
         assert!(specs.iter().any(|spec| {
