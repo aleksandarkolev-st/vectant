@@ -1568,6 +1568,12 @@ fn select_device_partial_artifact(
         .selected
 }
 
+fn selected_partial_reload_symbols(selection: &DevicePartialArtifactSelection) -> Vec<String> {
+    normalized_symbol_set(&selection.symbols)
+        .into_iter()
+        .collect()
+}
+
 async fn read_selected_device_partial_artifact(
     workspace: &Path,
     selection: &DevicePartialArtifactSelection,
@@ -3992,25 +3998,28 @@ pub async fn handle_compile_request(
                                         && normalized_symbol_set(&partial_patch.affected_symbols)
                                             == normalized_symbol_set(&device_patch.affected_symbols)
                                     {
+                                        let reload_symbols =
+                                            selected_partial_reload_symbols(&selection);
                                         partial_patch.patched_device_source.map(|partial_source| {
                                             let partial_filename = partial_device_filename(
                                                 &generated_path,
-                                                &device_patch.affected_symbols,
+                                                &reload_symbols,
                                                 &partial_source,
                                             );
                                             eprintln!(
-                                                "[gpu-hmr] device_only partial artifact patched: source_file={} file={} bytes={} full_bytes={} symbols={} kind={}",
+                                                "[gpu-hmr] device_only partial artifact patched: source_file={} file={} bytes={} full_bytes={} edited_symbols={} reload_symbols={} kind={}",
                                                 selection.filename,
                                                 partial_filename,
                                                 partial_source.len(),
                                                 patched_device_source.len(),
                                                 device_patch.affected_symbols.join(","),
+                                                reload_symbols.join(","),
                                                 selection.kind
                                             );
                                             serde_json::json!({
                                                 "content": partial_source,
                                                 "filename": partial_filename,
-                                                "symbols": device_patch.affected_symbols.clone(),
+                                                "symbols": reload_symbols,
                                                 "source": "devicePartialArtifacts",
                                                 "artifactFilename": selection.filename,
                                                 "artifactKind": selection.kind,
@@ -8273,6 +8282,39 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         assert_eq!(
             normalized_symbol_set(&selected.symbols),
             normalized_symbol_set(&["shade_primary".to_string(), "shade_secondary".to_string()])
+        );
+    }
+
+    #[test]
+    fn selected_partial_reload_symbols_use_artifact_owned_set() {
+        let selection = DevicePartialArtifactSelection {
+            filename: ".synthi/generated/gpu/device.partial.shade.hip".to_string(),
+            kind: "kernel_region".to_string(),
+            generated_path: ".synthi/generated/gpu/device.hip".to_string(),
+            symbols: vec![
+                " shade_secondary ".to_string(),
+                "shade_primary".to_string(),
+                "shade_secondary".to_string(),
+            ],
+            source_paths: vec!["src/device/shade.h".to_string()],
+            content_hash: Some("hash".to_string()),
+            content_bytes: Some(90),
+            full_bytes: Some(900),
+            source_path_match: true,
+            selection_reason: "safe_symbol_superset".to_string(),
+            rejection_reason: None,
+            mapping_confidence: Some("generated_include_bridge_same_source".to_string()),
+            verifier_evidence_id: Some("evidence".to_string()),
+            dependency_hash: Some("deps".to_string()),
+            compile_command_hash: Some("cmd".to_string()),
+        };
+
+        assert_eq!(
+            selected_partial_reload_symbols(&selection),
+            vec![
+                "shade_primary".to_string(),
+                "shade_secondary".to_string()
+            ]
         );
     }
 
