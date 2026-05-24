@@ -17,7 +17,10 @@ pub struct DeviceFastPathResult {
 
 impl DeviceFastPathResult {
     fn rejected(reason_codes: Vec<&str>, user_path: &str) -> Self {
-        Self::rejected_strings(reason_codes.into_iter().map(str::to_string).collect(), user_path)
+        Self::rejected_strings(
+            reason_codes.into_iter().map(str::to_string).collect(),
+            user_path,
+        )
     }
 
     fn rejected_strings(reason_codes: Vec<String>, user_path: &str) -> Self {
@@ -450,8 +453,7 @@ fn mapping_is_source_include_bridge(mapping: &Value) -> bool {
 
 fn generated_source_includes_path(source: &str, user_path: &str) -> bool {
     let target = normalize_path(user_path);
-    let include_re =
-        Regex::new(r#"^\s*#\s*include\s*"(?P<path>[^"]+)""#).expect("include regex");
+    let include_re = Regex::new(r#"^\s*#\s*include\s*"(?P<path>[^"]+)""#).expect("include regex");
     source.lines().any(|line| {
         include_re
             .captures(line)
@@ -491,23 +493,17 @@ pub fn device_only_capability_rejection_reason(sidecar: &Value) -> Option<&'stat
             .and_then(Value::as_array)
             .and_then(|codes| {
                 codes.iter().find_map(|code| match code.as_str() {
-                    Some("stale_launch_pointer_detected") => {
-                        Some("stale_launch_pointer_detected")
-                    }
+                    Some("stale_launch_pointer_detected") => Some("stale_launch_pointer_detected"),
                     Some("stale_launch_pointer_check_missing") => {
                         Some("stale_launch_pointer_check_missing")
                     }
-                    Some("launch_indirection_unverified") => {
-                        Some("launch_indirection_unverified")
-                    }
+                    Some("launch_indirection_unverified") => Some("launch_indirection_unverified"),
                     Some("multi_device_tu_requires_topology_verification") => {
                         Some("multi_device_tu_requires_topology_verification")
                     }
                     Some("gpu_device_tainted") => Some("gpu_device_tainted"),
                     Some("gpu_driver_tdr") => Some("gpu_driver_tdr"),
-                    Some("vram_session_refresh_required") => {
-                        Some("vram_session_refresh_required")
-                    }
+                    Some("vram_session_refresh_required") => Some("vram_session_refresh_required"),
                     Some("vram_fragmented") => Some("vram_fragmented"),
                     _ => None,
                 })
@@ -541,9 +537,7 @@ fn device_compile_metadata_rejection_reason(sidecar: &Value) -> Option<&'static 
 
     let has_effective_flags = sidecar
         .get("effectiveFlagsHash")
-        .or_else(|| {
-            selected_command.and_then(|command| command.get("effectiveFlagsHash"))
-        })
+        .or_else(|| selected_command.and_then(|command| command.get("effectiveFlagsHash")))
         .and_then(Value::as_str)
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
@@ -654,8 +648,8 @@ fn sanitize_gpu_annotations_for_cpp_parser(source: &str) -> String {
     let global_signature = Regex::new(r"GLOBAL_KERNEL_SIGNATURE\s*\(([^)]*)\)")
         .expect("global kernel signature sanitizer regex");
     let mut out = global_signature.replace_all(source, "$1").into_owned();
-    let launch_bounds = Regex::new(r"__launch_bounds__\s*\([^)]*\)")
-        .expect("launch bounds sanitizer regex");
+    let launch_bounds =
+        Regex::new(r"__launch_bounds__\s*\([^)]*\)").expect("launch bounds sanitizer regex");
     out = launch_bounds.replace_all(&out, "").into_owned();
     let launch_config =
         Regex::new(r"(?s)<<<.*?>>>").expect("CUDA/HIP launch config sanitizer regex");
@@ -864,6 +858,38 @@ fn kernel_signatures(source: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+pub fn changed_kernel_body_symbols(old_source: &str, new_source: &str) -> Vec<String> {
+    let old_regions = kernel_regions(old_source);
+    let new_regions = kernel_regions(new_source);
+    if old_regions.is_empty()
+        || old_regions.len() != new_regions.len()
+        || old_regions.keys().collect::<Vec<_>>() != new_regions.keys().collect::<Vec<_>>()
+    {
+        return Vec::new();
+    }
+
+    let mut changed = Vec::new();
+    for (name, old_region) in old_regions {
+        let Some(new_region) = new_regions.get(&name) else {
+            return Vec::new();
+        };
+        if normalize_signature(&old_region.signature) != normalize_signature(&new_region.signature)
+        {
+            return Vec::new();
+        }
+        let Some(old_body) = old_source.get(old_region.body_start..old_region.body_end) else {
+            return Vec::new();
+        };
+        let Some(new_body) = new_source.get(new_region.body_start..new_region.body_end) else {
+            return Vec::new();
+        };
+        if old_body != new_body {
+            changed.push(name);
+        }
+    }
+    changed
+}
+
 pub(crate) fn device_header_kernel_body_only_edit_symbol(
     old_source: &str,
     new_source: &str,
@@ -1004,8 +1030,7 @@ pub fn build_device_include_bridge_partial_source(
         return None;
     }
 
-    let include_re =
-        Regex::new(r#"^\s*#\s*include\s+"(?P<path>[^"]+)""#).expect("include regex");
+    let include_re = Regex::new(r#"^\s*#\s*include\s+"(?P<path>[^"]+)""#).expect("include regex");
     let mut partial = String::with_capacity(source.len());
     let mut removed = 0usize;
     let mut kept_target = false;
@@ -1018,7 +1043,9 @@ pub fn build_device_include_bridge_partial_source(
                     kept_target = true;
                 }
                 if omit_paths.contains(&include_path) {
-                    partial.push_str("// synthi-gpu-hmr: omitted source include from partial artifact");
+                    partial.push_str(
+                        "// synthi-gpu-hmr: omitted source include from partial artifact",
+                    );
                     partial.push_str(newline);
                     removed += 1;
                     continue;
@@ -1141,9 +1168,8 @@ fn statement_patch_anchor(
         if old_text.trim().is_empty() {
             continue;
         }
-        let Some((_, new_start, new_end)) = new_spans
-            .iter()
-            .find(|(new_kind, _, _)| new_kind == &kind)
+        let Some((_, new_start, new_end)) =
+            new_spans.iter().find(|(new_kind, _, _)| new_kind == &kind)
         else {
             continue;
         };
@@ -1155,7 +1181,8 @@ fn statement_patch_anchor(
                 replacement: new_text.to_string(),
             });
         }
-        let Some((relative, old_len)) = normalized_statement_anchor_offset(generated_body, old_text)
+        let Some((relative, old_len)) =
+            normalized_statement_anchor_offset(generated_body, old_text)
         else {
             continue;
         };
@@ -1169,7 +1196,10 @@ fn statement_patch_anchor(
     None
 }
 
-fn normalized_statement_anchor_offset(generated_body: &str, old_text: &str) -> Option<(usize, usize)> {
+fn normalized_statement_anchor_offset(
+    generated_body: &str,
+    old_text: &str,
+) -> Option<(usize, usize)> {
     let old_normalized = normalize_statement_anchor(old_text);
     if old_normalized.is_empty() {
         return None;
@@ -1641,7 +1671,8 @@ mod tests {
                 }
             ]
         });
-        let generated = "#include \"synthi_gpu_runtime.h\"\n#include \"src/Device/kernels/CameraRays.h\"\n";
+        let generated =
+            "#include \"synthi_gpu_runtime.h\"\n#include \"src/Device/kernels/CameraRays.h\"\n";
 
         let result = try_direct_device_body_patch(
             &meta,
@@ -1651,10 +1682,7 @@ mod tests {
         );
 
         assert!(result.accepted, "{:?}", result.reason_codes);
-        assert_eq!(
-            result.patched_device_source.as_deref(),
-            Some(generated)
-        );
+        assert_eq!(result.patched_device_source.as_deref(), Some(generated));
         assert_eq!(result.affected_symbols, vec!["CameraRays".to_string()]);
         assert!(result
             .reason_codes
@@ -1684,7 +1712,8 @@ mod tests {
         let mut meta = sidecar();
         meta["sourceBaselineContents"]["src/gpu/flow.hip"] = Value::String(source.to_string());
         meta["sourceBaselineHashes"]["src/gpu/flow.hip"] = Value::String(sha256_hex(source));
-        let generated = "extern \"C\" __global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n";
+        let generated =
+            "extern \"C\" __global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n";
 
         let result = try_direct_device_body_patch(&meta, "src/gpu/flow.hip", next, generated);
 
@@ -1742,6 +1771,32 @@ extern "C" __global__ void trace(float* x) {
         assert!(partial.contains("__global__ void shade"));
         assert!(!partial.contains("__global__ void trace"));
         assert!(partial.contains("unchanged kernel omitted: trace"));
+    }
+
+    #[test]
+    fn changed_kernel_body_symbols_reports_only_body_edits() {
+        let before = r#"
+extern "C" __global__ void shade(float* x) {
+  x[0] = 1.0f;
+}
+extern "C" __global__ void trace(float* x) {
+  x[0] = 2.0f;
+}
+"#;
+        let after = before.replace("x[0] = 2.0f;", "x[0] = 3.0f;");
+
+        assert_eq!(
+            changed_kernel_body_symbols(before, &after),
+            vec!["trace".to_string()]
+        );
+    }
+
+    #[test]
+    fn changed_kernel_body_symbols_declines_signature_drift() {
+        let before = "extern \"C\" __global__ void shade(float* x) { x[0] = 1.0f; }\n";
+        let after = "extern \"C\" __global__ void shade(float* x, int n) { x[0] = n; }\n";
+
+        assert!(changed_kernel_body_symbols(before, after).is_empty());
     }
 
     #[test]
@@ -1955,7 +2010,10 @@ extern "C" __global__ void trace(float* x) {
     #[test]
     fn missing_selected_compile_command_blocks_fast_path() {
         let mut missing = sidecar();
-        missing.as_object_mut().unwrap().remove("selectedCompileCommand");
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("selectedCompileCommand");
 
         let result = try_direct_device_body_patch(
             &missing,
@@ -1974,7 +2032,10 @@ extern "C" __global__ void trace(float* x) {
     #[test]
     fn missing_effective_flags_hash_blocks_fast_path() {
         let mut missing = sidecar();
-        missing.as_object_mut().unwrap().remove("effectiveFlagsHash");
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("effectiveFlagsHash");
         missing["selectedCompileCommand"]
             .as_object_mut()
             .unwrap()

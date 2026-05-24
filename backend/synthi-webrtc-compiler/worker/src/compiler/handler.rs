@@ -241,13 +241,17 @@ async fn purge_stale_split_state_for_session(
     match tokio::fs::remove_file(sidecar_path).await {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("removing stale {}", sidecar_path.display())),
+        Err(e) => {
+            return Err(e).with_context(|| format!("removing stale {}", sidecar_path.display()))
+        }
     }
     let synthi_dir = workspace.join(".synthi");
     match tokio::fs::remove_dir_all(&synthi_dir).await {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("removing stale {}", synthi_dir.display())),
+        Err(e) => {
+            return Err(e).with_context(|| format!("removing stale {}", synthi_dir.display()))
+        }
     }
     Ok(())
 }
@@ -324,8 +328,9 @@ use crate::hmr::deterministic_compile::{
 };
 use crate::hmr::gpu_device_fast_path::{
     build_device_include_bridge_partial_source, build_device_partial_source,
-    device_header_kernel_body_only_edit_symbol, device_only_capability_rejection_reason,
-    device_source_hash, mapped_generated_device_path, try_direct_device_body_patch,
+    changed_kernel_body_symbols, device_header_kernel_body_only_edit_symbol,
+    device_only_capability_rejection_reason, device_source_hash, mapped_generated_device_path,
+    try_direct_device_body_patch,
 };
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
@@ -613,6 +618,14 @@ struct DevicePartialArtifactSelection {
     source_path_match: bool,
 }
 
+#[derive(Debug, Clone)]
+struct AiDeltaDeviceScope {
+    source: String,
+    filename: String,
+    symbols: Vec<String>,
+    artifact_kind: String,
+}
+
 fn partial_device_filename(generated_path: &str, symbols: &[String], source: &str) -> String {
     let normalized = generated_path.replace('\\', "/");
     let (dir, file) = normalized
@@ -767,7 +780,11 @@ fn select_device_partial_artifact(
     candidates.sort_by(|a, b| {
         b.source_path_match
             .cmp(&a.source_path_match)
-            .then(a.content_bytes.unwrap_or(usize::MAX).cmp(&b.content_bytes.unwrap_or(usize::MAX)))
+            .then(
+                a.content_bytes
+                    .unwrap_or(usize::MAX)
+                    .cmp(&b.content_bytes.unwrap_or(usize::MAX)),
+            )
             .then(a.filename.cmp(&b.filename))
     });
     candidates.into_iter().next()
@@ -808,6 +825,107 @@ async fn read_selected_device_partial_artifact(
         }
     }
     Ok(Some(source))
+}
+
+async fn prepare_ai_delta_device_scope(
+    workspace: &Path,
+    sidecar: &serde_json::Value,
+    generated_path: &str,
+    request_path: &str,
+    old_user_source: Option<&str>,
+    new_user_source: &str,
+    generated_device_source: &str,
+) -> Result<Option<AiDeltaDeviceScope>> {
+    let Some(symbol) = old_user_source
+        .and_then(|old| device_header_kernel_body_only_edit_symbol(old, new_user_source))
+    else {
+        return Ok(None);
+    };
+    let symbols = vec![symbol];
+
+    if let Some(selection) =
+        select_device_partial_artifact(sidecar, generated_path, Some(request_path), &symbols)
+    {
+        if selection.kind == "kernel_region" {
+            if let Some(source) =
+                read_selected_device_partial_artifact(workspace, &selection).await?
+            {
+                eprintln!(
+                    "[GPU AI Delta] scoped device prompt selected partial artifact file={} bytes={} symbols={} kind={}",
+                    selection.filename,
+                    source.len(),
+                    symbols.join(","),
+                    selection.kind
+                );
+                return Ok(Some(AiDeltaDeviceScope {
+                    source,
+                    filename: selection.filename,
+                    symbols,
+                    artifact_kind: selection.kind,
+                }));
+            }
+        } else {
+            eprintln!(
+                "[GPU AI Delta] scoped device prompt skipped partial artifact file={} kind={} reason=non_kernel_region",
+                selection.filename, selection.kind
+            );
+        }
+    }
+
+    if let Some(source) = build_device_partial_source(generated_device_source, &symbols) {
+        let filename = partial_device_filename(generated_path, &symbols, &source);
+        eprintln!(
+            "[GPU AI Delta] scoped device prompt synthesized partial artifact file={} bytes={} full_bytes={} symbols={}",
+            filename,
+            source.len(),
+            generated_device_source.len(),
+            symbols.join(",")
+        );
+        return Ok(Some(AiDeltaDeviceScope {
+            source,
+            filename,
+            symbols,
+            artifact_kind: "kernel_region".to_string(),
+        }));
+    }
+
+    Ok(None)
+}
+
+fn ai_delta_device_partial_payload(
+    generated_path: &str,
+    previous_full_device: &str,
+    final_full_device: &str,
+    scoped: Option<(&AiDeltaDeviceScope, &str)>,
+) -> Option<serde_json::Value> {
+    if let Some((scope, final_scoped_source)) = scoped {
+        let filename = partial_device_filename(generated_path, &scope.symbols, final_scoped_source);
+        return Some(serde_json::json!({
+            "content": final_scoped_source,
+            "filename": filename,
+            "symbols": scope.symbols.clone(),
+            "source": "aiDeltaPartialArtifact",
+            "artifactFilename": scope.filename.clone(),
+            "artifactKind": scope.artifact_kind.clone(),
+            "requirePartial": true,
+        }));
+    }
+
+    let symbols = changed_kernel_body_symbols(previous_full_device, final_full_device);
+    if symbols.is_empty() {
+        return None;
+    }
+    build_device_partial_source(final_full_device, &symbols).map(|partial_source| {
+        let filename = partial_device_filename(generated_path, &symbols, &partial_source);
+        serde_json::json!({
+            "content": partial_source,
+            "filename": filename,
+            "symbols": symbols,
+            "source": "aiDeltaChangedKernelArtifact",
+            "artifactKind": "kernel_region",
+            "requirePartial": true,
+        })
+    })
 }
 
 fn split_partial_device_source(
@@ -1021,29 +1139,14 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
     session_id: &str,
 ) -> Result<Option<DeviceCompileOutcome>> {
     let workspace_path = ctx.workspace_path.as_path();
-    let runtime_paused = send_active_runner_runtime_command(
-        ctx,
-        session_id,
-        "synthi_pause_runtime",
-        "pause",
-    )
-    .await;
-    let device_result = compile_device_sources_phase0(
-        workspace_path,
-        output_dir,
-        timestamp,
-        sources,
-        manifest,
-    )
-    .await;
+    let runtime_paused =
+        send_active_runner_runtime_command(ctx, session_id, "synthi_pause_runtime", "pause").await;
+    let device_result =
+        compile_device_sources_phase0(workspace_path, output_dir, timestamp, sources, manifest)
+            .await;
     if runtime_paused {
-        send_active_runner_runtime_command(
-            ctx,
-            session_id,
-            "synthi_resume_runtime",
-            "resume",
-        )
-        .await;
+        send_active_runner_runtime_command(ctx, session_id, "synthi_resume_runtime", "resume")
+            .await;
     }
     let device = device_result?;
     if let (Some(outcome), Some(partial_filename)) =
@@ -1437,10 +1540,7 @@ fn kernel_symbol_from_signature(signature: &str) -> Option<String> {
     }
 }
 
-fn template_rebuild_impacts(
-    sidecar: &serde_json::Value,
-    path: &str,
-) -> (Vec<String>, Vec<String>) {
+fn template_rebuild_impacts(sidecar: &serde_json::Value, path: &str) -> (Vec<String>, Vec<String>) {
     let normalized = normalized_request_filename(path).unwrap_or_else(|| path.replace('\\', "/"));
     let mut symbols = BTreeSet::new();
     let mut source_paths = BTreeSet::new();
@@ -1484,7 +1584,10 @@ fn template_rebuild_impacts(
         }
     }
 
-    (symbols.into_iter().collect(), source_paths.into_iter().collect())
+    (
+        symbols.into_iter().collect(),
+        source_paths.into_iter().collect(),
+    )
 }
 
 fn device_include_graph_mentions_source(sidecar: &serde_json::Value, path: &str) -> bool {
@@ -1511,23 +1614,30 @@ fn include_bridge_kernel_source_paths(
     sidecar: &serde_json::Value,
     target_path: &str,
 ) -> (Vec<String>, Vec<String>) {
-    let target = normalized_request_filename(target_path).unwrap_or_else(|| target_path.replace('\\', "/"));
+    let target =
+        normalized_request_filename(target_path).unwrap_or_else(|| target_path.replace('\\', "/"));
     let mut targets = BTreeSet::new();
     let mut omitted = BTreeSet::new();
 
     for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
-        let Some(items) = sidecar.pointer(pointer).and_then(serde_json::Value::as_array) else {
+        let Some(items) = sidecar
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_array)
+        else {
             continue;
         };
         for item in items {
             if item.get("kind").and_then(serde_json::Value::as_str) != Some("kernel") {
                 continue;
             }
-            let include_bridge_mapping =
-                item.get("generatedMappingMode").and_then(serde_json::Value::as_str)
-                    == Some("source_include_bridge")
-                    || item.get("mappingConfidence").and_then(serde_json::Value::as_str)
-                        == Some("generated_include_bridge_same_source");
+            let include_bridge_mapping = item
+                .get("generatedMappingMode")
+                .and_then(serde_json::Value::as_str)
+                == Some("source_include_bridge")
+                || item
+                    .get("mappingConfidence")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("generated_include_bridge_same_source");
             if !include_bridge_mapping {
                 continue;
             }
@@ -1555,7 +1665,10 @@ fn device_partial_artifact_specs(
     full_source: &str,
 ) -> Vec<DevicePartialArtifactSpec> {
     let mut specs = include_bridge_partial_artifact_specs(sidecar, generated_path, full_source);
-    specs.extend(direct_kernel_partial_artifact_specs(generated_path, full_source));
+    specs.extend(direct_kernel_partial_artifact_specs(
+        generated_path,
+        full_source,
+    ));
     specs.sort_by(|a, b| a.filename.cmp(&b.filename));
     specs.dedup_by(|a, b| a.filename == b.filename);
     specs
@@ -1571,18 +1684,24 @@ fn include_bridge_partial_artifact_specs(
     let mut by_source: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
-        let Some(items) = sidecar.pointer(pointer).and_then(serde_json::Value::as_array) else {
+        let Some(items) = sidecar
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_array)
+        else {
             continue;
         };
         for item in items {
             if item.get("kind").and_then(serde_json::Value::as_str) != Some("kernel") {
                 continue;
             }
-            let include_bridge_mapping =
-                item.get("generatedMappingMode").and_then(serde_json::Value::as_str)
-                    == Some("source_include_bridge")
-                    || item.get("mappingConfidence").and_then(serde_json::Value::as_str)
-                        == Some("generated_include_bridge_same_source");
+            let include_bridge_mapping = item
+                .get("generatedMappingMode")
+                .and_then(serde_json::Value::as_str)
+                == Some("source_include_bridge")
+                || item
+                    .get("mappingConfidence")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("generated_include_bridge_same_source");
             if !include_bridge_mapping {
                 continue;
             }
@@ -1697,7 +1816,9 @@ async fn materialize_device_partial_artifacts(
     let mut meta = match serde_json::from_str::<serde_json::Value>(&raw) {
         Ok(meta) => meta,
         Err(e) => {
-            eprintln!("[compile-device] partial artifact catalog skipped: sidecar parse failed: {e}");
+            eprintln!(
+                "[compile-device] partial artifact catalog skipped: sidecar parse failed: {e}"
+            );
             return Ok(());
         }
     };
@@ -1754,8 +1875,8 @@ fn refresh_device_partial_artifact_catalog_value(
     symbols: &[String],
     generated_path: Option<&str>,
 ) -> bool {
-    let normalized = normalized_request_filename(filename)
-        .unwrap_or_else(|| filename.replace('\\', "/"));
+    let normalized =
+        normalized_request_filename(filename).unwrap_or_else(|| filename.replace('\\', "/"));
     let symbol_set = normalized_symbol_set(symbols);
     let generated = generated_path.and_then(normalized_request_filename);
     let mut updated = false;
@@ -1797,10 +1918,7 @@ fn refresh_device_partial_artifact_catalog_value(
                     "filename".to_string(),
                     serde_json::Value::String(normalized.clone()),
                 );
-                obj.insert(
-                    "contentBytes".to_string(),
-                    serde_json::json!(source.len()),
-                );
+                obj.insert("contentBytes".to_string(), serde_json::json!(source.len()));
                 obj.insert(
                     "contentHash".to_string(),
                     serde_json::Value::String(format!("{}", hash_content(source))),
@@ -2027,8 +2145,7 @@ fn try_warm_rebuild_header_plan(
     let mut candidate_meta = sidecar_meta.as_object().cloned().unwrap_or_default();
     candidate_meta.insert("lastReloadPlanReport".to_string(), candidate_plan);
     invalidate_derived_gpu_reports(&mut candidate_meta);
-    let normalized_candidate =
-        normalize_split_sidecar(&serde_json::Value::Object(candidate_meta));
+    let normalized_candidate = normalize_split_sidecar(&serde_json::Value::Object(candidate_meta));
 
     let arbiter_decision = normalized_candidate
         .get("arbiterDecision")
@@ -2091,16 +2208,18 @@ fn try_warm_rebuild_header_plan(
     reason_codes.sort_unstable();
     reason_codes.dedup();
 
-    let accepted = reason_codes
-        .iter()
-        .any(|code| code == "build.warm_rebuild")
+    let accepted = reason_codes.iter().any(|code| code == "build.warm_rebuild")
         && (deterministic_body_rebuild
             || (arbiter_decision == "auto_run"
                 && selected_plan == "warm_rebuild"
                 && template_source_projection_available));
     let estimated_ms = ranked_option_estimate_ms(&normalized_candidate, "warm_rebuild");
     let plan = warm_rebuild_reload_plan(
-        if accepted { "warm_rebuild" } else { "unsupported" },
+        if accepted {
+            "warm_rebuild"
+        } else {
+            "unsupported"
+        },
         user_path,
         generated_device_path,
         reason_codes.clone(),
@@ -2704,7 +2823,12 @@ pub async fn handle_compile_request(
                             }),
                         );
                         invalidate_derived_gpu_reports(&mut meta);
-                        write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta), &session_id).await;
+                        write_sidecar_logged(
+                            &sidecar_path,
+                            &serde_json::Value::Object(meta),
+                            &session_id,
+                        )
+                        .await;
                         eprintln!(
                             "[gpu-hmr] device_only fast path accepted: user={} generated={} reasons={}",
                             request_device_name,
@@ -2829,7 +2953,12 @@ pub async fn handle_compile_request(
                             serde_json::Value::String("device_only_rejected".to_string()),
                         );
                         invalidate_derived_gpu_reports(&mut meta);
-                        write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta), &session_id).await;
+                        write_sidecar_logged(
+                            &sidecar_path,
+                            &serde_json::Value::Object(meta),
+                            &session_id,
+                        )
+                        .await;
                         eprintln!(
                             "[gpu-hmr] device_only fast path rejected: user={} reasons={}",
                             request_device_name,
@@ -2943,8 +3072,12 @@ pub async fn handle_compile_request(
                         }
 
                         invalidate_derived_gpu_reports(&mut meta);
-                        write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta), &session_id)
-                            .await;
+                        write_sidecar_logged(
+                            &sidecar_path,
+                            &serde_json::Value::Object(meta),
+                            &session_id,
+                        )
+                        .await;
 
                         if !warm.accepted {
                             eprintln!(
@@ -3012,13 +3145,12 @@ pub async fn handle_compile_request(
                             });
                             let catalog_payload = if source_bridge_payload.is_some() {
                                 None
-                            } else if let Some(selection) =
-                                select_device_partial_artifact(
-                                    &sidecar_meta,
-                                    &generated_path,
-                                    Some(&request_name),
-                                    &warm.affected_symbols,
-                                ) {
+                            } else if let Some(selection) = select_device_partial_artifact(
+                                &sidecar_meta,
+                                &generated_path,
+                                Some(&request_name),
+                                &warm.affected_symbols,
+                            ) {
                                 if selection.kind == "source_include_bridge"
                                     && selection.source_path_match
                                 {
@@ -3145,8 +3277,8 @@ pub async fn handle_compile_request(
                                 CompileManifest::from_json_value(&sidecar_manifest_json)
                                     .ok_or_else(|| {
                                         anyhow::anyhow!(
-                                            "GPU AI delta requires a compile manifest in the split sidecar"
-                                        )
+                                    "GPU AI delta requires a compile manifest in the split sidecar"
+                                )
                                     })?;
                             if sidecar_manifest.gpu.is_none() {
                                 anyhow::bail!(
@@ -3179,6 +3311,20 @@ pub async fn handle_compile_request(
                                         )
                                     })?
                             };
+                            let ai_delta_device_scope = prepare_ai_delta_device_scope(
+                                &ctx.workspace_path,
+                                &sidecar_meta,
+                                &generated_device_path,
+                                &request_device_name,
+                                Some(old_source.as_str()),
+                                &req.source,
+                                &generated_device_source,
+                            )
+                            .await?;
+                            let ai_delta_device_prompt_source = ai_delta_device_scope
+                                .as_ref()
+                                .map(|scope| scope.source.as_str())
+                                .unwrap_or(generated_device_source.as_str());
 
                             let arch_hint: Option<&str> = if architecture_md.is_empty() {
                                 None
@@ -3191,7 +3337,7 @@ pub async fn handle_compile_request(
                                 &gui_content,
                                 &shared_content,
                                 &host_runner_content,
-                                &generated_device_source,
+                                ai_delta_device_prompt_source,
                                 arch_hint,
                                 sidecar_meta
                                     .get("deviceMappingReport")
@@ -3265,24 +3411,45 @@ pub async fn handle_compile_request(
                                 final_gui,
                                 final_shared,
                                 final_host_runner,
-                                final_device,
+                                final_prompt_device,
                             ) = crate::hmr::edit_applier::apply_edit_list_with_device(
                                 &ai_delta.edits,
                                 &core_content,
                                 &gui_content,
                                 &shared_content,
                                 &host_runner_content,
-                                &generated_device_source,
+                                ai_delta_device_prompt_source,
                             )?;
+                            let final_device = if ai_delta_device_scope.is_some() {
+                                match crate::hmr::edit_applier::apply_edit_list_with_device(
+                                    &ai_delta.edits,
+                                    &core_content,
+                                    &gui_content,
+                                    &shared_content,
+                                    &host_runner_content,
+                                    &generated_device_source,
+                                ) {
+                                    Ok((_, _, _, _, full_device)) => full_device,
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[GPU AI Delta] scoped device prompt rejected: generated full role did not accept the same verified edits: {e:#}"
+                                        );
+                                        anyhow::bail!(
+                                            "GPU AI delta scoped artifact edits did not apply to canonical generated device role"
+                                        );
+                                    }
+                                }
+                            } else {
+                                final_prompt_device.clone()
+                            };
 
-                            let include_violations =
-                                generated_role_include_policy_violations(&[
-                                    ("shared", &shared_filename, &final_shared),
-                                    ("core", &core_filename, &final_core),
-                                    ("gui", &gui_filename, &final_gui),
-                                    ("host_runner", &host_runner_filename, &final_host_runner),
-                                    ("device", &generated_device_path, &final_device),
-                                ]);
+                            let include_violations = generated_role_include_policy_violations(&[
+                                ("shared", &shared_filename, &final_shared),
+                                ("core", &core_filename, &final_core),
+                                ("gui", &gui_filename, &final_gui),
+                                ("host_runner", &host_runner_filename, &final_host_runner),
+                                ("device", &generated_device_path, &final_device),
+                            ]);
                             if !include_violations.is_empty() {
                                 let details =
                                     format_generated_role_include_violations(&include_violations);
@@ -3307,15 +3474,13 @@ pub async fn handle_compile_request(
                                 if let Some(obj) = verifier_report.as_object_mut() {
                                     obj.insert(
                                         "includeViolations".to_string(),
-                                        serde_json::json!(
-                                            include_violations
-                                                .iter()
-                                                .map(|v| serde_json::json!({
-                                                    "role": v.role,
-                                                    "include": v.include_path
-                                                }))
-                                                .collect::<Vec<_>>()
-                                        ),
+                                        serde_json::json!(include_violations
+                                            .iter()
+                                            .map(|v| serde_json::json!({
+                                                "role": v.role,
+                                                "include": v.include_path
+                                            }))
+                                            .collect::<Vec<_>>()),
                                     );
                                 }
                                 let mut meta =
@@ -3481,8 +3646,12 @@ pub async fn handle_compile_request(
                                 }),
                             );
                             invalidate_derived_gpu_reports(&mut meta);
-                            write_sidecar_logged(&sidecar_path, &serde_json::Value::Object(meta), &session_id)
-                                .await;
+                            write_sidecar_logged(
+                                &sidecar_path,
+                                &serde_json::Value::Object(meta),
+                                &session_id,
+                            )
+                            .await;
                             eprintln!(
                                 "[GPU AI Delta] accepted: user={} generated={} plan={} edits={}",
                                 request_device_name,
@@ -3490,7 +3659,39 @@ pub async fn handle_compile_request(
                                 ai_delta.reload_plan,
                                 ai_delta.edits.len()
                             );
-                            serde_json::json!({
+                            let partial_device_payload = if ai_delta.reload_plan == "device_only" {
+                                let payload = ai_delta_device_partial_payload(
+                                    &generated_device_path,
+                                    &generated_device_source,
+                                    &final_device,
+                                    ai_delta_device_scope
+                                        .as_ref()
+                                        .map(|scope| (scope, final_prompt_device.as_str())),
+                                );
+                                if let Some(partial) = payload.as_ref() {
+                                    eprintln!(
+                                        "[GPU AI Delta] partial compile package prepared: source={} file={} bytes={} symbols={}",
+                                        partial
+                                            .get("source")
+                                            .and_then(serde_json::Value::as_str)
+                                            .unwrap_or("unknown"),
+                                        partial
+                                            .get("filename")
+                                            .and_then(serde_json::Value::as_str)
+                                            .unwrap_or("unknown"),
+                                        partial
+                                            .get("content")
+                                            .and_then(serde_json::Value::as_str)
+                                            .map(str::len)
+                                            .unwrap_or(0),
+                                        string_array_field(partial, "symbols").join(",")
+                                    );
+                                }
+                                payload
+                            } else {
+                                None
+                            };
+                            let mut split_payload = serde_json::json!({
                                 "shared": { "content": final_shared, "filename": shared_filename },
                                 "core": { "content": final_core, "filename": core_filename },
                                 "gui": { "content": final_gui, "filename": gui_filename },
@@ -3498,7 +3699,13 @@ pub async fn handle_compile_request(
                                 "device": { "content": final_device, "filename": generated_device_path },
                                 "_synthi_manifest": sidecar_manifest_json.clone(),
                                 "_synthi_reload_plan": plan_report,
-                            })
+                            });
+                            if let (Some(obj), Some(partial)) =
+                                (split_payload.as_object_mut(), partial_device_payload)
+                            {
+                                obj.insert("_synthi_device_partial".to_string(), partial);
+                            }
+                            split_payload
                         } else {
                             // ── Tiered patching (no AI classifier) ──
                             //
@@ -3661,8 +3868,12 @@ pub async fn handle_compile_request(
                                                             "source_context_report": fresh_source_report,
                                                             "launch_indirection_report": fresh_launch_report,
                                                         });
-                                                        write_sidecar_logged(&sidecar_path, &meta, &session_id)
-                                                            .await;
+                                                        write_sidecar_logged(
+                                                            &sidecar_path,
+                                                            &meta,
+                                                            &session_id,
+                                                        )
+                                                        .await;
                                                         return Ok(result);
                                                     }
                                                 }
@@ -3704,7 +3915,12 @@ pub async fn handle_compile_request(
                                                     "source_context_report": fresh_source_report,
                                                     "launch_indirection_report": fresh_launch_report,
                                                 });
-                                                write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
+                                                write_sidecar_logged(
+                                                    &sidecar_path,
+                                                    &meta,
+                                                    &session_id,
+                                                )
+                                                .await;
                                                 return Ok(result);
                                             }
                                         }
@@ -3869,8 +4085,12 @@ pub async fn handle_compile_request(
                                                             "source_context_report": fresh_source_report,
                                                             "launch_indirection_report": fresh_launch_report,
                                                         });
-                                                        write_sidecar_logged(&sidecar_path, &meta, &session_id)
-                                                            .await;
+                                                        write_sidecar_logged(
+                                                            &sidecar_path,
+                                                            &meta,
+                                                            &session_id,
+                                                        )
+                                                        .await;
                                                         return Ok(result);
                                                     }
                                                 }
@@ -3915,7 +4135,12 @@ pub async fn handle_compile_request(
                                                     "source_context_report": fresh_source_report,
                                                     "launch_indirection_report": fresh_launch_report,
                                                 });
-                                                write_sidecar_logged(&sidecar_path, &meta, &session_id).await;
+                                                write_sidecar_logged(
+                                                    &sidecar_path,
+                                                    &meta,
+                                                    &session_id,
+                                                )
+                                                .await;
                                                 return Ok(result);
                                             }
                                         }
@@ -3938,11 +4163,7 @@ pub async fn handle_compile_request(
                                         ("shared", &shared_filename, &final_shared),
                                         ("core", &core_filename, &final_core),
                                         ("gui", &gui_filename, &final_gui),
-                                        (
-                                            "host_runner",
-                                            &host_runner_filename,
-                                            &final_host_runner,
-                                        ),
+                                        ("host_runner", &host_runner_filename, &final_host_runner),
                                     ]);
                                 if !include_violations.is_empty() {
                                     let details = format_generated_role_include_violations(
@@ -5390,10 +5611,9 @@ pub async fn handle_compile_request(
         debug_log!(
             "[GPU HMR] Skipping worker-side device reload; shipped runner will load sidecar"
         );
-    } else if let (Some(device_outcome), Some(manifest)) = (
-        device_compile_outcome.as_ref(),
-        compile_manifest.as_ref(),
-    ) {
+    } else if let (Some(device_outcome), Some(manifest)) =
+        (device_compile_outcome.as_ref(), compile_manifest.as_ref())
+    {
         if let Some(gpu) = manifest.gpu.as_ref() {
             let device_source = device_outcome.compiled_source.as_str();
             let gpu_language = gpu.vendor.as_str();
@@ -5402,13 +5622,12 @@ pub async fn handle_compile_request(
             if !device_dirty_units.iter().any(|u| u == device_filename) {
                 device_dirty_units.push(device_filename.to_string());
             }
-            let kernel_symbols = if device_outcome.partial_module
-                && !device_outcome.target_symbols.is_empty()
-            {
-                device_outcome.target_symbols.clone()
-            } else {
-                extract_device_kernel_symbols(device_source)
-            };
+            let kernel_symbols =
+                if device_outcome.partial_module && !device_outcome.target_symbols.is_empty() {
+                    device_outcome.target_symbols.clone()
+                } else {
+                    extract_device_kernel_symbols(device_source)
+                };
             let kernel_abi = kernel_abi_fingerprint_source(device_source);
             let artifact_path = device_outcome.artifact_path.to_string_lossy().to_string();
             let artifact_hash = format!(
@@ -5596,19 +5815,17 @@ pub async fn handle_compile_request(
         }
     }
 
-    if let (Some(device_outcome), Some(manifest)) = (
-        device_compile_outcome.as_ref(),
-        compile_manifest.as_ref(),
-    ) {
+    if let (Some(device_outcome), Some(manifest)) =
+        (device_compile_outcome.as_ref(), compile_manifest.as_ref())
+    {
         if let Some(gpu) = manifest.gpu.as_ref() {
             let device_source = device_outcome.compiled_source.as_str();
-            let kernel_symbols = if device_outcome.partial_module
-                && !device_outcome.target_symbols.is_empty()
-            {
-                device_outcome.target_symbols.clone()
-            } else {
-                extract_device_kernel_symbols(device_source)
-            };
+            let kernel_symbols =
+                if device_outcome.partial_module && !device_outcome.target_symbols.is_empty() {
+                    device_outcome.target_symbols.clone()
+                } else {
+                    extract_device_kernel_symbols(device_source)
+                };
             let kernel_abi_hash = format!(
                 "{}",
                 hash_content(&kernel_abi_fingerprint_source(device_source))
@@ -5692,9 +5909,10 @@ pub async fn handle_compile_request(
     let runner_reload_policy = if planner_output.decision.is_in_process() {
         RunnerReloadPolicy::default()
     } else {
-        RunnerReloadPolicy::require_runner_restart(vec![
-            planner_output.reason.decision_code.clone(),
-        ])
+        RunnerReloadPolicy::require_runner_restart(vec![planner_output
+            .reason
+            .decision_code
+            .clone()])
     };
 
     let runtime_reload_start = std::time::Instant::now();
@@ -6071,9 +6289,12 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
 
     #[test]
     fn deterministic_gpu_edits_are_not_preempted_by_failure_rescue() {
-        let status =
-            AdaptedProjectStatus::adapted(PathBuf::from("core.cpp"), PathBuf::from("gui.cpp"), None)
-                .with_split_hash("hash1".into());
+        let status = AdaptedProjectStatus::adapted(
+            PathBuf::from("core.cpp"),
+            PathBuf::from("gui.cpp"),
+            None,
+        )
+        .with_split_hash("hash1".into());
         let flags = crate::hmr::rollout_flags::RolloutFlags::new_defaults();
 
         assert!(prefer_deterministic_gpu_edit(
@@ -6284,11 +6505,8 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
 #include "src/Device/kernels/TraceTest.h"
 "#;
 
-        let specs = device_partial_artifact_specs(
-            &sidecar,
-            ".synthi/generated/gpu/device.hip",
-            source,
-        );
+        let specs =
+            device_partial_artifact_specs(&sidecar, ".synthi/generated/gpu/device.hip", source);
 
         assert_eq!(specs.len(), 2);
         let camera = specs
@@ -6364,28 +6582,21 @@ extern "C" __global__ void generated_one(float* out) { out[0] = 1.0f; }
 extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
 "#;
 
-        let specs = device_partial_artifact_specs(
-            &sidecar,
-            ".synthi/generated/gpu/device.hip",
-            source,
-        );
+        let specs =
+            device_partial_artifact_specs(&sidecar, ".synthi/generated/gpu/device.hip", source);
 
         assert_eq!(specs.len(), 4);
         assert!(specs.iter().any(|spec| {
-            spec.kind == "source_include_bridge"
-                && spec.symbols == vec!["CameraRays".to_string()]
+            spec.kind == "source_include_bridge" && spec.symbols == vec!["CameraRays".to_string()]
         }));
         assert!(specs.iter().any(|spec| {
-            spec.kind == "source_include_bridge"
-                && spec.symbols == vec!["TraceTest".to_string()]
+            spec.kind == "source_include_bridge" && spec.symbols == vec!["TraceTest".to_string()]
         }));
         assert!(specs.iter().any(|spec| {
-            spec.kind == "kernel_region"
-                && spec.symbols == vec!["generated_one".to_string()]
+            spec.kind == "kernel_region" && spec.symbols == vec!["generated_one".to_string()]
         }));
         assert!(specs.iter().any(|spec| {
-            spec.kind == "kernel_region"
-                && spec.symbols == vec!["generated_two".to_string()]
+            spec.kind == "kernel_region" && spec.symbols == vec!["generated_two".to_string()]
         }));
     }
 
@@ -6479,6 +6690,89 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
     }
 
     #[test]
+    fn ai_delta_payload_compiles_changed_kernel_partial() {
+        let before = r#"
+extern "C" __global__ void shade(float* out) { out[0] = 1.0f; }
+extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
+"#;
+        let after = before.replace("out[0] = 2.0f;", "out[0] = 4.0f;");
+
+        let payload = ai_delta_device_partial_payload(
+            ".synthi/generated/gpu/device.hip",
+            before,
+            &after,
+            None,
+        )
+        .expect("partial payload");
+
+        assert_eq!(
+            payload
+                .get("artifactKind")
+                .and_then(serde_json::Value::as_str),
+            Some("kernel_region")
+        );
+        assert_eq!(
+            string_array_field(&payload, "symbols"),
+            vec!["trace".to_string()]
+        );
+        assert!(payload
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .contains("out[0] = 4.0f"));
+        assert!(!payload
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .contains("__global__ void shade"));
+        assert_eq!(
+            payload
+                .get("requirePartial")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn ai_delta_payload_uses_scoped_partial_source() {
+        let scope = AiDeltaDeviceScope {
+            source: "extern \"C\" __global__ void trace(float* out) { out[0] = 2.0f; }\n"
+                .to_string(),
+            filename: ".synthi/generated/gpu/device.partial.old.hip".to_string(),
+            symbols: vec!["trace".to_string()],
+            artifact_kind: "kernel_region".to_string(),
+        };
+        let final_scope = "extern \"C\" __global__ void trace(float* out) { out[0] = 5.0f; }\n";
+
+        let payload = ai_delta_device_partial_payload(
+            ".synthi/generated/gpu/device.hip",
+            "",
+            "",
+            Some((&scope, final_scope)),
+        )
+        .expect("scoped partial payload");
+
+        assert_eq!(
+            payload.get("source").and_then(serde_json::Value::as_str),
+            Some("aiDeltaPartialArtifact")
+        );
+        assert_eq!(
+            payload
+                .get("artifactFilename")
+                .and_then(serde_json::Value::as_str),
+            Some(".synthi/generated/gpu/device.partial.old.hip")
+        );
+        assert_eq!(
+            payload.get("content").and_then(serde_json::Value::as_str),
+            Some(final_scope)
+        );
+        assert_eq!(
+            string_array_field(&payload, "symbols"),
+            vec!["trace".to_string()]
+        );
+    }
+
+    #[test]
     fn partial_artifact_catalog_refresh_updates_matching_reports_only() {
         let mut sidecar = serde_json::json!({
             "devicePartialArtifacts": {
@@ -6522,15 +6816,21 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         ] {
             let artifact = sidecar.pointer(pointer).expect("updated artifact");
             assert_eq!(
-                artifact.get("contentBytes").and_then(serde_json::Value::as_u64),
+                artifact
+                    .get("contentBytes")
+                    .and_then(serde_json::Value::as_u64),
                 Some(source.len() as u64)
             );
             assert_eq!(
-                artifact.get("contentHash").and_then(serde_json::Value::as_str),
+                artifact
+                    .get("contentHash")
+                    .and_then(serde_json::Value::as_str),
                 Some(expected_hash.as_str())
             );
             assert_eq!(
-                artifact.get("contentSource").and_then(serde_json::Value::as_str),
+                artifact
+                    .get("contentSource")
+                    .and_then(serde_json::Value::as_str),
                 Some("compiled_source")
             );
         }
@@ -6594,7 +6894,9 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
                 Some(new_filename)
             );
             assert_eq!(
-                artifact.get("contentHash").and_then(serde_json::Value::as_str),
+                artifact
+                    .get("contentHash")
+                    .and_then(serde_json::Value::as_str),
                 Some(expected_hash.as_str())
             );
         }
@@ -6621,8 +6923,7 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         assert!(
             decision.accepted,
             "reason_codes={:?} verifier={}",
-            decision.reason_codes,
-            decision.verifier_report
+            decision.reason_codes, decision.verifier_report
         );
         assert_eq!(
             decision
@@ -6708,8 +7009,7 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         assert!(
             decision.accepted,
             "reason_codes={:?} verifier={}",
-            decision.reason_codes,
-            decision.verifier_report
+            decision.reason_codes, decision.verifier_report
         );
         assert_eq!(
             decision
