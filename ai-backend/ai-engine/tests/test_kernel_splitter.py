@@ -690,6 +690,32 @@ def test_source_device_preservation_contract_includes_runtime_compiled_kernel_he
     assert "kCameraGain" in contract
 
 
+def test_source_device_preservation_contract_ignores_commented_kernel_examples():
+    contract = _source_device_preservation_contract(
+        {
+            "src/Device/includes/FixIntellisense.h": """
+            // extern "C" void __global__ my_function(...)
+            /* GLOBAL_KERNEL_SIGNATURE(void) FakeKernel(RenderData data) {} */
+            #define GLOBAL_KERNEL_SIGNATURE(returnType) extern "C" returnType __global__
+            """,
+            "src/Device/kernels/CameraRays.h": """
+            #include "../includes/FixIntellisense.h"
+            // constexpr float kFakeConstant = 99.0f;
+            constexpr float kCameraGain = 0.5f;
+            GLOBAL_KERNEL_SIGNATURE(void) CameraRays(float* out) {
+                out[threadIdx.x] = kCameraGain;
+            }
+            """,
+        }
+    )
+
+    assert "Required original kernels: CameraRays." in contract
+    assert "my_function" not in contract
+    assert "FakeKernel" not in contract
+    assert "kFakeConstant" not in contract
+    assert "kCameraGain" in contract
+
+
 def test_source_device_preservation_contract_omits_lower_priority_headers_with_reason(monkeypatch):
     monkeypatch.setattr(kernel_splitter, "_DEVICE_PRESERVATION_TOTAL_MAX_CHARS", 900)
     monkeypatch.setattr(kernel_splitter, "_DEVICE_PRESERVATION_PER_FILE_MAX_CHARS", 400)

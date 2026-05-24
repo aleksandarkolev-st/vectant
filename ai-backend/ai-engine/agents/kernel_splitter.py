@@ -42,7 +42,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
-from agents.abi_stamper import stamp_device_source
+from agents.abi_stamper import mask_comments_for_parsing, stamp_device_source
 from agents.gpu_detect import GpuDetectionResult
 from agents.gpu_split_repair import repair_split_artifacts
 from agents.gpu_source_context import build_project_source_context
@@ -379,7 +379,8 @@ def _looks_like_source_file(name: str) -> bool:
 
 
 def _has_gpu_device_marker(source: str) -> bool:
-    return bool(_GPU_DEVICE_MARKER_RE.search(source or "") or ("<<<" in source and ">>>" in source))
+    code = mask_comments_for_parsing(source or "")
+    return bool(_GPU_DEVICE_MARKER_RE.search(code) or ("<<<" in code and ">>>" in code))
 
 
 def _extract_embedded_source_object(value: str) -> Optional[str]:
@@ -579,7 +580,7 @@ def _device_reachable_source_files(
         if source is None:
             continue
         reachable[path] = source
-        for match in _QUOTE_INCLUDE_RE.finditer(source):
+        for match in _QUOTE_INCLUDE_RE.finditer(mask_comments_for_parsing(source)):
             resolved = _resolve_quoted_include(
                 match.group("path"),
                 including_path=path,
@@ -614,7 +615,7 @@ def _device_compiler_prelude_scope(
     device_include_names = {
         match.group("path").replace("\\", "/").lstrip("./")
         for source in device_sources.values()
-        for match in _ANY_INCLUDE_RE.finditer(source)
+        for match in _ANY_INCLUDE_RE.finditer(mask_comments_for_parsing(source))
     }
     namespaces = {
         _include_namespace(include)
@@ -628,7 +629,7 @@ def _device_compiler_prelude_scope(
     for path, source in source_files.items():
         includes = [
             match.group("path").replace("\\", "/").lstrip("./")
-            for match in _ANY_INCLUDE_RE.finditer(source)
+            for match in _ANY_INCLUDE_RE.finditer(mask_comments_for_parsing(source))
         ]
         for include in includes:
             basename = include.rsplit("/", 1)[-1].lower()
@@ -701,14 +702,14 @@ def _source_device_preservation_contract(
         {
             match.group(1)
             for source in device_sources.values()
-            for match in _SOURCE_GLOBAL_KERNEL_RE.finditer(source)
+            for match in _SOURCE_GLOBAL_KERNEL_RE.finditer(mask_comments_for_parsing(source))
         }
     )
     identifiers = sorted(
         {
             ident
             for source in device_sources.values()
-            for ident in _SOURCE_DEVICE_IDENTIFIER_RE.findall(source)
+            for ident in _SOURCE_DEVICE_IDENTIFIER_RE.findall(mask_comments_for_parsing(source))
         }
     )
     sections = [
@@ -728,11 +729,12 @@ def _source_device_preservation_contract(
 
     def sort_key(item: tuple[str, str]) -> tuple[int, str]:
         path, source = item
+        code = mask_comments_for_parsing(source)
         if path in root_set:
             return (0, path)
-        if _SOURCE_GLOBAL_KERNEL_RE.search(source):
+        if _SOURCE_GLOBAL_KERNEL_RE.search(code):
             return (1, path)
-        if _has_gpu_device_marker(source):
+        if _has_gpu_device_marker(code):
             return (2, path)
         if "/kernels/" in path:
             return (3, path)
@@ -741,7 +743,7 @@ def _source_device_preservation_contract(
     used = sum(len(section) + 2 for section in sections)
     omitted: List[str] = []
     for path, source in sorted(device_sources.items(), key=sort_key):
-        body = source
+        body = mask_comments_for_parsing(source)
         if len(body) > _DEVICE_PRESERVATION_PER_FILE_MAX_CHARS:
             body = (
                 body[:_DEVICE_PRESERVATION_PER_FILE_MAX_CHARS]
