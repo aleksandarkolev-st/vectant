@@ -1,6 +1,8 @@
 import { session } from "../session.js";
 import { leaseRegistry } from "../arbitration/lease.js";
 import { brokerError, brokerInputEnforced } from "../broker/index.js";
+import { resolveLeaseMode } from "../arbitration/lease.js";
+import { requestSharedLease } from "./shared_lease.js";
 import {
   errorResponse,
   jsonResponse,
@@ -40,6 +42,22 @@ export async function releaseInputTool(args: unknown): Promise<ToolResponse> {
     }) as unknown as Record<string, unknown>);
   }
 
+  if (leaseId !== undefined) {
+    const shared = await requestSharedLease(attached, { op: "release", lease_id: leaseId });
+    if (shared?.ok === false) {
+      return errorResponse(shared.error, shared.detail);
+    }
+    if (shared?.ok === true) {
+      leaseRegistry.release(leaseId, attached.sessionId);
+      session.touch();
+      return jsonResponse({
+        ok: true,
+        released: shared.released ?? [leaseId],
+        enforcement: "worker",
+      });
+    }
+  }
+
   const result = leaseRegistry.release(leaseId);
   session.touch();
   if (result.not_found !== null) {
@@ -48,6 +66,6 @@ export async function releaseInputTool(args: unknown): Promise<ToolResponse> {
   return jsonResponse({
     ok: true,
     released: result.released,
-    enforcement: "wire-only",
+    enforcement: brokerInputEnforced() ? "server" : resolveLeaseMode() === "single-holder" ? "mcp-local" : "wire-only",
   });
 }

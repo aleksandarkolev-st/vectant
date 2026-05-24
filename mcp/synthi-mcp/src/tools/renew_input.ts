@@ -1,5 +1,6 @@
 import { session } from "../session.js";
 import { DEFAULT_LEASE_MS, leaseRegistry } from "../arbitration/lease.js";
+import { requestSharedLease } from "./shared_lease.js";
 import {
   errorResponse,
   jsonResponse,
@@ -26,6 +27,25 @@ export async function renewInputTool(args: unknown): Promise<ToolResponse> {
       return errorResponse("invalid_args", { field: "extend_ms", expected: "positive number" });
     }
     extendMs = a.extend_ms;
+  }
+
+  const shared = await requestSharedLease(attached, { op: "renew", lease_id: a.lease_id, extend_ms: extendMs });
+  if (shared?.ok === false) return errorResponse(shared.error, shared.detail);
+  if (shared?.ok === true && shared.lease) {
+    leaseRegistry.adoptSharedLease(shared.lease);
+    session.touch();
+    return jsonResponse({
+      ok: true,
+      lease_id: shared.lease.lease_id,
+      expires_at: shared.lease.expires_at,
+      lease_ms: shared.lease.lease_ms,
+      owner: shared.lease.owner,
+      scope: shared.lease.scope,
+      preemptible: shared.lease.preemptible,
+      reason: shared.lease.reason,
+      continuous_owner_since: shared.lease.continuous_owner_since,
+      enforcement: "worker",
+    });
   }
 
   const result = leaseRegistry.renew(a.lease_id, extendMs);

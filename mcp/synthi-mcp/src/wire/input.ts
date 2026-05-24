@@ -46,6 +46,7 @@ export type GuiInnerEvent = GuiMouseMove | GuiMouseButton | GuiMouseWheel | GuiK
 export interface GuiEventEnvelope {
   type: "gui-event";
   sessionId: string;
+  lease_id?: string;
   /**
    * Optional correlator. When set, the worker echoes
    * `{type:"input-ack", dispatch_id, accepted, reason?}` on the
@@ -69,9 +70,10 @@ export function buttonNameToCode(name: MouseButtonName | undefined): number {
   }
 }
 
-function envelope(sessionId: string, event: GuiInnerEvent, dispatchId?: string): string {
+function envelope(sessionId: string, event: GuiInnerEvent, dispatchId?: string, leaseId?: string): string {
   const env: GuiEventEnvelope = { type: "gui-event", sessionId, event };
   if (dispatchId !== undefined) env.dispatch_id = dispatchId;
+  if (leaseId !== undefined) env.lease_id = leaseId;
   return JSON.stringify(env);
 }
 
@@ -79,9 +81,10 @@ export function encodeMouseMove(
   sessionId: string,
   x: number,
   y: number,
-  dispatchId?: string
+  dispatchId?: string,
+  leaseId?: string
 ): string {
-  return envelope(sessionId, { type: "mouse", action: "move", x, y }, dispatchId);
+  return envelope(sessionId, { type: "mouse", action: "move", x, y }, dispatchId, leaseId);
 }
 
 export function encodeMouseButton(
@@ -90,22 +93,24 @@ export function encodeMouseButton(
   y: number,
   button: number,
   action: "down" | "up",
-  dispatchId?: string
+  dispatchId?: string,
+  leaseId?: string
 ): string {
-  return envelope(sessionId, { type: "mouse", action, x, y, button }, dispatchId);
+  return envelope(sessionId, { type: "mouse", action, x, y, button }, dispatchId, leaseId);
 }
 
-export function encodeWheel(sessionId: string, deltaY: number, dispatchId?: string): string {
-  return envelope(sessionId, { type: "mouse", action: "wheel", deltaY }, dispatchId);
+export function encodeWheel(sessionId: string, deltaY: number, dispatchId?: string, leaseId?: string): string {
+  return envelope(sessionId, { type: "mouse", action: "wheel", deltaY }, dispatchId, leaseId);
 }
 
 export function encodeKey(
   sessionId: string,
   key: string,
   action: "down" | "up",
-  dispatchId?: string
+  dispatchId?: string,
+  leaseId?: string
 ): string {
-  return envelope(sessionId, { type: "key", action, key }, dispatchId);
+  return envelope(sessionId, { type: "key", action, key }, dispatchId, leaseId);
 }
 
 /**
@@ -120,12 +125,13 @@ export function encodeClickPair(
   x: number,
   y: number,
   button: MouseButtonName = "left",
-  dispatchIds?: [string, string]
+  dispatchIds?: [string, string],
+  leaseId?: string
 ): [string, string] {
   const code = buttonNameToCode(button);
   return [
-    encodeMouseButton(sessionId, x, y, code, "down", dispatchIds?.[0]),
-    encodeMouseButton(sessionId, x, y, code, "up", dispatchIds?.[1]),
+    encodeMouseButton(sessionId, x, y, code, "down", dispatchIds?.[0], leaseId),
+    encodeMouseButton(sessionId, x, y, code, "up", dispatchIds?.[1], leaseId),
   ];
 }
 
@@ -143,14 +149,15 @@ export function encodeClickPair(
 export function encodeTypeSequence(
   sessionId: string,
   text: string,
-  dispatchIdSupplier?: () => string
+  dispatchIdSupplier?: () => string,
+  leaseId?: string
 ): string[] {
   const out: string[] = [];
   for (const ch of text) {
     const downId = dispatchIdSupplier?.();
     const upId = dispatchIdSupplier?.();
-    out.push(encodeKey(sessionId, ch, "down", downId));
-    out.push(encodeKey(sessionId, ch, "up", upId));
+    out.push(encodeKey(sessionId, ch, "down", downId, leaseId));
+    out.push(encodeKey(sessionId, ch, "up", upId, leaseId));
   }
   return out;
 }

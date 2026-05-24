@@ -172,6 +172,16 @@ class LeaseRegistry {
     return this.mint(lease_ms, owner);
   }
 
+  adoptSharedLease(lease: InputLease): void {
+    this.evictExpired();
+    this.acquireOrder.set(lease.lease_id, ++this.acquireCounter);
+    this.active.set(lease.lease_id, {
+      ...lease,
+      scope: normalizeScope(lease.scope),
+    });
+    this.emitLeaseEvent("acquired", lease, { shared_authority: "worker", lease_ms: lease.lease_ms });
+  }
+
   acquireWithPolicy(
     lease_ms: number,
     owner: string = "mcp_agent",

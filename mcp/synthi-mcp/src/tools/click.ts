@@ -1,10 +1,7 @@
-import { session } from "../session.js";
-import { encodeClickPair, type MouseButtonName } from "../wire/input.js";
-import { checkBrokerInputGate } from "../broker/index.js";
+import { type MouseButtonName } from "../wire/input.js";
+import { mouseTool } from "./mouse.js";
 import {
-  errorFromException,
   errorResponse,
-  jsonResponse,
   type ToolResponse,
 } from "./shared.js";
 
@@ -39,21 +36,13 @@ export async function clickTool(args: unknown): Promise<ToolResponse> {
     });
   }
 
-  try {
-    const attached = session.require();
-    const brokerGate = await checkBrokerInputGate({
-      attached,
-      action: "mouse:click",
-      scope: "mouse",
-      lease_id: a.lease_id,
-      based_on_frame_seq: a.based_on_frame_seq,
-      based_on_viewport: a.based_on_viewport,
-    });
-    if (brokerGate) return errorResponse(brokerGate.error, brokerGate);
-    const frames = encodeClickPair(attached.sessionId, x, y, button);
-    await attached.channels.sendInput(frames);
-    return jsonResponse({ ok: true });
-  } catch (err) {
-    return errorFromException("click_failed", err);
-  }
+  return mouseTool({
+    action: "click",
+    x,
+    y,
+    button,
+    lease_id: a.lease_id,
+    based_on_frame_seq: a.based_on_frame_seq,
+    based_on_viewport: a.based_on_viewport,
+  });
 }

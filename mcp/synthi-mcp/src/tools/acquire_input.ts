@@ -7,6 +7,7 @@ import {
   resolveLeaseOwner,
   type LeaseScope,
 } from "../arbitration/lease.js";
+import { requestSharedLease } from "./shared_lease.js";
 import {
   errorResponse,
   jsonResponse,
@@ -69,7 +70,9 @@ export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
   if (scope === "invalid") {
     return errorResponse("invalid_args", { field: "scope", expected: "array of 'mouse'|'keyboard'" });
   }
-  const owner = resolveLeaseOwner();
+  const owner = typeof a.owner === "string" && a.owner.trim().length > 0
+    ? a.owner.trim()
+    : resolveLeaseOwner();
   const takeover = a.takeover === true;
   const preemptible = typeof a.preemptible === "boolean" ? a.preemptible : true;
   if (a.priority !== undefined && a.priority !== "normal" && a.priority !== "urgent_human_override") {
@@ -82,6 +85,40 @@ export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
   const enforcement = process.env["SYNTHI_BROKER_INPUT_MODE"] === "enforce"
     ? "server"
     : mode === "single-holder" ? "mcp-local" : "wire-only";
+
+  const shared = await requestSharedLease(attached, {
+    op: "acquire",
+    lease_ms: leaseMs,
+    owner,
+    takeover,
+    ...(scope !== undefined ? { scope } : {}),
+    preemptible,
+    priority,
+    reason,
+  });
+  if (shared?.ok === false) {
+    return errorResponse(shared.error, shared.detail);
+  }
+  if (shared?.ok === true && shared.lease) {
+    leaseRegistry.adoptSharedLease(shared.lease);
+    session.touch();
+    return jsonResponse({
+      ok: true,
+      lease_id: shared.lease.lease_id,
+      acquired_at: shared.lease.acquired_at,
+      expires_at: shared.lease.expires_at,
+      lease_ms: shared.lease.lease_ms,
+      owner: shared.lease.owner,
+      scope: shared.lease.scope,
+      preemptible: shared.lease.preemptible,
+      priority: shared.lease.priority,
+      reason: shared.lease.reason,
+      continuous_owner_since: shared.lease.continuous_owner_since,
+      enforcement: "worker",
+      reentrant: shared.reentrant === true,
+      ...(shared.evicted_lease_id ? { evicted_lease_id: shared.evicted_lease_id } : {}),
+    });
+  }
 
   const result = leaseRegistry.acquireWithPolicy(leaseMs, owner, {
     takeover,

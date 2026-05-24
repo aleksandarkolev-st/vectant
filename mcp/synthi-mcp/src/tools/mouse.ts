@@ -281,18 +281,18 @@ export async function mouseTool(args: unknown): Promise<ToolResponse> {
         let idx = 0;
         const nextId = (): string | undefined => (awaitAck ? ids[idx++] : undefined);
         if (action === "click" || action === "double_click") {
-          frames.push(encodeMouseButton(attached.sessionId, x, y, code, "down", nextId()));
-          frames.push(encodeMouseButton(attached.sessionId, x, y, code, "up", nextId()));
+          frames.push(encodeMouseButton(attached.sessionId, x, y, code, "down", nextId(), callerLeaseId));
+          frames.push(encodeMouseButton(attached.sessionId, x, y, code, "up", nextId(), callerLeaseId));
           if (action === "double_click") {
-            frames.push(encodeMouseButton(attached.sessionId, x, y, code, "down", nextId()));
-            frames.push(encodeMouseButton(attached.sessionId, x, y, code, "up", nextId()));
+            frames.push(encodeMouseButton(attached.sessionId, x, y, code, "down", nextId(), callerLeaseId));
+            frames.push(encodeMouseButton(attached.sessionId, x, y, code, "up", nextId(), callerLeaseId));
           }
         } else if (action === "down") {
-          frames.push(encodeMouseButton(attached.sessionId, x, y, code, "down", nextId()));
+          frames.push(encodeMouseButton(attached.sessionId, x, y, code, "down", nextId(), callerLeaseId));
         } else if (action === "up") {
-          frames.push(encodeMouseButton(attached.sessionId, x, y, code, "up", nextId()));
+          frames.push(encodeMouseButton(attached.sessionId, x, y, code, "up", nextId(), callerLeaseId));
         } else if (action === "move") {
-          frames.push(encodeMouseMove(attached.sessionId, x, y, nextId()));
+          frames.push(encodeMouseMove(attached.sessionId, x, y, nextId(), callerLeaseId));
         }
         await attached.channels.sendInput(frames);
         break;
@@ -318,9 +318,9 @@ export async function mouseTool(args: unknown): Promise<ToolResponse> {
         if (awaitAck) ackAlloc = allocateDispatches(3, ackTimeoutMs);
         const ids = ackAlloc?.ids ?? [];
         const frames: string[] = [
-          encodeMouseButton(attached.sessionId, x, y, code, "down", ids[0]),
-          encodeMouseMove(attached.sessionId, toX, toY, ids[1]),
-          encodeMouseButton(attached.sessionId, toX, toY, code, "up", ids[2]),
+          encodeMouseButton(attached.sessionId, x, y, code, "down", ids[0], callerLeaseId),
+          encodeMouseMove(attached.sessionId, toX, toY, ids[1], callerLeaseId),
+          encodeMouseButton(attached.sessionId, toX, toY, code, "up", ids[2], callerLeaseId),
         ];
         await attached.channels.sendInput(frames);
         break;
@@ -339,7 +339,7 @@ export async function mouseTool(args: unknown): Promise<ToolResponse> {
         inputQueueDepth.recordDispatch("mouse:wheel");
         if (awaitAck) ackAlloc = allocateDispatches(1, ackTimeoutMs);
         const id = ackAlloc?.ids[0];
-        await attached.channels.sendInput([encodeWheel(attached.sessionId, deltaY, id)]);
+        await attached.channels.sendInput([encodeWheel(attached.sessionId, deltaY, id, callerLeaseId)]);
         break;
       }
     }

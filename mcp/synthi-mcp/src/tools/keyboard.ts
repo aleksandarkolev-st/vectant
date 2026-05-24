@@ -141,7 +141,7 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
         }
         if (a.text.length > 0) {
           const supplier = awaitAck ? (): string => allocate().id : undefined;
-          const frames = encodeTypeSequence(attached.sessionId, a.text, supplier);
+          const frames = encodeTypeSequence(attached.sessionId, a.text, supplier, callerLeaseId);
           await attached.channels.sendInput(frames);
         }
         charsSent = a.text.length;
@@ -152,8 +152,8 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
         if (typeof a.key !== "string" || a.key.length === 0) {
           return errorResponse("invalid_args", { field: "key", expected: "non-empty string" });
         }
-        const down = encodeKey(attached.sessionId, a.key, "down", nextId());
-        const up = encodeKey(attached.sessionId, a.key, "up", nextId());
+        const down = encodeKey(attached.sessionId, a.key, "down", nextId(), callerLeaseId);
+        const up = encodeKey(attached.sessionId, a.key, "up", nextId(), callerLeaseId);
         await attached.channels.sendInput([down, up]);
         charsSent = 1;
         recordedKeys = [a.key];
@@ -165,8 +165,8 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
         }
         const keys = a.keys as string[];
         const frames: string[] = [];
-        for (const k of keys) frames.push(encodeKey(attached.sessionId, k, "down", nextId()));
-        for (let i = keys.length - 1; i >= 0; i--) frames.push(encodeKey(attached.sessionId, keys[i]!, "up", nextId()));
+        for (const k of keys) frames.push(encodeKey(attached.sessionId, k, "down", nextId(), callerLeaseId));
+        for (let i = keys.length - 1; i >= 0; i--) frames.push(encodeKey(attached.sessionId, keys[i]!, "up", nextId(), callerLeaseId));
         await attached.channels.sendInput(frames);
         charsSent = keys.length;
         recordedKeys = keys;

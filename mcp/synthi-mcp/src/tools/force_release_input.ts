@@ -2,6 +2,7 @@ import { session } from "../session.js";
 import { leaseRegistry } from "../arbitration/lease.js";
 import { authenticateBrokerBearer, authorizeBrokerCapability } from "../broker/auth.js";
 import { brokerError } from "../broker/errors.js";
+import { requestSharedLease } from "./shared_lease.js";
 import {
   errorResponse,
   jsonResponse,
@@ -43,6 +44,25 @@ export async function forceReleaseInputTool(args: unknown): Promise<ToolResponse
 
   const reason = typeof a.reason === "string" && a.reason.length > 0 ? a.reason : "admin_force_release";
   const forcedBy = auth.principal.subject;
+  const shared = await requestSharedLease(attached, {
+    op: "force-release",
+    lease_id: a.lease_id,
+    forced_by: forcedBy,
+    reason,
+  });
+  if (shared?.ok === false) return errorResponse(shared.error, shared.detail);
+  if (shared?.ok === true) {
+    leaseRegistry.forceRelease(a.lease_id, forcedBy, reason);
+    session.touch();
+    return jsonResponse({
+      ok: true,
+      released: true,
+      lease_id: a.lease_id,
+      forced_by: forcedBy,
+      reason,
+      enforcement: "worker",
+    });
+  }
   const result = leaseRegistry.forceRelease(a.lease_id, forcedBy, reason);
   session.touch();
   if (!result.ok) return errorResponse(result.error, { lease_id: a.lease_id });

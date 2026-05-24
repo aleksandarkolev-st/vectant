@@ -58,7 +58,8 @@ export async function dispatchInputTool(args: unknown): Promise<ToolResponse> {
     pendingById.set(p.id, p);
     return p.id;
   };
-  const frames = encodeAction(attached.sessionId, action, nextId);
+  const leaseId = typeof a.lease_id === "string" ? a.lease_id : undefined;
+  const frames = encodeAction(attached.sessionId, action, nextId, leaseId);
   const transportAck = { ack_id: `ack_${toolCallId}`, ts: Date.now() };
   try {
     await attached.channels.sendInput(frames, {
@@ -242,18 +243,18 @@ function parseAction(raw: unknown): DispatchAction | null {
   return null;
 }
 
-function encodeAction(sessionId: string, action: DispatchAction, nextId: () => string): string[] {
+function encodeAction(sessionId: string, action: DispatchAction, nextId: () => string, leaseId?: string): string[] {
   if (action.tool === "synthi_mouse") {
-    if (action.kind === "move") return [encodeMouseMove(sessionId, action.x, action.y, nextId())];
+    if (action.kind === "move") return [encodeMouseMove(sessionId, action.x, action.y, nextId(), leaseId)];
     const code = buttonNameToCode(action.button ?? "left");
     return [
-      encodeMouseButton(sessionId, action.x, action.y, code, "down", nextId()),
-      encodeMouseButton(sessionId, action.x, action.y, code, "up", nextId()),
+      encodeMouseButton(sessionId, action.x, action.y, code, "down", nextId(), leaseId),
+      encodeMouseButton(sessionId, action.x, action.y, code, "up", nextId(), leaseId),
     ];
   }
-  if (action.kind === "type") return encodeTypeSequence(sessionId, action.text, nextId);
+  if (action.kind === "type") return encodeTypeSequence(sessionId, action.text, nextId, leaseId);
   return [
-    encodeKey(sessionId, action.key, "down", nextId()),
-    encodeKey(sessionId, action.key, "up", nextId()),
+    encodeKey(sessionId, action.key, "down", nextId(), leaseId),
+    encodeKey(sessionId, action.key, "up", nextId(), leaseId),
   ];
 }

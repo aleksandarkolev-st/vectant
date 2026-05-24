@@ -699,6 +699,33 @@ class SessionManager {
         return;
       }
 
+      if (msgType === "input-lease-result") {
+        const op = typeof msg["op"] === "string" ? msg["op"] : "unknown";
+        const leaseId = typeof msg["lease_id"] === "string" ? msg["lease_id"] : undefined;
+        const owner = typeof msg["owner"] === "string" ? msg["owner"] : undefined;
+        eventLog.push({
+          kind: "lease",
+          action: op === "acquire" ? "acquired" :
+            op === "renew" ? "renewed" :
+            op === "release" ? "released" :
+            op === "force-release" ? "force_released" :
+            "queued",
+          ...(leaseId !== undefined ? { lease_id: leaseId } : {}),
+          ...(owner !== undefined ? { owner } : {}),
+          payload: msg,
+        });
+        return;
+      }
+
+      if (msgType === "input-rejected") {
+        eventLog.push({
+          kind: "input",
+          action: "rejected",
+          payload: msg,
+        });
+        return;
+      }
+
       // Structural-change pHash gate (ultraplan §4.1). Capture a
       // baseline pHash on compile-start; evaluate against post-reload
       // frame on `applied`. Phase 1 is detection-only — we emit a
