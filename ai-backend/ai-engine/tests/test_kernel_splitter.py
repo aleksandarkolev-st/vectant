@@ -520,6 +520,21 @@ def test_build_split_retry_prompt_preserves_previous_rejections():
     assert "init/seed kernel launch and signature" in prompt
 
 
+def test_build_split_retry_prompt_guides_launch_guard_and_buffer_repairs():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- constant_false_launch_guard: core_on_update initializes launch guard 'initialized' to false.",
+            "- device_buffers_not_initialized: d_buffer_a via TestCopyKernelRestrict.",
+        ],
+    )
+
+    assert "Never initialize a local launch guard with `false`" in prompt
+    assert "assigned from the actual `synthi_gpu_launch(...)` result" in prompt
+    assert "Preserved device kernels are mapping artifacts" in prompt
+    assert "not permission to launch every kernel" in prompt
+
+
 def test_build_split_retry_prompt_lists_rejected_project_headers():
     prompt = build_split_retry_prompt(
         "original prompt",
@@ -592,6 +607,8 @@ def test_verifier_acceptance_gate_contract_highlights_generic_split_gates():
     assert "gui_render(core_state)" in contract
     assert "placeholder comments" in contract
     assert "must not invent kernel names" in contract
+    assert "do not launch every preserved kernel" in contract
+    assert "local constants such as `bool initialized = false" in contract
 
 
 def test_build_prompt_attaches_extra_instructions():
@@ -687,6 +704,8 @@ def test_source_device_preservation_contract_includes_runtime_compiled_kernel_he
     assert "src/Device/kernels/CameraRays.h" in contract
     assert "src/Device/kernels/CameraCommon.h" in contract
     assert "Required original kernels: CameraRays." in contract
+    assert "device-role preservation and HMR mapping only" in contract
+    assert "not a request to synthesize host launches" in contract
     assert "kCameraGain" in contract
 
 

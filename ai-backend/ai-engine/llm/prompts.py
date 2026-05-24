@@ -4070,6 +4070,22 @@ returns true; only then run the update kernel and copy device outputs back. The
 first frame must have on-screen, non-overlapping data from the host mirrors,
 not uninitialized zeros or offscreen values.
 
+Do not synthesize host launches for every kernel that appears in a preserved
+device source/header. Preserved kernels are device-role mapping artifacts unless
+there is a real source-reachable launch path or a first-frame/update pipeline
+you construct with initialized buffers and correct arguments. If a preserved
+kernel is not runtime-reachable, keep it in the device role for mapping and do
+not invent `synthi_gpu_launch(...)` calls for it.
+
+Never create a local launch guard initialized to false and then branch on it in
+`core_on_update`. This rejected shape makes the launch path unreachable:
+
+    bool initialized = false;
+    if (initialized) { ... }
+
+Use a persistent state/static flag for lifecycle state, and assign per-frame
+launch guards directly from `synthi_gpu_launch(...)`.
+
 When preserving an existing user kernel such as `advance_particle_field`, still
 emit a generated init/seed kernel for the Synthi device role if the original
 project initialized arrays on the host. For separate arrays, that init kernel

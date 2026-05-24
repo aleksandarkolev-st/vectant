@@ -272,6 +272,14 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
         guidance.append(
             "- The init/seed kernel launch and signature must include every device pointer passed to update kernels, and the init body must write each pointer."
         )
+    if "device_buffers_not_initialized" in joined:
+        guidance.append(
+            "- For each real host-launched update kernel that receives device buffers, either add a dedicated init/seed kernel that writes every required device buffer before the update launch, or remove the host launch if it was a synthetic launch for a preserved-but-not-runtime-reachable source kernel. Preserved device kernels are mapping artifacts, not permission to launch every kernel in the project."
+        )
+    if "constant_false_launch_guard" in joined:
+        guidance.append(
+            "- Never initialize a local launch guard with `false` and immediately branch on it. The guard must be assigned from the actual `synthi_gpu_launch(...)` result, or it must be a persistent state/static flag updated only after a successful launch. A local `bool initialized = false; if (initialized) { ... }` is always rejected."
+        )
     if "kernel_launch_abi_mismatch" in joined:
         guidance.append(
             "- For each synthi_gpu_launch call, make the host initializer-list match the generated kernel parameter list exactly. If the kernel takes a LaunchParams-style struct, create one host variable and pass its address as a single argument; otherwise flatten the kernel signature to match the host launch ABI."
@@ -308,6 +316,8 @@ def _verifier_acceptance_gate_contract() -> str:
             "- Generated GUI and runner code must not switch frameworks. Preserve the source render backend reported by deterministic context selection.",
             "- Device kernels and runtime-compiled kernel headers selected by source context must keep original kernel names and body semantics so later user body edits can map into the generated device role.",
             "- Host launch sites must not invent kernel names. Every `synthi_gpu_launch(...)` kernel string must match an actual generated or source-preserved device kernel symbol.",
+            "- Preserved source-device kernels are not all runtime entrypoints. Generate `synthi_gpu_launch(...)` calls only for host-reachable launch paths or the explicit first-frame pipeline you construct; do not launch every preserved kernel just because it appears in the device role.",
+            "- Launch guards in `core_on_update` must be real launch results or persistent state/static flags. Never use local constants such as `bool initialized = false; if (initialized) { ... }` to gate runtime updates.",
         ]
     )
 
@@ -720,6 +730,8 @@ def _source_device_preservation_contract(
         "For core/gui/shared/host_runner, do not include original project headers; inline/adapt the needed structs, constants, and helper function bodies into generated roles.",
         "For the device role only, a direct quote-include of the listed target-scoped device source/header path is allowed when that preserves source-authoritative kernel bodies better than inlining.",
         "Do not emit dangling constant declarations, empty kernels, renamed kernels, or simplified substitute kernels.",
+        "Required original kernels below are required for device-role preservation and HMR mapping only. They are not a request to synthesize host launches for every preserved kernel.",
+        "Create host `synthi_gpu_launch(...)` calls only for source-reachable launch paths or for a deliberately constructed first-frame/update pipeline with valid initialized buffers.",
     ]
     if kernels:
         sections.append(f"Required original kernels: {', '.join(kernels)}.")
