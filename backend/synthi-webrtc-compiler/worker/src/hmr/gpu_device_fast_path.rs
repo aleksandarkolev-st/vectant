@@ -900,6 +900,7 @@ fn fast_path_verifier_evidence(
     json!({
         "kernelSignature": kernel_signature_evidence(old_user_source, new_user_source),
         "deviceFunctionSignature": device_function_signature_evidence(old_user_source, new_user_source),
+        "deviceFunctionBody": device_function_body_evidence(old_user_source, new_user_source),
         "typeLayout": type_layout_evidence(old_user_source, new_user_source),
         "constantGlobalLayout": constant_global_layout_evidence(old_user_source, new_user_source),
         "staticConstexprData": static_constexpr_data_evidence(old_user_source, new_user_source),
@@ -987,6 +988,31 @@ fn device_function_signature_snapshot(source: &str) -> Value {
     json!({
         "hash": device_function_signature_hash(source),
         "signatures": device_function_signatures(source),
+    })
+}
+
+fn device_function_body_evidence(before: Option<&str>, after: Option<&str>) -> Value {
+    let before_snapshot = before
+        .map(device_function_body_snapshot)
+        .unwrap_or(Value::Null);
+    let after_snapshot = after.map(device_function_body_snapshot).unwrap_or(Value::Null);
+    let changed = match (before, after) {
+        (Some(before), Some(after)) => {
+            Value::Bool(device_function_body_hash(before) != device_function_body_hash(after))
+        }
+        _ => Value::Null,
+    };
+    json!({
+        "changed": changed,
+        "before": before_snapshot,
+        "after": after_snapshot,
+    })
+}
+
+fn device_function_body_snapshot(source: &str) -> Value {
+    json!({
+        "hash": device_function_body_hash(source),
+        "bodyHashes": device_function_body_hashes(source),
     })
 }
 
@@ -1297,6 +1323,40 @@ fn device_function_regions(source: &str) -> BTreeMap<String, KernelRegion> {
         );
     }
     out
+}
+
+fn device_function_body_hashes(source: &str) -> BTreeMap<String, Vec<String>> {
+    let masked = mask_comments_preserving_len(source);
+    let mut body_hashes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (region_key, region) in device_function_regions(source) {
+        let name = region_key
+            .split('@')
+            .next()
+            .unwrap_or(region_key.as_str())
+            .to_string();
+        let signature = normalize_signature(&region.signature);
+        let body = masked
+            .get(region.body_start..region.body_end)
+            .map(collapse_ws)
+            .unwrap_or_default();
+        body_hashes
+            .entry(name)
+            .or_default()
+            .push(sha256_hex(&format!("{signature}:{body}")));
+    }
+    for values in body_hashes.values_mut() {
+        values.sort();
+    }
+    body_hashes
+}
+
+fn device_function_body_hash(source: &str) -> String {
+    let material = device_function_body_hashes(source)
+        .into_iter()
+        .map(|(symbol, body_hashes)| format!("{symbol}:{}", body_hashes.join(",")))
+        .collect::<Vec<_>>()
+        .join("|");
+    sha256_hex(&material)
 }
 
 pub(crate) fn device_header_kernel_body_only_edit_symbol(
@@ -1750,6 +1810,9 @@ fn strict_body_only_rejection(old_source: &str, new_source: &str) -> Option<&'st
         }
         return Some("abi.device_function_signature_changed");
     }
+    if device_function_body_hash(old_source) != device_function_body_hash(new_source) {
+        return Some("abi.device_function_body_changed");
+    }
     None
 }
 
@@ -2104,6 +2167,7 @@ fn rejection_plan(reason_codes: &[String]) -> &'static str {
                 | "abi.static_constexpr_data_changed"
                 | "abi.device_function_set_changed"
                 | "abi.device_function_signature_changed"
+                | "abi.device_function_body_changed"
                 | "abi.overload_set_changed"
         )
     }) {
@@ -2900,6 +2964,18 @@ extern "C" __global__ void trace(float* x) {
                 "__device__ float helper(float x = 1.0f) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper();\n}\n",
                 "__device__ float helper(float x = 2.0f) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper();\n}\n",
                 "abi.device_function_signature_changed",
+            ),
+            (
+                "device function body",
+                "__device__ float helper(float x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "__device__ float helper(float x) { return x + 1.0f; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "abi.device_function_body_changed",
+            ),
+            (
+                "inline device function body",
+                "__device__ inline float helper(float x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "__device__ inline float helper(float x) { return x + 1.0f; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "abi.device_function_body_changed",
             ),
             (
                 "overload set",
