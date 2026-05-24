@@ -262,14 +262,33 @@ pub fn try_direct_device_body_patch(
             .get("generatedPath")
             .and_then(Value::as_str)
             .map(normalize_path);
-        let source_bridge_partial_available = mapping_generated_path
+        let source_bridge_partial_status = mapping_generated_path
             .as_deref()
-            .is_some_and(|generated_path| {
-                source_include_bridge_partial_available(sidecar, generated_path, &user_path, symbol)
-            });
+            .map(|generated_path| {
+                source_include_bridge_partial_status(sidecar, generated_path, &user_path, symbol)
+            })
+            .unwrap_or(SourceIncludeBridgePartialStatus::Unavailable);
+        if let SourceIncludeBridgePartialStatus::Rejected(reason) = source_bridge_partial_status {
+            let evidence = fast_path_verifier_evidence(
+                sidecar,
+                Some(&old_user_source),
+                Some(new_user_source),
+                Some(generated_device_source),
+                Some(parser_status.report.clone()),
+                Some(&delta),
+                mapping_generated_range(mapping),
+                Some(reason),
+            );
+            return DeviceFastPathResult::rejected_strings_with_evidence(
+                vec![reason.to_string()],
+                &user_path,
+                mapped_generated_device_path(sidecar, &user_path).as_deref(),
+                evidence,
+            );
+        }
         if (mapping_is_source_include_bridge(mapping)
             && generated_source_includes_path(generated_device_source, &user_path))
-            || source_bridge_partial_available
+            || source_bridge_partial_status == SourceIncludeBridgePartialStatus::Available
         {
             patched_any = true;
             source_include_bridge_recompile = true;
@@ -508,17 +527,25 @@ fn generated_source_includes_path(source: &str, user_path: &str) -> bool {
     })
 }
 
-fn source_include_bridge_partial_available(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceIncludeBridgePartialStatus {
+    Available,
+    Rejected(&'static str),
+    Unavailable,
+}
+
+fn source_include_bridge_partial_status(
     sidecar: &Value,
     generated_path: &str,
     user_path: &str,
     symbol: &str,
-) -> bool {
+) -> SourceIncludeBridgePartialStatus {
     let generated = normalize_path(generated_path);
     let source = normalize_path(user_path);
     if generated.is_empty() || source.is_empty() || symbol.trim().is_empty() {
-        return false;
+        return SourceIncludeBridgePartialStatus::Unavailable;
     }
+    let mut rejection = None;
     for report_key in ["devicePartialArtifacts", "generatedDevicePartials"] {
         let Some(artifacts) = sidecar
             .get(report_key)
@@ -553,11 +580,14 @@ fn source_include_bridge_partial_available(
                 .iter()
                 .all(|candidate| device_symbol_maps_to_scope(sidecar, candidate, &source, &generated))
             {
-                return true;
+                return SourceIncludeBridgePartialStatus::Available;
             }
+            rejection.get_or_insert("selection.unsafe_symbol_superset");
         }
     }
-    false
+    rejection
+        .map(SourceIncludeBridgePartialStatus::Rejected)
+        .unwrap_or(SourceIncludeBridgePartialStatus::Unavailable)
 }
 
 fn normalized_json_string_set(item: &Value, key: &str) -> BTreeSet<String> {
@@ -2549,7 +2579,7 @@ mod tests {
         assert!(result
             .reason_codes
             .iter()
-            .any(|code| code == "mapping.patch_anchor_missing"));
+            .any(|code| code == "selection.unsafe_symbol_superset"));
     }
 
     #[test]
