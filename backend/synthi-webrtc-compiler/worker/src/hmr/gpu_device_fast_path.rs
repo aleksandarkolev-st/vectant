@@ -1003,9 +1003,16 @@ fn directive_diff_evidence(before: Option<&str>, after: Option<&str>) -> Value {
         }
         _ => Value::Null,
     };
+    let preprocessor_condition_changed = match (before, after) {
+        (Some(before), Some(after)) => {
+            Value::Bool(preprocessor_condition_hash(before) != preprocessor_condition_hash(after))
+        }
+        _ => Value::Null,
+    };
     json!({
         "includeDirectivesChanged": include_changed,
         "macroDirectivesChanged": macro_changed,
+        "preprocessorConditionsChanged": preprocessor_condition_changed,
         "before": before_summary,
         "after": after_summary,
     })
@@ -1033,6 +1040,7 @@ fn declaration_surface_evidence(before: Option<&str>, after: Option<&str>) -> Va
             "typeAliasHash": type_alias_hash(source),
             "externHash": extern_declaration_hash(source),
             "namespaceHash": namespace_declaration_hash(source),
+            "preprocessorConditionHash": preprocessor_condition_hash(source),
         })
     };
     let before_snapshot = before.map(snapshot).unwrap_or(Value::Null);
@@ -1452,14 +1460,28 @@ fn macro_directive_hash(source: &str) -> String {
     hash_lines(normalized_surface_lines_matching(source, &re))
 }
 
+fn preprocessor_condition_hash(source: &str) -> String {
+    let re = Regex::new(r#"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b"#)
+        .expect("preprocessor condition regex");
+    hash_lines(normalized_surface_lines_matching(source, &re))
+}
+
 fn directive_summary(source: &str) -> Value {
     let include_re = Regex::new(r#"^\s*#\s*include\b"#).expect("include directive regex");
     let macro_re = Regex::new(r#"^\s*#\s*(define|undef)\b"#).expect("macro directive regex");
+    let preprocessor_condition_re = Regex::new(r#"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b"#)
+        .expect("preprocessor condition regex");
     json!({
         "includeHash": include_directive_hash(source),
         "macroHash": macro_directive_hash(source),
+        "preprocessorConditionHash": preprocessor_condition_hash(source),
         "includeCount": normalized_surface_lines_matching(source, &include_re).len(),
         "macroCount": normalized_surface_lines_matching(source, &macro_re).len(),
+        "preprocessorConditionCount": normalized_surface_lines_matching(
+            source,
+            &preprocessor_condition_re,
+        )
+        .len(),
     })
 }
 
@@ -1490,12 +1512,13 @@ fn namespace_declaration_hash(source: &str) -> String {
 
 fn declaration_surface_hash(source: &str) -> String {
     sha256_hex(&format!(
-        "{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}",
         template_declaration_hash(source),
         using_declaration_hash(source),
         type_alias_hash(source),
         extern_declaration_hash(source),
         namespace_declaration_hash(source),
+        preprocessor_condition_hash(source),
     ))
 }
 
@@ -1672,6 +1695,9 @@ fn strict_body_only_rejection(old_source: &str, new_source: &str) -> Option<&'st
     }
     if macro_directive_hash(old_source) != macro_directive_hash(new_source) {
         return Some("abi.macro_directive_changed");
+    }
+    if preprocessor_condition_hash(old_source) != preprocessor_condition_hash(new_source) {
+        return Some("abi.preprocessor_condition_changed");
     }
     if template_declaration_hash(old_source) != template_declaration_hash(new_source) {
         return Some("abi.template_declaration_changed");
@@ -2054,6 +2080,7 @@ fn rejection_plan(reason_codes: &[String]) -> &'static str {
                 | "abi.constant_global_layout_changed"
                 | "abi.include_directive_changed"
                 | "abi.macro_directive_changed"
+                | "abi.preprocessor_condition_changed"
                 | "abi.template_declaration_changed"
                 | "abi.using_declaration_changed"
                 | "abi.type_alias_changed"
@@ -2751,6 +2778,12 @@ extern "C" __global__ void trace(float* x) {
                 "#define SCALE 1\n__global__ void flow(float* x, int n) {\n  x[0] += SCALE;\n}\n",
                 "#define SCALE 2\n__global__ void flow(float* x, int n) {\n  x[0] += SCALE;\n}\n",
                 "abi.macro_directive_changed",
+            ),
+            (
+                "preprocessor condition",
+                "#if defined(USE_PRIMARY)\nstruct Params { float a; };\n#endif\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "#if defined(USE_SECONDARY)\nstruct Params { float a; };\n#endif\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "abi.preprocessor_condition_changed",
             ),
             (
                 "using",
