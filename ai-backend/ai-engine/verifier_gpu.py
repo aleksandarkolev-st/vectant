@@ -229,10 +229,26 @@ _GPU_SDK_VECTOR_TYPE_NAMES = {
     "double4",
     "dim3",
 }
+_GPU_SDK_VECTOR_TYPE_PATTERN = "|".join(
+    re.escape(name)
+    for name in sorted(_GPU_SDK_VECTOR_TYPE_NAMES, key=len, reverse=True)
+)
 _GPU_SDK_VECTOR_STRUCT_RE = re.compile(
     r"\b(?:struct|class)\s+(?P<name>"
-    + "|".join(re.escape(name) for name in sorted(_GPU_SDK_VECTOR_TYPE_NAMES, key=len, reverse=True))
+    + _GPU_SDK_VECTOR_TYPE_PATTERN
     + r")\b"
+)
+_GPU_SDK_VECTOR_MAKE_FUNCTION_RE = re.compile(
+    r"\b(?:(?:static|inline|constexpr|consteval|__host__|__device__|"
+    r"__forceinline__|__inline__|HIPRT_HOST_DEVICE|HIPRT_DEVICE|CUDA_HOST_DEVICE)\s+)*"
+    r"(?P<vector_type>"
+    + _GPU_SDK_VECTOR_TYPE_PATTERN
+    + r")\s+"
+    r"(?P<name>make_(?P=vector_type))\s*"
+    r"\([^;{}]*\)\s*"
+    r"(?:noexcept\s*)?"
+    r"\{",
+    re.DOTALL,
 )
 _FORBIDDEN_GPU_RUNTIME_ACCESSOR_RE = re.compile(
     r"\b(?P<name>"
@@ -1472,6 +1488,20 @@ def verify_split_output(
                         f"{match.group('name')!r}. HIP/CUDA runtime headers own "
                         "these ABI names; generated roles must use the SDK type "
                         "instead of shadowing it with local structs."
+                    ),
+                    offending_module=role_path,
+                    offending_symbol=match.group("name"),
+                )
+            )
+        for match in _GPU_SDK_VECTOR_MAKE_FUNCTION_RE.finditer(mask_comments_for_parsing(src)):
+            violations.append(
+                Violation(
+                    rule="generated_role_redeclares_gpu_sdk_type",
+                    message=(
+                        f"Generated role file redeclares GPU SDK vector constructor "
+                        f"helper {match.group('name')!r}. HIP/CUDA runtime headers "
+                        "own these ABI helper names; generated roles must use the "
+                        "SDK helper instead of shadowing it with local definitions."
                     ),
                     offending_module=role_path,
                     offending_symbol=match.group("name"),

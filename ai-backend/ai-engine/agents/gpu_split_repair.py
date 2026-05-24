@@ -16,6 +16,7 @@ from agents.abi_stamper import mask_comments_for_parsing
 from verifier_gpu import (
     _CPP_DECL_KEYWORDS,
     _GUI_RENDER_EFFECT_RE,
+    _GPU_SDK_VECTOR_MAKE_FUNCTION_RE,
     _GPU_SDK_VECTOR_TYPE_NAMES,
     SplitVerificationResult,
     _device_role_included_source_files as _verifier_device_role_included_source_files,
@@ -555,6 +556,28 @@ def _normalize_symbol_fragment(value: str) -> str:
 def _repair_gpu_sdk_type_redeclarations(source: str) -> tuple[str, bool]:
     out = source
     changed = False
+    while True:
+        match = _GPU_SDK_VECTOR_MAKE_FUNCTION_RE.search(mask_comments_for_parsing(out))
+        if not match:
+            break
+        open_brace = out.find("{", match.end() - 1)
+        if open_brace < 0:
+            break
+        close_brace = _matching_brace(out, open_brace)
+        if close_brace is None:
+            break
+        end = close_brace + 1
+        while end < len(out) and out[end].isspace():
+            end += 1
+        if end < len(out) and out[end] == ";":
+            end += 1
+        start = match.start()
+        while start > 0 and out[start - 1] in " \t":
+            start -= 1
+        if start > 0 and out[start - 1] == "\n":
+            start -= 1
+        out = out[:start] + out[end:]
+        changed = True
     while True:
         match = _GPU_SDK_VECTOR_STRUCT_RE.search(mask_comments_for_parsing(out))
         if not match:

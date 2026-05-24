@@ -572,6 +572,8 @@ def test_repair_removes_generated_gpu_sdk_vector_type_redeclarations():
             "#include <hip/hip_runtime.h>\n"
             "struct float3 { float x, y, z; };\n"
             "struct int2 { int x, y; };\n"
+            "inline float3 make_float3(float x, float y, float z) { return {x, y, z}; }\n"
+            "static inline int2 make_int2(int x, int y) { return {x, y}; }\n"
             "struct AppState { float3 p; int2 size; };"
         ),
         "core.cpp": (
@@ -598,6 +600,8 @@ def test_repair_removes_generated_gpu_sdk_vector_type_redeclarations():
     assert "repair.gpu_sdk_type_redeclarations" in report["repairRules"]
     assert "struct float3" not in repaired["shared.h"]
     assert "struct int2" not in repaired["shared.h"]
+    assert "make_float3" not in repaired["shared.h"]
+    assert "make_int2" not in repaired["shared.h"]
     assert "float3 p" in repaired["shared.h"]
     assert "int2 size" in repaired["shared.h"]
     after = verify_split_output(files=repaired, manifest_arch=["gfx1201"], source_files={})

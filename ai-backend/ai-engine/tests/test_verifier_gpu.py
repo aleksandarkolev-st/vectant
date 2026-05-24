@@ -602,6 +602,36 @@ def test_split_rejects_generated_gpu_sdk_vector_type_redeclaration():
     )
 
 
+def test_split_rejects_generated_gpu_sdk_vector_helper_redeclaration():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "#include <hip/hip_runtime.h>\n"
+            "inline float3 make_float3(float x, float y, float z) { return {x, y, z}; }\n"
+            "static inline int2 make_int2(int x, int y) { return {x, y}; }\n"
+            "struct AppState { float3 p; int2 size; };"
+        ),
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) {}\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": "extern \"C\" __global__ void noop() {}",
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files={})
+
+    assert {
+        v.offending_symbol
+        for v in r.violations
+        if v.rule == "generated_role_redeclares_gpu_sdk_type"
+    } >= {"make_float3", "make_int2"}
+
+
 def test_split_rejects_invented_gpu_runtime_accessor():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
