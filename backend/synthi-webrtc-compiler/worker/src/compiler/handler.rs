@@ -1982,6 +1982,18 @@ fn validate_partial_device_artifact_exports(outcome: &DeviceCompileOutcome) -> R
         anyhow::bail!("partial GPU artifact symbol inspection unavailable or empty");
     }
 
+    let unresolved_mangled = exported
+        .iter()
+        .filter(|symbol| !expected.contains(*symbol) && looks_like_mangled_export(symbol))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !unresolved_mangled.is_empty() {
+        anyhow::bail!(
+            "partial GPU artifact exports mangled symbols without explicit identity mapping: {}",
+            unresolved_mangled.join(",")
+        );
+    }
+
     let missing = expected
         .difference(&exported)
         .cloned()
@@ -2010,6 +2022,13 @@ fn validate_partial_device_artifact_exports(outcome: &DeviceCompileOutcome) -> R
         exported.into_iter().collect::<Vec<_>>().join(",")
     );
     Ok(())
+}
+
+fn looks_like_mangled_export(symbol: &str) -> bool {
+    symbol.starts_with("_Z")
+        || symbol.starts_with("__Z")
+        || symbol.starts_with("?")
+        || symbol.starts_with("$")
 }
 
 fn device_hmr_result_label(outcome: &DeviceCompileOutcome) -> &'static str {
@@ -7565,6 +7584,55 @@ mod gpu_host_contract_tests {
 
         let err = validate_partial_device_artifact_exports(&outcome).unwrap_err();
         assert!(err.to_string().contains("unexpected symbols"));
+    }
+
+    #[test]
+    fn partial_artifact_export_validation_rejects_unmapped_mangled_symbols() {
+        let outcome = DeviceCompileOutcome {
+            artifact_path: std::path::PathBuf::from("/tmp/device.hsaco"),
+            compiled_source: String::new(),
+            compiler_elapsed_ms: 0,
+            partial_module: true,
+            target_symbols: vec!["shade".to_string()],
+            fallback_used: false,
+            fallback_reason: None,
+            requested_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_bytes: Some(128),
+            full_device_bytes: Some(1024),
+            artifact_exported_symbols: vec!["_Z5shadePf".to_string()],
+            diagnostics:
+                crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
+            stderr: String::new(),
+        };
+
+        let err = validate_partial_device_artifact_exports(&outcome).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("mangled symbols without explicit identity mapping"));
+    }
+
+    #[test]
+    fn partial_artifact_export_validation_allows_exact_raw_symbol_identity() {
+        let outcome = DeviceCompileOutcome {
+            artifact_path: std::path::PathBuf::from("/tmp/device.hsaco"),
+            compiled_source: String::new(),
+            compiler_elapsed_ms: 0,
+            partial_module: true,
+            target_symbols: vec!["_Z5shadePf".to_string()],
+            fallback_used: false,
+            fallback_reason: None,
+            requested_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_bytes: Some(128),
+            full_device_bytes: Some(1024),
+            artifact_exported_symbols: vec!["_Z5shadePf".to_string()],
+            diagnostics:
+                crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
+            stderr: String::new(),
+        };
+
+        validate_partial_device_artifact_exports(&outcome).unwrap();
     }
 
     #[test]
