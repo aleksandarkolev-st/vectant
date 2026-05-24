@@ -1,3 +1,94 @@
+# Task 5: Three workspace UI bugs (remote-control) 2026-05-23
+
+## Issues
+1. Split editor groups have no close affordance — once you split, there's no way to close a pane.
+2. Status island twitches 1–2px vertically when the glow behind the V appears/disappears during open/close.
+3. Composer buttons unclickable: SCM commit-type chips (feat/fix/docs) can't be clicked at all; AI chat toolbar buttons only register at their very bottom edge.
+
+## Root causes
+- (1) `TabGroup.jsx` gates the solo-close button on `isSidebar`, so editor surfaces never get one. Editor panes are tabgroups holding a single `closable:false` editor tab; closing it with `forceClose` collapses the split via `cleanupEmptyNodes`.
+- (3) `StatusBar.jsx` status-island: the `.status-island-positioner` is `pointer-events-auto` and its child `.status-island-pill-wrapper` is `min-w-[640px]`. That makes an invisible 640px-wide, ~28px-tall click-catching box float at the bottom-centre of the workspace (z-30), persistently swallowing clicks to whatever panel content sits beneath it — i.e. composer toolbars pinned to panel bottoms. SCM chips sit fully inside the band (dead), chat buttons straddle it (only the sliver below the band, at the very bottom edge, is clickable).
+- (2) The positioner's Y is mathematically constant across phases (collapsedCenter.y === expandedCenter.y), so the twitch is a compositing/subpixel artifact, not a layout move — the `visibility:hidden` toggles on the halo/shell destroy & recreate blurred GPU layers, which re-snap to the device-pixel grid (visible as 1–2px on fractional Windows display scaling).
+
+## Plan
+- [x] (3) Move `pointer-events-auto` off the positioner (→ `pointer-events-none`); put it on the visible surfaces only: the `.status-island` shell and the build-controls island. Logo wrapper already opts back in via CSS. Net: transparent areas no longer block clicks; the island only intercepts where it is actually visible.
+- [x] (1) Add a close (×) button to `EditorPaneHeader` (only renders when panes ≥ 2). Closes the pane's editor tab with `forceClose:true` → split collapses (`cleanupEmptyNodes` also reassigns focus if the closed pane was focused).
+- [x] (2) v1 (WRONG): promoted `.status-island-stage` (inline-block) → it shrink-wrapped left of the 640px wrapper, breaking centering, and didn't fix the jump. Reverted.
+- [x] (2) v2: promote the POSITIONER instead — append `translateZ(0)` to its inline transform + `willChange:'transform'`. It's absolutely positioned (explicit left/top), so promotion can't move it → centering preserved. A stable parent layer means creating/destroying the V's glow sub-layer no longer re-rasterizes & re-snaps the whole island. Needs visual confirmation (GPU/DPI-dependent).
+
+## Review
+- StatusBar.jsx: 3 edits — positioner `pointer-events-auto`→`pointer-events-none`; added `pointer-events-auto` to the pill shell and the build-controls island. Behaviour-preserving for the island itself (it stays interactive where visible); fixes click-through everywhere else, including the composer toolbars beneath it.
+- EditorPaneHeader.jsx: added a close (×) button + handler; hooks called unconditionally before the early returns.
+- globals.css: added a layer-stability rule for the island stage + shell. translateZ(0) is a visual no-op.
+- Not run: full app/visual verification (heavy: needs auth + collab + a workspace). Fixes 1 & 3 are deterministic DOM/layout changes; fix 2 is the GPU-jitter hypothesis and should be eyeballed on the user's display scaling.
+
+---
+
+# Task 4: Editor renders its own pane file (paneId/filePath seam) 2026-05-23
+
+## Goal
+Make each `Editor` instance render ITS OWN file (`props.filePath`) when in docking
+mode, falling back to global `activeFile` only outside docking. Today `Editor.jsx`
+derives everything from the single global `activeFile`, so split panes mirror.
+
+## Plan (checkable)
+- [x] Read Editor.jsx end-to-end + panel-wrappers.jsx
+- [x] Map every `activeFile` use; classify file-identity vs global-shell
+- [x] panel-wrappers: forward `tabGroupId` → `paneId`, flex-col container, `data-pane-id`
+- [x] Editor.jsx: add `paneId` prop; add `paneFile` resolver + `isFocusedPane`
+- [x] Switch `activeLanguage` / `activeFileIdentity` / `activeFileIcon` → `paneFile`
+- [x] Switch Monaco model pre-create effect (guard/URI/cache lookup) → `paneFile`
+- [x] Switch Yjs binding effect FILE-PATH/identity refs → `paneFile`; dep array
+- [x] Switch JSX `<Editor path>` (model identity) + `defaultValue` content → paneFile (docking)
+- [x] Switch handleCodeChange bound-file guard → `paneFile`
+- [x] Gate `dispatch(updateContent(...))` in handleCodeChange to `isFocusedPane`
+- [x] Gate post-bind Redux sync dispatch (Yjs effect) to `isFocusedPane`
+- [x] `npm run lint` for the two files; no NEW errors
+- [x] Commit ONLY the 2 files; `git show --stat HEAD`
+
+## Decisions / scope
+- The 5 auxiliary hooks (useAiCompletion, useNextEditPrediction, useDiffManager,
+  useEditorProviders, useGitGutter) still receive the global `activeFile` prop.
+  They get the paneFile-derived `activeLanguage`/`activeFileIdentity` (per task),
+  but their `activeFile` object stays global — out of task scope, and they are
+  focused-file (AI/diff/gutter) shell features. Flagged in Review.
+- DiffEditor + diff header stay `activeFile` (global diff view of focused file).
+- handleSave / HMR sendEditDelta / guest save-state stay `activeFile` (save target
+  = global file). Only the per-view model/content/binding + the content gate change.
+
+## Review
+
+Task 4 landed, and the broader multi-pane editor split (the whole feature, Tasks 0–9
+of `docs/superpowers/plans/2026-05-22-editor-split-multi-pane.md`) is implemented.
+
+### What shipped (commits on `frontend-refactor`)
+- `855da5ba` editor-panes util (pure: ordering/numbering/palette/attribution, 4 tests)
+- `5bfa84d2` layout-slice: `splitEditorPanel({zone})` copies source file, N-pane + vertical, `setPaneFile`, pane selectors (5 tests)
+- `c2d3b782` workspace open routing into focused pane + `closeFileEverywhere` + `paneActiveFile` helper (3 tests)
+- `25b35901` **Task 4** — Editor renders its own `paneFile` (model effect, `<Editor path>`, Yjs binding, content-write gating)
+- `f2e7e3ff` focused pane drives shell editor + `activeFile` mirror (`editorsByPaneRef`, `selectFocusedPaneFilePath`)
+- `c508d0e5` dim collaborator cursors in unfocused panes (by paneId, CSS-scoped)
+- `11353333` shared strip: segmented colored underline + pane-number badges (`--pane-color-1..5`)
+- `dec9d4bb` per-pane breadcrumb + number header strip (`EditorPaneHeader`, `--editor-pane-header-h`)
+- `53472024` TopNav split button → Split right / Split down popover
+- `85b27b42` vitest harness (revived the dormant docking tests)
+
+### Verification
+- **Unit tests: 59 passing** (`npx vitest run`). The lone red is a pre-existing empty stub `src/lib/__tests__/preview-store.test.js` ("No test suite found") — not touched by this work.
+- All 10 touched source files pass an esbuild syntax parse.
+- **NOT verified here (environment-blocked):** the production `next build` and any live/behavioral run. The disk was 100% full (`ENOSPC`); cleared ~5–7 GB of regenerable caches but a full Next build still needs more transient space than is free, and the backend stack isn't up. Build gate + behavioral run-through deferred — see handoff checklist.
+
+### Scope decisions (left on global `activeFile` deliberately — "focused pane is fully live")
+- LSP/compiler connect, AI completion/healing hooks, autosave, `handleSave`, HMR `sendEditDelta`, guest save-state, DiffEditor, and ConflictBanner all follow the global/focused file. Only the per-view model/content/Yjs binding and the content-write dispatches became per-pane. This matches the spec's "focused pane fully live; unfocused panes render their file but heavier machinery follows focus."
+- Cursor dimming + the pane-unfocused marker key on **paneId**, not path, so two panes showing the same file still dim the inactive one correctly.
+
+### Known follow-ups / things needing your eyes
+- Visual pass on the strip segmentation, badges, and 20px header strip once the app runs (I couldn't render them).
+- Run the production build once disk is freed (your `compact-vhdx.ps1`) — it's the real compile gate for the `Editor.jsx`/`page.jsx` changes.
+- Behavioral checklist in the session handoff (split → two files, no mirror, focus follows, etc.).
+
+---
+
 # SCM Composer Hitbox / Focus / Hover-Collapse Fixes 2026-05-22
 
 ## Reported bugs (source-control bottom composer)

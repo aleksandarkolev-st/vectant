@@ -19,7 +19,6 @@ import PresenceList from '@/components/collaboration/PresenceList';
 import OperatorStatusBarButton from './OperatorStatusBarButton';
 import VectantLogoCollapsed from './VectantLogoCollapsed';
 import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
-import { toast } from 'sonner';
 import {
   selectHealingStatus,
   selectAppliedFixCount,
@@ -808,11 +807,22 @@ function StatusBarInner({
   return (
     <div ref={rootRef} className="status-bar-root pointer-events-none absolute inset-0 z-30" style={{ background: 'transparent' }}>
       <div
-        className={`status-island-positioner pointer-events-auto ${phaseClass} ${isDragging ? 'is-dragging' : ''}`}
+        className={`status-island-positioner pointer-events-none ${phaseClass} ${isDragging ? 'is-dragging' : ''}`}
         style={{
           left: viewportSize.width ? `${visualCenter.x}px` : '50%',
           top: viewportSize.height ? `${visualCenter.y}px` : `calc(100% - ${STATUS_ISLAND_DEFAULT_BOTTOM_PX + (STATUS_ISLAND_PILL_HEIGHT_PX / 2)}px)`,
-          transform: 'translate(-50%, -50%)',
+          // translateZ(0) + will-change pins the whole island onto its own
+          // persistent compositor layer. The pill, brackets, and the V's
+          // glow each blur onto their own sub-layers; without a stable
+          // parent layer, creating/destroying the V glow (as the logo
+          // wrapper mounts/unmounts at each phase flip) re-rasterizes the
+          // island's stacking context and re-snaps it ~1-2px to the device
+          // pixel grid — the vertical jump. Promoting the positioner keeps
+          // its screen position fixed through that churn. Position is
+          // unaffected (it's absolutely placed via left/top), so the island
+          // stays centered.
+          transform: 'translate(-50%, -50%) translateZ(0)',
+          willChange: 'transform',
           transition: positionerTransition,
         }}
       >
@@ -827,7 +837,7 @@ function StatusBarInner({
             {/* Build-controls island — anchored to the visible pill edge so
                 viewport clamping can account for the true rendered footprint. */}
             {isRunning && (
-              <div ref={buildControlsRef} className="absolute left-full ml-2 top-1/2 -translate-y-1/2 hidden sm:block z-20">
+              <div ref={buildControlsRef} className="absolute left-full ml-2 top-1/2 -translate-y-1/2 hidden sm:block z-20 pointer-events-auto">
                 <div
                   className="flex items-center gap-1 h-7 px-1.5 rounded-full"
                   style={{
@@ -933,7 +943,7 @@ function StatusBarInner({
             />
             <div
               ref={statusIslandShellRef}
-              className={`status-island relative z-10 h-7 rounded-[6px] text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap ${isEntering ? 'status-island-entrance-shell status-island-entering' : ''} ${phase === 'collapsing' ? 'status-island-collapsing-shell' : ''} ${isCompact ? 'is-compact' : ''}`}
+              className={`status-island pointer-events-auto relative z-10 h-7 rounded-[6px] text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap ${isEntering ? 'status-island-entrance-shell status-island-entering' : ''} ${phase === 'collapsing' ? 'status-island-collapsing-shell' : ''} ${isCompact ? 'is-compact' : ''}`}
               style={{
                 background:
                   'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, var(--brand-gradient-horizontal) border-box',

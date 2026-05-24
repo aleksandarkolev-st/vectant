@@ -172,6 +172,14 @@ function configureClassicWorkerFactory() {
     const { useWorkerFactory } = require('monaco-languageclient/workerFactory');
     useWorkerFactory({
         workerLoaders: {
+            TextEditorWorker: () => new Worker(
+                new URL('@codingame/monaco-vscode-editor-api/esm/vs/editor/editor.worker.js', import.meta.url),
+                { type: 'module' }
+            ),
+            TextMateWorker: () => new Worker(
+                new URL('@codingame/monaco-vscode-textmate-service-override/worker', import.meta.url),
+                { type: 'module' }
+            ),
             editorWorkerService: () => new Worker(new URL('monaco-editor/esm/vs/editor/editor.worker.js', import.meta.url)),
             json: () => new Worker(new URL('monaco-editor/esm/vs/language/json/json.worker.js', import.meta.url)),
             css: () => new Worker(new URL('monaco-editor/esm/vs/language/css/css.worker.js', import.meta.url)),
@@ -194,6 +202,45 @@ const DOCK_LAYOUT_RESIZE_EVENT = 'synthi:dock-layout-resize';
 
 let servicesInitialized = false;
 let servicesInitPromise = null; // serialize concurrent init attempts
+
+async function disposeLanguageClientSafely(client, label) {
+    if (!client) return;
+
+    const needsStop = typeof client.needsStop === 'function'
+        ? client.needsStop()
+        : typeof client.isRunning === 'function'
+            ? client.isRunning()
+            : false;
+
+    if (needsStop) {
+        try {
+            await client.stop();
+            return;
+        } catch (error) {
+            console.warn(`[LSP] stop() failed for ${label}:`, error?.message || error);
+        }
+    }
+
+    try {
+        client.cleanUp?.('stop');
+    } catch (error) {
+        console.warn(`[LSP] cleanUp() failed for ${label}:`, error?.message || error);
+    }
+
+    try { client.cleanUpChannel?.(); } catch (_) {}
+    try { client._diagnostics?.dispose?.(); } catch (_) {}
+    try { client._ignoredRegistrations?.clear?.(); } catch (_) {}
+
+    if (Object.prototype.hasOwnProperty.call(client, '_connection')) {
+        client._connection = undefined;
+    }
+    if (Object.prototype.hasOwnProperty.call(client, '_onStart')) {
+        client._onStart = undefined;
+    }
+    if (Object.prototype.hasOwnProperty.call(client, '_onStop')) {
+        client._onStop = undefined;
+    }
+}
 
 // ===== SYNTHI BRAND Design Tokens - Theme-aware via CSS vars =====
 const TAB_TOKENS = {
@@ -819,6 +866,7 @@ const EditorPanel = ({
             // Client exists but is no longer running (channel closed, crashed, etc.)
             // Remove the stale entry so we re-initialize below.
             console.warn(`[LSP] Stale client for ${clientKey} — removing and re-initializing`);
+            void disposeLanguageClientSafely(client, `${backendLang} stale client`);
             languageClientsRef.current.delete(clientKey);
         }
 
@@ -847,6 +895,7 @@ const EditorPanel = ({
             console.log(`[LSP] Created channel for ${backendLang}, readyState: ${lspChannel.readyState}`);
         } catch (e) {
             console.error("[LSP] Failed to create channel", e);
+            lspInitPendingRef.current.delete(clientKey);
             setLspStatus('Channel Error');
             return;
         }
@@ -1335,7 +1384,7 @@ const EditorPanel = ({
             } catch (e) {
                 console.error(`[LSP] Client start failed for ${backendLang}:`, e.message || e);
                 lspInitPendingRef.current.delete(clientKey);
-                try { languageClient.stop(); } catch (_) {}
+                await disposeLanguageClientSafely(languageClient, `${backendLang} failed start`);
                 try { lspChannel.close(); } catch (_) {}
                 setLspStatus(`${backendLang} server unavailable`);
                 return;
@@ -2378,7 +2427,7 @@ const EditorPanel = ({
                                     suppClient.sendNotification('exit');
                                 } catch (_) {}
                             }
-                            suppClient.stop();
+                            await disposeLanguageClientSafely(suppClient, `${suppConfig.backend} supplementary client`);
                             languageClientsRef.current.delete(suppConfig.clientKey);
                             lspInitPendingRef.current.delete(suppConfig.clientKey);
                         });
@@ -2428,7 +2477,7 @@ const EditorPanel = ({
                     }
                 }
 
-                languageClient.stop();
+                await disposeLanguageClientSafely(languageClient, `${backendLang} channel close`);
                 languageClientsRef.current.delete(clientKey);
                 lspInitPendingRef.current.delete(clientKey);
                 lspOpenedUrisRef.current.delete(clientKey);
@@ -2715,17 +2764,21 @@ const EditorPanel = ({
     useEffect(() => {
         return () => {
             // P2: Send shutdown→exit for clean server shutdown before stopping
-            languageClientsRef.current.forEach(async (client, lang) => {
+            languageClientsRef.current.forEach((client, lang) => {
                 if (client.isRunning()) {
-                    try {
-                        await Promise.race([
-                            client.sendRequest('shutdown'),
-                            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2000))
-                        ]);
-                        client.sendNotification('exit');
-                    } catch (_) { /* best-effort */ }
+                    void (async () => {
+                        try {
+                            await Promise.race([
+                                client.sendRequest('shutdown'),
+                                new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2000))
+                            ]);
+                            client.sendNotification('exit');
+                        } catch (_) { /* best-effort */ }
+                        await disposeLanguageClientSafely(client, `${lang} unmount cleanup`);
+                    })();
+                } else {
+                    void disposeLanguageClientSafely(client, `${lang} unmount cleanup`);
                 }
-                client.stop();
             });
             languageClientsRef.current.clear();
             lspOpenedUrisRef.current.clear();

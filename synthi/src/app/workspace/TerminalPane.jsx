@@ -153,10 +153,13 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       try { wsRef.current.close(1000); } catch (_) {}
       wsRef.current = null;
     }
-    if (terminalRef.current?.term) {
-      try { terminalRef.current.term.dispose(); } catch (_) {}
-    }
+    const terminalInstance = terminalRef.current;
     terminalRef.current = null;
+    if (terminalInstance?.dispose) {
+      try { terminalInstance.dispose(); } catch (_) {}
+    } else if (terminalInstance?.term) {
+      try { terminalInstance.term.dispose(); } catch (_) {}
+    }
     sessionIdRef.current = null;
   }, []);
 
@@ -379,7 +382,13 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
       // ── Resize handling ───────────────────────────────────────────
       let resizeRaf = null;
       const doFit = () => {
-        if (disposed || !terminalRef.current) return;
+        if (
+          disposed ||
+          terminalRef.current?.term !== term ||
+          terminalRef.current?.fitAddon !== fitAddon
+        ) {
+          return;
+        }
         isResizingRef.current = true;
         try {
           fitAddon.fit();
@@ -596,8 +605,10 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
         try { wsRef.current.close(1000); } catch (_) {}
         wsRef.current = null;
       }
-      if (terminalRef.current?.dispose) {
-        try { terminalRef.current.dispose(); } catch (_) {}
+      const terminalInstance = terminalRef.current;
+      terminalRef.current = null;
+      if (terminalInstance?.dispose) {
+        try { terminalInstance.dispose(); } catch (_) {}
       }
     };
   }, [sessionKey, workspaceSlug, fixedSessionId, shellType]); // Re-connect if terminal tab, workspace, or shell type changes
