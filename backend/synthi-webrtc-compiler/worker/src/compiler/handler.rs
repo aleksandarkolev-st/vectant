@@ -20,7 +20,8 @@ const MAX_WARM_SOURCE_BRIDGE_TUS: usize = 16;
 
 // Import our new modular stages
 use crate::compiler::stages::ai_utils::{
-    perform_ai_diff_patch, perform_ai_split, perform_gpu_ai_diff_patch,
+    invalidate_ai_split_cache, perform_ai_diff_patch, perform_ai_split, perform_gpu_ai_diff_patch,
+    update_ai_split_cache_role,
 };
 use crate::compiler::stages::compile_core::compile_core;
 use crate::compiler::stages::compile_device::{compile_device_phase0, DeviceCompileOutcome};
@@ -576,6 +577,20 @@ struct DeviceCompileSources {
     partial_required: bool,
 }
 
+async fn compile_stage_or_invalidate_split_cache<T>(
+    req: &CompileRequest,
+    result: Result<T>,
+    reason: &str,
+) -> Result<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            invalidate_ai_split_cache(req, reason).await;
+            Err(err)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct DevicePartialArtifactSpec {
     filename: String,
@@ -997,6 +1012,7 @@ async fn send_active_runner_runtime_command(
 
 async fn compile_device_sources_phase0_and_refresh_catalog(
     ctx: &CompileContext,
+    req: &CompileRequest,
     output_dir: &Path,
     timestamp: i64,
     sources: &DeviceCompileSources,
@@ -1048,6 +1064,22 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
     if let Some(outcome) = device.as_ref() {
         if !outcome.partial_module {
             if let Some(full_filename) = sources.full_filename.as_deref() {
+                if outcome.compiled_source != sources.full_source {
+                    let updated = update_ai_split_cache_role(
+                        req,
+                        "device",
+                        full_filename,
+                        outcome.compiled_source.clone(),
+                    )
+                    .await;
+                    if updated {
+                        eprintln!(
+                            "[compile-device] split cache updated with verified healed device role file={} bytes={}",
+                            full_filename,
+                            outcome.compiled_source.len()
+                        );
+                    }
+                }
                 materialize_device_partial_artifacts(
                     workspace_path,
                     sidecar_path,
@@ -4881,6 +4913,7 @@ pub async fn handle_compile_request(
         {
             compile_device_sources_phase0_and_refresh_catalog(
                 ctx,
+                &req,
                 &output_dir,
                 timestamp,
                 sources,
@@ -4949,6 +4982,7 @@ pub async fn handle_compile_request(
             {
                 compile_device_sources_phase0_and_refresh_catalog(
                     ctx,
+                    &req,
                     &output_dir,
                     timestamp,
                     sources,
@@ -4967,8 +5001,10 @@ pub async fn handle_compile_request(
 
         // Propagate core error first (it's the most load-bearing —
         // without core we can't even attempt to load the .so chain).
-        let core_opt = core_res?;
-        let gui_opt = gui_res?;
+        let core_opt =
+            compile_stage_or_invalidate_split_cache(&req, core_res, "compile_core_failed").await?;
+        let gui_opt =
+            compile_stage_or_invalidate_split_cache(&req, gui_res, "compile_gui_failed").await?;
         // Runner errors are non-fatal; a missing compiled runner falls
         // back to the shipped runner path for this compile.
         let runner_opt = match runner_res {
@@ -4981,36 +5017,48 @@ pub async fn handle_compile_request(
                 None
             }
         };
-        let device_opt = device_res?;
+        let device_opt =
+            compile_stage_or_invalidate_split_cache(&req, device_res, "compile_device_failed")
+                .await?;
         (core_opt, gui_opt, runner_opt, device_opt)
     } else {
         // ─── Serial fallback ───────────────────────────────────────
-        let core_opt = compile_core(
-            ctx,
-            &split_data,
-            &processed_core,
-            rebuild_scope.clone(),
-            prev_core_path.clone(),
-            &output_dir,
-            timestamp,
-            ext,
-            Some(session_id.clone()),
-            compile_manifest.as_ref(),
+        let core_opt = compile_stage_or_invalidate_split_cache(
+            &req,
+            compile_core(
+                ctx,
+                &split_data,
+                &processed_core,
+                rebuild_scope.clone(),
+                prev_core_path.clone(),
+                &output_dir,
+                timestamp,
+                ext,
+                Some(session_id.clone()),
+                compile_manifest.as_ref(),
+            )
+            .await,
+            "compile_core_failed",
         )
         .await?;
 
-        let gui_opt = compile_gui(
-            ctx,
-            &split_data,
-            &processed_gui,
-            rebuild_scope.clone(),
-            String::new(),
-            &output_dir,
-            timestamp,
-            ext,
-            Some(session_id.clone()),
-            req.is_gui,
-            compile_manifest.as_ref(),
+        let gui_opt = compile_stage_or_invalidate_split_cache(
+            &req,
+            compile_gui(
+                ctx,
+                &split_data,
+                &processed_gui,
+                rebuild_scope.clone(),
+                String::new(),
+                &output_dir,
+                timestamp,
+                ext,
+                Some(session_id.clone()),
+                req.is_gui,
+                compile_manifest.as_ref(),
+            )
+            .await,
+            "compile_gui_failed",
         )
         .await?;
 
@@ -5040,14 +5088,20 @@ pub async fn handle_compile_request(
         let device_opt = if let (Some(sources), Some(manifest)) =
             (device_source_content.as_ref(), compile_manifest.as_ref())
         {
-            compile_device_sources_phase0_and_refresh_catalog(
-                ctx,
-                &output_dir,
-                timestamp,
-                sources,
-                manifest,
-                &sidecar_path,
-                &session_id,
+            compile_stage_or_invalidate_split_cache(
+                &req,
+                compile_device_sources_phase0_and_refresh_catalog(
+                    ctx,
+                    &req,
+                    &output_dir,
+                    timestamp,
+                    sources,
+                    manifest,
+                    &sidecar_path,
+                    &session_id,
+                )
+                .await,
+                "compile_device_failed",
             )
             .await?
         } else {
