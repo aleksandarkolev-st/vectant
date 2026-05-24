@@ -605,17 +605,39 @@ struct DevicePartialArtifactSpec {
     source_paths: Vec<String>,
     symbols: Vec<String>,
     omitted_source_includes: Vec<String>,
+    mapping_confidence: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DevicePartialArtifactSelection {
     filename: String,
     kind: String,
+    generated_path: String,
     symbols: Vec<String>,
     source_paths: Vec<String>,
     content_hash: Option<String>,
     content_bytes: Option<usize>,
+    full_bytes: Option<usize>,
     source_path_match: bool,
+    selection_reason: String,
+    rejection_reason: Option<String>,
+    mapping_confidence: Option<String>,
+    verifier_evidence_id: Option<String>,
+    dependency_hash: Option<String>,
+    compile_command_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DevicePartialArtifactSelectionReport {
+    selected: Option<DevicePartialArtifactSelection>,
+    rejection_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DeviceSymbolMapping {
+    source_path: String,
+    generated_path: String,
+    mapping_confidence: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -624,6 +646,12 @@ struct AiDeltaDeviceScope {
     filename: String,
     symbols: Vec<String>,
     artifact_kind: String,
+    source_paths: Vec<String>,
+    selection_reason: String,
+    mapping_confidence: Option<String>,
+    dependency_hash: Option<String>,
+    compile_command_hash: Option<String>,
+    verifier_evidence_id: Option<String>,
 }
 
 fn partial_device_filename(generated_path: &str, symbols: &[String], source: &str) -> String {
@@ -691,23 +719,194 @@ fn string_array_field(item: &serde_json::Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn select_device_partial_artifact(
+fn string_field(item: &serde_json::Value, key: &str) -> Option<String> {
+    item.get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn device_symbol_mapping_index(
+    sidecar: &serde_json::Value,
+) -> BTreeMap<String, Vec<DeviceSymbolMapping>> {
+    let mut index: BTreeMap<String, Vec<DeviceSymbolMapping>> = BTreeMap::new();
+    for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
+        let Some(items) = sidecar
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for item in items {
+            let Some(symbol) = item
+                .get("symbol")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            let Some(source_path) = item
+                .get("sourcePath")
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename)
+            else {
+                continue;
+            };
+            let Some(generated_path) = item
+                .get("generatedPath")
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename)
+            else {
+                continue;
+            };
+            index
+                .entry(symbol.to_string())
+                .or_default()
+                .push(DeviceSymbolMapping {
+                    source_path,
+                    generated_path,
+                    mapping_confidence: string_field(item, "mappingConfidence"),
+                });
+        }
+    }
+    index
+}
+
+fn mapping_confidence_for_symbols(
+    symbol_index: &BTreeMap<String, Vec<DeviceSymbolMapping>>,
+    symbols: &BTreeSet<String>,
+    generated_path: &str,
+    source_paths: &[String],
+) -> Option<String> {
+    let source_set = source_paths.iter().cloned().collect::<BTreeSet<_>>();
+    let mut confidences = BTreeSet::new();
+    for symbol in symbols {
+        let Some(mappings) = symbol_index.get(symbol) else {
+            continue;
+        };
+        for mapping in mappings {
+            if mapping.generated_path == generated_path
+                && (source_set.is_empty() || source_set.contains(&mapping.source_path))
+            {
+                if let Some(confidence) = mapping.mapping_confidence.as_deref() {
+                    confidences.insert(confidence.to_string());
+                }
+            }
+        }
+    }
+    match confidences.len() {
+        0 => None,
+        1 => confidences.into_iter().next(),
+        _ => Some("mixed".to_string()),
+    }
+}
+
+fn symbol_maps_to_scope(
+    symbol_index: &BTreeMap<String, Vec<DeviceSymbolMapping>>,
+    symbol: &str,
+    generated_path: &str,
+    source_path: Option<&str>,
+) -> bool {
+    let Some(mappings) = symbol_index.get(symbol) else {
+        return false;
+    };
+    mappings.iter().any(|mapping| {
+        mapping.generated_path == generated_path
+            && source_path
+                .map(|path| mapping.source_path == path)
+                .unwrap_or(true)
+    })
+}
+
+fn artifact_symbol_superset_is_safe(
+    symbol_index: &BTreeMap<String, Vec<DeviceSymbolMapping>>,
+    artifact_symbols: &BTreeSet<String>,
+    requested_symbols: &BTreeSet<String>,
+    generated_path: &str,
+    request_path: Option<&str>,
+) -> bool {
+    if !artifact_symbols.is_superset(requested_symbols) {
+        return false;
+    }
+    for symbol in artifact_symbols {
+        if !symbol_maps_to_scope(symbol_index, symbol, generated_path, request_path) {
+            return false;
+        }
+    }
+    true
+}
+
+fn sidecar_any_bool(sidecar: &serde_json::Value, pointers: &[&str]) -> bool {
+    pointers
+        .iter()
+        .any(|pointer| sidecar.pointer(pointer).and_then(serde_json::Value::as_bool) == Some(true))
+}
+
+fn select_device_partial_artifact_with_report(
     sidecar: &serde_json::Value,
     generated_path: &str,
     request_path: Option<&str>,
     symbols: &[String],
-) -> Option<DevicePartialArtifactSelection> {
+) -> DevicePartialArtifactSelectionReport {
     let generated = normalized_request_filename(generated_path)
         .unwrap_or_else(|| generated_path.replace('\\', "/"));
     let requested_symbols = normalized_symbol_set(symbols);
     if requested_symbols.is_empty() {
-        return None;
+        return DevicePartialArtifactSelectionReport {
+            selected: None,
+            rejection_reason: Some("selection.empty_edited_symbols".to_string()),
+        };
     }
     let request = request_path
         .and_then(normalized_request_filename)
         .filter(|path| !path.is_empty());
+    if sidecar_any_bool(
+        sidecar,
+        &[
+            "/lastDeviceFastPathVerifierReport/includeGraphRootChanged",
+            "/lastDeviceFastPathVerifierReport/includeRootChanged",
+            "/lastWarmRebuildVerifierReport/includeGraphRootChanged",
+            "/lastWarmRebuildVerifierReport/includeRootChanged",
+        ],
+    ) {
+        return DevicePartialArtifactSelectionReport {
+            selected: None,
+            rejection_reason: Some("selection.include_root_changed".to_string()),
+        };
+    }
+    if sidecar_any_bool(
+        sidecar,
+        &[
+            "/lastDeviceFastPathVerifierReport/macroControlledAbiUncertain",
+            "/lastDeviceFastPathVerifierReport/macroControlledSignatureOrLayoutUncertain",
+            "/lastWarmRebuildVerifierReport/macroControlledAbiUncertain",
+            "/lastWarmRebuildVerifierReport/macroControlledSignatureOrLayoutUncertain",
+        ],
+    ) {
+        return DevicePartialArtifactSelectionReport {
+            selected: None,
+            rejection_reason: Some("selection.macro_controlled_abi_uncertain".to_string()),
+        };
+    }
+    let symbol_index = device_symbol_mapping_index(sidecar);
+    for symbol in &requested_symbols {
+        if !symbol_maps_to_scope(&symbol_index, symbol, &generated, request.as_deref()) {
+            return DevicePartialArtifactSelectionReport {
+                selected: None,
+                rejection_reason: Some("selection.unknown_symbol".to_string()),
+            };
+        }
+    }
 
     let mut candidates = Vec::new();
+    let mut rejection_reason: Option<String> = None;
+    let mut remember_rejection = |reason: &str| {
+        if rejection_reason.is_none() {
+            rejection_reason = Some(reason.to_string());
+        }
+    };
     for report_key in ["devicePartialArtifacts", "generatedDevicePartials"] {
         let Some(artifacts) = sidecar
             .get(report_key)
@@ -733,13 +932,13 @@ fn select_device_partial_artifact(
                 continue;
             };
             if artifact_generated != generated {
+                remember_rejection("selection.generated_path_mismatch");
                 continue;
             }
 
             let artifact_symbols = string_array_field(item, "symbols");
-            if normalized_symbol_set(&artifact_symbols) != requested_symbols {
-                continue;
-            }
+            let artifact_symbol_set = normalized_symbol_set(&artifact_symbols);
+            let exact_symbol_set = artifact_symbol_set == requested_symbols;
 
             let source_paths = string_array_field(item, "sourcePaths")
                 .into_iter()
@@ -749,17 +948,53 @@ fn select_device_partial_artifact(
                 .as_deref()
                 .map(|requested| source_paths.iter().any(|path| path == requested))
                 .unwrap_or(false);
-            if request.is_some() && !source_paths.is_empty() && !source_path_match {
+            if request.is_some() && !source_path_match {
+                remember_rejection("selection.source_path_mismatch");
                 continue;
             }
 
+            let kind = item
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            if kind == "source_include_bridge" && request.is_some() {
+                if source_paths.len() != 1 || !source_path_match {
+                    remember_rejection("selection.source_path_mismatch");
+                    continue;
+                }
+            }
+
+            let selection_reason = if exact_symbol_set {
+                "exact_symbol_set"
+            } else if artifact_symbol_superset_is_safe(
+                &symbol_index,
+                &artifact_symbol_set,
+                &requested_symbols,
+                &generated,
+                request.as_deref(),
+            ) {
+                "safe_symbol_superset"
+            } else if artifact_symbol_set.is_superset(&requested_symbols) {
+                remember_rejection("selection.unsafe_symbol_superset");
+                continue;
+            } else {
+                remember_rejection("selection.symbol_set_mismatch");
+                continue;
+            };
+            let mapping_confidence = string_field(item, "mappingConfidence").or_else(|| {
+                mapping_confidence_for_symbols(
+                    &symbol_index,
+                    &artifact_symbol_set,
+                    &generated,
+                    &source_paths,
+                )
+            });
+
             candidates.push(DevicePartialArtifactSelection {
                 filename: filename.to_string(),
-                kind: item
-                    .get("kind")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_string(),
+                kind,
+                generated_path: artifact_generated,
                 symbols: artifact_symbols,
                 source_paths,
                 content_hash: item
@@ -772,7 +1007,17 @@ fn select_device_partial_artifact(
                     .get("contentBytes")
                     .and_then(serde_json::Value::as_u64)
                     .and_then(|value| usize::try_from(value).ok()),
+                full_bytes: item
+                    .get("fullBytes")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok()),
                 source_path_match,
+                selection_reason: selection_reason.to_string(),
+                rejection_reason: None,
+                mapping_confidence,
+                verifier_evidence_id: string_field(item, "verifierEvidenceId"),
+                dependency_hash: string_field(item, "dependencyHash"),
+                compile_command_hash: string_field(item, "compileCommandHash"),
             });
         }
     }
@@ -781,13 +1026,33 @@ fn select_device_partial_artifact(
         b.source_path_match
             .cmp(&a.source_path_match)
             .then(
+                (a.selection_reason == "exact_symbol_set")
+                    .cmp(&(b.selection_reason == "exact_symbol_set"))
+                    .reverse(),
+            )
+            .then(
                 a.content_bytes
                     .unwrap_or(usize::MAX)
                     .cmp(&b.content_bytes.unwrap_or(usize::MAX)),
             )
             .then(a.filename.cmp(&b.filename))
     });
-    candidates.into_iter().next()
+    let selected = candidates.into_iter().next();
+    DevicePartialArtifactSelectionReport {
+        selected,
+        rejection_reason,
+    }
+}
+
+#[cfg(test)]
+fn select_device_partial_artifact(
+    sidecar: &serde_json::Value,
+    generated_path: &str,
+    request_path: Option<&str>,
+    symbols: &[String],
+) -> Option<DevicePartialArtifactSelection> {
+    select_device_partial_artifact_with_report(sidecar, generated_path, request_path, symbols)
+        .selected
 }
 
 async fn read_selected_device_partial_artifact(
@@ -843,9 +1108,9 @@ async fn prepare_ai_delta_device_scope(
     };
     let symbols = vec![symbol];
 
-    if let Some(selection) =
-        select_device_partial_artifact(sidecar, generated_path, Some(request_path), &symbols)
-    {
+    let selection_report =
+        select_device_partial_artifact_with_report(sidecar, generated_path, Some(request_path), &symbols);
+    if let Some(selection) = selection_report.selected {
         if selection.kind == "kernel_region" {
             if let Some(source) =
                 read_selected_device_partial_artifact(workspace, &selection).await?
@@ -860,8 +1125,14 @@ async fn prepare_ai_delta_device_scope(
                 return Ok(Some(AiDeltaDeviceScope {
                     source,
                     filename: selection.filename,
-                    symbols,
+                    symbols: selection.symbols,
                     artifact_kind: selection.kind,
+                    source_paths: selection.source_paths,
+                    selection_reason: selection.selection_reason,
+                    mapping_confidence: selection.mapping_confidence,
+                    dependency_hash: selection.dependency_hash,
+                    compile_command_hash: selection.compile_command_hash,
+                    verifier_evidence_id: selection.verifier_evidence_id,
                 }));
             }
         } else {
@@ -870,6 +1141,14 @@ async fn prepare_ai_delta_device_scope(
                 selection.filename, selection.kind
             );
         }
+    } else if let Some(reason) = selection_report.rejection_reason.as_deref() {
+        eprintln!(
+            "[GPU AI Delta] scoped device prompt partial selection rejected: generated={} user={} symbols={} reason={}",
+            generated_path,
+            request_path,
+            symbols.join(","),
+            reason
+        );
     }
 
     if let Some(source) = build_device_partial_source(generated_device_source, &symbols) {
@@ -886,6 +1165,12 @@ async fn prepare_ai_delta_device_scope(
             filename,
             symbols,
             artifact_kind: "kernel_region".to_string(),
+            source_paths: Vec::new(),
+            selection_reason: "generated_body_partial".to_string(),
+            mapping_confidence: None,
+            dependency_hash: None,
+            compile_command_hash: None,
+            verifier_evidence_id: None,
         }));
     }
 
@@ -907,6 +1192,12 @@ fn ai_delta_device_partial_payload(
             "source": "aiDeltaPartialArtifact",
             "artifactFilename": scope.filename.clone(),
             "artifactKind": scope.artifact_kind.clone(),
+            "sourcePaths": scope.source_paths.clone(),
+            "selectionReason": scope.selection_reason.clone(),
+            "mappingConfidence": scope.mapping_confidence.clone(),
+            "dependencyHash": scope.dependency_hash.clone(),
+            "compileCommandHash": scope.compile_command_hash.clone(),
+            "verifierEvidenceId": scope.verifier_evidence_id.clone(),
             "requirePartial": true,
         }));
     }
@@ -923,6 +1214,8 @@ fn ai_delta_device_partial_payload(
             "symbols": symbols,
             "source": "aiDeltaChangedKernelArtifact",
             "artifactKind": "kernel_region",
+            "sourcePaths": [],
+            "selectionReason": "generated_body_partial",
             "requirePartial": true,
         })
     })
@@ -1682,6 +1975,7 @@ fn include_bridge_partial_artifact_specs(
     let generated = normalized_request_filename(generated_path)
         .unwrap_or_else(|| generated_path.replace('\\', "/"));
     let mut by_source: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut confidence_by_source: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
         let Some(items) = sidecar
@@ -1731,9 +2025,15 @@ fn include_bridge_partial_artifact_specs(
                 continue;
             };
             by_source
-                .entry(source_path)
+                .entry(source_path.clone())
                 .or_default()
                 .insert(symbol.to_string());
+            if let Some(confidence) = string_field(item, "mappingConfidence") {
+                confidence_by_source
+                    .entry(source_path)
+                    .or_default()
+                    .insert(confidence);
+            }
         }
     }
 
@@ -1764,6 +2064,13 @@ fn include_bridge_partial_artifact_specs(
             source_paths: target_paths,
             symbols,
             omitted_source_includes: omitted,
+            mapping_confidence: confidence_by_source
+                .remove(&source_path)
+                .and_then(|items| match items.len() {
+                    0 => None,
+                    1 => items.into_iter().next(),
+                    _ => Some("mixed".to_string()),
+                }),
         });
     }
     specs
@@ -1793,9 +2100,10 @@ fn direct_kernel_partial_artifact_specs(
                 content,
                 kind: "kernel_region",
                 generated_path: generated.clone(),
-                source_paths: Vec::new(),
+                source_paths: vec![generated.clone()],
                 symbols: target,
                 omitted_source_includes: Vec::new(),
+                mapping_confidence: None,
             })
         })
         .collect()
@@ -1840,6 +2148,13 @@ async fn materialize_device_partial_artifacts(
             "contentBytes": spec.content.len(),
             "fullBytes": full_source.len(),
             "contentHash": format!("{}", hash_content(&spec.content)),
+            "selectionReason": serde_json::Value::Null,
+            "rejectionReason": serde_json::Value::Null,
+            "fallbackReason": serde_json::Value::Null,
+            "mappingConfidence": spec.mapping_confidence,
+            "verifierEvidenceId": serde_json::Value::Null,
+            "dependencyHash": serde_json::Value::Null,
+            "compileCommandHash": serde_json::Value::Null,
         }));
     }
     let materialized = artifacts.len();
@@ -2834,13 +3149,15 @@ pub async fn handle_compile_request(
                             generated_path,
                             device_patch.reason_codes.join(",")
                         );
+                        let partial_selection_report = select_device_partial_artifact_with_report(
+                            &sidecar_meta,
+                            &generated_path,
+                            Some(&request_device_name),
+                            &device_patch.affected_symbols,
+                        );
                         let partial_device_payload = if let Some(selection) =
-                            select_device_partial_artifact(
-                                &sidecar_meta,
-                                &generated_path,
-                                Some(&request_device_name),
-                                &device_patch.affected_symbols,
-                            ) {
+                            partial_selection_report.selected
+                        {
                             if let Some(previous_partial_source) =
                                 read_selected_device_partial_artifact(&ctx.workspace_path, &selection)
                                     .await?
@@ -2864,12 +3181,17 @@ pub async fn handle_compile_request(
                                     );
                                     Some(serde_json::json!({
                                         "content": previous_partial_source,
-                                        "filename": partial_filename,
-                                        "symbols": device_patch.affected_symbols.clone(),
+                                        "filename": selection.filename.clone(),
+                                        "symbols": selection.symbols.clone(),
                                         "source": "devicePartialArtifacts",
                                         "artifactFilename": selection.filename.clone(),
                                         "artifactKind": selection.kind.clone(),
                                         "sourcePaths": selection.source_paths.clone(),
+                                        "selectionReason": selection.selection_reason.clone(),
+                                        "mappingConfidence": selection.mapping_confidence.clone(),
+                                        "dependencyHash": selection.dependency_hash.clone(),
+                                        "compileCommandHash": selection.compile_command_hash.clone(),
+                                        "verifierEvidenceId": selection.verifier_evidence_id.clone(),
                                         "requirePartial": true,
                                     }))
                                 } else {
@@ -2905,6 +3227,13 @@ pub async fn handle_compile_request(
                                                 "source": "devicePartialArtifacts",
                                                 "artifactFilename": selection.filename,
                                                 "artifactKind": selection.kind,
+                                                "sourcePaths": selection.source_paths,
+                                                "selectionReason": selection.selection_reason,
+                                                "mappingConfidence": selection.mapping_confidence,
+                                                "dependencyHash": selection.dependency_hash,
+                                                "compileCommandHash": selection.compile_command_hash,
+                                                "verifierEvidenceId": selection.verifier_evidence_id,
+                                                "requirePartial": true,
                                             })
                                         })
                                     } else {
@@ -2920,6 +3249,16 @@ pub async fn handle_compile_request(
                                 None
                             }
                         } else {
+                            if let Some(reason) = partial_selection_report.rejection_reason.as_deref()
+                            {
+                                eprintln!(
+                                    "[gpu-hmr] device_only partial artifact selection rejected: generated={} user={} symbols={} reason={}",
+                                    generated_path,
+                                    request_device_name,
+                                    device_patch.affected_symbols.join(","),
+                                    reason
+                                );
+                            }
                             None
                         }
                         .or_else(|| {
@@ -2943,10 +3282,15 @@ pub async fn handle_compile_request(
                                 serde_json::json!({
                                     "content": partial_source,
                                     "filename": partial_filename,
-                                    "symbols": device_patch.affected_symbols.clone(),
-                                })
-                            })
-                        });
+                                            "symbols": device_patch.affected_symbols.clone(),
+                                            "source": "generatedBodyPartial",
+                                            "artifactKind": "kernel_region",
+                                            "selectionReason": "generated_body_partial",
+                                            "fallbackReason": "partial_catalog_selection_unavailable",
+                                            "requirePartial": true,
+                                        })
+                                    })
+                                });
                         let mut split_payload = serde_json::json!({
                             "shared": { "content": shared_content, "filename": shared_filename },
                             "core": { "content": core_content, "filename": core_filename },
@@ -3173,49 +3517,70 @@ pub async fn handle_compile_request(
                             });
                             let catalog_payload = if source_bridge_payload.is_some() {
                                 None
-                            } else if let Some(selection) = select_device_partial_artifact(
-                                &sidecar_meta,
-                                &generated_path,
-                                Some(&request_name),
-                                &warm.affected_symbols,
-                            ) {
-                                if selection.kind == "source_include_bridge"
-                                    && selection.source_path_match
-                                {
-                                    read_selected_device_partial_artifact(
-                                        &ctx.workspace_path,
-                                        &selection,
-                                    )
-                                    .await?
-                                    .map(|partial_source| {
-                                        eprintln!(
-                                            "[gpu-hmr] warm_rebuild partial artifact selected: file={} bytes={} full_bytes={} symbols={} kind={}",
-                                            selection.filename,
-                                            partial_source.len(),
-                                            generated_device_source.len(),
-                                            warm.affected_symbols.join(","),
-                                            selection.kind
-                                        );
-                                        serde_json::json!({
-                                            "content": partial_source,
-                                            "filename": selection.filename,
-                                            "symbols": warm.affected_symbols.clone(),
-                                            "source": "devicePartialArtifacts",
-                                            "artifactKind": selection.kind,
-                                            "requirePartial": true,
+                            } else {
+                                let selection_report = select_device_partial_artifact_with_report(
+                                    &sidecar_meta,
+                                    &generated_path,
+                                    Some(&request_name),
+                                    &warm.affected_symbols,
+                                );
+                                if let Some(selection) = selection_report.selected {
+                                    if selection.kind == "source_include_bridge"
+                                        && selection.source_path_match
+                                    {
+                                        read_selected_device_partial_artifact(
+                                            &ctx.workspace_path,
+                                            &selection,
+                                        )
+                                        .await?
+                                        .map(|partial_source| {
+                                            eprintln!(
+                                                "[gpu-hmr] warm_rebuild partial artifact selected: file={} bytes={} full_bytes={} symbols={} kind={}",
+                                                selection.filename,
+                                                partial_source.len(),
+                                                generated_device_source.len(),
+                                                warm.affected_symbols.join(","),
+                                                selection.kind
+                                            );
+                                            serde_json::json!({
+                                                "content": partial_source,
+                                                "filename": selection.filename.clone(),
+                                                "symbols": selection.symbols.clone(),
+                                                "source": "devicePartialArtifacts",
+                                                "artifactFilename": selection.filename,
+                                                "artifactKind": selection.kind,
+                                                "sourcePaths": selection.source_paths,
+                                                "selectionReason": selection.selection_reason,
+                                                "mappingConfidence": selection.mapping_confidence,
+                                                "dependencyHash": selection.dependency_hash,
+                                                "compileCommandHash": selection.compile_command_hash,
+                                                "verifierEvidenceId": selection.verifier_evidence_id,
+                                                "requirePartial": true,
+                                            })
                                         })
-                                    })
+                                    } else {
+                                        eprintln!(
+                                            "[gpu-hmr] warm_rebuild partial artifact skipped: file={} kind={} source_path_match={} reason=not_header_source_bridge",
+                                            selection.filename,
+                                            selection.kind,
+                                            selection.source_path_match
+                                        );
+                                        None
+                                    }
                                 } else {
-                                    eprintln!(
-                                        "[gpu-hmr] warm_rebuild partial artifact skipped: file={} kind={} source_path_match={} reason=not_header_source_bridge",
-                                        selection.filename,
-                                        selection.kind,
-                                        selection.source_path_match
-                                    );
+                                    if let Some(reason) =
+                                        selection_report.rejection_reason.as_deref()
+                                    {
+                                        eprintln!(
+                                            "[gpu-hmr] warm_rebuild partial artifact selection rejected: generated={} user={} symbols={} reason={}",
+                                            generated_path,
+                                            request_name,
+                                            warm.affected_symbols.join(","),
+                                            reason
+                                        );
+                                    }
                                     None
                                 }
-                            } else {
-                                None
                             };
                             source_bridge_payload.or(catalog_payload).or_else(|| {
                                 let (target_paths, omit_paths) =
@@ -3243,6 +3608,9 @@ pub async fn handle_compile_request(
                                         "content": partial_source,
                                         "filename": partial_filename,
                                         "symbols": warm.affected_symbols.clone(),
+                                        "source": "sourceIncludeBridgeFallback",
+                                        "artifactKind": "source_include_bridge",
+                                        "fallbackReason": "partial_catalog_selection_unavailable",
                                         "requirePartial": true,
                                     })
                                 })
@@ -6670,6 +7038,24 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
     #[test]
     fn partial_artifact_selector_prefers_matching_source_path_and_symbol() {
         let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "CameraRays",
+                        "sourcePath": "src/Device/kernels/CameraRays.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_include_bridge_same_source"
+                    },
+                    {
+                        "kind": "kernel",
+                        "symbol": "MegaKernel",
+                        "sourcePath": "src/Device/kernels/Megakernel.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_include_bridge_same_source"
+                    }
+                ]
+            },
             "devicePartialArtifacts": {
                 "artifacts": [
                     {
@@ -6724,13 +7110,24 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
     #[test]
     fn partial_artifact_selector_allows_symbol_only_direct_kernel_artifacts() {
         let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "first",
+                        "sourcePath": ".synthi/generated/gpu/device.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_kernel_region"
+                    }
+                ]
+            },
             "generatedDevicePartials": {
                 "artifacts": [
                     {
                         "kind": "kernel_region",
                         "filename": ".synthi/generated/gpu/device.partial.first.hip",
                         "generatedPath": ".synthi/generated/gpu/device.hip",
-                        "sourcePaths": [],
+                        "sourcePaths": [".synthi/generated/gpu/device.hip"],
                         "symbols": ["first"],
                         "contentBytes": 64,
                         "contentHash": "h1"
@@ -6743,7 +7140,7 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         let selected = select_device_partial_artifact(
             &sidecar,
             ".synthi/generated/gpu/device.hip",
-            Some("src/gpu/kernels.hip"),
+            Some(".synthi/generated/gpu/device.hip"),
             &symbols,
         )
         .expect("direct partial artifact");
@@ -6753,7 +7150,225 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             ".synthi/generated/gpu/device.partial.first.hip"
         );
         assert_eq!(selected.kind, "kernel_region");
-        assert!(!selected.source_path_match);
+        assert!(selected.source_path_match);
+    }
+
+    #[test]
+    fn partial_artifact_selector_accepts_safe_symbol_superset() {
+        let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "shade_primary",
+                        "sourcePath": "src/device/shade.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_include_bridge_same_source"
+                    },
+                    {
+                        "kind": "kernel",
+                        "symbol": "shade_secondary",
+                        "sourcePath": "src/device/shade.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_include_bridge_same_source"
+                    }
+                ]
+            },
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "kind": "source_include_bridge",
+                        "filename": ".synthi/generated/gpu/device.partial.shade.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": ["src/device/shade.h"],
+                        "symbols": ["shade_primary", "shade_secondary"],
+                        "contentBytes": 90,
+                        "contentHash": "shade"
+                    }
+                ]
+            }
+        });
+        let symbols = vec!["shade_primary".to_string()];
+
+        let selected = select_device_partial_artifact(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some("src/device/shade.h"),
+            &symbols,
+        )
+        .expect("safe source-owned superset");
+
+        assert_eq!(selected.selection_reason, "safe_symbol_superset");
+        assert_eq!(
+            normalized_symbol_set(&selected.symbols),
+            normalized_symbol_set(&["shade_primary".to_string(), "shade_secondary".to_string()])
+        );
+    }
+
+    #[test]
+    fn partial_artifact_selector_rejects_unknown_symbols() {
+        let sidecar = serde_json::json!({
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "kind": "source_include_bridge",
+                        "filename": ".synthi/generated/gpu/device.partial.unknown.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": ["src/device/unknown.h"],
+                        "symbols": ["unknown_kernel"],
+                        "contentBytes": 90,
+                        "contentHash": "unknown"
+                    }
+                ]
+            }
+        });
+        let report = select_device_partial_artifact_with_report(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some("src/device/unknown.h"),
+            &["unknown_kernel".to_string()],
+        );
+
+        assert!(report.selected.is_none());
+        assert_eq!(
+            report.rejection_reason.as_deref(),
+            Some("selection.unknown_symbol")
+        );
+    }
+
+    #[test]
+    fn partial_artifact_selector_rejects_unsafe_symbol_superset() {
+        let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "edited_kernel",
+                        "sourcePath": "src/device/edited.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    },
+                    {
+                        "kind": "kernel",
+                        "symbol": "foreign_kernel",
+                        "sourcePath": "src/device/foreign.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    }
+                ]
+            },
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "kind": "source_include_bridge",
+                        "filename": ".synthi/generated/gpu/device.partial.mixed.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": ["src/device/edited.h"],
+                        "symbols": ["edited_kernel", "foreign_kernel"],
+                        "contentBytes": 90,
+                        "contentHash": "mixed"
+                    }
+                ]
+            }
+        });
+        let report = select_device_partial_artifact_with_report(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some("src/device/edited.h"),
+            &["edited_kernel".to_string()],
+        );
+
+        assert!(report.selected.is_none());
+        assert_eq!(
+            report.rejection_reason.as_deref(),
+            Some("selection.unsafe_symbol_superset")
+        );
+    }
+
+    #[test]
+    fn partial_artifact_selector_rejects_changed_include_root() {
+        let sidecar = serde_json::json!({
+            "lastDeviceFastPathVerifierReport": {
+                "includeGraphRootChanged": true
+            },
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "edited_kernel",
+                        "sourcePath": "src/device/edited.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    }
+                ]
+            },
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "kind": "source_include_bridge",
+                        "filename": ".synthi/generated/gpu/device.partial.edited.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": ["src/device/edited.h"],
+                        "symbols": ["edited_kernel"],
+                        "contentBytes": 90,
+                        "contentHash": "edited"
+                    }
+                ]
+            }
+        });
+        let report = select_device_partial_artifact_with_report(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some("src/device/edited.h"),
+            &["edited_kernel".to_string()],
+        );
+
+        assert!(report.selected.is_none());
+        assert_eq!(
+            report.rejection_reason.as_deref(),
+            Some("selection.include_root_changed")
+        );
+    }
+
+    #[test]
+    fn partial_artifact_selector_rejects_macro_controlled_abi_uncertainty() {
+        let sidecar = serde_json::json!({
+            "lastDeviceFastPathVerifierReport": {
+                "macroControlledAbiUncertain": true
+            },
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "edited_kernel",
+                        "sourcePath": "src/device/edited.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    }
+                ]
+            },
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "kind": "source_include_bridge",
+                        "filename": ".synthi/generated/gpu/device.partial.edited.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": ["src/device/edited.h"],
+                        "symbols": ["edited_kernel"],
+                        "contentBytes": 90,
+                        "contentHash": "edited"
+                    }
+                ]
+            }
+        });
+        let report = select_device_partial_artifact_with_report(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some("src/device/edited.h"),
+            &["edited_kernel".to_string()],
+        );
+
+        assert!(report.selected.is_none());
+        assert_eq!(
+            report.rejection_reason.as_deref(),
+            Some("selection.macro_controlled_abi_uncertain")
+        );
     }
 
     #[test]
@@ -6808,6 +7423,12 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
             filename: ".synthi/generated/gpu/device.partial.old.hip".to_string(),
             symbols: vec!["trace".to_string()],
             artifact_kind: "kernel_region".to_string(),
+            source_paths: vec![".synthi/generated/gpu/device.hip".to_string()],
+            selection_reason: "exact_symbol_set".to_string(),
+            mapping_confidence: Some("generated_kernel_region".to_string()),
+            dependency_hash: Some("dep-hash".to_string()),
+            compile_command_hash: Some("cmd-hash".to_string()),
+            verifier_evidence_id: Some("evidence-1".to_string()),
         };
         let final_scope = "extern \"C\" __global__ void trace(float* out) { out[0] = 5.0f; }\n";
 
@@ -6836,6 +7457,18 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
         assert_eq!(
             string_array_field(&payload, "symbols"),
             vec!["trace".to_string()]
+        );
+        assert_eq!(
+            payload
+                .get("selectionReason")
+                .and_then(serde_json::Value::as_str),
+            Some("exact_symbol_set")
+        );
+        assert_eq!(
+            payload
+                .get("dependencyHash")
+                .and_then(serde_json::Value::as_str),
+            Some("dep-hash")
         );
     }
 
