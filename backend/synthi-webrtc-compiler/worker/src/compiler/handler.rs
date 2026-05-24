@@ -2815,11 +2815,6 @@ pub async fn handle_compile_request(
                             );
                         }
                         natural_gpu_ai_delta_reason_codes = device_patch.reason_codes.clone();
-                        eprintln!(
-                            "[GPU AI Delta] natural fallback requested: user={} reasons={}",
-                            request_device_name,
-                            natural_gpu_ai_delta_reason_codes.join(",")
-                        );
                         None
                     }
                 } else {
@@ -3098,6 +3093,13 @@ pub async fn handle_compile_request(
                         if req.force_gpu_ai_delta || !natural_gpu_ai_delta_reason_codes.is_empty() {
                             let request_device_name = normalized_request_filename(&req.filename)
                                 .unwrap_or_else(|| req.filename.replace('\\', "/"));
+                            if !natural_gpu_ai_delta_reason_codes.is_empty() {
+                                eprintln!(
+                                    "[GPU AI Delta] natural fallback requested: user={} reasons={}",
+                                    request_device_name,
+                                    natural_gpu_ai_delta_reason_codes.join(",")
+                                );
+                            }
                             if !is_device_source_request(&request_device_name)
                                 && !is_device_header_request(&request_device_name)
                             {
