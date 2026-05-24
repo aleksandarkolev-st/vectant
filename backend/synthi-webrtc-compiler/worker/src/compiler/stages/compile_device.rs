@@ -15,9 +15,10 @@
 //   step 2:  nvcc --cubin -arch=<arch>  -o device_<ts>.cubin     device_<ts>.ptx
 //
 // The two-step is symmetric with the host two-step: PTX is the cacheable
-// intermediate, cubin is the load-time artifact. For ROCm we run
-// `hipcc --genco` and normalize clang's offload bundle output into the
-// raw AMDGPU code object expected by HIP's module loader.
+// intermediate, cubin is the load-time artifact. For ROCm single-arch
+// HMR we ask hipcc for raw device-only output; multi-arch builds still use
+// bundled output and extract the active AMDGPU code object for HIP's module
+// loader.
 //
 // Phase 0 scope: produce the artifact, run the stderr through
 // `ptxas_info_parser`, attach `GpuToolchainDiagnostics` to the result.
@@ -1639,8 +1640,10 @@ fn parse_hip_offload_target(target_list: &str) -> Option<String> {
 /// optimisation for Phase 5 cross-TU device linking; Phase 0's
 /// monolithic device.cu doesn't need it.
 ///
-/// For hipcc we pass `--genco`, then the compile stage extracts the
-/// device bundle into a raw code object suitable for `hipModuleLoad`.
+/// For hipcc single-arch HMR we ask clang's HIP driver for device-only output
+/// and disable bundling so the artifact is already a raw code object suitable
+/// for `hipModuleLoad`. Multi-arch HIP output still uses the legacy bundled
+/// path, then the compile stage extracts the active code object.
 #[cfg(feature = "gpu-hmr")]
 pub fn populate_device_command(
     cmd: &mut tokio::process::Command,
@@ -1677,7 +1680,12 @@ pub fn populate_device_command(
             cmd.arg(source_filename);
         }
         DeviceCompiler::Hipcc => {
-            cmd.arg("--genco");
+            if gpu.arch.len() == 1 {
+                cmd.arg("--offload-device-only");
+                cmd.arg("--no-gpu-bundle-output");
+            } else {
+                cmd.arg("--genco");
+            }
             for arch in &gpu.arch {
                 cmd.arg(format!("--offload-arch={arch}"));
             }
@@ -1787,10 +1795,27 @@ mod tests {
         let out = PathBuf::from("/tmp/device_42.hsaco");
         populate_device_command(&mut cmd, &rocm_block(), "device.hip", &out);
         let args = args_of(&cmd);
-        assert!(args.iter().any(|a| a == "--genco"));
+        assert!(args.iter().any(|a| a == "--offload-device-only"));
+        assert!(args.iter().any(|a| a == "--no-gpu-bundle-output"));
         assert!(args.iter().any(|a| a == "--offload-arch=gfx90a"));
         assert!(args.iter().any(|a| a.ends_with("device_42.hsaco")));
         assert!(args.iter().any(|a| a == "device.hip"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn hipcc_multi_arch_uses_bundled_output() {
+        let mut block = rocm_block();
+        block.arch.push("gfx1100".to_string());
+        let mut cmd = tokio::process::Command::new("hipcc");
+        let out = PathBuf::from("/tmp/device_42.hsaco");
+        populate_device_command(&mut cmd, &block, "device.hip", &out);
+        let args = args_of(&cmd);
+        assert!(args.iter().any(|a| a == "--genco"));
+        assert!(!args.iter().any(|a| a == "--offload-device-only"));
+        assert!(!args.iter().any(|a| a == "--no-gpu-bundle-output"));
+        assert!(args.iter().any(|a| a == "--offload-arch=gfx90a"));
+        assert!(args.iter().any(|a| a == "--offload-arch=gfx1100"));
     }
 
     #[cfg(feature = "gpu-hmr")]
