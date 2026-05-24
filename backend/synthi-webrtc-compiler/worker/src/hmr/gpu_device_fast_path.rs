@@ -258,8 +258,18 @@ pub fn try_direct_device_body_patch(
                 evidence,
             );
         };
-        if mapping_is_source_include_bridge(mapping)
-            && generated_source_includes_path(generated_device_source, &user_path)
+        let mapping_generated_path = mapping
+            .get("generatedPath")
+            .and_then(Value::as_str)
+            .map(normalize_path);
+        let source_bridge_partial_available = mapping_generated_path
+            .as_deref()
+            .is_some_and(|generated_path| {
+                source_include_bridge_partial_available(sidecar, generated_path, &user_path, symbol)
+            });
+        if (mapping_is_source_include_bridge(mapping)
+            && generated_source_includes_path(generated_device_source, &user_path))
+            || source_bridge_partial_available
         {
             patched_any = true;
             source_include_bridge_recompile = true;
@@ -496,6 +506,108 @@ fn generated_source_includes_path(source: &str, user_path: &str) -> bool {
             .map(|m| normalize_path(m.as_str()) == target)
             .unwrap_or(false)
     })
+}
+
+fn source_include_bridge_partial_available(
+    sidecar: &Value,
+    generated_path: &str,
+    user_path: &str,
+    symbol: &str,
+) -> bool {
+    let generated = normalize_path(generated_path);
+    let source = normalize_path(user_path);
+    if generated.is_empty() || source.is_empty() || symbol.trim().is_empty() {
+        return false;
+    }
+    for report_key in ["devicePartialArtifacts", "generatedDevicePartials"] {
+        let Some(artifacts) = sidecar
+            .get(report_key)
+            .and_then(|report| report.get("artifacts"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for item in artifacts {
+            if item.get("kind").and_then(Value::as_str) != Some("source_include_bridge") {
+                continue;
+            }
+            let Some(artifact_generated) = item
+                .get("generatedPath")
+                .and_then(Value::as_str)
+                .map(normalize_path)
+            else {
+                continue;
+            };
+            if artifact_generated != generated {
+                continue;
+            }
+            let source_paths = normalized_json_string_set(item, "sourcePaths");
+            if source_paths.len() != 1 || !source_paths.contains(&source) {
+                continue;
+            }
+            let artifact_symbols = normalized_json_string_set(item, "symbols");
+            if artifact_symbols.is_empty() || !artifact_symbols.contains(symbol) {
+                continue;
+            }
+            if artifact_symbols
+                .iter()
+                .all(|candidate| device_symbol_maps_to_scope(sidecar, candidate, &source, &generated))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn normalized_json_string_set(item: &Value, key: &str) -> BTreeSet<String> {
+    item.get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(normalize_path)
+                .filter(|value| !value.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn device_symbol_maps_to_scope(
+    sidecar: &Value,
+    symbol: &str,
+    source_path: &str,
+    generated_path: &str,
+) -> bool {
+    for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
+        let Some(items) = sidecar.pointer(pointer).and_then(Value::as_array) else {
+            continue;
+        };
+        if items.iter().any(|item| {
+            item.get("kind").and_then(Value::as_str) == Some("kernel")
+                && item
+                    .get("symbol")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    == Some(symbol)
+                && item
+                    .get("sourcePath")
+                    .and_then(Value::as_str)
+                    .map(normalize_path)
+                    .as_deref()
+                    == Some(source_path)
+                && item
+                    .get("generatedPath")
+                    .and_then(Value::as_str)
+                    .map(normalize_path)
+                    .as_deref()
+                    == Some(generated_path)
+        }) {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn device_only_capability_rejection_reason(sidecar: &Value) -> Option<&'static str> {
@@ -2000,6 +2112,68 @@ fn read_balanced(source: &str, open_index: usize, open: u8, close: u8) -> Option
 mod tests {
     use super::*;
 
+    const FIXTURE_GENERATED_DEVICE_PATH: &str = ".synthi/generated/gpu/device.hip";
+    const FIXTURE_SOURCE_PATH: &str = "fixtures/device/source.hip";
+    const FIXTURE_FOREIGN_SOURCE_PATH: &str = "fixtures/device/foreign.hip";
+    const FIXTURE_SYMBOL: &str = "fixture_kernel_a";
+    const FIXTURE_FOREIGN_SYMBOL: &str = "fixture_kernel_b";
+    const FIXTURE_PARTIAL_FILENAME: &str = ".synthi/generated/gpu/device.partial.source.hip";
+
+    fn fixture_kernel_body(symbol: &str, statement: &str) -> String {
+        format!("extern \"C\" __global__ void {symbol}(float* values) {{\n  {statement};\n}}\n")
+    }
+
+    fn source_include_recompile_fixture(
+        before: &str,
+        mappings: Vec<Value>,
+        artifact_symbols: &[&str],
+    ) -> Value {
+        let mut source_baseline_contents = serde_json::Map::new();
+        source_baseline_contents.insert(
+            FIXTURE_SOURCE_PATH.to_string(),
+            Value::String(before.to_string()),
+        );
+        let mut source_baseline_hashes = serde_json::Map::new();
+        source_baseline_hashes.insert(
+            FIXTURE_SOURCE_PATH.to_string(),
+            Value::String(sha256_hex(before)),
+        );
+        json!({
+            "selectedCompileCommand": {
+                "schemaVersion": "synthi.gpu.selected_compile_command.v1",
+                "source": "compile_commands.json",
+                "identity": "compile-command-id",
+                "effectiveFlagsHash": "flags-hash"
+            },
+            "effectiveFlagsHash": "flags-hash",
+            "toolchainCapabilities": {
+                "status": "current",
+                "supportsDeviceOnlyReload": true
+            },
+            "fastPathPolicy": {
+                "deviceOnlyAllowed": true
+            },
+            "sourceBaselineContents": Value::Object(source_baseline_contents),
+            "sourceBaselineHashes": Value::Object(source_baseline_hashes),
+            "deviceMappings": mappings,
+            "devicePartialArtifacts": {
+                "schemaVersion": "synthi.gpu.device_partial_artifacts.v1",
+                "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                "artifacts": [
+                    {
+                        "kind": "source_include_bridge",
+                        "filename": FIXTURE_PARTIAL_FILENAME,
+                        "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                        "sourcePaths": [FIXTURE_SOURCE_PATH],
+                        "symbols": artifact_symbols,
+                        "contentBytes": 82,
+                        "fullBytes": 256
+                    }
+                ]
+            }
+        })
+    }
+
     fn sidecar() -> Value {
         let source = "__constant__ float gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += gain[0];\n}\n";
         json!({
@@ -2288,6 +2462,83 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "mapping.generated_body_patched"));
+    }
+
+    #[test]
+    fn source_include_partial_recompile_does_not_require_generated_patch_anchor() {
+        let before = fixture_kernel_body(FIXTURE_SYMBOL, "values[0] += 1.0f");
+        let next = before.replace("values[0] += 1.0f", "values[0] += 2.0f");
+        let generated = fixture_kernel_body(FIXTURE_SYMBOL, "values[0] = device_step(values[0])");
+        let meta = source_include_recompile_fixture(
+            &before,
+            vec![
+                json!({
+                    "kind": "kernel",
+                    "symbol": FIXTURE_SYMBOL,
+                    "sourcePath": FIXTURE_SOURCE_PATH,
+                    "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                    "mappingConfidence": "source_backed_partial"
+                }),
+            ],
+            &[FIXTURE_SYMBOL],
+        );
+
+        let result = try_direct_device_body_patch(
+            &meta,
+            FIXTURE_SOURCE_PATH,
+            &next,
+            &generated,
+        );
+
+        assert!(result.accepted, "{:?}", result.reason_codes);
+        assert_eq!(result.patched_device_source.as_deref(), Some(generated.as_str()));
+        assert_eq!(result.affected_symbols, vec![FIXTURE_SYMBOL.to_string()]);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "mapping.source_include_bridge_recompile"));
+        assert!(!result
+            .reason_codes
+            .iter()
+            .any(|code| code == "mapping.generated_body_patched"));
+    }
+
+    #[test]
+    fn source_include_partial_recompile_rejects_unsafe_symbol_superset() {
+        let before = fixture_kernel_body(FIXTURE_SYMBOL, "values[0] += 1.0f");
+        let next = before.replace("values[0] += 1.0f", "values[0] += 2.0f");
+        let generated = fixture_kernel_body(FIXTURE_SYMBOL, "values[0] = device_step(values[0])");
+        let meta = source_include_recompile_fixture(
+            &before,
+            vec![
+                json!({
+                    "kind": "kernel",
+                    "symbol": FIXTURE_SYMBOL,
+                    "sourcePath": FIXTURE_SOURCE_PATH,
+                    "generatedPath": FIXTURE_GENERATED_DEVICE_PATH
+                }),
+                json!({
+                    "kind": "kernel",
+                    "symbol": FIXTURE_FOREIGN_SYMBOL,
+                    "sourcePath": FIXTURE_FOREIGN_SOURCE_PATH,
+                    "generatedPath": FIXTURE_GENERATED_DEVICE_PATH
+                }),
+            ],
+            &[FIXTURE_SYMBOL, FIXTURE_FOREIGN_SYMBOL],
+        );
+
+        let result = try_direct_device_body_patch(
+            &meta,
+            FIXTURE_SOURCE_PATH,
+            &next,
+            &generated,
+        );
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "mapping.patch_anchor_missing"));
     }
 
     #[test]

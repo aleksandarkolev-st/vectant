@@ -581,6 +581,7 @@ struct DeviceCompileSources {
     partial_source: Option<String>,
     partial_filename: Option<String>,
     partial_symbols: Vec<String>,
+    partial_source_paths: Vec<String>,
     partial_required: bool,
     partial_artifact_kind: Option<String>,
     partial_fallback_reason: Option<String>,
@@ -591,6 +592,7 @@ struct DevicePartialCompileSource {
     source: String,
     filename: String,
     symbols: Vec<String>,
+    source_paths: Vec<String>,
     required: bool,
     artifact_kind: Option<String>,
     fallback_reason: Option<String>,
@@ -1603,6 +1605,17 @@ fn split_partial_device_source(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    let source_paths = partial
+        .get("sourcePaths")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .filter_map(normalized_request_filename)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let required = partial
         .get("requirePartial")
         .and_then(serde_json::Value::as_bool)
@@ -1616,6 +1629,7 @@ fn split_partial_device_source(
             source,
             filename,
             symbols,
+            source_paths,
             required,
             artifact_kind,
             fallback_reason,
@@ -1911,6 +1925,8 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
                 &outcome.compiled_source,
                 &outcome.target_symbols,
                 sources.full_filename.as_deref(),
+                sources.partial_artifact_kind.as_deref(),
+                &sources.partial_source_paths,
                 session_id,
             )
             .await?;
@@ -2419,6 +2435,10 @@ fn device_partial_artifact_specs(
 ) -> Vec<DevicePartialArtifactSpec> {
     let mut specs =
         include_bridge_partial_artifact_specs(sidecar, generated_path, full_source, workspace);
+    specs.extend(source_backed_translation_unit_partial_artifact_specs(
+        sidecar,
+        generated_path,
+    ));
     specs.extend(direct_kernel_partial_artifact_specs(
         generated_path,
         full_source,
@@ -2426,6 +2446,99 @@ fn device_partial_artifact_specs(
     specs.sort_by(|a, b| a.filename.cmp(&b.filename));
     specs.dedup_by(|a, b| a.filename == b.filename);
     specs
+}
+
+fn source_backed_translation_unit_partial_artifact_specs(
+    sidecar: &serde_json::Value,
+    generated_path: &str,
+) -> Vec<DevicePartialArtifactSpec> {
+    let generated = normalized_request_filename(generated_path)
+        .unwrap_or_else(|| generated_path.replace('\\', "/"));
+    let mut by_source: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut confidence_by_source: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
+        let Some(items) = sidecar
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for item in items {
+            if item.get("kind").and_then(serde_json::Value::as_str) != Some("kernel") {
+                continue;
+            }
+            let Some(mapping_generated) = item
+                .get("generatedPath")
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename)
+            else {
+                continue;
+            };
+            if mapping_generated != generated {
+                continue;
+            }
+            let Some(source_path) = item
+                .get("sourcePath")
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename)
+            else {
+                continue;
+            };
+            if source_path == generated || !is_device_translation_unit_path(&source_path) {
+                continue;
+            }
+            let Some(symbol) = item
+                .get("symbol")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            by_source
+                .entry(source_path.clone())
+                .or_default()
+                .insert(symbol.to_string());
+            if let Some(confidence) = string_field(item, "mappingConfidence") {
+                confidence_by_source
+                    .entry(source_path)
+                    .or_default()
+                    .insert(confidence);
+            }
+        }
+    }
+
+    by_source
+        .into_iter()
+        .filter_map(|(source_path, symbols)| {
+            let source_paths = vec![source_path.clone()];
+            let content = build_source_include_partial_source(&source_paths)?;
+            let symbols = symbols.into_iter().collect::<Vec<_>>();
+            let filename = partial_device_filename(&generated, &symbols, &content);
+            Some(DevicePartialArtifactSpec {
+                filename,
+                content,
+                kind: "source_include_bridge",
+                generated_path: generated.clone(),
+                source_paths,
+                symbols,
+                omitted_source_includes: Vec::new(),
+                mapping_confidence: confidence_by_source.remove(&source_path).and_then(|items| {
+                    match items.len() {
+                        0 => None,
+                        1 => items.into_iter().next(),
+                        _ => Some("mixed".to_string()),
+                    }
+                }),
+            })
+        })
+        .collect()
+}
+
+fn is_device_translation_unit_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".cu") || lower.ends_with(".hip")
 }
 
 fn include_bridge_partial_artifact_specs(
@@ -2657,6 +2770,8 @@ fn refresh_device_partial_artifact_catalog_value(
     source: &str,
     symbols: &[String],
     generated_path: Option<&str>,
+    artifact_kind: Option<&str>,
+    source_paths: &[String],
 ) -> bool {
     let normalized =
         normalized_request_filename(filename).unwrap_or_else(|| filename.replace('\\', "/"));
@@ -2673,6 +2788,14 @@ fn refresh_device_partial_artifact_catalog_value(
             continue;
         };
         let mut report_updated = false;
+        let has_filename_match = artifacts.iter().any(|artifact| {
+            artifact
+                .get("filename")
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename)
+                .as_deref()
+                == Some(normalized.as_str())
+        });
         for artifact in &mut *artifacts {
             let artifact_name = artifact
                 .get("filename")
@@ -2693,7 +2816,7 @@ fn refresh_device_partial_artifact_catalog_value(
                         .map(|expected| artifact_generated.as_deref() == Some(expected))
                         .unwrap_or(true)
             };
-            if !filename_matches && !symbol_matches {
+            if !filename_matches && (has_filename_match || !symbol_matches) {
                 continue;
             }
             if let Some(obj) = artifact.as_object_mut() {
@@ -2710,17 +2833,43 @@ fn refresh_device_partial_artifact_catalog_value(
                     "contentSource".to_string(),
                     serde_json::Value::String("compiled_source".to_string()),
                 );
+                if let Some(kind) = artifact_kind.map(str::trim).filter(|kind| !kind.is_empty()) {
+                    obj.insert(
+                        "kind".to_string(),
+                        serde_json::Value::String(kind.to_string()),
+                    );
+                }
+                let normalized_source_paths = source_paths
+                    .iter()
+                    .filter_map(|path| normalized_request_filename(path))
+                    .map(serde_json::Value::String)
+                    .collect::<Vec<_>>();
+                if !normalized_source_paths.is_empty() {
+                    obj.insert(
+                        "sourcePaths".to_string(),
+                        serde_json::Value::Array(normalized_source_paths),
+                    );
+                }
                 report_updated = true;
             }
         }
         if !report_updated && !symbol_set.is_empty() {
+            let normalized_source_paths = source_paths
+                .iter()
+                .filter_map(|path| normalized_request_filename(path))
+                .map(serde_json::Value::String)
+                .collect::<Vec<_>>();
             let mut artifact = serde_json::json!({
                 "filename": normalized.clone(),
                 "symbols": symbols,
                 "contentBytes": source.len(),
                 "contentHash": format!("{}", hash_content(source)),
                 "contentSource": "compiled_source",
-                "kind": "compiled_partial"
+                "kind": artifact_kind
+                    .map(str::trim)
+                    .filter(|kind| !kind.is_empty())
+                    .unwrap_or("compiled_partial"),
+                "sourcePaths": normalized_source_paths
             });
             if let (Some(obj), Some(generated)) = (artifact.as_object_mut(), generated.as_deref()) {
                 obj.insert(
@@ -2743,6 +2892,8 @@ async fn refresh_device_partial_artifact_catalog(
     source: &str,
     symbols: &[String],
     generated_path: Option<&str>,
+    artifact_kind: Option<&str>,
+    source_paths: &[String],
     session_id: &str,
 ) -> Result<()> {
     let raw = match tokio::fs::read_to_string(sidecar_path).await {
@@ -2764,6 +2915,8 @@ async fn refresh_device_partial_artifact_catalog(
         source,
         symbols,
         generated_path,
+        artifact_kind,
+        source_paths,
     ) {
         return Ok(());
     }
@@ -5465,6 +5618,7 @@ pub async fn handle_compile_request(
                 partial_source,
                 partial_filename,
                 partial_symbols,
+                partial_source_paths,
                 partial_required,
                 partial_artifact_kind,
                 partial_fallback_reason,
@@ -5474,12 +5628,13 @@ pub async fn handle_compile_request(
                         Some(partial.source),
                         Some(partial.filename),
                         partial.symbols,
+                        partial.source_paths,
                         partial.required,
                         partial.artifact_kind,
                         partial.fallback_reason,
                     )
                 })
-                .unwrap_or((None, None, Vec::new(), false, None, None));
+                .unwrap_or((None, None, Vec::new(), Vec::new(), false, None, None));
             eprintln!(
                 "[compile-device] source resolved from split_data file={} bytes={} partial={} partial_required={}",
                 device_filename,
@@ -5496,6 +5651,7 @@ pub async fn handle_compile_request(
                 partial_source,
                 partial_filename,
                 partial_symbols,
+                partial_source_paths,
                 partial_required,
                 partial_artifact_kind,
                 partial_fallback_reason,
@@ -5514,6 +5670,7 @@ pub async fn handle_compile_request(
                         partial_source: None,
                         partial_filename: None,
                         partial_symbols: Vec::new(),
+                        partial_source_paths: Vec::new(),
                         partial_required: false,
                         partial_artifact_kind: None,
                         partial_fallback_reason: None,
@@ -7103,8 +7260,25 @@ pub(crate) fn build_simple_diff(old: &str, new: &str) -> String {
 mod gpu_host_contract_tests {
     use super::*;
 
+    const FIXTURE_GENERATED_DEVICE_PATH: &str = ".synthi/generated/gpu/device.hip";
+    const FIXTURE_SOURCE_PATH: &str = "fixtures/device/source.hip";
+    const FIXTURE_SYMBOL: &str = "fixture_kernel_a";
+    const FIXTURE_SIBLING_SYMBOL: &str = "fixture_kernel_b";
+    const FIXTURE_SOURCE_PARTIAL_FILENAME: &str =
+        ".synthi/generated/gpu/device.partial.source.hip";
+    const FIXTURE_KERNEL_PARTIAL_FILENAME: &str =
+        ".synthi/generated/gpu/device.partial.kernel.hip";
+
     fn symbols(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    fn fixture_kernel_source(symbol: &str) -> String {
+        format!("extern \"C\" __global__ void {symbol}() {{ }}")
+    }
+
+    fn fixture_source_include_partial(path: &str) -> String {
+        format!("// synthi-gpu-hmr: source include partial\n#include \"{path}\"\n")
     }
 
     #[test]
@@ -7566,6 +7740,44 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
             spec.content,
             "// synthi-gpu-hmr: source include partial\n#include \"src/Device/kernels/Megakernel.h\"\n"
         );
+    }
+
+    #[test]
+    fn source_backed_translation_unit_catalog_materializes_include_partial() {
+        let sidecar = normalize_split_sidecar(&serde_json::json!({
+            "deviceMappingReport": {
+                "schemaVersion": "synthi.gpu.device_mapping.v1",
+                "generatedDevicePath": FIXTURE_GENERATED_DEVICE_PATH,
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": FIXTURE_SYMBOL,
+                        "sourcePath": FIXTURE_SOURCE_PATH,
+                        "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                        "mappingConfidence": "same_name_signature"
+                    }
+                ]
+            }
+        }));
+        let source = format!(
+            r#"
+extern "C" __global__ void {FIXTURE_SIBLING_SYMBOL}(float* out) {{ out[0] = 1.0f; }}
+extern "C" __global__ void {FIXTURE_SYMBOL}(float* out) {{ out[0] = 2.0f; }}
+"#
+        );
+
+        let specs =
+            device_partial_artifact_specs(&sidecar, FIXTURE_GENERATED_DEVICE_PATH, &source, None);
+
+        let bridge = specs
+            .iter()
+            .find(|spec| {
+                spec.kind == "source_include_bridge"
+                    && spec.source_paths == vec![FIXTURE_SOURCE_PATH.to_string()]
+            })
+            .expect("source-backed TU bridge");
+        assert_eq!(bridge.symbols, vec![FIXTURE_SYMBOL.to_string()]);
+        assert_eq!(bridge.content, fixture_source_include_partial(FIXTURE_SOURCE_PATH));
     }
 
     #[test]
@@ -8193,17 +8405,19 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
                 ]
             }
         });
-        let source = "extern \"C\" __global__ void target() {}";
+        let source = fixture_kernel_source(FIXTURE_SYMBOL);
 
         assert!(refresh_device_partial_artifact_catalog_value(
             &mut sidecar,
             ".synthi/generated/gpu/device.partial.target.hip",
-            source,
-            &["target".to_string()],
-            Some(".synthi/generated/gpu/device.hip"),
+            &source,
+            &[FIXTURE_SYMBOL.to_string()],
+            Some(FIXTURE_GENERATED_DEVICE_PATH),
+            Some("source_include_bridge"),
+            &[FIXTURE_SOURCE_PATH.to_string()],
         ));
 
-        let expected_hash = format!("{}", hash_content(source));
+        let expected_hash = format!("{}", hash_content(&source));
         for pointer in [
             "/devicePartialArtifacts/artifacts/0",
             "/generatedDevicePartials/artifacts/0",
@@ -8227,6 +8441,14 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
                     .and_then(serde_json::Value::as_str),
                 Some("compiled_source")
             );
+            assert_eq!(
+                artifact.get("kind").and_then(serde_json::Value::as_str),
+                Some("source_include_bridge")
+            );
+            assert_eq!(
+                string_array_field(artifact, "sourcePaths"),
+                vec![FIXTURE_SOURCE_PATH.to_string()]
+            );
         }
 
         let other = sidecar
@@ -8245,9 +8467,9 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
                 "artifacts": [
                     {
                         "filename": ".synthi/generated/gpu/device.partial.old.hip",
-                        "generatedPath": ".synthi/generated/gpu/device.hip",
-                        "symbols": ["MegaKernel"],
-                        "sourcePaths": ["src/Device/kernels/Megakernel.h"],
+                        "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                        "symbols": [FIXTURE_SYMBOL],
+                        "sourcePaths": [FIXTURE_SOURCE_PATH],
                         "contentBytes": 12000,
                         "contentHash": "old"
                     }
@@ -8257,27 +8479,29 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
                 "artifacts": [
                     {
                         "filename": ".synthi/generated/gpu/device.partial.old.hip",
-                        "generatedPath": ".synthi/generated/gpu/device.hip",
-                        "symbols": ["MegaKernel"],
-                        "sourcePaths": ["src/Device/kernels/Megakernel.h"],
+                        "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                        "symbols": [FIXTURE_SYMBOL],
+                        "sourcePaths": [FIXTURE_SOURCE_PATH],
                         "contentBytes": 12000,
                         "contentHash": "old"
                     }
                 ]
             }
         });
-        let source = "extern \"C\" __global__ void MegaKernel() { }";
+        let source = fixture_kernel_source(FIXTURE_SYMBOL);
         let new_filename = ".synthi/generated/gpu/device.partial.new.hip";
 
         assert!(refresh_device_partial_artifact_catalog_value(
             &mut sidecar,
             new_filename,
-            source,
-            &["MegaKernel".to_string()],
-            Some(".synthi/generated/gpu/device.hip"),
+            &source,
+            &[FIXTURE_SYMBOL.to_string()],
+            Some(FIXTURE_GENERATED_DEVICE_PATH),
+            Some("source_include_bridge"),
+            &[FIXTURE_SOURCE_PATH.to_string()],
         ));
 
-        let expected_hash = format!("{}", hash_content(source));
+        let expected_hash = format!("{}", hash_content(&source));
         for pointer in [
             "/devicePartialArtifacts/artifacts/0",
             "/generatedDevicePartials/artifacts/0",
@@ -8292,6 +8516,106 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
                     .get("contentHash")
                     .and_then(serde_json::Value::as_str),
                 Some(expected_hash.as_str())
+            );
+            assert_eq!(
+                artifact.get("kind").and_then(serde_json::Value::as_str),
+                Some("source_include_bridge")
+            );
+            assert_eq!(
+                string_array_field(artifact, "sourcePaths"),
+                vec![FIXTURE_SOURCE_PATH.to_string()]
+            );
+        }
+    }
+
+    #[test]
+    fn partial_artifact_catalog_refresh_prefers_exact_filename_over_symbol_rekey() {
+        let mut sidecar = serde_json::json!({
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "filename": FIXTURE_SOURCE_PARTIAL_FILENAME,
+                        "kind": "source_include_bridge",
+                        "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                        "symbols": [FIXTURE_SYMBOL],
+                        "sourcePaths": [FIXTURE_SOURCE_PATH],
+                        "contentBytes": 82,
+                        "contentHash": "old-source"
+                    },
+                    {
+                        "filename": FIXTURE_KERNEL_PARTIAL_FILENAME,
+                        "kind": "kernel_region",
+                        "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                        "symbols": [FIXTURE_SYMBOL],
+                        "sourcePaths": [FIXTURE_GENERATED_DEVICE_PATH],
+                        "contentBytes": 1600,
+                        "contentHash": "old-kernel"
+                    }
+                ]
+            },
+            "generatedDevicePartials": {
+                "artifacts": [
+                    {
+                        "filename": FIXTURE_SOURCE_PARTIAL_FILENAME,
+                        "kind": "source_include_bridge",
+                        "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                        "symbols": [FIXTURE_SYMBOL],
+                        "sourcePaths": [FIXTURE_SOURCE_PATH],
+                        "contentBytes": 82,
+                        "contentHash": "old-source"
+                    },
+                    {
+                        "filename": FIXTURE_KERNEL_PARTIAL_FILENAME,
+                        "kind": "kernel_region",
+                        "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                        "symbols": [FIXTURE_SYMBOL],
+                        "sourcePaths": [FIXTURE_GENERATED_DEVICE_PATH],
+                        "contentBytes": 1600,
+                        "contentHash": "old-kernel"
+                    }
+                ]
+            }
+        });
+        let source = fixture_source_include_partial(FIXTURE_SOURCE_PATH);
+
+        assert!(refresh_device_partial_artifact_catalog_value(
+            &mut sidecar,
+            FIXTURE_SOURCE_PARTIAL_FILENAME,
+            &source,
+            &[FIXTURE_SYMBOL.to_string()],
+            Some(FIXTURE_GENERATED_DEVICE_PATH),
+            Some("source_include_bridge"),
+            &[FIXTURE_SOURCE_PATH.to_string()],
+        ));
+
+        let expected_hash = format!("{}", hash_content(&source));
+        for report_key in ["devicePartialArtifacts", "generatedDevicePartials"] {
+            let artifacts = sidecar
+                .pointer(&format!("/{report_key}/artifacts"))
+                .and_then(serde_json::Value::as_array)
+                .expect("artifacts");
+            assert_eq!(artifacts.len(), 2);
+            assert_eq!(
+                artifacts[0]
+                    .get("contentHash")
+                    .and_then(serde_json::Value::as_str),
+                Some(expected_hash.as_str())
+            );
+            assert_eq!(
+                artifacts[1]
+                    .get("filename")
+                    .and_then(serde_json::Value::as_str),
+                Some(FIXTURE_KERNEL_PARTIAL_FILENAME)
+            );
+            assert_eq!(
+                artifacts[1]
+                    .get("contentHash")
+                    .and_then(serde_json::Value::as_str),
+                Some("old-kernel")
+            );
+            assert_eq!(
+                artifacts[1].get("kind").and_then(serde_json::Value::as_str),
+                Some("kernel_region")
             );
         }
     }
