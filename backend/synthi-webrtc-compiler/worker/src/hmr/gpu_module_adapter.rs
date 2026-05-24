@@ -261,6 +261,15 @@ impl GpuLaunchDispatcher for DriverLaunchDispatcher {
 /// invariant for the planner) but `driver_state` reports
 /// `unavailable` so the planner knows to fall through to cold
 /// restart. The full swap path lands in Phase 3.
+#[derive(Debug, Clone)]
+struct DeviceReloadOwnership {
+    partial_reload: bool,
+    expected_symbols: Vec<String>,
+    touched_symbols: Vec<String>,
+    retired_module_count: usize,
+    replaced_primary: bool,
+}
+
 pub struct GpuModuleAdapter {
     config: GpuModuleAdapterConfig,
     phase: GpuPhase,
@@ -513,6 +522,40 @@ impl GpuModuleAdapter {
         }
     }
 
+    fn emit_runtime_ownership_report(
+        &mut self,
+        ownership: &DeviceReloadOwnership,
+        artifact: &str,
+    ) {
+        let label = if ownership.partial_reload {
+            "gpu-hmr-partial"
+        } else {
+            "gpu-hmr-full-device"
+        };
+        let expected = if ownership.expected_symbols.is_empty() {
+            "-".to_string()
+        } else {
+            ownership.expected_symbols.join(",")
+        };
+        let touched = if ownership.touched_symbols.is_empty() {
+            "-".to_string()
+        } else {
+            ownership.touched_symbols.join(",")
+        };
+        let line = format!(
+            "[gpu-reload] runtime_ownership label={} partial={} artifact={} expected_symbols={} touched_symbols={} retired_modules={} replaced_primary={}",
+            label,
+            ownership.partial_reload,
+            artifact,
+            expected,
+            touched,
+            ownership.retired_module_count,
+            ownership.replaced_primary
+        );
+        eprintln!("{line}");
+        self.last_reload_log.push(line);
+    }
+
     fn module_manager_error(err: ModuleManagerError) -> String {
         format!("gpu module manager {}: {err}", err.short_label())
     }
@@ -756,7 +799,7 @@ impl Adapter for GpuModuleAdapter {
             .capabilities
             .iter()
             .any(|capability| capability == "gpu_sidecar_partial_module");
-        let load_result = (|| -> Result<(), String> {
+        let load_result = (|| -> Result<DeviceReloadOwnership, String> {
             if partial_device_reload && first_device_load {
                 return Err(
                     "partial GPU sidecar reload requires an existing full device module".into(),
@@ -778,6 +821,7 @@ impl Adapter for GpuModuleAdapter {
             self.module_manager
                 .resolve_kernels(&symbols, &req.build_manifest.exported_symbols)
                 .map_err(Self::module_manager_error)?;
+            let mut replaced_primary = false;
             let retired = if partial_device_reload {
                 self.module_manager
                     .merge_standby_partial(previous_table, &req.build_manifest.exported_symbols)
@@ -789,21 +833,29 @@ impl Adapter for GpuModuleAdapter {
                     .swap()
                     .map_err(Self::module_manager_error)?
                 {
+                    replaced_primary = true;
                     retired.push(slot);
                 }
                 retired.extend(self.module_manager.drain_partial_modules());
                 retired
             };
+            let retired_module_count = retired.len();
             for retired in retired {
                 self.module_manager
                     .unload_retired(&symbols, retired)
                     .map_err(Self::module_manager_error)?;
             }
-            Ok(())
+            Ok(DeviceReloadOwnership {
+                partial_reload: partial_device_reload,
+                expected_symbols: req.build_manifest.exported_symbols.clone(),
+                touched_symbols: req.build_manifest.exported_symbols.clone(),
+                retired_module_count,
+                replaced_primary,
+            })
         })();
 
         match load_result {
-            Ok(()) => {
+            Ok(ownership) => {
                 self.active_module_handle = self.module_manager.primary().map(|s| s.handle);
                 self.kernel_table.clear();
                 for name in self.module_manager.kernel_table().names() {
@@ -830,6 +882,7 @@ impl Adapter for GpuModuleAdapter {
                     expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
                     matched_kernel_hashes: self.kernel_table.len() as u32,
                 });
+                self.emit_runtime_ownership_report(&ownership, artifact);
                 self.phase = GpuPhase::Ready;
                 self.health = AdapterHealth::Healthy;
                 self.remember_device_abi(req);
@@ -1494,6 +1547,16 @@ mod tests {
             .last_reload_log()
             .iter()
             .any(|l| l.contains("reason=device-partial-file-only-edit")));
+        let ownership = a
+            .last_reload_log()
+            .iter()
+            .find(|l| l.contains("runtime_ownership"))
+            .expect("runtime ownership report");
+        assert!(ownership.contains("label=gpu-hmr-partial"));
+        assert!(ownership.contains("partial=true"));
+        assert!(ownership.contains("expected_symbols=vec_add"));
+        assert!(ownership.contains("touched_symbols=vec_add"));
+        assert!(ownership.contains("replaced_primary=false"));
     }
 
     #[test]

@@ -580,6 +580,18 @@ struct DeviceCompileSources {
     partial_filename: Option<String>,
     partial_symbols: Vec<String>,
     partial_required: bool,
+    partial_artifact_kind: Option<String>,
+    partial_fallback_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DevicePartialCompileSource {
+    source: String,
+    filename: String,
+    symbols: Vec<String>,
+    required: bool,
+    artifact_kind: Option<String>,
+    fallback_reason: Option<String>,
 }
 
 async fn compile_stage_or_invalidate_split_cache<T>(
@@ -1223,8 +1235,16 @@ fn ai_delta_device_partial_payload(
 
 fn split_partial_device_source(
     split_data: &serde_json::Value,
-) -> Option<(String, String, Vec<String>, bool)> {
+) -> Option<DevicePartialCompileSource> {
     let partial = split_data.get("_synthi_device_partial")?;
+    let string_field = |name: &str| {
+        partial
+            .get(name)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
     let source = partial
         .get("content")
         .or_else(|| partial.get("source"))
@@ -1253,10 +1273,19 @@ fn split_partial_device_source(
         .get("requirePartial")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    let artifact_kind = string_field("artifactKind");
+    let fallback_reason = string_field("fallbackReason");
     if symbols.is_empty() {
         None
     } else {
-        Some((source, filename, symbols, required))
+        Some(DevicePartialCompileSource {
+            source,
+            filename,
+            symbols,
+            required,
+            artifact_kind,
+            fallback_reason,
+        })
     }
 }
 
@@ -1301,6 +1330,7 @@ async fn compile_device_sources_phase0(
     sources: &DeviceCompileSources,
     manifest: &CompileManifest,
 ) -> Result<Option<DeviceCompileOutcome>> {
+    let mut fallback_reason: Option<String> = None;
     if let (Some(partial_source), Some(partial_filename)) = (
         sources.partial_source.as_deref(),
         sources.partial_filename.as_deref(),
@@ -1326,12 +1356,28 @@ async fn compile_device_sources_phase0(
                 Ok(Some(mut outcome)) => {
                     outcome.partial_module = true;
                     outcome.target_symbols = sources.partial_symbols.clone();
+                    outcome.fallback_used = false;
+                    outcome.fallback_reason = None;
+                    outcome.requested_artifact_kind = sources.partial_artifact_kind.clone();
+                    outcome.selected_artifact_kind = sources
+                        .partial_artifact_kind
+                        .clone()
+                        .or_else(|| Some("partial_device".to_string()));
+                    outcome.selected_artifact_bytes = Some(partial_source.len());
+                    outcome.full_device_bytes = Some(sources.full_source.len());
                     return Ok(Some(outcome));
                 }
                 Ok(None) => {
                     if sources.partial_required {
                         eprintln!(
-                            "[compile-device] required partial source compile returned no artifact; refusing stale full generated fallback"
+                            "[compile-device] gpu-hmr-rejected fallbackUsed=false fallbackReason=required_partial_compile_no_artifact requestedArtifactKind={} selectedArtifactKind=none selectedArtifactBytes={} fullDeviceBytes={} file={}",
+                            sources
+                                .partial_artifact_kind
+                                .as_deref()
+                                .unwrap_or("partial_device"),
+                            partial_source.len(),
+                            sources.full_source.len(),
+                            partial_filename
                         );
                         anyhow::bail!(
                             "required GPU partial source compile returned no artifact: {}",
@@ -1341,11 +1387,24 @@ async fn compile_device_sources_phase0(
                     eprintln!(
                         "[compile-device] partial source compile returned no artifact; falling back to full generated device"
                     );
+                    fallback_reason = Some(
+                        sources
+                            .partial_fallback_reason
+                            .clone()
+                            .unwrap_or_else(|| "partial_compile_no_artifact".to_string()),
+                    );
                 }
                 Err(e) => {
                     if sources.partial_required {
                         eprintln!(
-                            "[compile-device] required partial source compile failed; refusing stale full generated fallback: {e:#}"
+                            "[compile-device] gpu-hmr-rejected fallbackUsed=false fallbackReason=required_partial_compile_failed requestedArtifactKind={} selectedArtifactKind=none selectedArtifactBytes={} fullDeviceBytes={} file={} error={e:#}",
+                            sources
+                                .partial_artifact_kind
+                                .as_deref()
+                                .unwrap_or("partial_device"),
+                            partial_source.len(),
+                            sources.full_source.len(),
+                            partial_filename
                         );
                         return Err(e).with_context(|| {
                             format!(
@@ -1356,6 +1415,12 @@ async fn compile_device_sources_phase0(
                     }
                     eprintln!(
                         "[compile-device] partial source compile failed; falling back to full generated device: {e:#}"
+                    );
+                    fallback_reason = Some(
+                        sources
+                            .partial_fallback_reason
+                            .clone()
+                            .unwrap_or_else(|| "partial_compile_failed".to_string()),
                     );
                 }
             }
@@ -1374,8 +1439,24 @@ async fn compile_device_sources_phase0(
     if let Some(outcome) = outcome.as_mut() {
         outcome.partial_module = false;
         outcome.target_symbols.clear();
+        outcome.fallback_used = fallback_reason.is_some();
+        outcome.fallback_reason = fallback_reason;
+        outcome.requested_artifact_kind = sources.partial_artifact_kind.clone();
+        outcome.selected_artifact_kind = Some("full_device".to_string());
+        outcome.selected_artifact_bytes = Some(sources.full_source.len());
+        outcome.full_device_bytes = Some(sources.full_source.len());
     }
     Ok(outcome)
+}
+
+fn device_hmr_result_label(outcome: &DeviceCompileOutcome) -> &'static str {
+    if outcome.partial_module {
+        "gpu-hmr-partial"
+    } else if outcome.fallback_used {
+        "gpu-hmr-degraded-full-device"
+    } else {
+        "gpu-hmr-full-device"
+    }
 }
 
 async fn send_active_runner_runtime_command(
@@ -4991,12 +5072,26 @@ pub async fn handle_compile_request(
                     .map(|s| s.to_string())
             });
         if let Some(src) = from_split {
-            let (partial_source, partial_filename, partial_symbols, partial_required) =
-                split_partial_device_source(&split_data)
-                    .map(|(source, filename, symbols, required)| {
-                        (Some(source), Some(filename), symbols, required)
-                    })
-                    .unwrap_or((None, None, Vec::new(), false));
+            let partial_request = split_partial_device_source(&split_data);
+            let (
+                partial_source,
+                partial_filename,
+                partial_symbols,
+                partial_required,
+                partial_artifact_kind,
+                partial_fallback_reason,
+            ) = partial_request
+                .map(|partial| {
+                    (
+                        Some(partial.source),
+                        Some(partial.filename),
+                        partial.symbols,
+                        partial.required,
+                        partial.artifact_kind,
+                        partial.fallback_reason,
+                    )
+                })
+                .unwrap_or((None, None, Vec::new(), false, None, None));
             eprintln!(
                 "[compile-device] source resolved from split_data file={} bytes={} partial={} partial_required={}",
                 device_filename,
@@ -5014,6 +5109,8 @@ pub async fn handle_compile_request(
                 partial_filename,
                 partial_symbols,
                 partial_required,
+                partial_artifact_kind,
+                partial_fallback_reason,
             })
         } else {
             match tokio::fs::read_to_string(ctx.workspace_path.join(device_filename)).await {
@@ -5030,6 +5127,8 @@ pub async fn handle_compile_request(
                         partial_filename: None,
                         partial_symbols: Vec::new(),
                         partial_required: false,
+                        partial_artifact_kind: None,
+                        partial_fallback_reason: None,
                     })
                 }
                 Ok(_) => {
@@ -5739,14 +5838,29 @@ pub async fn handle_compile_request(
         eprintln!("[HMR] host_runner binary: {}", p);
     }
     if let Some(ref out) = device_compile_outcome {
+        let selected_artifact_bytes = out
+            .selected_artifact_bytes
+            .map(|bytes| bytes.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let full_device_bytes = out
+            .full_device_bytes
+            .map(|bytes| bytes.to_string())
+            .unwrap_or_else(|| "none".to_string());
         eprintln!(
-            "[compile-device] sidecar ready artifact={} compiler_ms={} stderr_bytes={} register_records={} partial={} symbols={}",
+            "[compile-device] sidecar ready artifact={} compiler_ms={} stderr_bytes={} register_records={} partial={} symbols={} label={} fallbackUsed={} fallbackReason={} requestedArtifactKind={} selectedArtifactKind={} selectedArtifactBytes={} fullDeviceBytes={}",
             out.artifact_path.display(),
             out.compiler_elapsed_ms,
             out.stderr.len(),
             out.diagnostics.register_pressure.len(),
             out.partial_module,
-            out.target_symbols.join(",")
+            out.target_symbols.join(","),
+            device_hmr_result_label(out),
+            out.fallback_used,
+            out.fallback_reason.as_deref().unwrap_or("none"),
+            out.requested_artifact_kind.as_deref().unwrap_or("none"),
+            out.selected_artifact_kind.as_deref().unwrap_or("none"),
+            selected_artifact_bytes,
+            full_device_bytes
         );
     }
 
@@ -6038,7 +6152,12 @@ pub async fn handle_compile_request(
             let mut capabilities = vec![
                 "gpu_sidecar_module".to_string(),
                 "synthi_gpu_launch".to_string(),
+                format!("gpu_hmr_result:{}", device_hmr_result_label(device_outcome)),
+                format!("gpu_hmr_fallback_used:{}", device_outcome.fallback_used),
             ];
+            if let Some(reason) = device_outcome.fallback_reason.as_deref() {
+                capabilities.push(format!("gpu_hmr_fallback_reason:{reason}"));
+            }
             if device_outcome.partial_module {
                 capabilities.push("gpu_sidecar_partial_module".to_string());
             }
@@ -6231,6 +6350,28 @@ pub async fn handle_compile_request(
             } else {
                 "__gpu_device"
             };
+            eprintln!(
+                "[compile-device] reload package label={} fallbackUsed={} fallbackReason={} requestedArtifactKind={} selectedArtifactKind={} selectedArtifactBytes={} fullDeviceBytes={}",
+                device_hmr_result_label(device_outcome),
+                device_outcome.fallback_used,
+                device_outcome.fallback_reason.as_deref().unwrap_or("none"),
+                device_outcome
+                    .requested_artifact_kind
+                    .as_deref()
+                    .unwrap_or("none"),
+                device_outcome
+                    .selected_artifact_kind
+                    .as_deref()
+                    .unwrap_or("none"),
+                device_outcome
+                    .selected_artifact_bytes
+                    .map(|bytes| bytes.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                device_outcome
+                    .full_device_bytes
+                    .map(|bytes| bytes.to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            );
             let device_cmd = format!(
                 "{}:{}:{}:{}",
                 marker,
@@ -6576,6 +6717,59 @@ mod gpu_host_contract_tests {
 
     fn symbols(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    #[test]
+    fn partial_source_contract_preserves_fallback_metadata() {
+        let split = serde_json::json!({
+            "_synthi_device_partial": {
+                "content": "extern \"C\" __global__ void shade() {}",
+                "filename": ".synthi/generated/gpu/device.partial.hip",
+                "symbols": ["shade"],
+                "artifactKind": "source_include_bridge",
+                "fallbackReason": "selection.source_path_mismatch",
+                "requirePartial": true
+            }
+        });
+
+        let partial = split_partial_device_source(&split).expect("partial source");
+        assert_eq!(partial.filename, ".synthi/generated/gpu/device.partial.hip");
+        assert_eq!(partial.symbols, vec!["shade".to_string()]);
+        assert!(partial.required);
+        assert_eq!(partial.artifact_kind.as_deref(), Some("source_include_bridge"));
+        assert_eq!(
+            partial.fallback_reason.as_deref(),
+            Some("selection.source_path_mismatch")
+        );
+    }
+
+    #[test]
+    fn device_hmr_result_label_marks_degraded_full_fallback() {
+        let outcome = DeviceCompileOutcome {
+            artifact_path: std::path::PathBuf::from("/tmp/device.hsaco"),
+            compiled_source: String::new(),
+            compiler_elapsed_ms: 0,
+            partial_module: false,
+            target_symbols: Vec::new(),
+            fallback_used: true,
+            fallback_reason: Some("partial_compile_failed".to_string()),
+            requested_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_kind: Some("full_device".to_string()),
+            selected_artifact_bytes: Some(4096),
+            full_device_bytes: Some(4096),
+            diagnostics:
+                crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
+            stderr: String::new(),
+        };
+
+        assert_eq!(
+            device_hmr_result_label(&outcome),
+            "gpu-hmr-degraded-full-device"
+        );
+        assert_eq!(
+            outcome.fallback_reason.as_deref(),
+            Some("partial_compile_failed")
+        );
     }
 
     #[test]

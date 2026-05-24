@@ -94,6 +94,12 @@ pub struct DeviceCompileOutcome {
     pub compiler_elapsed_ms: u64,
     pub partial_module: bool,
     pub target_symbols: Vec<String>,
+    pub fallback_used: bool,
+    pub fallback_reason: Option<String>,
+    pub requested_artifact_kind: Option<String>,
+    pub selected_artifact_kind: Option<String>,
+    pub selected_artifact_bytes: Option<usize>,
+    pub full_device_bytes: Option<usize>,
     /// Parsed ptxas/nvlink diagnostics — empty for ROCm (Phase 0).
     pub diagnostics: GpuToolchainDiagnostics,
     /// Raw stderr from the device compiler — preserved verbatim for the
@@ -277,6 +283,12 @@ async fn compile_device_inner(
                     compiler_elapsed_ms: 0,
                     partial_module: false,
                     target_symbols: Vec::new(),
+                    fallback_used: false,
+                    fallback_reason: None,
+                    requested_artifact_kind: None,
+                    selected_artifact_kind: None,
+                    selected_artifact_bytes: None,
+                    full_device_bytes: None,
                     diagnostics: GpuToolchainDiagnostics::default(),
                     stderr: String::new(),
                 }));
@@ -319,6 +331,12 @@ async fn compile_device_inner(
                 compiler_elapsed_ms: compile.elapsed_ms,
                 partial_module: false,
                 target_symbols: Vec::new(),
+                fallback_used: false,
+                fallback_reason: None,
+                requested_artifact_kind: None,
+                selected_artifact_kind: None,
+                selected_artifact_bytes: None,
+                full_device_bytes: None,
                 diagnostics: compile.diagnostics,
                 stderr: compile.stderr,
             }));
