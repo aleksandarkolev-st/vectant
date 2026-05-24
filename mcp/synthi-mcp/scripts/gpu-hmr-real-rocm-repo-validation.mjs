@@ -17,6 +17,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
+import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -578,9 +579,12 @@ function buildCompileProjection(files, focusPath, buildMetadata, phaseName) {
 }
 
 async function createWorkspace() {
-  const workspace = await httpJson('POST', `${CFG.frontendUrl}/api/workspace`, {
+  const workspace = await createValidationWorkspace({
+    frontendUrl: CFG.frontendUrl,
     name: CFG.workspaceName,
     slug: CFG.slug,
+    httpJson,
+    record,
   });
   record('create workspace', 'pass', `id=${workspace.id ?? 'n/a'} slug=${CFG.slug}`);
 }
