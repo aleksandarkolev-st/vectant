@@ -61,6 +61,12 @@ const DEFAULT_DEVICE_PARTIAL_COMPILE_TIMEOUT_SECS: u64 = 60;
 #[cfg(feature = "gpu-hmr")]
 const DEVICE_ARTIFACT_CACHE_SCHEMA: &str = "synthi.gpu.device_artifact_cache.v1";
 #[cfg(feature = "gpu-hmr")]
+const DEVICE_ARTIFACT_CACHE_DIR_ENV: &str = "SYNTHI_GPU_HMR_DEVICE_ARTIFACT_CACHE_DIR";
+#[cfg(feature = "gpu-hmr")]
+const DEVICE_ARTIFACT_CACHE_SCOPE_ENV: &str = "SYNTHI_GPU_HMR_DEVICE_ARTIFACT_CACHE_SCOPE";
+#[cfg(feature = "gpu-hmr")]
+const DEVICE_ARTIFACT_CACHE_GLOBAL_DIR: &str = "synthi-gpu-device-artifacts";
+#[cfg(feature = "gpu-hmr")]
 const DEVICE_CACHE_MAX_INCLUDED_FILES: usize = 8192;
 #[cfg(feature = "gpu-hmr")]
 const DEVICE_CACHE_MAX_INCLUDED_BYTES: u64 = 256 * 1024 * 1024;
@@ -197,6 +203,25 @@ async fn compile_device_inner(
     let mut current_source = device_source.to_string();
     for attempt in 0..=max_heal_attempts {
         if heal_allowed {
+            match prune_redundant_generated_device_includes(
+                workspace_dir,
+                source_filename,
+                &current_source,
+                &gpu.device_flags,
+            )
+            .await
+            {
+                Ok(sanitized) if sanitized != current_source => {
+                    eprintln!(
+                        "[compile-device] pruned redundant generated device include bridge entries before compile"
+                    );
+                    current_source = sanitized;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("[compile-device] generated include pruning skipped: {e}");
+                }
+            }
             match remove_source_owned_device_forward_decls(
                 workspace_dir,
                 source_filename,
@@ -347,6 +372,279 @@ async fn compile_device_inner(
     }
 
     unreachable!("device compile loop always returns or bails")
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn prune_redundant_generated_device_includes(
+    workspace_dir: &Path,
+    source_filename: &str,
+    source: &str,
+    device_flags: &[String],
+) -> Result<String> {
+    let includes =
+        resolve_top_level_device_includes(workspace_dir, source_filename, source, device_flags);
+    if includes.len() <= 1 {
+        return Ok(source.to_string());
+    }
+
+    let mut remove_indices = HashSet::new();
+    let mut seen_paths = HashSet::new();
+    for (index, include) in includes.iter().enumerate() {
+        if !seen_paths.insert(include.normalized.clone())
+            && generated_device_include_can_be_pruned(workspace_dir, include).await
+        {
+            remove_indices.insert(index);
+        }
+    }
+
+    for (index, include) in includes.iter().enumerate() {
+        if remove_indices.contains(&index)
+            || !generated_device_include_can_be_pruned(workspace_dir, include).await
+        {
+            continue;
+        }
+        for (other_index, other) in includes.iter().enumerate() {
+            if index == other_index || include.normalized == other.normalized {
+                continue;
+            }
+            if include_file_reaches_target(
+                workspace_dir,
+                &other.resolved,
+                &include.normalized,
+                device_flags,
+            )
+            .await?
+            {
+                remove_indices.insert(index);
+                break;
+            }
+        }
+    }
+
+    if remove_indices.is_empty() {
+        return Ok(source.to_string());
+    }
+
+    let mut remove_spans = includes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, include)| {
+            if remove_indices.contains(&index) {
+                Some((include.start, include.end, include.path.as_str()))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    remove_spans.sort_by_key(|(start, _, _)| *start);
+
+    let mut output = String::with_capacity(source.len());
+    let mut cursor = 0usize;
+    for (start, end, include_path) in remove_spans {
+        if start < cursor || end > source.len() {
+            continue;
+        }
+        output.push_str(&source[cursor..start]);
+        output.push_str("// synthi-gpu-hmr: pruned redundant generated device include");
+        if source[start..end].ends_with('\n') {
+            output.push('\n');
+        }
+        cursor = end;
+        eprintln!(
+            "[compile-device] pruned redundant generated device include path={include_path}"
+        );
+    }
+    output.push_str(&source[cursor..]);
+    Ok(output)
+}
+
+#[cfg(feature = "gpu-hmr")]
+#[derive(Debug, Clone)]
+struct TopLevelDeviceInclude {
+    path: String,
+    start: usize,
+    end: usize,
+    resolved: PathBuf,
+    normalized: String,
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn resolve_top_level_device_includes(
+    workspace_dir: &Path,
+    source_filename: &str,
+    source: &str,
+    device_flags: &[String],
+) -> Vec<TopLevelDeviceInclude> {
+    let mut include_dirs = device_include_dirs(workspace_dir, device_flags);
+    include_dirs.push(workspace_dir.to_path_buf());
+    let source_path = workspace_dir.join(source_filename);
+    let root_dir = source_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| workspace_dir.to_path_buf());
+    include_dirs.push(root_dir.clone());
+
+    parse_top_level_device_includes(source)
+        .into_iter()
+        .filter_map(|include| {
+            let resolved = resolve_device_include(
+                workspace_dir,
+                &root_dir,
+                &include.path,
+                include.quoted,
+                &include_dirs,
+            )?;
+            let normalized = normalize_path_key(&resolved);
+            Some(TopLevelDeviceInclude {
+                path: include.path,
+                start: include.start,
+                end: include.end,
+                resolved,
+                normalized,
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "gpu-hmr")]
+#[derive(Debug, Clone)]
+struct RawTopLevelDeviceInclude {
+    path: String,
+    quoted: bool,
+    start: usize,
+    end: usize,
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn parse_top_level_device_includes(source: &str) -> Vec<RawTopLevelDeviceInclude> {
+    let include_re =
+        Regex::new(r#"^\s*#\s*include\s*(?P<delim>[<"])(?P<path>[^>"]+)[>"]"#)
+            .expect("valid include regex");
+    let mut includes = Vec::new();
+    let mut offset = 0usize;
+    for line in source.split_inclusive('\n') {
+        let line_body = line.trim_end_matches(['\r', '\n']);
+        if let Some(caps) = include_re.captures(line_body) {
+            if let Some(path) = caps.name("path").map(|m| m.as_str().trim()) {
+                if !path.is_empty() {
+                    includes.push(RawTopLevelDeviceInclude {
+                        path: path.replace('\\', "/"),
+                        quoted: caps.name("delim").map(|m| m.as_str()) == Some("\""),
+                        start: offset,
+                        end: offset + line.len(),
+                    });
+                }
+            }
+        }
+        offset += line.len();
+    }
+    includes
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn generated_device_include_can_be_pruned(
+    workspace_dir: &Path,
+    include: &TopLevelDeviceInclude,
+) -> bool {
+    if !path_is_within_workspace(workspace_dir, &include.resolved) {
+        return false;
+    }
+    let Ok(metadata) = tokio::fs::metadata(&include.resolved).await else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.len() > DEVICE_CACHE_MAX_SINGLE_INCLUDE_BYTES {
+        return false;
+    }
+    let Ok(content) = tokio::fs::read_to_string(&include.resolved).await else {
+        return false;
+    };
+    !device_source_declares_kernel_entry(&content)
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_source_declares_kernel_entry(source: &str) -> bool {
+    let kernel_re = Regex::new(
+        r#"(?x)
+        \b
+        (
+            __global__
+            | GLOBAL_KERNEL_SIGNATURE
+            | KERNEL_SIGNATURE
+            | CUDA_KERNEL_SIGNATURE
+            | HIP_KERNEL_SIGNATURE
+        )
+        \b
+        "#,
+    )
+    .expect("valid kernel entry regex");
+    kernel_re.is_match(&strip_cpp_comments_for_device_compile(source))
+}
+
+#[cfg(feature = "gpu-hmr")]
+async fn include_file_reaches_target(
+    workspace_dir: &Path,
+    start_path: &Path,
+    target_normalized: &str,
+    device_flags: &[String],
+) -> Result<bool> {
+    let mut include_dirs = device_include_dirs(workspace_dir, device_flags);
+    include_dirs.push(workspace_dir.to_path_buf());
+
+    let mut queue = VecDeque::from([start_path.to_path_buf()]);
+    let mut visited = HashSet::new();
+    let mut total_bytes = 0u64;
+    while let Some(path) = queue.pop_front() {
+        let normalized = normalize_path_key(&path);
+        if !visited.insert(normalized) {
+            continue;
+        }
+        if visited.len() > DEVICE_CACHE_MAX_INCLUDED_FILES {
+            return Ok(false);
+        }
+
+        let Ok(metadata) = tokio::fs::metadata(&path).await else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() > DEVICE_CACHE_MAX_SINGLE_INCLUDE_BYTES {
+            continue;
+        }
+        total_bytes = total_bytes.saturating_add(metadata.len());
+        if total_bytes > DEVICE_CACHE_MAX_INCLUDED_BYTES {
+            return Ok(false);
+        }
+
+        let Ok(content) = tokio::fs::read_to_string(&path).await else {
+            continue;
+        };
+        let including_dir = path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| workspace_dir.to_path_buf());
+        for include in parse_includes(&content) {
+            let Some(next) = resolve_device_include(
+                workspace_dir,
+                &including_dir,
+                &include.path,
+                include.quoted,
+                &include_dirs,
+            ) else {
+                continue;
+            };
+            let next_normalized = normalize_path_key(&next);
+            if next_normalized == target_normalized {
+                return Ok(true);
+            }
+            if path_is_within_workspace(workspace_dir, &next) {
+                queue.push_back(next);
+            }
+        }
+    }
+    Ok(false)
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn path_is_within_workspace(workspace_dir: &Path, path: &Path) -> bool {
+    path.starts_with(workspace_dir)
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -644,7 +942,10 @@ fn strip_cpp_comments_for_device_compile(source: &str) -> String {
 
 #[cfg(feature = "gpu-hmr")]
 fn normalize_path_key(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    std::fs::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -900,7 +1201,31 @@ async fn reachable_device_include_cache_hash(
 
 #[cfg(feature = "gpu-hmr")]
 fn device_artifact_cache_dir(workspace_dir: &Path) -> PathBuf {
-    workspace_dir.join(".synthi/cache/gpu-device-artifacts")
+    let configured_dir = std::env::var(DEVICE_ARTIFACT_CACHE_DIR_ENV).ok();
+    let configured_scope = std::env::var(DEVICE_ARTIFACT_CACHE_SCOPE_ENV).ok();
+    device_artifact_cache_dir_from_config(
+        workspace_dir,
+        configured_dir.as_deref(),
+        configured_scope.as_deref(),
+    )
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_artifact_cache_dir_from_config(
+    workspace_dir: &Path,
+    configured_dir: Option<&str>,
+    configured_scope: Option<&str>,
+) -> PathBuf {
+    if let Some(raw) = configured_dir.map(str::trim).filter(|raw| !raw.is_empty()) {
+        return PathBuf::from(raw);
+    }
+    if matches!(
+        configured_scope.map(str::trim),
+        Some(scope) if scope.eq_ignore_ascii_case("workspace")
+    ) {
+        return workspace_dir.join(".synthi/cache/gpu-device-artifacts");
+    }
+    std::env::temp_dir().join(DEVICE_ARTIFACT_CACHE_GLOBAL_DIR)
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -1482,6 +1807,40 @@ mod tests {
     }
 
     #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn device_artifact_cache_dir_defaults_to_worker_global_cache() {
+        let workspace = PathBuf::from("/workspace/project");
+        let cache_dir = device_artifact_cache_dir_from_config(&workspace, None, None);
+
+        assert_eq!(
+            cache_dir,
+            std::env::temp_dir().join(DEVICE_ARTIFACT_CACHE_GLOBAL_DIR)
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn device_artifact_cache_dir_can_be_overridden() {
+        let workspace = PathBuf::from("/workspace/project");
+        let cache_dir =
+            device_artifact_cache_dir_from_config(&workspace, Some("/cache/gpu"), Some("workspace"));
+
+        assert_eq!(cache_dir, PathBuf::from("/cache/gpu"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn device_artifact_cache_dir_can_use_workspace_scope() {
+        let workspace = PathBuf::from("/workspace/project");
+        let cache_dir = device_artifact_cache_dir_from_config(&workspace, None, Some("workspace"));
+
+        assert_eq!(
+            cache_dir,
+            workspace.join(".synthi/cache/gpu-device-artifacts")
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
     #[tokio::test]
     async fn device_artifact_cache_key_tracks_reachable_include_content() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1642,6 +2001,129 @@ extern "C" __global__ void CameraRays(int* out) { *out = 1; }
         assert!(!cleaned.contains("extern \"C\" {\n}"));
         assert!(cleaned.contains("__device__ int generated_helper();"));
         assert!(cleaned.contains("extern \"C\" __global__ void CameraRays"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[tokio::test]
+    async fn generated_include_pruning_removes_transitively_reachable_helper_include() {
+        let tmp = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(tmp.path().join("src"))
+            .await
+            .unwrap();
+        tokio::fs::write(tmp.path().join("src/common.h"), "#define SCALE 2\n")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            tmp.path().join("src/kernel.h"),
+            "#include \"common.h\"\nGLOBAL_KERNEL_SIGNATURE(void) Shade(int* out) { *out = SCALE; }\n",
+        )
+        .await
+        .unwrap();
+
+        let source = "#include \"src/common.h\"\n#include \"src/kernel.h\"\n";
+        let cleaned = prune_redundant_generated_device_includes(
+            tmp.path(),
+            ".synthi/generated/gpu/device.hip",
+            source,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert!(!cleaned.contains("#include \"src/common.h\""));
+        assert!(cleaned.contains("#include \"src/kernel.h\""));
+        assert!(cleaned.contains("pruned redundant generated device include"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[tokio::test]
+    async fn generated_include_pruning_preserves_kernel_entry_includes() {
+        let tmp = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(tmp.path().join("src"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            tmp.path().join("src/kernel.h"),
+            "GLOBAL_KERNEL_SIGNATURE(void) Shade(int* out) { *out = 1; }\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            tmp.path().join("src/all_kernels.h"),
+            "#include \"kernel.h\"\n",
+        )
+        .await
+        .unwrap();
+
+        let source = "#include \"src/kernel.h\"\n#include \"src/all_kernels.h\"\n";
+        let cleaned = prune_redundant_generated_device_includes(
+            tmp.path(),
+            ".synthi/generated/gpu/device.hip",
+            source,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert!(cleaned.contains("#include \"src/kernel.h\""));
+        assert!(cleaned.contains("#include \"src/all_kernels.h\""));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[tokio::test]
+    async fn generated_include_pruning_removes_duplicate_non_kernel_include() {
+        let tmp = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(tmp.path().join("src"))
+            .await
+            .unwrap();
+        tokio::fs::write(tmp.path().join("src/common.h"), "#define SCALE 2\n")
+            .await
+            .unwrap();
+
+        let source = "#include \"src/common.h\"\n#include \"src/common.h\"\n";
+        let cleaned = prune_redundant_generated_device_includes(
+            tmp.path(),
+            ".synthi/generated/gpu/device.hip",
+            source,
+            &[],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(cleaned.matches("#include \"src/common.h\"").count(), 1);
+        assert!(cleaned.contains("pruned redundant generated device include"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[tokio::test]
+    async fn generated_include_pruning_canonicalizes_equivalent_include_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(tmp.path().join("thirdparty/pkg"))
+            .await
+            .unwrap();
+        tokio::fs::write(tmp.path().join("thirdparty/pkg/impl.h"), "struct Helper {};\n")
+            .await
+            .unwrap();
+        tokio::fs::write(
+            tmp.path().join("bridge.h"),
+            "#include <pkg/impl.h>\n",
+        )
+        .await
+        .unwrap();
+
+        let source = "#include \"bridge.h\"\n#include \"thirdparty/pkg/impl.h\"\n";
+        let cleaned = prune_redundant_generated_device_includes(
+            tmp.path(),
+            ".synthi/generated/gpu/device.hip",
+            source,
+            &["-Ithirdparty/pkg/..".to_string()],
+        )
+        .await
+        .unwrap();
+
+        assert!(cleaned.contains("#include \"bridge.h\""));
+        assert!(!cleaned.contains("#include \"thirdparty/pkg/impl.h\""));
+        assert!(cleaned.contains("pruned redundant generated device include"));
     }
 
     #[cfg(feature = "gpu-hmr")]
