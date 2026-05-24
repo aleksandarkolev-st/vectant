@@ -1130,7 +1130,7 @@ async fn device_artifact_cache_key(
     for token in &normalized_command {
         cache_update_str(&mut hasher, "compile_token", token);
     }
-    for classified in classified_device_flags(&gpu.device_flags) {
+    for classified in classified_device_flags(workspace_dir, &gpu.device_flags) {
         cache_update_str(&mut hasher, "classified_flag", &classified);
     }
     cache_update_str(&mut hasher, "compile_command_hash", &compile_command_hash);
@@ -1171,13 +1171,98 @@ fn normalized_device_compile_command_tokens(
     let mut cmd = tokio::process::Command::new(compiler_exe);
     let artifact_placeholder = PathBuf::from("__synthi_device_artifact__");
     populate_device_command(&mut cmd, gpu, source_filename, &artifact_placeholder);
-    std::iter::once(compiler_exe.to_string())
-        .chain(
-            cmd.as_std()
-                .get_args()
-                .map(|arg| normalize_compile_command_token(workspace_dir, &arg.to_string_lossy())),
-        )
-        .collect()
+    normalize_compile_command_tokens(
+        workspace_dir,
+        compiler_exe,
+        source_filename,
+        cmd.as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned()),
+    )
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn normalize_compile_command_tokens<I>(
+    workspace_dir: &Path,
+    compiler_exe: &str,
+    source_filename: &str,
+    args: I,
+) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let normalized_source = source_filename.replace('\\', "/");
+    let mut out = vec![compiler_exe.to_string()];
+    let mut previous_path_flag = false;
+    for token in args {
+        if previous_path_flag {
+            out.push(normalize_path_flag_value(workspace_dir, &token));
+            previous_path_flag = false;
+            continue;
+        }
+        if is_separate_path_value_flag(&token) {
+            previous_path_flag = true;
+            out.push(token);
+            continue;
+        }
+        if token.replace('\\', "/") == normalized_source {
+            out.push(normalize_path_flag_value(workspace_dir, &token));
+            continue;
+        }
+        out.push(normalize_compile_command_token(workspace_dir, &token));
+    }
+    out
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn normalize_path_flag_value(workspace_dir: &Path, value: &str) -> String {
+    let value = value.replace('\\', "/");
+    if is_windows_absolute_path_value(&value) {
+        return normalize_windows_absolute_path_value(&value);
+    }
+    let path = PathBuf::from(&value);
+    if path.is_absolute() {
+        normalize_path_key(&path)
+    } else {
+        normalize_path_key(&workspace_dir.join(path))
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn is_windows_absolute_path_value(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && bytes[2] == b'/')
+        || value.starts_with("//")
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn normalize_windows_absolute_path_value(value: &str) -> String {
+    let mut normalized = value.replace('\\', "/");
+    if normalized.as_bytes().get(1) == Some(&b':') {
+        let drive = normalized[0..1].to_ascii_lowercase();
+        normalized.replace_range(0..1, &drive);
+    }
+    normalized
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn is_separate_path_value_flag(flag: &str) -> bool {
+    matches!(
+        flag,
+        "-I"
+            | "-isystem"
+            | "-iquote"
+            | "-idirafter"
+            | "-include"
+            | "--include"
+            | "--include-directory"
+            | "--system-include"
+            | "--sysroot"
+            | "-isysroot"
+    )
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -1186,28 +1271,44 @@ fn normalize_compile_command_token(workspace_dir: &Path, token: &str) -> String 
     if token == "__synthi_device_artifact__" {
         return token;
     }
-    for prefix in ["-I", "-isystem", "-iquote", "--include-directory=", "--system-include="] {
+    for prefix in [
+        "--include-directory=",
+        "--system-include=",
+        "--sysroot=",
+    ] {
         if let Some(rest) = token.strip_prefix(prefix).filter(|rest| !rest.is_empty()) {
-            let path = PathBuf::from(rest);
-            let normalized = if path.is_absolute() {
-                normalize_path_key(&path)
-            } else {
-                normalize_path_key(&workspace_dir.join(path))
-            };
-            return format!("{prefix}{normalized}");
+            return format!("{prefix}{}", normalize_path_flag_value(workspace_dir, rest));
+        }
+    }
+    for prefix in [
+        "-I",
+        "-isystem",
+        "-iquote",
+        "-idirafter",
+        "-include",
+        "-isysroot",
+    ] {
+        if token != prefix {
+            if let Some(rest) = token.strip_prefix(prefix).filter(|rest| !rest.is_empty()) {
+                return format!("{prefix}{}", normalize_path_flag_value(workspace_dir, rest));
+            }
         }
     }
     token
 }
 
 #[cfg(feature = "gpu-hmr")]
-fn classified_device_flags(device_flags: &[String]) -> Vec<String> {
+fn classified_device_flags(workspace_dir: &Path, device_flags: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let mut iter = device_flags.iter().peekable();
     while let Some(flag) = iter.next() {
         let class = if matches!(flag.as_str(), "-I" | "-isystem" | "-iquote" | "-idirafter") {
-            iter.peek()
-                .map(|next| format!("include_path:{flag}:{}", next.replace('\\', "/")))
+            iter.peek().map(|next| {
+                format!(
+                    "include_path:{flag}:{}",
+                    normalize_path_flag_value(workspace_dir, next)
+                )
+            })
         } else if matches!(flag.as_str(), "-D" | "-U") {
             iter.peek().map(|next| format!("define:{flag}:{next}"))
         } else if matches!(flag.as_str(), "-std" | "--std") {
@@ -1219,7 +1320,10 @@ fn classified_device_flags(device_flags: &[String]) -> Vec<String> {
             || flag.starts_with("--include-directory=")
             || flag.starts_with("--system-include=")
         {
-            Some(format!("include_path:{}", flag.replace('\\', "/")))
+            Some(format!(
+                "include_path:{}",
+                normalize_compile_command_token(workspace_dir, flag)
+            ))
         } else if flag.starts_with("-D") || flag.starts_with("-U") {
             Some(format!("define:{flag}"))
         } else if flag.starts_with("-std=") || flag.starts_with("--std=") {
@@ -2529,6 +2633,79 @@ mod tests {
                 "src/kernel body.h",
                 "/opt/rocm/include/hip/hip_runtime.h",
             ]
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn compile_command_tokens_normalize_split_path_flags() {
+        let workspace = PathBuf::from("/workspace/project");
+        let mut block = rocm_block();
+        block.device_flags = vec![
+            "-I".to_string(),
+            "include".to_string(),
+            "-isystem".to_string(),
+            "third_party\\sdk".to_string(),
+            "--include-directory=generated\\headers".to_string(),
+            "-O3".to_string(),
+        ];
+
+        let tokens = normalized_device_compile_command_tokens(
+            &workspace,
+            "hipcc",
+            &block,
+            ".synthi\\generated\\gpu\\device.partial.test.hip",
+        );
+
+        assert!(tokens.iter().any(|token| token == "-I"));
+        assert!(tokens
+            .iter()
+            .any(|token| token == "/workspace/project/include"));
+        assert!(tokens
+            .iter()
+            .any(|token| token == "/workspace/project/third_party/sdk"));
+        assert!(tokens.iter().any(|token| {
+            token == "--include-directory=/workspace/project/generated/headers"
+        }));
+        assert!(tokens.iter().any(|token| {
+            token == "/workspace/project/.synthi/generated/gpu/device.partial.test.hip"
+        }));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn classified_device_flags_normalize_include_paths() {
+        let workspace = PathBuf::from("/workspace/project");
+        let flags = vec![
+            "-I".to_string(),
+            "include".to_string(),
+            "-DVALUE=1".to_string(),
+            "--include-directory=generated\\headers".to_string(),
+        ];
+
+        let classified = classified_device_flags(&workspace, &flags);
+
+        assert!(classified
+            .iter()
+            .any(|item| item == "include_path:-I:/workspace/project/include"));
+        assert!(classified.iter().any(|item| {
+            item == "include_path:--include-directory=/workspace/project/generated/headers"
+        }));
+        assert!(classified.iter().any(|item| item == "define:-DVALUE=1"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn path_flag_normalization_preserves_windows_absolute_paths() {
+        let workspace = PathBuf::from("/workspace/project");
+
+        assert_eq!(
+            normalize_path_flag_value(&workspace, "C:\\GPU SDK\\include"),
+            "c:/GPU SDK/include"
+        );
+        assert_eq!(
+            normalize_path_flag_value(&workspace, "\\\\buildshare\\sdk\\include"),
+            "//buildshare/sdk/include"
         );
     }
 
