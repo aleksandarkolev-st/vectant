@@ -674,6 +674,30 @@ struct DeviceSymbolMapping {
     source_path: String,
     generated_path: String,
     mapping_confidence: Option<String>,
+    identity: DeviceSymbolIdentityKey,
+}
+
+#[derive(Debug, Clone, Default, Eq, PartialEq, Ord, PartialOrd)]
+struct DeviceSymbolIdentityKey {
+    qualified_source_name: Option<String>,
+    signature_hash: Option<String>,
+    linkage: Option<String>,
+    namespace_path: Option<String>,
+    template_arity: Option<String>,
+    overload_index: Option<String>,
+    source_span: Option<String>,
+}
+
+impl DeviceSymbolIdentityKey {
+    fn has_evidence(&self) -> bool {
+        self.qualified_source_name.is_some()
+            || self.signature_hash.is_some()
+            || self.linkage.is_some()
+            || self.namespace_path.is_some()
+            || self.template_arity.is_some()
+            || self.overload_index.is_some()
+            || self.source_span.is_some()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1088,6 +1112,37 @@ fn string_field(item: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn scalar_identity_field(item: &serde_json::Value, key: &str) -> Option<String> {
+    let value = item.get(key)?;
+    if let Some(text) = value.as_str() {
+        return Some(text.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+    }
+    if value.is_null() {
+        return None;
+    }
+    if value.is_number() || value.is_boolean() || value.is_array() || value.is_object() {
+        return Some(value.to_string())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.trim_matches('"').to_string());
+    }
+    None
+}
+
+fn device_symbol_identity_key(item: &serde_json::Value) -> DeviceSymbolIdentityKey {
+    DeviceSymbolIdentityKey {
+        qualified_source_name: scalar_identity_field(item, "qualifiedSourceName")
+            .or_else(|| scalar_identity_field(item, "qualifiedName")),
+        signature_hash: scalar_identity_field(item, "signatureHash"),
+        linkage: scalar_identity_field(item, "linkage"),
+        namespace_path: scalar_identity_field(item, "namespacePath"),
+        template_arity: scalar_identity_field(item, "templateArity"),
+        overload_index: scalar_identity_field(item, "overloadIndex"),
+        source_span: scalar_identity_field(item, "sourceSpan"),
+    }
+}
+
 fn device_symbol_mapping_index(
     sidecar: &serde_json::Value,
 ) -> BTreeMap<String, Vec<DeviceSymbolMapping>> {
@@ -1129,6 +1184,7 @@ fn device_symbol_mapping_index(
                     source_path,
                     generated_path,
                     mapping_confidence: string_field(item, "mappingConfidence"),
+                    identity: device_symbol_identity_key(item),
                 });
         }
     }
@@ -1178,6 +1234,40 @@ fn symbol_maps_to_scope(
             && source_path
                 .map(|path| mapping.source_path == path)
                 .unwrap_or(true)
+        })
+}
+
+fn symbol_identity_uncertain_for_scope(
+    symbol_index: &BTreeMap<String, Vec<DeviceSymbolMapping>>,
+    symbol: &str,
+    generated_path: &str,
+    source_path: Option<&str>,
+) -> bool {
+    let Some(mappings) = symbol_index.get(symbol) else {
+        return false;
+    };
+    let identity_keys = mappings
+        .iter()
+        .filter(|mapping| {
+            mapping.generated_path == generated_path
+                && source_path
+                    .map(|path| mapping.source_path == path)
+                    .unwrap_or(true)
+                && mapping.identity.has_evidence()
+        })
+        .map(|mapping| mapping.identity.clone())
+        .collect::<BTreeSet<_>>();
+    identity_keys.len() > 1
+}
+
+fn any_symbol_identity_uncertain_for_scope(
+    symbol_index: &BTreeMap<String, Vec<DeviceSymbolMapping>>,
+    symbols: &BTreeSet<String>,
+    generated_path: &str,
+    source_path: Option<&str>,
+) -> bool {
+    symbols.iter().any(|symbol| {
+        symbol_identity_uncertain_for_scope(symbol_index, symbol, generated_path, source_path)
     })
 }
 
@@ -1273,6 +1363,17 @@ fn select_device_partial_artifact_with_report(
             };
         }
     }
+    if any_symbol_identity_uncertain_for_scope(
+        &symbol_index,
+        &requested_symbols,
+        &generated,
+        request.as_deref(),
+    ) {
+        return DevicePartialArtifactSelectionReport {
+            selected: None,
+            rejection_reason: Some("selection.symbol_identity_uncertain".to_string()),
+        };
+    }
 
     let mut candidates = Vec::new();
     let mut rejection_reason: Option<String> = None;
@@ -1318,6 +1419,15 @@ fn select_device_partial_artifact_with_report(
             let artifact_symbols = string_array_field(item, "symbols");
             let artifact_symbol_set = normalized_symbol_set(&artifact_symbols);
             let exact_symbol_set = artifact_symbol_set == requested_symbols;
+            if any_symbol_identity_uncertain_for_scope(
+                &symbol_index,
+                &artifact_symbol_set,
+                &generated,
+                request.as_deref(),
+            ) {
+                remember_rejection("selection.symbol_identity_uncertain");
+                continue;
+            }
 
             let raw_source_paths = string_array_field(item, "sourcePaths");
             let mut source_paths = Vec::with_capacity(raw_source_paths.len());
@@ -8361,6 +8471,106 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             report.rejection_reason.as_deref(),
             Some("selection.path_identity_uncertain")
         );
+    }
+
+    #[test]
+    fn partial_artifact_selector_rejects_ambiguous_symbol_identity() {
+        let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_kernel",
+                        "qualifiedSourceName": "scope::owned_kernel",
+                        "signatureHash": "sig-a",
+                        "sourcePath": "src/device/owned.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    },
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_kernel",
+                        "qualifiedSourceName": "scope::owned_kernel",
+                        "signatureHash": "sig-b",
+                        "sourcePath": "src/device/owned.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    }
+                ]
+            },
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "kind": "source_include_bridge",
+                        "filename": ".synthi/generated/gpu/device.partial.owned.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": ["src/device/owned.h"],
+                        "symbols": ["owned_kernel"],
+                        "contentBytes": 90,
+                        "contentHash": "owned"
+                    }
+                ]
+            }
+        });
+        let report = select_device_partial_artifact_with_report(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some("src/device/owned.h"),
+            &["owned_kernel".to_string()],
+        );
+
+        assert!(report.selected.is_none());
+        assert_eq!(
+            report.rejection_reason.as_deref(),
+            Some("selection.symbol_identity_uncertain")
+        );
+    }
+
+    #[test]
+    fn partial_artifact_selector_accepts_duplicate_symbol_identity_evidence() {
+        let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_kernel",
+                        "qualifiedSourceName": "scope::owned_kernel",
+                        "signatureHash": "sig-a",
+                        "sourcePath": "src/device/owned.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    },
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_kernel",
+                        "qualifiedSourceName": "scope::owned_kernel",
+                        "signatureHash": "sig-a",
+                        "sourcePath": "src/device/owned.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    }
+                ]
+            },
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "kind": "source_include_bridge",
+                        "filename": ".synthi/generated/gpu/device.partial.owned.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": ["src/device/owned.h"],
+                        "symbols": ["owned_kernel"],
+                        "contentBytes": 90,
+                        "contentHash": "owned"
+                    }
+                ]
+            }
+        });
+        let selected = select_device_partial_artifact(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some("src/device/owned.h"),
+            &["owned_kernel".to_string()],
+        )
+        .expect("duplicate identity evidence is not ambiguous");
+
+        assert_eq!(selected.selection_reason, "exact_symbol_set");
+        assert_eq!(selected.symbols, vec!["owned_kernel".to_string()]);
     }
 
     #[test]
