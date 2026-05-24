@@ -105,6 +105,7 @@ const CFG = {
   firstCompileTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FIRST_TIMEOUT_MS ?? 300000),
   hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 90000),
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
+  screenshotRetryDelayMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
   expectScreenshot: process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT === '1',
   hmrWaitModule: process.env.SYNTHI_REAL_ROCM_HMR_WAIT_MODULE ?? 'device',
@@ -831,41 +832,61 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt) {
 
 async function captureScreenshot(label) {
   if (!mcpState?.client) return null;
-  for (let attempt = 1; attempt <= CFG.screenshotAttempts; attempt += 1) {
+  const attempts = Math.max(1, CFG.screenshotAttempts);
+  let lastRow = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const shot = await mcpState.client.toolCallRaw('synthi_screenshot', { freshness_max_ms: CFG.screenshotFreshnessMaxMs }, 30000).catch((e) => ({ error: e.message }));
     const content = Array.isArray(shot?.content) ? shot.content : [];
     const imageBlock = content.find((block) => block?.type === 'image' && typeof block.data === 'string');
     if (imageBlock?.data) {
-      const outPath = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`);
+      const suffix = attempt === 1 ? '' : `-attempt-${attempt}`;
+      const outPath = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}${suffix}.png`);
       const bytes = Buffer.from(imageBlock.data, 'base64');
       await writeFile(outPath, bytes);
-      const sharpImage = sharp(bytes);
-      const meta = await sharpImage.metadata();
-      const stats = await sharpImage.greyscale().raw().toBuffer().then((buf) => {
-        let visible = 0;
-        let sum = 0;
-        for (const value of buf) {
-          sum += value;
-          if (value > 8) visible += 1;
-        }
-        return { visible, mean: buf.length ? sum / buf.length : 0 };
-      });
-      const row = { label, path: outPath, width: meta.width, height: meta.height, visible_pixels: stats.visible, mean_luma: stats.mean, bytes: bytes.length };
+      const stats = await analyzeImage(bytes);
+      const row = { label, path: outPath, width: stats.width, height: stats.height, visible_pixels: stats.visible_pixels, mean_luma: stats.mean_luma, bytes: bytes.length, attempt };
       report.screenshots.push(row);
-      record(`screenshot ${label}`, stats.visible > 500 ? 'pass' : 'warn', JSON.stringify(row));
-      return row;
+      const ok = row.width >= 320 && row.height >= 240 && row.visible_pixels > 500;
+      if (ok) {
+        record(`screenshot ${label}`, 'pass', JSON.stringify(row));
+        return row;
+      }
+      lastRow = row;
+      const status = CFG.expectScreenshot ? 'warn' : 'info';
+      record(`screenshot ${label} retry`, status, `attempt=${attempt}/${attempts} ${JSON.stringify(row)}`);
+      if (attempt < attempts) {
+        await sleep(CFG.screenshotRetryDelayMs);
+      }
+      continue;
     }
     const text = content.find((block) => block?.type === 'text')?.text;
     const detail = shot?.error ?? text ?? (shot?.isError ? JSON.stringify(shot?.structuredContent ?? shot) : 'no data');
     record(`screenshot ${label}`, 'warn', `attempt=${attempt} ${detail}`);
-    await sleep(1000);
+    await sleep(CFG.screenshotRetryDelayMs);
   }
   if (!CFG.expectScreenshot) {
-    record(`screenshot ${label}`, 'info', 'not_applicable_for_non_visual_target');
-    return null;
+    record(`screenshot ${label}`, 'info', lastRow ? `not_visibly_non_black ${JSON.stringify(lastRow)}` : 'not_applicable_for_non_visual_target');
+    return lastRow;
   }
-  throw new Error(`screenshot ${label} was expected but no frame was captured`);
-  return null;
+  const detail = lastRow ? JSON.stringify(lastRow) : 'no frame was captured';
+  record(`screenshot ${label}`, 'fail', detail);
+  throw new Error(`screenshot ${label} was expected but was not visibly non-black`);
+}
+
+async function analyzeImage(input) {
+  const { data, info } = await sharp(input).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  let visible = 0;
+  let lumaTotal = 0;
+  for (let i = 0; i < data.length; i += info.channels) {
+    const r = data[i] ?? 0;
+    const g = data[i + 1] ?? 0;
+    const b = data[i + 2] ?? 0;
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    lumaTotal += luma;
+    if (luma > 24 || Math.max(r, g, b) - Math.min(r, g, b) > 30) visible += 1;
+  }
+  const pixels = Math.max(1, info.width * info.height);
+  return { width: info.width, height: info.height, visible_pixels: visible, mean_luma: lumaTotal / pixels };
 }
 
 function editSource(source, before, after, label) {
