@@ -84,6 +84,7 @@ const CFG = {
     ?? 'HIP-Basic/saxpy/main.hip',
   secondDeltaBefore: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE ?? '',
   secondDeltaAfter: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER ?? '',
+  extraDeltasJson: process.env.SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON ?? '',
   maxFileBytes: Number(process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? 512 * 1024),
   compileContextMaxBytes: Number(process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? 48 * 1024 * 1024),
   writeBatchSize: Number(process.env.SYNTHI_REAL_ROCM_WRITE_BATCH_SIZE ?? 200),
@@ -144,6 +145,7 @@ const report = {
       SYNTHI_REAL_ROCM_ENTRY: process.env.SYNTHI_REAL_ROCM_ENTRY ?? '',
       SYNTHI_REAL_ROCM_DELTA_FILE: process.env.SYNTHI_REAL_ROCM_DELTA_FILE ?? '',
       SYNTHI_REAL_ROCM_SECOND_DELTA_FILE: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_FILE ?? '',
+      SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON: process.env.SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON ?? '',
       SYNTHI_REAL_ROCM_TARGET: process.env.SYNTHI_REAL_ROCM_TARGET ?? '',
       SYNTHI_REAL_ROCM_BUILD_SUBDIR: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? '',
       SYNTHI_REAL_ROCM_BUILD_UPSTREAM: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM ?? '',
@@ -876,12 +878,52 @@ function editConfiguredSource(source) {
   return editSource(source, CFG.deltaBefore, CFG.deltaAfter, 'configured');
 }
 
-function hasSecondConfiguredSourceDelta() {
-  if (!CFG.secondDeltaBefore && !CFG.secondDeltaAfter) return false;
-  if (!CFG.secondDeltaBefore || !CFG.secondDeltaAfter) {
-    throw new Error('second source delta requires both SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE and SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER');
+function safePhaseLabel(label, index) {
+  return cleanIdentifier(label || `extra-${index + 1}`).replace(/\./g, '-');
+}
+
+function parseExtraDeltas() {
+  const deltas = [];
+  if (CFG.secondDeltaBefore || CFG.secondDeltaAfter) {
+    if (!CFG.secondDeltaBefore || !CFG.secondDeltaAfter) {
+      throw new Error('second source delta requires both SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE and SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER');
+    }
+    deltas.push({
+      label: 'second',
+      file: CFG.secondDeltaFile,
+      before: CFG.secondDeltaBefore,
+      after: CFG.secondDeltaAfter,
+    });
   }
-  return true;
+  if (!CFG.extraDeltasJson.trim()) return deltas;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(CFG.extraDeltasJson);
+  } catch (err) {
+    throw new Error(`SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON is not valid JSON: ${err.message}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON must be a JSON array');
+  }
+  parsed.forEach((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`extra delta ${index + 1} must be an object`);
+    }
+    const file = String(entry.file ?? entry.path ?? CFG.deltaFile).replace(/\\/g, '/');
+    const before = typeof entry.before === 'string' ? entry.before : '';
+    const after = typeof entry.after === 'string' ? entry.after : '';
+    if (!file || !before || !after || before === after) {
+      throw new Error(`extra delta ${index + 1} requires file/path, before, and after strings that change the source`);
+    }
+    deltas.push({
+      label: safePhaseLabel(entry.label, index),
+      file,
+      before,
+      after,
+    });
+  });
+  return deltas;
 }
 
 function evidenceLines(text, pattern) {
@@ -984,6 +1026,7 @@ async function writeResults() {
     `entry_file: ${report.entry_file}`,
     `delta_file: ${report.delta_file}`,
     `second_delta_file: ${report.second_delta_file ?? ''}`,
+    `extra_deltas: ${JSON.stringify(report.extra_deltas ?? [])}`,
     `model: ${report.model}`,
     `gpu_vendor: ${report.gpu_vendor}`,
     `gpu_arch: ${report.gpu_arch}`,
@@ -1013,6 +1056,27 @@ async function run() {
   await ensureRepo();
   const buildMetadata = await prepareUpstreamBuild();
   const files = await collectRepoFiles(buildMetadata);
+  const fileContentByPath = new Map(files.map((file) => [file.path, file.content]));
+  const updateFileContent = (filePath, content) => {
+    const normalized = String(filePath ?? '').replace(/\\/g, '/');
+    fileContentByPath.set(normalized, content);
+    const file = files.find((candidate) => candidate.path === normalized);
+    if (file) file.content = content;
+  };
+  const contentForPath = (filePath) => {
+    const normalized = String(filePath ?? '').replace(/\\/g, '/');
+    if (!fileContentByPath.has(normalized)) {
+      throw new Error(`delta file missing from seeded files: ${normalized}`);
+    }
+    return fileContentByPath.get(normalized);
+  };
+  const extraDeltas = parseExtraDeltas();
+  report.extra_deltas = extraDeltas.map((delta) => ({
+    label: delta.label,
+    file: delta.file,
+    before_sha256: createHash('sha256').update(delta.before).digest('hex'),
+    after_sha256: createHash('sha256').update(delta.after).digest('hex'),
+  }));
   const primary = files.find((file) => file.path === CFG.entryFile);
   if (!primary) throw new Error(`entry file missing from seeded files: ${CFG.entryFile}`);
   const deltaPrimary = files.find((file) => file.path === CFG.deltaFile);
@@ -1044,7 +1108,7 @@ async function run() {
   }, CFG.firstCompileTimeoutMs, 'first_real_repo_ai_split_compile');
   await captureScreenshot('first-compile');
 
-  const edited = editConfiguredSource(deltaPrimary.content);
+  const edited = editConfiguredSource(contentForPath(CFG.deltaFile));
   const hmrAdditionalFiles = buildCompileProjection(
     files,
     CFG.deltaFile,
@@ -1057,6 +1121,7 @@ async function run() {
     { files: [{ path: CFG.deltaFile, encoding: 'utf8', content: edited }], syncToGcs: CFG.syncToGcs },
     { 'x-user-id': CFG.hostId },
   );
+  updateFileContent(CFG.deltaFile, edited);
   await compileViaMcp({
     language: 'cpp',
     filename: CFG.deltaFile,
@@ -1074,33 +1139,35 @@ async function run() {
   }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr');
   await captureScreenshot('post-hmr');
 
-  if (hasSecondConfiguredSourceDelta()) {
-    const secondPrimary = files.find((file) => file.path === CFG.secondDeltaFile);
-    if (!secondPrimary) throw new Error(`second delta file missing from seeded files: ${CFG.secondDeltaFile}`);
-    const secondBase = CFG.secondDeltaFile === CFG.deltaFile ? edited : secondPrimary.content;
-    const secondEdited = editSource(
-      secondBase,
-      CFG.secondDeltaBefore,
-      CFG.secondDeltaAfter,
-      'second configured',
+  for (let index = 0; index < extraDeltas.length; index += 1) {
+    const delta = extraDeltas[index];
+    const label = safePhaseLabel(delta.label, index);
+    const phaseName = `real_repo_${label}_user_source_delta_hmr`;
+    const screenshotLabel = `post-${label}-hmr`;
+    const editedSource = editSource(
+      contentForPath(delta.file),
+      delta.before,
+      delta.after,
+      `${label} configured`,
     );
-    const secondAdditionalFiles = buildCompileProjection(
+    const additionalFiles = buildCompileProjection(
       files,
-      CFG.secondDeltaFile,
+      delta.file,
       buildMetadata,
-      'real_repo_second_user_source_delta_hmr',
+      phaseName,
     );
     await httpJson(
       'POST',
       `${CFG.collabUrl}/git/${CFG.slug}/write-files-batch`,
-      { files: [{ path: CFG.secondDeltaFile, encoding: 'utf8', content: secondEdited }], syncToGcs: CFG.syncToGcs },
+      { files: [{ path: delta.file, encoding: 'utf8', content: editedSource }], syncToGcs: CFG.syncToGcs },
       { 'x-user-id': CFG.hostId },
     );
+    updateFileContent(delta.file, editedSource);
     await compileViaMcp({
       language: 'cpp',
-      filename: CFG.secondDeltaFile,
-      source: secondEdited,
-      files: secondAdditionalFiles,
+      filename: delta.file,
+      source: editedSource,
+      files: additionalFiles,
       is_gui: CFG.expectScreenshot,
       use_ai_split: true,
       user_requested_ai: true,
@@ -1110,8 +1177,8 @@ async function run() {
       slug: CFG.slug,
       width: CFG.width,
       height: CFG.height,
-    }, CFG.hmrTimeoutMs, 'real_repo_second_user_source_delta_hmr');
-    await captureScreenshot('post-second-hmr');
+    }, CFG.hmrTimeoutMs, phaseName);
+    await captureScreenshot(screenshotLabel);
   }
 }
 
