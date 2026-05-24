@@ -1,7 +1,7 @@
 import type { AttachedSession } from "../session.js";
 import type { InputLease, LeasePriority, LeaseScope } from "../arbitration/lease.js";
 
-export type SharedLeaseOp = "acquire" | "release" | "renew" | "force-release";
+export type SharedLeaseOp = "acquire" | "release" | "renew" | "force-release" | "validate";
 
 export interface SharedLeaseOk {
   ok: true;
@@ -31,6 +31,7 @@ export async function requestSharedLease(
     priority?: LeasePriority;
     reason?: string | null;
     forced_by?: string;
+    peer_id?: string;
   },
   timeoutMs = 4_000
 ): Promise<SharedLeaseOk | SharedLeaseError | null> {
@@ -52,6 +53,7 @@ export async function requestSharedLease(
       ...(payload.priority !== undefined ? { priority: payload.priority } : {}),
       ...(payload.reason !== undefined ? { reason: payload.reason } : {}),
       ...(payload.forced_by !== undefined ? { forced_by: payload.forced_by } : {}),
+      ...(payload.peer_id !== undefined ? { peer_id: payload.peer_id } : {}),
     },
     timeoutMs
   );

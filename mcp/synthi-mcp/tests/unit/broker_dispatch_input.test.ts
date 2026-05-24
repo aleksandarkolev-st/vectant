@@ -49,6 +49,15 @@ async function installFakeAttached(opts: { interFrameDelayMs?: number; frameColo
       dimensions: () => ({ width: 4, height: 4 }),
     },
     channels: {
+      requestInputLease: async (payload: Record<string, unknown>) => {
+        const op = payload["op"];
+        const leaseId = typeof payload["lease_id"] === "string" ? payload["lease_id"] : undefined;
+        const scope = Array.isArray(payload["scope"]) && payload["scope"][0] === "mouse" ? "mouse" : "keyboard";
+        if (op !== "validate") return { ok: false, error: "LEASE_DENIED" };
+        const validation = leaseRegistry.validateForBrokerInput(leaseId, scope, Date.now(), "s_1");
+        if (!validation.allowed) return { ok: false, error: validation.error, ...validation.detail };
+        return { ok: true, lease_id: validation.lease.lease_id, lease: validation.lease };
+      },
       sendInput: async (frames: string[], sendOpts?: FakeSendOptions) => {
         sent.push(...frames);
         for (let i = 0; i < frames.length; i++) {

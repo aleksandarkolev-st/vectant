@@ -72,7 +72,7 @@ export interface CapabilityManifest {
   };
   arbitration: {
     input_lease_supported: boolean;
-    enforcement: "none" | "server" | "wire-only" | "mcp-local";
+    enforcement: "none" | "server" | "wire-only" | "mcp-local" | "session-shared-worker";
   };
   limits: {
     event_log_capacity: number;
@@ -221,7 +221,7 @@ export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate
 
 function resolveArbitrationManifest(): CapabilityManifest["arbitration"] {
   if (resolveBrokerInputMode() === "enforce") {
-    return { input_lease_supported: true, enforcement: "server" };
+    return { input_lease_supported: true, enforcement: "session-shared-worker" };
   }
   const mode = process.env["SYNTHI_LEASE_MODE"] === "single-holder" ? "mcp-local" : "wire-only";
   return { input_lease_supported: true, enforcement: mode };

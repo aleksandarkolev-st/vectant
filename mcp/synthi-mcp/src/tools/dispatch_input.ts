@@ -45,7 +45,24 @@ export async function dispatchInputTool(args: unknown): Promise<ToolResponse> {
     based_on_viewport: a.based_on_viewport,
     now: receivedAt,
   });
-  if (gate) return errorResponse(gate.error, gate);
+  if (gate) {
+    recordBrokerInputTrace({
+      tool_call_id: toolCallId,
+      session_id: attached.sessionId,
+      action: actionName,
+      frame_seq: typeof a.based_on_frame_seq === "number" ? a.based_on_frame_seq : undefined,
+      lease_id: typeof a.lease_id === "string" ? a.lease_id : undefined,
+      received_at: receivedAt,
+      dispatched_at: receivedAt,
+      ack_chain: { transport_ack: { ack_id: `rejected_${toolCallId}`, ts: receivedAt } },
+      detail: {
+        error_code: gate.error,
+        rejected_before_dispatch: true,
+        gate,
+      },
+    });
+    return errorResponse(gate.error, gate);
+  }
 
   const timeoutMs = typeof a.timeout_ms === "number" && a.timeout_ms > 0
     ? Math.floor(a.timeout_ms)

@@ -5,6 +5,7 @@ import { brokerError } from "./errors.js";
 import { brokerFallbackController } from "./fallback.js";
 import { brokerRolloutController } from "./rollout.js";
 import { brokerRuntime } from "./runtime.js";
+import { requestSharedLease } from "../tools/shared_lease.js";
 
 export type BrokerInputMode = "shadow" | "enforce";
 
@@ -67,6 +68,33 @@ export async function checkBrokerInputGate(input: {
   const leaseId = typeof input.lease_id === "string" && input.lease_id.length > 0
     ? input.lease_id
     : undefined;
+  const sharedLeaseGate = await requestSharedLease(input.attached, {
+    op: "validate",
+    lease_id: leaseId,
+    scope: [input.scope],
+  });
+  if (sharedLeaseGate === null) {
+    return buildGateError("LEASE_DENIED", input.action, {
+      reason: "shared_session_lease_authority_unavailable",
+      required_authority: "worker",
+      lease_id: leaseId ?? null,
+      scope: input.scope,
+      session_id: input.attached.sessionId,
+    });
+  }
+  if (sharedLeaseGate.ok === false) {
+    const code = normalizeSharedLeaseError(sharedLeaseGate.error);
+    return buildGateError(code, input.action, {
+      ...sharedLeaseGate.detail,
+      lease_id: leaseId ?? null,
+      scope: input.scope,
+      session_id: input.attached.sessionId,
+    });
+  }
+  if (sharedLeaseGate.lease) {
+    leaseRegistry.adoptSharedLease(sharedLeaseGate.lease);
+  }
+
   const leaseGate = leaseRegistry.validateForBrokerInput(leaseId, input.scope, now, input.attached.sessionId);
   if (!leaseGate.allowed) {
     return buildGateError(leaseGate.error, input.action, {
@@ -148,6 +176,11 @@ export async function checkBrokerInputGate(input: {
   return null;
 }
 
+function normalizeSharedLeaseError(error: string): Extract<BrokerErrorCode, "LEASE_REQUIRED" | "LEASE_EXPIRED" | "LEASE_DENIED" | "LEASE_PREEMPTED"> {
+  if (error === "LEASE_REQUIRED" || error === "LEASE_EXPIRED" || error === "LEASE_PREEMPTED") return error;
+  return "LEASE_DENIED";
+}
+
 function parseViewport(raw: unknown): InputViewport | "invalid" | null {
   if (raw === undefined) return null;
   if (!raw || typeof raw !== "object") return "invalid";
@@ -178,9 +211,9 @@ function buildGateError(
   detail: Record<string, unknown>
 ): BrokerInputGateError {
   return {
+    ...detail,
     error: code,
     action,
-    ...detail,
     broker_error: brokerError(code, detail),
   };
 }

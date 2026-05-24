@@ -53,8 +53,16 @@ export async function releaseInputTool(args: unknown): Promise<ToolResponse> {
       return jsonResponse({
         ok: true,
         released: shared.released ?? [leaseId],
-        enforcement: "worker",
+        enforcement: "session-shared-worker",
       });
+    }
+    if (brokerInputEnforced()) {
+      return errorResponse("LEASE_DENIED", brokerError("LEASE_DENIED", {
+        reason: "shared_session_lease_authority_unavailable",
+        required_authority: "worker",
+        lease_id: leaseId,
+        session_id: attached.sessionId,
+      }) as unknown as Record<string, unknown>);
     }
   }
 

@@ -7,6 +7,7 @@ import {
   resolveLeaseOwner,
   type LeaseScope,
 } from "../arbitration/lease.js";
+import { brokerError } from "../broker/errors.js";
 import { requestSharedLease } from "./shared_lease.js";
 import {
   errorResponse,
@@ -114,10 +115,17 @@ export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
       priority: shared.lease.priority,
       reason: shared.lease.reason,
       continuous_owner_since: shared.lease.continuous_owner_since,
-      enforcement: "worker",
+      enforcement: "session-shared-worker",
       reentrant: shared.reentrant === true,
       ...(shared.evicted_lease_id ? { evicted_lease_id: shared.evicted_lease_id } : {}),
     });
+  }
+  if (process.env["SYNTHI_BROKER_INPUT_MODE"] === "enforce") {
+    return errorResponse("LEASE_DENIED", brokerError("LEASE_DENIED", {
+      reason: "shared_session_lease_authority_unavailable",
+      required_authority: "worker",
+      session_id: attached.sessionId,
+    }) as unknown as Record<string, unknown>);
   }
 
   const result = leaseRegistry.acquireWithPolicy(leaseMs, owner, {

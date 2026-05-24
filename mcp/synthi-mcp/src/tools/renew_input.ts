@@ -1,5 +1,6 @@
 import { session } from "../session.js";
 import { DEFAULT_LEASE_MS, leaseRegistry } from "../arbitration/lease.js";
+import { brokerError, brokerInputEnforced } from "../broker/index.js";
 import { requestSharedLease } from "./shared_lease.js";
 import {
   errorResponse,
@@ -44,8 +45,16 @@ export async function renewInputTool(args: unknown): Promise<ToolResponse> {
       preemptible: shared.lease.preemptible,
       reason: shared.lease.reason,
       continuous_owner_since: shared.lease.continuous_owner_since,
-      enforcement: "worker",
+      enforcement: "session-shared-worker",
     });
+  }
+  if (brokerInputEnforced()) {
+    return errorResponse("LEASE_DENIED", brokerError("LEASE_DENIED", {
+      reason: "shared_session_lease_authority_unavailable",
+      required_authority: "worker",
+      lease_id: a.lease_id,
+      session_id: attached.sessionId,
+    }) as unknown as Record<string, unknown>);
   }
 
   const result = leaseRegistry.renew(a.lease_id, extendMs);

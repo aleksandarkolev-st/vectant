@@ -2,6 +2,7 @@ import { session } from "../session.js";
 import { leaseRegistry } from "../arbitration/lease.js";
 import { authenticateBrokerBearer, authorizeBrokerCapability } from "../broker/auth.js";
 import { brokerError } from "../broker/errors.js";
+import { brokerInputEnforced } from "../broker/input_gate.js";
 import { requestSharedLease } from "./shared_lease.js";
 import {
   errorResponse,
@@ -60,8 +61,16 @@ export async function forceReleaseInputTool(args: unknown): Promise<ToolResponse
       lease_id: a.lease_id,
       forced_by: forcedBy,
       reason,
-      enforcement: "worker",
+      enforcement: "session-shared-worker",
     });
+  }
+  if (brokerInputEnforced()) {
+    return errorResponse("LEASE_DENIED", brokerError("LEASE_DENIED", {
+      reason: "shared_session_lease_authority_unavailable",
+      required_authority: "worker",
+      lease_id: a.lease_id,
+      session_id: attached.sessionId,
+    }) as unknown as Record<string, unknown>);
   }
   const result = leaseRegistry.forceRelease(a.lease_id, forcedBy, reason);
   session.touch();

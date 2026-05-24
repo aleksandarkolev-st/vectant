@@ -20,9 +20,29 @@ function withBrokerInputEnforced<T>(fn: () => Promise<T>): Promise<T> {
   });
 }
 
-function installFakeAttached(frame: { seq: number; ts: number; dpr?: number | null } = { seq: 10, ts: Date.now(), dpr: 1 }): { sent: string[] } {
+function installFakeAttached(
+  frame: { seq: number; ts: number; dpr?: number | null } = { seq: 10, ts: Date.now(), dpr: 1 },
+  opts: { sharedLease?: "local" | "missing" | "deny" } = {}
+): { sent: string[] } {
   const dpr = frame.dpr === null ? undefined : frame.dpr ?? 1;
   const sent: string[] = [];
+  const channels: Record<string, unknown> = {
+    sendInput: async (frames: string[]) => {
+      sent.push(...frames);
+    },
+  };
+  if (opts.sharedLease !== "missing") {
+    channels["requestInputLease"] = async (payload: Record<string, unknown>) => {
+      const op = payload["op"];
+      const leaseId = typeof payload["lease_id"] === "string" ? payload["lease_id"] : undefined;
+      const scope = Array.isArray(payload["scope"]) && payload["scope"][0] === "keyboard" ? "keyboard" : "mouse";
+      if (opts.sharedLease === "deny") return { ok: false, error: "LEASE_DENIED", reason: "held_by_other_peer" };
+      if (op !== "validate") return { ok: false, error: "LEASE_DENIED" };
+      const validation = leaseRegistry.validateForBrokerInput(leaseId, scope, Date.now(), "fake");
+      if (!validation.allowed) return { ok: false, error: validation.error, ...validation.detail };
+      return { ok: true, lease_id: validation.lease.lease_id, lease: validation.lease };
+    };
+  }
   (session as unknown as { state: string }).state = "attached";
   (session as unknown as { attached: unknown }).attached = {
     sessionId: "fake",
@@ -33,11 +53,7 @@ function installFakeAttached(frame: { seq: number; ts: number; dpr?: number | nu
       hasFrame: () => true,
       dimensions: () => ({ width: 800, height: 600, ...(dpr === undefined ? {} : { dpr }) }),
     },
-    channels: {
-      sendInput: async (frames: string[]) => {
-        sent.push(...frames);
-      },
-    },
+    channels,
   };
   return { sent };
 }
@@ -56,6 +72,46 @@ describe("broker-enforced input gate", () => {
     const res = await mouseTool({ action: "click", x: 10, y: 10, based_on_frame_seq: 10 });
     expect(res.isError).toBe(true);
     expect((res.structuredContent as { error: string }).error).toBe("LEASE_REQUIRED");
+    expect(sent).toHaveLength(0);
+  }));
+
+  it("fails closed when shared session lease authority is unavailable", async () => withBrokerInputEnforced(async () => {
+    const { sent } = installFakeAttached({ seq: 10, ts: Date.now() }, { sharedLease: "missing" });
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "agent", { scope: ["mouse"] });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected acquire rejection");
+
+    const res = await mouseTool({
+      action: "click",
+      x: 10,
+      y: 10,
+      lease_id: lease.lease.lease_id,
+      based_on_frame_seq: 10,
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { error: string; reason?: string }).error).toBe("LEASE_DENIED");
+    expect((res.structuredContent as { reason?: string }).reason).toBe("shared_session_lease_authority_unavailable");
+    expect(sent).toHaveLength(0);
+  }));
+
+  it("honors shared-authority denial even when the local lease matches", async () => withBrokerInputEnforced(async () => {
+    const { sent } = installFakeAttached({ seq: 10, ts: Date.now() }, { sharedLease: "deny" });
+    const lease = leaseRegistry.acquireWithPolicy(5_000, "agent", { scope: ["mouse"] });
+    expect(lease.ok).toBe(true);
+    if (!lease.ok) throw new Error("unexpected acquire rejection");
+
+    const res = await mouseTool({
+      action: "click",
+      x: 10,
+      y: 10,
+      lease_id: lease.lease.lease_id,
+      based_on_frame_seq: 10,
+    });
+
+    expect(res.isError).toBe(true);
+    expect((res.structuredContent as { error: string; reason?: string }).error).toBe("LEASE_DENIED");
+    expect((res.structuredContent as { reason?: string }).reason).toBe("held_by_other_peer");
     expect(sent).toHaveLength(0);
   }));
 
