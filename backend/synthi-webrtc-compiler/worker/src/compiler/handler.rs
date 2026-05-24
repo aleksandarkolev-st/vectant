@@ -4513,10 +4513,48 @@ pub async fn handle_compile_request(
                                 &generated_device_source,
                             )
                             .await?;
-                            let ai_delta_device_prompt_source = ai_delta_device_scope
-                                .as_ref()
-                                .map(|scope| scope.source.as_str())
-                                .unwrap_or(generated_device_source.as_str());
+                            let Some(ai_delta_device_scope) = ai_delta_device_scope else {
+                                let (plan_report, verifier_report, reason_codes) =
+                                    gpu_ai_delta_policy_rejection_reports(
+                                        "device_only",
+                                        &request_device_name,
+                                        &generated_device_path,
+                                        vec![
+                                            "ai_delta.scoped_device_artifact_missing".to_string(),
+                                            "ai_delta.full_device_prompt_rejected".to_string(),
+                                        ],
+                                        vec!["device".to_string()],
+                                    );
+                                let mut meta =
+                                    sidecar_meta.as_object().cloned().unwrap_or_default();
+                                meta.insert("lastReloadPlanReport".to_string(), plan_report);
+                                meta.insert(
+                                    "lastGpuAiDeltaVerifierReport".to_string(),
+                                    verifier_report,
+                                );
+                                meta.insert(
+                                    "patchTier".to_string(),
+                                    serde_json::Value::String("ai_delta_rejected".to_string()),
+                                );
+                                invalidate_derived_gpu_reports(&mut meta);
+                                write_sidecar_logged(
+                                    &sidecar_path,
+                                    &serde_json::Value::Object(meta),
+                                    &session_id,
+                                )
+                                .await;
+                                eprintln!(
+                                    "[GPU AI Delta] rejected unscoped device prompt: user={} generated={} reasons={}",
+                                    request_device_name,
+                                    generated_device_path,
+                                    reason_codes.join(",")
+                                );
+                                anyhow::bail!(
+                                    "GPU AI delta verifier rejected unscoped device prompt: reason_codes={}",
+                                    reason_codes.join(",")
+                                );
+                            };
+                            let ai_delta_device_prompt_source = ai_delta_device_scope.source.as_str();
 
                             let arch_hint: Option<&str> = if architecture_md.is_empty() {
                                 None
@@ -4612,7 +4650,7 @@ pub async fn handle_compile_request(
                                 &host_runner_content,
                                 ai_delta_device_prompt_source,
                             )?;
-                            let final_device = if ai_delta_device_scope.is_some() {
+                            let final_device = {
                                 match crate::hmr::edit_applier::apply_edit_list_with_device(
                                     &ai_delta.edits,
                                     &core_content,
@@ -4631,8 +4669,6 @@ pub async fn handle_compile_request(
                                         );
                                     }
                                 }
-                            } else {
-                                final_prompt_device.clone()
                             };
 
                             let include_violations = generated_role_include_policy_violations(&[
@@ -4856,9 +4892,7 @@ pub async fn handle_compile_request(
                                     &generated_device_path,
                                     &generated_device_source,
                                     &final_device,
-                                    ai_delta_device_scope
-                                        .as_ref()
-                                        .map(|scope| (scope, final_prompt_device.as_str())),
+                                    Some((&ai_delta_device_scope, final_prompt_device.as_str())),
                                 );
                                 if let Some(partial) = payload.as_ref() {
                                     eprintln!(
