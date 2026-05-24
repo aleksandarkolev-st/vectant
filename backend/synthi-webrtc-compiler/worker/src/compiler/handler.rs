@@ -4857,11 +4857,15 @@ pub async fn handle_compile_request(
             }
         }
     }
+    // Device-only builds may reuse host modules only when runner state proved
+    // those modules belong to the same preview session. Filesystem fallbacks can
+    // point at a previous workspace/session and are only safe for non-device
+    // recovery paths that still rebuild or restart the host side.
     let device_only_compile_stage = can_compile_device_only_stage(
         &split_data,
         has_gpu_device_stage,
-        reusable_core_path.is_some(),
-        reusable_gui_path.is_some(),
+        prev_core_path.is_some(),
+        prev_gui_path.is_some(),
         req.is_gui,
     );
     if !tier0_bypassed {
