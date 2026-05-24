@@ -1312,17 +1312,32 @@ fn select_device_partial_artifact_with_report(
                     continue;
                 }
             }
+            let multi_symbol_reload_supported = exact_symbol_set
+                || kind == "source_include_bridge"
+                || item
+                    .get("multiSymbolReloadSupported")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                || item
+                    .get("runtimeMultiSymbolReloadSupported")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true);
 
-            let selection_reason = if exact_symbol_set {
-                "exact_symbol_set"
-            } else if artifact_symbol_superset_is_safe(
+            let safe_symbol_superset = artifact_symbol_superset_is_safe(
                 &symbol_index,
                 &artifact_symbol_set,
                 &requested_symbols,
                 &generated,
                 request.as_deref(),
-            ) {
+            );
+
+            let selection_reason = if exact_symbol_set {
+                "exact_symbol_set"
+            } else if safe_symbol_superset && multi_symbol_reload_supported {
                 "safe_symbol_superset"
+            } else if safe_symbol_superset {
+                remember_rejection("selection.runtime_multi_symbol_reload_unsupported");
+                continue;
             } else if artifact_symbol_set.is_superset(&requested_symbols) {
                 remember_rejection("selection.unsafe_symbol_superset");
                 continue;
@@ -8108,6 +8123,109 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         assert_eq!(
             normalized_symbol_set(&selected.symbols),
             normalized_symbol_set(&["shade_primary".to_string(), "shade_secondary".to_string()])
+        );
+    }
+
+    #[test]
+    fn partial_artifact_selector_accepts_explicit_multi_symbol_reload_superset() {
+        let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_primary",
+                        "sourcePath": ".synthi/generated/gpu/device.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_kernel_region"
+                    },
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_secondary",
+                        "sourcePath": ".synthi/generated/gpu/device.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_kernel_region"
+                    }
+                ]
+            },
+            "generatedDevicePartials": {
+                "artifacts": [
+                    {
+                        "kind": "kernel_region",
+                        "filename": ".synthi/generated/gpu/device.partial.owned.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": [".synthi/generated/gpu/device.hip"],
+                        "symbols": ["owned_primary", "owned_secondary"],
+                        "contentBytes": 88,
+                        "contentHash": "owned",
+                        "multiSymbolReloadSupported": true
+                    }
+                ]
+            }
+        });
+        let symbols = vec!["owned_primary".to_string()];
+
+        let selected = select_device_partial_artifact(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some(".synthi/generated/gpu/device.hip"),
+            &symbols,
+        )
+        .expect("explicit multi-symbol reload support");
+
+        assert_eq!(selected.kind, "kernel_region");
+        assert_eq!(selected.selection_reason, "safe_symbol_superset");
+        assert_eq!(
+            normalized_symbol_set(&selected.symbols),
+            normalized_symbol_set(&["owned_primary".to_string(), "owned_secondary".to_string()])
+        );
+    }
+
+    #[test]
+    fn partial_artifact_selector_rejects_superset_without_reload_support() {
+        let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_primary",
+                        "sourcePath": ".synthi/generated/gpu/device.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_kernel_region"
+                    },
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_secondary",
+                        "sourcePath": ".synthi/generated/gpu/device.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "mappingConfidence": "generated_kernel_region"
+                    }
+                ]
+            },
+            "generatedDevicePartials": {
+                "artifacts": [
+                    {
+                        "kind": "kernel_region",
+                        "filename": ".synthi/generated/gpu/device.partial.owned.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": [".synthi/generated/gpu/device.hip"],
+                        "symbols": ["owned_primary", "owned_secondary"],
+                        "contentBytes": 88,
+                        "contentHash": "owned"
+                    }
+                ]
+            }
+        });
+        let report = select_device_partial_artifact_with_report(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some(".synthi/generated/gpu/device.hip"),
+            &["owned_primary".to_string()],
+        );
+
+        assert!(report.selected.is_none());
+        assert_eq!(
+            report.rejection_reason.as_deref(),
+            Some("selection.runtime_multi_symbol_reload_unsupported")
         );
     }
 
