@@ -1429,6 +1429,22 @@ fn normalized_surface_lines_matching(source: &str, pattern: &Regex) -> Vec<Strin
         .collect()
 }
 
+fn normalized_source_lines_matching(source: &str, pattern: &Regex) -> Vec<String> {
+    let masked = mask_comments_preserving_len(source);
+    source
+        .lines()
+        .zip(masked.lines())
+        .filter_map(|(line, masked_line)| {
+            if pattern.is_match(masked_line) {
+                Some(collapse_ws(line.trim()))
+            } else {
+                None
+            }
+        })
+        .filter(|line| !line.is_empty())
+        .collect()
+}
+
 fn hash_lines(lines: Vec<String>) -> String {
     sha256_hex(&lines.join("\n"))
 }
@@ -1452,18 +1468,18 @@ fn include_graph_roots(source: &str) -> Vec<String> {
 
 fn include_directive_hash(source: &str) -> String {
     let re = Regex::new(r#"^\s*#\s*include\b"#).expect("include directive regex");
-    hash_lines(normalized_surface_lines_matching(source, &re))
+    hash_lines(normalized_source_lines_matching(source, &re))
 }
 
 fn macro_directive_hash(source: &str) -> String {
     let re = Regex::new(r#"^\s*#\s*(define|undef)\b"#).expect("macro directive regex");
-    hash_lines(normalized_surface_lines_matching(source, &re))
+    hash_lines(normalized_source_lines_matching(source, &re))
 }
 
 fn preprocessor_condition_hash(source: &str) -> String {
     let re = Regex::new(r#"^\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b"#)
         .expect("preprocessor condition regex");
-    hash_lines(normalized_surface_lines_matching(source, &re))
+    hash_lines(normalized_source_lines_matching(source, &re))
 }
 
 fn directive_summary(source: &str) -> Value {
@@ -1475,9 +1491,9 @@ fn directive_summary(source: &str) -> Value {
         "includeHash": include_directive_hash(source),
         "macroHash": macro_directive_hash(source),
         "preprocessorConditionHash": preprocessor_condition_hash(source),
-        "includeCount": normalized_surface_lines_matching(source, &include_re).len(),
-        "macroCount": normalized_surface_lines_matching(source, &macro_re).len(),
-        "preprocessorConditionCount": normalized_surface_lines_matching(
+        "includeCount": normalized_source_lines_matching(source, &include_re).len(),
+        "macroCount": normalized_source_lines_matching(source, &macro_re).len(),
+        "preprocessorConditionCount": normalized_source_lines_matching(
             source,
             &preprocessor_condition_re,
         )
@@ -2780,9 +2796,27 @@ extern "C" __global__ void trace(float* x) {
                 "abi.macro_directive_changed",
             ),
             (
+                "body define",
+                "__global__ void flow(float* x, int n) {\n#define SCALE 1\n  x[0] += SCALE;\n#undef SCALE\n}\n",
+                "__global__ void flow(float* x, int n) {\n#define SCALE 2\n  x[0] += SCALE;\n#undef SCALE\n}\n",
+                "abi.macro_directive_changed",
+            ),
+            (
+                "body include",
+                "__global__ void flow(float* x, int n) {\n#include \"path_a.inc\"\n  x[0] += 1.0f;\n}\n",
+                "__global__ void flow(float* x, int n) {\n#include \"path_b.inc\"\n  x[0] += 1.0f;\n}\n",
+                "abi.include_directive_changed",
+            ),
+            (
                 "preprocessor condition",
                 "#if defined(USE_PRIMARY)\nstruct Params { float a; };\n#endif\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
                 "#if defined(USE_SECONDARY)\nstruct Params { float a; };\n#endif\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "abi.preprocessor_condition_changed",
+            ),
+            (
+                "body preprocessor condition",
+                "__global__ void flow(float* x, int n) {\n#if defined(USE_PRIMARY)\n  x[0] += 1.0f;\n#endif\n}\n",
+                "__global__ void flow(float* x, int n) {\n#if defined(USE_SECONDARY)\n  x[0] += 1.0f;\n#endif\n}\n",
                 "abi.preprocessor_condition_changed",
             ),
             (
