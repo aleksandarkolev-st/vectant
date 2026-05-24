@@ -1389,46 +1389,6 @@ fn mask_comments_preserving_len(source: &str) -> String {
     String::from_utf8(masked).unwrap_or_else(|_| source.to_string())
 }
 
-fn source_without_function_regions(source: &str) -> String {
-    let mut ranges = kernel_regions(source)
-        .into_values()
-        .chain(device_function_regions(source).into_values())
-        .map(|region| (region.start, region.end))
-        .collect::<Vec<_>>();
-    ranges.sort();
-    let mut bytes = source.as_bytes().to_vec();
-    for (start, end) in ranges {
-        let start = start.min(bytes.len());
-        let end = end.min(bytes.len());
-        if start >= end {
-            continue;
-        }
-        for byte in &mut bytes[start..end] {
-            if *byte != b'\n' && *byte != b'\r' {
-                *byte = b' ';
-            }
-        }
-    }
-    String::from_utf8(bytes).unwrap_or_else(|_| source.to_string())
-}
-
-fn normalized_surface_lines_matching(source: &str, pattern: &Regex) -> Vec<String> {
-    let surface = source_without_function_regions(source);
-    let masked = mask_comments_preserving_len(&surface);
-    surface
-        .lines()
-        .zip(masked.lines())
-        .filter_map(|(line, masked_line)| {
-            if pattern.is_match(masked_line) {
-                Some(collapse_ws(line.trim()))
-            } else {
-                None
-            }
-        })
-        .filter(|line| !line.is_empty())
-        .collect()
-}
-
 fn normalized_source_lines_matching(source: &str, pattern: &Regex) -> Vec<String> {
     let masked = mask_comments_preserving_len(source);
     source
@@ -1503,27 +1463,27 @@ fn directive_summary(source: &str) -> Value {
 
 fn template_declaration_hash(source: &str) -> String {
     let re = Regex::new(r#"\btemplate\s*<"#).expect("template regex");
-    hash_lines(normalized_surface_lines_matching(source, &re))
+    hash_lines(normalized_source_lines_matching(source, &re))
 }
 
 fn using_declaration_hash(source: &str) -> String {
     let re = Regex::new(r#"\busing\b"#).expect("using regex");
-    hash_lines(normalized_surface_lines_matching(source, &re))
+    hash_lines(normalized_source_lines_matching(source, &re))
 }
 
 fn type_alias_hash(source: &str) -> String {
     let re = Regex::new(r#"\b(typedef|using\b[^;{]*=)"#).expect("type alias regex");
-    hash_lines(normalized_surface_lines_matching(source, &re))
+    hash_lines(normalized_source_lines_matching(source, &re))
 }
 
 fn extern_declaration_hash(source: &str) -> String {
     let re = Regex::new(r#"\bextern\b"#).expect("extern regex");
-    hash_lines(normalized_surface_lines_matching(source, &re))
+    hash_lines(normalized_source_lines_matching(source, &re))
 }
 
 fn namespace_declaration_hash(source: &str) -> String {
     let re = Regex::new(r#"\bnamespace\b"#).expect("namespace regex");
-    hash_lines(normalized_surface_lines_matching(source, &re))
+    hash_lines(normalized_source_lines_matching(source, &re))
 }
 
 fn declaration_surface_hash(source: &str) -> String {
@@ -1541,28 +1501,28 @@ fn declaration_surface_hash(source: &str) -> String {
 fn static_constexpr_data_hash(source: &str) -> String {
     let re =
         Regex::new(r#"\b(static|constexpr)\b[^;{()]*;"#).expect("static constexpr data regex");
-    hash_lines(normalized_surface_lines_matching(source, &re))
+    hash_lines(normalized_source_lines_matching(source, &re))
 }
 
 fn type_layout_hash(source: &str) -> String {
-    let surface = source_without_function_regions(source);
-    let masked = mask_comments_preserving_len(&surface);
+    let masked = mask_comments_preserving_len(source);
     let re = Regex::new(r#"\b(struct|class|union)\s+[A-Za-z_][A-Za-z0-9_]*[^;{]*\{"#)
         .expect("type layout regex");
     let mut layouts = Vec::new();
     for matched in re.find_iter(&masked) {
         let open = matched.end().saturating_sub(1);
-        let Some((_body, close)) = read_balanced(&surface, open, b'{', b'}') else {
+        let Some((_body, close)) = read_balanced(source, open, b'{', b'}') else {
             continue;
         };
         let mut end = close;
-        while end < surface.len() && surface.as_bytes().get(end).is_some_and(u8::is_ascii_whitespace) {
+        while end < source.len() && source.as_bytes().get(end).is_some_and(u8::is_ascii_whitespace)
+        {
             end += 1;
         }
-        if surface.as_bytes().get(end) == Some(&b';') {
+        if source.as_bytes().get(end) == Some(&b';') {
             end += 1;
         }
-        if let Some(layout) = surface.get(matched.start()..end) {
+        if let Some(layout) = source.get(matched.start()..end) {
             layouts.push(collapse_ws(layout));
         }
     }
@@ -2826,9 +2786,21 @@ extern "C" __global__ void trace(float* x) {
                 "abi.using_declaration_changed",
             ),
             (
+                "body using",
+                "__global__ void flow(float* x, int n) {\n  using Scalar = float;\n  x[0] += Scalar{1.0f};\n}\n",
+                "__global__ void flow(float* x, int n) {\n  using Scalar = double;\n  x[0] += Scalar{1.0f};\n}\n",
+                "abi.using_declaration_changed",
+            ),
+            (
                 "typedef",
                 "typedef float Scalar;\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
                 "typedef double Scalar;\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "abi.type_alias_changed",
+            ),
+            (
+                "body typedef",
+                "__global__ void flow(float* x, int n) {\n  typedef float Scalar;\n  x[0] += Scalar{1.0f};\n}\n",
+                "__global__ void flow(float* x, int n) {\n  typedef double Scalar;\n  x[0] += Scalar{1.0f};\n}\n",
                 "abi.type_alias_changed",
             ),
             (
@@ -2838,9 +2810,21 @@ extern "C" __global__ void trace(float* x) {
                 "abi.extern_declaration_changed",
             ),
             (
+                "body extern",
+                "__global__ void flow(float* x, int n) {\n  extern float table[];\n  x[0] += table[0];\n}\n",
+                "__global__ void flow(float* x, int n) {\n  extern double table[];\n  x[0] += table[0];\n}\n",
+                "abi.extern_declaration_changed",
+            ),
+            (
                 "type layout",
                 "struct Params { float a; };\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
                 "struct Params { float a; float b; };\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "abi.type_layout_changed",
+            ),
+            (
+                "body type layout",
+                "__global__ void flow(float* x, int n) {\n  struct Local { float a; };\n  Local v{1.0f};\n  x[0] += v.a;\n}\n",
+                "__global__ void flow(float* x, int n) {\n  struct Local { float a; float b; };\n  Local v{1.0f, 2.0f};\n  x[0] += v.a;\n}\n",
                 "abi.type_layout_changed",
             ),
             (
@@ -2853,6 +2837,12 @@ extern "C" __global__ void trace(float* x) {
                 "static constexpr",
                 "static constexpr float kGain = 1.0f;\n__global__ void flow(float* x, int n) {\n  x[0] += kGain;\n}\n",
                 "static constexpr float kGain = 2.0f;\n__global__ void flow(float* x, int n) {\n  x[0] += kGain;\n}\n",
+                "abi.static_constexpr_data_changed",
+            ),
+            (
+                "body static constexpr",
+                "__global__ void flow(float* x, int n) {\n  static constexpr float kGain = 1.0f;\n  x[0] += kGain;\n}\n",
+                "__global__ void flow(float* x, int n) {\n  static constexpr float kGain = 2.0f;\n  x[0] += kGain;\n}\n",
                 "abi.static_constexpr_data_changed",
             ),
             (
