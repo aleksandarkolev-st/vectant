@@ -270,6 +270,31 @@ struct DeviceReloadOwnership {
     replaced_primary: bool,
 }
 
+fn sorted_unique_symbols(symbols: &[String]) -> Vec<String> {
+    let mut out = symbols
+        .iter()
+        .map(|symbol| symbol.trim())
+        .filter(|symbol| !symbol.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn resolved_kernel_symbols(manager: &GpuModuleManager) -> Vec<String> {
+    let mut out = manager
+        .kernel_table()
+        .names()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
 pub struct GpuModuleAdapter {
     config: GpuModuleAdapterConfig,
     phase: GpuPhase,
@@ -821,6 +846,15 @@ impl Adapter for GpuModuleAdapter {
             self.module_manager
                 .resolve_kernels(&symbols, &req.build_manifest.exported_symbols)
                 .map_err(Self::module_manager_error)?;
+            let expected_symbols = sorted_unique_symbols(&req.build_manifest.exported_symbols);
+            let touched_symbols = resolved_kernel_symbols(&self.module_manager);
+            if touched_symbols != expected_symbols {
+                return Err(format!(
+                    "GPU runtime symbol ownership mismatch: expected={} touched={}",
+                    expected_symbols.join(","),
+                    touched_symbols.join(",")
+                ));
+            }
             let mut replaced_primary = false;
             let retired = if partial_device_reload {
                 self.module_manager
@@ -847,8 +881,8 @@ impl Adapter for GpuModuleAdapter {
             }
             Ok(DeviceReloadOwnership {
                 partial_reload: partial_device_reload,
-                expected_symbols: req.build_manifest.exported_symbols.clone(),
-                touched_symbols: req.build_manifest.exported_symbols.clone(),
+                expected_symbols,
+                touched_symbols,
                 retired_module_count,
                 replaced_primary,
             })
@@ -879,8 +913,8 @@ impl Adapter for GpuModuleAdapter {
                     snapshot_bytes,
                     snapshot_ms: started.elapsed().as_millis() as u64,
                     dirty_buffers,
-                    expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
-                    matched_kernel_hashes: self.kernel_table.len() as u32,
+                    expected_kernel_hashes: ownership.expected_symbols.len() as u32,
+                    matched_kernel_hashes: ownership.touched_symbols.len() as u32,
                 });
                 self.emit_runtime_ownership_report(&ownership, artifact);
                 self.phase = GpuPhase::Ready;
@@ -1557,6 +1591,30 @@ mod tests {
         assert!(ownership.contains("expected_symbols=vec_add"));
         assert!(ownership.contains("touched_symbols=vec_add"));
         assert!(ownership.contains("replaced_primary=false"));
+    }
+
+    #[test]
+    fn runtime_ownership_reports_resolved_unique_symbols() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let mut req = request_with_artifact(&path, vec!["device.cu".into()]);
+        req.build_manifest.exported_symbols = vec![
+            "beta_kernel".into(),
+            "alpha_kernel".into(),
+            "beta_kernel".into(),
+        ];
+
+        let mut a = adapter_with_symbols(stub_symbols());
+        assert!(matches!(a.reload(&req), AdapterReloadResult::Success { .. }));
+
+        let ownership = a
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("runtime_ownership"))
+            .expect("runtime ownership report");
+        assert!(ownership.contains("expected_symbols=alpha_kernel,beta_kernel"));
+        assert!(ownership.contains("touched_symbols=alpha_kernel,beta_kernel"));
     }
 
     #[test]
