@@ -792,6 +792,65 @@ def test_repair_rechecks_launches_after_source_device_bridge_replaces_fake_kerne
     assert not any(v.rule.startswith("source_device_kernel_") for v in after.violations)
 
 
+def test_repair_removes_guard_block_for_unresolved_launch_assignment():
+    source_files = {
+        "src/Device/includes/FixIntellisense.h": (
+            "#pragma once\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) extern \"C\" returnType __global__\n"
+        ),
+        "src/Device/kernels/CameraRays.h": (
+            '#include "Device/includes/FixIntellisense.h"\n'
+            "GLOBAL_KERNEL_SIGNATURE(void) CameraRays(int* frame) { *frame += 1; }\n"
+        ),
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'bool initialized = synthi_gpu_launch(nullptr, "my_function", 1, 64, 0, nullptr, { &frame }); '
+            "if (initialized) { ++frame; } "
+            'synthi_gpu_launch(nullptr, "CameraRays", 1, 64, 0, nullptr, { &frame }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": (
+            'extern "C" __global__ void CameraRays(void* data) {}\n'
+            'extern "C" __global__ void my_function(int* frame) { *frame += 1; }'
+        ),
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "source_device_kernel_signature_not_preserved" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert "repair.unresolved_generated_launches" in report["repairRules"]
+    assert "my_function" not in repaired["core.cpp"]
+    assert "initialized" not in repaired["core.cpp"]
+    assert "CameraRays" in repaired["core.cpp"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule == "constant_false_launch_guard" for v in after.violations)
+
+
 def test_repair_replaces_placeholder_host_runner_with_real_gui_routing():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
@@ -1182,6 +1241,46 @@ def test_repair_recomposes_aggregate_launch_param_from_flat_host_args():
     assert "LaunchParams synthi_hmr_launch_params_1" in repaired["core.cpp"]
     assert "{ &s->dx, &s->dy, &s->dvx, &s->dvy, &s->drgba, &s->count, &synthi_hmr_launch_params_1 }" in repaired["core.cpp"]
     assert "float center_x" not in repaired["device.hip"]
+    after = verify_split_output(files=repaired, manifest_arch=["gfx1201"])
+    assert not any(v.rule == "kernel_launch_abi_mismatch" for v in after.violations)
+
+
+def test_repair_truncates_extra_args_for_single_aggregate_kernel_param():
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "struct RenderData { float* pixels; int width; int height; unsigned int frame; };"
+        ),
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static RenderData render_data; return &render_data; }\n'
+            'extern "C" void core_on_update(void* state, double) { RenderData render_data = *(RenderData*)state; '
+            'synthi_gpu_launch(nullptr, "MegaKernel", 4, 256, 0, nullptr, '
+            "{ &render_data, &render_data.width, &render_data.height, &render_data.frame }); }\n"
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": (
+            'extern "C" __global__ void MegaKernel(RenderData render_data) { '
+            'render_data.pixels[threadIdx.x] = 1.0f; }'
+        ),
+    }
+    verification = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "kernel_launch_abi_mismatch" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files={},
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.launch_abi_mismatch" in report["repairRules"]
+    assert "{ &render_data }" in repaired["core.cpp"]
+    assert "&render_data.width" not in repaired["core.cpp"]
     after = verify_split_output(files=repaired, manifest_arch=["gfx1201"])
     assert not any(v.rule == "kernel_launch_abi_mismatch" for v in after.violations)
 

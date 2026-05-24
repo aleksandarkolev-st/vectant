@@ -1579,7 +1579,16 @@ def _remove_unresolved_generated_launches(
             if assignment:
                 indent = assignment.group("indent") or ""
                 name = assignment.group("name")
-                replacements[(statement_start, statement_end)] = f"{indent}bool {name} = false;"
+                guard_replacement = _immediate_guard_replacement(
+                    host_source,
+                    statement_end,
+                    name,
+                )
+                if guard_replacement is not None:
+                    guard_end, replacement = guard_replacement
+                    replacements[(statement_start, guard_end)] = replacement
+                else:
+                    replacements[(statement_start, statement_end)] = f"{indent}bool {name} = false;"
             elif prefix.strip():
                 replacements[(start, end)] = "false"
             else:
@@ -1594,6 +1603,44 @@ def _remove_unresolved_generated_launches(
     for (start, end), replacement in sorted(replacements.items(), reverse=True):
         out = out[:start] + replacement + out[end:]
     return out, out != host_source
+
+
+def _immediate_guard_replacement(
+    source: str,
+    start: int,
+    guard_name: str,
+) -> Optional[Tuple[int, str]]:
+    cursor = start
+    while cursor < len(source) and source[cursor].isspace():
+        cursor += 1
+    match = re.match(
+        rf"if\s*\(\s*{re.escape(guard_name)}\s*\)\s*",
+        source[cursor:],
+    )
+    if not match:
+        return None
+
+    then_open = cursor + match.end()
+    if then_open >= len(source) or source[then_open] != "{":
+        return None
+    then_close = _matching_brace(source, then_open)
+    if then_close is None:
+        return None
+
+    after_then = then_close + 1
+    while after_then < len(source) and source[after_then].isspace():
+        after_then += 1
+    else_match = re.match(r"else\s*", source[after_then:])
+    if not else_match:
+        return after_then, ""
+
+    else_open = after_then + else_match.end()
+    if else_open >= len(source) or source[else_open] != "{":
+        return None
+    else_close = _matching_brace(source, else_open)
+    if else_close is None:
+        return None
+    return else_close + 1, source[else_open : else_close + 1]
 
 
 def _repair_init_kernel_buffers(
@@ -1997,6 +2044,11 @@ def _repair_launch_abi_mismatches(
     changed = False
     type_sources = (core_source, shared_source, device_source)
 
+    next_core = _repair_single_aggregate_launch_args(out_core, out_device, type_sources)
+    if next_core != out_core:
+        out_core = next_core
+        changed = True
+
     next_core = _repair_aggregate_launch_args(
         out_core,
         out_device,
@@ -2124,6 +2176,39 @@ def _repair_aggregate_launch_args(
     return out
 
 
+def _repair_single_aggregate_launch_args(
+    core_source: str,
+    device_source: str,
+    type_sources: Sequence[str],
+) -> str:
+    replacements: Dict[Tuple[int, int], str] = {}
+    for launch in _collect_launches(core_source, device_source):
+        params = _kernel_params(device_source, launch.kernel)
+        if len(params) != 1 or len(launch.launch_args) <= 1:
+            continue
+        param = params[0]
+        if param.is_pointer or not _aggregate_param_type(param.type_text, type_sources):
+            continue
+        first_arg = launch.launch_args[0].strip()
+        first_expr = _normalize_launch_buffer_arg(first_arg)
+        if not _addressable_launch_expr(first_expr):
+            continue
+
+        new_call_args = list(launch.args)
+        new_call_args[-1] = "{ " + first_arg + " }"
+        replacements[(launch.start, launch.end)] = (
+            "synthi_gpu_launch(" + ", ".join(new_call_args) + ")"
+        )
+
+    if not replacements:
+        return core_source
+
+    out = core_source
+    for (start, end), replacement in sorted(replacements.items(), reverse=True):
+        out = out[:start] + replacement + out[end:]
+    return out
+
+
 def _statement_start(source: str, index: int) -> int:
     cursor = index
     while cursor > 0 and source[cursor - 1].isspace():
@@ -2169,6 +2254,33 @@ def _struct_fields(type_text: str, type_sources: Sequence[str]) -> List[Tuple[st
         if fields:
             return fields
     return []
+
+
+_SCALAR_LAUNCH_PARAM_RE = re.compile(
+    r"^(?:(?:const|volatile)\s+)*(?:"
+    r"bool|char|signed\s+char|unsigned\s+char|short|unsigned\s+short|"
+    r"int|unsigned\s+int|long|unsigned\s+long|long\s+long|unsigned\s+long\s+long|"
+    r"float|double|size_t|std::size_t|"
+    r"u?int(?:8|16|32|64)_t|std::u?int(?:8|16|32|64)_t|"
+    r"dim3"
+    r")\s*(?:const|volatile)?$"
+)
+
+
+def _aggregate_param_type(type_text: str, type_sources: Sequence[str]) -> bool:
+    normalized = re.sub(
+        r"\s+",
+        " ",
+        type_text.replace("&", " ").replace("*", " "),
+    ).strip()
+    if not normalized or _SCALAR_LAUNCH_PARAM_RE.match(normalized):
+        return False
+    if _struct_fields(normalized, type_sources):
+        return True
+    return bool(
+        re.search(r"\b(?:struct|class)\s+[A-Za-z_][A-Za-z0-9_:]*\b", normalized)
+        or re.match(r"^(?:(?:const|volatile)\s+)*[A-Z_][A-Za-z0-9_:<>]*$", normalized)
+    )
 
 
 def _append_kernel_params(
