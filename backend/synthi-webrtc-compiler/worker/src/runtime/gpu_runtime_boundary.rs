@@ -337,31 +337,49 @@ fn synthi_gpu_launch_raw_impl(
     }
     drop(guard);
 
-    let ok = {
+    let (ok, dispatch_error) = {
         let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
-        guard
-            .launches
-            .get(launch_index)
-            .map(|record| record.dispatch_error.is_none())
-            .unwrap_or(false)
+        match guard.launches.get(launch_index) {
+            Some(record) => (record.dispatch_error.is_none(), record.dispatch_error.clone()),
+            None => (false, Some("launch record disappeared".to_string())),
+        }
+    };
+    let dispatch_label = if stale_generation {
+        "stale-pointer"
+    } else if dispatcher.is_some() {
+        if ok {
+            "ok"
+        } else {
+            "failed"
+        }
+    } else {
+        "missing-dispatcher"
     };
 
-    eprintln!(
-        "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={}",
-        kernel_name,
-        grid,
-        block,
-        arg_count,
-        stream_token,
-        shared_bytes,
-        if stale_generation {
-            "stale-pointer"
-        } else if dispatcher.is_some() {
-            if ok { "ok" } else { "failed" }
-        } else {
-            "missing-dispatcher"
-        }
-    );
+    if let Some(error) = dispatch_error.as_deref() {
+        eprintln!(
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} error={}",
+            kernel_name,
+            grid,
+            block,
+            arg_count,
+            stream_token,
+            shared_bytes,
+            dispatch_label,
+            log_safe(error)
+        );
+    } else {
+        eprintln!(
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={}",
+            kernel_name,
+            grid,
+            block,
+            arg_count,
+            stream_token,
+            shared_bytes,
+            dispatch_label
+        );
+    }
     ok
 }
 
@@ -424,6 +442,32 @@ pub fn managed_buffers_snapshot() -> Vec<ManagedBufferRecord> {
 pub fn launch_records_snapshot() -> Vec<LaunchRecord> {
     let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     guard.launches.clone()
+}
+
+pub fn launch_record_count() -> usize {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard.launches.len()
+}
+
+pub fn failed_launch_records_since(start: usize) -> Vec<LaunchRecord> {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard
+        .launches
+        .iter()
+        .skip(start)
+        .filter(|record| record.dispatch_error.is_some())
+        .cloned()
+        .collect()
+}
+
+fn log_safe(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\r' | '\n' | '\t' => ' ',
+            other => other,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -618,6 +662,11 @@ mod tests {
         );
 
         assert!(!ok);
+        assert_eq!(launch_record_count(), 1);
+        let failed = failed_launch_records_since(0);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].kernel_name, "bad");
+        assert!(failed_launch_records_since(1).is_empty());
         let launches = launch_records_snapshot();
         assert!(!launches[0].dispatched);
         assert_eq!(
