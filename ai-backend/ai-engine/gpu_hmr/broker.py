@@ -49,6 +49,12 @@ VERIFICATION_KIND_TO_VERIFIER = {
 
 PROOF_REQUIRED_KINDS = {"dependency", "abi", "compile", "runtime"}
 
+VERIFIED_STATE_RANK: Dict[CandidateState, int] = {
+    "schema_verified_candidate": 1,
+    "compile_verified_candidate": 2,
+    "runtime_verified_candidate": 3,
+}
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -66,6 +72,21 @@ def _model_dict(model: Any) -> Dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump(exclude_none=False)
     return model.dict(exclude_none=False)
+
+
+def _candidate_verified_state_for_kinds(kinds: Iterable[str]) -> CandidateState:
+    kind_set = {str(kind) for kind in kinds}
+    if "runtime" in kind_set:
+        return "runtime_verified_candidate"
+    if "compile" in kind_set:
+        return "compile_verified_candidate"
+    return "schema_verified_candidate"
+
+
+def _highest_verified_state(previous_state: CandidateState, requested_state: CandidateState) -> CandidateState:
+    if VERIFIED_STATE_RANK.get(previous_state, 0) > VERIFIED_STATE_RANK.get(requested_state, 0):
+        return previous_state
+    return requested_state
 
 
 @dataclass
@@ -640,19 +661,21 @@ class GpuHmrBroker:
 
         if blocking_reason_codes:
             next_state: CandidateState = "rejected_candidate"
-        elif "runtime" in kinds:
-            next_state = "runtime_verified_candidate"
-        elif "compile" in kinds:
-            next_state = "compile_verified_candidate"
         else:
-            next_state = "schema_verified_candidate"
+            requested_state = _candidate_verified_state_for_kinds(kinds)
+            next_state = _highest_verified_state(candidate.state, requested_state)
 
         previous_state = candidate.state
+        requested_state_rank = VERIFIED_STATE_RANK.get(_candidate_verified_state_for_kinds(kinds), 0)
+        next_state_rank = VERIFIED_STATE_RANK.get(next_state, 0)
+        candidate_report_hashes = report_hashes
+        if next_state == previous_state and next_state_rank > requested_state_rank:
+            candidate_report_hashes = _sorted_unique([*candidate.verifierReportHashes, *report_hashes])
         record = CandidateVerificationRecord(
             candidateId=candidate.candidateId,
             candidateSpecManifestHash=candidate.candidateSpecManifestHash,
             state=next_state,
-            verifierReportHashes=report_hashes,
+            verifierReportHashes=candidate_report_hashes,
             transitionHistory=[
                 {
                     "from": previous_state,
@@ -666,7 +689,7 @@ class GpuHmrBroker:
         self.verification_records[record_hash] = _model_dict(record)
         candidate.state = next_state
         candidate.candidateVerificationRecordHash = record_hash
-        candidate.verifierReportHashes = report_hashes
+        candidate.verifierReportHashes = candidate_report_hashes
         candidate.reasonCodes = _sorted_unique(blocking_reason_codes)
         candidate.updatedAt = _utc_now()
         self.traces.setdefault(candidate_id, []).append(
@@ -683,7 +706,7 @@ class GpuHmrBroker:
             "candidateVerificationRecordHash": record_hash,
             "jobId": None,
             "state": next_state,
-            "verifierReportHashes": report_hashes,
+            "verifierReportHashes": candidate_report_hashes,
             "blockingReasonCodes": _sorted_unique(blocking_reason_codes),
         }
 

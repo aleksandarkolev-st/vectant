@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 
 from gpu_hmr.api import router
-from gpu_hmr.broker import reset_gpu_hmr_broker_for_tests
-from gpu_hmr.contracts import CandidateSpecManifest
+from gpu_hmr.broker import get_gpu_hmr_broker, reset_gpu_hmr_broker_for_tests
+from gpu_hmr.contracts import CandidateSpecManifest, VerifierReport
 
 
 def _client():
@@ -274,6 +274,73 @@ def test_candidate_lifecycle_routes_fail_closed_until_deterministic_proof_exists
     accepted = client.get("/gpu-hmr/accepted/current")
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()["acceptedPointer"] is None
+
+
+def test_candidate_reverify_preserves_highest_verified_state(monkeypatch):
+    client = _client()
+    projection_hash = _create_projection(client)
+    generated = _prepare_generated_candidate(client, projection_hash)
+    candidate_id = generated["candidateId"]
+    spec_hash = generated["candidateSpecManifestHash"]
+    broker = get_gpu_hmr_broker()
+
+    def pass_verifier(candidate, kind, runtime_verification_identity_hash):
+        return VerifierReport(
+            verifierName=kind,
+            candidateId=candidate.candidateId,
+            candidateSpecManifestHash=str(candidate.candidateSpecManifestHash),
+            inputIdentitySnapshot={
+                "sourceSplitIdentityHash": candidate.sourceSplitIdentityHash,
+                "compileCandidateIdentityHash": None,
+                "runtimeVerificationIdentityHash": runtime_verification_identity_hash,
+                "codeIntelGeneration": "ci-42",
+                "retrievalTraceHashes": [],
+            },
+            status="pass",
+            blocking=True,
+            reasonCodes=[],
+            proofRefs=[{"kind": f"{kind}_proof", "hash": f"{kind}-hash"}],
+            toolVersion="test",
+        )
+
+    monkeypatch.setattr(broker, "_run_verifier", pass_verifier)
+
+    runtime_verify = client.post(
+        f"/gpu-hmr/candidates/{candidate_id}/verify",
+        json={
+            "candidateSpecManifestHash": spec_hash,
+            "verificationKinds": ["schema", "compile", "runtime"],
+            "runtimeVerificationIdentityHash": "runtime-1",
+            "idempotencyKey": "ws:verify:runtime-pass",
+        },
+    )
+    assert runtime_verify.status_code == 200, runtime_verify.text
+    assert runtime_verify.json()["state"] == "runtime_verified_candidate"
+    runtime_report_hashes = set(runtime_verify.json()["verifierReportHashes"])
+    assert len(runtime_report_hashes) == 3
+
+    schema_verify = client.post(
+        f"/gpu-hmr/candidates/{candidate_id}/verify",
+        json={
+            "candidateSpecManifestHash": spec_hash,
+            "verificationKinds": ["schema"],
+            "idempotencyKey": "ws:verify:schema-after-runtime",
+        },
+    )
+    assert schema_verify.status_code == 200, schema_verify.text
+    assert schema_verify.json()["state"] == "runtime_verified_candidate"
+    assert runtime_report_hashes.issubset(set(schema_verify.json()["verifierReportHashes"]))
+
+    promote = client.post(
+        f"/gpu-hmr/candidates/{candidate_id}/promote",
+        json={
+            "candidateSpecManifestHash": spec_hash,
+            "candidateVerificationRecordHash": schema_verify.json()["candidateVerificationRecordHash"],
+            "promotionIdentityHash": "promotion-1",
+            "idempotencyKey": "ws:promote:after-narrow-reverify",
+        },
+    )
+    assert promote.status_code == 200, promote.text
 
 
 def test_candidate_cancel_route_is_idempotent():
