@@ -16,10 +16,12 @@
 
 #![cfg(feature = "gpu-hmr")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_void, CStr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::runtime::capability::HmrStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedBufferRecord {
@@ -69,6 +71,7 @@ struct BoundaryState {
     buffers_by_ptr: HashMap<usize, ManagedBufferRecord>,
     ptr_by_name: HashMap<String, usize>,
     launches: Vec<LaunchRecord>,
+    reported_failure_keys: HashSet<String>,
 }
 
 static STATE: OnceLock<Mutex<BoundaryState>> = OnceLock::new();
@@ -368,6 +371,7 @@ fn synthi_gpu_launch_raw_impl(
             dispatch_label,
             log_safe(error)
         );
+        maybe_emit_launch_failure_status(&kernel_name, error, dispatch_label, active_generation);
     } else {
         eprintln!(
             "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={}",
@@ -468,6 +472,42 @@ fn log_safe(value: &str) -> String {
             other => other,
         })
         .collect()
+}
+
+fn maybe_emit_launch_failure_status(
+    kernel_name: &str,
+    error: &str,
+    dispatch_label: &str,
+    active_generation: u64,
+) {
+    if dispatch_label == "missing-dispatcher" {
+        return;
+    }
+
+    let safe_error = log_safe(error);
+    let safe_kernel = log_safe(kernel_name);
+    let key = format!("{active_generation}:{safe_kernel}:{safe_error}");
+    let should_emit = {
+        let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+        guard.reported_failure_keys.insert(key)
+    };
+    if !should_emit {
+        return;
+    }
+
+    eprintln!(
+        "[gpu-runtime-boundary] gpu_runtime_error kind=launch_failed kernel={} generation={} error={}",
+        safe_kernel, active_generation, safe_error
+    );
+    let status = HmrStatus::rejected_with_fallback(
+        "device",
+        &format!(
+            "GPU kernel launch failed after sidecar reload: kernel={} error={}",
+            safe_kernel, safe_error
+        ),
+        "Keep runtime running but mark GPU HMR degraded until the launch succeeds",
+    );
+    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
 }
 
 #[cfg(test)]
