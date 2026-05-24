@@ -1510,7 +1510,7 @@ export class CompilerClient {
         return this.connect();
     }
 
-    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, userRequestedAi = false, userRequestedDeterministic = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null, preferGpuPipeline = true } = {}) {
+    async compile({ filename, source, language, files = [], isGui = false, width, height, onLog, useAiSplit = false, userRequestedAi = false, userRequestedDeterministic = false, target = null, projectRoot = null, slug = null, sessionId: providedSessionId = null, preferGpuPipeline = true, gpuTarget = 'auto' } = {}) {
         // Auto-detect React Native from source if no target specified and file is JS/JSX/TSX
         const ext = (filename || '').split('.').pop().toLowerCase();
         const isJsxFile = ['js', 'jsx', 'tsx', 'ts'].includes(ext);
@@ -1816,6 +1816,9 @@ export class CompilerClient {
                     }
                     return null;
                 })();
+                const normalizedGpuTarget = ['auto', 'cuda', 'rocm'].includes(String(gpuTarget || '').toLowerCase())
+                    ? String(gpuTarget || '').toLowerCase()
+                    : 'auto';
 
                 this.compileChannel.send(JSON.stringify({
                     language: lang,
@@ -1831,7 +1834,7 @@ export class CompilerClient {
                     user_requested_ai: userRequestedAi,
                     user_requested_deterministic: userRequestedDeterministic,
                     prefer_gpu_pipeline: preferGpuPipeline !== false,
-                    gpu_mode: preferGpuPipeline === false ? 'disabled' : 'auto',
+                    gpu_mode: preferGpuPipeline === false ? 'disabled' : normalizedGpuTarget,
                     compile_manifest: compileManifest,
                     target: effectiveTarget,
                     project_root: projectRoot,

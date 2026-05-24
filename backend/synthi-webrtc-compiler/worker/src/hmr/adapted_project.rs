@@ -9,6 +9,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::hmr::compile_manifest::{CompileManifest, ModuleFiles};
+
 /// Result of adapted-project detection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdaptedProjectStatus {
@@ -152,6 +154,52 @@ pub fn detect_adapted_project(workspace_dir: &Path) -> AdaptedProjectStatus {
         return AdaptedProjectStatus::not_adapted("workspace directory does not exist");
     }
 
+    if let Some(module_files) = read_manifest_module_files(workspace_dir) {
+        let core_path = module_files
+            .core
+            .as_deref()
+            .and_then(|p| existing_workspace_file(workspace_dir, p));
+        let gui_path = module_files
+            .gui
+            .as_deref()
+            .and_then(|p| existing_workspace_file(workspace_dir, p));
+        let shared_path = module_files
+            .shared
+            .as_deref()
+            .and_then(|p| existing_workspace_file(workspace_dir, p));
+        let host_runner_path = module_files
+            .host_runner
+            .as_deref()
+            .and_then(|p| existing_workspace_file(workspace_dir, p));
+        if core_path.is_some() || gui_path.is_some() {
+            let user_owned_runner = match &host_runner_path {
+                Some(p) => host_runner_is_user_owned(p),
+                None => false,
+            };
+            return match (core_path, gui_path) {
+                (Some(core), Some(gui)) => match host_runner_path {
+                    Some(runner) => AdaptedProjectStatus::adapted_full(
+                        core,
+                        gui,
+                        shared_path,
+                        runner,
+                        user_owned_runner,
+                    ),
+                    None => AdaptedProjectStatus::adapted(core, gui, shared_path),
+                },
+                (Some(_), None) => {
+                    AdaptedProjectStatus::not_adapted("manifest core module found but no gui module")
+                }
+                (None, Some(_)) => {
+                    AdaptedProjectStatus::not_adapted("manifest gui module found but no core module")
+                }
+                (None, None) => AdaptedProjectStatus::not_adapted(
+                    "manifest module_files declared but no core/gui split files found",
+                ),
+            };
+        }
+    }
+
     let core_path = find_first_match(workspace_dir, CORE_NAMES);
     let gui_path = find_first_match(workspace_dir, GUI_NAMES);
     let shared_path = find_first_match(workspace_dir, SHARED_NAMES);
@@ -175,6 +223,64 @@ pub fn detect_adapted_project(workspace_dir: &Path) -> AdaptedProjectStatus {
         (Some(_), None) => AdaptedProjectStatus::not_adapted("core module found but no gui module"),
         (None, Some(_)) => AdaptedProjectStatus::not_adapted("gui module found but no core module"),
         (None, None) => AdaptedProjectStatus::not_adapted("no core/gui split files found"),
+    }
+}
+
+fn read_manifest_module_files(workspace_dir: &Path) -> Option<ModuleFiles> {
+    for rel in [".synthi/build_manifest.json", ".synthi_split_meta.json"] {
+        let Ok(raw) = std::fs::read_to_string(workspace_dir.join(rel)) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            continue;
+        };
+        let manifest_value = if rel == ".synthi_split_meta.json" {
+            match value.get("compile_manifest") {
+                Some(v) => v.clone(),
+                None => continue,
+            }
+        } else {
+            value
+        };
+        let Some(manifest) = CompileManifest::from_json_value(&manifest_value) else {
+            continue;
+        };
+        if manifest.module_files.core.is_some() || manifest.module_files.gui.is_some() {
+            return Some(manifest.module_files);
+        }
+    }
+    None
+}
+
+fn existing_workspace_file(workspace_dir: &Path, raw: &str) -> Option<PathBuf> {
+    let rel = workspace_relative_path(raw)?;
+    let path = workspace_dir.join(rel);
+    if path.exists() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+fn workspace_relative_path(raw: &str) -> Option<PathBuf> {
+    let normalized = raw.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return None;
+    }
+    let mut rel = PathBuf::new();
+    for component in Path::new(&normalized).components() {
+        match component {
+            std::path::Component::Normal(part) => rel.push(part),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return None,
+        }
+    }
+    if rel.as_os_str().is_empty() {
+        None
+    } else {
+        Some(rel)
     }
 }
 

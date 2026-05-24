@@ -4369,6 +4369,9 @@ async fn handle_compile(
             .log_dc
             .send_text(serde_json::to_string(&payload).unwrap_or_default())
             .await;
+        let hmr_status =
+            crate::runtime::capability::HmrStatus::compile_error("pipeline", vec![error_str]);
+        let _ = ctx.log_dc.send_text(hmr_status.to_json()).await;
         return Err(e);
     }
 

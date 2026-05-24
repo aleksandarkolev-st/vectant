@@ -264,6 +264,25 @@ pub enum ModuleKind {
     Device,
 }
 
+/// Role-to-file mapping for projects whose split modules do not use the
+/// legacy `shared.h/core.cpp/gui.cpp/host_runner.cpp/device.*` names.
+///
+/// `files` remains the full browser resend list; this block provides the
+/// semantic role mapping the worker needs for detection and compile dispatch.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModuleFiles {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gui: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_runner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+}
+
 /// How to compile the split modules for this specific project.
 ///
 /// Deserialized from the Python `BuildManifest` JSON that comes in via
@@ -292,6 +311,12 @@ pub struct CompileManifest {
 
     #[serde(default)]
     pub runner_link_flags: Vec<String>,
+
+    #[serde(default)]
+    pub files: Vec<String>,
+
+    #[serde(default)]
+    pub module_files: ModuleFiles,
 
     #[serde(default)]
     pub system_packages: Vec<String>,
@@ -345,6 +370,19 @@ impl CompileManifest {
             gui_link_flags: vec!["-lSDL2".to_string()],
             shared_link_flags: Vec::new(),
             runner_link_flags: vec!["-lSDL2".to_string(), "-ldl".to_string()],
+            files: vec![
+                "shared.h".to_string(),
+                "core.cpp".to_string(),
+                "gui.cpp".to_string(),
+                "host_runner.cpp".to_string(),
+            ],
+            module_files: ModuleFiles {
+                shared: Some("shared.h".to_string()),
+                core: Some("core.cpp".to_string()),
+                gui: Some("gui.cpp".to_string()),
+                host_runner: Some("host_runner.cpp".to_string()),
+                device: None,
+            },
             system_packages: vec!["libsdl2-dev".to_string()],
             hot_reload_mode: HotReloadMode::Swap,
             confidence: ConfidenceBlock {
@@ -383,6 +421,29 @@ impl CompileManifest {
                 .unwrap_or("nvcc"),
             _ => self.compiler.executable(),
         }
+    }
+
+    /// Return the manifest-declared source path for a semantic module role.
+    pub fn module_file(&self, kind: ModuleKind) -> Option<&str> {
+        match kind {
+            ModuleKind::Shared => self.module_files.shared.as_deref(),
+            ModuleKind::Core => self.module_files.core.as_deref(),
+            ModuleKind::Gui => self.module_files.gui.as_deref(),
+            ModuleKind::HostRunner => self.module_files.host_runner.as_deref(),
+            ModuleKind::Device => self.module_files.device.as_deref(),
+        }
+        .filter(|s| !s.trim().is_empty())
+    }
+
+    /// Device source path, falling back to the canonical extension for the
+    /// selected vendor when the manifest predates `module_files.device`.
+    pub fn device_source_filename(&self) -> Option<&str> {
+        self.module_file(ModuleKind::Device).or_else(|| {
+            self.gpu.as_ref().map(|gpu| match gpu.vendor {
+                DeviceVendor::Cuda => "device.cu",
+                DeviceVendor::Rocm => "device.hip",
+            })
+        })
     }
 
     /// Whether this manifest requires process-restart on hot-reload (either
@@ -657,6 +718,7 @@ mod tests {
         "gui_link_flags": ["-lSDL2"],
         "shared_link_flags": [],
         "runner_link_flags": ["-lSDL2","-ldl","-lcudart","-lcuda"],
+        "files": ["shared.h","core.cpp","gui.cpp","host_runner.cpp","device.cu"],
         "system_packages": [],
         "hot_reload_mode": "swap",
         "confidence": {
@@ -683,6 +745,7 @@ mod tests {
         assert_eq!(gpu.vendor, DeviceVendor::Cuda);
         assert_eq!(gpu.device_compiler, DeviceCompiler::Nvcc);
         assert_eq!(gpu.arch, vec!["sm_80".to_string(), "sm_90".to_string()]);
+        assert_eq!(m.files.last().map(|s| s.as_str()), Some("device.cu"));
         assert_eq!(gpu.snapshot_mode, SnapshotMode::Auto);
         assert_eq!(gpu.fatbin_strategy, FatbinStrategy::SidecarModule);
     }

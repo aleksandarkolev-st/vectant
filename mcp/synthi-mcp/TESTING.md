@@ -25,6 +25,50 @@ release. Failures go in the PR description as `MANUAL_QA_FAIL:
 
 ---
 
+## Targeted broker + operator checks
+
+Use these when validating input leasing and multi-subagent attach before
+running the full golden path.
+
+Lease enforcement unit checks:
+
+```bash
+cd mcp/synthi-mcp
+npm run test:unit -- tests/unit/lease.test.ts tests/unit/broker_input_gate.test.ts tests/unit/broker_dispatch_input.test.ts
+```
+
+This verifies lease acquire/release/renew/preempt behavior, broker input
+gating, required `lease_id`, fresh `based_on_frame_seq`, and
+`synthi_dispatch_input` traceability.
+
+Operator-facing multi-subagent smoke:
+
+```bash
+cd mcp/synthi-mcp
+SIGNALING_URL=ws://localhost:9000 npm run smoke:operator-agents
+```
+
+This creates a fresh synthetic session, registers an operator plus two
+`mcp-agent` peers, asserts the operator presence stream reports two
+agents, sends the same `kick-peer` message the UI kill switch sends,
+asserts both agents receive `evicted`, and confirms presence returns to
+zero. For an existing real session, set `SESSION_ID=<slug>` and
+`ALLOW_EXISTING_SESSION_KICK=1`; otherwise the script refuses to kick
+real peers by default.
+
+For presence-only validation against an existing session:
+
+```bash
+SESSION_ID=<slug> SKIP_KICK=1 npm run smoke:operator-agents
+```
+
+Note: this confirms multi-agent attach and the operator UI protocol. The
+current MCP lease registry is process-local; cross-process lease
+arbitration requires the worker-side lease gate to be integrated into the
+input dispatch path.
+
+---
+
 ## The 15 steps
 
 ### 1. Register the MCP

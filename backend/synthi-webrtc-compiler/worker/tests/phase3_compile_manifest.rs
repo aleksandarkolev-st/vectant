@@ -28,7 +28,9 @@
 //   cargo test --test phase3_compile_manifest
 // from `backend/synthi-webrtc-compiler/worker/`.
 
-use worker::hmr::compile_manifest::{CompileManifest, ConfidenceLevel, HotReloadMode};
+use worker::hmr::compile_manifest::{
+    CompileManifest, ConfidenceLevel, HotReloadMode, ModuleKind,
+};
 
 const SAMPLE_SDL2_JSON: &str = r#"{
     "compiler": "g++",
@@ -179,6 +181,57 @@ fn from_json_value_tolerates_extra_fields() {
     assert_eq!(m.compiler.executable(), "clang++");
     assert_eq!(m.std, "c++20");
     assert_eq!(m.gui_link_flags, vec!["-lglfw".to_string()]);
+}
+
+#[test]
+fn module_files_map_dynamic_split_paths() {
+    let json = r#"{
+        "compiler": "g++",
+        "std": "c++20",
+        "common_flags": ["-shared", "-fPIC"],
+        "core_link_flags": [],
+        "gui_link_flags": ["-lSDL2"],
+        "shared_link_flags": [],
+        "runner_link_flags": ["-lSDL2", "-ldl"],
+        "files": [
+            "include/dyn_shared_a.h",
+            "src/dyn_core_a.cpp",
+            "src/dyn_gui_a.cpp",
+            "run/dyn_runner_a.cpp",
+            "gpu/dyn_device_a.hip"
+        ],
+        "module_files": {
+            "shared": "include/dyn_shared_a.h",
+            "core": "src/dyn_core_a.cpp",
+            "gui": "src/dyn_gui_a.cpp",
+            "host_runner": "run/dyn_runner_a.cpp",
+            "device": "gpu/dyn_device_a.hip"
+        },
+        "system_packages": ["libsdl2-dev"],
+        "hot_reload_mode": "swap",
+        "confidence": {
+            "overall": "high",
+            "runner_synthesis": "high",
+            "link_flags": "high",
+            "notes": ""
+        },
+        "gpu": {
+            "vendor": "rocm",
+            "device_compiler": "hipcc",
+            "arch": ["gfx1201"],
+            "device_flags": ["-O2"],
+            "runtime_libs": ["amdhip64"],
+            "snapshot_mode": "auto",
+            "fatbin_strategy": "sidecar_module"
+        }
+    }"#;
+    let m: CompileManifest = serde_json::from_str(json).unwrap();
+    assert_eq!(m.module_file(ModuleKind::Core), Some("src/dyn_core_a.cpp"));
+    assert_eq!(
+        m.module_file(ModuleKind::HostRunner),
+        Some("run/dyn_runner_a.cpp")
+    );
+    assert_eq!(m.device_source_filename(), Some("gpu/dyn_device_a.hip"));
 }
 
 #[test]

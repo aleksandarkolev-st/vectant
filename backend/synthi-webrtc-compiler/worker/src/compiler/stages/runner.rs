@@ -700,12 +700,20 @@ pub async fn handle_runner_execution(
 
         // Phase 12 — per-project runner needs cwd = build dir so its
         // `dlopen("./libcore.so")` resolves via the symlinks created
-        // after link. Shipped runner doesn't care about cwd.
+        // after link. GPU split sidecars are workspace-relative; the
+        // shipped runner reads ./.synthi_split_meta.json at startup to
+        // choose the backend and split-state path.
         if use_per_project_runner {
             if let Some(parent) = runner_path.parent() {
                 cmd.current_dir(parent);
                 eprintln!("[Main] per-project runner cwd: {}", parent.display());
             }
+        } else if ctx.workspace_path.join(".synthi_split_meta.json").exists() {
+            cmd.current_dir(&ctx.workspace_path);
+            eprintln!(
+                "[Main] shipped runner cwd: {}",
+                ctx.workspace_path.display()
+            );
         }
 
         if let Some(sid) = &session_id {
