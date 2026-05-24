@@ -178,6 +178,63 @@ CameraRays(HIPRTRenderData render_data) {
     )
 
 
+def test_build_device_mapping_report_maps_macro_kernel_translation_units():
+    source = {
+        "src/Device/kernels/CameraRays.hip": """
+GLOBAL_KERNEL_SIGNATURE(void) CameraRays(HIPRTRenderData render_data) {
+  render_data.random_number += 1;
+}
+""",
+    }
+    generated = {
+        ".synthi/generated/gpu/device.hip": """
+extern "C" __global__ void CameraRays(HIPRTRenderData render_data) {
+  render_data.random_number += 1;
+}
+"""
+    }
+
+    report = build_device_mapping_report(
+        source_files=source,
+        generated_files=generated,
+        manifest={"module_files": {"device": ".synthi/generated/gpu/device.hip"}},
+    )
+
+    assert report["mappingStatus"] == "mapped"
+    assert report["deviceMappings"][0]["sourcePath"] == "src/Device/kernels/CameraRays.hip"
+    assert report["deviceMappings"][0]["symbol"] == "CameraRays"
+
+
+def test_build_device_mapping_report_walks_transitive_generated_include_bridge():
+    source = {
+        "src/Device/bridge.h": '#include "kernels/CameraRays.h"\n',
+        "src/Device/kernels/CameraRays.h": """
+GLOBAL_KERNEL_SIGNATURE(void) CameraRays(HIPRTRenderData render_data) {
+  render_data.random_number += 1;
+}
+""",
+    }
+    generated = {
+        ".synthi/generated/gpu/device.hip": """
+#define __KERNELCC__ 1
+#include "src/Device/bridge.h"
+"""
+    }
+
+    report = build_device_mapping_report(
+        source_files=source,
+        generated_files=generated,
+        manifest={"module_files": {"device": ".synthi/generated/gpu/device.hip"}},
+    )
+
+    assert report["mappingStatus"] == "mapped"
+    assert report["deviceMappings"][0]["sourcePath"] == "src/Device/kernels/CameraRays.h"
+    assert report["deviceMappings"][0]["generatedMappingMode"] == "source_include_bridge"
+    assert report["deviceIncludeGraph"]["generatedDeviceIncludes"] == [
+        "src/Device/kernels/CameraRays.h"
+    ]
+
+
 def test_build_device_mapping_report_handles_preprocessor_split_kernel_signature():
     source = {
         "src/Device/kernels/CameraRays.h": """

@@ -230,15 +230,19 @@ def _is_device_compilation_source(path: str, source: str) -> bool:
     normalized = _normalize_path(path).lower()
     masked = mask_comments_for_parsing(source)
     if normalized.endswith((".cu", ".hip")):
-        return "__global__" in masked or "__device__" in masked
+        return _contains_device_compilation_marker(masked)
     if not _is_device_header_path(path):
         return False
+    return _contains_device_compilation_marker(masked)
+
+
+def _contains_device_compilation_marker(masked_source: str) -> bool:
     return bool(
-        "__global__" in masked
-        or "__device__" in masked
-        or "GLOBAL_KERNEL_SIGNATURE" in masked
-        or "HIPRT_DEVICE" in masked
-        or "HIPRT_HOST_DEVICE" in masked
+        "__global__" in masked_source
+        or "__device__" in masked_source
+        or "GLOBAL_KERNEL_SIGNATURE" in masked_source
+        or "HIPRT_DEVICE" in masked_source
+        or "HIPRT_HOST_DEVICE" in masked_source
     )
 
 
@@ -280,11 +284,20 @@ def _generated_direct_source_includes(
     source_files: Mapping[str, str],
 ) -> Dict[str, str]:
     included: Dict[str, str] = {}
-    masked = mask_comments_for_parsing(generated_source)
-    for match in _LOCAL_INCLUDE_RE.finditer(masked):
-        resolved = _resolve_local_include(generated_path, match.group("path"), source_files)
-        if resolved and _is_device_compilation_source(resolved, source_files[resolved]):
-            included[resolved] = source_files[resolved]
+    stack: list[tuple[str, str]] = [(generated_path, generated_source)]
+    visited: Set[str] = set()
+    while stack:
+        current_path, current_source = stack.pop()
+        masked = mask_comments_for_parsing(current_source)
+        for match in _LOCAL_INCLUDE_RE.finditer(masked):
+            resolved = _resolve_local_include(current_path, match.group("path"), source_files)
+            if not resolved or resolved in visited:
+                continue
+            visited.add(resolved)
+            resolved_source = source_files[resolved]
+            if _is_device_compilation_source(resolved, resolved_source):
+                included[resolved] = resolved_source
+            stack.append((resolved, resolved_source))
     return included
 
 
