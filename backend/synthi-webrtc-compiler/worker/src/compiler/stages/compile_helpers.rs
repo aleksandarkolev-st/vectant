@@ -382,7 +382,7 @@ pub(crate) fn filter_unresolved_manifest_library_flags(
         }
 
         if is_library_file_argument(flag) {
-            if library_file_argument_resolves(flag, workspace_dir) {
+            if library_file_argument_resolves(compiler_exe, flag, &search_dirs, workspace_dir) {
                 filtered.push(flag.clone());
             } else {
                 eprintln!(
@@ -496,13 +496,24 @@ fn is_library_file_argument(flag: &str) -> bool {
         || lower.ends_with(".lib")
 }
 
-fn library_file_argument_resolves(flag: &str, workspace_dir: &Path) -> bool {
+fn library_file_argument_resolves(
+    compiler_exe: &str,
+    flag: &str,
+    search_dirs: &[PathBuf],
+    workspace_dir: &Path,
+) -> bool {
     let path = PathBuf::from(flag);
     if path.is_absolute() {
-        path.is_file()
-    } else {
-        workspace_dir.join(path).is_file()
+        return path.is_file();
     }
+    if workspace_dir.join(&path).is_file() {
+        return true;
+    }
+    if flag.contains('/') || flag.contains('\\') {
+        return false;
+    }
+    library_exists_in_dirs(flag, search_dirs)
+        || compiler_reports_library(compiler_exe, &[flag.to_string()], search_dirs, workspace_dir)
 }
 
 fn library_exists_in_dirs(candidate: &str, search_dirs: &[PathBuf]) -> bool {
