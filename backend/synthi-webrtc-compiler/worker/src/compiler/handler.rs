@@ -1,7 +1,7 @@
 use crate::debug_log;
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use crate::compiler::builder::{
     hash_content, hash_shared_header_semantic, ModuleHashes, RebuildScope,
@@ -38,18 +38,31 @@ use crate::runtime::capability::HmrStatus;
 use tokio::io::AsyncWriteExt;
 
 fn compile_request_relpath(path: &str) -> Result<PathBuf> {
-    if path.trim().is_empty() {
+    let normalized = path.trim().replace('\\', "/");
+    if normalized.is_empty() {
         anyhow::bail!("compile request contains an empty filename");
     }
 
+    if normalized.starts_with('/') || normalized.starts_with("//") {
+        anyhow::bail!("compile request filename is not workspace-relative: {path}");
+    }
+
+    let drive_prefixed = normalized
+        .as_bytes()
+        .get(0..2)
+        .is_some_and(|prefix| prefix[0].is_ascii_alphabetic() && prefix[1] == b':');
+    if drive_prefixed {
+        anyhow::bail!("compile request filename is not workspace-relative: {path}");
+    }
+
     let mut rel = PathBuf::new();
-    for component in Path::new(path).components() {
-        match component {
-            Component::Normal(part) => rel.push(part),
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
                 anyhow::bail!("compile request filename is not workspace-relative: {path}");
             }
+            part => rel.push(part),
         }
     }
 
@@ -1198,8 +1211,12 @@ fn select_device_partial_artifact_with_report(
     request_path: Option<&str>,
     symbols: &[String],
 ) -> DevicePartialArtifactSelectionReport {
-    let generated = normalized_request_filename(generated_path)
-        .unwrap_or_else(|| generated_path.replace('\\', "/"));
+    let Some(generated) = normalized_request_filename(generated_path) else {
+        return DevicePartialArtifactSelectionReport {
+            selected: None,
+            rejection_reason: Some("selection.path_identity_uncertain".to_string()),
+        };
+    };
     let requested_symbols = normalized_symbol_set(symbols);
     if requested_symbols.is_empty() {
         return DevicePartialArtifactSelectionReport {
@@ -1207,9 +1224,18 @@ fn select_device_partial_artifact_with_report(
             rejection_reason: Some("selection.empty_edited_symbols".to_string()),
         };
     }
-    let request = request_path
-        .and_then(normalized_request_filename)
-        .filter(|path| !path.is_empty());
+    let request = match request_path {
+        Some(path) => match normalized_request_filename(path).filter(|path| !path.is_empty()) {
+            Some(path) => Some(path),
+            None => {
+                return DevicePartialArtifactSelectionReport {
+                    selected: None,
+                    rejection_reason: Some("selection.path_identity_uncertain".to_string()),
+                };
+            }
+        },
+        None => None,
+    };
     if sidecar_any_bool(
         sidecar,
         &[
@@ -1272,11 +1298,16 @@ fn select_device_partial_artifact_with_report(
             else {
                 continue;
             };
+            if normalized_request_filename(filename).is_none() {
+                remember_rejection("selection.path_identity_uncertain");
+                continue;
+            }
             let Some(artifact_generated) = item
                 .get("generatedPath")
                 .and_then(serde_json::Value::as_str)
                 .and_then(normalized_request_filename)
             else {
+                remember_rejection("selection.path_identity_uncertain");
                 continue;
             };
             if artifact_generated != generated {
@@ -1288,10 +1319,19 @@ fn select_device_partial_artifact_with_report(
             let artifact_symbol_set = normalized_symbol_set(&artifact_symbols);
             let exact_symbol_set = artifact_symbol_set == requested_symbols;
 
-            let source_paths = string_array_field(item, "sourcePaths")
-                .into_iter()
-                .filter_map(|path| normalized_request_filename(&path))
-                .collect::<Vec<_>>();
+            let raw_source_paths = string_array_field(item, "sourcePaths");
+            let mut source_paths = Vec::with_capacity(raw_source_paths.len());
+            let mut source_path_identity_uncertain = false;
+            for path in raw_source_paths {
+                match normalized_request_filename(&path) {
+                    Some(path) => source_paths.push(path),
+                    None => source_path_identity_uncertain = true,
+                }
+            }
+            if source_path_identity_uncertain {
+                remember_rejection("selection.path_identity_uncertain");
+                continue;
+            }
             let source_path_match = request
                 .as_deref()
                 .map(|requested| source_paths.iter().any(|path| path == requested))
@@ -8226,6 +8266,100 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         assert_eq!(
             report.rejection_reason.as_deref(),
             Some("selection.runtime_multi_symbol_reload_unsupported")
+        );
+    }
+
+    #[test]
+    fn compile_request_relpath_rejects_absolute_host_paths() {
+        assert_eq!(
+            normalized_request_filename(r"src\device\kernel.hip").as_deref(),
+            Some("src/device/kernel.hip")
+        );
+        assert!(normalized_request_filename(r"C:\Users\dev\kernel.hip").is_none());
+        assert!(normalized_request_filename("/workspace/src/device/kernel.hip").is_none());
+        assert!(normalized_request_filename(r"\\server\share\kernel.hip").is_none());
+        assert!(normalized_request_filename("../src/device/kernel.hip").is_none());
+    }
+
+    #[test]
+    fn partial_artifact_selector_rejects_uncertain_request_path_identity() {
+        let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_kernel",
+                        "sourcePath": "src/device/owned.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    }
+                ]
+            },
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "kind": "source_include_bridge",
+                        "filename": ".synthi/generated/gpu/device.partial.owned.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": ["src/device/owned.h"],
+                        "symbols": ["owned_kernel"],
+                        "contentBytes": 90,
+                        "contentHash": "owned"
+                    }
+                ]
+            }
+        });
+        let report = select_device_partial_artifact_with_report(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some(r"C:\workspace\src\device\owned.h"),
+            &["owned_kernel".to_string()],
+        );
+
+        assert!(report.selected.is_none());
+        assert_eq!(
+            report.rejection_reason.as_deref(),
+            Some("selection.path_identity_uncertain")
+        );
+    }
+
+    #[test]
+    fn partial_artifact_selector_rejects_uncertain_artifact_path_identity() {
+        let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_kernel",
+                        "sourcePath": "src/device/owned.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    }
+                ]
+            },
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "kind": "source_include_bridge",
+                        "filename": ".synthi/generated/gpu/device.partial.owned.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": ["/workspace/src/device/owned.h"],
+                        "symbols": ["owned_kernel"],
+                        "contentBytes": 90,
+                        "contentHash": "owned"
+                    }
+                ]
+            }
+        });
+        let report = select_device_partial_artifact_with_report(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some("src/device/owned.h"),
+            &["owned_kernel".to_string()],
+        );
+
+        assert!(report.selected.is_none());
+        assert_eq!(
+            report.rejection_reason.as_deref(),
+            Some("selection.path_identity_uncertain")
         );
     }
 
