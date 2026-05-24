@@ -282,6 +282,12 @@ def repair_split_artifacts(
                 repair_rules.append("repair.init_kernel_buffers")
 
         shared_source = repaired.get(shared_path or "", "")
+        core_after, changed = _repair_launch_boundary_arity(repaired[core_path])
+        if changed:
+            repaired[core_path] = core_after
+            changed_files.add(core_path)
+            repair_rules.append("repair.launch_boundary_arity")
+
         core_after, device_after, changed = _repair_launch_abi_mismatches(
             core_source=repaired[core_path],
             device_source=repaired[device_path],
@@ -2034,6 +2040,33 @@ def _repair_launch_abi_mismatches(
                 changed = True
 
     return out_core, out_device, changed
+
+
+def _repair_launch_boundary_arity(core_source: str) -> tuple[str, bool]:
+    replacements: Dict[Tuple[int, int], str] = {}
+    for start, end, body in _iter_launch_spans(core_source):
+        args = _split_top_level_args(body)
+        if len(args) != 6:
+            continue
+        if not _launch_kernel_name(args[1]):
+            continue
+        if not _launch_initializer_literal(args[-1]):
+            continue
+        fixed_args = list(args[:4]) + ["0"] + list(args[4:])
+        replacements[(start, end)] = "synthi_gpu_launch(" + ", ".join(fixed_args) + ")"
+
+    if not replacements:
+        return core_source, False
+
+    out = core_source
+    for (start, end), replacement in sorted(replacements.items(), reverse=True):
+        out = out[:start] + replacement + out[end:]
+    return out, True
+
+
+def _launch_initializer_literal(arg: str) -> bool:
+    stripped = arg.strip()
+    return stripped.startswith("{") and stripped.endswith("}")
 
 
 def _repair_aggregate_launch_args(

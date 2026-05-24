@@ -1222,6 +1222,42 @@ def test_repair_launch_argument_addresses_for_simple_lvalues():
     assert not any(v.rule == "launch_arg_not_address" for v in after.violations)
 
 
+def test_repair_inserts_shared_bytes_for_legacy_launch_boundary():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* dx; int count; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            "auto* s = static_cast<AppState*>(state); "
+            'synthi_gpu_launch(nullptr, "step", 1, 64, nullptr, { &s->dx, &s->count }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": (
+            'extern "C" __global__ void step(float* dx, int count) { '
+            "int i = blockIdx.x * blockDim.x + threadIdx.x; if (i < count) dx[i] += 1.0f; }"
+        ),
+    }
+    verification = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    assert any(v.rule == "invalid_synthi_launch_signature" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files={},
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.launch_boundary_arity" in report["repairRules"]
+    assert 'synthi_gpu_launch(nullptr, "step", 1, 64, 0, nullptr, { &s->dx, &s->count })' in repaired["core.cpp"]
+    after = verify_split_output(files=repaired, manifest_arch=["gfx1201"])
+    assert not any(v.rule == "invalid_synthi_launch_signature" for v in after.violations)
+
+
 def test_repair_materializes_inline_launch_initializer_argument():
     files = {
         "shared.h": (
