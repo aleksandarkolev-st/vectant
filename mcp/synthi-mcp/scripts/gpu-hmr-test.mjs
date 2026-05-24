@@ -47,6 +47,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,6 +84,8 @@ const CFG = {
   workerContainer: process.env.WORKER_CONTAINER ?? 'synthi-ide-worker-1',
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
+  mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
+    ?? ((process.env.GOOGLE_API_KEY ?? '') ? 'gemini_api' : 'agent_side'),
   useMcpCompile: (process.env.SYNTHI_GPU_USE_MCP ?? '1') !== '0',
   directAiFallback: process.env.SYNTHI_GPU_DIRECT_AI_FALLBACK === '1',
   skipPhases: new Set((process.env.SKIP_PHASES ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
@@ -227,7 +230,13 @@ async function resolveDockerContainers() {
 // ───────────────────────── collab + frontend wire ─────────────────────────
 
 async function createWorkspace({ name, slug }) {
-  return httpJson('POST', `${CFG.frontendUrl}/api/workspace`, { name, slug });
+  return createValidationWorkspace({
+    frontendUrl: CFG.frontendUrl,
+    name,
+    slug,
+    httpJson,
+    record: (name, status, detail) => record('seed', name, status, detail),
+  });
 }
 
 async function writeFilesBatch({ slug, userId, files, syncToGcs }) {
@@ -434,7 +443,7 @@ async function startMcp() {
     const mcpEnv = {
       SYNTHI_SESSION_ID: CFG.slug,
       SYNTHI_SIGNALING_URL: CFG.mcpSignalingUrl,
-      SYNTHI_VISION_BACKEND: 'gemini_api',
+      SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
       SYNTHI_PROMETHEUS_HOST: '0.0.0.0',
@@ -452,7 +461,7 @@ async function startMcp() {
       ...process.env,
       SYNTHI_SESSION_ID: CFG.slug,
       SYNTHI_SIGNALING_URL: CFG.signalingUrl,
-      SYNTHI_VISION_BACKEND: 'gemini_api',
+      SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
       SYNTHI_PROMETHEUS_HOST: '127.0.0.1',
@@ -743,10 +752,11 @@ extern "C" void gui_on_render(void* state_void) {
     if (s && s->d_c) {
         cudaMemcpy(sample, s->d_c, sizeof(sample), cudaMemcpyDeviceToHost);
     }
-    std::printf("[gui] frame=%llu c[0..7]=%g %g %g %g %g %g %g %g\\n",
+    std::fprintf(stderr, "[gui] frame=%llu c[0..7]=%g %g %g %g %g %g %g %g\\n",
         (unsigned long long) (s ? s->frame : 0),
         sample[0], sample[1], sample[2], sample[3],
         sample[4], sample[5], sample[6], sample[7]);
+    std::fflush(stderr);
 }
 `;
 
@@ -824,6 +834,9 @@ extern "C" __global__ void vec_add(const float* a, const float* b, float* c, int
     }
 }
 `;
+
+const VECTOR_ADD_READBACK = [0, 3, 6, 9, 12, 15, 18, 21];
+const VECTOR_MUL_READBACK = [0, 2, 8, 18, 32, 50, 72, 98];
 
 // Phase-2 abi-breaking edit: extra parameter — signature changes.
 const DEVICE_CU_PHASE2_ABI_BREAK = `// device.cu — abi-breaking edit (extra parameter)
@@ -1492,6 +1505,60 @@ function hasStatePreserved(logText) {
   return /state_preserved:\s*true/.test(logText ?? '');
 }
 
+function parseGuiReadbacks(logText) {
+  const samples = [];
+  const re = /\[gui\]\s+frame=(\d+)\s+c\[0\.\.7\]=([^\n\r]+)/g;
+  for (const m of (logText ?? '').matchAll(re)) {
+    const values = m[2].trim().split(/\s+/).map(Number);
+    if (values.length < 8 || values.slice(0, 8).some((v) => !Number.isFinite(v))) continue;
+    samples.push({
+      frame: Number(m[1]),
+      values: values.slice(0, 8),
+      raw: m[0],
+    });
+  }
+  return samples;
+}
+
+function readbackMatches(values, expected) {
+  if (!Array.isArray(values) || values.length < expected.length) return false;
+  return expected.every((want, i) => Math.abs(values[i] - want) <= 0.001);
+}
+
+function formatReadback(values) {
+  return `[${(values ?? []).map((v) => Number.isFinite(v) ? Number(v).toFixed(3) : String(v)).join(', ')}]`;
+}
+
+async function awaitGuiReadback(phase, name, expected, checkpoint, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+  const maxBytes = 8 * 1024 * 1024;
+  const logOpts = checkpoint?.at ? { since: checkpoint.at } : {};
+  let latest = null;
+  while (Date.now() < deadline) {
+    const tail = await readWorkerLogTail(maxBytes, logOpts);
+    const window = workerLogSearchWindow(tail, { after: checkpoint });
+    const samples = parseGuiReadbacks(window);
+    for (let i = samples.length - 1; i >= 0; --i) {
+      if (readbackMatches(samples[i].values, expected)) {
+        record(
+          phase,
+          name,
+          'pass',
+          `frame=${samples[i].frame} values=${formatReadback(samples[i].values)}`,
+        );
+        return samples[i];
+      }
+    }
+    if (samples.length) latest = samples[samples.length - 1];
+    await sleep(500);
+  }
+  const detail = latest
+    ? `latest frame=${latest.frame} values=${formatReadback(latest.values)} expected=${formatReadback(expected)}`
+    : `no [gui] readback observed expected=${formatReadback(expected)}`;
+  record(phase, name, 'fail', detail);
+  throw new Error(`${phase} ${name}: ${detail}`);
+}
+
 // ───────────────────────── phases ─────────────────────────
 
 async function preflight() {
@@ -1677,6 +1744,7 @@ async function phaseP0(ctx) {
   if (skipIfNoGpuToolchain('P0', ctx, 'toolchain smoke')) return;
 
   log('info', '── Phase P0: toolchain smoke ──');
+  const p0LogStart = await workerLogCheckpoint(8 * 1024 * 1024);
   const compile = await postCompile({
     ctx,
     slug: CFG.slug,
@@ -1700,6 +1768,15 @@ async function phaseP0(ctx) {
   );
   record('P0', 'gpu adapter loaded cubin/hsaco', sawCubin.matched ? 'pass' : 'warn',
     sawCubin.snippet || 'no marker');
+
+  if (ctx.fixture === 'vector') {
+    await awaitGuiReadback(
+      'P0',
+      'baseline numeric GPU readback',
+      VECTOR_ADD_READBACK,
+      p0LogStart,
+    );
+  }
 
   // ccache must NOT wrap nvcc/hipcc (§5.3 regression check).
   const tail = await readWorkerLogTail();
@@ -1735,6 +1812,15 @@ async function phaseP1(ctx) {
     { after: preTail, maxBytes: 8 * 1024 * 1024 });
   record('P1', 'reload plan emitted', reload.matched ? 'pass' : 'warn',
     reload.snippet || 'no plan marker — orchestrator not wired yet');
+
+  if (ctx.fixture === 'vector') {
+    await awaitGuiReadback(
+      'P1',
+      'post-edit numeric GPU readback',
+      VECTOR_MUL_READBACK,
+      preTail,
+    );
+  }
 
   const reused = await awaitWorkerLogRegex(
     /reused buffer\s+[A-Za-z0-9_]+=0x|state_preserved:\s*true/,
@@ -1851,6 +1937,14 @@ async function phaseP2(ctx) {
     } else {
       record('P2', `fast swap within budget (${CFG.fastSwapBudgetMs}ms)`, 'warn',
         `no plan=device_only marker (wall=${Date.now() - tFast0}ms)`);
+    }
+    if (ctx.fixture === 'vector') {
+      await awaitGuiReadback(
+        'P2',
+        'fast-swap numeric GPU readback',
+        VECTOR_MUL_READBACK,
+        fastLogStart,
+      );
     }
   }
 
@@ -2155,6 +2249,12 @@ async function selfCheck() {
       ...flowContract.findings.map((f) => `flow:${f}`),
     ];
     console.error(`gpu-hmr-test self-check failed: ${findings.join(', ')}`);
+    process.exitCode = 1;
+    return;
+  }
+  const sampleReadback = parseGuiReadbacks('[gui] frame=7 c[0..7]=0 3 6 9 12 15 18 21\n');
+  if (!readbackMatches(sampleReadback[0]?.values, VECTOR_ADD_READBACK)) {
+    console.error('gpu-hmr-test self-check failed: readback parser did not match vector baseline');
     process.exitCode = 1;
     return;
   }
