@@ -204,6 +204,7 @@ pub fn try_direct_device_body_patch(
 
     let mut patched = generated_device_source.to_string();
     let mut patched_any = false;
+    let mut source_include_bridge_recompile = false;
     let mut affected_symbols = Vec::new();
     let mut generated_patch_span = None;
     for mapping in mappings {
@@ -236,6 +237,14 @@ pub fn try_direct_device_body_patch(
             );
         };
         let Some(generated_region) = generated_regions.get(symbol) else {
+            if mapping_is_source_include_bridge(mapping)
+                && generated_source_includes_path(generated_device_source, &user_path)
+            {
+                patched_any = true;
+                source_include_bridge_recompile = true;
+                affected_symbols.push(symbol.to_string());
+                break;
+            }
             let evidence = fast_path_verifier_evidence(
                 sidecar,
                 Some(&old_user_source),
@@ -354,6 +363,11 @@ pub fn try_direct_device_body_patch(
         "build.effective_flags_hash_present".to_string(),
         "build.device_sidecar_only".to_string(),
     ];
+    if source_include_bridge_recompile {
+        codes.push("mapping.source_include_bridge_recompile".to_string());
+    } else {
+        codes.push("mapping.generated_body_patched".to_string());
+    }
     if parser_lexical_fallback {
         codes.push("parser.lexical_kernel_region_fallback".to_string());
     } else {
@@ -421,6 +435,30 @@ pub fn mapped_generated_device_path(sidecar: &Value, user_path: &str) -> Option<
 
 pub fn device_source_hash(source: &str) -> String {
     sha256_hex(source)
+}
+
+fn mapping_is_source_include_bridge(mapping: &Value) -> bool {
+    mapping
+        .get("generatedMappingMode")
+        .and_then(Value::as_str)
+        .is_some_and(|mode| mode == "source_include_bridge")
+        || mapping
+            .get("mappingConfidence")
+            .and_then(Value::as_str)
+            .is_some_and(|confidence| confidence == "generated_include_bridge_same_source")
+}
+
+fn generated_source_includes_path(source: &str, user_path: &str) -> bool {
+    let target = normalize_path(user_path);
+    let include_re =
+        Regex::new(r#"^\s*#\s*include\s*"(?P<path>[^"]+)""#).expect("include regex");
+    source.lines().any(|line| {
+        include_re
+            .captures(line)
+            .and_then(|caps| caps.name("path"))
+            .map(|m| normalize_path(m.as_str()) == target)
+            .unwrap_or(false)
+    })
 }
 
 pub fn device_only_capability_rejection_reason(sidecar: &Value) -> Option<&'static str> {
@@ -1565,6 +1603,67 @@ mod tests {
             .as_deref()
             .unwrap_or_default()
             .contains("random_number += 3"));
+    }
+
+    #[test]
+    fn source_include_bridge_header_body_edit_recompiles_scoped_partial() {
+        let before = "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)\nCameraRays(HIPRTRenderData render_data) {\n  render_data.random_number += 1;\n}\n";
+        let next = before.replace("random_number += 1", "random_number += 5");
+        let meta = json!({
+            "selectedCompileCommand": {
+                "schemaVersion": "synthi.gpu.selected_compile_command.v1",
+                "source": "compile_commands.json",
+                "identity": "compile-command-id",
+                "effectiveFlagsHash": "flags-hash"
+            },
+            "effectiveFlagsHash": "flags-hash",
+            "toolchainCapabilities": {
+                "status": "current",
+                "supportsDeviceOnlyReload": true
+            },
+            "fastPathPolicy": {
+                "deviceOnlyAllowed": true
+            },
+            "sourceBaselineContents": {
+                "src/Device/kernels/CameraRays.h": before
+            },
+            "sourceBaselineHashes": {
+                "src/Device/kernels/CameraRays.h": sha256_hex(before)
+            },
+            "deviceMappings": [
+                {
+                    "kind": "kernel",
+                    "symbol": "CameraRays",
+                    "sourcePath": "src/Device/kernels/CameraRays.h",
+                    "generatedPath": ".synthi/generated/gpu/device.hip",
+                    "generatedMappingMode": "source_include_bridge",
+                    "mappingConfidence": "generated_include_bridge_same_source"
+                }
+            ]
+        });
+        let generated = "#include \"synthi_gpu_runtime.h\"\n#include \"src/Device/kernels/CameraRays.h\"\n";
+
+        let result = try_direct_device_body_patch(
+            &meta,
+            "src/Device/kernels/CameraRays.h",
+            &next,
+            generated,
+        );
+
+        assert!(result.accepted, "{:?}", result.reason_codes);
+        assert_eq!(
+            result.patched_device_source.as_deref(),
+            Some(generated)
+        );
+        assert_eq!(result.affected_symbols, vec!["CameraRays".to_string()]);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "mapping.source_include_bridge_recompile"));
+        assert!(result
+            .verifier_report
+            .pointer("/evidence/mappedGeneratedSpan")
+            .is_some_and(Value::is_null));
     }
 
     #[test]
