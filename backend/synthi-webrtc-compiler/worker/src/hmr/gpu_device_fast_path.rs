@@ -258,15 +258,15 @@ pub fn try_direct_device_body_patch(
                 evidence,
             );
         };
+        if mapping_is_source_include_bridge(mapping)
+            && generated_source_includes_path(generated_device_source, &user_path)
+        {
+            patched_any = true;
+            source_include_bridge_recompile = true;
+            affected_symbols.push(symbol.to_string());
+            break;
+        }
         let Some(generated_region) = generated_regions.get(symbol) else {
-            if mapping_is_source_include_bridge(mapping)
-                && generated_source_includes_path(generated_device_source, &user_path)
-            {
-                patched_any = true;
-                source_include_bridge_recompile = true;
-                affected_symbols.push(symbol.to_string());
-                break;
-            }
             let evidence = fast_path_verifier_evidence(
                 sidecar,
                 Some(&old_user_source),
@@ -2226,6 +2226,68 @@ mod tests {
             .verifier_report
             .pointer("/evidence/mappedGeneratedSpan")
             .is_some_and(Value::is_null));
+    }
+
+    #[test]
+    fn source_include_bridge_prefers_recompile_when_generated_copy_exists() {
+        let before = "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)\nSourceBackedKernel(RenderState state) {\n  state.value += device_min(3, state.limit);\n}\n";
+        let next = before.replace("device_min(3", "device_min(2 + 1");
+        let meta = json!({
+            "selectedCompileCommand": {
+                "schemaVersion": "synthi.gpu.selected_compile_command.v1",
+                "source": "compile_commands.json",
+                "identity": "compile-command-id",
+                "effectiveFlagsHash": "flags-hash"
+            },
+            "effectiveFlagsHash": "flags-hash",
+            "toolchainCapabilities": {
+                "status": "current",
+                "supportsDeviceOnlyReload": true
+            },
+            "fastPathPolicy": {
+                "deviceOnlyAllowed": true
+            },
+            "sourceBaselineContents": {
+                "src/gpu/source_backed_kernel.h": before
+            },
+            "sourceBaselineHashes": {
+                "src/gpu/source_backed_kernel.h": sha256_hex(before)
+            },
+            "deviceMappings": [
+                {
+                    "kind": "kernel",
+                    "symbol": "SourceBackedKernel",
+                    "sourcePath": "src/gpu/source_backed_kernel.h",
+                    "generatedPath": ".synthi/generated/gpu/device.hip",
+                    "generatedMappingMode": "source_include_bridge",
+                    "mappingConfidence": "generated_include_bridge_same_source"
+                }
+            ]
+        });
+        let generated = "#include \"synthi_gpu_runtime.h\"\n#include \"src/gpu/source_backed_kernel.h\"\nextern \"C\" __global__ void SourceBackedKernel(RenderState state) {\n  state.value = state.value + 1;\n}\n";
+        assert!(kernel_regions(generated).contains_key("SourceBackedKernel"));
+
+        let result = try_direct_device_body_patch(
+            &meta,
+            "src/gpu/source_backed_kernel.h",
+            &next,
+            generated,
+        );
+
+        assert!(result.accepted, "{:?}", result.reason_codes);
+        assert_eq!(result.patched_device_source.as_deref(), Some(generated));
+        assert_eq!(
+            result.affected_symbols,
+            vec!["SourceBackedKernel".to_string()]
+        );
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "mapping.source_include_bridge_recompile"));
+        assert!(!result
+            .reason_codes
+            .iter()
+            .any(|code| code == "mapping.generated_body_patched"));
     }
 
     #[test]
