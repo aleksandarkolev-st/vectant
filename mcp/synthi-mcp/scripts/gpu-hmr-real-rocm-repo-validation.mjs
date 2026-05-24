@@ -869,7 +869,10 @@ async function captureScreenshot(label) {
     await sleep(CFG.screenshotRetryDelayMs);
   }
   if (!CFG.expectScreenshot) {
-    record(`screenshot ${label}`, 'info', lastRow ? `not_visibly_non_black ${JSON.stringify(lastRow)}` : 'not_applicable_for_non_visual_target');
+    const detail = lastRow
+      ? `visual_proof_unavailable not_visibly_non_black ${JSON.stringify(lastRow)}`
+      : 'visual_proof_unavailable no_frame_captured screenshot_optional';
+    record(`screenshot ${label}`, 'warn', detail);
     return lastRow;
   }
   const detail = lastRow ? JSON.stringify(lastRow) : 'no frame was captured';
