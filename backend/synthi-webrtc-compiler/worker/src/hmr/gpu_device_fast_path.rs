@@ -267,6 +267,26 @@ pub fn try_direct_device_body_patch(
             .get("generatedPath")
             .and_then(Value::as_str)
             .map(normalize_path);
+        if mapping_generated_path.as_deref().is_some_and(|generated| {
+            device_symbol_identity_uncertain_for_scope(sidecar, symbol, &user_path, generated)
+        }) {
+            let evidence = fast_path_verifier_evidence(
+                sidecar,
+                Some(&old_user_source),
+                Some(new_user_source),
+                Some(generated_device_source),
+                Some(parser_status.report.clone()),
+                Some(&delta),
+                mapping_generated_range(mapping),
+                Some("selection.symbol_identity_uncertain"),
+            );
+            return DeviceFastPathResult::rejected_strings_with_evidence(
+                vec!["selection.symbol_identity_uncertain".to_string()],
+                &user_path,
+                mapped_generated_device_path(sidecar, &user_path).as_deref(),
+                evidence,
+            );
+        }
         let source_bridge_partial_status = mapping_generated_path
             .as_deref()
             .map(|generated_path| {
@@ -643,6 +663,86 @@ fn device_symbol_maps_to_scope(
         }
     }
     false
+}
+
+fn device_mapping_identity_field(item: &Value, key: &str) -> Option<String> {
+    let value = item.get(key)?;
+    if let Some(text) = value.as_str() {
+        return Some(text.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+    }
+    if value.is_null() {
+        return None;
+    }
+    Some(value.to_string())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn device_mapping_identity_key(item: &Value) -> Option<String> {
+    let fields = [
+        "qualifiedSourceName",
+        "qualifiedName",
+        "signatureHash",
+        "linkage",
+        "namespacePath",
+        "templateArity",
+        "overloadIndex",
+        "sourceSpan",
+        "sourceSpanHash",
+        "mangledNames",
+        "demangledNames",
+        "exportedNames",
+    ];
+    let parts = fields
+        .iter()
+        .filter_map(|field| {
+            device_mapping_identity_field(item, field).map(|value| format!("{field}={value}"))
+        })
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join("\x1f"))
+}
+
+fn device_symbol_identity_uncertain_for_scope(
+    sidecar: &Value,
+    symbol: &str,
+    source_path: &str,
+    generated_path: &str,
+) -> bool {
+    let mut identities = BTreeSet::new();
+    for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
+        let Some(items) = sidecar.pointer(pointer).and_then(Value::as_array) else {
+            continue;
+        };
+        for item in items {
+            let same_scope = item.get("kind").and_then(Value::as_str) == Some("kernel")
+                && item
+                    .get("symbol")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    == Some(symbol)
+                && item
+                    .get("sourcePath")
+                    .and_then(Value::as_str)
+                    .map(normalize_path)
+                    .as_deref()
+                    == Some(source_path)
+                && item
+                    .get("generatedPath")
+                    .and_then(Value::as_str)
+                    .map(normalize_path)
+                    .as_deref()
+                    == Some(generated_path);
+            if !same_scope {
+                continue;
+            }
+            if let Some(identity) = device_mapping_identity_key(item) {
+                identities.insert(identity);
+            }
+        }
+    }
+    identities.len() > 1
 }
 
 pub fn device_only_capability_rejection_reason(sidecar: &Value) -> Option<&'static str> {
@@ -2711,6 +2811,57 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "mapping.generated_body_patched"));
+    }
+
+    #[test]
+    fn source_include_partial_recompile_rejects_conflicting_symbol_identity() {
+        let before = fixture_kernel_body(FIXTURE_SYMBOL, "values[0] += 1.0f");
+        let next = before.replace("values[0] += 1.0f", "values[0] += 2.0f");
+        let generated = fixture_kernel_body(FIXTURE_SYMBOL, "values[0] = device_step(values[0])");
+        let meta = source_include_recompile_fixture(
+            &before,
+            vec![
+                json!({
+                    "kind": "kernel",
+                    "symbol": FIXTURE_SYMBOL,
+                    "qualifiedSourceName": "gpu::fixture_kernel_a",
+                    "signatureHash": "signature-a",
+                    "sourcePath": FIXTURE_SOURCE_PATH,
+                    "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                    "mappingConfidence": "source_backed_partial"
+                }),
+                json!({
+                    "kind": "kernel",
+                    "symbol": FIXTURE_SYMBOL,
+                    "qualifiedSourceName": "gpu::fixture_kernel_a",
+                    "signatureHash": "signature-b",
+                    "sourcePath": FIXTURE_SOURCE_PATH,
+                    "generatedPath": FIXTURE_GENERATED_DEVICE_PATH,
+                    "mappingConfidence": "source_backed_partial"
+                }),
+            ],
+            &[FIXTURE_SYMBOL],
+        );
+
+        let result = try_direct_device_body_patch(
+            &meta,
+            FIXTURE_SOURCE_PATH,
+            &next,
+            &generated,
+        );
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "selection.symbol_identity_uncertain"));
+        assert_eq!(
+            result
+                .verifier_report
+                .pointer("/evidence/rejectionRule")
+                .and_then(Value::as_str),
+            Some("selection.symbol_identity_uncertain")
+        );
     }
 
     #[test]
