@@ -184,6 +184,11 @@ pub fn try_direct_device_body_patch(
 
     let mappings = mappings_for_source(sidecar, &user_path);
     if mappings.is_empty() {
+        let reason_codes = unmapped_mapping_reason_codes_for_source(sidecar, &user_path);
+        let evidence_reason = reason_codes
+            .first()
+            .map(String::as_str)
+            .unwrap_or("mapping.device_mapping_missing");
         let evidence = fast_path_verifier_evidence(
             sidecar,
             Some(&old_user_source),
@@ -192,10 +197,10 @@ pub fn try_direct_device_body_patch(
             Some(parser_status.report.clone()),
             changed_span(&old_user_source, new_user_source).as_ref(),
             None,
-            Some("mapping.device_mapping_missing"),
+            Some(evidence_reason),
         );
         return DeviceFastPathResult::rejected_strings_with_evidence(
-            vec!["mapping.device_mapping_missing".to_string()],
+            reason_codes,
             &user_path,
             None,
             evidence,
@@ -1202,6 +1207,44 @@ fn mappings_for_source<'a>(sidecar: &'a Value, path: &str) -> Vec<&'a Value> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn unmapped_mapping_reason_codes_for_source(sidecar: &Value, path: &str) -> Vec<String> {
+    let mut reasons = BTreeSet::new();
+    for pointer in ["/unmappedKernels", "/deviceMappingReport/unmappedKernels"] {
+        let Some(items) = sidecar.pointer(pointer).and_then(Value::as_array) else {
+            continue;
+        };
+        for item in items {
+            let source_matches = item
+                .get("sourcePath")
+                .and_then(Value::as_str)
+                .map(normalize_path)
+                .as_deref()
+                == Some(path);
+            if !source_matches {
+                continue;
+            }
+            let Some(reason) = item
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|reason| !reason.is_empty())
+            else {
+                continue;
+            };
+            if reason.starts_with("mapping.") {
+                reasons.insert(reason.to_string());
+            } else {
+                reasons.insert(format!("mapping.{reason}"));
+            }
+        }
+    }
+    if reasons.is_empty() {
+        vec!["mapping.device_mapping_missing".to_string()]
+    } else {
+        reasons.into_iter().collect()
+    }
 }
 
 fn kernel_signatures(source: &str) -> BTreeMap<String, String> {
@@ -3238,6 +3281,46 @@ extern "C" __global__ void trace(float* x) {
             .reason_codes
             .iter()
             .any(|code| code == "mapping.device_mapping_missing"));
+    }
+
+    #[test]
+    fn mapping_report_unmapped_reason_is_preserved() {
+        let mut ambiguous_mapping = sidecar();
+        ambiguous_mapping["deviceMappings"] = Value::Array(Vec::new());
+        ambiguous_mapping["deviceMappingReport"] = json!({
+            "unmappedKernels": [
+                {
+                    "sourcePath": "src/gpu/flow.hip",
+                    "symbol": "flow",
+                    "reason": "ambiguous_source_symbol_identity"
+                }
+            ]
+        });
+        let next = "__constant__ float gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += gain[0] * 2.0f;\n}\n";
+
+        let result = try_direct_device_body_patch(
+            &ambiguous_mapping,
+            "src/gpu/flow.hip",
+            next,
+            generated_source(),
+        );
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "mapping.ambiguous_source_symbol_identity"));
+        assert!(!result
+            .reason_codes
+            .iter()
+            .any(|code| code == "mapping.device_mapping_missing"));
+        assert_eq!(
+            result
+                .verifier_report
+                .pointer("/evidence/rejectionRule")
+                .and_then(Value::as_str),
+            Some("mapping.ambiguous_source_symbol_identity")
+        );
     }
 
     #[test]
