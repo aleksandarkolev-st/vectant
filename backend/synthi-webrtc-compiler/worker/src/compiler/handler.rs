@@ -2059,7 +2059,8 @@ fn exported_symbol_source_identity_candidates(exported_symbol: &str) -> Vec<Stri
     if let Some(components) = parse_itanium_mangled_source_components(exported_symbol) {
         if !components.is_empty() {
             candidates.push(components.join("::"));
-            if let Some(name) = components.last() {
+            if components.len() == 1 {
+                let name = &components[0];
                 candidates.push(name.clone());
             }
         }
@@ -2151,6 +2152,73 @@ fn device_reload_kernel_symbols(source: &str, outcome: &DeviceCompileOutcome) ->
     normalized_symbol_set(&outcome.artifact_exported_symbols)
         .into_iter()
         .collect()
+}
+
+fn device_reload_kernel_symbol_specs(source: &str, outcome: &DeviceCompileOutcome) -> Vec<String> {
+    let logical_symbols = device_reload_kernel_symbols(source, outcome);
+    if !outcome.partial_module {
+        return logical_symbols;
+    }
+
+    logical_symbols
+        .into_iter()
+        .map(|logical| {
+            device_driver_symbol_for_logical_symbol(&logical, &outcome.artifact_exported_symbols)
+                .filter(|driver| driver != &logical)
+                .map(|driver| format!("{logical}={driver}"))
+                .unwrap_or(logical)
+        })
+        .collect()
+}
+
+fn device_driver_symbol_for_logical_symbol(
+    logical_symbol: &str,
+    exported_symbols: &[String],
+) -> Option<String> {
+    let matches = normalized_symbol_set(exported_symbols)
+        .into_iter()
+        .filter(|exported| {
+            exported == logical_symbol
+                || exported_symbol_source_identity_candidates(exported)
+                    .iter()
+                    .any(|candidate| candidate == logical_symbol)
+        })
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then(|| matches[0].clone())
+}
+
+fn encode_gpu_kernel_command_token(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.' | b'$' | b'?' | b'@')
+        {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn encode_gpu_kernel_command_specs(symbol_specs: &[String]) -> String {
+    if symbol_specs.is_empty() {
+        return "-".to_string();
+    }
+    symbol_specs
+        .iter()
+        .map(|spec| {
+            spec.split_once('=')
+                .map(|(logical, driver)| {
+                    format!(
+                        "{}={}",
+                        encode_gpu_kernel_command_token(logical),
+                        encode_gpu_kernel_command_token(driver)
+                    )
+                })
+                .unwrap_or_else(|| encode_gpu_kernel_command_token(spec))
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 async fn send_active_runner_runtime_command(
@@ -7066,7 +7134,7 @@ pub async fn handle_compile_request(
             if !device_dirty_units.iter().any(|u| u == device_filename) {
                 device_dirty_units.push(device_filename.to_string());
             }
-            let kernel_symbols = device_reload_kernel_symbols(device_source, device_outcome);
+            let kernel_symbols = device_reload_kernel_symbol_specs(device_source, device_outcome);
             let kernel_abi = kernel_abi_fingerprint_source(device_source);
             let artifact_path = device_outcome.artifact_path.to_string_lossy().to_string();
             let artifact_hash = format!(
@@ -7264,7 +7332,8 @@ pub async fn handle_compile_request(
     {
         if let Some(gpu) = manifest.gpu.as_ref() {
             let device_source = device_outcome.compiled_source.as_str();
-            let kernel_symbols = device_reload_kernel_symbols(device_source, device_outcome);
+            let kernel_symbol_specs =
+                device_reload_kernel_symbol_specs(device_source, device_outcome);
             let kernel_abi_hash = format!(
                 "{}",
                 hash_content(&kernel_abi_fingerprint_source(device_source))
@@ -7300,7 +7369,7 @@ pub async fn handle_compile_request(
                 "{}:{}:{}:{}",
                 marker,
                 gpu.vendor.as_str(),
-                kernel_symbols.join(","),
+                encode_gpu_kernel_command_specs(&kernel_symbol_specs),
                 kernel_abi_hash
             );
             modules_to_load.insert(
@@ -7789,6 +7858,39 @@ DECLARE_KERNEL(opaque_kernel)
     }
 
     #[test]
+    fn partial_reload_symbol_specs_map_logical_to_mangled_driver_symbol() {
+        let outcome = fixture_device_outcome(
+            true,
+            symbols(&["shade"]),
+            symbols(&["_Z5shadePf"]),
+        );
+
+        assert_eq!(
+            device_reload_kernel_symbol_specs("", &outcome),
+            symbols(&["shade=_Z5shadePf"])
+        );
+    }
+
+    #[test]
+    fn partial_reload_symbol_specs_do_not_guess_unqualified_namespace_symbol() {
+        let outcome = fixture_device_outcome(
+            true,
+            symbols(&["shade"]),
+            symbols(&["_ZN3gpu5shadeEPf"]),
+        );
+
+        assert_eq!(device_reload_kernel_symbol_specs("", &outcome), symbols(&["shade"]));
+    }
+
+    #[test]
+    fn gpu_kernel_command_specs_percent_encode_delimiters() {
+        assert_eq!(
+            encode_gpu_kernel_command_specs(&symbols(&["gpu::shade=_ZN3gpu5shadeEPf"])),
+            "gpu%3A%3Ashade=_ZN3gpu5shadeEPf"
+        );
+    }
+
+    #[test]
     fn partial_artifact_export_validation_rejects_unknown_symbols() {
         let outcome = DeviceCompileOutcome {
             artifact_path: std::path::PathBuf::from("/tmp/device.hsaco"),
@@ -7882,6 +7984,33 @@ DECLARE_KERNEL(opaque_kernel)
         };
 
         validate_partial_device_artifact_exports(&outcome).unwrap();
+    }
+
+    #[test]
+    fn partial_artifact_export_validation_rejects_qualified_mangled_symbol_for_unqualified_target()
+    {
+        let outcome = DeviceCompileOutcome {
+            artifact_path: std::path::PathBuf::from("/tmp/device.hsaco"),
+            compiled_source: String::new(),
+            compiler_elapsed_ms: 0,
+            partial_module: true,
+            target_symbols: vec!["shade".to_string()],
+            fallback_used: false,
+            fallback_reason: None,
+            requested_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_bytes: Some(128),
+            full_device_bytes: Some(1024),
+            artifact_exported_symbols: vec!["_ZN3gpu5shadeEPf".to_string()],
+            diagnostics:
+                crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
+            stderr: String::new(),
+        };
+
+        let err = validate_partial_device_artifact_exports(&outcome).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("mangled symbols without explicit identity mapping"));
     }
 
     #[test]

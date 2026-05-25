@@ -103,6 +103,22 @@ impl KernelTable {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KernelResolution {
+    pub logical_name: String,
+    pub driver_name: String,
+}
+
+impl KernelResolution {
+    pub fn identity(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            logical_name: name.clone(),
+            driver_name: name,
+        }
+    }
+}
+
 // ── Launch config ───────────────────────────────────────────
 
 /// Driver-API launch dimensions for a resolved kernel. The first
@@ -351,6 +367,19 @@ impl GpuModuleManager {
         symbols: &GpuDriverSymbolTable,
         kernel_names: &[String],
     ) -> Result<usize, ModuleManagerError> {
+        let resolutions = kernel_names
+            .iter()
+            .cloned()
+            .map(KernelResolution::identity)
+            .collect::<Vec<_>>();
+        self.resolve_kernel_symbols(symbols, &resolutions)
+    }
+
+    pub fn resolve_kernel_symbols(
+        &mut self,
+        symbols: &GpuDriverSymbolTable,
+        kernels: &[KernelResolution],
+    ) -> Result<usize, ModuleManagerError> {
         let slot = self.standby.ok_or_else(|| {
             let err = ModuleManagerError::NoTarget;
             self.last_error = Some(err.clone());
@@ -360,9 +389,21 @@ impl GpuModuleManager {
         // failure doesn't leave a half-populated state on the
         // manager. Only the final success path swaps it in.
         let mut next = KernelTable::new();
-        for name in kernel_names {
-            let cstr = CString::new(name.as_str())
-                .map_err(|_| ModuleManagerError::InvalidKernelName(name.clone()))?;
+        for kernel in kernels {
+            let logical_name = kernel.logical_name.trim();
+            let driver_name = kernel.driver_name.trim();
+            if logical_name.is_empty() || driver_name.is_empty() {
+                let err = ModuleManagerError::InvalidKernelName(kernel.logical_name.clone());
+                self.last_error = Some(err.clone());
+                return Err(err);
+            }
+            if CString::new(logical_name).is_err() {
+                let err = ModuleManagerError::InvalidKernelName(kernel.logical_name.clone());
+                self.last_error = Some(err.clone());
+                return Err(err);
+            }
+            let cstr = CString::new(driver_name)
+                .map_err(|_| ModuleManagerError::InvalidKernelName(kernel.driver_name.clone()))?;
             let mut hfunc: CuFunction = std::ptr::null_mut();
             // SAFETY: slot.module_ptr() is the value returned by
             // cuModuleLoadData earlier; the name pointer lives
@@ -382,7 +423,7 @@ impl GpuModuleManager {
                 self.last_error = Some(err.clone());
                 return Err(err);
             }
-            next.insert(name.clone(), hfunc as u64);
+            next.insert(logical_name.to_string(), hfunc as u64);
         }
         self.kernels = next;
         Ok(self.kernels.len())
@@ -571,7 +612,7 @@ impl GpuModuleManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::c_void;
+    use std::ffi::{c_void, CStr};
 
     // ── Stub symbol table ───────────────────────────────────
     //
@@ -630,6 +671,7 @@ mod tests {
 
     thread_local! {
         static STATE: RefCell<StubState> = const { RefCell::new(StubState::fresh()) };
+        static GET_FN_NAMES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     }
 
     fn with_state<R>(f: impl FnOnce(&StubState) -> R) -> R {
@@ -637,6 +679,9 @@ mod tests {
     }
     fn with_state_mut<R>(f: impl FnOnce(&mut StubState) -> R) -> R {
         STATE.with(|s| f(&mut s.borrow_mut()))
+    }
+    fn get_fn_names() -> Vec<String> {
+        GET_FN_NAMES.with(|names| names.borrow().clone())
     }
 
     unsafe extern "C" fn stub_load_data(module: *mut CuModule, _image: *const c_void) -> CuResult {
@@ -663,10 +708,16 @@ mod tests {
     unsafe extern "C" fn stub_get_function(
         hfunc: *mut CuFunction,
         _hmod: CuModule,
-        _name: *const u8,
+        name: *const u8,
     ) -> CuResult {
         with_state_mut(|s| {
             s.get_fn_calls += 1;
+            if !name.is_null() {
+                let decoded = unsafe { CStr::from_ptr(name as *const i8) }
+                    .to_string_lossy()
+                    .to_string();
+                GET_FN_NAMES.with(|names| names.borrow_mut().push(decoded));
+            }
             let r = s.get_fn_result;
             if r == 0 {
                 let h = s.next_fn_handle;
@@ -745,6 +796,7 @@ mod tests {
 
     fn reset_counters() {
         with_state_mut(|s| *s = StubState::fresh());
+        GET_FN_NAMES.with(|names| names.borrow_mut().clear());
     }
 
     // ── Actual assertions ──────────────────────────────────
@@ -819,6 +871,27 @@ mod tests {
         assert_eq!(with_state(|s| s.get_fn_calls), 3);
         assert!(m.kernel_table().get("vec_add").is_some());
         assert!(m.kernel_table().get("missing").is_none());
+    }
+
+    #[test]
+    fn resolve_kernel_symbols_uses_driver_name_and_keeps_logical_key() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+        m.load_standby(&t, &[1, 2]).unwrap();
+        let n = m
+            .resolve_kernel_symbols(
+                &t,
+                &[KernelResolution {
+                    logical_name: "shade".into(),
+                    driver_name: "_Z5shadePf".into(),
+                }],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(get_fn_names(), vec!["_Z5shadePf".to_string()]);
+        assert!(m.kernel_table().get("shade").is_some());
+        assert!(m.kernel_table().get("_Z5shadePf").is_none());
     }
 
     #[test]

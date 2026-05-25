@@ -86,6 +86,36 @@ fn device_load_abi_version(kernels: &[String], abi_arg: Option<&str>) -> String 
         .unwrap_or_else(|| kernels.join("|"))
 }
 
+#[cfg(feature = "gpu-hmr")]
+fn decode_gpu_kernel_command_token(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = *bytes.get(i + 1)?;
+            let lo = *bytes.get(i + 2)?;
+            let decoded = hex_nibble(hi)? << 4 | hex_nibble(lo)?;
+            out.push(decoded);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 use loader::ModuleLoader; // Removed LoadResult
 
 use state_manager::StateManager;
@@ -1357,7 +1387,16 @@ fn main() {
                         let kernels: Vec<String> = kernels_arg
                             .split(',')
                             .filter(|s| !s.trim().is_empty() && *s != "-")
-                            .map(|s| s.trim().to_string())
+                            .filter_map(|s| {
+                                let raw = s.trim();
+                                decode_gpu_kernel_command_token(raw).or_else(|| {
+                                    eprintln!(
+                                        "[Runner] [GPU HMR] Ignoring invalid encoded kernel token '{}'",
+                                        raw
+                                    );
+                                    None
+                                })
+                            })
                             .collect();
                         let abi_version = device_load_abi_version(&kernels, parts.get(4).copied());
 
@@ -1876,7 +1915,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::device_load_abi_version;
+    use super::{decode_gpu_kernel_command_token, device_load_abi_version};
 
     #[test]
     fn device_load_abi_version_prefers_protocol_fingerprint() {
@@ -1894,5 +1933,18 @@ mod tests {
             device_load_abi_version(&kernels, None),
             "advance|init".to_string()
         );
+    }
+
+    #[test]
+    fn gpu_kernel_command_token_decodes_delimited_symbol_identity() {
+        assert_eq!(
+            decode_gpu_kernel_command_token("gpu%3A%3Ashade%3D_ZN3gpu5shadeEPf").as_deref(),
+            Some("gpu::shade=_ZN3gpu5shadeEPf")
+        );
+    }
+
+    #[test]
+    fn gpu_kernel_command_token_rejects_invalid_escape() {
+        assert!(decode_gpu_kernel_command_token("shade%XX").is_none());
     }
 }

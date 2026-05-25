@@ -66,7 +66,7 @@ use crate::hmr::device_snapshot::BufferRegistry;
 use crate::hmr::gpu_driver_loader::{
     self, CuFunction, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable,
 };
-use crate::hmr::gpu_module_manager::{GpuModuleManager, ModuleManagerError};
+use crate::hmr::gpu_module_manager::{GpuModuleManager, KernelResolution, ModuleManagerError};
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
@@ -280,6 +280,36 @@ fn sorted_unique_symbols(symbols: &[String]) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+fn kernel_resolution_specs(symbols: &[String]) -> Result<Vec<KernelResolution>, String> {
+    let mut out = Vec::new();
+    for symbol in symbols {
+        let symbol = symbol.trim();
+        if symbol.is_empty() {
+            continue;
+        }
+        let (logical_name, driver_name) = symbol
+            .split_once('=')
+            .map(|(logical, driver)| (logical.trim(), driver.trim()))
+            .unwrap_or((symbol, symbol));
+        if logical_name.is_empty() || driver_name.is_empty() {
+            return Err(format!("invalid GPU kernel symbol mapping: {symbol:?}"));
+        }
+        out.push(KernelResolution {
+            logical_name: logical_name.to_string(),
+            driver_name: driver_name.to_string(),
+        });
+    }
+    Ok(out)
+}
+
+fn logical_kernel_symbols(symbols: &[String]) -> Result<Vec<String>, String> {
+    let out = kernel_resolution_specs(symbols)?
+        .into_iter()
+        .map(|symbol| symbol.logical_name)
+        .collect::<Vec<_>>();
+    Ok(sorted_unique_symbols(&out))
 }
 
 fn resolved_kernel_symbols(manager: &GpuModuleManager) -> Vec<String> {
@@ -833,6 +863,8 @@ impl Adapter for GpuModuleAdapter {
             if partial_device_reload && req.build_manifest.exported_symbols.is_empty() {
                 return Err("partial GPU sidecar reload has no target symbols".into());
             }
+            let kernel_resolutions = kernel_resolution_specs(&req.build_manifest.exported_symbols)?;
+            let expected_symbols = logical_kernel_symbols(&req.build_manifest.exported_symbols)?;
             let previous_table = self.module_manager.kernel_table().clone();
             if self.config.vendor == GpuVendor::Rocm {
                 self.module_manager
@@ -844,9 +876,8 @@ impl Adapter for GpuModuleAdapter {
                     .map_err(Self::module_manager_error)?;
             }
             self.module_manager
-                .resolve_kernels(&symbols, &req.build_manifest.exported_symbols)
+                .resolve_kernel_symbols(&symbols, &kernel_resolutions)
                 .map_err(Self::module_manager_error)?;
-            let expected_symbols = sorted_unique_symbols(&req.build_manifest.exported_symbols);
             let touched_symbols = resolved_kernel_symbols(&self.module_manager);
             if touched_symbols != expected_symbols {
                 return Err(format!(
@@ -858,7 +889,7 @@ impl Adapter for GpuModuleAdapter {
             let mut replaced_primary = false;
             let retired = if partial_device_reload {
                 self.module_manager
-                    .merge_standby_partial(previous_table, &req.build_manifest.exported_symbols)
+                    .merge_standby_partial(previous_table, &expected_symbols)
                     .map_err(Self::module_manager_error)?
             } else {
                 let mut retired = Vec::new();
@@ -995,6 +1026,30 @@ mod tests {
             preserve_state: true,
             timeout_ms: 5_000,
         }
+    }
+
+    #[test]
+    fn kernel_resolution_specs_keep_logical_launch_names() {
+        let specs = vec![
+            "shade=_Z5shadePf".to_string(),
+            "gpu::trace=_ZN3gpu5traceEPf".to_string(),
+            "plain".to_string(),
+        ];
+        let resolutions = kernel_resolution_specs(&specs).unwrap();
+        assert_eq!(resolutions[0].logical_name, "shade");
+        assert_eq!(resolutions[0].driver_name, "_Z5shadePf");
+        assert_eq!(resolutions[1].logical_name, "gpu::trace");
+        assert_eq!(resolutions[1].driver_name, "_ZN3gpu5traceEPf");
+        assert_eq!(resolutions[2].logical_name, "plain");
+        assert_eq!(resolutions[2].driver_name, "plain");
+        assert_eq!(
+            logical_kernel_symbols(&specs).unwrap(),
+            vec![
+                "gpu::trace".to_string(),
+                "plain".to_string(),
+                "shade".to_string()
+            ]
+        );
     }
 
     static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x1000);
