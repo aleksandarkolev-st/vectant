@@ -2595,6 +2595,80 @@ async fn wait_for_runner_runtime_control_ack(
     }
 }
 
+async fn subscribe_active_runner_output(
+    ctx: &CompileContext,
+    session_id: &str,
+) -> Option<tokio::sync::broadcast::Receiver<String>> {
+    let guard = ctx.runner_store.lock().await;
+    let state = guard.as_ref()?;
+    if state.session_id.as_deref() != Some(session_id) {
+        return None;
+    }
+    Some(state.output_tx.subscribe())
+}
+
+fn runner_device_sidecar_status(line: &str) -> Option<Result<(), String>> {
+    let payload = extract_runner_structured_payload(line)?;
+    let value = serde_json::from_str::<serde_json::Value>(payload).ok()?;
+    if value.get("module").and_then(serde_json::Value::as_str) != Some("device") {
+        return None;
+    }
+
+    match value.get("status").and_then(serde_json::Value::as_str)? {
+        "applied" => Some(Ok(())),
+        "rejected" | "compile_error" | "crash-fatal" => {
+            let reason = value
+                .get("reason")
+                .or_else(|| value.get("error"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("device sidecar reload rejected by runner")
+                .to_string();
+            Some(Err(reason))
+        }
+        _ => None,
+    }
+}
+
+fn runner_device_sidecar_ack_timeout() -> std::time::Duration {
+    let ms = std::env::var("SYNTHI_GPU_HMR_DEVICE_RELOAD_ACK_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS);
+    std::time::Duration::from_millis(ms)
+}
+
+async fn wait_for_runner_device_sidecar_status(
+    output_rx: &mut tokio::sync::broadcast::Receiver<String>,
+) -> Result<()> {
+    let timeout = runner_device_sidecar_ack_timeout();
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => {
+                anyhow::bail!(
+                    "runner device sidecar reload did not acknowledge terminal device HMR status within {}ms",
+                    timeout.as_millis()
+                );
+            }
+            received = output_rx.recv() => {
+                match received {
+                    Ok(line) => {
+                        if let Some(status) = runner_device_sidecar_status(&line) {
+                            return status.map_err(anyhow::Error::msg);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        anyhow::bail!("runner output channel closed before device sidecar reload status");
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn compile_device_sources_phase0_and_refresh_catalog(
     ctx: &CompileContext,
     req: &CompileRequest,
@@ -7916,6 +7990,12 @@ pub async fn handle_compile_request(
     };
 
     let runtime_reload_start = std::time::Instant::now();
+    let mut device_sidecar_status_rx =
+        if device_runtime_resume_deferred && device_sidecar_only_reload {
+            subscribe_active_runner_output(ctx, &session_id).await
+        } else {
+            None
+        };
     let runner_result = if use_supervisor {
         use crate::runtime::path_c::supervisor::spawn_supervised;
 
@@ -8026,14 +8106,49 @@ pub async fn handle_compile_request(
 
     match runner_result {
         Ok(()) => {
-            if device_runtime_resume_deferred {
-                resume_active_runner_after_gpu_hmr(ctx, &session_id).await?;
-            }
             if device_sidecar_only_reload {
                 debug_log!(
                     "[HMR] Device-only runner reload dispatched; waiting for runner GPU sidecar status"
                 );
-            } else {
+                if let Some(output_rx) = device_sidecar_status_rx.as_mut() {
+                    if let Err(error) = wait_for_runner_device_sidecar_status(output_rx).await {
+                        let status = HmrStatus::gpu_rejected_with_fallback_reason(
+                            "device",
+                            &format!(
+                                "Runner did not acknowledge device sidecar reload before GPU HMR resume: {error}"
+                            ),
+                            "Keep previous GPU sidecar loaded and restart or reload the preview before applying another GPU HMR patch",
+                            "runtime.device_reload_not_acknowledged",
+                        );
+                        let _ = ctx.log_dc.send_text(status.to_json()).await;
+                        if device_runtime_resume_deferred {
+                            let _ = resume_active_runner_after_gpu_hmr(ctx, &session_id).await;
+                        }
+                        return Err(
+                            error.context("runner device sidecar reload was not acknowledged")
+                        );
+                    }
+                } else if device_runtime_resume_deferred {
+                    let error = anyhow::anyhow!(
+                        "active runner output subscription was unavailable for deferred device sidecar reload"
+                    );
+                    let status = HmrStatus::gpu_rejected_with_fallback_reason(
+                        "device",
+                        &format!(
+                            "Runner did not expose device sidecar reload status before GPU HMR resume: {error}"
+                        ),
+                        "Keep previous GPU sidecar loaded and restart or reload the preview before applying another GPU HMR patch",
+                        "runtime.device_reload_status_unavailable",
+                    );
+                    let _ = ctx.log_dc.send_text(status.to_json()).await;
+                    let _ = resume_active_runner_after_gpu_hmr(ctx, &session_id).await;
+                    return Err(error);
+                }
+            }
+            if device_runtime_resume_deferred {
+                resume_active_runner_after_gpu_hmr(ctx, &session_id).await?;
+            }
+            if !device_sidecar_only_reload {
                 let candidate_messages = {
                     let mut orchestrator = ctx.hmr_orchestrator.lock().await;
                     orchestrator
@@ -8360,6 +8475,22 @@ mod gpu_host_contract_tests {
             "runtime-paused",
             "runner-control-1"
         ));
+    }
+
+    #[test]
+    fn device_sidecar_status_matches_terminal_device_hmr() {
+        let applied = r#"[Runner] [HMR-STATUS] {"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true}"#;
+        assert!(runner_device_sidecar_status(applied).unwrap().is_ok());
+
+        let rejected = r#"[Runner] [HMR-STATUS] {"status":"rejected","module":"device","reason":"driver rejected module"}"#;
+        let err = runner_device_sidecar_status(rejected).unwrap().unwrap_err();
+        assert!(err.contains("driver rejected module"));
+    }
+
+    #[test]
+    fn device_sidecar_status_ignores_non_device_hmr() {
+        let runner_status = r#"[Runner] [HMR-STATUS] {"status":"runtime-paused","module":"runner","runtimePaused":true}"#;
+        assert!(runner_device_sidecar_status(runner_status).is_none());
     }
 
     #[test]
