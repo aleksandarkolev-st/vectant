@@ -3418,6 +3418,33 @@ fn device_fast_path_rejection_blocks_fallback(reason_codes: &[String]) -> bool {
     })
 }
 
+fn device_fast_path_missing_toolchain_allows_split_bootstrap(
+    sidecar_meta: &serde_json::Value,
+    request_path: &str,
+    generated_device_path: Option<&str>,
+    reason_codes: &[String],
+) -> bool {
+    if !reason_codes
+        .iter()
+        .any(|code| code == "toolchain_capability_missing")
+    {
+        return false;
+    }
+    if generated_device_path
+        .map(str::trim)
+        .is_some_and(|path| !path.is_empty())
+    {
+        return false;
+    }
+    let request_name =
+        normalized_request_filename(request_path).unwrap_or_else(|| request_path.replace('\\', "/"));
+    sidecar_string_for_path(sidecar_meta, "sourceBaselineContents", &request_name).is_none()
+        && sidecar_meta
+            .get("original_source")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+}
+
 fn upsert_object_field(
     root: &mut serde_json::Map<String, serde_json::Value>,
     object_key: &str,
@@ -4174,7 +4201,16 @@ pub async fn handle_compile_request(
                             request_device_name,
                             device_patch.reason_codes.join(",")
                         );
-                        if device_fast_path_rejection_blocks_fallback(&device_patch.reason_codes) {
+                        let split_bootstrap_allowed =
+                            device_fast_path_missing_toolchain_allows_split_bootstrap(
+                                &sidecar_meta,
+                                &request_device_name,
+                                generated_device_path.as_deref(),
+                                &device_patch.reason_codes,
+                            );
+                        if device_fast_path_rejection_blocks_fallback(&device_patch.reason_codes)
+                            && !split_bootstrap_allowed
+                        {
                             eprintln!(
                                 "[gpu-hmr] device_only hard stop: user={} reasons={}",
                                 request_device_name,
@@ -4185,7 +4221,15 @@ pub async fn handle_compile_request(
                                 device_patch.reason_codes.join(",")
                             );
                         }
-                        natural_gpu_ai_delta_reason_codes = device_patch.reason_codes.clone();
+                        if split_bootstrap_allowed {
+                            eprintln!(
+                                "[gpu-hmr] device_only bootstrap fallback allowed: user={} reasons={}",
+                                request_device_name,
+                                device_patch.reason_codes.join(",")
+                            );
+                        } else {
+                            natural_gpu_ai_delta_reason_codes = device_patch.reason_codes.clone();
+                        }
                         None
                     }
                 } else {
@@ -9813,5 +9857,38 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
         assert!(!device_fast_path_rejection_blocks_fallback(&[
             "mapping.patch_anchor_missing".to_string()
         ]));
+    }
+
+    #[test]
+    fn missing_toolchain_capability_only_bootstraps_without_prior_device_state() {
+        let reasons = vec!["toolchain_capability_missing".to_string()];
+        assert!(device_fast_path_missing_toolchain_allows_split_bootstrap(
+            &serde_json::json!({}),
+            "src/gpu/kernel.hip",
+            None,
+            &reasons,
+        ));
+        assert!(!device_fast_path_missing_toolchain_allows_split_bootstrap(
+            &serde_json::json!({}),
+            "src/gpu/kernel.hip",
+            Some(".synthi/generated/gpu/device.hip"),
+            &reasons,
+        ));
+        assert!(!device_fast_path_missing_toolchain_allows_split_bootstrap(
+            &serde_json::json!({
+                "sourceBaselineContents": {
+                    "src/gpu/kernel.hip": "__global__ void kernel() {}"
+                }
+            }),
+            "src/gpu/kernel.hip",
+            None,
+            &reasons,
+        ));
+        assert!(!device_fast_path_missing_toolchain_allows_split_bootstrap(
+            &serde_json::json!({}),
+            "src/gpu/kernel.hip",
+            None,
+            &["toolchain_capability_stale".to_string()],
+        ));
     }
 }
