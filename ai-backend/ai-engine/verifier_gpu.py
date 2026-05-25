@@ -1672,6 +1672,7 @@ def verify_split_output(
         [device_source, *device_included_sources.values()]
     )
     source_launch_args_by_kernel = _source_launch_args_by_kernel(source_files or {})
+    source_launch_kernels = _source_launch_kernels(source_files or {})
 
     allowed_include_paths: Set[str] = {"synthi_gpu_runtime.h"}
     for path in (shared_path, core_path, gui_path, host_runner_path, device_path):
@@ -2754,6 +2755,27 @@ def verify_split_output(
                         offending_symbol=kernel,
                     )
                 )
+            elif (
+                source_launch_kernels
+                and kernel not in source_launch_kernels
+                and not _is_lifecycle_launch_kernel(kernel)
+            ):
+                violations.append(
+                    Violation(
+                        rule="non_source_reachable_launch_site",
+                        message=(
+                            f"Host file {host_path} launches {kernel!r}, but the "
+                            "source launch graph does not contain that kernel. "
+                            "Generated host code must preserve source-reachable "
+                            "launch ownership instead of launching preserved "
+                            "device symbols opportunistically. Only explicit "
+                            "lifecycle initialization/setup/reset kernels may be "
+                            "introduced outside the source launch graph."
+                        ),
+                        offending_module=host_path,
+                        offending_symbol=kernel,
+                    )
+                )
 
     if declared_kernels and synthi_launch_count == 0:
         violations.append(
@@ -2793,6 +2815,24 @@ def _source_launch_args_by_kernel(source_files: Mapping[str, str]) -> dict[str, 
         if normalized not in options:
             options.append(normalized)
     return by_kernel
+
+
+def _source_launch_kernels(source_files: Mapping[str, str]) -> Set[str]:
+    return {
+        site.kernel
+        for site in extract_launch_graph(source_files)
+        if site.kernel
+    }
+
+
+def _is_lifecycle_launch_kernel(kernel: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:^|_)(?:init|initialize|seed|setup|reset)(?:_|$)",
+            kernel,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _normalize_launch_arg_identity(expr: str) -> str:

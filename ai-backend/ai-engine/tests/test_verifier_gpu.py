@@ -214,6 +214,43 @@ def test_split_accepts_source_kernel_launch_with_same_arg_pack_identity():
     assert not any(v.rule == "source_launch_args_not_preserved" for v in r.violations)
 
 
+def test_split_rejects_launching_preserved_kernel_not_in_source_launch_graph():
+    source_files = {
+        "src/host.cpp": (
+            "void run(int w, int h, void* launch_args, void* stream) {\n"
+            "  kernels.main.set_kernel_function_name(\"shade_pixels\");\n"
+            "  kernels.main.launch_asynchronous(8, 8, w, h, launch_args, stream);\n"
+            "}\n"
+        ),
+        "src/device.hip": (
+            'extern "C" __global__ void shade_pixels(LaunchArgs args) { }\n'
+            'extern "C" __global__ void debug_probe(LaunchArgs args) { }\n'
+        ),
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int n; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { int launch_args = 0; synthi_gpu_launch(nullptr, "debug_probe", 1, 64, 0, nullptr, { &launch_args }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": VALID_HOST_RUNNER,
+        "device.hip": (
+            'extern "C" __global__ void shade_pixels(LaunchArgs args) { }\n'
+            'extern "C" __global__ void debug_probe(LaunchArgs args) { }'
+        ),
+    }
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+    assert any(
+        v.rule == "non_source_reachable_launch_site"
+        and v.offending_symbol == "debug_probe"
+        for v in r.violations
+    )
+
+
 def test_split_rejects_statically_invalid_launch_dimensions():
     source_files = {
         "src/device.hip": 'extern "C" __global__ void step(int* out) { }',
