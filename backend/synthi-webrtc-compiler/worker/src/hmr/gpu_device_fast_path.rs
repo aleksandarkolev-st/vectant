@@ -122,6 +122,29 @@ pub fn try_direct_device_body_patch(
         );
     }
 
+    let duplicate_kernel_symbols = duplicate_kernel_region_names(&old_user_source)
+        .union(&duplicate_kernel_region_names(new_user_source))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !duplicate_kernel_symbols.is_empty() {
+        let evidence = fast_path_verifier_evidence(
+            sidecar,
+            Some(&old_user_source),
+            Some(new_user_source),
+            Some(generated_device_source),
+            Some(parser_status.report.clone()),
+            changed_span(&old_user_source, new_user_source).as_ref(),
+            None,
+            Some("mapping.ambiguous_source_symbol_identity"),
+        );
+        return DeviceFastPathResult::rejected_strings_with_evidence(
+            vec!["mapping.ambiguous_source_symbol_identity".to_string()],
+            &user_path,
+            mapped_generated_device_path(sidecar, &user_path).as_deref(),
+            evidence,
+        );
+    }
+
     let old_signatures = kernel_signatures(&old_user_source);
     let new_signatures = kernel_signatures(new_user_source);
     if old_signatures != new_signatures {
@@ -1526,13 +1549,13 @@ pub(crate) fn device_header_kernel_body_only_edit_symbol(
     None
 }
 
-fn kernel_regions(source: &str) -> BTreeMap<String, KernelRegion> {
+fn kernel_region_records(source: &str) -> Vec<(String, KernelRegion)> {
     let re = Regex::new(
         r#"(?:extern\s+"C"\s+)?(?:__global__\s+(?:void\s+)?|GLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+(?:__launch_bounds__\s*\([^)]*\)\s*)?)([A-Za-z_][A-Za-z0-9_]*)\s*\("#,
     )
     .expect("kernel regex");
     let masked = mask_comments_preserving_len(source);
-    let mut out = BTreeMap::new();
+    let mut out = Vec::new();
     for captures in re.captures_iter(&masked) {
         let Some(matched) = captures.get(0) else {
             continue;
@@ -1554,7 +1577,7 @@ fn kernel_regions(source: &str) -> BTreeMap<String, KernelRegion> {
             .get(matched.start()..body_open)
             .unwrap_or(params.as_str())
             .to_string();
-        out.insert(
+        out.push((
             name,
             KernelRegion {
                 signature,
@@ -1563,9 +1586,24 @@ fn kernel_regions(source: &str) -> BTreeMap<String, KernelRegion> {
                 body_end: body_close.saturating_sub(1),
                 end: body_close,
             },
-        );
+        ));
     }
     out
+}
+
+fn kernel_regions(source: &str) -> BTreeMap<String, KernelRegion> {
+    kernel_region_records(source).into_iter().collect()
+}
+
+fn duplicate_kernel_region_names(source: &str) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut duplicates = BTreeSet::new();
+    for (name, _region) in kernel_region_records(source) {
+        if !seen.insert(name.clone()) {
+            duplicates.insert(name);
+        }
+    }
+    duplicates
 }
 
 fn mask_comments_preserving_len(source: &str) -> String {
@@ -3354,6 +3392,24 @@ extern "C" __global__ void trace(float* x) {
             .reason_codes
             .iter()
             .any(|code| code == "abi.constant_global_layout_changed"));
+    }
+
+    #[test]
+    fn direct_fast_path_rejects_duplicate_kernel_source_identity() {
+        let source = "namespace primary {\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n}\nnamespace secondary {\n__global__ void flow(float* x, int n) {\n  x[0] += 2.0f;\n}\n}\n";
+        let next = source.replace("x[0] += 2.0f;", "x[0] += 3.0f;");
+        let result = try_direct_device_body_patch(
+            &sidecar_with_source(source),
+            "src/gpu/flow.hip",
+            &next,
+            generated_source(),
+        );
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "mapping.ambiguous_source_symbol_identity"));
     }
 
     #[test]
