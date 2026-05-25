@@ -2319,6 +2319,7 @@ fn parse_llvm_readobj_exported_function_symbols(raw: &str) -> Vec<String> {
     let mut name: Option<String> = None;
     let mut is_global = false;
     let mut is_function = false;
+    let mut is_undefined = false;
 
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -2327,6 +2328,7 @@ fn parse_llvm_readobj_exported_function_symbols(raw: &str) -> Vec<String> {
             name = None;
             is_global = false;
             is_function = false;
+            is_undefined = false;
             continue;
         }
         if !in_symbol {
@@ -2338,8 +2340,10 @@ fn parse_llvm_readobj_exported_function_symbols(raw: &str) -> Vec<String> {
             is_global = rest.contains("Global") || rest.contains("Weak");
         } else if let Some(rest) = trimmed.strip_prefix("Type:") {
             is_function = rest.contains("Function");
+        } else if let Some(rest) = trimmed.strip_prefix("Section:") {
+            is_undefined = rest.contains("Undefined");
         } else if trimmed == "}" {
-            if is_global && is_function {
+            if is_global && is_function && !is_undefined {
                 if let Some(symbol) = name.take().filter(|symbol| is_device_export_symbol(symbol)) {
                     symbols.insert(symbol);
                 }
@@ -2743,26 +2747,37 @@ Symbols [
     Name: helper (1)
     Binding: Local (0x0)
     Type: Function (0x2)
+    Section: .text (0x2)
   }
   Symbol {
     Name: shade.private_seg_size (12)
     Binding: Local (0x0)
     Type: None (0x0)
+    Section: .data (0x3)
   }
   Symbol {
     Name: shade (32)
     Binding: Global (0x1)
     Type: Function (0x2)
+    Section: .text (0x2)
+  }
+  Symbol {
+    Name: helper_external (39)
+    Binding: Global (0x1)
+    Type: Function (0x2)
+    Section: Undefined (0x0)
   }
   Symbol {
     Name: shade.kd (45)
     Binding: Global (0x1)
     Type: Object (0x1)
+    Section: .data (0x3)
   }
   Symbol {
     Name: __hip_cuid_deadbeef (52)
     Binding: Global (0x1)
     Type: Object (0x1)
+    Section: .data (0x3)
   }
 ]
 "#;
