@@ -647,6 +647,13 @@ fn source_include_bridge_partial_status(
             }
             if artifact_symbols
                 .iter()
+                .any(|candidate| !device_symbol_known(sidecar, candidate))
+            {
+                rejection.get_or_insert("selection.unknown_symbol");
+                continue;
+            }
+            if artifact_symbols
+                .iter()
                 .all(|candidate| device_symbol_maps_to_scope(sidecar, candidate, &source, &generated))
             {
                 return SourceIncludeBridgePartialStatus::Available;
@@ -671,6 +678,25 @@ fn normalized_json_string_set(item: &Value, key: &str) -> BTreeSet<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn device_symbol_known(sidecar: &Value, symbol: &str) -> bool {
+    for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
+        let Some(items) = sidecar.pointer(pointer).and_then(Value::as_array) else {
+            continue;
+        };
+        if items.iter().any(|item| {
+            item.get("kind").and_then(Value::as_str) == Some("kernel")
+                && item
+                    .get("symbol")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    == Some(symbol)
+        }) {
+            return true;
+        }
+    }
+    false
 }
 
 fn device_symbol_maps_to_scope(
@@ -2982,6 +3008,31 @@ mod tests {
             .reason_codes
             .iter()
             .any(|code| code == "selection.unsafe_symbol_superset"));
+    }
+
+    #[test]
+    fn source_include_partial_recompile_rejects_unknown_symbol() {
+        let before = fixture_kernel_body(FIXTURE_SYMBOL, "values[0] += 1.0f");
+        let next = before.replace("values[0] += 1.0f", "values[0] += 2.0f");
+        let generated = fixture_kernel_body(FIXTURE_SYMBOL, "values[0] = device_step(values[0])");
+        let meta = source_include_recompile_fixture(
+            &before,
+            vec![json!({
+                "kind": "kernel",
+                "symbol": FIXTURE_SYMBOL,
+                "sourcePath": FIXTURE_SOURCE_PATH,
+                "generatedPath": FIXTURE_GENERATED_DEVICE_PATH
+            })],
+            &[FIXTURE_SYMBOL, "unmapped_fixture_kernel"],
+        );
+
+        let result = try_direct_device_body_patch(&meta, FIXTURE_SOURCE_PATH, &next, &generated);
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "selection.unknown_symbol"));
     }
 
     #[test]
