@@ -3862,6 +3862,15 @@ The role names are fixed runtime slots, but source filenames are not: emit
 appropriate paths and map each role in
 `compile_manifest.module_files`.
 
+Every code fragment in this prompt is a structural template. Identifier names
+inside examples are not project facts. Do not copy example kernel names,
+state-field names, buffer names, constants, backend handles, or file names into
+the generated split unless the same identifier is present in the user's source
+context or you introduce a project-derived helper with a real generated
+definition, descriptor entry, and launch site. If source-device preservation or
+the source launch graph lists project kernels, those project names are the
+authority.
+
 # OUTPUT ROLES
 
 1. shared role       - AppState struct + shared types + extern "C" prototypes.
@@ -4042,7 +4051,7 @@ change what `gui_on_render` draws without changing the host ABI.
 
 Use an explicit guarded launch/readback shape, not a fire-and-forget launch:
 
-    bool launched = synthi_gpu_launch(nullptr, "update_particles", grid, block,
+    bool launched = synthi_gpu_launch(nullptr, "PROJECT_UPDATE_KERNEL", grid, block,
                                       0, nullptr,
                                       { &state->d_particles, &count_arg, &dt_arg });
     if (launched) {
@@ -4103,7 +4112,7 @@ buffer or to only the displayed coordinates. If the update launch passes
 those device pointers too:
 
     if (!state->device_initialized) {
-        bool initialized = synthi_gpu_launch(nullptr, "init_particle_field",
+        bool initialized = synthi_gpu_launch(nullptr, "PROJECT_INIT_KERNEL",
                                              grid, block, 0, nullptr,
                                              { &state->d_x, &state->d_y,
                                                &state->d_vx, &state->d_vy,
@@ -4114,7 +4123,7 @@ those device pointers too:
 
 The matching device kernel must receive and write every pointer it is given:
 
-    extern "C" __global__ void init_particle_field(float* x, float* y,
+    extern "C" __global__ void PROJECT_INIT_KERNEL(float* x, float* y,
                                                    float* vx, float* vy,
                                                    unsigned int* rgba,
                                                    int count) {
@@ -4148,14 +4157,14 @@ host data before the sidecar dispatcher is available.
 A valid update shape is:
 
     if (!state->device_initialized) {
-        bool initialized = synthi_gpu_launch(nullptr, "init_particles", grid,
+        bool initialized = synthi_gpu_launch(nullptr, "PROJECT_INIT_KERNEL", grid,
                                              block, 0, nullptr,
                                              { &state->d_particles, &count_arg });
         if (initialized) state->device_initialized = true;
         return;
     }
 
-    bool updated = synthi_gpu_launch(nullptr, "update_particles", grid, block,
+    bool updated = synthi_gpu_launch(nullptr, "PROJECT_UPDATE_KERNEL", grid, block,
                                      0, nullptr,
                                      { &state->d_particles, &count_arg, &dt_arg });
     if (updated) {
@@ -4263,7 +4272,7 @@ extern "C" const DeviceDescriptor* device_descriptor();
 //    The first field is const char*, not an integer. Use the runtime vendor
 //    macro and static arch/kernel string arrays:
 //    static const char* arches[] = { "gfx1201" };  // use the target arch
-//    static const char* kernels[] = { "update_particles" };
+//    static const char* kernels[] = { "ACTUAL_PROJECT_KERNEL" };
 //    static DeviceDescriptor d = { SYNTHI_GPU_VENDOR, arches, kernels, 1, 1, 0 };
 
 // 2. device_on_load — natively patch deserialisation across an ABI edit.

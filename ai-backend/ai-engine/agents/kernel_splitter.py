@@ -297,6 +297,9 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
         guidance.append(
             "- Do not invent placeholder host launches. Every synthi_gpu_launch kernel name must be an actual __global__ symbol emitted in the device role or a target-scoped source-device kernel preserved by the device role. If you add or keep a synthi_gpu_launch call, first ensure that exact kernel name is declared in device.hip/device.cu; otherwise remove the invented launch site instead of naming a fake kernel such as `my_function`."
         )
+        guidance.append(
+            "- Treat every identifier inside prompt examples, documentation snippets, tests, and previous rejected attempts as non-authoritative. A launch name copied from examples but absent from the source context is prompt leakage; remove it or replace it with a real source/device symbol plus a matching generated definition and descriptor entry."
+        )
     if "generated.host_state_type_not_shared" in joined:
         guidance.append(
             "- Define the host-visible state record exactly once in shared.h; core.cpp, gui.cpp, and host_runner.cpp must include shared.h and use that type."
@@ -325,6 +328,7 @@ def _verifier_acceptance_gate_contract() -> str:
             "- Generated GUI and runner code must not switch frameworks. Preserve the source render backend reported by deterministic context selection.",
             "- Device kernels and runtime-compiled kernel headers selected by source context must keep original kernel names and body semantics so later user body edits can map into the generated device role.",
             "- Host launch sites must not invent kernel names. Every `synthi_gpu_launch(...)` kernel string must match an actual generated or source-preserved device kernel symbol.",
+            "- Example identifiers are not source facts. Any launch name copied from prompt examples, docs, tests, or a previous rejected attempt is invalid unless that identifier appears in the target-scoped source context or is introduced as a real generated helper with a matching device definition and descriptor entry.",
             "- Host launch block dimensions must respect source kernel `__launch_bounds__` when present. If a kernel declares `__launch_bounds__(N)`, the generated launch block must have at most N total threads.",
             "- Preserved source-device kernels are not all runtime entrypoints. Generate `synthi_gpu_launch(...)` calls only for host-reachable launch paths or the explicit first-frame pipeline you construct; do not launch every preserved kernel just because it appears in the device role.",
             "- Launch guards in `core_on_update` must be real launch results or persistent state/static flags. Never use local constants such as `bool initialized = false; if (initialized) { ... }` to gate runtime updates.",

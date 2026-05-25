@@ -33,7 +33,7 @@ from agents.kernel_splitter import (
     split_attempt_record,
 )
 from agents.gpu_source_context import build_project_source_context
-from llm.prompts import build_split_mode_prompt
+from llm.prompts import GPU_SPLIT_PROMPT, build_split_mode_prompt
 from verifier_gpu import SplitVerificationResult, Violation
 
 
@@ -598,6 +598,8 @@ def test_build_split_retry_prompt_guides_unresolved_launch_repairs():
     assert "Do not invent placeholder host launches" in prompt
     assert "actual __global__ symbol" in prompt
     assert "fake kernel" in prompt
+    assert "prompt leakage" in prompt
+    assert "source context" in prompt
 
 
 def test_build_split_retry_prompt_guides_source_launch_arg_repairs():
@@ -622,8 +624,15 @@ def test_verifier_acceptance_gate_contract_highlights_generic_split_gates():
     assert "gui_render(core_state)" in contract
     assert "placeholder comments" in contract
     assert "must not invent kernel names" in contract
+    assert "Example identifiers are not source facts" in contract
     assert "do not launch every preserved kernel" in contract
     assert "local constants such as `bool initialized = false" in contract
+
+
+def test_gpu_split_prompt_marks_examples_as_non_authoritative():
+    assert "structural template" in GPU_SPLIT_PROMPT
+    assert "inside examples are not project facts" in GPU_SPLIT_PROMPT
+    assert "source launch graph lists project kernels" in GPU_SPLIT_PROMPT
 
 
 def test_source_launch_graph_contract_reports_runtime_kernel_object_launches():
