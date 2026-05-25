@@ -30,9 +30,13 @@ class KernelRegion:
     name: str
     params: str
     signature_hash: str
+    qualified_name: str
+    namespace_path: str
     signature_start: int
     body_start: int
     body_end: int
+    source_span: str
+    source_span_hash: str
 
 
 def build_device_mapping_report(
@@ -97,6 +101,7 @@ def build_device_mapping_report(
                         "generatedPath": generated_path,
                         "mappingConfidence": "generated_include_bridge_same_source",
                         "signatureHash": source_region.signature_hash,
+                        **_kernel_identity_fields(source_region),
                         "sourceBodyRange": {
                             "startByte": source_region.body_start,
                             "endByte": source_region.body_end,
@@ -120,6 +125,7 @@ def build_device_mapping_report(
                     "generatedPath": generated_path,
                     "mappingConfidence": "same_name_signature",
                     "signatureHash": source_region.signature_hash,
+                    **_kernel_identity_fields(source_region),
                     "sourceBodyRange": {
                         "startByte": source_region.body_start,
                         "endByte": source_region.body_end,
@@ -188,16 +194,83 @@ def extract_kernel_regions(source: str) -> Dict[str, KernelRegion]:
             cursor = max(after_params, match.end())
             continue
         _body, body_close = _read_balanced(masked, body_open, "{", "}")
+        namespace_parts = _namespace_path_at(masked, match.start())
+        qualified_name = "::".join([*namespace_parts, name]) if namespace_parts else name
+        source_span = f"{match.start()}:{body_close}"
+        span_source = source[match.start() : body_close]
         regions[name] = KernelRegion(
             name=name,
             params=params,
             signature_hash=signatures.get(name, ""),
+            qualified_name=qualified_name,
+            namespace_path="::".join(namespace_parts),
             signature_start=match.start(),
             body_start=body_open + 1,
             body_end=max(body_open + 1, body_close - 1),
+            source_span=source_span,
+            source_span_hash=_sha256(span_source),
         )
         cursor = max(body_close, match.end())
     return regions
+
+
+def _kernel_identity_fields(region: KernelRegion) -> dict:
+    return {
+        "qualifiedSourceName": region.qualified_name,
+        "namespacePath": region.namespace_path,
+        "sourceSpan": region.source_span,
+        "sourceSpanHash": region.source_span_hash,
+    }
+
+
+_NAMESPACE_OPEN_RE = re.compile(
+    r"\b(?:inline\s+)?namespace(?:\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*))?\s*\{"
+)
+
+
+def _namespace_path_at(masked_source: str, position: int) -> list[str]:
+    frames: list[list[str]] = []
+    active: list[str] = []
+    i = 0
+    limit = max(0, min(position, len(masked_source)))
+    while i < limit:
+        match = _NAMESPACE_OPEN_RE.match(masked_source, i)
+        if match:
+            raw_name = match.group("name")
+            parts = raw_name.split("::") if raw_name else ["<anonymous>"]
+            frames.append(parts)
+            active.extend(parts)
+            i = match.end()
+            continue
+        ch = masked_source[i]
+        if ch in {'"', "'"}:
+            i = _skip_quoted_literal(masked_source, i, limit)
+            continue
+        if ch == "{":
+            frames.append([])
+        elif ch == "}":
+            if frames:
+                parts = frames.pop()
+                if parts:
+                    active = active[: -len(parts)]
+        i += 1
+    return active
+
+
+def _skip_quoted_literal(source: str, index: int, limit: int) -> int:
+    quote = source[index]
+    i = index + 1
+    escaped = False
+    while i < limit:
+        ch = source[i]
+        if escaped:
+            escaped = False
+        elif ch == "\\":
+            escaped = True
+        elif ch == quote:
+            return i + 1
+        i += 1
+    return i
 
 
 def _manifest_device_path(manifest: Mapping[str, Any]) -> Optional[str]:

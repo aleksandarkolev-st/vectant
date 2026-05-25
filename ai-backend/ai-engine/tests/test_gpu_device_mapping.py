@@ -10,6 +10,27 @@ def test_extract_kernel_regions_records_body_spans():
     body = source[regions["flow"].body_start : regions["flow"].body_end]
     assert "x[0] += 1.0f;" in body
     assert regions["flow"].signature_hash.startswith("0x")
+    assert regions["flow"].qualified_name == "flow"
+    assert regions["flow"].namespace_path == ""
+    assert regions["flow"].source_span_hash
+
+
+def test_extract_kernel_regions_records_namespace_identity():
+    source = """
+namespace gpu::kernels {
+constexpr const char* debug_brace = "}";
+__global__ void shade(float* x) {
+  x[0] += 1.0f;
+}
+}
+"""
+
+    regions = extract_kernel_regions(source)
+
+    assert set(regions) == {"shade"}
+    assert regions["shade"].qualified_name == "gpu::kernels::shade"
+    assert regions["shade"].namespace_path == "gpu::kernels"
+    assert regions["shade"].source_span.startswith(str(source.index("__global__")))
 
 
 def test_build_device_mapping_report_maps_user_kernel_to_internal_role():
@@ -44,9 +65,45 @@ extern "C" __global__ void flow(float* x, int n) {
     assert report["generatedDevicePath"] == ".synthi/generated/gpu/device.hip"
     assert report["deviceMappings"][0]["sourcePath"] == "src/gpu/flow.hip"
     assert report["deviceMappings"][0]["generatedPath"] == ".synthi/generated/gpu/device.hip"
+    assert report["deviceMappings"][0]["qualifiedSourceName"] == "flow"
+    assert report["deviceMappings"][0]["sourceSpanHash"]
     assert report["sourceBaselineContents"]["src/gpu/flow.hip"].lstrip().startswith("__constant__")
     assert report["kernelSignatureHashes"]["flow"].startswith("0x")
     assert "generated:device" in report["constantGlobalLayoutHashes"]
+
+
+def test_build_device_mapping_report_records_namespace_symbol_identity():
+    source = {
+        "src/gpu/shade.hip": """
+namespace gpu::kernels {
+__global__ void shade(float* x) {
+  x[0] += 1.0f;
+}
+}
+"""
+    }
+    generated = {
+        ".synthi/generated/gpu/device.hip": """
+namespace gpu::kernels {
+extern "C" __global__ void shade(float* x) {
+  x[0] += 1.0f;
+}
+}
+"""
+    }
+
+    report = build_device_mapping_report(
+        source_files=source,
+        generated_files=generated,
+        manifest={"module_files": {"device": ".synthi/generated/gpu/device.hip"}},
+    )
+
+    mapping = report["deviceMappings"][0]
+    assert mapping["symbol"] == "shade"
+    assert mapping["qualifiedSourceName"] == "gpu::kernels::shade"
+    assert mapping["namespacePath"] == "gpu::kernels"
+    assert mapping["sourceSpan"]
+    assert mapping["sourceSpanHash"]
 
 
 def test_build_device_mapping_report_records_unmapped_kernel():
