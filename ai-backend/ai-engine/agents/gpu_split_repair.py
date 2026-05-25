@@ -2209,6 +2209,8 @@ def _bounded_block_expression(
     ctor = _dim3_constructor_name(host_source, original) or _inline_dim3_constructor_name(original)
     if ctor:
         return f"{ctor}({adjusted[0]}, {adjusted[1]}, {adjusted[2]})"
+    if original.startswith("{") and original.endswith("}"):
+        return f"{{{adjusted[0]}, {adjusted[1]}, {adjusted[2]}}}"
     if adjusted[1] == 1 and adjusted[2] == 1:
         return str(adjusted[0])
     return None
