@@ -6,7 +6,8 @@ import { resolvePipelineBudgetMs } from "../../src/protocol/index.js";
 
 function installFakeAttached(
   waitForTerminal: () => Promise<{ status: "applied"; source: "hmr_status"; elapsedMs: number }>
-): void {
+): { feedHmr: (msg: Record<string, unknown>) => void } {
+  const listeners: Array<(msg: Record<string, unknown>) => void> = [];
   (session as unknown as { state: string }).state = "attached";
   (session as unknown as { attached: unknown }).attached = {
     sessionId: "fixture",
@@ -25,9 +26,20 @@ function installFakeAttached(
     },
     channels: {
       hmr: {
-        onMessage: () => () => {},
+        onMessage: (cb: (msg: Record<string, unknown>) => void) => {
+          listeners.push(cb);
+          return () => {
+            const index = listeners.indexOf(cb);
+            if (index >= 0) listeners.splice(index, 1);
+          };
+        },
         waitForTerminal,
       },
+    },
+  };
+  return {
+    feedHmr: (msg: Record<string, unknown>) => {
+      for (const listener of [...listeners]) listener(msg);
     },
   };
 }
@@ -36,6 +48,7 @@ describe("synthi_wait_hmr", () => {
   beforeEach(() => {
     session._resetForTests();
     eventLog._resetForTests();
+    delete process.env["SYNTHI_MCP_HMR_POST_APPLY_OBSERVE_MS"];
   });
 
   it("reports frame_gate:disabled when no frame_advance has ever been seen", async () => {
@@ -66,5 +79,63 @@ describe("synthi_wait_hmr", () => {
     expect(res.isError).toBeUndefined();
     const body = res.structuredContent as { frame_gate: { status: string } };
     expect(body.frame_gate.status).toBe("timeout");
+  });
+
+  it("returns a post-apply runtime rejection instead of applied", async () => {
+    process.env["SYNTHI_MCP_HMR_POST_APPLY_OBSERVE_MS"] = "100";
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({ status: "applied", module: "device", state_preserved: true });
+      setTimeout(
+        () =>
+          fake.feedHmr({
+            status: "rejected",
+            module: "device",
+            reason: "GPU kernel launch failed after sidecar reload",
+            fallback: "Keep runtime running but mark GPU HMR degraded until the launch succeeds",
+          }),
+        10
+      );
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({ timeoutMs: 500 });
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      status: string;
+      post_apply_terminal?: boolean;
+      detail?: { reason?: string };
+    };
+    expect(body.status).toBe("rejected");
+    expect(body.post_apply_terminal).toBe(true);
+    expect(body.detail?.reason).toContain("GPU kernel launch failed");
+  });
+
+  it("returns a post-apply runtime rejection while waiting for frame evidence", async () => {
+    session.setFrameAdvance(1, Date.now());
+    const fake = installFakeAttached(async () => {
+      fake.feedHmr({ status: "applied", module: "device", state_preserved: true });
+      setTimeout(
+        () =>
+          fake.feedHmr({
+            status: "rejected",
+            module: "device",
+            reason: "post-reload device dispatch rejected",
+            fallback: "Keep runtime running but mark GPU HMR degraded until the launch succeeds",
+          }),
+        10
+      );
+      return { status: "applied", source: "hmr_status", elapsedMs: 10 };
+    });
+
+    const res = await waitHmrTool({ timeoutMs: 500 });
+    expect(res.isError).toBeUndefined();
+    const body = res.structuredContent as {
+      status: string;
+      post_apply_terminal?: boolean;
+      detail?: { reason?: string };
+    };
+    expect(body.status).toBe("rejected");
+    expect(body.post_apply_terminal).toBe(true);
+    expect(body.detail?.reason).toContain("post-reload device dispatch rejected");
   });
 });
