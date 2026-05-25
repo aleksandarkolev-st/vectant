@@ -361,6 +361,10 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
         guidance.append(
             "- For each real host-launched update kernel that receives device buffers, either add a dedicated init/seed kernel that writes every required device buffer before the update launch, or remove the host launch if it was a synthetic launch for a preserved-but-not-runtime-reachable source kernel. Preserved device kernels are mapping artifacts, not permission to launch every kernel in the project."
         )
+    if "device_kernels_not_launched" in joined:
+        guidance.append(
+            "- Use the SOURCE LAUNCH GRAPH records to preserve a real source-reachable launch path. If you emit a synthi_gpu_launch(...) for a listed source kernel, materialize the listed host argument owner expressions in generated core state and pass those owners by address in the same order. Do not invent a different aggregate, placeholder buffer, or synthetic kernel just to make a launch compile; a launch without source-owned arguments is verifier-rejected."
+        )
     if "constant_false_launch_guard" in joined:
         guidance.append(
             "- Never initialize a local launch guard with `false` and immediately branch on it. The guard must be assigned from the actual `synthi_gpu_launch(...)` result, or it must be a persistent state/static flag updated only after a successful launch. A local `bool initialized = false; if (initialized) { ... }` is always rejected."
@@ -1016,6 +1020,7 @@ def _source_launch_graph_contract(
             "shared": item.get("shared"),
             "stream": item.get("stream"),
             "args": item.get("args"),
+            "requiredHostArgumentOwners": item.get("args"),
             "form": item.get("form"),
         }
         for item in graph[:40]
@@ -1032,6 +1037,19 @@ def _source_launch_graph_contract(
         (
             "Do not replace a listed source launch with an unrelated preserved kernel "
             "solely because that other kernel compiles."
+        ),
+        (
+            "For each emitted `synthi_gpu_launch(...)` that targets one of these "
+            "records, the initializer-list entries must be the addresses of "
+            "`requiredHostArgumentOwners` in the same order. Generated core code "
+            "must materialize those owner expressions from adapted source state "
+            "before the launch; do not replace them with newly named aggregate "
+            "wrappers, placeholder buffers, or test-only data."
+        ),
+        (
+            "If a listed owner expression cannot be represented in generated core "
+            "without inventing state, do not emit that source launch. A verifier "
+            "rejection is safer than a launch with different argument ownership."
         ),
         (
             "The records below are target-scoped and filtered to kernels that exist in "

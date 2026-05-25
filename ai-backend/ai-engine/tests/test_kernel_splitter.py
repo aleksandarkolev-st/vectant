@@ -666,6 +666,20 @@ def test_build_split_retry_prompt_guides_source_launch_arg_repairs():
     assert "remove that runtime launch" in prompt
 
 
+def test_build_split_retry_prompt_guides_missing_source_launches():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- device_kernels_not_launched: The generated device role declares GPU kernels, but no generated host role launches them through synthi_gpu_launch(...).",
+        ],
+    )
+
+    assert "SOURCE LAUNCH GRAPH" in prompt
+    assert "source-reachable launch path" in prompt
+    assert "host argument owner expressions" in prompt
+    assert "Do not invent a different aggregate" in prompt
+
+
 def test_deterministic_split_repair_runs_followup_passes():
     source_files = {
         "src/device/kernels/StepKernel.h": (
@@ -760,6 +774,10 @@ def test_source_launch_graph_contract_reports_runtime_kernel_object_launches():
     assert "shade_pixels" in contract
     assert "runtime_kernel_object" in contract
     assert "BlockW, BlockH, 1" in contract
+    assert "requiredHostArgumentOwners" in contract
+    assert "launch_args" in contract
+    assert "addresses of `requiredHostArgumentOwners`" in contract
+    assert "without inventing state" in contract
     assert "unrelated preserved kernel" in contract
 
 
