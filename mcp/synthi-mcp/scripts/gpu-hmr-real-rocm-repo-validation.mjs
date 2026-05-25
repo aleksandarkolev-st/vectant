@@ -965,6 +965,41 @@ function countMatches(lines, pattern) {
   return lines.filter((line) => pattern.test(line)).length;
 }
 
+function runtimeDispatchEvidence(workerEvidence) {
+  const dispatchFailureLines = workerEvidence.filter((line) =>
+    /\bsynthi_gpu_launch\b.*\bdispatch=(failed|stale-pointer|missing-dispatcher)\b/i.test(line)
+  );
+  const dispatchSuccessCount = countMatches(
+    workerEvidence,
+    /\bsynthi_gpu_launch\b.*\bdispatch=ok\b/i,
+  );
+  return {
+    success_count: dispatchSuccessCount,
+    failure_count: dispatchFailureLines.length,
+    failure_lines: dispatchFailureLines.slice(0, 20),
+  };
+}
+
+function selfCheckRuntimeDispatchEvidence() {
+  const evidence = runtimeDispatchEvidence([
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=first grid=(1, 1, 1) dispatch=ok',
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=second grid=(1, 1, 1) dispatch=failed',
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=third grid=(1, 1, 1) dispatch=stale-pointer',
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=fourth grid=(1, 1, 1) dispatch=missing-dispatcher',
+    '[gpu-runtime-boundary] unrelated launch line dispatch=failed',
+  ]);
+  if (evidence.success_count !== 1) {
+    throw new Error(`expected one dispatch success, got ${evidence.success_count}`);
+  }
+  if (evidence.failure_count !== 3) {
+    throw new Error(`expected three dispatch failures, got ${evidence.failure_count}`);
+  }
+  if (evidence.failure_lines.some((line) => !/\bsynthi_gpu_launch\b/.test(line))) {
+    throw new Error('dispatch failure evidence included a non-launch line');
+  }
+  console.log('runtime dispatch evidence self-check passed');
+}
+
 async function collectRuntimeEvidence() {
   if (CFG.mcpTransport !== 'docker') return;
   report.docker = {
@@ -986,7 +1021,7 @@ async function collectRuntimeEvidence() {
   );
   const workerEvidence = evidenceLines(
     workerLogs,
-    /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|Runner process exited|fatal|Rust cannot catch/i,
+    /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|gpu-runtime-boundary|synthi_gpu_launch|gpu_runtime_error|gpu-hmr-rejected|Runner process exited|fatal|Rust cannot catch/i,
   );
   const aiEvidence = evidenceLines(
     aiLogs,
@@ -995,6 +1030,7 @@ async function collectRuntimeEvidence() {
   const genericDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch(?!\/gpu)/i);
   const gpuDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch\/gpu/i);
   const compileHealCalls = countMatches(aiEvidence, /POST \/refactor\/heal/i);
+  const runtimeDispatch = runtimeDispatchEvidence(workerEvidence);
   report.evidence = {
     worker_log_lines: workerEvidence,
     ai_engine_log_lines: aiEvidence,
@@ -1011,7 +1047,20 @@ async function collectRuntimeEvidence() {
       runner_restarts: countMatches(workerEvidence, /Restarting runner/i),
       runner_exit_errors: countMatches(workerEvidence, /Runner process exited|Rust cannot catch|fatal runtime/i),
     },
+    runtime_dispatch: runtimeDispatch,
   };
+  if (runtimeDispatch.failure_count > 0) {
+    record(
+      'runtime dispatch failures',
+      'fail',
+      runtimeDispatch.failure_lines.slice(0, 3).join(' | ').slice(0, 1200),
+    );
+    process.exitCode = 1;
+  } else if (runtimeDispatch.success_count > 0) {
+    record('runtime dispatch successes', 'pass', `dispatch_ok=${runtimeDispatch.success_count}`);
+  } else {
+    record('runtime dispatch evidence', 'warn', 'no synthi_gpu_launch dispatch lines captured');
+  }
   record(
     'runtime evidence collected',
     'pass',
@@ -1210,17 +1259,26 @@ async function run() {
   }
 }
 
-run()
-  .catch((err) => {
-    record('fatal', 'fail', err.stack || err.message);
+if (process.argv.includes('--self-check')) {
+  try {
+    selfCheckRuntimeDispatchEvidence();
+  } catch (err) {
+    console.error(err.stack || err.message);
     process.exitCode = 1;
-  })
-  .finally(async () => {
-    if (mcpState?.proc) {
-      try { mcpState.proc.kill('SIGTERM'); } catch { /* ignore */ }
-    }
-    await collectRuntimeEvidence().catch((err) => {
-      record('runtime evidence collected', 'warn', err.stack || err.message);
+  }
+} else {
+  run()
+    .catch((err) => {
+      record('fatal', 'fail', err.stack || err.message);
+      process.exitCode = 1;
+    })
+    .finally(async () => {
+      if (mcpState?.proc) {
+        try { mcpState.proc.kill('SIGTERM'); } catch { /* ignore */ }
+      }
+      await collectRuntimeEvidence().catch((err) => {
+        record('runtime evidence collected', 'warn', err.stack || err.message);
+      });
+      await writeResults().catch((err) => console.error(err));
     });
-    await writeResults().catch((err) => console.error(err));
-  });
+}
