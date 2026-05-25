@@ -20,6 +20,9 @@ _GLOBAL_KERNEL_RE = re.compile(
     re.MULTILINE,
 )
 _LOCAL_INCLUDE_RE = re.compile(r'^\s*#\s*include\s+"(?P<path>[^"]+)"', re.MULTILINE)
+_DEVICE_ANNOTATION_MACRO_RE = re.compile(
+    r"\b[A-Z][A-Z0-9_]*(?:DEVICE|GPU|CUDA|HIP)[A-Z0-9_]*\b"
+)
 
 
 @dataclass(frozen=True)
@@ -241,8 +244,7 @@ def _contains_device_compilation_marker(masked_source: str) -> bool:
         "__global__" in masked_source
         or "__device__" in masked_source
         or "GLOBAL_KERNEL_SIGNATURE" in masked_source
-        or "HIPRT_DEVICE" in masked_source
-        or "HIPRT_HOST_DEVICE" in masked_source
+        or _DEVICE_ANNOTATION_MACRO_RE.search(masked_source)
     )
 
 

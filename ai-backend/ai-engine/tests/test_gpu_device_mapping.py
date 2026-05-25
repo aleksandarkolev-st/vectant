@@ -205,6 +205,30 @@ extern "C" __global__ void CameraRays(HIPRTRenderData render_data) {
     assert report["deviceMappings"][0]["symbol"] == "CameraRays"
 
 
+def test_build_device_mapping_report_tracks_generic_macro_device_translation_unit():
+    source = {
+        "src/gpu/helper.hip": """
+PROJECT_DEVICE float helper_gain(float value) {
+  return value * 2.0f;
+}
+""",
+    }
+    generated = {
+        ".synthi/generated/gpu/device.hip": "",
+    }
+
+    report = build_device_mapping_report(
+        source_files=source,
+        generated_files=generated,
+        manifest={"module_files": {"device": ".synthi/generated/gpu/device.hip"}},
+    )
+
+    assert "src/gpu/helper.hip" in report["sourceBaselineContents"]
+    assert report["deviceIncludeGraph"]["deviceTranslationUnits"] == ["src/gpu/helper.hip"]
+    assert report["deviceMappings"] == []
+    assert report["unmappedKernels"] == []
+
+
 def test_build_device_mapping_report_walks_transitive_generated_include_bridge():
     source = {
         "src/Device/bridge.h": '#include "kernels/CameraRays.h"\n',
