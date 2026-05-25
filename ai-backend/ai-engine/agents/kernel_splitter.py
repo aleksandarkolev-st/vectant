@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, 
 
 from agents.abi_stamper import mask_comments_for_parsing, stamp_device_source
 from agents.gpu_detect import GpuDetectionResult
-from agents.gpu_split_repair import repair_split_artifacts
+from agents.gpu_split_repair import REPAIR_SCHEMA_VERSION, repair_split_artifacts
 from agents.gpu_source_context import build_project_source_context
 from agents.launch_graph_extractor import launch_graph_as_dicts
 from llm.prompts import GPU_SPLIT_PROMPT
@@ -85,6 +85,90 @@ class KernelSplitResult:
             "verification": self.verification.to_dict() if self.verification else None,
             "repair_report": self.repair_report,
         }
+
+
+MAX_DETERMINISTIC_REPAIR_PASSES = 4
+
+
+def _reason_codes(verification: SplitVerificationResult) -> List[str]:
+    return [violation.rule for violation in verification.violations]
+
+
+def _append_unique(target: List[str], values: Sequence[Any]) -> None:
+    for value in values:
+        text = str(value)
+        if text and text not in target:
+            target.append(text)
+
+
+def _apply_split_repairs_until_stable(
+    *,
+    files: Mapping[str, str],
+    manifest: Optional[Mapping[str, Any]],
+    manifest_arch: Sequence[str],
+    source_files: Mapping[str, str],
+    verification: SplitVerificationResult,
+    max_passes: int = MAX_DETERMINISTIC_REPAIR_PASSES,
+) -> tuple[Dict[str, str], SplitVerificationResult, dict]:
+    """Apply deterministic generated-artifact repairs to a fixed point.
+
+    A repair can expose a narrower verifier failure on the next pass. For
+    example, replacing a generated device role with a source include bridge can
+    turn a previously declared fake lifecycle kernel into an unresolved host
+    launch. That follow-up launch removal is still deterministic and should run
+    before asking the model for another split attempt.
+    """
+
+    current_files = {str(path): str(content) for path, content in files.items()}
+    current_verification = verification
+    aggregate: dict = {
+        "schemaVersion": REPAIR_SCHEMA_VERSION,
+        "repaired": False,
+        "inputReasonCodes": [],
+        "repairRules": [],
+        "changedFiles": [],
+        "scope": "generated_artifacts_only",
+        "passes": [],
+        "remainingReasonCodes": _reason_codes(current_verification),
+    }
+
+    for pass_index in range(max(0, max_passes)):
+        if current_verification.ok:
+            break
+
+        repaired_files, pass_report = repair_split_artifacts(
+            files=current_files,
+            manifest=manifest,
+            source_files=source_files,
+            verification=current_verification,
+        )
+        pass_record = dict(pass_report)
+        pass_record["pass"] = pass_index + 1
+        _append_unique(
+            aggregate["inputReasonCodes"],
+            pass_report.get("inputReasonCodes", []),
+        )
+
+        if not pass_report.get("repaired"):
+            pass_record["remainingReasonCodes"] = _reason_codes(current_verification)
+            aggregate["passes"].append(pass_record)
+            break
+
+        current_files = repaired_files
+        current_verification = verify_split_output(
+            files=current_files,
+            manifest_arch=manifest_arch,
+            manifest=manifest,
+            source_files=source_files,
+        )
+        pass_record["remainingReasonCodes"] = _reason_codes(current_verification)
+        aggregate["passes"].append(pass_record)
+        aggregate["repaired"] = True
+        _append_unique(aggregate["repairRules"], pass_report.get("repairRules", []))
+        _append_unique(aggregate["changedFiles"], pass_report.get("changedFiles", []))
+
+    aggregate["remainingReasonCodes"] = _reason_codes(current_verification)
+    return current_files, current_verification, aggregate
 
 
 class KernelSplitterError(Exception):
@@ -1457,46 +1541,13 @@ async def run_kernel_splitter(
         manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
         source_files=scoped_source_map,
     )
-    repair_report: dict = {
-        "schemaVersion": "synthi.gpu.split_repair.v1",
-        "repaired": False,
-        "inputReasonCodes": [v.rule for v in verification.violations],
-        "repairRules": [],
-        "changedFiles": [],
-        "scope": "generated_artifacts_only",
-    }
-    repaired_files, repair_report = repair_split_artifacts(
+    parsed["files"], verification, repair_report = _apply_split_repairs_until_stable(
         files=parsed["files"],
         manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
+        manifest_arch=arch_list,
         source_files=scoped_source_map,
         verification=verification,
     )
-    if repair_report.get("repaired"):
-        repaired_verification = verify_split_output(
-            files=repaired_files,
-            manifest_arch=arch_list,
-            manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
-            source_files=scoped_source_map,
-        )
-        parsed["files"] = repaired_files
-        verification = repaired_verification
-
-    if not verification.ok and not repair_report.get("repaired"):
-        repaired_files, repair_report = repair_split_artifacts(
-            files=parsed["files"],
-            manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
-            source_files=scoped_source_map,
-            verification=verification,
-        )
-        if repair_report.get("repaired"):
-            repaired_verification = verify_split_output(
-                files=repaired_files,
-                manifest_arch=arch_list,
-                manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
-                source_files=scoped_source_map,
-            )
-            parsed["files"] = repaired_files
-            verification = repaired_verification
     parsed["kernel_hashes"] = _kernel_hashes_for_generated_split(
         files=parsed["files"],
         manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,

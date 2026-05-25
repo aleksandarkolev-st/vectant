@@ -23,6 +23,7 @@ from agents.kernel_splitter import (
     _source_device_kernel_symbol_set,
     _source_launch_graph_contract,
     _verifier_acceptance_gate_contract,
+    _apply_split_repairs_until_stable,
     _kernel_hashes_for_generated_split,
     _stamp_core_device_kernel_sig_hashes,
     build_prompt,
@@ -35,7 +36,7 @@ from agents.kernel_splitter import (
 )
 from agents.gpu_source_context import build_project_source_context
 from llm.prompts import GPU_SPLIT_PROMPT, build_split_mode_prompt
-from verifier_gpu import SplitVerificationResult, Violation
+from verifier_gpu import SplitVerificationResult, Violation, verify_split_output
 
 
 SAMPLE_RAW = '''
@@ -663,6 +664,64 @@ def test_build_split_retry_prompt_guides_source_launch_arg_repairs():
     assert "source-reachable kernel" in prompt
     assert "same launch argument object names and order" in prompt
     assert "remove that runtime launch" in prompt
+
+
+def test_deterministic_split_repair_runs_followup_passes():
+    source_files = {
+        "src/device/kernels/StepKernel.h": (
+            "#pragma once\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) extern \"C\" returnType __global__\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) StepKernel(int* values) { values[0] += 1; }\n"
+        ),
+    }
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "struct AppState { int* values; };"
+        ),
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            "auto* s = static_cast<AppState*>(state); "
+            'synthi_gpu_launch(nullptr, "StepKernel", 1, 64, 0, nullptr, { &s->values }); '
+            'synthi_gpu_launch(nullptr, "setup_runtime_buffers", 1, 64, 0, nullptr, { &s->values }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": (
+            'extern "C" __global__ void StepKernel(float* values) { values[0] += 1.0f; }\n'
+            'extern "C" __global__ void setup_runtime_buffers(int** values) { }'
+        ),
+    }
+
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["unit-test-arch"],
+        source_files=source_files,
+    )
+    assert any(v.rule.startswith("source_device_kernel_") for v in verification.violations)
+    assert not any(v.rule == "launch_site_unresolved" for v in verification.violations)
+
+    repaired, after, report = _apply_split_repairs_until_stable(
+        files=files,
+        manifest=None,
+        manifest_arch=["unit-test-arch"],
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.source_device_include_bridge" in report["repairRules"]
+    assert "repair.unresolved_generated_launches" in report["repairRules"]
+    assert len(report["passes"]) >= 2
+    assert "setup_runtime_buffers" not in repaired["core.cpp"]
+    assert not any(v.rule == "launch_site_unresolved" for v in after.violations)
 
 
 def test_verifier_acceptance_gate_contract_highlights_generic_split_gates():
