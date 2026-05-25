@@ -688,6 +688,10 @@ struct DeviceSymbolIdentityKey {
     template_arity: Option<String>,
     overload_index: Option<String>,
     source_span: Option<String>,
+    source_span_hash: Option<String>,
+    mangled_names: Option<String>,
+    demangled_names: Option<String>,
+    exported_names: Option<String>,
 }
 
 impl DeviceSymbolIdentityKey {
@@ -699,6 +703,10 @@ impl DeviceSymbolIdentityKey {
             || self.template_arity.is_some()
             || self.overload_index.is_some()
             || self.source_span.is_some()
+            || self.source_span_hash.is_some()
+            || self.mangled_names.is_some()
+            || self.demangled_names.is_some()
+            || self.exported_names.is_some()
     }
 }
 
@@ -1132,6 +1140,32 @@ fn scalar_identity_field(item: &serde_json::Value, key: &str) -> Option<String> 
     None
 }
 
+fn identity_list_field(item: &serde_json::Value, key: &str) -> Option<String> {
+    let value = item.get(key)?;
+    if let Some(items) = value.as_array() {
+        let values = items
+            .iter()
+            .filter_map(|item| {
+                if let Some(text) = item.as_str() {
+                    Some(text.trim().to_string())
+                } else if item.is_null() {
+                    None
+                } else {
+                    Some(item.to_string())
+                }
+            })
+            .filter(|value| !value.is_empty())
+            .collect::<BTreeSet<_>>();
+        if values.is_empty() {
+            None
+        } else {
+            Some(values.into_iter().collect::<Vec<_>>().join("\n"))
+        }
+    } else {
+        scalar_identity_field(item, key)
+    }
+}
+
 fn device_symbol_identity_key(item: &serde_json::Value) -> DeviceSymbolIdentityKey {
     DeviceSymbolIdentityKey {
         qualified_source_name: scalar_identity_field(item, "qualifiedSourceName")
@@ -1142,6 +1176,10 @@ fn device_symbol_identity_key(item: &serde_json::Value) -> DeviceSymbolIdentityK
         template_arity: scalar_identity_field(item, "templateArity"),
         overload_index: scalar_identity_field(item, "overloadIndex"),
         source_span: scalar_identity_field(item, "sourceSpan"),
+        source_span_hash: scalar_identity_field(item, "sourceSpanHash"),
+        mangled_names: identity_list_field(item, "mangledNames"),
+        demangled_names: identity_list_field(item, "demangledNames"),
+        exported_names: identity_list_field(item, "exportedNames"),
     }
 }
 
@@ -9083,6 +9121,118 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
             report.rejection_reason.as_deref(),
             Some("selection.symbol_identity_uncertain")
         );
+    }
+
+    #[test]
+    fn partial_artifact_selector_rejects_conflicting_compiled_symbol_identity() {
+        let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_kernel",
+                        "qualifiedSourceName": "scope::owned_kernel",
+                        "signatureHash": "sig-a",
+                        "sourceSpanHash": "span-a",
+                        "mangledNames": ["_Z12owned_kernelPi"],
+                        "exportedNames": ["owned_kernel"],
+                        "sourcePath": "src/device/owned.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    },
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_kernel",
+                        "qualifiedSourceName": "scope::owned_kernel",
+                        "signatureHash": "sig-a",
+                        "sourceSpanHash": "span-a",
+                        "mangledNames": ["_Z12owned_kernelPf"],
+                        "exportedNames": ["owned_kernel"],
+                        "sourcePath": "src/device/owned.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    }
+                ]
+            },
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "kind": "source_include_bridge",
+                        "filename": ".synthi/generated/gpu/device.partial.owned.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": ["src/device/owned.h"],
+                        "symbols": ["owned_kernel"],
+                        "contentBytes": 90,
+                        "contentHash": "owned"
+                    }
+                ]
+            }
+        });
+        let report = select_device_partial_artifact_with_report(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some("src/device/owned.h"),
+            &["owned_kernel".to_string()],
+        );
+
+        assert!(report.selected.is_none());
+        assert_eq!(
+            report.rejection_reason.as_deref(),
+            Some("selection.symbol_identity_uncertain")
+        );
+    }
+
+    #[test]
+    fn partial_artifact_selector_accepts_reordered_compiled_symbol_identity() {
+        let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_kernel",
+                        "qualifiedSourceName": "scope::owned_kernel",
+                        "signatureHash": "sig-a",
+                        "sourceSpanHash": "span-a",
+                        "mangledNames": ["_Z13owned_kernel2Pi", "_Z12owned_kernelPi"],
+                        "exportedNames": ["owned_kernel", "owned_kernel.stub"],
+                        "sourcePath": "src/device/owned.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    },
+                    {
+                        "kind": "kernel",
+                        "symbol": "owned_kernel",
+                        "qualifiedSourceName": "scope::owned_kernel",
+                        "signatureHash": "sig-a",
+                        "sourceSpanHash": "span-a",
+                        "mangledNames": ["_Z12owned_kernelPi", "_Z13owned_kernel2Pi"],
+                        "exportedNames": ["owned_kernel.stub", "owned_kernel"],
+                        "sourcePath": "src/device/owned.h",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    }
+                ]
+            },
+            "devicePartialArtifacts": {
+                "artifacts": [
+                    {
+                        "kind": "source_include_bridge",
+                        "filename": ".synthi/generated/gpu/device.partial.owned.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip",
+                        "sourcePaths": ["src/device/owned.h"],
+                        "symbols": ["owned_kernel"],
+                        "contentBytes": 90,
+                        "contentHash": "owned"
+                    }
+                ]
+            }
+        });
+        let selected = select_device_partial_artifact(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            Some("src/device/owned.h"),
+            &["owned_kernel".to_string()],
+        )
+        .expect("reordered compiled identity evidence is equivalent");
+
+        assert_eq!(selected.selection_reason, "exact_symbol_set");
+        assert_eq!(selected.symbols, vec!["owned_kernel".to_string()]);
     }
 
     #[test]
