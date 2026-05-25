@@ -1974,14 +1974,60 @@ fn statement_spans(source: &str) -> Vec<(usize, usize)> {
 }
 
 fn normalize_statement_anchor(text: &str) -> String {
-    let without_global_qualifiers = text.replace("::", "");
-    collapse_ws(&without_global_qualifiers)
+    let without_redundant_global_qualifiers = strip_redundant_global_scope_qualifiers(text);
+    collapse_ws(&without_redundant_global_qualifiers)
         .replace(" ;", ";")
         .replace("( ", "(")
         .replace(" )", ")")
         .replace("[ ", "[")
         .replace(" ]", "]")
         .replace(" ,", ",")
+}
+
+fn strip_redundant_global_scope_qualifiers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if idx + 1 < bytes.len()
+            && bytes[idx] == b':'
+            && bytes[idx + 1] == b':'
+            && starts_redundant_global_scope(text, idx)
+        {
+            idx += 2;
+            continue;
+        }
+        let Some(ch) = text[idx..].chars().next() else {
+            break;
+        };
+        out.push(ch);
+        idx += ch.len_utf8();
+    }
+    out
+}
+
+fn starts_redundant_global_scope(text: &str, scope_idx: usize) -> bool {
+    let Some(next) = text.get(scope_idx + 2..).and_then(|rest| rest.chars().next()) else {
+        return false;
+    };
+    if !is_cpp_identifier_start(next) {
+        return false;
+    }
+    let previous = text
+        .get(..scope_idx)
+        .and_then(|prefix| prefix.chars().rev().find(|ch| !ch.is_whitespace()));
+    match previous {
+        None => true,
+        Some(ch) => !is_cpp_identifier_continue(ch) && !matches!(ch, ')' | ']' | '>'),
+    }
+}
+
+fn is_cpp_identifier_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_cpp_identifier_continue(ch: char) -> bool {
+    is_cpp_identifier_start(ch) || ch.is_ascii_digit()
 }
 
 fn enclosing_patch_spans(
@@ -2839,6 +2885,22 @@ extern "C" __global__ void trace(float* x) {
             .as_deref()
             .unwrap_or_default()
             .contains("x[0] -= ::scale_template::gain<float>(1.0f);"));
+    }
+
+    #[test]
+    fn statement_anchor_preserves_namespace_identity() {
+        assert_eq!(
+            normalize_statement_anchor("value += ::math::gain(input);"),
+            normalize_statement_anchor("value += math::gain(input);")
+        );
+        assert_ne!(
+            normalize_statement_anchor("value += math::gain(input);"),
+            normalize_statement_anchor("value += mathgain(input);")
+        );
+        assert_ne!(
+            normalize_statement_anchor("value += outer::gain(input);"),
+            normalize_statement_anchor("value += gain(input);")
+        );
     }
 
     #[test]
