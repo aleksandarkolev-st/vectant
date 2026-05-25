@@ -106,6 +106,36 @@ fn should_process_runner_commands(_gpu_reload_inflight_count: usize) -> bool {
     true
 }
 
+fn runtime_control_status_payload(
+    status: &str,
+    token: Option<&str>,
+    runtime_paused: bool,
+    gpu_reload_inflight_count: usize,
+) -> String {
+    let mut payload = serde_json::json!({
+        "status": status,
+        "module": "runner",
+        "runtimePaused": runtime_paused,
+        "gpuReloadInflightCount": gpu_reload_inflight_count,
+    });
+    if let Some(token) = token.filter(|value| !value.trim().is_empty()) {
+        payload["runtimeControlToken"] = serde_json::Value::String(token.to_string());
+    }
+    payload.to_string()
+}
+
+fn emit_runtime_control_status(
+    status: &str,
+    token: Option<&str>,
+    runtime_paused: bool,
+    gpu_reload_inflight_count: usize,
+) {
+    eprintln!(
+        "[Runner] [HMR-STATUS] {}",
+        runtime_control_status_payload(status, token, runtime_paused, gpu_reload_inflight_count)
+    );
+}
+
 #[cfg(feature = "gpu-hmr")]
 fn decode_gpu_kernel_command_token(value: &str) -> Option<String> {
     let bytes = value.as_bytes();
@@ -1350,16 +1380,38 @@ fn main() {
                     }
                 }
                 "synthi_pause_runtime" | "pause_runtime" => {
+                    let control_token = parts.get(1).copied();
                     if !runtime_paused {
                         runtime_paused = true;
                         eprintln!("[Runner] Runtime update/render paused for external HMR work");
                     }
+                    #[cfg(feature = "gpu-hmr")]
+                    let gpu_reload_inflight_count = gpu_reload_inflight.len();
+                    #[cfg(not(feature = "gpu-hmr"))]
+                    let gpu_reload_inflight_count = 0;
+                    emit_runtime_control_status(
+                        "runtime-paused",
+                        control_token,
+                        runtime_paused,
+                        gpu_reload_inflight_count,
+                    );
                 }
                 "synthi_resume_runtime" | "resume_runtime" => {
+                    let control_token = parts.get(1).copied();
                     if runtime_paused {
                         runtime_paused = false;
                         eprintln!("[Runner] Runtime update/render resumed");
                     }
+                    #[cfg(feature = "gpu-hmr")]
+                    let gpu_reload_inflight_count = gpu_reload_inflight.len();
+                    #[cfg(not(feature = "gpu-hmr"))]
+                    let gpu_reload_inflight_count = 0;
+                    emit_runtime_control_status(
+                        "runtime-resumed",
+                        control_token,
+                        runtime_paused,
+                        gpu_reload_inflight_count,
+                    );
                 }
                 "load" => {
                     // usage: load <name> <path>
@@ -1955,7 +2007,7 @@ fn main() {
 mod tests {
     use super::{
         decode_gpu_kernel_command_token, device_load_abi_version, is_runtime_execution_paused,
-        should_process_runner_commands,
+        runtime_control_status_payload, should_process_runner_commands,
     };
 
     #[test]
@@ -1987,6 +2039,32 @@ mod tests {
     #[test]
     fn gpu_kernel_command_token_rejects_invalid_escape() {
         assert!(decode_gpu_kernel_command_token("shade%XX").is_none());
+    }
+
+    #[test]
+    fn runtime_control_status_payload_carries_token_and_pause_state() {
+        let payload = runtime_control_status_payload(
+            "runtime-paused",
+            Some("runner-control-3"),
+            true,
+            2,
+        );
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(value["status"], "runtime-paused");
+        assert_eq!(value["module"], "runner");
+        assert_eq!(value["runtimeControlToken"], "runner-control-3");
+        assert_eq!(value["runtimePaused"], true);
+        assert_eq!(value["gpuReloadInflightCount"], 2);
+    }
+
+    #[test]
+    fn runtime_control_status_payload_omits_blank_token() {
+        let payload = runtime_control_status_payload("runtime-resumed", Some(""), false, 0);
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(value["status"], "runtime-resumed");
+        assert!(value.get("runtimeControlToken").is_none());
     }
 
     #[cfg(feature = "gpu-hmr")]

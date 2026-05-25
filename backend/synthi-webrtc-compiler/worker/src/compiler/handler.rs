@@ -15,10 +15,13 @@ use crate::infra::messages::CompileRequest;
 static TIER0_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TIER0_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TIER0_INELIGIBLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static RUNNER_RUNTIME_CONTROL_SEQ: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 const MAX_DEVICE_PARTIAL_ARTIFACTS: usize = 128;
 const MAX_WARM_SOURCE_BRIDGE_TUS: usize = 16;
 const MAX_SOURCE_BRIDGE_SUPPORT_INLINE_DEPTH: usize = 6;
 const MAX_SOURCE_BRIDGE_SUPPORT_INLINE_BYTES: usize = 256 * 1024;
+const DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS: u64 = 5_000;
 
 // Import our new modular stages
 use crate::compiler::stages::ai_utils::{
@@ -2357,14 +2360,14 @@ async fn send_active_runner_runtime_command(
     session_id: &str,
     command: &str,
     label: &str,
-) -> bool {
-    let stdin_arc = {
+) -> Result<bool> {
+    let (stdin_arc, mut output_rx) = {
         let mut guard = ctx.runner_store.lock().await;
         let Some(state) = guard.as_mut() else {
-            return false;
+            return Ok(false);
         };
         if state.session_id.as_deref() != Some(session_id) {
-            return false;
+            return Ok(false);
         }
         let runner_alive = if let Some(child) = state.process.as_mut() {
             matches!(child.try_wait(), Ok(None))
@@ -2372,27 +2375,105 @@ async fn send_active_runner_runtime_command(
             false
         };
         if !runner_alive {
-            return false;
+            return Ok(false);
         }
-        state.stdin.clone()
+        (state.stdin.clone(), state.output_tx.subscribe())
     };
 
     let Some(stdin_arc) = stdin_arc else {
-        return false;
+        return Ok(false);
     };
 
+    let token = format!(
+        "runner-control-{}",
+        RUNNER_RUNTIME_CONTROL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let expected_status = runner_runtime_control_ack_status(command)
+        .context("runner runtime command does not have an acknowledgement contract")?;
     let mut stdin = stdin_arc.lock().await;
-    let line = format!("{command}\n");
+    let line = format!("{command} {token}\n");
     if let Err(e) = stdin.write_all(line.as_bytes()).await {
         eprintln!("[compile-device] runner {label} command failed: {e}");
-        return false;
+        anyhow::bail!("runner {label} command write failed: {e}");
     }
     if let Err(e) = stdin.flush().await {
         eprintln!("[compile-device] runner {label} flush failed: {e}");
-        return false;
+        anyhow::bail!("runner {label} command flush failed: {e}");
     }
     eprintln!("[compile-device] runner {label} command sent: {command}");
-    true
+    let timeout = runner_runtime_control_ack_timeout();
+    if wait_for_runner_runtime_control_ack(&mut output_rx, expected_status, &token, timeout).await {
+        Ok(true)
+    } else {
+        anyhow::bail!(
+            "runner {label} command did not acknowledge {expected_status} within {}ms",
+            timeout.as_millis()
+        );
+    }
+}
+
+fn runner_runtime_control_ack_status(command: &str) -> Option<&'static str> {
+    match command {
+        "synthi_pause_runtime" | "pause_runtime" => Some("runtime-paused"),
+        "synthi_resume_runtime" | "resume_runtime" => Some("runtime-resumed"),
+        _ => None,
+    }
+}
+
+fn runner_runtime_control_ack_timeout() -> std::time::Duration {
+    let ms = std::env::var("SYNTHI_GPU_HMR_RUNTIME_CONTROL_ACK_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS);
+    std::time::Duration::from_millis(ms)
+}
+
+fn extract_runner_structured_payload(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return Some(trimmed);
+    }
+
+    const PREFIX: &str = "[Runner] [HMR-STATUS] ";
+    line.find(PREFIX).map(|idx| &line[idx + PREFIX.len()..])
+}
+
+fn runner_runtime_control_ack_matches(line: &str, expected_status: &str, token: &str) -> bool {
+    let Some(payload) = extract_runner_structured_payload(line) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return false;
+    };
+    value.get("status").and_then(serde_json::Value::as_str) == Some(expected_status)
+        && value
+            .get("runtimeControlToken")
+            .and_then(serde_json::Value::as_str)
+            == Some(token)
+}
+
+async fn wait_for_runner_runtime_control_ack(
+    output_rx: &mut tokio::sync::broadcast::Receiver<String>,
+    expected_status: &str,
+    token: &str,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => return false,
+            received = output_rx.recv() => {
+                match received {
+                    Ok(line) if runner_runtime_control_ack_matches(&line, expected_status, token) => return true,
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+                }
+            }
+        }
+    }
 }
 
 async fn compile_device_sources_phase0_and_refresh_catalog(
@@ -2407,13 +2488,38 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
 ) -> Result<Option<DeviceCompileOutcome>> {
     let workspace_path = ctx.workspace_path.as_path();
     let runtime_paused =
-        send_active_runner_runtime_command(ctx, session_id, "synthi_pause_runtime", "pause").await;
+        match send_active_runner_runtime_command(ctx, session_id, "synthi_pause_runtime", "pause")
+            .await
+        {
+            Ok(paused) => paused,
+            Err(error) => {
+                let status = HmrStatus::gpu_rejected_with_fallback_reason(
+                    "device",
+                    &format!("Runner did not acknowledge runtime pause before GPU HMR: {error}"),
+                    "Keep previous GPU sidecar loaded",
+                    "runtime.pause_not_acknowledged",
+                );
+                let _ = ctx.log_dc.send_text(status.to_json()).await;
+                return Err(error.context("runner runtime pause was not acknowledged"));
+            }
+        };
     let device_result =
         compile_device_sources_phase0(workspace_path, output_dir, timestamp, sources, manifest)
             .await;
     if runtime_paused {
-        send_active_runner_runtime_command(ctx, session_id, "synthi_resume_runtime", "resume")
-            .await;
+        if let Err(error) =
+            send_active_runner_runtime_command(ctx, session_id, "synthi_resume_runtime", "resume")
+                .await
+        {
+            let status = HmrStatus::gpu_rejected_with_fallback_reason(
+                "device",
+                &format!("Runner did not acknowledge runtime resume after GPU HMR: {error}"),
+                "Restart or reload the preview before applying another GPU HMR patch",
+                "runtime.resume_not_acknowledged",
+            );
+            let _ = ctx.log_dc.send_text(status.to_json()).await;
+            return Err(error.context("runner runtime resume was not acknowledged"));
+        }
     }
     let device = device_result?;
     if let (Some(outcome), Some(partial_filename)) =
@@ -7922,6 +8028,36 @@ mod gpu_host_contract_tests {
             partial.fallback_reason.as_deref(),
             Some("selection.source_path_mismatch")
         );
+    }
+
+    #[test]
+    fn runtime_control_ack_matches_structured_runner_token() {
+        let line = r#"[Runner] [HMR-STATUS] {"status":"runtime-paused","module":"runner","runtimeControlToken":"runner-control-7","runtimePaused":true}"#;
+
+        assert!(runner_runtime_control_ack_matches(
+            line,
+            "runtime-paused",
+            "runner-control-7"
+        ));
+        assert!(!runner_runtime_control_ack_matches(
+            line,
+            "runtime-resumed",
+            "runner-control-7"
+        ));
+        assert!(!runner_runtime_control_ack_matches(
+            line,
+            "runtime-paused",
+            "runner-control-8"
+        ));
+    }
+
+    #[test]
+    fn runtime_control_ack_ignores_unstructured_logs() {
+        assert!(!runner_runtime_control_ack_matches(
+            "[Runner] Runtime update/render paused for external HMR work",
+            "runtime-paused",
+            "runner-control-1"
+        ));
     }
 
     #[test]
