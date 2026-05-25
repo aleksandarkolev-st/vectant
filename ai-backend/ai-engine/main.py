@@ -2083,6 +2083,7 @@ from agents.kernel_splitter import (  # noqa: E402
     split_provider_failure_verification as _split_provider_failure_verification,
     split_agentic_report as _split_agentic_report,
     split_attempt_record as _split_attempt_record,
+    split_repair_retry_notes as _split_repair_retry_notes,
 )
 from agents.gpu_device_mapping import build_device_mapping_report  # noqa: E402
 from agents.gpu_launch_indirection import build_launch_indirection_report  # noqa: E402
@@ -2523,6 +2524,9 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         notes = "\n".join(
             f"- {v.rule}: {v.message}" for v in split.verification.violations
         )
+        repair_retry_notes = _split_repair_retry_notes(split.repair_report)
+        if repair_retry_notes:
+            notes = "\n".join([notes, *repair_retry_notes])
         logger.info(
             "[split/gpu] verifier rejected split attempt %s/%s: %s",
             attempt,

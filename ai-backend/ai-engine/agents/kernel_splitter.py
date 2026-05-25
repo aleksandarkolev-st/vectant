@@ -279,6 +279,34 @@ def split_attempt_record(
     }
 
 
+def split_repair_retry_notes(repair_report: Optional[Mapping[str, Any]]) -> List[str]:
+    """Summarize deterministic repair side effects for the next split prompt."""
+
+    if not isinstance(repair_report, Mapping):
+        return []
+    rules = [str(rule) for rule in repair_report.get("repairRules", []) if rule]
+    remaining = [
+        str(rule) for rule in repair_report.get("remainingReasonCodes", []) if rule
+    ]
+    if not rules:
+        return []
+
+    notes = [
+        "- deterministic_repair_applied: "
+        f"rules={', '.join(rules)}"
+        + (f"; remaining={', '.join(remaining)}" if remaining else "")
+    ]
+    if "repair.source_launch_args" in rules:
+        notes.append(
+            "- repair.source_launch_args: Deterministic repair had to rewrite or remove source-reachable launches whose generated arguments did not match SOURCE LAUNCH GRAPH owner expressions. Regenerate core with those exact source owner variables available before synthi_gpu_launch(...); do not emit a launch that repair will remove again."
+        )
+    if "repair.source_launch_sites" not in rules and "device_kernels_not_launched" in remaining:
+        notes.append(
+            "- repair.source_launch_sites_missing: Deterministic repair could not synthesize a source launch because the required SOURCE LAUNCH GRAPH grid/block/stream/argument owner expressions were not available in generated core."
+        )
+    return notes
+
+
 def split_agentic_report(
     *,
     attempts: Sequence[Mapping[str, Any]],
@@ -373,7 +401,7 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
         guidance.append(
             "- For each synthi_gpu_launch call, make the host initializer-list match the generated kernel parameter list exactly. If the kernel takes a LaunchParams-style struct, create one host variable and pass its address as a single argument; otherwise flatten the kernel signature to match the host launch ABI."
         )
-    if "source_launch_args_not_preserved" in joined:
+    if "source_launch_args_not_preserved" in joined or "repair.source_launch_args" in joined:
         guidance.append(
             "- For each synthi_gpu_launch call that targets a source-reachable kernel from the source launch graph, preserve the same launch argument object names and order as the source launch site. Do not synthesize a different aggregate solely to satisfy the kernel parameter count; if the original argument pack cannot be reconstructed safely in generated core state, remove that runtime launch and keep the kernel preserved only for device mapping/HMR."
         )

@@ -33,6 +33,7 @@ from agents.kernel_splitter import (
     split_provider_failure_verification,
     split_agentic_report,
     split_attempt_record,
+    split_repair_retry_notes,
 )
 from agents.gpu_source_context import build_project_source_context
 from llm.prompts import GPU_SPLIT_PROMPT, build_split_mode_prompt
@@ -666,6 +667,19 @@ def test_build_split_retry_prompt_guides_source_launch_arg_repairs():
     assert "remove that runtime launch" in prompt
 
 
+def test_build_split_retry_prompt_guides_repaired_source_launch_arg_removals():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- repair.source_launch_args: Deterministic repair had to rewrite or remove source-reachable launches whose generated arguments did not match SOURCE LAUNCH GRAPH owner expressions.",
+        ],
+    )
+
+    assert "source-reachable kernel" in prompt
+    assert "same launch argument object names and order" in prompt
+    assert "Do not synthesize a different aggregate" in prompt
+
+
 def test_build_split_retry_prompt_guides_missing_source_launches():
     prompt = build_split_retry_prompt(
         "original prompt",
@@ -678,6 +692,21 @@ def test_build_split_retry_prompt_guides_missing_source_launches():
     assert "source-reachable launch path" in prompt
     assert "host argument owner expressions" in prompt
     assert "Do not invent a different aggregate" in prompt
+
+
+def test_split_repair_retry_notes_surface_launch_arg_repairs():
+    notes = split_repair_retry_notes(
+        {
+            "repairRules": ["repair.source_launch_args"],
+            "remainingReasonCodes": ["device_kernels_not_launched"],
+        }
+    )
+
+    joined = "\n".join(notes)
+    assert "deterministic_repair_applied" in joined
+    assert "repair.source_launch_args" in joined
+    assert "SOURCE LAUNCH GRAPH owner expressions" in joined
+    assert "required SOURCE LAUNCH GRAPH" in joined
 
 
 def test_deterministic_split_repair_runs_followup_passes():
