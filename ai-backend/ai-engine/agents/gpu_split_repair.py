@@ -358,6 +358,27 @@ def repair_split_artifacts(
             changed_files.add(core_path)
             repair_rules.append("repair.source_launch_sites")
 
+    if "source_launch_args_not_preserved" in input_reason_codes:
+        symbols = {
+            str(violation.offending_symbol)
+            for violation in (verification.violations if verification is not None else [])
+            if violation.rule == "source_launch_args_not_preserved"
+            and violation.offending_symbol
+        }
+        for host_path in (core_path, gui_path, host_runner_path):
+            if not host_path or host_path not in repaired:
+                continue
+            host_after, changed = _repair_source_launch_arg_ownership(
+                repaired[host_path],
+                source_files,
+                symbols,
+            )
+            if changed:
+                repaired[host_path] = host_after
+                changed_files.add(host_path)
+        if any(path in changed_files for path in (core_path, gui_path, host_runner_path) if path):
+            repair_rules.append("repair.source_launch_args")
+
     if (
         device_path
         and device_path in repaired
@@ -1659,6 +1680,73 @@ def _source_launch_site_to_synthi_call(
         f"{site.shared}, {site.stream}, "
         "{ " + ", ".join(launch_args) + " });"
     )
+
+
+def _repair_source_launch_arg_ownership(
+    host_source: str,
+    source_files: Mapping[str, str],
+    symbols: Set[str],
+) -> tuple[str, bool]:
+    if not symbols or "synthi_gpu_launch(" not in host_source:
+        return host_source, False
+
+    sites_by_kernel: Dict[str, List[LaunchSite]] = {}
+    for site in extract_launch_graph(source_files):
+        if site.kernel in symbols:
+            sites_by_kernel.setdefault(site.kernel, []).append(site)
+    if not sites_by_kernel:
+        return host_source, False
+
+    replacements: Dict[Tuple[int, int], str] = {}
+    remove_symbols: Set[str] = set()
+    for start, end, body in _iter_launch_spans(host_source):
+        args = _split_top_level_args(body)
+        if len(args) != 7:
+            continue
+        kernel = _launch_kernel_name(args[1])
+        if kernel not in sites_by_kernel:
+            continue
+
+        replacement_expr: Optional[str] = None
+        for site in sites_by_kernel[kernel]:
+            replacement = _source_launch_site_to_synthi_call(host_source, site)
+            if replacement is not None:
+                replacement_expr = replacement.rstrip()
+                if replacement_expr.endswith(";"):
+                    replacement_expr = replacement_expr[:-1].rstrip()
+                break
+
+        if replacement_expr is None:
+            remove_symbols.add(kernel)
+            continue
+
+        statement_start = _statement_start(host_source, start)
+        statement_end = _statement_end(host_source, end)
+        prefix = host_source[statement_start:start]
+        assignment = re.match(
+            r"(?P<indent>[ \t]*)(?:(?:const\s+)?(?P<type>bool|auto)(?:\s+const)?\s+)"
+            r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*$",
+            prefix,
+            re.DOTALL,
+        )
+        if statement_end is not None and assignment:
+            indent = assignment.group("indent") or ""
+            name = assignment.group("name")
+            replacements[(statement_start, statement_end)] = (
+                f"{indent}bool {name} = {replacement_expr};"
+            )
+        else:
+            replacements[(start, end)] = replacement_expr
+
+    if not replacements and not remove_symbols:
+        return host_source, False
+
+    out = host_source
+    for (start, end), replacement in sorted(replacements.items(), reverse=True):
+        out = out[:start] + replacement + out[end:]
+    if remove_symbols:
+        out, _ = _remove_unresolved_generated_launches(out, remove_symbols)
+    return out, out != host_source
 
 
 def _launch_dim_expr_for_boundary(expr: str) -> str:
