@@ -899,6 +899,7 @@ fn remove_forward_decls_for_names(source: &str, source_owned_names: &HashSet<Str
         return source.to_string();
     }
 
+    let masked_source = strip_cpp_comments_for_device_compile(source);
     let forward_decl_re = Regex::new(&format!(
         r#"(?ms)^[ \t]*(?:extern\s+(?:"C"\s+)?\s*)?(?:__device__|{}|__host__\s+__device__|__device__\s+__host__)\b[^;{{}}]*?\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\([^;{{}}()]*(?:\([^;{{}}()]*\)[^;{{}}()]*)*\)\s*;\s*(?:\r?\n)?"#,
         device_annotation_macro_pattern()
@@ -907,7 +908,14 @@ fn remove_forward_decls_for_names(source: &str, source_owned_names: &HashSet<Str
     let out = forward_decl_re
         .replace_all(source, |caps: &regex::Captures| {
             let name = caps.name("name").map(|m| m.as_str()).unwrap_or("");
-            if source_owned_names.contains(name) {
+            let declaration_end = caps.get(0).map(|m| m.end()).unwrap_or(0);
+            if source_owned_names.contains(name)
+                && !forward_decl_is_required_before_later_include(
+                    &masked_source,
+                    declaration_end,
+                    name,
+                )
+            {
                 String::new()
             } else {
                 caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string()
@@ -918,6 +926,32 @@ fn remove_forward_decls_for_names(source: &str, source_owned_names: &HashSet<Str
     let empty_extern_c_re = Regex::new(r#"(?ms)^[ \t]*extern\s+"C"\s*\{\s*\}\s*(?:\r?\n)?"#)
         .expect("valid empty extern C regex");
     empty_extern_c_re.replace_all(&out, "").into_owned()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn forward_decl_is_required_before_later_include(
+    masked_source: &str,
+    declaration_end: usize,
+    name: &str,
+) -> bool {
+    if name.trim().is_empty() || declaration_end >= masked_source.len() {
+        return false;
+    }
+
+    let tail = &masked_source[declaration_end..];
+    let include_re =
+        Regex::new(r#"(?m)^\s*#\s*include\s*[<"][^>"]+[>"]"#).expect("valid include regex");
+    let before_next_include = include_re
+        .find(tail)
+        .map(|m| &tail[..m.start()])
+        .unwrap_or(tail);
+    if before_next_include.trim().is_empty() {
+        return false;
+    }
+
+    let escaped = regex::escape(name);
+    let use_re = Regex::new(&format!(r#"\b{}\s*\("#, escaped)).expect("valid identifier regex");
+    use_re.is_match(before_next_include)
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -3147,6 +3181,27 @@ extern "C" __global__ void apply(float* out) { *out = 1.0f; }
         assert!(!cleaned.contains("source_declared(float*)"));
         assert!(cleaned.contains("__device__ int generated_helper();"));
         assert!(cleaned.contains("extern \"C\" __global__ void apply"));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn source_owned_cleanup_preserves_forward_decl_used_before_later_include() {
+        let mut owned = HashSet::new();
+        owned.insert("source_owned_helper".to_string());
+        let source = r#"
+__device__ bool source_owned_helper(const Ray&, const void*, void*, const Hit&);
+__device__ bool generated_filter(const Ray& ray, const void* data, void* payload, const Hit& hit) {
+    return source_owned_helper(ray, data, payload, hit);
+}
+#include "src/device/source_owned_helper.h"
+extern "C" __global__ void apply(float* out) { *out = 1.0f; }
+"#;
+
+        let cleaned = remove_forward_decls_for_names(source, &owned);
+
+        assert!(cleaned.contains("__device__ bool source_owned_helper"));
+        assert!(cleaned.contains("return source_owned_helper"));
+        assert!(cleaned.contains("#include \"src/device/source_owned_helper.h\""));
     }
 
     #[cfg(feature = "gpu-hmr")]
