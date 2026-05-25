@@ -1505,6 +1505,65 @@ function hasStatePreserved(logText) {
   return /state_preserved:\s*true/.test(logText ?? '');
 }
 
+function firstMatchingLine(logText, regex) {
+  for (const line of String(logText ?? '').split(/\r?\n/)) {
+    regex.lastIndex = 0;
+    if (regex.test(line)) return line.trim();
+  }
+  return null;
+}
+
+function summarizeLogLine(line) {
+  return String(line ?? '').replace(/\s+/g, ' ').slice(0, 240);
+}
+
+function gpuHmrFallbackTelemetry(logText) {
+  const degraded = firstMatchingLine(
+    logText,
+    /\bgpu-hmr-degraded-full-device\b|\bfallbackUsed=true\b/,
+  );
+  const rejected = firstMatchingLine(logText, /\bgpu-hmr-rejected\b/);
+  const label = firstMatchingLine(
+    logText,
+    /\bgpu-hmr-(partial|degraded-full-device|rejected|full-device)\b/,
+  );
+  const fallbackFalse = firstMatchingLine(logText, /\bfallbackUsed=false\b/);
+  const selected = firstMatchingLine(logText, /\bselectedArtifactKind=[^\s]+/);
+  return {
+    degraded,
+    rejected,
+    label,
+    fallbackFalse,
+    selected,
+  };
+}
+
+async function assertNoGpuHmrFallback(phase, name, checkpoint, maxBytes = 8 * 1024 * 1024) {
+  const logOpts = checkpoint?.at ? { since: checkpoint.at } : {};
+  const tail = await readWorkerLogTail(maxBytes, logOpts);
+  const window = workerLogSearchWindow(tail, { after: checkpoint });
+  const telemetry = gpuHmrFallbackTelemetry(window);
+  if (telemetry.degraded) {
+    record(phase, name, 'fail', `degraded fallback observed: ${summarizeLogLine(telemetry.degraded)}`);
+    return telemetry;
+  }
+  if (telemetry.rejected) {
+    record(phase, name, 'fail', `HMR rejection observed: ${summarizeLogLine(telemetry.rejected)}`);
+    return telemetry;
+  }
+  if (telemetry.label || telemetry.fallbackFalse) {
+    record(
+      phase,
+      name,
+      'pass',
+      summarizeLogLine(telemetry.label || telemetry.fallbackFalse || telemetry.selected),
+    );
+    return telemetry;
+  }
+  record(phase, name, 'fail', 'no gpu-hmr label or fallbackUsed telemetry found after edit');
+  return telemetry;
+}
+
 function parseGuiReadbacks(logText) {
   const samples = [];
   const re = /\[gui\]\s+frame=(\d+)\s+c\[0\.\.7\]=([^\n\r]+)/g;
@@ -1725,6 +1784,11 @@ async function phaseFlow(ctx) {
   record('FLOW', 'outward device edit hot-swapped',
     fastSwap.matched ? 'pass' : 'warn',
     fastSwap.snippet || 'no device-only HMR marker');
+  await assertNoGpuHmrFallback(
+    'FLOW',
+    'outward HMR has no full-device fallback',
+    flipStart,
+  );
 
   const trend = await awaitWorkerLogRegex(
     /\[gpu-flow-demo\].*trend=outward/,
@@ -1810,6 +1874,11 @@ async function phaseP1(ctx) {
     /\[gpu-reload\]\s+plan=(device_only|cold|host_only|mixed|abi_breaking)/,
     CFG.hmrTimeoutMs,
     { after: preTail, maxBytes: 8 * 1024 * 1024 });
+  await assertNoGpuHmrFallback(
+    'P1',
+    'edit HMR has no full-device fallback',
+    preTail,
+  );
   record('P1', 'reload plan emitted', reload.matched ? 'pass' : 'warn',
     reload.snippet || 'no plan marker — orchestrator not wired yet');
 
@@ -1938,6 +2007,11 @@ async function phaseP2(ctx) {
       record('P2', `fast swap within budget (${CFG.fastSwapBudgetMs}ms)`, 'warn',
         `no plan=device_only marker (wall=${Date.now() - tFast0}ms)`);
     }
+    await assertNoGpuHmrFallback(
+      'P2',
+      'fast-swap HMR has no full-device fallback',
+      fastLogStart,
+    );
     if (ctx.fixture === 'vector') {
       await awaitGuiReadback(
         'P2',
@@ -2255,6 +2329,17 @@ async function selfCheck() {
   const sampleReadback = parseGuiReadbacks('[gui] frame=7 c[0..7]=0 3 6 9 12 15 18 21\n');
   if (!readbackMatches(sampleReadback[0]?.values, VECTOR_ADD_READBACK)) {
     console.error('gpu-hmr-test self-check failed: readback parser did not match vector baseline');
+    process.exitCode = 1;
+    return;
+  }
+  const partialTelemetry = gpuHmrFallbackTelemetry(
+    '[compile-device] reload package label=gpu-hmr-partial fallbackUsed=false selectedArtifactKind=source_include_bridge\n',
+  );
+  const degradedTelemetry = gpuHmrFallbackTelemetry(
+    '[compile-device] reload package label=gpu-hmr-degraded-full-device fallbackUsed=true fallbackReason=partial_compile_failed selectedArtifactKind=full_device\n',
+  );
+  if (!partialTelemetry.label || partialTelemetry.degraded || !degradedTelemetry.degraded) {
+    console.error('gpu-hmr-test self-check failed: fallback telemetry parser did not classify labels');
     process.exitCode = 1;
     return;
   }
