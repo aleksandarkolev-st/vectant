@@ -1740,7 +1740,9 @@ fn static_constexpr_data_hash(source: &str) -> String {
 
 fn type_layout_hash(source: &str) -> String {
     let masked = mask_comments_preserving_len(source);
-    let re = Regex::new(r#"\b(struct|class|union)\s+[A-Za-z_][A-Za-z0-9_]*[^;{]*\{"#)
+    let re = Regex::new(
+        r#"\b(?:(?:struct|class|union)\s+[A-Za-z_][A-Za-z0-9_]*[^;{]*|enum\s+(?:(?:class|struct)\s+)?[A-Za-z_][A-Za-z0-9_]*[^;{]*)\{"#,
+    )
         .expect("type layout regex");
     let mut layouts = Vec::new();
     for matched in re.find_iter(&masked) {
@@ -3199,6 +3201,18 @@ extern "C" __global__ void trace(float* x) {
                 "body type layout",
                 "__global__ void flow(float* x, int n) {\n  struct Local { float a; };\n  Local v{1.0f};\n  x[0] += v.a;\n}\n",
                 "__global__ void flow(float* x, int n) {\n  struct Local { float a; float b; };\n  Local v{1.0f, 2.0f};\n  x[0] += v.a;\n}\n",
+                "abi.type_layout_changed",
+            ),
+            (
+                "enum layout",
+                "enum class Mode : int { Primary = 1 };\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "enum class Mode : int { Primary = 1, Secondary = 2 };\n__global__ void flow(float* x, int n) {\n  x[0] += 1.0f;\n}\n",
+                "abi.type_layout_changed",
+            ),
+            (
+                "body enum layout",
+                "__global__ void flow(float* x, int n) {\n  enum Mode { Primary = 1 };\n  x[0] += float(Primary);\n}\n",
+                "__global__ void flow(float* x, int n) {\n  enum Mode { Primary = 1, Secondary = 2 };\n  x[0] += float(Primary);\n}\n",
                 "abi.type_layout_changed",
             ),
             (
