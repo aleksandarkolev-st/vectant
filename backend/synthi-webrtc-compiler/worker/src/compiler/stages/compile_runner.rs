@@ -42,6 +42,31 @@ use tokio::time::{timeout, Duration};
 /// Standard filename for the AI-synthesised host runner source.
 pub const HOST_RUNNER_FILENAME: &str = "host_runner.cpp";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompileRunnerOptions {
+    /// Whether compile_runner may call AI manifest/source heal after a failed
+    /// runner compile. GPU sidecar compiles use the shipped runner at runtime,
+    /// so their generated host runner is validation-only and should not spend
+    /// AI calls trying to repair non-live link failures.
+    pub allow_ai_heal: bool,
+}
+
+impl Default for CompileRunnerOptions {
+    fn default() -> Self {
+        Self {
+            allow_ai_heal: true,
+        }
+    }
+}
+
+impl CompileRunnerOptions {
+    pub fn for_manifest(manifest: Option<&CompileManifest>) -> Self {
+        Self {
+            allow_ai_heal: manifest.and_then(|m| m.gpu.as_ref()).is_none(),
+        }
+    }
+}
+
 /// Build the full ordered flag list compile_runner will hand to the C++
 /// compiler for a given manifest. Pure function — no IO, no allocations
 /// outside the returned Vec — so it's directly testable from integration
@@ -117,6 +142,7 @@ pub async fn compile_runner(
     timestamp: i64,
     session_id: Option<String>,
     compile_manifest: Option<&CompileManifest>,
+    options: CompileRunnerOptions,
 ) -> Result<Option<String>> {
     if host_runner_content.trim().is_empty() {
         eprintln!("[CompileRunner] Skipping – no host_runner content");
@@ -313,6 +339,36 @@ pub async fn compile_runner(
     if !output.status.success() {
         let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
         eprintln!("[CompileRunner] {} FAILED:\n{}", compiler_exe, stderr_str);
+        if !options.allow_ai_heal {
+            eprintln!(
+                "[CompileRunner] AI heal skipped for validation-only host runner compile"
+            );
+            let report =
+                parse_compiler_output(&stderr_str, "host_runner", CompilerType::Gcc, true);
+            let diagnostics_json = report.to_json();
+            let diag_payload = serde_json::json!({
+                "sessionId": session_id.clone(),
+                "type": "compile-diagnostics",
+                "language": "cpp",
+                "diagnostics": serde_json::from_str::<serde_json::Value>(&diagnostics_json)
+                    .unwrap_or_default(),
+                "error_count": report.error_count,
+                "warning_count": report.warning_count,
+                "stage": "compile_runner",
+                "ai_heal": "skipped_validation_only",
+            });
+            let _ = ctx
+                .log_dc
+                .send_text(serde_json::to_string(&diag_payload).unwrap_or_default())
+                .await;
+
+            let truncated = if stderr_str.len() > 500 {
+                format!("{}...", &stderr_str[..500])
+            } else {
+                stderr_str
+            };
+            anyhow::bail!("Host runner compilation failed: {}", truncated);
+        }
 
         // ── ULTRAPLAN Phase 6: manifest heal (link errors) ──
         // When stderr contains undefined-reference errors, the host_runner
@@ -588,4 +644,38 @@ pub async fn compile_runner(
     }
 
     Ok(Some(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hmr::compile_manifest::{
+        DeviceCompiler, DeviceVendor, FatbinStrategy, GpuBuildBlock, SnapshotMode,
+    };
+
+    #[test]
+    fn compile_runner_ai_heal_policy_allows_host_only_projects() {
+        let manifest = CompileManifest::generic_fallback();
+
+        assert!(CompileRunnerOptions::for_manifest(Some(&manifest)).allow_ai_heal);
+        assert!(CompileRunnerOptions::for_manifest(None).allow_ai_heal);
+    }
+
+    #[test]
+    fn compile_runner_ai_heal_policy_skips_gpu_validation_runner() {
+        let mut manifest = CompileManifest::generic_fallback();
+        manifest.gpu = Some(GpuBuildBlock {
+            vendor: DeviceVendor::Rocm,
+            device_compiler: DeviceCompiler::Hipcc,
+            arch: vec!["gfx90a".to_string()],
+            device_flags: vec!["-O3".to_string()],
+            runtime_libs: vec!["amdhip64".to_string()],
+            snapshot_mode: SnapshotMode::Userspace,
+            fatbin_strategy: FatbinStrategy::SidecarModule,
+            device_roles: Vec::new(),
+            device_link: Default::default(),
+        });
+
+        assert!(!CompileRunnerOptions::for_manifest(Some(&manifest)).allow_ai_heal);
+    }
 }

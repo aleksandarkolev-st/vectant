@@ -28,7 +28,9 @@ use crate::compiler::stages::ai_utils::{
 use crate::compiler::stages::compile_core::compile_core;
 use crate::compiler::stages::compile_device::{compile_device_phase0, DeviceCompileOutcome};
 use crate::compiler::stages::compile_gui::compile_gui;
-use crate::compiler::stages::compile_runner::{compile_runner, HOST_RUNNER_FILENAME};
+use crate::compiler::stages::compile_runner::{
+    compile_runner, CompileRunnerOptions, HOST_RUNNER_FILENAME,
+};
 use crate::compiler::stages::gpu_runtime_contract::ensure_gpu_runtime_contract_header;
 use crate::compiler::stages::guardrails::{
     apply_core_guardrails, apply_gui_guardrails, apply_shared_guardrails,
@@ -6479,6 +6481,7 @@ pub async fn handle_compile_request(
                     timestamp,
                     Some(session_id.clone()),
                     compile_manifest.as_ref(),
+                    CompileRunnerOptions::for_manifest(compile_manifest.as_ref()),
                 )
                 .await
             } else {
@@ -6579,6 +6582,7 @@ pub async fn handle_compile_request(
                 timestamp,
                 Some(session_id.clone()),
                 compile_manifest.as_ref(),
+                CompileRunnerOptions::for_manifest(compile_manifest.as_ref()),
             )
             .await
             {
