@@ -4086,6 +4086,19 @@ you construct with initialized buffers and correct arguments. If a preserved
 kernel is not runtime-reachable, keep it in the device role for mapping and do
 not invent `synthi_gpu_launch(...)` calls for it.
 
+For large source-backed kernels with aggregate launch parameters, pointer-rich
+render state, descriptor tables, acceleration structures, texture objects, or
+other project runtime state you cannot fully reconstruct from target-scoped
+source context, do not call that source kernel from generated `core_on_update`.
+Preserve the kernel in the device role for mapping/HMR, but do not create an
+unsafe runtime launch that can block or hang. If the split still needs to prove
+the Synthi launch boundary, emit a small generated lifecycle init/setup/reset
+kernel with fully initialized Synthi-owned scalar/buffer arguments, include it
+in `device_descriptor`, and launch that lifecycle kernel. The lifecycle kernel
+must not replace the preserved source kernel in the mapping report, and it must
+not be used as evidence that the source kernel's real application argument ABI
+was reconstructed.
+
 Never create a local launch guard initialized to false and then branch on it in
 `core_on_update`. This rejected shape makes the launch path unreachable:
 

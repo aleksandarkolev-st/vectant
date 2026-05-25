@@ -665,6 +665,8 @@ def test_gpu_split_prompt_marks_examples_as_non_authoritative():
     assert "structural template" in GPU_SPLIT_PROMPT
     assert "inside examples are not project facts" in GPU_SPLIT_PROMPT
     assert "source launch graph lists project kernels" in GPU_SPLIT_PROMPT
+    assert "do not call that source kernel from generated `core_on_update`" in GPU_SPLIT_PROMPT
+    assert "generated lifecycle init/setup/reset" in GPU_SPLIT_PROMPT
 
 
 def test_source_launch_graph_contract_reports_runtime_kernel_object_launches():
