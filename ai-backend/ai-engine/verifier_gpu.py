@@ -1053,7 +1053,11 @@ def _static_integer_bindings(source: str) -> Dict[str, int]:
     return bindings
 
 
-def _dim3_constructor_threads(source: str, name: str, bindings: Mapping[str, int]) -> Optional[int]:
+def _dim3_constructor_values(
+    source: str,
+    name: str,
+    bindings: Mapping[str, int],
+) -> Optional[List[int]]:
     decl_re = re.compile(
         rf"\b(?:dim3|Dim3)\s+{re.escape(name)}\s*(?:=)?\s*"
         rf"(?:\{{(?P<brace>[^}}]*)\}}|\((?P<paren>[^)]*)\))",
@@ -1074,7 +1078,55 @@ def _dim3_constructor_threads(source: str, name: str, bindings: Mapping[str, int
         values.append(value)
     while len(values) < 3:
         values.append(1)
+    return values
+
+
+def _dim3_constructor_threads(source: str, name: str, bindings: Mapping[str, int]) -> Optional[int]:
+    values = _dim3_constructor_values(source, name, bindings)
+    if values is None:
+        return None
     return values[0] * values[1] * values[2]
+
+
+def _launch_dim_values(core_source: str, dim_expr: str) -> Optional[List[int]]:
+    bindings = _static_integer_bindings(core_source)
+    direct = _eval_static_int_expr(dim_expr, bindings)
+    if direct is not None:
+        return [direct, 1, 1]
+    name_match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*", dim_expr)
+    if name_match:
+        return _dim3_constructor_values(core_source, name_match.group(1), bindings)
+    ctor_match = re.fullmatch(
+        r"\s*(?:dim3|Dim3)?\s*(?:\{(?P<brace>.*)\}|\((?P<paren>.*)\))\s*",
+        dim_expr,
+        re.DOTALL,
+    )
+    if not ctor_match:
+        return None
+    raw_args = ctor_match.group("brace") if ctor_match.group("brace") is not None else ctor_match.group("paren")
+    dims = _split_top_level_args(raw_args or "")
+    if not dims:
+        return None
+    values = [_eval_static_int_expr(dim, bindings) for dim in dims[:3]]
+    if not all(value is not None for value in values):
+        return None
+    int_values = [int(value) for value in values if value is not None]
+    while len(int_values) < 3:
+        int_values.append(1)
+    return int_values
+
+
+def _invalid_launch_dim_reason(core_source: str, dim_expr: str, label: str) -> Optional[str]:
+    values = _launch_dim_values(core_source, dim_expr)
+    if values is None:
+        return None
+    max_u32 = (1 << 32) - 1
+    for index, value in enumerate(values):
+        if value <= 0:
+            return f"{label}[{index}] must be positive, got {value}"
+        if value >= max_u32:
+            return f"{label}[{index}] must be less than {max_u32}, got {value}"
+    return None
 
 
 def _launch_block_thread_count(core_source: str, block_expr: str) -> Optional[int]:
@@ -2138,6 +2190,22 @@ def verify_split_output(
 
         if launch_args.endswith("}"):
             entries = _split_top_level_args(launch_args[1:-1])
+            invalid_grid = _invalid_launch_dim_reason(core_source, args[2], "grid")
+            invalid_block = _invalid_launch_dim_reason(core_source, args[3], "block")
+            if invalid_grid or invalid_block:
+                reason = invalid_grid or invalid_block or "invalid launch dimensions"
+                violations.append(
+                    Violation(
+                        rule="invalid_synthi_launch_dimensions",
+                        message=(
+                            "synthi_gpu_launch grid and block dimensions must be "
+                            "statically positive when the verifier can evaluate "
+                            f"them. {reason}."
+                        ),
+                        offending_module=core_path,
+                        offending_symbol=kernel_name,
+                    )
+                )
             if kernel_name:
                 kernel_params = _device_kernel_params(device_semantic_source, kernel_name)
                 if kernel_params and len(entries) != len(kernel_params):
