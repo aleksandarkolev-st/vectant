@@ -86,13 +86,34 @@ pub fn try_direct_device_body_patch(
         return DeviceFastPathResult::rejected(vec![reason], &user_path);
     }
 
-    let Some(old_user_source) = source_baseline(sidecar, &user_path) else {
-        return DeviceFastPathResult::rejected(vec!["mapping.source_baseline_missing"], &user_path);
-    };
-    if let Some(expected_hash) = source_baseline_hash(sidecar, &user_path) {
-        if sha256_hex(&old_user_source) != expected_hash {
+    let old_user_source = match source_baseline(sidecar, &user_path) {
+        NormalizedStringLookup::Found(source) => source,
+        NormalizedStringLookup::Missing => {
             return DeviceFastPathResult::rejected(
-                vec!["mapping.source_baseline_stale"],
+                vec!["mapping.source_baseline_missing"],
+                &user_path,
+            );
+        }
+        NormalizedStringLookup::Ambiguous => {
+            return DeviceFastPathResult::rejected(
+                vec!["mapping.source_baseline_path_ambiguous"],
+                &user_path,
+            );
+        }
+    };
+    match source_baseline_hash(sidecar, &user_path) {
+        NormalizedStringLookup::Found(expected_hash) => {
+            if sha256_hex(&old_user_source) != expected_hash {
+                return DeviceFastPathResult::rejected(
+                    vec!["mapping.source_baseline_stale"],
+                    &user_path,
+                );
+            }
+        }
+        NormalizedStringLookup::Missing => {}
+        NormalizedStringLookup::Ambiguous => {
+            return DeviceFastPathResult::rejected(
+                vec!["mapping.source_baseline_hash_path_ambiguous"],
                 &user_path,
             );
         }
@@ -1293,22 +1314,43 @@ fn byte_range_json(start: usize, end: usize) -> Value {
     })
 }
 
-fn source_baseline(sidecar: &Value, path: &str) -> Option<String> {
-    sidecar
-        .get("sourceBaselineContents")
-        .and_then(Value::as_object)
-        .and_then(|m| m.get(path))
-        .and_then(Value::as_str)
-        .map(str::to_string)
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NormalizedStringLookup {
+    Found(String),
+    Missing,
+    Ambiguous,
 }
 
-fn source_baseline_hash(sidecar: &Value, path: &str) -> Option<String> {
-    sidecar
-        .get("sourceBaselineHashes")
-        .and_then(Value::as_object)
-        .and_then(|m| m.get(path))
-        .and_then(Value::as_str)
-        .map(str::to_string)
+fn source_baseline(sidecar: &Value, path: &str) -> NormalizedStringLookup {
+    normalized_object_string_lookup(sidecar, "sourceBaselineContents", path)
+}
+
+fn source_baseline_hash(sidecar: &Value, path: &str) -> NormalizedStringLookup {
+    normalized_object_string_lookup(sidecar, "sourceBaselineHashes", path)
+}
+
+fn normalized_object_string_lookup(
+    sidecar: &Value,
+    object_key: &str,
+    path: &str,
+) -> NormalizedStringLookup {
+    let Some(map) = sidecar.get(object_key).and_then(Value::as_object) else {
+        return NormalizedStringLookup::Missing;
+    };
+    let normalized_path = normalize_path(path);
+    let mut values = BTreeSet::new();
+    for (key, value) in map {
+        if normalize_path(key) == normalized_path {
+            if let Some(text) = value.as_str() {
+                values.insert(text.to_string());
+            }
+        }
+    }
+    match values.len() {
+        0 => NormalizedStringLookup::Missing,
+        1 => NormalizedStringLookup::Found(values.into_iter().next().unwrap_or_default()),
+        _ => NormalizedStringLookup::Ambiguous,
+    }
 }
 
 fn mappings_for_source<'a>(sidecar: &'a Value, path: &str) -> Vec<&'a Value> {
@@ -3758,5 +3800,44 @@ extern "C" __global__ void trace(float* x) {
         assert_eq!(normalize_path("/workspace/src/../gpu/flow.hip"), "/workspace/gpu/flow.hip");
         assert_eq!(normalize_path("../src/gpu/flow.hip"), "../src/gpu/flow.hip");
         assert_eq!(normalize_path("../../src/./gpu/flow.hip"), "../../src/gpu/flow.hip");
+    }
+
+    #[test]
+    fn baseline_lookup_accepts_normalized_single_path_identity() {
+        let source = "__constant__ float gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += gain[0];\n}\n";
+        let next = "__constant__ float gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += gain[0] * 2.0f;\n}\n";
+        let mut meta = sidecar();
+        meta["sourceBaselineContents"] = json!({
+            r".\src\gpu\flow.hip": source
+        });
+        meta["sourceBaselineHashes"] = json!({
+            r".\src\gpu\flow.hip": sha256_hex(source)
+        });
+
+        let result =
+            try_direct_device_body_patch(&meta, "src/gpu/flow.hip", next, generated_source());
+
+        assert!(result.accepted);
+    }
+
+    #[test]
+    fn baseline_lookup_rejects_ambiguous_normalized_path_identity() {
+        let source = "__constant__ float gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += gain[0];\n}\n";
+        let other_source = "__constant__ float gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += gain[0] + 1.0f;\n}\n";
+        let next = "__constant__ float gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += gain[0] * 2.0f;\n}\n";
+        let mut meta = sidecar();
+        meta["sourceBaselineContents"] = json!({
+            "src/gpu/flow.hip": source,
+            "./src/gpu/flow.hip": other_source
+        });
+
+        let result =
+            try_direct_device_body_patch(&meta, "src/gpu/flow.hip", next, generated_source());
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "mapping.source_baseline_path_ambiguous"));
     }
 }
