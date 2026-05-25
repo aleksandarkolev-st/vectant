@@ -39,6 +39,17 @@ def _env_float(name: str, default: float) -> float:
     return value if value > 0 else default
 
 
+def _env_float_min(name: str, default: float, minimum: float) -> float:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value >= minimum else default
+
+
 def _get_metrics_collector():
     """Lazy import to avoid circular dependencies."""
     try:
@@ -68,6 +79,18 @@ class GeminiProvider(AiProvider):
             # Note: input/context window size is determined by the model selection (e.g. gemini-3.1-flash-lite-preview).
             max_output_tokens=131072,
         )
+
+    def _generation_config_for_mode(self, mode: str) -> genai.GenerationConfig:
+        if mode == "split":
+            return genai.GenerationConfig(
+                temperature=_env_float_min("SYNTHI_GEMINI_SPLIT_TEMPERATURE", 0.0, 0.0),
+                top_p=_env_float_min("SYNTHI_GEMINI_SPLIT_TOP_P", 0.8, 0.0),
+                top_k=int(_env_float_min("SYNTHI_GEMINI_SPLIT_TOP_K", 40.0, 1.0)),
+                max_output_tokens=int(
+                    _env_float_min("SYNTHI_GEMINI_SPLIT_MAX_OUTPUT_TOKENS", 131072.0, 1.0)
+                ),
+            )
+        return self.generation_config
 
     def _get_client(self, api_key: Optional[str], model_name: str) -> genai.GenerativeModel:
         key = api_key or os.getenv("GEMINI_API_KEY")
@@ -162,7 +185,11 @@ class GeminiProvider(AiProvider):
             )
             try:
                 resp = await asyncio.wait_for(
-                    client.generate_content_async(full_prompt, stream=False),
+                    client.generate_content_async(
+                        full_prompt,
+                        stream=False,
+                        generation_config=self._generation_config_for_mode(mode_lower),
+                    ),
                     timeout=timeout_seconds,
                 )
                 combined = resp.text.strip()
