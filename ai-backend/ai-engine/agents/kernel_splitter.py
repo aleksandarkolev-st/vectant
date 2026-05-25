@@ -678,6 +678,46 @@ def _device_roots_from_context_report(source_context_report: Mapping[str, Any]) 
     return roots
 
 
+def _source_launch_graph_scope(
+    source_files: Mapping[str, str],
+    device_sources: Mapping[str, str],
+) -> set[str]:
+    kernel_names = {
+        match.group(1)
+        for source in device_sources.values()
+        for match in _SOURCE_GLOBAL_KERNEL_RE.finditer(mask_comments_for_parsing(source))
+    }
+    if not kernel_names:
+        return set()
+
+    scoped_paths: set[str] = set()
+    for item in launch_graph_as_dicts(source_files):
+        kernel = str(item.get("kernel") or "").strip()
+        if kernel not in kernel_names:
+            continue
+        site = str(item.get("site") or "").replace("\\", "/")
+        path = site.rsplit(":", 1)[0] if ":" in site else site
+        if path in source_files:
+            scoped_paths.add(path)
+
+    queue = list(scoped_paths)
+    while queue:
+        path = queue.pop(0)
+        source = source_files.get(path)
+        if source is None:
+            continue
+        for match in _QUOTE_INCLUDE_RE.finditer(mask_comments_for_parsing(source)):
+            resolved = _resolve_quoted_include(
+                match.group("path"),
+                including_path=path,
+                source_files=source_files,
+            )
+            if resolved and resolved not in scoped_paths and _looks_like_source_file(resolved):
+                scoped_paths.add(resolved)
+                queue.append(resolved)
+    return scoped_paths
+
+
 def _source_files_scoped_to_context(
     source_files: Mapping[str, str],
     source_context_report: Mapping[str, Any],
@@ -707,6 +747,7 @@ def _source_files_scoped_to_context(
             scoped_paths.update(device_sources)
     if device_sources:
         scoped_paths.update(_device_compiler_prelude_scope(normalized, device_sources))
+        scoped_paths.update(_source_launch_graph_scope(normalized, device_sources))
     scoped = {
         path: normalized[path]
         for path in sorted(scoped_paths)

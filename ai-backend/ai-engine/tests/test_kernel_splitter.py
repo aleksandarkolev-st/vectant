@@ -734,6 +734,46 @@ def test_source_launch_graph_contract_uses_selected_target_context_scope():
     assert "debug_kernel" not in contract
 
 
+def test_scoped_context_adds_host_launches_for_selected_device_roots():
+    files = {
+        "src/main.cpp": "int main(){ return 0; }",
+        "src/render/selected_pass.cpp": (
+            '#include "selected_pass.h"\n'
+            'void setup(){ kernel.set_kernel_function_name("SelectedKernel"); }\n'
+            "void draw(){ kernel.launch_asynchronous(8, 8, width, height, launch_args, stream); }\n"
+        ),
+        "src/render/selected_pass.h": "struct SelectedPass {};",
+        "src/tools/debug_pass.cpp": (
+            'void setup(){ kernel.set_kernel_function_name("DebugKernel"); }\n'
+            "void draw(){ kernel.launch_asynchronous(1, 1, 1, 1, debug_args, stream); }\n"
+        ),
+        "src/Device/kernels/Selected.h": (
+            "GLOBAL_KERNEL_SIGNATURE(void) SelectedKernel(LaunchArgs args) { }\n"
+        ),
+        "src/Device/kernels/Debug.h": (
+            "GLOBAL_KERNEL_SIGNATURE(void) DebugKernel(LaunchArgs args) { }\n"
+        ),
+    }
+    report = {
+        "included": [
+            {"path": "src/main.cpp"},
+            {"path": "src/Device/kernels/Selected.h"},
+        ],
+        "deviceTuTopology": {
+            "deviceTranslationUnits": [{"path": "src/Device/kernels/Selected.h"}]
+        },
+    }
+
+    scoped = _source_files_scoped_to_context(files, report)
+    contract = _source_launch_graph_contract(scoped)
+
+    assert "src/render/selected_pass.cpp" in scoped
+    assert "src/render/selected_pass.h" in scoped
+    assert "src/tools/debug_pass.cpp" not in scoped
+    assert "SelectedKernel" in contract
+    assert "DebugKernel" not in contract
+
+
 def test_source_launch_graph_contract_filters_to_preserved_device_kernels():
     files = {
         "src/app/main.cpp": (
