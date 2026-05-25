@@ -307,6 +307,24 @@ def test_normalizes_json_like_file_content_with_literal_newlines():
     assert 'extern "C" void core_on_update' in parsed["files"]["core.cpp"]
 
 
+def test_decodes_structurally_escaped_source_newlines():
+    raw = r'''
+<JSON>{
+  "shared.h": "#include \"synthi_gpu_runtime.h\"\\nstruct AppState { const char* label; };",
+  "core.cpp": "/* generated */\\n#include \"shared.h\"\\nextern \"C\" void core_on_update(void*, double) { const char* s = \"literal\\nkept\"; }",
+  "gui.cpp": "extern \"C\" void gui_on_render(void*) {}",
+  "host_runner.cpp": "int main(){return 0;}",
+  "device.hip": "extern \"C\" __global__ void step() {}"
+}</JSON>
+'''
+
+    parsed = parse_kernel_split_response(raw)
+
+    assert parsed["files"]["core.cpp"].startswith("/* generated */\n#include")
+    assert '"literal\\nkept"' in parsed["files"]["core.cpp"]
+    assert "\\nextern" not in parsed["files"]["core.cpp"]
+
+
 def test_normalizes_embedded_file_map_inside_role_content():
     raw = r'''
 <JSON>{

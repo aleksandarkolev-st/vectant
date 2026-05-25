@@ -439,6 +439,66 @@ def _extract_embedded_source_object(value: str) -> Optional[str]:
         )
 
 
+def _looks_like_structurally_escaped_source(value: str) -> bool:
+    escaped_newlines = value.count(r"\n") + value.count(r"\r\n")
+    actual_newlines = value.count("\n")
+    if escaped_newlines < 2:
+        return False
+    if actual_newlines and actual_newlines * 3 >= escaped_newlines:
+        return False
+    return bool(
+        re.search(
+            r"\\n\s*(?:#|extern\b|struct\b|class\b|namespace\b|static\b|using\b|template\b|//|/\*|\})",
+            value,
+        )
+    )
+
+
+def _decode_structural_source_escapes(value: str) -> str:
+    if not _looks_like_structurally_escaped_source(value):
+        return value
+
+    out: List[str] = []
+    i = 0
+    quote: Optional[str] = None
+    escaped = False
+    while i < len(value):
+        ch = value[i]
+        if quote:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            i += 1
+            continue
+
+        if ch in {'"', "'"}:
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(value):
+            nxt = value[i + 1]
+            if nxt == "n":
+                out.append("\n")
+                i += 2
+                continue
+            if nxt == "r" and i + 3 < len(value) and value[i + 2 : i + 4] == r"\n":
+                out.append("\n")
+                i += 4
+                continue
+            if nxt == "t":
+                out.append("\t")
+                i += 2
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _is_file_map_like(value: Mapping[str, Any]) -> bool:
     return any(
         key in _ROLE_FILENAMES or _looks_like_source_file(str(key))
@@ -470,10 +530,10 @@ def _normalise_file_map(files: Mapping[str, Any]) -> Dict[str, str]:
                 return
             embedded = _extract_embedded_source_object(value)
             if embedded and _looks_like_source_file(clean_name):
-                out[clean_name] = embedded
+                out[clean_name] = _decode_structural_source_escapes(embedded)
                 return
         if isinstance(value, str) and value.strip() and _looks_like_source_file(clean_name):
-            out[clean_name] = value
+            out[clean_name] = _decode_structural_source_escapes(value)
         elif isinstance(value, Mapping):
             filename = value.get("filename") or value.get("path") or value.get("name")
             content = value.get("content") or value.get("file_content") or value.get("source")
@@ -491,9 +551,9 @@ def _normalise_file_map(files: Mapping[str, Any]) -> Dict[str, str]:
                         return
                     embedded = _extract_embedded_source_object(content)
                     if embedded:
-                        out[target_name] = embedded
+                        out[target_name] = _decode_structural_source_escapes(embedded)
                         return
-                out[target_name] = content
+                out[target_name] = _decode_structural_source_escapes(content)
                 return
             if isinstance(content, str) and content.strip() and _looks_like_source_file(clean_name):
                 if content.strip().startswith("{"):
@@ -508,9 +568,9 @@ def _normalise_file_map(files: Mapping[str, Any]) -> Dict[str, str]:
                         return
                     embedded = _extract_embedded_source_object(content)
                     if embedded:
-                        out[clean_name] = embedded
+                        out[clean_name] = _decode_structural_source_escapes(embedded)
                         return
-                out[clean_name] = content
+                out[clean_name] = _decode_structural_source_escapes(content)
                 return
             for nested_name, nested_value in value.items():
                 if _looks_like_source_file(str(nested_name)):
