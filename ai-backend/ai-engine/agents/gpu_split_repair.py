@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
+from agents.launch_graph_extractor import LaunchSite, extract_launch_graph
 from agents.abi_stamper import mask_comments_for_parsing
 from verifier_gpu import (
     _CPP_DECL_KEYWORDS,
@@ -21,16 +22,19 @@ from verifier_gpu import (
     SplitVerificationResult,
     _device_role_included_source_files as _verifier_device_role_included_source_files,
     _device_kernel_launch_bound,
+    _eval_static_int_expr,
     _host_runner_routes_gui_module,
     _launch_block_thread_count,
     _launch_dim_values,
     _launch_initializer_args,
     _launch_kernel_name,
     _normalize_launch_buffer_arg,
+    _normalize_launch_arg_identity,
     _render_backends_in_sources,
     _resolve_split_role_paths,
     _source_device_files as _verifier_source_device_files,
     _split_top_level_args,
+    _static_integer_bindings,
     _strip_cpp_comments,
 )
 
@@ -50,6 +54,8 @@ _OBJECT_DEFINE_RE = re.compile(
 _DEFINE_NAME_RE = re.compile(r"^\s*#\s*define\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b")
 _KERNEL_OPTION_CONDITION_RE = re.compile(r"^\s*#\s*(?:if|elif)\s+(?P<expr>.*)$")
 _IDENTIFIER_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
+_STRING_LITERAL_RE = re.compile(r'"(?:[^"\\\n]|\\.)*"')
+_CHAR_LITERAL_RE = re.compile(r"'(?:[^'\\\n]|\\.)*'")
 _SOURCE_DEVICE_CONST_DECL_RE = re.compile(
     r"(?P<decl>\b(?:(?:constexpr|const|__constant__)\s+)*"
     r"(?P<type>(?:std::)?uint32_t|unsigned\s+int|int|float|double)\s+"
@@ -330,6 +336,27 @@ def repair_split_artifacts(
                 changed_files.add(host_path)
         if any(path in changed_files for path in (core_path, gui_path, host_runner_path) if path):
             repair_rules.append("repair.launch_bounds")
+
+    if (
+        core_path
+        and device_path
+        and core_path in repaired
+        and device_path in repaired
+        and "device_kernels_not_launched" in input_reason_codes
+    ):
+        device_lookup_source = _device_lookup_source_with_source_includes(
+            repaired[device_path],
+            source_files,
+        )
+        core_after, changed = _repair_missing_source_launch_sites(
+            core_source=repaired[core_path],
+            device_source=device_lookup_source,
+            source_files=source_files,
+        )
+        if changed:
+            repaired[core_path] = core_after
+            changed_files.add(core_path)
+            repair_rules.append("repair.source_launch_sites")
 
     if (
         device_path
@@ -1559,6 +1586,130 @@ def _host_launch_symbols(
             if kernel:
                 symbols.add(kernel)
     return symbols
+
+
+def _repair_missing_source_launch_sites(
+    *,
+    core_source: str,
+    device_source: str,
+    source_files: Mapping[str, str],
+) -> tuple[str, bool]:
+    if "synthi_gpu_launch(" in core_source:
+        return core_source, False
+    span = _function_body_span(core_source, "core_on_update")
+    if span is None:
+        return core_source, False
+    declared_kernels = _effective_device_kernel_names(device_source, source_files)
+    if not declared_kernels:
+        return core_source, False
+
+    existing_launches: Set[str] = set()
+    launch_lines: List[str] = []
+    for site in extract_launch_graph(source_files):
+        if site.kernel in existing_launches or site.kernel not in declared_kernels:
+            continue
+        line = _source_launch_site_to_synthi_call(core_source, site)
+        if line is None:
+            continue
+        existing_launches.add(site.kernel)
+        launch_lines.append(line)
+
+    if not launch_lines:
+        return core_source, False
+
+    insert_at = span[1]
+    prefix = "\n" if insert_at > 0 and core_source[insert_at - 1] not in "\r\n" else ""
+    insertion = prefix + "".join(f"    {line}\n" for line in launch_lines)
+    out = core_source[:insert_at] + insertion + core_source[insert_at:]
+    return out, out != core_source
+
+
+def _source_launch_site_to_synthi_call(
+    core_source: str,
+    site: LaunchSite,
+) -> Optional[str]:
+    if not site.args:
+        return None
+    lookup_source = _core_update_lookup_source(core_source)
+    if lookup_source is None:
+        return None
+    if not _launch_expr_available_in_core(lookup_source, site.grid, core_source):
+        return None
+    if not _launch_expr_available_in_core(lookup_source, site.block, core_source):
+        return None
+    if not _launch_expr_available_in_core(lookup_source, site.shared, core_source):
+        return None
+    if not _launch_expr_available_in_core(lookup_source, site.stream, core_source):
+        return None
+
+    launch_args: List[str] = []
+    for arg in site.args:
+        normalized = _normalize_launch_arg_identity(arg)
+        if not normalized or not _is_safe_launch_lvalue(normalized):
+            return None
+        if not _launch_expr_available_in_core(lookup_source, normalized, core_source):
+            return None
+        launch_args.append(f"&{normalized}")
+    if not launch_args:
+        return None
+    return (
+        f'synthi_gpu_launch(nullptr, "{site.kernel}", '
+        f"{_launch_dim_expr_for_boundary(site.grid)}, "
+        f"{_launch_dim_expr_for_boundary(site.block)}, "
+        f"{site.shared}, {site.stream}, "
+        "{ " + ", ".join(launch_args) + " });"
+    )
+
+
+def _launch_dim_expr_for_boundary(expr: str) -> str:
+    text = expr.strip()
+    if "," not in text:
+        return text
+    if text.startswith("{") and text.endswith("}"):
+        return text
+    return "{ " + text + " }"
+
+
+def _core_update_lookup_source(core_source: str) -> Optional[str]:
+    span = _function_body_span(core_source, "core_on_update")
+    if span is None:
+        return None
+    body = core_source[span[0] : span[1]]
+    masked = mask_comments_for_parsing(body)
+    masked = _STRING_LITERAL_RE.sub('""', masked)
+    masked = _CHAR_LITERAL_RE.sub("''", masked)
+    return masked
+
+
+def _launch_expr_available_in_core(lookup_source: str, expr: str, full_core_source: str) -> bool:
+    text = expr.strip()
+    if not text:
+        return False
+    if text in {"0", "nullptr", "NULL"}:
+        return True
+    if _eval_static_int_expr(text, _static_integer_bindings(full_core_source)) is not None:
+        return True
+    identifiers = {
+        token
+        for token in _IDENTIFIER_RE.findall(text)
+        if token not in _CPP_DECL_KEYWORDS
+        and token not in {"dim3", "Dim3", "nullptr", "NULL"}
+    }
+    return all(_identifier_available_in_core(lookup_source, token) for token in identifiers)
+
+
+def _identifier_available_in_core(core_source: str, name: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(name)}\b", core_source))
+
+
+def _is_safe_launch_lvalue(expr: str) -> bool:
+    field = r"[A-Za-z_][A-Za-z0-9_]*"
+    return bool(
+        re.fullmatch(
+            rf"{field}(?:(?:->|\.){field}|\[[^\]\n;{{}}]+\])*",
+            expr.strip(),
+        )
+    )
 
 
 def _unresolved_generated_launch_symbols(

@@ -788,6 +788,154 @@ def test_repair_rechecks_launches_after_source_device_bridge_replaces_fake_kerne
     assert not any(v.rule.startswith("source_device_kernel_") for v in after.violations)
 
 
+def test_repair_materializes_missing_source_launch_when_core_has_owned_args():
+    source_files = {
+        "src/Device/includes/FixIntellisense.h": (
+            "#pragma once\n"
+            "#define GLOBAL_KERNEL_SIGNATURE(returnType) extern \"C\" returnType __global__\n"
+        ),
+        "src/Device/kernels/Shade.h": (
+            '#include "Device/includes/FixIntellisense.h"\n'
+            "struct LaunchArgs { unsigned int* pixels; int width; int height; };\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) Shade(LaunchArgs launch_args) { "
+            "launch_args.pixels[0] = (unsigned int)launch_args.width; }\n"
+        ),
+        "src/render.cpp": (
+            "void render(auto& kernel, LaunchArgs launch_args, void* stream, int width, int height) { "
+            'kernel.set_kernel_function_name("Shade"); '
+            "kernel.launch_asynchronous(8, 8, width, height, launch_args, stream); }\n"
+        ),
+    }
+    files = {
+        "shared.h": (
+            '#include "synthi_gpu_runtime.h"\n'
+            "struct LaunchArgs { unsigned int* pixels; int width; int height; };"
+        ),
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static LaunchArgs launch_args{}; return &launch_args; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            "auto* launch_args_ptr = static_cast<LaunchArgs*>(state); "
+            "LaunchArgs launch_args = *launch_args_ptr; "
+            "void* stream = nullptr; int width = launch_args.width; int height = launch_args.height; }\n"
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": '#include "src/Device/kernels/Shade.h"\n',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "device_kernels_not_launched" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.source_launch_sites" in report["repairRules"]
+    assert (
+        'synthi_gpu_launch(nullptr, "Shade", { width, height, 1 }, { 8, 8, 1 }, 0, stream, { &launch_args });'
+        in repaired["core.cpp"]
+    )
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+    assert not any(v.rule == "device_kernels_not_launched" for v in after.violations)
+    assert not any(v.rule == "source_launch_args_not_preserved" for v in after.violations)
+
+
+def test_repair_does_not_invent_missing_source_launch_args():
+    source_files = {
+        "src/kernels.cu": 'extern "C" __global__ void Shade(int launch_args) {}\n',
+        "src/render.cu": 'void render(){ Shade<<<1, 64>>>(launch_args); }\n',
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { int frame = 0; (void)frame; }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": 'extern "C" __global__ void Shade(int launch_args) {}\n',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "device_kernels_not_launched" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert "repair.source_launch_sites" not in report["repairRules"]
+    assert repaired["core.cpp"] == files["core.cpp"]
+
+
+def test_repair_does_not_treat_string_literal_as_launch_arg_owner():
+    source_files = {
+        "src/kernels.cu": 'extern "C" __global__ void Shade(int launch_args) {}\n',
+        "src/render.cu": 'void render(){ Shade<<<1, 64>>>(launch_args); }\n',
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'const char* diagnostic = "launch_args"; (void)diagnostic; }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": 'extern "C" __global__ void Shade(int launch_args) {}\n',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["sm_80"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "device_kernels_not_launched" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert "repair.source_launch_sites" not in report["repairRules"]
+    assert repaired["core.cpp"] == files["core.cpp"]
+
+
 def test_repair_removes_guard_block_for_unresolved_launch_assignment():
     source_files = {
         "src/Device/includes/FixIntellisense.h": (
