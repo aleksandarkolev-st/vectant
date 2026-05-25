@@ -51,3 +51,24 @@ void launch() {
     assert graph[0]["grid"] == "width, height, 1"
     assert graph[0]["stream"] == "stream"
     assert graph[0]["args"] == ["launch_args"]
+
+
+def test_ignores_commented_launch_forms():
+    graph = launch_graph_as_dicts(
+        {
+            "core.cpp": r'''
+void configure() {
+  // ignored_raw<<<grid, block>>>(args);
+  /* synthi_gpu_launch(gpu, "ignored_boundary", 1, 1, 0, stream, { &args }); */
+  /*
+  kernels.set_kernel_function_name("ignored_object");
+  kernels.launch_asynchronous(1, 1, 1, 1, dummy_args, stream);
+  */
+  kernels.set_kernel_function_name("kept_object");
+  kernels.launch_asynchronous(8, 8, width, height, launch_args, stream);
+}
+'''
+        }
+    )
+
+    assert [item["kernel"] for item in graph] == ["kept_object"]

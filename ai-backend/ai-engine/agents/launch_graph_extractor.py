@@ -71,9 +71,10 @@ def extract_launch_graph(files: Mapping[str, str]) -> List[LaunchSite]:
     for path, source in files.items():
         if not _looks_like_host_source(path):
             continue
-        sites.extend(_extract_raw_launches(path, source))
-        sites.extend(_extract_boundary_launches(path, source))
-        sites.extend(_extract_runtime_object_launches(path, source))
+        parsed_source = _mask_comments_preserving_len(source)
+        sites.extend(_extract_raw_launches(path, parsed_source))
+        sites.extend(_extract_boundary_launches(path, parsed_source))
+        sites.extend(_extract_runtime_object_launches(path, parsed_source))
     return sites
 
 
@@ -241,6 +242,52 @@ def _site(path: str, source: str, offset: int) -> str:
 
 def _normalize_owner_expr(value: str) -> str:
     return re.sub(r"\s+", "", value)
+
+
+def _mask_comments_preserving_len(source: str) -> str:
+    out: List[str] = []
+    i = 0
+    in_string: Optional[str] = None
+    escape = False
+    while i < len(source):
+        ch = source[i]
+        nxt = source[i + 1] if i + 1 < len(source) else ""
+        if in_string:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == in_string:
+                in_string = None
+            i += 1
+            continue
+        if ch in {'"', "'"}:
+            in_string = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            out.extend([" ", " "])
+            i += 2
+            while i < len(source) and source[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            out.extend([" ", " "])
+            i += 2
+            while i < len(source):
+                if source[i] == "*" and i + 1 < len(source) and source[i + 1] == "/":
+                    out.extend([" ", " "])
+                    i += 2
+                    break
+                out.append("\n" if source[i] == "\n" else " ")
+                i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _looks_like_host_source(path: str) -> bool:
