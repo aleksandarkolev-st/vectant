@@ -499,13 +499,18 @@ fn maybe_emit_launch_failure_status(
         "[gpu-runtime-boundary] gpu_runtime_error kind=launch_failed kernel={} generation={} error={}",
         safe_kernel, active_generation, safe_error
     );
-    let status = HmrStatus::rejected_with_fallback(
+    eprintln!(
+        "[gpu-runtime-boundary] gpu-hmr-rejected fallbackUsed=false fallbackReason=runtime_launch_failed kernel={} generation={}",
+        safe_kernel, active_generation
+    );
+    let status = HmrStatus::gpu_rejected_with_fallback_reason(
         "device",
         &format!(
             "GPU kernel launch failed after sidecar reload: kernel={} error={}",
             safe_kernel, safe_error
         ),
         "Keep runtime running but mark GPU HMR degraded until the launch succeeds",
+        "runtime_launch_failed",
     );
     eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
 }
