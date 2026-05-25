@@ -127,31 +127,70 @@ fn clamp_dim(value: u64) -> u32 {
     value.max(1).min(u32::MAX as u64) as u32
 }
 
-fn read_launch_dims(ptr: *const c_void, bytes: usize) -> (u32, u32, u32) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DecodedLaunchDims {
+    dims: (u32, u32, u32),
+    invalid_reason: Option<String>,
+}
+
+fn invalid_launch_dim_reason(label: &str, values: &[(usize, u64)]) -> Option<String> {
+    for (index, value) in values {
+        if *value == 0 {
+            return Some(format!("{label}[{index}] is zero"));
+        }
+        if *value == u32::MAX as u64 || *value == u64::MAX {
+            return Some(format!("{label}[{index}] is sentinel-max"));
+        }
+    }
+    None
+}
+
+fn decode_launch_dims(label: &str, ptr: *const c_void, bytes: usize) -> DecodedLaunchDims {
     if ptr.is_null() || bytes == 0 {
-        return (1, 1, 1);
+        return DecodedLaunchDims {
+            dims: (1, 1, 1),
+            invalid_reason: None,
+        };
     }
 
     unsafe {
         if bytes >= 12 {
             let p = ptr as *const u32;
-            return (
-                clamp_dim(std::ptr::read_unaligned(p) as u64),
-                clamp_dim(std::ptr::read_unaligned(p.add(1)) as u64),
-                clamp_dim(std::ptr::read_unaligned(p.add(2)) as u64),
-            );
+            let raw = [
+                std::ptr::read_unaligned(p) as u64,
+                std::ptr::read_unaligned(p.add(1)) as u64,
+                std::ptr::read_unaligned(p.add(2)) as u64,
+            ];
+            return DecodedLaunchDims {
+                dims: (clamp_dim(raw[0]), clamp_dim(raw[1]), clamp_dim(raw[2])),
+                invalid_reason: invalid_launch_dim_reason(
+                    label,
+                    &[(0, raw[0]), (1, raw[1]), (2, raw[2])],
+                ),
+            };
         }
         if bytes >= std::mem::size_of::<usize>() {
             let n = std::ptr::read_unaligned(ptr as *const usize);
-            return (clamp_dim(n as u64), 1, 1);
+            let raw = n as u64;
+            return DecodedLaunchDims {
+                dims: (clamp_dim(raw), 1, 1),
+                invalid_reason: invalid_launch_dim_reason(label, &[(0, raw)]),
+            };
         }
         if bytes >= std::mem::size_of::<u32>() {
             let n = std::ptr::read_unaligned(ptr as *const u32);
-            return (clamp_dim(n as u64), 1, 1);
+            let raw = n as u64;
+            return DecodedLaunchDims {
+                dims: (clamp_dim(raw), 1, 1),
+                invalid_reason: invalid_launch_dim_reason(label, &[(0, raw)]),
+            };
         }
     }
 
-    (1, 1, 1)
+    DecodedLaunchDims {
+        dims: (1, 1, 1),
+        invalid_reason: None,
+    }
 }
 
 #[no_mangle]
@@ -272,8 +311,10 @@ fn synthi_gpu_launch_raw_impl(
     expected_generation: u64,
 ) -> bool {
     let kernel_name = cstr(kernel_name).unwrap_or_else(|| "<unknown>".to_string());
-    let grid = read_launch_dims(_grid, grid_size);
-    let block = read_launch_dims(_block, block_size);
+    let grid_decoded = decode_launch_dims("grid", _grid, grid_size);
+    let block_decoded = decode_launch_dims("block", _block, block_size);
+    let grid = grid_decoded.dims;
+    let block = block_decoded.dims;
     let active_generation = current_launch_generation();
     let stale_generation = expected_generation != 0 && expected_generation != active_generation;
     let request = GpuLaunchRequest {
@@ -318,7 +359,14 @@ fn synthi_gpu_launch_raw_impl(
         (launch_index, dispatcher)
     };
 
-    let dispatch_result = if stale_generation {
+    let invalid_launch_dims = grid_decoded
+        .invalid_reason
+        .or(block_decoded.invalid_reason)
+        .map(|reason| format!("gpu_launch_invalid_dimensions: {reason}"));
+
+    let dispatch_result = if let Some(reason) = invalid_launch_dims {
+        Some(Err(reason))
+    } else if stale_generation {
         Some(Err("reload_failed.stale_launch_pointer".to_string()))
     } else {
         dispatcher.as_ref().map(|d| d.dispatch(&request, args))
@@ -680,6 +728,84 @@ mod tests {
             launches[0].expected_generation,
             launches[0].active_generation
         );
+    }
+
+    #[test]
+    fn invalid_launch_dimensions_reject_before_dispatch() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: calls.clone(),
+        }));
+
+        let kernel = CString::new("invalid_dims").unwrap();
+        let grid = [u32::MAX, 1, 1];
+        let block = [16_u32, 16, 1];
+        let ok = synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            grid.as_ptr().cast(),
+            std::mem::size_of_val(&grid),
+            block.as_ptr().cast(),
+            std::mem::size_of_val(&block),
+            0,
+            0,
+            std::ptr::null(),
+            1,
+        );
+
+        assert!(!ok);
+        assert!(calls.lock().unwrap().is_empty());
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].kernel_name, "invalid_dims");
+        assert_eq!(launches[0].grid, (u32::MAX, 1, 1));
+        assert_eq!(launches[0].block, (16, 16, 1));
+        assert!(!launches[0].dispatched);
+        let error = launches[0].dispatch_error.as_deref().unwrap_or_default();
+        assert!(error.contains("gpu_launch_invalid_dimensions"));
+        assert!(error.contains("grid[0] is sentinel-max"));
+    }
+
+    #[test]
+    fn zero_launch_dimensions_reject_before_dispatch() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: calls.clone(),
+        }));
+
+        let kernel = CString::new("zero_dims").unwrap();
+        let grid = [1_u32, 1, 1];
+        let block = [0_u32, 16, 1];
+        let ok = synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            grid.as_ptr().cast(),
+            std::mem::size_of_val(&grid),
+            block.as_ptr().cast(),
+            std::mem::size_of_val(&block),
+            0,
+            0,
+            std::ptr::null(),
+            1,
+        );
+
+        assert!(!ok);
+        assert!(calls.lock().unwrap().is_empty());
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].kernel_name, "zero_dims");
+        assert_eq!(launches[0].grid, (1, 1, 1));
+        assert_eq!(launches[0].block, (1, 16, 1));
+        assert!(!launches[0].dispatched);
+        let error = launches[0].dispatch_error.as_deref().unwrap_or_default();
+        assert!(error.contains("gpu_launch_invalid_dimensions"));
+        assert!(error.contains("block[0] is zero"));
     }
 
     #[test]
