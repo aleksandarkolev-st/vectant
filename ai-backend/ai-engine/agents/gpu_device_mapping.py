@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Mapping, Optional, Set
 
 from agents.abi_stamper import constant_layout_hash, mask_comments_for_parsing, stamp_device_source
-from agents.gpu_device_markers import DEVICE_ANNOTATION_MACRO_RE
+from agents.gpu_device_markers import DEVICE_ANNOTATION_MACRO_RE as _DEVICE_ANNOTATION_MACRO_RE
 
 
 _GLOBAL_KERNEL_RE = re.compile(
