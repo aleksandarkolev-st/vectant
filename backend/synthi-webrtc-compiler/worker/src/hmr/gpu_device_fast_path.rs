@@ -1364,17 +1364,21 @@ fn normalized_object_string_lookup(
         return NormalizedStringLookup::Missing;
     };
     let normalized_path = normalize_path(path);
-    let mut values = BTreeSet::new();
-    for (key, value) in map {
+    let mut matched_keys = BTreeSet::new();
+    let mut matched_value = None;
+    for (key, item) in map {
         if normalize_path(key) == normalized_path {
-            if let Some(text) = value.as_str() {
-                values.insert(text.to_string());
+            matched_keys.insert(key.to_string());
+            if let Some(text) = item.as_str() {
+                matched_value.get_or_insert_with(|| text.to_string());
             }
         }
     }
-    match values.len() {
+    match matched_keys.len() {
         0 => NormalizedStringLookup::Missing,
-        1 => NormalizedStringLookup::Found(values.into_iter().next().unwrap_or_default()),
+        1 => matched_value
+            .map(NormalizedStringLookup::Found)
+            .unwrap_or(NormalizedStringLookup::Missing),
         _ => NormalizedStringLookup::Ambiguous,
     }
 }
@@ -3880,6 +3884,26 @@ extern "C" __global__ void trace(float* x) {
         meta["sourceBaselineContents"] = json!({
             "src/gpu/flow.hip": source,
             "./src/gpu/flow.hip": other_source
+        });
+
+        let result =
+            try_direct_device_body_patch(&meta, "src/gpu/flow.hip", next, generated_source());
+
+        assert!(!result.accepted);
+        assert!(result
+            .reason_codes
+            .iter()
+            .any(|code| code == "mapping.source_baseline_path_ambiguous"));
+    }
+
+    #[test]
+    fn baseline_lookup_rejects_alias_paths_even_with_same_contents() {
+        let source = "__constant__ float gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += gain[0];\n}\n";
+        let next = "__constant__ float gain[1];\n__global__ void flow(float* x, int n) {\n  x[0] += gain[0] * 2.0f;\n}\n";
+        let mut meta = sidecar();
+        meta["sourceBaselineContents"] = json!({
+            "src/gpu/flow.hip": source,
+            "./src/gpu/flow.hip": source
         });
 
         let result =
