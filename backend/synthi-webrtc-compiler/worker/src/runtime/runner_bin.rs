@@ -213,6 +213,34 @@ struct GpuReloadCompletion {
     result: AdapterReloadResult,
 }
 
+#[cfg(feature = "gpu-hmr")]
+fn emit_gpu_reload_completion(completion: &GpuReloadCompletion) {
+    eprintln!(
+        "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact={} kernels={} result={:?}",
+        completion.language, completion.artifact_path, completion.kernels, completion.result
+    );
+    let status = match &completion.result {
+        AdapterReloadResult::Success {
+            state_preserved, ..
+        } => HmrStatus::Applied {
+            module: "device".into(),
+            capability: "GPU sidecar HMR".into(),
+            state_preserved: *state_preserved,
+        },
+        AdapterReloadResult::Failed { error, .. } => HmrStatus::rejected_with_fallback(
+            "device",
+            error,
+            "Keep previous GPU sidecar loaded",
+        ),
+        AdapterReloadResult::Unsupported { reason } => HmrStatus::rejected_with_fallback(
+            "device",
+            reason,
+            "Full GPU sidecar reload required",
+        ),
+    };
+    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+}
+
 // ============================================================
 // INDEPENDENT SWAP DOMAINS: Separate state for each module
 // ============================================================
@@ -1000,33 +1028,7 @@ fn main() {
     loop {
         #[cfg(feature = "gpu-hmr")]
         while let Ok(completion) = gpu_reload_rx.try_recv() {
-            eprintln!(
-                "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact={} kernels={} result={:?}",
-                completion.language,
-                completion.artifact_path,
-                completion.kernels,
-                completion.result
-            );
-            let status = match &completion.result {
-                AdapterReloadResult::Success {
-                    state_preserved, ..
-                } => HmrStatus::Applied {
-                    module: "device".into(),
-                    capability: "GPU sidecar HMR".into(),
-                    state_preserved: *state_preserved,
-                },
-                AdapterReloadResult::Failed { error, .. } => HmrStatus::rejected_with_fallback(
-                    "device",
-                    error,
-                    "Keep previous GPU sidecar loaded",
-                ),
-                AdapterReloadResult::Unsupported { reason } => HmrStatus::rejected_with_fallback(
-                    "device",
-                    reason,
-                    "Full GPU sidecar reload required",
-                ),
-            };
-            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+            emit_gpu_reload_completion(&completion);
             gpu_reload_inflight.remove(&completion.language);
             gpu_adapters.insert(completion.language, completion.adapter);
         }
@@ -1633,6 +1635,12 @@ fn main() {
                             kernels_log,
                             partial_device_load
                         );
+                        if let Err(error) = adapter.capture_current_context_for_reload() {
+                            eprintln!(
+                                "[Runner] [GPU HMR] Device context capture failed vendor={}: {}",
+                                language, error
+                            );
+                        }
                         thread::spawn(move || {
                             let result = adapter.reload(&req);
                             let _ = completion_tx.send(GpuReloadCompletion {

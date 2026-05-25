@@ -65,11 +65,12 @@ pub type CuFunction = *mut c_void;
 pub type CuContext = *mut c_void;
 pub type CuKernelParams = *mut *mut c_void;
 
-pub const REQUIRED_SYMBOL_COUNT: usize = 13;
+pub const REQUIRED_SYMBOL_COUNT: usize = 14;
 
 pub type CuInitFn = unsafe extern "C" fn(flags: u32) -> CuResult;
 pub type CuDeviceGetFn = unsafe extern "C" fn(device: *mut i32, ordinal: i32) -> CuResult;
 pub type CuCtxGetCurrentFn = unsafe extern "C" fn(ctx: *mut CuContext) -> CuResult;
+pub type CuCtxSetCurrentFn = unsafe extern "C" fn(ctx: CuContext) -> CuResult;
 
 pub type CuModuleLoadDataFn =
     unsafe extern "C" fn(module: *mut CuModule, image: *const c_void) -> CuResult;
@@ -111,6 +112,7 @@ pub struct GpuDriverSymbolTable {
     pub cu_init: CuInitFn,
     pub cu_device_get: CuDeviceGetFn,
     pub cu_ctx_get_current: CuCtxGetCurrentFn,
+    pub cu_ctx_set_current: CuCtxSetCurrentFn,
     pub cu_module_load_data: CuModuleLoadDataFn,
     pub cu_module_load: CuModuleLoadFn,
     pub cu_module_unload: CuModuleUnloadFn,
@@ -132,6 +134,7 @@ pub fn required_symbol_names(vendor: GpuVendor) -> [&'static str; REQUIRED_SYMBO
             "cuInit",
             "cuDeviceGet",
             "cuCtxGetCurrent",
+            "cuCtxSetCurrent",
             "cuModuleLoadData",
             "cuModuleLoad",
             "cuModuleUnload",
@@ -147,6 +150,7 @@ pub fn required_symbol_names(vendor: GpuVendor) -> [&'static str; REQUIRED_SYMBO
             "hipInit",
             "hipDeviceGet",
             "hipCtxGetCurrent",
+            "hipCtxSetCurrent",
             "hipModuleLoadData",
             "hipModuleLoad",
             "hipModuleUnload",
@@ -355,16 +359,17 @@ unsafe fn resolve_symbols(
         cu_init: fetch!(0, CuInitFn),
         cu_device_get: fetch!(1, CuDeviceGetFn),
         cu_ctx_get_current: fetch!(2, CuCtxGetCurrentFn),
-        cu_module_load_data: fetch!(3, CuModuleLoadDataFn),
-        cu_module_load: fetch!(4, CuModuleLoadFn),
-        cu_module_unload: fetch!(5, CuModuleUnloadFn),
-        cu_module_get_function: fetch!(6, CuModuleGetFunctionFn),
-        cu_launch_kernel: fetch!(7, CuLaunchKernelFn),
-        cu_ctx_synchronize: fetch!(8, CuCtxSynchronizeFn),
-        cu_stream_synchronize: fetch!(9, CuStreamSynchronizeFn),
-        cu_mem_alloc: fetch!(10, CuMemAllocFn),
-        cu_mem_free: fetch!(11, CuMemFreeFn),
-        cu_memcpy_dtod: fetch!(12, CuMemcpyDtoDFn),
+        cu_ctx_set_current: fetch!(3, CuCtxSetCurrentFn),
+        cu_module_load_data: fetch!(4, CuModuleLoadDataFn),
+        cu_module_load: fetch!(5, CuModuleLoadFn),
+        cu_module_unload: fetch!(6, CuModuleUnloadFn),
+        cu_module_get_function: fetch!(7, CuModuleGetFunctionFn),
+        cu_launch_kernel: fetch!(8, CuLaunchKernelFn),
+        cu_ctx_synchronize: fetch!(9, CuCtxSynchronizeFn),
+        cu_stream_synchronize: fetch!(10, CuStreamSynchronizeFn),
+        cu_mem_alloc: fetch!(11, CuMemAllocFn),
+        cu_mem_free: fetch!(12, CuMemFreeFn),
+        cu_memcpy_dtod: fetch!(13, CuMemcpyDtoDFn),
     })
 }
 
