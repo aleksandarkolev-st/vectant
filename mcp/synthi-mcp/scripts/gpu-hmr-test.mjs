@@ -1517,6 +1517,20 @@ function summarizeLogLine(line) {
   return String(line ?? '').replace(/\s+/g, ' ').slice(0, 240);
 }
 
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function kernelNamesFromSource(source) {
+  const masked = String(source ?? '').replace(/\/\/[^\n\r]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const names = new Set();
+  const kernelRe = /(?:extern\s+"C"\s+)?(?:__global__\s+(?:void\s+)?|GLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+(?:__launch_bounds__\s*\([^)]*\)\s*)?)([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  for (const match of masked.matchAll(kernelRe)) {
+    names.add(match[1]);
+  }
+  return [...names].sort();
+}
+
 function gpuHmrFallbackTelemetry(logText) {
   const degraded = firstMatchingLine(
     logText,
@@ -1562,6 +1576,40 @@ async function assertNoGpuHmrFallback(phase, name, checkpoint, maxBytes = 8 * 10
   }
   record(phase, name, 'fail', 'no gpu-hmr label or fallbackUsed telemetry found after edit');
   return telemetry;
+}
+
+async function awaitGpuDispatchOk(phase, name, checkpoint, expectedKernels = [], timeoutMs = 12000) {
+  const maxBytes = 8 * 1024 * 1024;
+  const kernelPattern = expectedKernels.length
+    ? `(?:${expectedKernels.map(escapeRegex).join('|')})`
+    : String.raw`\S+`;
+  const dispatchRe = new RegExp(
+    String.raw`\[gpu-runtime-boundary\]\s+synthi_gpu_launch\s+kernel=${kernelPattern}\b.*dispatch=(ok|failed|stale-pointer|missing-dispatcher)`,
+  );
+  const failureRe = new RegExp(
+    String.raw`\[gpu-runtime-boundary\]\s+synthi_gpu_launch\s+kernel=${kernelPattern}\b.*dispatch=(failed|stale-pointer|missing-dispatcher)\b`,
+  );
+  const successRe = new RegExp(
+    String.raw`\[gpu-runtime-boundary\]\s+synthi_gpu_launch\s+kernel=${kernelPattern}\b.*dispatch=ok\b`,
+  );
+  const dispatch = await awaitWorkerLogRegex(
+    dispatchRe,
+    timeoutMs,
+    { after: checkpoint, maxBytes },
+  );
+  const window = dispatch.window ?? dispatch.tail ?? '';
+  const failure = firstMatchingLine(window, failureRe);
+  if (failure) {
+    record(phase, name, 'fail', summarizeLogLine(failure));
+    return false;
+  }
+  const success = firstMatchingLine(window, successRe);
+  if (success) {
+    record(phase, name, 'pass', summarizeLogLine(success));
+    return true;
+  }
+  record(phase, name, 'fail', 'no successful GPU runtime dispatch observed after edit');
+  return false;
 }
 
 function parseGuiReadbacks(logText) {
@@ -1761,6 +1809,12 @@ async function phaseFlow(ctx) {
   record('FLOW', 'inward GPU launch observed',
     baselineLaunch.matched ? 'pass' : 'warn',
     baselineLaunch.snippet || 'no particle_flow launch marker');
+  await awaitGpuDispatchOk(
+    'FLOW',
+    'inward GPU dispatch ok',
+    baselineStart,
+    kernelNamesFromSource(FLOW_DEVICE_INWARD),
+  );
 
   await captureMcpScreenshot('flow-inward');
 
@@ -1788,6 +1842,12 @@ async function phaseFlow(ctx) {
     'FLOW',
     'outward HMR has no full-device fallback',
     flipStart,
+  );
+  await awaitGpuDispatchOk(
+    'FLOW',
+    'outward GPU dispatch ok',
+    flipStart,
+    kernelNamesFromSource(FLOW_DEVICE_OUTWARD),
   );
 
   const trend = await awaitWorkerLogRegex(
@@ -1832,6 +1892,12 @@ async function phaseP0(ctx) {
   );
   record('P0', 'gpu adapter loaded cubin/hsaco', sawCubin.matched ? 'pass' : 'warn',
     sawCubin.snippet || 'no marker');
+  await awaitGpuDispatchOk(
+    'P0',
+    'baseline GPU dispatch ok',
+    p0LogStart,
+    kernelNamesFromSource(DEVICE_CU_PHASE0),
+  );
 
   if (ctx.fixture === 'vector') {
     await awaitGuiReadback(
@@ -1878,6 +1944,12 @@ async function phaseP1(ctx) {
     'P1',
     'edit HMR has no full-device fallback',
     preTail,
+  );
+  await awaitGpuDispatchOk(
+    'P1',
+    'post-edit GPU dispatch ok',
+    preTail,
+    kernelNamesFromSource(DEVICE_CU_PHASE1_EDIT),
   );
   record('P1', 'reload plan emitted', reload.matched ? 'pass' : 'warn',
     reload.snippet || 'no plan marker — orchestrator not wired yet');
@@ -2011,6 +2083,12 @@ async function phaseP2(ctx) {
       'P2',
       'fast-swap HMR has no full-device fallback',
       fastLogStart,
+    );
+    await awaitGpuDispatchOk(
+      'P2',
+      'fast-swap GPU dispatch ok',
+      fastLogStart,
+      kernelNamesFromSource(DEVICE_CU_PHASE2_FAST),
     );
     if (ctx.fixture === 'vector') {
       await awaitGuiReadback(
@@ -2340,6 +2418,26 @@ async function selfCheck() {
   );
   if (!partialTelemetry.label || partialTelemetry.degraded || !degradedTelemetry.degraded) {
     console.error('gpu-hmr-test self-check failed: fallback telemetry parser did not classify labels');
+    process.exitCode = 1;
+    return;
+  }
+  const dispatchOk = firstMatchingLine(
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=any grid=(1, 1, 1) block=(1, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok\n',
+    /\[gpu-runtime-boundary\]\s+synthi_gpu_launch\s+kernel=\S+.*dispatch=ok\b/,
+  );
+  const dispatchFailed = firstMatchingLine(
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=any grid=(1, 1, 1) block=(1, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=failed error=cuLaunchKernel returned 1\n',
+    /\[gpu-runtime-boundary\]\s+synthi_gpu_launch\s+kernel=\S+.*dispatch=(failed|stale-pointer|missing-dispatcher)\b/,
+  );
+  const vectorKernels = kernelNamesFromSource(DEVICE_CU_PHASE0);
+  const flowKernels = kernelNamesFromSource(FLOW_DEVICE_INWARD);
+  if (
+    !dispatchOk
+    || !dispatchFailed
+    || vectorKernels.join(',') !== 'vec_add'
+    || flowKernels.join(',') !== 'particle_flow'
+  ) {
+    console.error('gpu-hmr-test self-check failed: dispatch telemetry parser did not classify launch status');
     process.exitCode = 1;
     return;
   }
