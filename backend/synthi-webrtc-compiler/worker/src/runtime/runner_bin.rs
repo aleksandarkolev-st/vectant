@@ -1641,6 +1641,24 @@ fn main() {
                                 language, error
                             );
                         }
+
+                        if partial_device_load {
+                            let result = adapter.reload(&req);
+                            let completion = GpuReloadCompletion {
+                                language: language_owned,
+                                artifact_path: artifact_path_owned,
+                                kernels: kernels_log,
+                                adapter,
+                                result,
+                            };
+                            emit_gpu_reload_completion(&completion);
+                            let GpuReloadCompletion {
+                                language, adapter, ..
+                            } = completion;
+                            gpu_reload_inflight.remove(&language);
+                            gpu_adapters.insert(language, adapter);
+                            continue;
+                        }
                         thread::spawn(move || {
                             let result = adapter.reload(&req);
                             let _ = completion_tx.send(GpuReloadCompletion {
