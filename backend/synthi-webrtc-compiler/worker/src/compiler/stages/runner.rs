@@ -190,13 +190,47 @@ fn same_session_full_device_abi_changed(
         )
 }
 
+fn full_device_abi_restart_marker(
+    current_session: Option<&str>,
+    requested_session: Option<&str>,
+    previous_abi: Option<&str>,
+    next_abi: Option<&str>,
+) -> Option<(String, String)> {
+    if same_session_full_device_abi_changed(
+        current_session,
+        requested_session,
+        previous_abi,
+        next_abi,
+    ) {
+        return Some((
+            previous_abi?.trim().to_string(),
+            next_abi?.trim().to_string(),
+        ));
+    }
+    if !runner_session_matches(current_session, requested_session) {
+        return None;
+    }
+    let next = next_abi.map(str::trim).filter(|abi| !abi.is_empty())?;
+    match previous_abi.map(str::trim).filter(|abi| !abi.is_empty()) {
+        Some(previous) if previous != next => Some((previous.to_string(), next.to_string())),
+        None => Some(("untracked".to_string(), next.to_string())),
+        _ => None,
+    }
+}
+
 fn emit_abi_breaking_restart_marker(
     previous_abi: &str,
     next_abi: &str,
     policy: &RunnerReloadPolicy,
 ) {
+    let reason = if previous_abi == "untracked" {
+        "device_abi_untracked"
+    } else {
+        "device_abi_changed"
+    };
     eprintln!(
-        "[gpu-reload] plan=abi_breaking reason=device_abi_changed previous_abi={} next_abi={} reload_policy_reasons={}",
+        "[gpu-reload] plan=abi_breaking reason={} previous_abi={} next_abi={} reload_policy_reasons={}",
+        reason,
         previous_abi,
         next_abi,
         policy.reason_summary()
@@ -392,18 +426,13 @@ pub async fn handle_runner_execution(
         let resolution_same = state.width == req_width && state.height == req_height;
         let session_same =
             runner_session_matches(state.session_id.as_deref(), session_id.as_deref());
-        if same_session_full_device_abi_changed(
-            state.session_id.as_deref(),
-            session_id.as_deref(),
-            state.loaded_device_abi.as_deref(),
-            next_device_abi.as_deref(),
-        ) && !reload_policy.allow_existing_runner_reload
-        {
-            if let (Some(previous), Some(next)) =
-                (state.loaded_device_abi.as_ref(), next_device_abi.as_ref())
-            {
-                pending_abi_breaking_restart_marker = Some((previous.clone(), next.clone()));
-            }
+        if !reload_policy.allow_existing_runner_reload {
+            pending_abi_breaking_restart_marker = full_device_abi_restart_marker(
+                state.session_id.as_deref(),
+                session_id.as_deref(),
+                state.loaded_device_abi.as_deref(),
+                next_device_abi.as_deref(),
+            );
         }
         debug_log!("[Main] Existing runner: alive={}, is_gui={}, gui_mode_same={}, resolution_same={}, session_same={}, current_session={:?}, requested_session={:?}, has_on_update={}, reload_policy_allow_existing={}, reload_policy_reasons={}",
             runner_alive, state.is_gui, gui_mode_same, resolution_same, session_same, state.session_id.as_deref(), session_id.as_deref(), has_on_update, reload_policy.allow_existing_runner_reload, reload_policy.reason_summary());
@@ -1371,9 +1400,9 @@ pub async fn handle_runner_execution(
 #[cfg(test)]
 mod tests {
     use super::{
-        full_device_abi_from_marker, next_full_device_abi, runner_load_command,
-        runner_reuse_allowed, runner_session_matches, same_session_full_device_abi_changed,
-        RunnerReloadPolicy,
+        full_device_abi_from_marker, full_device_abi_restart_marker, next_full_device_abi,
+        runner_load_command, runner_reuse_allowed, runner_session_matches,
+        same_session_full_device_abi_changed, RunnerReloadPolicy,
     };
 
     #[test]
@@ -1463,6 +1492,46 @@ mod tests {
             None,
             Some("abi-v2")
         ));
+    }
+
+    #[test]
+    fn device_abi_restart_marker_handles_changed_or_untracked_full_abi() {
+        assert_eq!(
+            full_device_abi_restart_marker(
+                Some("session-a"),
+                Some("session-a"),
+                Some("abi-v1"),
+                Some("abi-v2")
+            ),
+            Some(("abi-v1".to_string(), "abi-v2".to_string()))
+        );
+        assert_eq!(
+            full_device_abi_restart_marker(
+                Some("session-a"),
+                Some("session-a"),
+                None,
+                Some("abi-v2")
+            ),
+            Some(("untracked".to_string(), "abi-v2".to_string()))
+        );
+        assert_eq!(
+            full_device_abi_restart_marker(
+                Some("session-a"),
+                Some("session-b"),
+                Some("abi-v1"),
+                Some("abi-v2")
+            ),
+            None
+        );
+        assert_eq!(
+            full_device_abi_restart_marker(
+                Some("session-a"),
+                Some("session-a"),
+                Some("abi-v2"),
+                Some("abi-v2")
+            ),
+            None
+        );
     }
 
     #[test]
