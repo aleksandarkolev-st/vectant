@@ -1,5 +1,5 @@
 use libloading::{Library, Symbol};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_void, CString};
 use std::io::{self, BufRead, Write};
 use std::ptr;
@@ -97,12 +97,29 @@ fn is_runtime_execution_paused(runtime_paused: bool, _gpu_reload_inflight_count:
 }
 
 #[cfg(feature = "gpu-hmr")]
-fn should_process_runner_commands(gpu_reload_inflight_count: usize) -> bool {
-    gpu_reload_inflight_count == 0
+fn is_runtime_control_command(command: &str) -> bool {
+    matches!(
+        command,
+        "synthi_pause_runtime" | "pause_runtime" | "synthi_resume_runtime" | "resume_runtime"
+    )
 }
 
 #[cfg(not(feature = "gpu-hmr"))]
-fn should_process_runner_commands(_gpu_reload_inflight_count: usize) -> bool {
+fn is_runtime_control_command(_command: &str) -> bool {
+    false
+}
+
+fn runner_command_name(command: &str) -> Option<&str> {
+    command.split_whitespace().next()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn should_process_runner_command(command: &str, gpu_reload_inflight_count: usize) -> bool {
+    gpu_reload_inflight_count == 0 || is_runtime_control_command(command)
+}
+
+#[cfg(not(feature = "gpu-hmr"))]
+fn should_process_runner_command(_command: &str, _gpu_reload_inflight_count: usize) -> bool {
     true
 }
 
@@ -226,6 +243,47 @@ struct GpuReloadCompletion {
 enum RunnerCommand {
     Legacy(String),
     Ipc(process_isolation::IpcMessage),
+}
+
+fn runner_command_to_text(cmd_wrapper: RunnerCommand) -> String {
+    match cmd_wrapper {
+        RunnerCommand::Legacy(c) => c,
+        RunnerCommand::Ipc(msg) => match msg {
+            process_isolation::IpcMessage::LoadModule { slot, path, .. } => {
+                format!("load {} {}", slot, path)
+            }
+            process_isolation::IpcMessage::ReloadModule { slot, path, .. } => {
+                format!("reload {} {}", slot, path)
+            }
+            process_isolation::IpcMessage::InputEvent { kind, a, b, c } => {
+                // Map numeric events back to legacy string commands
+                match kind {
+                    0 => format!("input motion {} {}", a, b), // x, y
+                    1 => format!(
+                        "input button {} {} {} {}",
+                        if b == 1 { "down" } else { "up" }, // state
+                        a,                                  // button
+                        (c >> 16) as i16,
+                        (c & 0xFFFF) as i16
+                    ), // x, y packed
+                    2 => format!(
+                        "input key {} {}",
+                        if a == 1 { "down" } else { "up" },
+                        b
+                    ), // state, keycode
+                    _ => String::new(),
+                }
+            }
+            process_isolation::IpcMessage::Ping { seq } => {
+                debug_log!("[Runner] Ping received (seq={})", seq);
+                String::new()
+            }
+            _ => {
+                debug_log!("[Runner] Unhandled IPC message: {:?}", msg);
+                String::new()
+            }
+        },
+    }
 }
 
 /// ULTRAPLAN Lightning Phase 10g.2 — backend selection for runtime.
@@ -822,6 +880,7 @@ fn main() {
     // update/render during that window without stopping stdin, status
     // processing, frame presentation, or capture.
     let mut runtime_paused: bool = false;
+    let mut deferred_commands: VecDeque<String> = VecDeque::new();
 
     // ============================================================
     // MODULE LOADER WITH ABI VALIDATION
@@ -1156,56 +1215,42 @@ fn main() {
         // Process all pending commands
         loop {
             #[cfg(feature = "gpu-hmr")]
-            if !should_process_runner_commands(gpu_reload_inflight.len()) {
-                break;
-            }
+            let gpu_reload_inflight_count = gpu_reload_inflight.len();
             #[cfg(not(feature = "gpu-hmr"))]
-            if !should_process_runner_commands(0) {
-                break;
-            }
+            let gpu_reload_inflight_count = 0usize;
 
-            let Ok(cmd_wrapper) = rx.try_recv() else {
-                break;
-            };
-            let cmd = match cmd_wrapper {
-                RunnerCommand::Legacy(c) => c,
-                RunnerCommand::Ipc(msg) => {
-                    match msg {
-                        process_isolation::IpcMessage::LoadModule { slot, path, .. } => {
-                            format!("load {} {}", slot, path)
-                        }
-                        process_isolation::IpcMessage::ReloadModule { slot, path, .. } => {
-                            format!("reload {} {}", slot, path)
-                        }
-                        process_isolation::IpcMessage::InputEvent { kind, a, b, c } => {
-                            // Map numeric events back to legacy string commands
-                            match kind {
-                                0 => format!("input motion {} {}", a, b), // x, y
-                                1 => format!(
-                                    "input button {} {} {} {}",
-                                    if b == 1 { "down" } else { "up" }, // state
-                                    a,                                  // button
-                                    (c >> 16) as i16,
-                                    (c & 0xFFFF) as i16
-                                ), // x, y packed
-                                2 => format!(
-                                    "input key {} {}",
-                                    if a == 1 { "down" } else { "up" },
-                                    b
-                                ), // state, keycode
-                                _ => String::new(),
-                            }
-                        }
-                        process_isolation::IpcMessage::Ping { seq } => {
-                            debug_log!("[Runner] Ping received (seq={})", seq);
-                            String::new()
-                        }
-                        _ => {
-                            debug_log!("[Runner] Unhandled IPC message: {:?}", msg);
-                            String::new()
-                        }
-                    }
+            let cmd = if gpu_reload_inflight_count == 0 {
+                if let Some(cmd) = deferred_commands.pop_front() {
+                    cmd
+                } else {
+                    let Ok(cmd_wrapper) = rx.try_recv() else {
+                        break;
+                    };
+                    runner_command_to_text(cmd_wrapper)
                 }
+            } else if let Some(index) = deferred_commands.iter().position(|cmd| {
+                runner_command_name(cmd)
+                    .map(|name| should_process_runner_command(name, gpu_reload_inflight_count))
+                    .unwrap_or(false)
+            }) {
+                deferred_commands.remove(index).unwrap_or_default()
+            } else {
+                let mut selected = None;
+                while let Ok(cmd_wrapper) = rx.try_recv() {
+                    let cmd = runner_command_to_text(cmd_wrapper);
+                    let Some(name) = runner_command_name(&cmd) else {
+                        continue;
+                    };
+                    if should_process_runner_command(name, gpu_reload_inflight_count) {
+                        selected = Some(cmd);
+                        break;
+                    }
+                    deferred_commands.push_back(cmd);
+                }
+                let Some(cmd) = selected else {
+                    break;
+                };
+                cmd
             };
 
             if cmd.is_empty() {
@@ -1217,6 +1262,11 @@ fn main() {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             if parts.is_empty() {
                 continue;
+            }
+
+            if !should_process_runner_command(parts[0], gpu_reload_inflight_count) {
+                deferred_commands.push_back(cmd);
+                break;
             }
 
             match parts[0] {
@@ -2007,7 +2057,7 @@ fn main() {
 mod tests {
     use super::{
         decode_gpu_kernel_command_token, device_load_abi_version, is_runtime_execution_paused,
-        runtime_control_status_payload, should_process_runner_commands,
+        runtime_control_status_payload, should_process_runner_command,
     };
 
     #[test]
@@ -2077,9 +2127,20 @@ mod tests {
 
     #[cfg(feature = "gpu-hmr")]
     #[test]
-    fn runner_defers_commands_while_gpu_reload_is_inflight() {
-        assert!(!should_process_runner_commands(1));
-        assert!(should_process_runner_commands(0));
+    fn runner_defers_module_commands_while_gpu_reload_is_inflight() {
+        assert!(!should_process_runner_command("load", 1));
+        assert!(!should_process_runner_command("reload", 1));
+        assert!(!should_process_runner_command("load_device", 1));
+        assert!(should_process_runner_command("load", 0));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn runner_allows_runtime_control_while_gpu_reload_is_inflight() {
+        assert!(should_process_runner_command("synthi_pause_runtime", 1));
+        assert!(should_process_runner_command("pause_runtime", 1));
+        assert!(should_process_runner_command("synthi_resume_runtime", 1));
+        assert!(should_process_runner_command("resume_runtime", 1));
     }
 
     #[cfg(feature = "gpu-hmr")]
@@ -2089,7 +2150,7 @@ mod tests {
         let mut processed = Vec::new();
 
         for command in ["load_device", "load_core", "load_gui"] {
-            if !should_process_runner_commands(inflight_reloads) {
+            if !should_process_runner_command(command, inflight_reloads) {
                 break;
             }
             processed.push(command);
