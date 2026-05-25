@@ -2037,6 +2037,14 @@ fn validate_partial_device_artifact_exports(outcome: &DeviceCompileOutcome) -> R
         );
     }
 
+    let ambiguous_exports = ambiguous_exported_symbol_identities(&exported, &expected);
+    if !ambiguous_exports.is_empty() {
+        anyhow::bail!(
+            "partial GPU artifact has ambiguous exported symbol identity: {}",
+            ambiguous_exports.join(", ")
+        );
+    }
+
     let missing = expected
         .difference(&exported)
         .filter(|expected_symbol| {
@@ -2076,6 +2084,28 @@ fn validate_partial_device_artifact_exports(outcome: &DeviceCompileOutcome) -> R
         exported.into_iter().collect::<Vec<_>>().join(",")
     );
     Ok(())
+}
+
+fn ambiguous_exported_symbol_identities(
+    exported: &BTreeSet<String>,
+    expected: &BTreeSet<String>,
+) -> Vec<String> {
+    expected
+        .iter()
+        .filter_map(|expected_symbol| {
+            let matches = exported
+                .iter()
+                .filter(|exported_symbol| {
+                    exported_symbol == &expected_symbol
+                        || exported_symbol_source_identity_candidates(exported_symbol)
+                            .iter()
+                            .any(|candidate| candidate == expected_symbol)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            (matches.len() > 1).then(|| format!("{expected_symbol}=>{}", matches.join("|")))
+        })
+        .collect()
 }
 
 fn exported_symbol_matches_expected_source_identity(
@@ -7999,6 +8029,30 @@ DECLARE_KERNEL(opaque_kernel)
         };
 
         validate_partial_device_artifact_exports(&outcome).unwrap();
+    }
+
+    #[test]
+    fn partial_artifact_export_validation_rejects_ambiguous_mangled_overloads() {
+        let outcome = DeviceCompileOutcome {
+            artifact_path: std::path::PathBuf::from("/tmp/device.hsaco"),
+            compiled_source: String::new(),
+            compiler_elapsed_ms: 0,
+            partial_module: true,
+            target_symbols: vec!["shade".to_string()],
+            fallback_used: false,
+            fallback_reason: None,
+            requested_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_bytes: Some(128),
+            full_device_bytes: Some(1024),
+            artifact_exported_symbols: vec!["_Z5shadef".to_string(), "_Z5shadei".to_string()],
+            diagnostics:
+                crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
+            stderr: String::new(),
+        };
+
+        let err = validate_partial_device_artifact_exports(&outcome).unwrap_err();
+        assert!(err.to_string().contains("ambiguous exported symbol identity"));
     }
 
     #[test]
