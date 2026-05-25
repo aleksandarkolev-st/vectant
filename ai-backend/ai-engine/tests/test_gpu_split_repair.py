@@ -708,20 +708,16 @@ def test_repair_removes_unbacked_launches_when_source_device_headers_are_authori
 
     assert report["repaired"] is True
     assert "repair.source_device_include_bridge" in report["repairRules"]
-    assert "repair.unresolved_generated_launches" not in report["repairRules"]
-    assert 'synthi_gpu_launch(nullptr, "init_buffers"' in repaired["core.cpp"]
-    assert 'synthi_gpu_launch(nullptr, "my_function"' in repaired["core.cpp"]
+    assert "repair.unresolved_generated_launches" in report["repairRules"]
+    assert 'synthi_gpu_launch(nullptr, "init_buffers"' not in repaired["core.cpp"]
+    assert 'synthi_gpu_launch(nullptr, "my_function"' not in repaired["core.cpp"]
     assert "bool launched = false;" not in repaired["core.cpp"]
     after = verify_split_output(
         files=repaired,
         manifest_arch=["gfx1201"],
         source_files=source_files,
     )
-    assert {
-        v.offending_symbol
-        for v in after.violations
-        if v.rule == "launch_site_unresolved"
-    } == {"init_buffers", "my_function"}
+    assert not any(v.rule == "launch_site_unresolved" for v in after.violations)
     assert not any(v.rule.startswith("source_device_kernel_") for v in after.violations)
 
 
