@@ -2355,7 +2355,11 @@ fn normalize_generated_include_path(path: &str) -> String {
             continue;
         }
         if part == ".." {
-            parts.pop();
+            if parts.last().is_some_and(|last| last != "..") {
+                parts.pop();
+            } else {
+                parts.push(part.to_string());
+            }
             continue;
         }
         parts.push(part.to_string());
@@ -8618,6 +8622,22 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         assert!(normalized_request_filename("/workspace/src/device/kernel.hip").is_none());
         assert!(normalized_request_filename(r"\\server\share\kernel.hip").is_none());
         assert!(normalized_request_filename("../src/device/kernel.hip").is_none());
+    }
+
+    #[test]
+    fn generated_include_path_normalization_preserves_unanchored_parent_segments() {
+        assert_eq!(
+            normalize_generated_include_path("src/device/../kernels/flow.h"),
+            "src/kernels/flow.h"
+        );
+        assert_eq!(
+            normalize_generated_include_path("../src/device/flow.h"),
+            "../src/device/flow.h"
+        );
+        assert_eq!(
+            normalize_generated_include_path("../../device/flow.h"),
+            "../../device/flow.h"
+        );
     }
 
     #[test]
