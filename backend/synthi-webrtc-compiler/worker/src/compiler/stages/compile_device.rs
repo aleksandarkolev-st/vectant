@@ -2848,6 +2848,13 @@ extern "C" __global__ void shade(int* out) { *out = LIMIT; }
         );
         assert_ne!(first.dependency_hash, second.dependency_hash);
         assert_ne!(first.cache_key, second.cache_key);
+        tokio::fs::remove_file(&artifact).await.unwrap();
+        assert!(
+            !restore_cached_device_artifact(tmp.path(), &second.cache_key, &artifact)
+                .await
+                .unwrap()
+        );
+        assert!(!artifact.exists());
 
         tokio::fs::write(&artifact, b"new-hsaco").await.unwrap();
         store_cached_device_artifact(tmp.path(), &second, &artifact)
