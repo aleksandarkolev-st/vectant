@@ -63,6 +63,8 @@ _ASYNC_OBJECT_LAUNCH_RE = re.compile(
     rf"(?P<owner>{_OWNER_EXPR})\s*(?:->|\.)\s*launch_asynchronous\s*\(",
     re.DOTALL,
 )
+_ARG_PACK_LOOKBACK_CHARS = 6000
+_SIMPLE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def extract_launch_graph(files: Mapping[str, str]) -> List[LaunchSite]:
@@ -144,6 +146,13 @@ def _extract_runtime_object_launches(path: str, source: str) -> Iterable[LaunchS
         parts = _split_top_level(body)
         if len(parts) < 2:
             continue
+        launch_args = []
+        if len(parts) > 4 and parts[4].strip():
+            launch_args = _resolve_argument_pack_args(
+                source,
+                launch_start=match.start(),
+                pack_expr=parts[4],
+            )
         block_x = _part(parts, 0, "1")
         block_y = _part(parts, 1, "1")
         grid_x = _part(parts, 2, "1")
@@ -155,7 +164,7 @@ def _extract_runtime_object_launches(path: str, source: str) -> Iterable[LaunchS
             block=f"{block_x}, {block_y}, 1",
             shared=_part(parts, 6, "0"),
             stream=_part(parts, 5, "0"),
-            args=[parts[4].strip()] if len(parts) > 4 and parts[4].strip() else [],
+            args=launch_args,
             form="runtime_kernel_object",
         )
 
@@ -226,6 +235,46 @@ def _part(parts: List[str], index: int, default: str) -> str:
     if index >= len(parts) or not parts[index].strip():
         return default
     return parts[index].strip()
+
+
+def _resolve_argument_pack_args(
+    source: str,
+    *,
+    launch_start: int,
+    pack_expr: str,
+) -> List[str]:
+    pack = pack_expr.strip()
+    if not pack:
+        return []
+    if not _SIMPLE_IDENTIFIER_RE.fullmatch(pack):
+        return [pack]
+
+    window = source[max(0, launch_start - _ARG_PACK_LOOKBACK_CHARS) : launch_start]
+    pattern = re.compile(
+        rf"(?:\b(?:auto|void\s*\*+|(?:std::)?array\s*<[^;=]+>|(?:std::)?vector\s*<[^;=]+>)\s+)?"
+        rf"{re.escape(pack)}\s*(?:\[[^\]]*\])?\s*=\s*\{{(?P<body>.*?)\}}\s*;",
+        re.DOTALL,
+    )
+    matches = list(pattern.finditer(window))
+    if not matches:
+        return [pack]
+
+    body = matches[-1].group("body")
+    entries = [_normalize_argument_pack_entry(part) for part in _split_top_level(body)]
+    entries = [entry for entry in entries if entry]
+    return entries or [pack]
+
+
+def _normalize_argument_pack_entry(expr: str) -> str:
+    text = expr.strip()
+    while text.startswith("&"):
+        text = text[1:].strip()
+    while text.startswith("(") and text.endswith(")"):
+        inner = text[1:-1].strip()
+        if not inner:
+            break
+        text = inner
+    return re.sub(r"\s+", "", text)
 
 
 def _strip_quotes(value: str) -> str:

@@ -53,6 +53,27 @@ void launch() {
     assert graph[0]["args"] == ["launch_args"]
 
 
+def test_resolves_runtime_kernel_argument_pack_entries():
+    graph = launch_graph_as_dicts(
+        {
+            "render_pass.cpp": """
+void configure() {
+  kernels[RenderPass::MAIN]->set_kernel_function_name("shade_pixels");
+}
+void launch() {
+  void* launch_args[] = { &payload, &output_buffer, &sample_count };
+  kernels[RenderPass::MAIN]->launch_asynchronous(
+      BlockWidth, BlockHeight, width, height, launch_args, stream);
+}
+"""
+        }
+    )
+
+    assert len(graph) == 1
+    assert graph[0]["kernel"] == "shade_pixels"
+    assert graph[0]["args"] == ["payload", "output_buffer", "sample_count"]
+
+
 def test_ignores_commented_launch_forms():
     graph = launch_graph_as_dicts(
         {
