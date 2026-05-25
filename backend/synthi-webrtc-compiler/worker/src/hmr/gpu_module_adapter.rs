@@ -875,17 +875,6 @@ impl Adapter for GpuModuleAdapter {
                 elapsed_ms: 0,
                 budget_ms: self.config.drain_timeout_ms,
             }
-        } else if partial_device_reload {
-            // A partial sidecar keeps the primary module resident and only
-            // swaps the targeted dispatch-table entries. A context-wide drain
-            // can block behind unrelated long-running kernels, so defer global
-            // synchronization to reloads that actually replace/unload the
-            // primary module.
-            DrainOutcome::Synced {
-                scope: DrainScope::Context,
-                elapsed_ms: 0,
-                budget_ms: self.config.drain_timeout_ms,
-            }
         } else {
             drain_context(&symbols, self.config.drain_timeout_ms)
         };
@@ -995,7 +984,7 @@ impl Adapter for GpuModuleAdapter {
                     } else {
                         "device-file-only-edit".into()
                     },
-                    streams_synced: if partial_device_reload { 0 } else { 1 },
+                    streams_synced: 1,
                     force_drain_timeout: false,
                     snapshot_bytes,
                     snapshot_ms: started.elapsed().as_millis() as u64,
@@ -1016,7 +1005,7 @@ impl Adapter for GpuModuleAdapter {
                 self.emit_report(GpuSwapInputs {
                     plan,
                     reason: "module-load-failed".into(),
-                    streams_synced: if partial_device_reload { 0 } else { 1 },
+                    streams_synced: 1,
                     force_drain_timeout: false,
                     snapshot_bytes,
                     snapshot_ms: started.elapsed().as_millis() as u64,
@@ -1718,7 +1707,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_reload_skips_global_context_drain() {
+    fn partial_reload_drains_context_before_module_load() {
         let mut first = tempfile::NamedTempFile::new().unwrap();
         let mut second = tempfile::NamedTempFile::new().unwrap();
         let mut partial_file = tempfile::NamedTempFile::new().unwrap();
@@ -1762,7 +1751,7 @@ mod tests {
             a.reload(&partial),
             AdapterReloadResult::Success { .. }
         ));
-        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), full_reload_syncs);
+        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), full_reload_syncs + 1);
     }
 
     #[test]
