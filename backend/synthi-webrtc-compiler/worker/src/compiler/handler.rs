@@ -7,6 +7,7 @@ use crate::compiler::builder::{
     hash_content, hash_shared_header_semantic, ModuleHashes, RebuildScope,
 };
 use crate::compiler::context::CompileContext;
+use crate::infra::crash_recovery::PLUGIN_TIMEOUT_SECS;
 use crate::infra::messages::CompileRequest;
 
 // ULTRAPLAN Lightning Phase 11 — per-process Tier 0 bypass counters.
@@ -21,7 +22,9 @@ const MAX_DEVICE_PARTIAL_ARTIFACTS: usize = 128;
 const MAX_WARM_SOURCE_BRIDGE_TUS: usize = 16;
 const MAX_SOURCE_BRIDGE_SUPPORT_INLINE_DEPTH: usize = 6;
 const MAX_SOURCE_BRIDGE_SUPPORT_INLINE_BYTES: usize = 256 * 1024;
-const DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_GRACE_MS: u64 = 5_000;
+const DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS: u64 =
+    PLUGIN_TIMEOUT_SECS * 1_000 + DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_GRACE_MS;
 
 // Import our new modular stages
 use crate::compiler::stages::ai_utils::{
@@ -8058,6 +8061,13 @@ mod gpu_host_contract_tests {
             "runtime-paused",
             "runner-control-1"
         ));
+    }
+
+    #[test]
+    fn runtime_control_ack_timeout_covers_plugin_watchdog() {
+        assert!(
+            DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS > PLUGIN_TIMEOUT_SECS * 1_000
+        );
     }
 
     #[test]
