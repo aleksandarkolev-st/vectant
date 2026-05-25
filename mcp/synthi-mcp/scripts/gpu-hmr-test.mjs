@@ -293,11 +293,15 @@ async function readWorkerLogTail(maxBytes = 2 * 1024 * 1024, opts = {}) {
   try {
     const st = await stat(CFG.workerLogPath);
     const fd = await import('node:fs').then((m) => m.promises.open(CFG.workerLogPath, 'r'));
-    const start = Math.max(0, st.size - maxBytes);
+    const requestedOffset = Number.isFinite(opts.fromOffset) ? Number(opts.fromOffset) : null;
+    const start = requestedOffset != null && requestedOffset <= st.size
+      ? requestedOffset
+      : Math.max(0, st.size - maxBytes);
     const buf = Buffer.alloc(st.size - start);
     await fd.read(buf, 0, buf.length, start);
     await fd.close();
-    return buf.toString('utf8');
+    const text = buf.toString('utf8');
+    return requestedOffset == null ? text.slice(-maxBytes) : text;
   } catch (e) {
     return new Promise((resolve) => {
       const tailLines = String(Math.max(1000, Math.ceil(maxBytes / 128)));
@@ -317,7 +321,13 @@ async function readWorkerLogTail(maxBytes = 2 * 1024 * 1024, opts = {}) {
 
 async function workerLogCheckpoint(maxBytes = 2 * 1024 * 1024) {
   const at = new Date(Date.now() - 2000).toISOString();
-  return { at, tail: await readWorkerLogTail(maxBytes) };
+  let fileSize = null;
+  try {
+    fileSize = existsSync(CFG.workerLogPath) ? (await stat(CFG.workerLogPath)).size : null;
+  } catch {
+    fileSize = null;
+  }
+  return { at, fileSize, tail: await readWorkerLogTail(maxBytes) };
 }
 
 function workerLogWindow(tail, afterTail) {
@@ -329,6 +339,7 @@ function workerLogWindow(tail, afterTail) {
 }
 
 function workerLogSearchWindow(tail, opts = {}) {
+  if (opts.after?.fileSize != null && existsSync(CFG.workerLogPath)) return tail;
   // Docker captures stdout/stderr separately, so execFile cannot preserve
   // cross-stream ordering. With a timestamp checkpoint, --since is already the
   // boundary; applying a stderr-derived anchor can discard stdout planner logs.
@@ -339,7 +350,11 @@ function workerLogSearchWindow(tail, opts = {}) {
 async function awaitWorkerLogRegex(regex, timeoutMs, opts = {}) {
   const deadline = Date.now() + timeoutMs;
   const maxBytes = opts.maxBytes ?? 2 * 1024 * 1024;
-  const logOpts = opts.after?.at ? { since: opts.after.at } : {};
+  const logOpts = opts.after?.fileSize != null
+    ? { fromOffset: opts.after.fileSize }
+    : opts.after?.at
+      ? { since: opts.after.at }
+      : {};
   while (Date.now() < deadline) {
     const tail = await readWorkerLogTail(maxBytes, logOpts);
     const window = workerLogSearchWindow(tail, opts);
@@ -1513,6 +1528,15 @@ function firstMatchingLine(logText, regex) {
   return null;
 }
 
+function lastMatchingLine(logText, regex) {
+  let latest = null;
+  for (const line of String(logText ?? '').split(/\r?\n/)) {
+    regex.lastIndex = 0;
+    if (regex.test(line)) latest = line.trim();
+  }
+  return latest;
+}
+
 function summarizeLogLine(line) {
   return String(line ?? '').replace(/\s+/g, ' ').slice(0, 240);
 }
@@ -1532,28 +1556,34 @@ function kernelNamesFromSource(source) {
 }
 
 function gpuHmrFallbackTelemetry(logText) {
-  const degraded = firstMatchingLine(
-    logText,
-    /\bgpu-hmr-degraded-full-device\b|\bfallbackUsed=true\b/,
-  );
-  const rejected = firstMatchingLine(logText, /\bgpu-hmr-rejected\b/);
-  const label = firstMatchingLine(
+  const label = lastMatchingLine(
     logText,
     /\bgpu-hmr-(partial|degraded-full-device|rejected|full-device)\b/,
   );
-  const fallbackFalse = firstMatchingLine(logText, /\bfallbackUsed=false\b/);
-  const selected = firstMatchingLine(logText, /\bselectedArtifactKind=[^\s]+/);
+  const fallbackTrue = lastMatchingLine(logText, /\bfallbackUsed=true\b/);
+  const fallbackFalse = lastMatchingLine(logText, /\bfallbackUsed=false\b/);
+  const selected = lastMatchingLine(logText, /\bselectedArtifactKind=[^\s]+/);
+  const latestPartial = label && /\bgpu-hmr-partial\b/.test(label);
   return {
-    degraded,
-    rejected,
+    degraded: label && /\bgpu-hmr-degraded-full-device\b/.test(label)
+      ? label
+      : latestPartial
+        ? null
+        : fallbackTrue,
+    rejected: label && /\bgpu-hmr-rejected\b/.test(label) ? label : null,
     label,
+    fallbackTrue,
     fallbackFalse,
     selected,
   };
 }
 
 async function assertNoGpuHmrFallback(phase, name, checkpoint, maxBytes = 8 * 1024 * 1024) {
-  const logOpts = checkpoint?.at ? { since: checkpoint.at } : {};
+  const logOpts = checkpoint?.fileSize != null
+    ? { fromOffset: checkpoint.fileSize }
+    : checkpoint?.at
+      ? { since: checkpoint.at }
+      : {};
   const tail = await readWorkerLogTail(maxBytes, logOpts);
   const window = workerLogSearchWindow(tail, { after: checkpoint });
   const telemetry = gpuHmrFallbackTelemetry(window);
@@ -1563,6 +1593,10 @@ async function assertNoGpuHmrFallback(phase, name, checkpoint, maxBytes = 8 * 10
   }
   if (telemetry.rejected) {
     record(phase, name, 'fail', `HMR rejection observed: ${summarizeLogLine(telemetry.rejected)}`);
+    return telemetry;
+  }
+  if (telemetry.label && /\bgpu-hmr-full-device\b/.test(telemetry.label)) {
+    record(phase, name, 'fail', `full-device compile observed after edit: ${summarizeLogLine(telemetry.label)}`);
     return telemetry;
   }
   if (telemetry.label || telemetry.fallbackFalse) {
@@ -1639,7 +1673,11 @@ function formatReadback(values) {
 async function awaitGuiReadback(phase, name, expected, checkpoint, timeoutMs = 12000) {
   const deadline = Date.now() + timeoutMs;
   const maxBytes = 8 * 1024 * 1024;
-  const logOpts = checkpoint?.at ? { since: checkpoint.at } : {};
+  const logOpts = checkpoint?.fileSize != null
+    ? { fromOffset: checkpoint.fileSize }
+    : checkpoint?.at
+      ? { since: checkpoint.at }
+      : {};
   let latest = null;
   while (Date.now() < deadline) {
     const tail = await readWorkerLogTail(maxBytes, logOpts);
@@ -1973,7 +2011,14 @@ async function phaseP1(ctx) {
 
   // If we saw both pre and post pointer lines, assert at least one match.
   if (prePtrs.length > 0) {
-    const postTail = await readWorkerLogTail(8 * 1024 * 1024, preTail.at ? { since: preTail.at } : {});
+    const postTail = await readWorkerLogTail(
+      8 * 1024 * 1024,
+      preTail.fileSize != null
+        ? { fromOffset: preTail.fileSize }
+        : preTail.at
+          ? { since: preTail.at }
+          : {},
+    );
     const postPtrs = extractBufferPointers(workerLogSearchWindow(postTail, { after: preTail }));
     const overlap = prePtrs.filter((p) => postPtrs.includes(p));
     record('P1', 'pre/post pointer overlap',
