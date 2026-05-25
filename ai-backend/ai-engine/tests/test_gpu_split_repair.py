@@ -851,6 +851,91 @@ def test_repair_removes_guard_block_for_unresolved_launch_assignment():
     assert not any(v.rule == "constant_false_launch_guard" for v in after.violations)
 
 
+def test_repair_shrinks_literal_launch_block_to_declared_launch_bound():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { &frame }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": 'extern "C" __global__ __launch_bounds__(64) void step(int* frame) { *frame += 1; }',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files={},
+    )
+    assert any(v.rule == "kernel_launch_bounds_exceeded" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files={},
+        verification=verification,
+    )
+
+    assert "repair.launch_bounds" in report["repairRules"]
+    assert 'synthi_gpu_launch(nullptr, "step", 1, 64,' in repaired["core.cpp"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files={},
+    )
+    assert not any(v.rule == "kernel_launch_bounds_exceeded" for v in after.violations)
+
+
+def test_repair_preserves_dimensional_shape_for_launch_bound_block():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            "Dim3 block(16, 16, 1); "
+            'synthi_gpu_launch(nullptr, "tile", 1, block, 0, nullptr, { &frame }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": 'GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) tile(int* frame) { *frame += 1; }',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files={},
+    )
+    assert any(v.rule == "kernel_launch_bounds_exceeded" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files={},
+        verification=verification,
+    )
+
+    assert "repair.launch_bounds" in report["repairRules"]
+    assert 'synthi_gpu_launch(nullptr, "tile", 1, Dim3(8, 8, 1),' in repaired["core.cpp"]
+    after = verify_split_output(
+        files=repaired,
+        manifest_arch=["gfx1201"],
+        source_files={},
+    )
+    assert not any(v.rule == "kernel_launch_bounds_exceeded" for v in after.violations)
+
+
 def test_repair_replaces_placeholder_host_runner_with_real_gui_routing():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',

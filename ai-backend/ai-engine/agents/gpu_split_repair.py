@@ -20,7 +20,10 @@ from verifier_gpu import (
     _GPU_SDK_VECTOR_TYPE_NAMES,
     SplitVerificationResult,
     _device_role_included_source_files as _verifier_device_role_included_source_files,
+    _device_kernel_launch_bound,
     _host_runner_routes_gui_module,
+    _launch_block_thread_count,
+    _launch_dim_values,
     _launch_initializer_args,
     _launch_kernel_name,
     _normalize_launch_buffer_arg,
@@ -298,6 +301,35 @@ def repair_split_artifacts(
             repaired[device_path] = device_after
             changed_files.update({core_path, device_path})
             repair_rules.append("repair.launch_abi_mismatch")
+
+    if (
+        device_path
+        and device_path in repaired
+        and "kernel_launch_bounds_exceeded" in input_reason_codes
+    ):
+        device_lookup_source = _device_lookup_source_with_source_includes(
+            repaired[device_path],
+            source_files,
+        )
+        bounded_symbols = {
+            str(violation.offending_symbol)
+            for violation in (verification.violations if verification is not None else [])
+            if violation.rule == "kernel_launch_bounds_exceeded"
+            and violation.offending_symbol
+        }
+        for host_path in (core_path, gui_path, host_runner_path):
+            if not host_path or host_path not in repaired:
+                continue
+            host_after, changed = _repair_launch_bounds_exceeded(
+                host_source=repaired[host_path],
+                device_source=device_lookup_source,
+                bounded_symbols=bounded_symbols,
+            )
+            if changed:
+                repaired[host_path] = host_after
+                changed_files.add(host_path)
+        if any(path in changed_files for path in (core_path, gui_path, host_runner_path) if path):
+            repair_rules.append("repair.launch_bounds")
 
     if (
         device_path
@@ -2114,6 +2146,115 @@ def _repair_launch_boundary_arity(core_source: str) -> tuple[str, bool]:
     for (start, end), replacement in sorted(replacements.items(), reverse=True):
         out = out[:start] + replacement + out[end:]
     return out, True
+
+
+def _repair_launch_bounds_exceeded(
+    *,
+    host_source: str,
+    device_source: str,
+    bounded_symbols: Set[str],
+) -> tuple[str, bool]:
+    if not bounded_symbols or "synthi_gpu_launch(" not in host_source:
+        return host_source, False
+
+    replacements: Dict[Tuple[int, int], str] = {}
+    for start, end, body in _iter_launch_spans(host_source):
+        args = _split_top_level_args(body)
+        if len(args) != 7:
+            continue
+        kernel = _launch_kernel_name(args[1])
+        if not kernel or kernel not in bounded_symbols:
+            continue
+        launch_bound = _device_kernel_launch_bound(device_source, kernel)
+        if launch_bound is None or launch_bound <= 0:
+            continue
+        block_threads = _launch_block_thread_count(host_source, args[3])
+        if block_threads is None or block_threads <= launch_bound:
+            continue
+        fixed_block = _bounded_block_expression(
+            host_source=host_source,
+            block_expr=args[3],
+            launch_bound=launch_bound,
+        )
+        if fixed_block is None or fixed_block.strip() == args[3].strip():
+            continue
+        fixed_args = list(args)
+        fixed_args[3] = fixed_block
+        replacements[(start, end)] = "synthi_gpu_launch(" + ", ".join(fixed_args) + ")"
+
+    if not replacements:
+        return host_source, False
+
+    out = host_source
+    for (start, end), replacement in sorted(replacements.items(), reverse=True):
+        out = out[:start] + replacement + out[end:]
+    return out, out != host_source
+
+
+def _bounded_block_expression(
+    *,
+    host_source: str,
+    block_expr: str,
+    launch_bound: int,
+) -> Optional[str]:
+    dims = _launch_dim_values(host_source, block_expr)
+    if not dims:
+        return None
+    adjusted = _shrink_dims_to_thread_bound(dims, launch_bound)
+    if adjusted is None:
+        return None
+
+    original = block_expr.strip()
+    if len([value for value in dims if value != 1]) <= 1 and _simple_integer_expr(original):
+        return str(adjusted[0])
+
+    ctor = _dim3_constructor_name(host_source, original) or _inline_dim3_constructor_name(original)
+    if ctor:
+        return f"{ctor}({adjusted[0]}, {adjusted[1]}, {adjusted[2]})"
+    if adjusted[1] == 1 and adjusted[2] == 1:
+        return str(adjusted[0])
+    return None
+
+
+def _shrink_dims_to_thread_bound(
+    dims: Sequence[int],
+    launch_bound: int,
+) -> Optional[List[int]]:
+    if launch_bound <= 0:
+        return None
+    adjusted = [max(1, int(value)) for value in list(dims[:3])]
+    while len(adjusted) < 3:
+        adjusted.append(1)
+    if adjusted[0] * adjusted[1] * adjusted[2] <= launch_bound:
+        return adjusted
+
+    while adjusted[0] * adjusted[1] * adjusted[2] > launch_bound:
+        axis = max(range(3), key=lambda index: adjusted[index])
+        if adjusted[axis] <= 1:
+            return None
+        adjusted[axis] = max(1, adjusted[axis] // 2)
+    return adjusted
+
+
+def _simple_integer_expr(expr: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]+[uUlL]*", expr.strip()))
+
+
+def _inline_dim3_constructor_name(expr: str) -> Optional[str]:
+    match = re.match(r"\s*(?P<ctor>dim3|Dim3)\s*(?:\(|\{)", expr)
+    return match.group("ctor") if match else None
+
+
+def _dim3_constructor_name(source: str, expr: str) -> Optional[str]:
+    name_match = re.fullmatch(r"\s*(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*", expr)
+    if not name_match:
+        return None
+    name = name_match.group("name")
+    match = re.search(
+        rf"\b(?P<ctor>dim3|Dim3)\s+{re.escape(name)}\s*(?:=)?\s*(?:\{{|\()",
+        source,
+    )
+    return match.group("ctor") if match else None
 
 
 def _launch_initializer_literal(arg: str) -> bool:
