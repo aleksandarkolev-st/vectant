@@ -87,6 +87,26 @@ fn device_load_abi_version(kernels: &[String], abi_arg: Option<&str>) -> String 
 }
 
 #[cfg(feature = "gpu-hmr")]
+fn is_runtime_execution_paused(runtime_paused: bool, gpu_reload_inflight_count: usize) -> bool {
+    runtime_paused || gpu_reload_inflight_count > 0
+}
+
+#[cfg(not(feature = "gpu-hmr"))]
+fn is_runtime_execution_paused(runtime_paused: bool, _gpu_reload_inflight_count: usize) -> bool {
+    runtime_paused
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn should_process_runner_commands(gpu_reload_inflight_count: usize) -> bool {
+    gpu_reload_inflight_count == 0
+}
+
+#[cfg(not(feature = "gpu-hmr"))]
+fn should_process_runner_commands(_gpu_reload_inflight_count: usize) -> bool {
+    true
+}
+
+#[cfg(feature = "gpu-hmr")]
 fn decode_gpu_kernel_command_token(value: &str) -> Option<String> {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -922,6 +942,12 @@ fn main() {
             gpu_adapters.insert(completion.language, completion.adapter);
         }
 
+        #[cfg(feature = "gpu-hmr")]
+        let runtime_execution_paused =
+            is_runtime_execution_paused(runtime_paused, gpu_reload_inflight.len());
+        #[cfg(not(feature = "gpu-hmr"))]
+        let runtime_execution_paused = is_runtime_execution_paused(runtime_paused, 0);
+
         // Poll SDL2 events and pass them to loaded modules.
         //
         // ULTRAPLAN Lightning Phase 10g.3b — route through the
@@ -941,7 +967,7 @@ fn main() {
         // into a local Vec<SDL_Event> that outlives the pointer
         // collection used for dispatch.
         #[cfg(target_os = "linux")]
-        if !window.is_null() {
+        if !window.is_null() && !runtime_execution_paused {
             // Collect event pointers from whichever source. The
             // storage behind the pointers lives in either
             // sdl2_backend's event_arena (trait path) or the local
@@ -1098,7 +1124,19 @@ fn main() {
         }
 
         // Process all pending commands
-        while let Ok(cmd_wrapper) = rx.try_recv() {
+        loop {
+            #[cfg(feature = "gpu-hmr")]
+            if !should_process_runner_commands(gpu_reload_inflight.len()) {
+                break;
+            }
+            #[cfg(not(feature = "gpu-hmr"))]
+            if !should_process_runner_commands(0) {
+                break;
+            }
+
+            let Ok(cmd_wrapper) = rx.try_recv() else {
+                break;
+            };
             let cmd = match cmd_wrapper {
                 RunnerCommand::Legacy(c) => c,
                 RunnerCommand::Ipc(msg) => {
@@ -1604,7 +1642,7 @@ fn main() {
             }
         });
 
-        if !runtime_paused {
+        if !runtime_execution_paused {
             for name in &keys {
                 if let Some(lib) = modules.get(name) {
                     unsafe {
@@ -1738,7 +1776,7 @@ fn main() {
         // Flicker prevention: after a module load, skip rendering for one
         // frame so on_load has time to initialize state.  The previous
         // frame stays visible on the X11 framebuffer (ximagesrc captures it).
-        if runtime_paused {
+        if runtime_execution_paused {
             // Keep presenting/capturing the last completed frame while
             // compile work happens outside the runner process.
         } else if skip_render_frames > 0 {
@@ -1915,7 +1953,10 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_gpu_kernel_command_token, device_load_abi_version};
+    use super::{
+        decode_gpu_kernel_command_token, device_load_abi_version, is_runtime_execution_paused,
+        should_process_runner_commands,
+    };
 
     #[test]
     fn device_load_abi_version_prefers_protocol_fingerprint() {
@@ -1946,5 +1987,39 @@ mod tests {
     #[test]
     fn gpu_kernel_command_token_rejects_invalid_escape() {
         assert!(decode_gpu_kernel_command_token("shade%XX").is_none());
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn runtime_execution_pauses_while_gpu_reload_is_inflight() {
+        assert!(is_runtime_execution_paused(false, 1));
+        assert!(is_runtime_execution_paused(true, 0));
+        assert!(!is_runtime_execution_paused(false, 0));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn runner_defers_commands_while_gpu_reload_is_inflight() {
+        assert!(!should_process_runner_commands(1));
+        assert!(should_process_runner_commands(0));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn runner_stops_draining_commands_after_gpu_reload_starts() {
+        let mut inflight_reloads = 0usize;
+        let mut processed = Vec::new();
+
+        for command in ["load_device", "load_core", "load_gui"] {
+            if !should_process_runner_commands(inflight_reloads) {
+                break;
+            }
+            processed.push(command);
+            if command == "load_device" {
+                inflight_reloads += 1;
+            }
+        }
+
+        assert_eq!(processed, vec!["load_device"]);
     }
 }
