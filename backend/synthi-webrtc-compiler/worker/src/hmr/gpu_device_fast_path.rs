@@ -2158,11 +2158,25 @@ fn collapse_ws(text: &str) -> String {
 }
 
 fn normalize_path(path: &str) -> String {
-    let mut normalized = path.replace('\\', "/");
-    while normalized.starts_with("./") {
-        normalized = normalized[2..].to_string();
+    let normalized = path.replace('\\', "/");
+    let absolute = normalized.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for part in normalized.split('/') {
+        match part {
+            "" | "." => {}
+            ".." if parts.last().is_some_and(|last| *last != "..") => {
+                parts.pop();
+            }
+            ".." => parts.push(part),
+            value => parts.push(value),
+        }
     }
-    normalized
+    let joined = parts.join("/");
+    if absolute && !joined.is_empty() {
+        format!("/{joined}")
+    } else {
+        joined
+    }
 }
 
 fn device_annotation_macro_pattern() -> &'static str {
@@ -3431,5 +3445,14 @@ extern "C" __global__ void trace(float* x) {
             Some(".synthi/generated/gpu/device.hip")
         );
         assert_eq!(device_source_hash("abc"), sha256_hex("abc"));
+    }
+
+    #[test]
+    fn fast_path_logical_path_normalization_collapses_anchored_segments() {
+        assert_eq!(normalize_path(r".\src\gpu\flow.hip"), "src/gpu/flow.hip");
+        assert_eq!(normalize_path("src/device/../gpu/flow.hip"), "src/gpu/flow.hip");
+        assert_eq!(normalize_path("/workspace/src/../gpu/flow.hip"), "/workspace/gpu/flow.hip");
+        assert_eq!(normalize_path("../src/gpu/flow.hip"), "../src/gpu/flow.hip");
+        assert_eq!(normalize_path("../../src/./gpu/flow.hip"), "../../src/gpu/flow.hip");
     }
 }
