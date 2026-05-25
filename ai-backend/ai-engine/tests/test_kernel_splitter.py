@@ -20,6 +20,7 @@ from agents.kernel_splitter import (
     _project_source_context,
     _source_files_scoped_to_context,
     _source_device_preservation_contract,
+    _source_device_kernel_symbol_set,
     _source_launch_graph_contract,
     _verifier_acceptance_gate_contract,
     _kernel_hashes_for_generated_split,
@@ -688,6 +689,26 @@ def test_source_launch_graph_contract_uses_selected_target_context_scope():
 
     assert "draw_pixels" in contract
     assert "debug_kernel" not in contract
+
+
+def test_source_launch_graph_contract_filters_to_preserved_device_kernels():
+    files = {
+        "src/app/main.cpp": (
+            'void setup(){ first.set_kernel_function_name("kept_kernel"); }\n'
+            "void draw(){ first.launch_asynchronous(8, 8, width, height, launch_args, stream); }\n"
+            'void setup_debug(){ second.set_kernel_function_name("debug_kernel"); }\n'
+            "void debug(){ second.launch_asynchronous(1, 1, 1, 1, debug_args, stream); }\n"
+        ),
+        "src/gpu/kernels.h": (
+            "GLOBAL_KERNEL_SIGNATURE(void) kept_kernel(float* out) { out[0] = 1.0f; }\n"
+        ),
+    }
+    allowed = _source_device_kernel_symbol_set(files, roots=["src/gpu/kernels.h"])
+    contract = _source_launch_graph_contract(files, allowed_kernels=allowed)
+
+    assert "kept_kernel" in contract
+    assert "debug_kernel" not in contract
+    assert "source-device preservation set" in contract
 
 
 def test_build_prompt_attaches_extra_instructions():

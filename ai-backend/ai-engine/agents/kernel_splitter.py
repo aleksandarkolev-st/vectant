@@ -792,8 +792,30 @@ def _source_device_preservation_contract(
     return "\n".join(sections)
 
 
-def _source_launch_graph_contract(source_files: Mapping[str, str]) -> str:
+def _source_device_kernel_symbol_set(
+    source_files: Mapping[str, str],
+    roots: Optional[Sequence[str]] = None,
+) -> set[str]:
+    device_sources = _device_reachable_source_files(source_files, roots=roots)
+    return {
+        match.group(1)
+        for source in device_sources.values()
+        for match in _SOURCE_GLOBAL_KERNEL_RE.finditer(mask_comments_for_parsing(source))
+    }
+
+
+def _source_launch_graph_contract(
+    source_files: Mapping[str, str],
+    *,
+    allowed_kernels: Optional[set[str]] = None,
+) -> str:
     graph = launch_graph_as_dicts(source_files)
+    if allowed_kernels is not None:
+        graph = [
+            item
+            for item in graph
+            if str(item.get("kernel") or "").strip() in allowed_kernels
+        ]
     if not graph:
         return ""
     compact = [
@@ -821,6 +843,10 @@ def _source_launch_graph_contract(source_files: Mapping[str, str]) -> str:
         (
             "Do not replace a listed source launch with an unrelated preserved kernel "
             "solely because that other kernel compiles."
+        ),
+        (
+            "The records below are target-scoped and filtered to kernels that exist in "
+            "the source-device preservation set."
         ),
         json.dumps(compact, sort_keys=True, separators=(",", ":")),
     ]
@@ -1181,7 +1207,13 @@ async def run_kernel_splitter(
                     scoped_source_map,
                     roots=device_preservation_roots,
                 ),
-                _source_launch_graph_contract(scoped_source_map),
+                _source_launch_graph_contract(
+                    scoped_source_map,
+                    allowed_kernels=_source_device_kernel_symbol_set(
+                        scoped_source_map,
+                        roots=device_preservation_roots,
+                    ),
+                ),
             ]
             if part
         ),
