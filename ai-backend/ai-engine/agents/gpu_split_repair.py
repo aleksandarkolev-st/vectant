@@ -167,6 +167,7 @@ def repair_split_artifacts(
     repaired = {str(path): str(content) for path, content in files.items()}
     changed_files: Set[str] = set()
     repair_rules: List[str] = []
+    repair_details: Dict[str, Any] = {}
     input_reason_codes = (
         [violation.rule for violation in verification.violations]
         if verification is not None
@@ -337,27 +338,6 @@ def repair_split_artifacts(
         if any(path in changed_files for path in (core_path, gui_path, host_runner_path) if path):
             repair_rules.append("repair.launch_bounds")
 
-    if (
-        core_path
-        and device_path
-        and core_path in repaired
-        and device_path in repaired
-        and "device_kernels_not_launched" in input_reason_codes
-    ):
-        device_lookup_source = _device_lookup_source_with_source_includes(
-            repaired[device_path],
-            source_files,
-        )
-        core_after, changed = _repair_missing_source_launch_sites(
-            core_source=repaired[core_path],
-            device_source=device_lookup_source,
-            source_files=source_files,
-        )
-        if changed:
-            repaired[core_path] = core_after
-            changed_files.add(core_path)
-            repair_rules.append("repair.source_launch_sites")
-
     if "source_launch_args_not_preserved" in input_reason_codes:
         symbols = {
             str(violation.offending_symbol)
@@ -413,7 +393,30 @@ def repair_split_artifacts(
             if any(path in changed_files for path in (core_path, gui_path, host_runner_path) if path):
                 repair_rules.append("repair.unresolved_generated_launches")
 
-    return repaired, {
+    if (
+        core_path
+        and device_path
+        and core_path in repaired
+        and device_path in repaired
+        and "device_kernels_not_launched" in input_reason_codes
+    ):
+        device_lookup_source = _device_lookup_source_with_source_includes(
+            repaired[device_path],
+            source_files,
+        )
+        core_after, changed, launch_site_report = _repair_missing_source_launch_sites(
+            core_source=repaired[core_path],
+            device_source=device_lookup_source,
+            source_files=source_files,
+        )
+        if launch_site_report:
+            repair_details["sourceLaunchSiteRepair"] = launch_site_report
+        if changed:
+            repaired[core_path] = core_after
+            changed_files.add(core_path)
+            repair_rules.append("repair.source_launch_sites")
+
+    report = {
         "schemaVersion": REPAIR_SCHEMA_VERSION,
         "repaired": bool(repair_rules),
         "inputReasonCodes": input_reason_codes,
@@ -421,6 +424,8 @@ def repair_split_artifacts(
         "changedFiles": sorted(changed_files),
         "scope": "generated_artifacts_only",
     }
+    report.update(repair_details)
+    return repaired, report
 
 
 def _needs_source_device_semantics_repair(
@@ -1614,72 +1619,137 @@ def _repair_missing_source_launch_sites(
     core_source: str,
     device_source: str,
     source_files: Mapping[str, str],
-) -> tuple[str, bool]:
-    if "synthi_gpu_launch(" in core_source:
-        return core_source, False
+) -> tuple[str, bool, dict]:
     span = _function_body_span(core_source, "core_on_update")
     if span is None:
-        return core_source, False
+        return core_source, False, {}
     declared_kernels = _effective_device_kernel_names(device_source, source_files)
     if not declared_kernels:
-        return core_source, False
+        return core_source, False, {}
 
-    existing_launches: Set[str] = set()
+    already_launched = {
+        site.kernel
+        for site in extract_launch_graph({"core.cpp": core_source})
+        if site.kernel in declared_kernels
+    }
+    synthesized_launches: Set[str] = set()
     launch_lines: List[str] = []
+    missing_records: List[dict] = []
     for site in extract_launch_graph(source_files):
-        if site.kernel in existing_launches or site.kernel not in declared_kernels:
+        if (
+            site.kernel in already_launched
+            or site.kernel in synthesized_launches
+            or site.kernel not in declared_kernels
+        ):
             continue
-        line = _source_launch_site_to_synthi_call(core_source, site)
+        line, availability = _source_launch_site_to_synthi_call_with_evidence(
+            core_source,
+            site,
+        )
         if line is None:
+            if availability:
+                missing_records.append(availability)
             continue
-        existing_launches.add(site.kernel)
+        synthesized_launches.add(site.kernel)
         launch_lines.append(line)
 
+    report = {
+        "attemptedKernels": sorted(declared_kernels),
+        "existingKernels": sorted(already_launched),
+        "synthesizedKernels": sorted(synthesized_launches),
+        "missing": missing_records[:12],
+    }
     if not launch_lines:
-        return core_source, False
+        return core_source, False, report
 
     insert_at = span[1]
     prefix = "\n" if insert_at > 0 and core_source[insert_at - 1] not in "\r\n" else ""
     insertion = prefix + "".join(f"    {line}\n" for line in launch_lines)
     out = core_source[:insert_at] + insertion + core_source[insert_at:]
-    return out, out != core_source
+    return out, out != core_source, report
 
 
 def _source_launch_site_to_synthi_call(
     core_source: str,
     site: LaunchSite,
 ) -> Optional[str]:
+    line, _availability = _source_launch_site_to_synthi_call_with_evidence(
+        core_source,
+        site,
+    )
+    return line
+
+
+def _source_launch_site_to_synthi_call_with_evidence(
+    core_source: str,
+    site: LaunchSite,
+) -> tuple[Optional[str], dict]:
     if not site.args:
-        return None
+        return None, _source_launch_site_availability(core_source, site)
     lookup_source = _core_update_lookup_source(core_source)
     if lookup_source is None:
-        return None
-    if not _launch_expr_available_in_core(lookup_source, site.grid, core_source):
-        return None
-    if not _launch_expr_available_in_core(lookup_source, site.block, core_source):
-        return None
-    if not _launch_expr_available_in_core(lookup_source, site.shared, core_source):
-        return None
-    if not _launch_expr_available_in_core(lookup_source, site.stream, core_source):
-        return None
+        return None, _source_launch_site_availability(core_source, site)
+    availability = _source_launch_site_availability(core_source, site)
+    if availability.get("missingExpressions"):
+        return None, availability
 
     launch_args: List[str] = []
     for arg in site.args:
         normalized = _normalize_launch_arg_identity(arg)
         if not normalized or not _is_safe_launch_lvalue(normalized):
-            return None
-        if not _launch_expr_available_in_core(lookup_source, normalized, core_source):
-            return None
+            return None, availability
         launch_args.append(f"&{normalized}")
     if not launch_args:
-        return None
+        return None, availability
     return (
         f'synthi_gpu_launch(nullptr, "{site.kernel}", '
         f"{_launch_dim_expr_for_boundary(site.grid)}, "
         f"{_launch_dim_expr_for_boundary(site.block)}, "
         f"{site.shared}, {site.stream}, "
         "{ " + ", ".join(launch_args) + " });"
-    )
+    ), availability
+
+
+def _source_launch_site_availability(core_source: str, site: LaunchSite) -> dict:
+    lookup_source = _core_update_lookup_source(core_source) or ""
+    expressions = [
+        ("grid", site.grid),
+        ("block", site.block),
+        ("shared", site.shared),
+        ("stream", site.stream),
+    ]
+    for arg in site.args:
+        normalized = _normalize_launch_arg_identity(arg)
+        expressions.append((f"arg:{arg}", normalized))
+
+    missing: List[str] = []
+    unsafe: List[str] = []
+    required_owners: List[str] = []
+    for kind, expr in expressions:
+        expr = (expr or "").strip()
+        if not expr:
+            missing.append(kind)
+            continue
+        if kind.startswith("arg:"):
+            if not _is_safe_launch_lvalue(expr):
+                unsafe.append(expr)
+                continue
+            required_owners.append(expr)
+        if not _launch_expr_available_in_core(lookup_source, expr, core_source):
+            missing.append(expr)
+
+    return {
+        "site": site.site,
+        "kernel": site.kernel,
+        "form": site.form,
+        "grid": site.grid,
+        "block": site.block,
+        "shared": site.shared,
+        "stream": site.stream,
+        "requiredHostArgumentOwners": required_owners,
+        "missingExpressions": sorted(set(missing)),
+        "unsafeExpressions": sorted(set(unsafe)),
+    }
 
 
 def _repair_source_launch_arg_ownership(

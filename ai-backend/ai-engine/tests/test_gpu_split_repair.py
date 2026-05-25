@@ -1,5 +1,7 @@
+from types import SimpleNamespace
+
 from agents.gpu_split_repair import repair_split_artifacts, sanitize_generated_heal_output
-from verifier_gpu import verify_split_output
+from verifier_gpu import Violation, verify_split_output
 
 
 def test_heal_sanitizer_removes_missing_project_toolkit_include_and_calls():
@@ -894,6 +896,10 @@ def test_repair_does_not_invent_missing_source_launch_args():
 
     assert "repair.source_launch_sites" not in report["repairRules"]
     assert repaired["core.cpp"] == files["core.cpp"]
+    missing = report["sourceLaunchSiteRepair"]["missing"]
+    assert missing[0]["kernel"] == "Shade"
+    assert missing[0]["requiredHostArgumentOwners"] == ["launch_args"]
+    assert "launch_args" in missing[0]["missingExpressions"]
 
 
 def test_repair_does_not_treat_string_literal_as_launch_arg_owner():
@@ -934,6 +940,60 @@ def test_repair_does_not_treat_string_literal_as_launch_arg_owner():
 
     assert "repair.source_launch_sites" not in report["repairRules"]
     assert repaired["core.cpp"] == files["core.cpp"]
+
+
+def test_repair_reports_missing_source_launch_after_bad_launch_removed():
+    source_files = {
+        "src/kernels.cu": 'extern "C" __global__ void Shade(int source_payload) {}\n',
+        "src/render.cu": 'void render(){ Shade<<<1, 64>>>(source_payload); }\n',
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'int generated_payload = 2; '
+            'bool launched = synthi_gpu_launch(nullptr, "Shade", 1, 64, 0, 0, { &generated_payload }); '
+            'if (launched) { generated_payload += 1; } }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": 'extern "C" __global__ void Shade(int source_payload) {}\n',
+    }
+    verification = SimpleNamespace(
+        violations=[
+            Violation(
+                "source_launch_args_not_preserved",
+                "generated launch does not preserve source argument owner",
+                offending_symbol="Shade",
+            ),
+            Violation(
+                "device_kernels_not_launched",
+                "no source-reachable kernel launch remains after repair",
+            ),
+        ]
+    )
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert "repair.source_launch_args" in report["repairRules"]
+    assert "repair.source_launch_sites" not in report["repairRules"]
+    assert "synthi_gpu_launch" not in repaired["core.cpp"]
+    missing = report["sourceLaunchSiteRepair"]["missing"]
+    assert missing[0]["kernel"] == "Shade"
+    assert missing[0]["requiredHostArgumentOwners"] == ["source_payload"]
+    assert "source_payload" in missing[0]["missingExpressions"]
 
 
 def test_repair_rewrites_source_launch_args_when_owner_exists():

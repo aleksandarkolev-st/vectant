@@ -304,6 +304,33 @@ def split_repair_retry_notes(repair_report: Optional[Mapping[str, Any]]) -> List
         notes.append(
             "- repair.source_launch_sites_missing: Deterministic repair could not synthesize a source launch because the required SOURCE LAUNCH GRAPH grid/block/stream/argument owner expressions were not available in generated core."
         )
+        launch_repair = repair_report.get("sourceLaunchSiteRepair")
+        if isinstance(launch_repair, Mapping):
+            missing = launch_repair.get("missing") or []
+            if isinstance(missing, Sequence) and missing:
+                compact_missing = []
+                for item in missing[:4]:
+                    if not isinstance(item, Mapping):
+                        continue
+                    compact_missing.append(
+                        {
+                            "site": item.get("site"),
+                            "kernel": item.get("kernel"),
+                            "missingExpressions": item.get("missingExpressions"),
+                            "requiredHostArgumentOwners": item.get(
+                                "requiredHostArgumentOwners"
+                            ),
+                        }
+                    )
+                if compact_missing:
+                    notes.append(
+                        "- repair.source_launch_sites_missing_records: "
+                        + json.dumps(
+                            compact_missing,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                    )
     return notes
 
 
@@ -1040,17 +1067,7 @@ def _source_launch_graph_contract(
     if not graph:
         return ""
     compact = [
-        {
-            "site": item.get("site"),
-            "kernel": item.get("kernel"),
-            "grid": item.get("grid"),
-            "block": item.get("block"),
-            "shared": item.get("shared"),
-            "stream": item.get("stream"),
-            "args": item.get("args"),
-            "requiredHostArgumentOwners": item.get("args"),
-            "form": item.get("form"),
-        }
+        _compact_source_launch_record(item, source_files)
         for item in graph[:40]
     ]
     omitted = len(graph) - len(compact)
@@ -1088,6 +1105,63 @@ def _source_launch_graph_contract(
     if omitted > 0:
         lines.append(f"Launch records omitted for prompt budget: {omitted}.")
     return "\n".join(lines)
+
+
+def _compact_source_launch_record(
+    item: Mapping[str, Any],
+    source_files: Mapping[str, str],
+) -> dict:
+    record = {
+        "site": item.get("site"),
+        "kernel": item.get("kernel"),
+        "grid": item.get("grid"),
+        "block": item.get("block"),
+        "shared": item.get("shared"),
+        "stream": item.get("stream"),
+        "args": item.get("args"),
+        "requiredHostArgumentOwners": item.get("args"),
+        "form": item.get("form"),
+    }
+    snippet = _source_launch_site_snippet(source_files, item.get("site"))
+    if snippet:
+        record["sourceSnippet"] = snippet
+    return record
+
+
+def _source_launch_site_snippet(
+    source_files: Mapping[str, str],
+    site: Any,
+    *,
+    context_lines: int = 12,
+    max_chars: int = 1200,
+) -> str:
+    if not isinstance(site, str) or ":" not in site:
+        return ""
+    path, line_text = site.rsplit(":", 1)
+    try:
+        line_no = int(line_text)
+    except ValueError:
+        return ""
+    normalized_path = path.replace("\\", "/").lstrip("./")
+    normalized_sources = {
+        source_path.replace("\\", "/").lstrip("./"): source
+        for source_path, source in source_files.items()
+    }
+    source = normalized_sources.get(normalized_path)
+    if not source:
+        return ""
+    lines = source.splitlines()
+    if not lines:
+        return ""
+    index = max(0, min(len(lines) - 1, line_no - 1))
+    start = max(0, index - context_lines)
+    end = min(len(lines), index + context_lines + 1)
+    snippet = "\n".join(
+        f"{line_index + 1}: {lines[line_index]}" for line_index in range(start, end)
+    )
+    if len(snippet) > max_chars:
+        return snippet[:max_chars] + "\n/* ... launch snippet truncated ... */"
+    return snippet
 
 
 def _include_in_project_context(path: str, source: str) -> bool:

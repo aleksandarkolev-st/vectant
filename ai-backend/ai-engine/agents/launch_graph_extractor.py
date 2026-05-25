@@ -341,6 +341,6 @@ def _mask_comments_preserving_len(source: str) -> str:
 
 def _looks_like_host_source(path: str) -> bool:
     lower = path.lower()
-    return lower.endswith((".cpp", ".cc", ".cxx", ".c", ".h", ".hpp")) and not lower.endswith(
-        (".cu", ".cuh", ".hip")
+    return lower.endswith(
+        (".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hh", ".hxx", ".cu", ".cuh", ".hip")
     )

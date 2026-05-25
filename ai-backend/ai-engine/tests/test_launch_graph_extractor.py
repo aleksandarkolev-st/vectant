@@ -29,6 +29,15 @@ def test_extracts_raw_launch_for_pre_rewrite_source():
     assert graph[0]["stream"] == "stream"
 
 
+def test_extracts_raw_launch_from_gpu_translation_unit():
+    graph = launch_graph_as_dicts(
+        {"render.cu": "void step(){ shade<<<grid, block, 0, stream>>>(payload); }"}
+    )
+    assert len(graph) == 1
+    assert graph[0]["kernel"] == "shade"
+    assert graph[0]["args"] == ["payload"]
+
+
 def test_extracts_runtime_kernel_object_launch():
     graph = launch_graph_as_dicts(
         {

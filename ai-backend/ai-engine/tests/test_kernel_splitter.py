@@ -694,6 +694,28 @@ def test_build_split_retry_prompt_guides_missing_source_launches():
     assert "Do not invent a different aggregate" in prompt
 
 
+def test_source_launch_graph_contract_includes_bounded_source_snippets():
+    source_files = {
+        "src/render.cpp": (
+            "void render(dim3 grid, dim3 block, void* stream) {\n"
+            "  RenderData render_data{};\n"
+            "  // preserve the real owner expression below\n"
+            "  MegaKernel<<<grid, block, 0, stream>>>(render_data);\n"
+            "}\n"
+        ),
+        "src/kernels.h": 'extern "C" __global__ void MegaKernel(RenderData render_data) {}\n',
+    }
+
+    contract = _source_launch_graph_contract(
+        source_files,
+        allowed_kernels={"MegaKernel"},
+    )
+
+    assert '"sourceSnippet"' in contract
+    assert "MegaKernel<<<grid, block, 0, stream>>>(render_data)" in contract
+    assert '"requiredHostArgumentOwners":["render_data"]' in contract
+
+
 def test_split_repair_retry_notes_surface_launch_arg_repairs():
     notes = split_repair_retry_notes(
         {
@@ -707,6 +729,30 @@ def test_split_repair_retry_notes_surface_launch_arg_repairs():
     assert "repair.source_launch_args" in joined
     assert "SOURCE LAUNCH GRAPH owner expressions" in joined
     assert "required SOURCE LAUNCH GRAPH" in joined
+
+
+def test_split_repair_retry_notes_surface_missing_launch_records():
+    notes = split_repair_retry_notes(
+        {
+            "repairRules": ["repair.generated_project_includes"],
+            "remainingReasonCodes": ["device_kernels_not_launched"],
+            "sourceLaunchSiteRepair": {
+                "missing": [
+                    {
+                        "site": "src/render.cpp:42",
+                        "kernel": "MegaKernel",
+                        "missingExpressions": ["render_data", "stream"],
+                        "requiredHostArgumentOwners": ["render_data"],
+                    }
+                ]
+            },
+        }
+    )
+
+    joined = "\n".join(notes)
+    assert "repair.source_launch_sites_missing_records" in joined
+    assert "src/render.cpp:42" in joined
+    assert "render_data" in joined
 
 
 def test_deterministic_split_repair_runs_followup_passes():
