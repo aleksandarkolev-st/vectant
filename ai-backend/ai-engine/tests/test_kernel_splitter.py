@@ -741,8 +741,14 @@ def test_split_repair_retry_notes_surface_missing_launch_records():
                     {
                         "site": "src/render.cpp:42",
                         "kernel": "MegaKernel",
+                        "form": "raw_triple_chevron",
+                        "grid": "grid",
+                        "block": "block",
+                        "shared": "0",
+                        "stream": "stream",
                         "missingExpressions": ["render_data", "stream"],
                         "requiredHostArgumentOwners": ["render_data"],
+                        "sourceSnippet": "42: MegaKernel<<<grid, block, 0, stream>>>(render_data);",
                     }
                 ]
             },
@@ -753,6 +759,7 @@ def test_split_repair_retry_notes_surface_missing_launch_records():
     assert "repair.source_launch_sites_missing_records" in joined
     assert "src/render.cpp:42" in joined
     assert "render_data" in joined
+    assert "MegaKernel<<<grid, block, 0, stream>>>(render_data)" in joined
 
 
 def test_deterministic_split_repair_runs_followup_passes():

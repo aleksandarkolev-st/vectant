@@ -1643,6 +1643,7 @@ def _repair_missing_source_launch_sites(
         line, availability = _source_launch_site_to_synthi_call_with_evidence(
             core_source,
             site,
+            source_files=source_files,
         )
         if line is None:
             if availability:
@@ -1674,6 +1675,7 @@ def _source_launch_site_to_synthi_call(
     line, _availability = _source_launch_site_to_synthi_call_with_evidence(
         core_source,
         site,
+        source_files=None,
     )
     return line
 
@@ -1681,13 +1683,15 @@ def _source_launch_site_to_synthi_call(
 def _source_launch_site_to_synthi_call_with_evidence(
     core_source: str,
     site: LaunchSite,
+    *,
+    source_files: Optional[Mapping[str, str]] = None,
 ) -> tuple[Optional[str], dict]:
     if not site.args:
-        return None, _source_launch_site_availability(core_source, site)
+        return None, _source_launch_site_availability(core_source, site, source_files)
     lookup_source = _core_update_lookup_source(core_source)
     if lookup_source is None:
-        return None, _source_launch_site_availability(core_source, site)
-    availability = _source_launch_site_availability(core_source, site)
+        return None, _source_launch_site_availability(core_source, site, source_files)
+    availability = _source_launch_site_availability(core_source, site, source_files)
     if availability.get("missingExpressions"):
         return None, availability
 
@@ -1708,7 +1712,11 @@ def _source_launch_site_to_synthi_call_with_evidence(
     ), availability
 
 
-def _source_launch_site_availability(core_source: str, site: LaunchSite) -> dict:
+def _source_launch_site_availability(
+    core_source: str,
+    site: LaunchSite,
+    source_files: Optional[Mapping[str, str]] = None,
+) -> dict:
     lookup_source = _core_update_lookup_source(core_source) or ""
     expressions = [
         ("grid", site.grid),
@@ -1747,7 +1755,45 @@ def _source_launch_site_availability(core_source: str, site: LaunchSite) -> dict
         "requiredHostArgumentOwners": required_owners,
         "missingExpressions": sorted(set(missing)),
         "unsafeExpressions": sorted(set(unsafe)),
+        "sourceSnippet": _source_launch_site_snippet(source_files or {}, site.site),
     }
+
+
+def _source_launch_site_snippet(
+    source_files: Mapping[str, str],
+    site: str,
+    *,
+    context_lines: int = 10,
+    max_chars: int = 1200,
+) -> str:
+    if not isinstance(site, str) or ":" not in site:
+        return ""
+    path, line_text = site.rsplit(":", 1)
+    try:
+        line_no = int(line_text)
+    except ValueError:
+        return ""
+    normalized_path = path.replace("\\", "/").lstrip("./")
+    normalized_sources = {
+        source_path.replace("\\", "/").lstrip("./"): source
+        for source_path, source in source_files.items()
+    }
+    source = normalized_sources.get(normalized_path)
+    if not source:
+        return ""
+    lines = source.splitlines()
+    if not lines:
+        return ""
+    index = max(0, min(len(lines) - 1, line_no - 1))
+    start = max(0, index - context_lines)
+    end = min(len(lines), index + context_lines + 1)
+    snippet = "\n".join(
+        f"{line_index + 1}: {lines[line_index]}"
+        for line_index in range(start, end)
+    )
+    if len(snippet) <= max_chars:
+        return snippet
+    return snippet[: max_chars - 3].rstrip() + "..."
 
 
 def _repair_source_launch_arg_ownership(

@@ -900,6 +900,7 @@ def test_repair_does_not_invent_missing_source_launch_args():
     assert missing[0]["kernel"] == "Shade"
     assert missing[0]["requiredHostArgumentOwners"] == ["launch_args"]
     assert "launch_args" in missing[0]["missingExpressions"]
+    assert "Shade<<<1, 64>>>(launch_args)" in missing[0]["sourceSnippet"]
 
 
 def test_repair_does_not_treat_string_literal_as_launch_arg_owner():

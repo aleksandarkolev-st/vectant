@@ -317,10 +317,16 @@ def split_repair_retry_notes(repair_report: Optional[Mapping[str, Any]]) -> List
                         {
                             "site": item.get("site"),
                             "kernel": item.get("kernel"),
+                            "form": item.get("form"),
+                            "grid": item.get("grid"),
+                            "block": item.get("block"),
+                            "shared": item.get("shared"),
+                            "stream": item.get("stream"),
                             "missingExpressions": item.get("missingExpressions"),
                             "requiredHostArgumentOwners": item.get(
                                 "requiredHostArgumentOwners"
                             ),
+                            "sourceSnippet": item.get("sourceSnippet"),
                         }
                     )
                 if compact_missing:
