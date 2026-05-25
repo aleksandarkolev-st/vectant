@@ -50,6 +50,10 @@ from typing import Dict, Iterable, List, Mapping, Optional, Set
 
 from agents.launch_graph_extractor import extract_launch_graph
 from agents.abi_stamper import mask_comments_for_parsing, normalize_param_list
+from agents.gpu_device_markers import (
+    DEVICE_ANNOTATION_MACRO_PATTERN,
+    GPU_DEVICE_MARKER_RE,
+)
 
 
 HealTier = str  # "compile_hard" | "compile_soft" | "runtime"
@@ -242,7 +246,7 @@ _GPU_SDK_VECTOR_STRUCT_RE = re.compile(
 )
 _GPU_SDK_VECTOR_MAKE_FUNCTION_RE = re.compile(
     r"\b(?:(?:static|inline|constexpr|consteval|__host__|__device__|"
-    r"__forceinline__|__inline__|HIPRT_HOST_DEVICE|HIPRT_DEVICE|CUDA_HOST_DEVICE)\s+)*"
+    rf"__forceinline__|__inline__|{DEVICE_ANNOTATION_MACRO_PATTERN})\s+)*"
     r"(?P<vector_type>"
     + _GPU_SDK_VECTOR_TYPE_PATTERN
     + r")\s+"
@@ -1488,13 +1492,7 @@ def _is_source_device_file(path: str, source: str) -> bool:
         return True
     if not normalized.endswith((".cuh", ".hpp", ".hh", ".h")):
         return False
-    return bool(
-        "__global__" in masked
-        or "__device__" in masked
-        or "GLOBAL_KERNEL_SIGNATURE" in masked
-        or "HIPRT_DEVICE" in masked
-        or "HIPRT_HOST_DEVICE" in masked
-    )
+    return bool(GPU_DEVICE_MARKER_RE.search(masked))
 
 
 def _render_backends_in_sources(sources: Iterable[str]) -> Set[str]:
@@ -1510,11 +1508,7 @@ def _source_device_identifiers(source_device_sources: Mapping[str, str]) -> Set[
     identifiers: Set[str] = set()
     for source in source_device_sources.values():
         masked = mask_comments_for_parsing(source)
-        if (
-            "__global__" not in masked
-            and "__device__" not in masked
-            and "GLOBAL_KERNEL_SIGNATURE" not in masked
-        ):
+        if not GPU_DEVICE_MARKER_RE.search(masked):
             continue
         identifiers.update(_SOURCE_DEVICE_IDENTIFIER_RE.findall(masked))
     return identifiers

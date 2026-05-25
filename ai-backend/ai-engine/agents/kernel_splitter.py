@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, 
 
 from agents.abi_stamper import mask_comments_for_parsing, stamp_device_source
 from agents.gpu_detect import GpuDetectionResult
+from agents.gpu_device_markers import GPU_DEVICE_MARKER_RE as _GPU_DEVICE_MARKER_RE
 from agents.gpu_split_repair import REPAIR_SCHEMA_VERSION, repair_split_artifacts
 from agents.gpu_source_context import build_project_source_context
 from agents.launch_graph_extractor import launch_graph_as_dicts
@@ -520,17 +521,6 @@ _SOURCE_GLOBAL_KERNEL_RE = re.compile(
     r"__global__\s+(?:void\s+)?"
     r"|GLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+(?:__launch_bounds__\s*\([^)]*\)\s*)?"
     r")([A-Za-z_][A-Za-z0-9_]*)\s*\("
-)
-_GPU_DEVICE_MARKER_RE = re.compile(
-    r"\b(?:"
-    r"__(?:global|device|constant|managed|host)__"
-    r"|GLOBAL_KERNEL_SIGNATURE\s*\("
-    r"|HIPRT_(?:DEVICE|HOST_DEVICE)\b"
-    r"|oroModuleLaunchKernel\b"
-    r"|hiprtc(?:CreateProgram|CompileProgram|GetCode|GetBitcode)\b"
-    r"|cuModuleLaunchKernel\b"
-    r")",
-    re.I,
 )
 _SOURCE_DEVICE_IDENTIFIER_RE = re.compile(r"\bk[A-Z][A-Za-z0-9_]*\b")
 _QUOTE_INCLUDE_RE = re.compile(r"#\s*include\s+\"(?P<path>[^\"]+)\"")

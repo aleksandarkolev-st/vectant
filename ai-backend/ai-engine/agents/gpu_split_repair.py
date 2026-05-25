@@ -14,6 +14,10 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, 
 
 from agents.launch_graph_extractor import LaunchSite, extract_launch_graph
 from agents.abi_stamper import mask_comments_for_parsing
+from agents.gpu_device_markers import (
+    DEVICE_ANNOTATION_MACRO_PATTERN,
+    has_gpu_device_marker,
+)
 from verifier_gpu import (
     _CPP_DECL_KEYWORDS,
     _GUI_RENDER_EFFECT_RE,
@@ -80,7 +84,7 @@ _ANY_GLOBAL_KERNEL_RE = re.compile(
     re.DOTALL,
 )
 _SOURCE_DEVICE_FUNCTION_RE = re.compile(
-    r"\b(?:HIPRT_DEVICE|HIPRT_HOST_DEVICE|__device__|__host__\s+__device__|__device__\s+__host__)\b"
+    rf"\b(?:{DEVICE_ANNOTATION_MACRO_PATTERN}|__device__|__host__\s+__device__|__device__\s+__host__)\b"
     r"(?P<signature>[^;{}]*?)"
     r"\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*"
     r"\([^;{}()]*(?:\([^;{}()]*\)[^;{}()]*)*\)"
@@ -459,13 +463,7 @@ def _source_device_files(source_files: Mapping[str, str]) -> Dict[str, str]:
         if not lower.endswith(_DEVICE_SOURCE_EXTENSIONS + _DEVICE_HEADER_EXTENSIONS):
             continue
         masked = mask_comments_for_parsing(source)
-        if (
-            "__global__" in masked
-            or "__device__" in masked
-            or "GLOBAL_KERNEL_SIGNATURE" in masked
-            or "HIPRT_DEVICE" in masked
-            or "HIPRT_HOST_DEVICE" in masked
-        ):
+        if has_gpu_device_marker(masked):
             files[normalized] = source
     return files
 

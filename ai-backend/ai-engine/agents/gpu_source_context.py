@@ -8,6 +8,7 @@ import shlex
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agents.abi_stamper import mask_comments_for_parsing
+from agents.gpu_device_markers import GPU_DEVICE_MARKER_RE
 from agents.launch_graph_extractor import extract_launch_graph
 from gpu_hmr.canonical import canonical_hash
 
@@ -36,15 +37,8 @@ _BACKEND_PATTERNS = {
     ),
 }
 _KERNEL_DECL_RE = re.compile(
-    r"\b(?:"
-    r"__(?:global|device|constant|managed|host)__"
-    r"|GLOBAL_KERNEL_SIGNATURE\s*\("
-    r"|HIPRT_(?:DEVICE|HOST_DEVICE)\b"
-    r"|oroModuleLaunchKernel\b"
-    r"|hiprtc(?:CreateProgram|CompileProgram|GetCode|GetBitcode)\b"
-    r"|cuModuleLaunchKernel\b"
-    r")",
-    re.I,
+    GPU_DEVICE_MARKER_RE.pattern,
+    GPU_DEVICE_MARKER_RE.flags,
 )
 _TEMPLATE_EVIDENCE_BASENAMES = {
     "template-evidence.json",
