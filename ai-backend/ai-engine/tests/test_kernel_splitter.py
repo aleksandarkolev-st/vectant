@@ -599,6 +599,19 @@ def test_build_split_retry_prompt_guides_unresolved_launch_repairs():
     assert "fake kernel" in prompt
 
 
+def test_build_split_retry_prompt_guides_source_launch_arg_repairs():
+    prompt = build_split_retry_prompt(
+        "original prompt",
+        [
+            "- source_launch_args_not_preserved: Generated core launches a source-reachable kernel 'shade_pixels' but does not preserve the source launch argument ownership.",
+        ],
+    )
+
+    assert "source-reachable kernel" in prompt
+    assert "same launch argument object names and order" in prompt
+    assert "remove that runtime launch" in prompt
+
+
 def test_verifier_acceptance_gate_contract_highlights_generic_split_gates():
     contract = _verifier_acceptance_gate_contract()
 

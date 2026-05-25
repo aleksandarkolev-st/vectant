@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Dict, Iterable, List, Mapping, Optional, Set
 
+from agents.launch_graph_extractor import extract_launch_graph
 from agents.abi_stamper import mask_comments_for_parsing, normalize_param_list
 
 
@@ -1618,6 +1619,7 @@ def verify_split_output(
     device_semantic_source = "\n".join(
         [device_source, *device_included_sources.values()]
     )
+    source_launch_args_by_kernel = _source_launch_args_by_kernel(source_files or {})
 
     allowed_include_paths: Set[str] = {"synthi_gpu_runtime.h"}
     for path in (shared_path, core_path, gui_path, host_runner_path, device_path):
@@ -2176,6 +2178,33 @@ def verify_split_output(
                             offending_symbol=kernel_name,
                         )
                     )
+                source_launch_args = source_launch_args_by_kernel.get(kernel_name, [])
+                if source_launch_args:
+                    generated_arg_identities = [
+                        _normalize_launch_arg_identity(entry)
+                        for entry in entries
+                        if entry.strip()
+                    ]
+                    if generated_arg_identities not in source_launch_args:
+                        expected = " or ".join(
+                            "{" + ", ".join(args) + "}" for args in source_launch_args[:3]
+                        )
+                        violations.append(
+                            Violation(
+                                rule="source_launch_args_not_preserved",
+                                message=(
+                                    "Generated core launches a source-reachable kernel "
+                                    f"{kernel_name!r} but does not preserve the source "
+                                    "launch argument ownership. Source launch args are "
+                                    f"{expected}; generated launch args are "
+                                    f"{{{', '.join(generated_arg_identities)}}}. "
+                                    "Do not synthesize a different aggregate or argument "
+                                    "object for a preserved source kernel."
+                                ),
+                                offending_module=core_path,
+                                offending_symbol=kernel_name,
+                            )
+                        )
             for entry in entries:
                 stripped = entry.strip()
                 if stripped and not stripped.startswith("&"):
@@ -2680,6 +2709,34 @@ def verify_split_output(
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers — kernel signature extraction + edit application
 # ─────────────────────────────────────────────────────────────────────────────
+def _source_launch_args_by_kernel(source_files: Mapping[str, str]) -> dict[str, List[List[str]]]:
+    by_kernel: dict[str, List[List[str]]] = {}
+    for site in extract_launch_graph(source_files):
+        if not site.kernel or not site.args:
+            continue
+        normalized = [
+            _normalize_launch_arg_identity(arg)
+            for arg in site.args
+            if arg.strip()
+        ]
+        if not normalized:
+            continue
+        options = by_kernel.setdefault(site.kernel, [])
+        if normalized not in options:
+            options.append(normalized)
+    return by_kernel
+
+
+def _normalize_launch_arg_identity(expr: str) -> str:
+    text = expr.strip()
+    while text.startswith("&"):
+        text = text[1:].strip()
+    while text.startswith("(") and text.endswith(")"):
+        inner = text[1:-1].strip()
+        if not inner:
+            break
+        text = inner
+    return re.sub(r"\s+", "", text)
 
 
 def _collect_new_kernels(

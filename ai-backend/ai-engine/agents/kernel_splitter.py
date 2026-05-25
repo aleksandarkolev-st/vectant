@@ -285,6 +285,10 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
         guidance.append(
             "- For each synthi_gpu_launch call, make the host initializer-list match the generated kernel parameter list exactly. If the kernel takes a LaunchParams-style struct, create one host variable and pass its address as a single argument; otherwise flatten the kernel signature to match the host launch ABI."
         )
+    if "source_launch_args_not_preserved" in joined:
+        guidance.append(
+            "- For each synthi_gpu_launch call that targets a source-reachable kernel from the source launch graph, preserve the same launch argument object names and order as the source launch site. Do not synthesize a different aggregate solely to satisfy the kernel parameter count; if the original argument pack cannot be reconstructed safely in generated core state, remove that runtime launch and keep the kernel preserved only for device mapping/HMR."
+        )
     if "kernel_launch_bounds_exceeded" in joined:
         guidance.append(
             "- For each synthi_gpu_launch call, choose block dimensions whose total thread count is no greater than that kernel's __launch_bounds__ value. Preserve project semantics while deriving the block shape from the kernel's declared launch bound or target-scoped constants."
