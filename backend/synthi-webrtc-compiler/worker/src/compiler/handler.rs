@@ -2041,6 +2041,23 @@ fn device_hmr_result_label(outcome: &DeviceCompileOutcome) -> &'static str {
     }
 }
 
+fn device_reload_kernel_symbols(source: &str, outcome: &DeviceCompileOutcome) -> Vec<String> {
+    if outcome.partial_module && !outcome.target_symbols.is_empty() {
+        return normalized_symbol_set(&outcome.target_symbols)
+            .into_iter()
+            .collect();
+    }
+
+    let source_symbols = extract_device_kernel_symbols(source);
+    if !source_symbols.is_empty() {
+        return source_symbols;
+    }
+
+    normalized_symbol_set(&outcome.artifact_exported_symbols)
+        .into_iter()
+        .collect()
+}
+
 async fn send_active_runner_runtime_command(
     ctx: &CompileContext,
     session_id: &str,
@@ -6904,12 +6921,7 @@ pub async fn handle_compile_request(
             if !device_dirty_units.iter().any(|u| u == device_filename) {
                 device_dirty_units.push(device_filename.to_string());
             }
-            let kernel_symbols =
-                if device_outcome.partial_module && !device_outcome.target_symbols.is_empty() {
-                    device_outcome.target_symbols.clone()
-                } else {
-                    extract_device_kernel_symbols(device_source)
-                };
+            let kernel_symbols = device_reload_kernel_symbols(device_source, device_outcome);
             let kernel_abi = kernel_abi_fingerprint_source(device_source);
             let artifact_path = device_outcome.artifact_path.to_string_lossy().to_string();
             let artifact_hash = format!(
@@ -7107,12 +7119,7 @@ pub async fn handle_compile_request(
     {
         if let Some(gpu) = manifest.gpu.as_ref() {
             let device_source = device_outcome.compiled_source.as_str();
-            let kernel_symbols =
-                if device_outcome.partial_module && !device_outcome.target_symbols.is_empty() {
-                    device_outcome.target_symbols.clone()
-                } else {
-                    extract_device_kernel_symbols(device_source)
-                };
+            let kernel_symbols = device_reload_kernel_symbols(device_source, device_outcome);
             let kernel_abi_hash = format!(
                 "{}",
                 hash_content(&kernel_abi_fingerprint_source(device_source))
@@ -7508,6 +7515,30 @@ mod gpu_host_contract_tests {
         format!("// synthi-gpu-hmr: source include partial\n#include \"{path}\"\n")
     }
 
+    fn fixture_device_outcome(
+        partial_module: bool,
+        target_symbols: Vec<String>,
+        artifact_exported_symbols: Vec<String>,
+    ) -> DeviceCompileOutcome {
+        DeviceCompileOutcome {
+            artifact_path: std::path::PathBuf::from("/tmp/device.hsaco"),
+            compiled_source: String::new(),
+            compiler_elapsed_ms: 0,
+            partial_module,
+            target_symbols,
+            fallback_used: false,
+            fallback_reason: None,
+            requested_artifact_kind: None,
+            selected_artifact_kind: None,
+            selected_artifact_bytes: None,
+            full_device_bytes: None,
+            artifact_exported_symbols,
+            diagnostics:
+                crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
+            stderr: String::new(),
+        }
+    }
+
     #[test]
     fn partial_source_contract_preserves_fallback_metadata() {
         let split = serde_json::json!({
@@ -7559,6 +7590,56 @@ mod gpu_host_contract_tests {
         assert_eq!(
             outcome.fallback_reason.as_deref(),
             Some("partial_compile_failed")
+        );
+    }
+
+    #[test]
+    fn full_reload_symbols_use_source_declarations_when_available() {
+        let outcome = fixture_device_outcome(
+            false,
+            Vec::new(),
+            symbols(&["artifact_kernel_a", "artifact_kernel_b"]),
+        );
+        let source = r#"
+extern "C" __global__ void source_kernel_b() {}
+extern "C" __global__ void source_kernel_a() {}
+"#;
+
+        assert_eq!(
+            device_reload_kernel_symbols(source, &outcome),
+            symbols(&["source_kernel_a", "source_kernel_b"])
+        );
+    }
+
+    #[test]
+    fn full_reload_symbols_fall_back_to_artifact_exports_when_source_is_opaque() {
+        let outcome = fixture_device_outcome(
+            false,
+            Vec::new(),
+            symbols(&["artifact_kernel_b", "artifact_kernel_a"]),
+        );
+        let source = r#"
+#define DECLARE_KERNEL(name) /* project-specific kernel declaration macro */
+DECLARE_KERNEL(opaque_kernel)
+"#;
+
+        assert_eq!(
+            device_reload_kernel_symbols(source, &outcome),
+            symbols(&["artifact_kernel_a", "artifact_kernel_b"])
+        );
+    }
+
+    #[test]
+    fn partial_reload_symbols_keep_verifier_selected_scope() {
+        let outcome = fixture_device_outcome(
+            true,
+            symbols(&["selected_kernel"]),
+            symbols(&["selected_kernel", "other_export"]),
+        );
+
+        assert_eq!(
+            device_reload_kernel_symbols("", &outcome),
+            symbols(&["selected_kernel"])
         );
     }
 
