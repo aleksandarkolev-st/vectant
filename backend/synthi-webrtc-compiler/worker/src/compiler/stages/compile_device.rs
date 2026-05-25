@@ -864,18 +864,19 @@ fn resolve_device_include(
 
 #[cfg(feature = "gpu-hmr")]
 fn source_owned_device_function_names(source: &str) -> HashSet<String> {
-    let device_fn_re = Regex::new(
+    let device_fn_re = Regex::new(&format!(
         r#"(?xs)
-        \b(?:HIPRT_DEVICE|HIPRT_HOST_DEVICE|__device__|__host__\s+__device__|__device__\s+__host__)\b
-        (?P<signature>[^;{}]*?)
+        \b(?:{}|__device__|__host__\s+__device__|__device__\s+__host__)\b
+        (?P<signature>[^;{{}}]*?)
         \b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*
         \(
-            [^;{}()]*
-            (?:\([^;{}()]*\)[^;{}()]*)*
+            [^;{{}}()]*
+            (?:\([^;{{}}()]*\)[^;{{}}()]*)*
         \)
-        \s*(?:;|\{)
+        \s*(?:;|\{{)
         "#,
-    )
+        device_annotation_macro_pattern()
+    ))
     .expect("valid device function regex");
     device_fn_re
         .captures_iter(&strip_cpp_comments_for_device_compile(source))
@@ -898,25 +899,10 @@ fn remove_forward_decls_for_names(source: &str, source_owned_names: &HashSet<Str
         return source.to_string();
     }
 
-    let forward_decl_re = Regex::new(
-        r#"(?ms)
-        ^[ \t]*
-        (?:
-            extern\s+(?:"C"\s+)?
-        )?
-        (?:
-            __device__|HIPRT_DEVICE|HIPRT_HOST_DEVICE|__host__\s+__device__|__device__\s+__host__
-        )\b
-        [^;{}]*?
-        \b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*
-        \(
-            [^;{}()]*
-            (?:\([^;{}()]*\)[^;{}()]*)*
-        \)
-        \s*;\s*
-        (?:\r?\n)?
-        "#,
-    )
+    let forward_decl_re = Regex::new(&format!(
+        r#"(?ms)^[ \t]*(?:extern\s+(?:"C"\s+)?\s*)?(?:__device__|{}|__host__\s+__device__|__device__\s+__host__)\b[^;{{}}]*?\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\([^;{{}}()]*(?:\([^;{{}}()]*\)[^;{{}}()]*)*\)\s*;\s*(?:\r?\n)?"#,
+        device_annotation_macro_pattern()
+    ))
     .expect("valid forward declaration regex");
     let out = forward_decl_re
         .replace_all(source, |caps: &regex::Captures| {
@@ -932,6 +918,11 @@ fn remove_forward_decls_for_names(source: &str, source_owned_names: &HashSet<Str
     let empty_extern_c_re = Regex::new(r#"(?ms)^[ \t]*extern\s+"C"\s*\{\s*\}\s*(?:\r?\n)?"#)
         .expect("valid empty extern C regex");
     empty_extern_c_re.replace_all(&out, "").into_owned()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn device_annotation_macro_pattern() -> &'static str {
+    r#"[A-Z][A-Z0-9_]*(?:DEVICE|GPU|CUDA|HIP)[A-Z0-9_]*"#
 }
 
 #[cfg(feature = "gpu-hmr")]
@@ -2960,31 +2951,39 @@ extern "C" __global__ void shade(int* out) { *out = LIMIT; }
 
     #[cfg(feature = "gpu-hmr")]
     #[tokio::test]
-    async fn source_owned_cleanup_removes_generated_device_forward_decl_conflict() {
+    async fn source_owned_cleanup_removes_macro_annotated_device_forward_decl_conflict() {
         let tmp = tempfile::tempdir().unwrap();
         let header = tmp
             .path()
-            .join("thirdparties/HIPRT-Fork/hiprt/impl/hiprt_device_impl.h");
+            .join("thirdparties/device-lib/include/devlib/device_impl.h");
         tokio::fs::create_dir_all(header.parent().unwrap())
             .await
             .unwrap();
-        tokio::fs::write(
-            &header,
-            "HIPRT_DEVICE bool filterFunc(unsigned int, unsigned int, const hiprtRay&);\n",
+        let header_source =
+            "PROJECT_DEVICE bool filterFunc(unsigned int, unsigned int, const ProjectRay&);\n";
+        tokio::fs::write(&header, header_source).await.unwrap();
+        assert!(source_owned_device_function_names(header_source).contains("filterFunc"));
+
+        let mut block = rocm_block();
+        block.device_flags = vec!["-Ithirdparties/device-lib/include".to_string()];
+        let source = r#"
+#include <devlib/device_impl.h>
+extern "C" {
+    __device__ bool filterFunc(unsigned int, unsigned int, const ProjectRay&);
+}
+__device__ int generated_helper();
+extern "C" __global__ void SourceBackedKernel(int* out) { *out = 1; }
+"#;
+
+        let reachable = reachable_source_owned_device_functions(
+            tmp.path(),
+            ".synthi/generated/gpu/device.hip",
+            source,
+            &block.device_flags,
         )
         .await
         .unwrap();
-
-        let mut block = rocm_block();
-        block.device_flags = vec!["-Ithirdparties/HIPRT-Fork".to_string()];
-        let source = r#"
-#include <hiprt/impl/hiprt_device_impl.h>
-extern "C" {
-    __device__ bool filterFunc(unsigned int, unsigned int, const hiprtRay&);
-}
-__device__ int generated_helper();
-extern "C" __global__ void CameraRays(int* out) { *out = 1; }
-"#;
+        assert!(reachable.contains("filterFunc"));
 
         let cleaned = remove_source_owned_device_forward_decls(
             tmp.path(),
@@ -2995,11 +2994,11 @@ extern "C" __global__ void CameraRays(int* out) { *out = 1; }
         .await
         .unwrap();
 
-        assert!(cleaned.contains("#include <hiprt/impl/hiprt_device_impl.h>"));
+        assert!(cleaned.contains("#include <devlib/device_impl.h>"));
         assert!(!cleaned.contains("__device__ bool filterFunc"));
         assert!(!cleaned.contains("extern \"C\" {\n}"));
         assert!(cleaned.contains("__device__ int generated_helper();"));
-        assert!(cleaned.contains("extern \"C\" __global__ void CameraRays"));
+        assert!(cleaned.contains("extern \"C\" __global__ void SourceBackedKernel"));
     }
 
     #[cfg(feature = "gpu-hmr")]

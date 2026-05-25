@@ -831,20 +831,12 @@ fn sanitize_gpu_annotations_for_cpp_parser(source: &str) -> String {
     let launch_config =
         Regex::new(r"(?s)<<<.*?>>>").expect("CUDA/HIP launch config sanitizer regex");
     out = launch_config.replace_all(&out, "").into_owned();
-    for token in [
-        "__global__",
-        "__device__",
-        "__host__",
-        "__constant__",
-        "__managed__",
-        "__shared__",
-        "__restrict__",
-        "HIPRT_DEVICE",
-        "HIPRT_HOST_DEVICE",
-        "HIPRT_INLINE",
-    ] {
-        out = out.replace(token, "");
-    }
+    let annotations = Regex::new(&format!(
+        r#"\b(?:__global__|__device__|__host__|__constant__|__managed__|__shared__|__restrict__|{})\b"#,
+        device_annotation_macro_pattern()
+    ))
+    .expect("GPU annotation sanitizer regex");
+    out = annotations.replace_all(&out, "").into_owned();
     out
 }
 
@@ -1280,9 +1272,10 @@ fn device_function_signature_hash(source: &str) -> String {
 }
 
 fn device_function_regions(source: &str) -> BTreeMap<String, KernelRegion> {
-    let re = Regex::new(
-        r#"(?:(?:__host__\s+__device__|__device__\s+__host__|__device__|HIPRT_DEVICE|HIPRT_HOST_DEVICE|HIPRT_INLINE)\s+)+(?:[A-Za-z_][A-Za-z0-9_:<>,\s*&~]*\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\("#,
-    )
+    let re = Regex::new(&format!(
+        r#"(?:(?:__host__\s+__device__|__device__\s+__host__|__device__|{})\s+)+(?:[A-Za-z_][A-Za-z0-9_:<>,\s*&~]*\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\("#,
+        device_annotation_macro_pattern()
+    ))
     .expect("device function regex");
     let masked = mask_comments_preserving_len(source);
     let mut out = BTreeMap::new();
@@ -2172,6 +2165,20 @@ fn normalize_path(path: &str) -> String {
     normalized
 }
 
+fn device_annotation_macro_pattern() -> &'static str {
+    r#"[A-Z][A-Z0-9_]*(?:DEVICE|GPU|CUDA|HIP)[A-Z0-9_]*"#
+}
+
+fn source_contains_device_annotation(source: &str) -> bool {
+    let stripped = mask_comments_preserving_len(source);
+    stripped.contains("__global__")
+        || stripped.contains("__device__")
+        || stripped.contains("GLOBAL_KERNEL_SIGNATURE")
+        || Regex::new(&format!(r#"\b{}\b"#, device_annotation_macro_pattern()))
+            .expect("device annotation macro regex")
+            .is_match(&stripped)
+}
+
 fn is_device_source_path(path: &str) -> bool {
     let lower = normalize_path(path).to_ascii_lowercase();
     lower.ends_with(".cu") || lower.ends_with(".hip")
@@ -2187,12 +2194,7 @@ fn is_device_header_path(path: &str) -> bool {
 }
 
 fn is_device_header_kernel_source_path(path: &str, source: &str) -> bool {
-    is_device_header_path(path)
-        && (source.contains("__global__")
-            || source.contains("__device__")
-            || source.contains("GLOBAL_KERNEL_SIGNATURE")
-            || source.contains("HIPRT_DEVICE")
-            || source.contains("HIPRT_HOST_DEVICE"))
+    is_device_header_path(path) && source_contains_device_annotation(source)
 }
 
 fn rejection_plan(reason_codes: &[String]) -> &'static str {
@@ -3034,6 +3036,18 @@ extern "C" __global__ void trace(float* x) {
                 "abi.device_function_body_changed",
             ),
             (
+                "macro annotated device function body",
+                "PROJECT_DEVICE float helper(float x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "PROJECT_DEVICE float helper(float x) { return x + 1.0f; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "abi.device_function_body_changed",
+            ),
+            (
+                "macro annotated device function signature",
+                "PROJECT_DEVICE float helper(float x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "PROJECT_DEVICE double helper(float x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
+                "abi.device_function_signature_changed",
+            ),
+            (
                 "inline device function body",
                 "__device__ inline float helper(float x) { return x; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
                 "__device__ inline float helper(float x) { return x + 1.0f; }\n__global__ void flow(float* x, int n) {\n  x[0] += helper(1.0f);\n}\n",
@@ -3083,6 +3097,22 @@ extern "C" __global__ void trace(float* x) {
                 result.reason_codes
             );
         }
+    }
+
+    #[test]
+    fn device_header_detection_accepts_generic_device_annotation_macros() {
+        assert!(is_device_header_kernel_source_path(
+            "src/device/helper.hpp",
+            "PROJECT_DEVICE float helper(float x) { return x; }\n"
+        ));
+        assert!(is_device_header_kernel_source_path(
+            "src/device/helper.hpp",
+            "GPU_HOST_DEVICE float helper(float x) { return x; }\n"
+        ));
+        assert!(!is_device_header_kernel_source_path(
+            "src/device/helper.hpp",
+            "// PROJECT_DEVICE float helper(float x) { return x; }\n"
+        ));
     }
 
     #[test]
