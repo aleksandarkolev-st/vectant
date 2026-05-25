@@ -54,7 +54,10 @@ def build_device_mapping_report(
 
     generated_path = _manifest_device_path(manifest) or _first_device_path(generated_files)
     generated_source = generated_files.get(generated_path or "", "") if generated_path else ""
-    generated_regions = extract_kernel_regions(generated_source)
+    generated_region_records = extract_kernel_region_records(generated_source)
+    generated_regions, generated_duplicate_symbols = _unique_kernel_regions_by_symbol(
+        generated_region_records
+    )
     normalized_sources = {
         _normalize_path(path): source for path, source in source_files.items()
     }
@@ -88,8 +91,34 @@ def build_device_mapping_report(
     unmapped = []
     generated_include_paths = set(generated_included_sources)
     for source_path, source in sorted(source_device_files.items()):
-        source_regions = extract_kernel_regions(source)
-        for name, source_region in sorted(source_regions.items()):
+        source_region_records = extract_kernel_region_records(source)
+        _source_regions, source_duplicate_symbols = _unique_kernel_regions_by_symbol(
+            source_region_records
+        )
+        for source_region in sorted(
+            source_region_records, key=lambda region: (region.name, region.signature_start)
+        ):
+            name = source_region.name
+            if name in source_duplicate_symbols:
+                unmapped.append(
+                    {
+                        "sourcePath": source_path,
+                        "symbol": name,
+                        "qualifiedSourceName": source_region.qualified_name,
+                        "reason": "ambiguous_source_symbol_identity",
+                    }
+                )
+                continue
+            if name in generated_duplicate_symbols:
+                unmapped.append(
+                    {
+                        "sourcePath": source_path,
+                        "symbol": name,
+                        "qualifiedSourceName": source_region.qualified_name,
+                        "reason": "ambiguous_generated_symbol_identity",
+                    }
+                )
+                continue
             generated_region = generated_regions.get(name)
             if not generated_region and source_path in generated_include_paths:
                 mappings.append(
@@ -179,7 +208,14 @@ def build_device_mapping_report(
 
 
 def extract_kernel_regions(source: str) -> Dict[str, KernelRegion]:
-    regions: Dict[str, KernelRegion] = {}
+    regions, _duplicates = _unique_kernel_regions_by_symbol(
+        extract_kernel_region_records(source)
+    )
+    return regions
+
+
+def extract_kernel_region_records(source: str) -> list[KernelRegion]:
+    regions: list[KernelRegion] = []
     cursor = 0
     masked = mask_comments_for_parsing(source)
     signatures = stamp_device_source(source)
@@ -198,7 +234,7 @@ def extract_kernel_regions(source: str) -> Dict[str, KernelRegion]:
         qualified_name = "::".join([*namespace_parts, name]) if namespace_parts else name
         source_span = f"{match.start()}:{body_close}"
         span_source = source[match.start() : body_close]
-        regions[name] = KernelRegion(
+        regions.append(KernelRegion(
             name=name,
             params=params,
             signature_hash=signatures.get(name, ""),
@@ -209,9 +245,24 @@ def extract_kernel_regions(source: str) -> Dict[str, KernelRegion]:
             body_end=max(body_open + 1, body_close - 1),
             source_span=source_span,
             source_span_hash=_sha256(span_source),
-        )
+        ))
         cursor = max(body_close, match.end())
     return regions
+
+
+def _unique_kernel_regions_by_symbol(
+    regions: list[KernelRegion],
+) -> tuple[Dict[str, KernelRegion], Set[str]]:
+    counts: Dict[str, int] = {}
+    for region in regions:
+        counts[region.name] = counts.get(region.name, 0) + 1
+    duplicates = {name for name, count in counts.items() if count > 1}
+    unique = {
+        region.name: region
+        for region in regions
+        if region.name not in duplicates
+    }
+    return unique, duplicates
 
 
 def _kernel_identity_fields(region: KernelRegion) -> dict:

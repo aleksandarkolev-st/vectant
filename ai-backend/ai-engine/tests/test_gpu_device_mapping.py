@@ -106,6 +106,77 @@ extern "C" __global__ void shade(float* x) {
     assert mapping["sourceSpanHash"]
 
 
+def test_build_device_mapping_report_rejects_duplicate_source_symbol_identity():
+    source = {
+        "src/gpu/shade.hip": """
+namespace primary {
+__global__ void shade(float* x) { x[0] += 1.0f; }
+}
+namespace secondary {
+__global__ void shade(float* x) { x[0] += 2.0f; }
+}
+"""
+    }
+    generated = {
+        ".synthi/generated/gpu/device.hip": """
+namespace primary {
+extern "C" __global__ void shade(float* x) { x[0] += 1.0f; }
+}
+namespace secondary {
+extern "C" __global__ void shade(float* x) { x[0] += 2.0f; }
+}
+"""
+    }
+
+    report = build_device_mapping_report(
+        source_files=source,
+        generated_files=generated,
+        manifest={"module_files": {"device": ".synthi/generated/gpu/device.hip"}},
+    )
+
+    assert report["deviceMappings"] == []
+    assert {item["reason"] for item in report["unmappedKernels"]} == {
+        "ambiguous_source_symbol_identity"
+    }
+    assert {
+        item["qualifiedSourceName"] for item in report["unmappedKernels"]
+    } == {"primary::shade", "secondary::shade"}
+
+
+def test_build_device_mapping_report_rejects_duplicate_generated_symbol_identity():
+    source = {
+        "src/gpu/shade.hip": """
+__global__ void shade(float* x) { x[0] += 1.0f; }
+"""
+    }
+    generated = {
+        ".synthi/generated/gpu/device.hip": """
+namespace primary {
+extern "C" __global__ void shade(float* x) { x[0] += 1.0f; }
+}
+namespace secondary {
+extern "C" __global__ void shade(float* x) { x[0] += 1.0f; }
+}
+"""
+    }
+
+    report = build_device_mapping_report(
+        source_files=source,
+        generated_files=generated,
+        manifest={"module_files": {"device": ".synthi/generated/gpu/device.hip"}},
+    )
+
+    assert report["deviceMappings"] == []
+    assert report["unmappedKernels"] == [
+        {
+            "sourcePath": "src/gpu/shade.hip",
+            "symbol": "shade",
+            "qualifiedSourceName": "shade",
+            "reason": "ambiguous_generated_symbol_identity",
+        }
+    ]
+
+
 def test_build_device_mapping_report_records_unmapped_kernel():
     report = build_device_mapping_report(
         source_files={"src/gpu/flow.hip": "__global__ void missing(float* x) {}"},
