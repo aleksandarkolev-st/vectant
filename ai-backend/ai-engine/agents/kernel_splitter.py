@@ -45,7 +45,11 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, 
 from agents.abi_stamper import mask_comments_for_parsing, stamp_device_source
 from agents.gpu_detect import GpuDetectionResult
 from agents.gpu_device_markers import GPU_DEVICE_MARKER_RE as _GPU_DEVICE_MARKER_RE
-from agents.gpu_split_repair import REPAIR_SCHEMA_VERSION, repair_split_artifacts
+from agents.gpu_split_repair import (
+    REPAIR_SCHEMA_VERSION,
+    canonicalize_source_backed_device_roles,
+    repair_split_artifacts,
+)
 from agents.gpu_source_context import build_project_source_context
 from agents.launch_graph_extractor import launch_graph_as_dicts
 from llm.prompts import GPU_SPLIT_PROMPT
@@ -170,6 +174,39 @@ def _apply_split_repairs_until_stable(
 
     aggregate["remainingReasonCodes"] = _reason_codes(current_verification)
     return current_files, current_verification, aggregate
+
+
+def _merge_split_repair_reports(*reports: Mapping[str, Any]) -> dict:
+    merged: dict = {
+        "schemaVersion": REPAIR_SCHEMA_VERSION,
+        "repaired": False,
+        "inputReasonCodes": [],
+        "repairRules": [],
+        "changedFiles": [],
+        "scope": "generated_artifacts_only",
+        "passes": [],
+        "remainingReasonCodes": [],
+    }
+    for report in reports:
+        if not isinstance(report, Mapping):
+            continue
+        merged["repaired"] = bool(merged["repaired"] or report.get("repaired"))
+        _append_unique(merged["inputReasonCodes"], report.get("inputReasonCodes", []))
+        _append_unique(merged["repairRules"], report.get("repairRules", []))
+        _append_unique(merged["changedFiles"], report.get("changedFiles", []))
+        passes = report.get("passes")
+        if isinstance(passes, Sequence) and not isinstance(passes, (str, bytes)):
+            merged["passes"].extend(dict(item) for item in passes if isinstance(item, Mapping))
+        elif report.get("repairRules"):
+            merged["passes"].append(dict(report))
+        if "remainingReasonCodes" in report:
+            merged["remainingReasonCodes"] = [
+                str(code) for code in report.get("remainingReasonCodes", []) if code
+            ]
+        for key, value in report.items():
+            if key not in merged and key not in {"schemaVersion", "scope"}:
+                merged[key] = value
+    return merged
 
 
 class KernelSplitterError(Exception):
@@ -1651,19 +1688,27 @@ async def run_kernel_splitter(
             if isinstance(arch_value, list):
                 arch_list = [str(a) for a in arch_value]
 
+    canonical_files, canonical_report = canonicalize_source_backed_device_roles(
+        files=parsed["files"],
+        manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
+        source_files=scoped_source_map,
+    )
+    parsed["files"] = canonical_files
+
     verification = verify_split_output(
         files=parsed["files"],
         manifest_arch=arch_list,
         manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
         source_files=scoped_source_map,
     )
-    parsed["files"], verification, repair_report = _apply_split_repairs_until_stable(
+    parsed["files"], verification, stable_repair_report = _apply_split_repairs_until_stable(
         files=parsed["files"],
         manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
         manifest_arch=arch_list,
         source_files=scoped_source_map,
         verification=verification,
     )
+    repair_report = _merge_split_repair_reports(canonical_report, stable_repair_report)
     parsed["kernel_hashes"] = _kernel_hashes_for_generated_split(
         files=parsed["files"],
         manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,

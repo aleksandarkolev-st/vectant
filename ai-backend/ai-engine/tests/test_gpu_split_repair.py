@@ -1,6 +1,10 @@
 from types import SimpleNamespace
 
-from agents.gpu_split_repair import repair_split_artifacts, sanitize_generated_heal_output
+from agents.gpu_split_repair import (
+    canonicalize_source_backed_device_roles,
+    repair_split_artifacts,
+    sanitize_generated_heal_output,
+)
 from verifier_gpu import Violation, verify_split_output
 
 
@@ -30,6 +34,78 @@ def test_heal_sanitizer_removes_missing_project_toolkit_include_and_calls():
     assert "#include <GL/gl.h>" in repaired
     assert '#include "shared.h"' in repaired
     assert "glBegin(GL_TRIANGLES);" in repaired
+
+
+def test_canonicalize_source_backed_device_role_removes_ai_prelude():
+    source_files = {
+        "src/device_defs.h": (
+            "#pragma once\n"
+            "#ifdef __KERNELCC__\n"
+            "#define PROJECT_INLINE __device__ inline\n"
+            "#else\n"
+            "#define PROJECT_INLINE inline\n"
+            "#endif\n"
+        ),
+        "src/options.h": (
+            "#pragma once\n"
+            "#define NESTED_DIELECTRICS_STACK_SIZE 4\n"
+            "#ifndef __KERNELCC__\n"
+            "#define NestedDielectricsStackSize NESTED_DIELECTRICS_STACK_SIZE\n"
+            "#endif\n"
+        ),
+        "src/kernels/step.h": (
+            "#pragma once\n"
+            '#include "src/device_defs.h"\n'
+            '#include "src/options.h"\n'
+            'extern "C" __global__ void Step(int* out) { out[0] += 1; }\n'
+        ),
+    }
+    files = {
+        "device.hip": (
+            "#include <hip/hip_runtime.h>\n"
+            "#ifndef PROJECT_INLINE\n"
+            "#define PROJECT_INLINE inline\n"
+            "#endif\n"
+            '#include "src/kernels/step.h"\n'
+            'extern "C" __global__ void generated_probe(int* out) { out[0] = 0; }\n'
+        ),
+        "shared.h": '#include "synthi_gpu_runtime.h"\n',
+        "core.cpp": "void core_on_update() {}\n",
+    }
+
+    repaired, report = canonicalize_source_backed_device_roles(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+    )
+
+    assert report["repaired"] is True
+    assert "repair.canonical_source_include_bridge" in report["repairRules"]
+    assert "Synthi source-device include bridge" in repaired["device.hip"]
+    assert "#define PROJECT_INLINE inline" not in repaired["device.hip"]
+    assert "#define NestedDielectricsStackSize NESTED_DIELECTRICS_STACK_SIZE" in repaired["device.hip"]
+    assert "generated_probe" not in repaired["device.hip"]
+    assert '#include "src/kernels/step.h"' in repaired["device.hip"]
+
+
+def test_canonicalize_source_backed_device_role_ignores_non_source_wrappers():
+    files = {
+        "device.hip": (
+            "#include <hip/hip_runtime.h>\n"
+            'extern "C" __global__ void Step(int* out) { out[0] += 1; }\n'
+        ),
+    }
+
+    repaired, report = canonicalize_source_backed_device_roles(
+        files=files,
+        manifest=None,
+        source_files={
+            "src/kernels/step.h": 'extern "C" __global__ void Step(int* out) {}\n',
+        },
+    )
+
+    assert report["repaired"] is False
+    assert repaired == files
 
 
 def test_repair_materializes_visible_opengl_render_for_glfw_source():

@@ -134,6 +134,25 @@ _RESERVED_DEFAULT_MACRO_NAMES = {
     "__restrict__",
     "__shared__",
 }
+_DECLARATION_MACRO_VALUE_TOKENS = {
+    "alignas",
+    "constexpr",
+    "consteval",
+    "constinit",
+    "extern",
+    "inline",
+    "static",
+    "template",
+    "typedef",
+    "using",
+    "__attribute__",
+    "__device__",
+    "__forceinline",
+    "__forceinline__",
+    "__global__",
+    "__host__",
+    "__inline__",
+}
 
 
 @dataclass
@@ -430,6 +449,68 @@ def repair_split_artifacts(
     }
     report.update(repair_details)
     return repaired, report
+
+
+def canonicalize_source_backed_device_roles(
+    *,
+    files: Mapping[str, str],
+    manifest: Optional[Mapping[str, Any]],
+    source_files: Mapping[str, str],
+) -> tuple[Dict[str, str], dict]:
+    """Replace AI-authored source-backed device wrappers with a deterministic bridge.
+
+    When the generated device role already includes source kernel headers, the
+    source headers are the authority. Keeping an AI-authored prelude around
+    those includes can introduce guessed macros or fallback declarations that
+    conflict with project/SDK headers. Canonicalization is deliberately narrow:
+    it only applies to device roles that directly include source headers with
+    kernel definitions, and it still requires the normal split verifier after
+    rewriting.
+    """
+
+    repaired = {str(path): str(content) for path, content in files.items()}
+    role_paths = _resolve_split_role_paths(repaired, manifest)
+    device_path = role_paths.get("device")
+    if not device_path or device_path not in repaired:
+        return repaired, _empty_repair_report()
+
+    reachable = _source_device_reachable_files(source_files)
+    bridge = _source_device_include_bridge(reachable, source_files)
+    if bridge is None or repaired[device_path] == bridge:
+        return repaired, _empty_repair_report()
+
+    source_kernel_includes = _device_role_source_kernel_includes(
+        repaired[device_path],
+        reachable,
+        source_files,
+    )
+    if not source_kernel_includes:
+        return repaired, _empty_repair_report()
+
+    repaired[device_path] = bridge
+    return repaired, {
+        "schemaVersion": REPAIR_SCHEMA_VERSION,
+        "repaired": True,
+        "inputReasonCodes": [],
+        "repairRules": ["repair.canonical_source_include_bridge"],
+        "changedFiles": [device_path],
+        "scope": "generated_artifacts_only",
+        "sourceBackedDeviceRole": {
+            "devicePath": device_path,
+            "includedSourceKernelHeaders": source_kernel_includes[:80],
+        },
+    }
+
+
+def _empty_repair_report() -> dict:
+    return {
+        "schemaVersion": REPAIR_SCHEMA_VERSION,
+        "repaired": False,
+        "inputReasonCodes": [],
+        "repairRules": [],
+        "changedFiles": [],
+        "scope": "generated_artifacts_only",
+    }
 
 
 def _needs_source_device_semantics_repair(
@@ -977,10 +1058,20 @@ def _source_device_cpu_only_macro_defaults(reachable: Mapping[str, str]) -> List
             if name.startswith("__") or name in _RESERVED_DEFAULT_MACRO_NAMES:
                 continue
             value = match.group("value").strip() or "1"
+            if _macro_default_value_changes_declarations(value):
+                continue
             if name not in defaults:
                 order.append(name)
             defaults[name] = value
     return [(name, defaults[name]) for name in order]
+
+
+def _macro_default_value_changes_declarations(value: str) -> bool:
+    normalized = value.strip()
+    if not normalized:
+        return False
+    tokens = {token for token in _IDENTIFIER_RE.findall(normalized)}
+    return bool(tokens & _DECLARATION_MACRO_VALUE_TOKENS)
 
 
 def _source_device_defined_macros(reachable: Mapping[str, str]) -> Set[str]:
@@ -1292,6 +1383,28 @@ def _source_device_include_bridge(
         f"{default_macro_block}"
         f"{includes}\n"
     )
+
+
+def _device_role_source_kernel_includes(
+    device_source: str,
+    reachable: Mapping[str, str],
+    source_files: Mapping[str, str],
+) -> List[str]:
+    kernel_headers = {
+        path.replace("\\", "/")
+        for path, source in reachable.items()
+        if path.lower().endswith(_DEVICE_HEADER_EXTENSIONS)
+        and _ANY_GLOBAL_KERNEL_RE.search(mask_comments_for_parsing(source))
+    }
+    if not kernel_headers:
+        return []
+    included: List[str] = []
+    for match in _ANY_INCLUDE_RE.finditer(mask_comments_for_parsing(device_source)):
+        include_path = match.group("path").replace("\\", "/").lstrip("./")
+        resolved = _resolve_source_path_for_include(include_path, source_files)
+        if resolved in kernel_headers and resolved not in included:
+            included.append(resolved)
+    return included
 
 
 def _repair_source_device_semantics(
