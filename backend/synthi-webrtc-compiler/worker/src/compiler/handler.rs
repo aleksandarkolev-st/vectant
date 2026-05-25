@@ -593,6 +593,7 @@ fn device_filename_for_vendor(vendor: DeviceVendor) -> &'static str {
 struct DeviceCompileSources {
     full_source: String,
     full_filename: Option<String>,
+    full_symbols: Vec<String>,
     partial_source: Option<String>,
     partial_filename: Option<String>,
     partial_symbols: Vec<String>,
@@ -1229,6 +1230,61 @@ fn device_symbol_mapping_index(
         }
     }
     index
+}
+
+fn device_mapping_symbols_for_generated(
+    sidecar: &serde_json::Value,
+    generated_path: &str,
+) -> Vec<String> {
+    let requested_generated = normalized_request_filename(generated_path);
+    let mut exact_symbols = BTreeSet::new();
+    let mut symbols_by_generated: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for pointer in ["/deviceMappings", "/deviceMappingReport/deviceMappings"] {
+        let Some(items) = sidecar
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for item in items {
+            let Some(symbol) = item
+                .get("symbol")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            let Some(mapping_generated) = item
+                .get("generatedPath")
+                .and_then(serde_json::Value::as_str)
+                .and_then(normalized_request_filename)
+            else {
+                continue;
+            };
+            if requested_generated.as_deref() == Some(mapping_generated.as_str()) {
+                exact_symbols.insert(symbol.to_string());
+            }
+            symbols_by_generated
+                .entry(mapping_generated)
+                .or_default()
+                .insert(symbol.to_string());
+        }
+    }
+
+    if !exact_symbols.is_empty() {
+        return exact_symbols.into_iter().collect();
+    }
+    if symbols_by_generated.len() == 1 {
+        return symbols_by_generated
+            .into_values()
+            .next()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+    }
+    Vec::new()
 }
 
 fn mapping_confidence_for_symbols(
@@ -1998,7 +2054,7 @@ async fn compile_device_sources_phase0(
     .await?;
     if let Some(outcome) = outcome.as_mut() {
         outcome.partial_module = false;
-        outcome.target_symbols.clear();
+        outcome.target_symbols = sources.full_symbols.clone();
         outcome.fallback_used = fallback_reason.is_some();
         outcome.fallback_reason = fallback_reason;
         outcome.requested_artifact_kind = sources.partial_artifact_kind.clone();
@@ -2217,7 +2273,14 @@ fn device_reload_kernel_symbols(source: &str, outcome: &DeviceCompileOutcome) ->
         return source_symbols;
     }
 
-    normalized_symbol_set(&outcome.artifact_exported_symbols)
+    let artifact_symbols = normalized_symbol_set(&outcome.artifact_exported_symbols)
+        .into_iter()
+        .collect::<Vec<_>>();
+    if !artifact_symbols.is_empty() {
+        return artifact_symbols;
+    }
+
+    normalized_symbol_set(&outcome.target_symbols)
         .into_iter()
         .collect()
 }
@@ -6136,6 +6199,15 @@ pub async fn handle_compile_request(
                     .map(|s| s.to_string())
             });
         if let Some(src) = from_split {
+            let split_device_filename = split_data
+                .get("device")
+                .and_then(|v| v.get("filename"))
+                .or_else(|| split_data.get(device_filename).and_then(|v| v.get("filename")))
+                .and_then(|v| v.as_str())
+                .and_then(normalized_request_filename)
+                .unwrap_or_else(|| device_filename.to_string());
+            let full_symbols =
+                device_mapping_symbols_for_generated(&split_data, &split_device_filename);
             let partial_request = split_partial_device_source(&split_data);
             let (
                 partial_source,
@@ -6159,9 +6231,14 @@ pub async fn handle_compile_request(
                 })
                 .unwrap_or((None, None, Vec::new(), Vec::new(), false, None, None));
             eprintln!(
-                "[compile-device] source resolved from split_data file={} bytes={} partial={} partial_required={}",
-                device_filename,
+                "[compile-device] source resolved from split_data file={} bytes={} mapped_symbols={} partial={} partial_required={}",
+                split_device_filename,
                 src.len(),
+                if full_symbols.is_empty() {
+                    "-".to_string()
+                } else {
+                    full_symbols.join(",")
+                },
                 partial_source
                     .as_ref()
                     .map(|source| source.len().to_string())
@@ -6170,7 +6247,8 @@ pub async fn handle_compile_request(
             );
             Some(DeviceCompileSources {
                 full_source: src,
-                full_filename: Some(device_filename.to_string()),
+                full_filename: Some(split_device_filename),
+                full_symbols,
                 partial_source,
                 partial_filename,
                 partial_symbols,
@@ -6190,6 +6268,7 @@ pub async fn handle_compile_request(
                     Some(DeviceCompileSources {
                         full_source: src,
                         full_filename: Some(device_filename.to_string()),
+                        full_symbols: Vec::new(),
                         partial_source: None,
                         partial_filename: None,
                         partial_symbols: Vec::new(),
@@ -7912,6 +7991,23 @@ DECLARE_KERNEL(opaque_kernel)
     }
 
     #[test]
+    fn full_reload_symbols_fall_back_to_mapping_scope_when_source_and_exports_are_opaque() {
+        let outcome = fixture_device_outcome(
+            false,
+            symbols(&["mapped_kernel_b", "mapped_kernel_a"]),
+            Vec::new(),
+        );
+        let source = r#"
+#include "src/device/generated_kernel_bridge.h"
+"#;
+
+        assert_eq!(
+            device_reload_kernel_symbols(source, &outcome),
+            symbols(&["mapped_kernel_a", "mapped_kernel_b"])
+        );
+    }
+
+    #[test]
     fn partial_reload_symbols_keep_verifier_selected_scope() {
         let outcome = fixture_device_outcome(
             true,
@@ -8708,6 +8804,61 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         assert!(specs.iter().any(|spec| {
             spec.kind == "kernel_region" && spec.symbols == vec!["generated_two".to_string()]
         }));
+    }
+
+    #[test]
+    fn device_mapping_symbols_use_exact_generated_path_before_single_scope_fallback() {
+        let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "symbol": "alpha",
+                        "sourcePath": "src/a.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    },
+                    {
+                        "symbol": "beta",
+                        "sourcePath": "src/b.hip",
+                        "generatedPath": ".synthi/generated/gpu/device.hip"
+                    }
+                ]
+            }
+        });
+
+        assert_eq!(
+            device_mapping_symbols_for_generated(&sidecar, ".synthi/generated/gpu/device.hip"),
+            symbols(&["alpha", "beta"])
+        );
+        assert_eq!(
+            device_mapping_symbols_for_generated(&sidecar, "device.hip"),
+            symbols(&["alpha", "beta"])
+        );
+    }
+
+    #[test]
+    fn device_mapping_symbols_do_not_guess_across_multiple_generated_paths() {
+        let sidecar = serde_json::json!({
+            "deviceMappingReport": {
+                "deviceMappings": [
+                    {
+                        "symbol": "alpha",
+                        "sourcePath": "src/a.hip",
+                        "generatedPath": ".synthi/generated/gpu/device_a.hip"
+                    },
+                    {
+                        "symbol": "beta",
+                        "sourcePath": "src/b.hip",
+                        "generatedPath": ".synthi/generated/gpu/device_b.hip"
+                    }
+                ]
+            }
+        });
+
+        assert_eq!(
+            device_mapping_symbols_for_generated(&sidecar, ".synthi/generated/gpu/device_a.hip"),
+            symbols(&["alpha"])
+        );
+        assert!(device_mapping_symbols_for_generated(&sidecar, "device.hip").is_empty());
     }
 
     #[test]
