@@ -20,6 +20,7 @@ from agents.kernel_splitter import (
     _project_source_context,
     _source_files_scoped_to_context,
     _source_device_preservation_contract,
+    _source_launch_graph_contract,
     _verifier_acceptance_gate_contract,
     _kernel_hashes_for_generated_split,
     build_prompt,
@@ -609,6 +610,23 @@ def test_verifier_acceptance_gate_contract_highlights_generic_split_gates():
     assert "must not invent kernel names" in contract
     assert "do not launch every preserved kernel" in contract
     assert "local constants such as `bool initialized = false" in contract
+
+
+def test_source_launch_graph_contract_reports_runtime_kernel_object_launches():
+    contract = _source_launch_graph_contract(
+        {
+            "render_pass.cpp": (
+                'void setup(){ kernel.set_kernel_function_name("shade_pixels"); }\n'
+                'void draw(){ kernel.launch_asynchronous(BlockW, BlockH, w, h, args, stream); }'
+            )
+        }
+    )
+
+    assert "SOURCE LAUNCH GRAPH" in contract
+    assert "shade_pixels" in contract
+    assert "runtime_kernel_object" in contract
+    assert "BlockW, BlockH, 1" in contract
+    assert "unrelated preserved kernel" in contract
 
 
 def test_build_prompt_attaches_extra_instructions():

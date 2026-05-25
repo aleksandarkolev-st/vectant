@@ -46,6 +46,7 @@ from agents.abi_stamper import mask_comments_for_parsing, stamp_device_source
 from agents.gpu_detect import GpuDetectionResult
 from agents.gpu_split_repair import repair_split_artifacts
 from agents.gpu_source_context import build_project_source_context
+from agents.launch_graph_extractor import launch_graph_as_dicts
 from llm.prompts import GPU_SPLIT_PROMPT
 from verifier_gpu import SplitVerificationResult, Violation, verify_split_output
 
@@ -787,6 +788,43 @@ def _source_device_preservation_contract(
     return "\n".join(sections)
 
 
+def _source_launch_graph_contract(source_files: Mapping[str, str]) -> str:
+    graph = launch_graph_as_dicts(source_files)
+    if not graph:
+        return ""
+    compact = [
+        {
+            "site": item.get("site"),
+            "kernel": item.get("kernel"),
+            "grid": item.get("grid"),
+            "block": item.get("block"),
+            "shared": item.get("shared"),
+            "stream": item.get("stream"),
+            "args": item.get("args"),
+            "form": item.get("form"),
+        }
+        for item in graph[:40]
+    ]
+    omitted = len(graph) - len(compact)
+    lines = [
+        "# SOURCE LAUNCH GRAPH",
+        (
+            "Deterministic source analysis found host-reachable GPU launch records. "
+            "Generated core `synthi_gpu_launch(...)` calls must preserve these source "
+            "launch kernels, argument ownership, and block/grid intent unless a "
+            "separate generated initialization launch is required for the same data path."
+        ),
+        (
+            "Do not replace a listed source launch with an unrelated preserved kernel "
+            "solely because that other kernel compiles."
+        ),
+        json.dumps(compact, sort_keys=True, separators=(",", ":")),
+    ]
+    if omitted > 0:
+        lines.append(f"Launch records omitted for prompt budget: {omitted}.")
+    return "\n".join(lines)
+
+
 def _include_in_project_context(path: str, source: str) -> bool:
     normalized = path.replace("\\", "/")
     base = normalized.rsplit("/", 1)[-1]
@@ -1139,6 +1177,7 @@ async def run_kernel_splitter(
                     scoped_source_map,
                     roots=device_preservation_roots,
                 ),
+                _source_launch_graph_contract(scoped_source_map),
             ]
             if part
         ),

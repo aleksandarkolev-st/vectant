@@ -27,3 +27,27 @@ def test_extracts_raw_launch_for_pre_rewrite_source():
     assert graph[0]["kernel"] == "vec_add"
     assert graph[0]["form"] == "raw_triple_chevron"
     assert graph[0]["stream"] == "stream"
+
+
+def test_extracts_runtime_kernel_object_launch():
+    graph = launch_graph_as_dicts(
+        {
+            "render_pass.cpp": """
+void configure() {
+  kernels[RenderPass::MAIN]->set_kernel_function_name("shade_pixels");
+}
+void launch() {
+  kernels[RenderPass::MAIN]->launch_asynchronous(
+      BlockWidth, BlockHeight, width, height, launch_args, stream);
+}
+"""
+        }
+    )
+
+    assert len(graph) == 1
+    assert graph[0]["kernel"] == "shade_pixels"
+    assert graph[0]["form"] == "runtime_kernel_object"
+    assert graph[0]["block"] == "BlockWidth, BlockHeight, 1"
+    assert graph[0]["grid"] == "width, height, 1"
+    assert graph[0]["stream"] == "stream"
+    assert graph[0]["args"] == ["launch_args"]

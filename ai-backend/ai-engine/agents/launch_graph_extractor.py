@@ -8,6 +8,8 @@ both supported host forms:
     `kernel<<<grid, block, shared, stream>>>(args...)`
   - Synthi's runtime boundary in split source:
     `synthi_gpu_launch(gpu, "kernel", grid, block, shared, stream, {...})`
+  - runtime kernel objects that record a kernel symbol and launch later:
+    `obj.set_kernel_function_name("kernel"); obj.launch_asynchronous(...)`
 
 No LLM is used here. Symbolic expressions are kept as strings.
 """
@@ -48,6 +50,19 @@ _RAW_LAUNCH_RE = re.compile(
     re.DOTALL,
 )
 _BOUNDARY_CALL_RE = re.compile(r"\bsynthi_gpu_launch\s*\(", re.DOTALL)
+_OWNER_EXPR = (
+    r"[A-Za-z_][A-Za-z0-9_:]*"
+    r"(?:\s*(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_:]*|\s*\[[^\]\n;]+\])*"
+)
+_KERNEL_NAME_SETTER_RE = re.compile(
+    rf"(?P<owner>{_OWNER_EXPR})\s*(?:->|\.)\s*set_kernel_function_name\s*"
+    r"\(\s*[\"'](?P<kernel>[A-Za-z_][A-Za-z0-9_]*)[\"']\s*\)",
+    re.DOTALL,
+)
+_ASYNC_OBJECT_LAUNCH_RE = re.compile(
+    rf"(?P<owner>{_OWNER_EXPR})\s*(?:->|\.)\s*launch_asynchronous\s*\(",
+    re.DOTALL,
+)
 
 
 def extract_launch_graph(files: Mapping[str, str]) -> List[LaunchSite]:
@@ -58,6 +73,7 @@ def extract_launch_graph(files: Mapping[str, str]) -> List[LaunchSite]:
             continue
         sites.extend(_extract_raw_launches(path, source))
         sites.extend(_extract_boundary_launches(path, source))
+        sites.extend(_extract_runtime_object_launches(path, source))
     return sites
 
 
@@ -109,6 +125,38 @@ def _extract_boundary_args(arg_expr: str) -> List[str]:
     if text.startswith("{") and text.endswith("}"):
         text = text[1:-1]
     return [p.lstrip("&").strip() for p in _split_top_level(text) if p.strip()]
+
+
+def _extract_runtime_object_launches(path: str, source: str) -> Iterable[LaunchSite]:
+    owner_to_kernel = {
+        _normalize_owner_expr(match.group("owner")): match.group("kernel")
+        for match in _KERNEL_NAME_SETTER_RE.finditer(source)
+    }
+    if not owner_to_kernel:
+        return
+    for match in _ASYNC_OBJECT_LAUNCH_RE.finditer(source):
+        owner = _normalize_owner_expr(match.group("owner"))
+        kernel = owner_to_kernel.get(owner)
+        if not kernel:
+            continue
+        body, _ = _read_balanced(source, match.end() - 1, "(", ")")
+        parts = _split_top_level(body)
+        if len(parts) < 2:
+            continue
+        block_x = _part(parts, 0, "1")
+        block_y = _part(parts, 1, "1")
+        grid_x = _part(parts, 2, "1")
+        grid_y = _part(parts, 3, "1")
+        yield LaunchSite(
+            site=_site(path, source, match.start()),
+            kernel=kernel,
+            grid=f"{grid_x}, {grid_y}, 1",
+            block=f"{block_x}, {block_y}, 1",
+            shared=_part(parts, 6, "0"),
+            stream=_part(parts, 5, "0"),
+            args=[parts[4].strip()] if len(parts) > 4 and parts[4].strip() else [],
+            form="runtime_kernel_object",
+        )
 
 
 def _read_balanced(source: str, open_index: int, open_ch: str, close_ch: str) -> tuple[str, int]:
@@ -189,6 +237,10 @@ def _strip_quotes(value: str) -> str:
 def _site(path: str, source: str, offset: int) -> str:
     line = source.count("\n", 0, offset) + 1
     return f"{path}:{line}"
+
+
+def _normalize_owner_expr(value: str) -> str:
+    return re.sub(r"\s+", "", value)
 
 
 def _looks_like_host_source(path: str) -> bool:
