@@ -2605,7 +2605,8 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
     sidecar_path: &Path,
     session_id: &str,
     allow_direct_translation_unit_partial: bool,
-) -> Result<Option<DeviceCompileOutcome>> {
+    defer_runtime_resume: bool,
+) -> Result<(Option<DeviceCompileOutcome>, bool)> {
     let workspace_path = ctx.workspace_path.as_path();
     let runtime_paused =
         match send_active_runner_runtime_command(ctx, session_id, "synthi_pause_runtime", "pause")
@@ -2632,70 +2633,112 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
         allow_direct_translation_unit_partial,
     )
     .await;
-    if runtime_paused {
-        if let Err(error) =
-            send_active_runner_runtime_command(ctx, session_id, "synthi_resume_runtime", "resume")
-                .await
+    let device = match device_result {
+        Ok(device) => device,
+        Err(error) => {
+            if runtime_paused {
+                let _ = resume_active_runner_after_gpu_hmr(ctx, session_id).await;
+            }
+            return Err(error);
+        }
+    };
+
+    let catalog_result: Result<()> = async {
+        if let (Some(outcome), Some(partial_filename)) =
+            (device.as_ref(), sources.partial_filename.as_deref())
         {
-            let status = HmrStatus::gpu_rejected_with_fallback_reason(
-                "device",
-                &format!("Runner did not acknowledge runtime resume after GPU HMR: {error}"),
-                "Restart or reload the preview before applying another GPU HMR patch",
-                "runtime.resume_not_acknowledged",
-            );
-            let _ = ctx.log_dc.send_text(status.to_json()).await;
-            return Err(error.context("runner runtime resume was not acknowledged"));
-        }
-    }
-    let device = device_result?;
-    if let (Some(outcome), Some(partial_filename)) =
-        (device.as_ref(), sources.partial_filename.as_deref())
-    {
-        if outcome.partial_module {
-            refresh_device_partial_artifact_catalog(
-                sidecar_path,
-                partial_filename,
-                &outcome.compiled_source,
-                &outcome.target_symbols,
-                sources.full_filename.as_deref(),
-                sources.partial_artifact_kind.as_deref(),
-                &sources.partial_source_paths,
-                session_id,
-            )
-            .await?;
-        }
-    }
-    if let Some(outcome) = device.as_ref() {
-        if !outcome.partial_module {
-            if let Some(full_filename) = sources.full_filename.as_deref() {
-                if outcome.compiled_source != sources.full_source {
-                    let updated = update_ai_split_cache_role(
-                        req,
-                        "device",
-                        full_filename,
-                        outcome.compiled_source.clone(),
-                    )
-                    .await;
-                    if updated {
-                        eprintln!(
-                            "[compile-device] split cache updated with verified healed device role file={} bytes={}",
-                            full_filename,
-                            outcome.compiled_source.len()
-                        );
-                    }
-                }
-                materialize_device_partial_artifacts(
-                    workspace_path,
+            if outcome.partial_module {
+                refresh_device_partial_artifact_catalog(
                     sidecar_path,
-                    full_filename,
+                    partial_filename,
                     &outcome.compiled_source,
+                    &outcome.target_symbols,
+                    sources.full_filename.as_deref(),
+                    sources.partial_artifact_kind.as_deref(),
+                    &sources.partial_source_paths,
                     session_id,
                 )
                 .await?;
             }
         }
+        if let Some(outcome) = device.as_ref() {
+            if !outcome.partial_module {
+                if let Some(full_filename) = sources.full_filename.as_deref() {
+                    if outcome.compiled_source != sources.full_source {
+                        let updated = update_ai_split_cache_role(
+                            req,
+                            "device",
+                            full_filename,
+                            outcome.compiled_source.clone(),
+                        )
+                        .await;
+                        if updated {
+                            eprintln!(
+                                "[compile-device] split cache updated with verified healed device role file={} bytes={}",
+                                full_filename,
+                                outcome.compiled_source.len()
+                            );
+                        }
+                    }
+                    materialize_device_partial_artifacts(
+                        workspace_path,
+                        sidecar_path,
+                        full_filename,
+                        &outcome.compiled_source,
+                        session_id,
+                    )
+                    .await?;
+                }
+            }
+        }
+        Ok(())
     }
-    Ok(device)
+    .await;
+    if let Err(error) = catalog_result {
+        if runtime_paused {
+            let _ = resume_active_runner_after_gpu_hmr(ctx, session_id).await;
+        }
+        return Err(error);
+    }
+
+    let runtime_resume_deferred = runtime_paused && defer_runtime_resume && device.is_some();
+    if runtime_resume_deferred {
+        eprintln!(
+            "[compile-device] runner resume deferred until GPU sidecar reload command is dispatched"
+        );
+    }
+    if runtime_paused && !runtime_resume_deferred {
+        resume_active_runner_after_gpu_hmr(ctx, session_id).await?;
+    }
+    Ok((device, runtime_resume_deferred))
+}
+
+async fn resume_active_runner_after_gpu_hmr(ctx: &CompileContext, session_id: &str) -> Result<()> {
+    if let Err(error) =
+        send_active_runner_runtime_command(ctx, session_id, "synthi_resume_runtime", "resume")
+            .await
+    {
+        let status = HmrStatus::gpu_rejected_with_fallback_reason(
+            "device",
+            &format!("Runner did not acknowledge runtime resume after GPU HMR: {error}"),
+            "Restart or reload the preview before applying another GPU HMR patch",
+            "runtime.resume_not_acknowledged",
+        );
+        let _ = ctx.log_dc.send_text(status.to_json()).await;
+        return Err(error.context("runner runtime resume was not acknowledged"));
+    }
+    Ok(())
+}
+
+fn is_gpu_device_reload_marker(name: &str) -> bool {
+    name.starts_with("__gpu_device:") || name.starts_with("__gpu_device_partial:")
+}
+
+fn is_device_sidecar_only_reload(modules_to_load: &[(String, String)]) -> bool {
+    !modules_to_load.is_empty()
+        && modules_to_load
+            .iter()
+            .all(|(name, _)| is_gpu_device_reload_marker(name))
 }
 
 fn is_device_source_request(filename: &str) -> bool {
@@ -7020,11 +7063,18 @@ pub async fn handle_compile_request(
         }
     }
 
-    let (core_lib_path_opt, gui_lib_path_opt, host_runner_bin_path, device_compile_outcome): (
+    let (
+        core_lib_path_opt,
+        gui_lib_path_opt,
+        host_runner_bin_path,
+        device_compile_outcome,
+        device_runtime_resume_deferred,
+    ): (
         Option<String>,
         Option<String>,
         Option<String>,
         Option<DeviceCompileOutcome>,
+        bool,
     ) = if tier0_bypassed {
         // Tier 0 patched existing .so files in place — skip g++.
         // Resolve paths from stable symlinks (cheap — two stat calls).
@@ -7042,9 +7092,9 @@ pub async fn handle_compile_request(
                 }
             }
         }
-        (core_opt, gui_opt, None, None)
+        (core_opt, gui_opt, None, None, false)
     } else if device_only_compile_stage {
-        let device_opt = if let (Some(sources), Some(manifest)) =
+        let (device_opt, runtime_resume_deferred) = if let (Some(sources), Some(manifest)) =
             (device_source_content.as_ref(), compile_manifest.as_ref())
         {
             compile_device_sources_phase0_and_refresh_catalog(
@@ -7057,16 +7107,18 @@ pub async fn handle_compile_request(
                 &sidecar_path,
                 &session_id,
                 allow_direct_translation_unit_partial,
+                true,
             )
             .await?
         } else {
-            None
+            (None, false)
         };
         (
             reusable_core_path.clone(),
             reusable_gui_path.clone(),
             None,
             device_opt,
+            runtime_resume_deferred,
         )
     } else if use_parallel {
         // ─── Parallel path ──────────────────────────────────────────
@@ -7128,10 +7180,11 @@ pub async fn handle_compile_request(
                     &sidecar_path,
                     &session_id,
                     allow_direct_translation_unit_partial,
+                    false,
                 )
                 .await
             } else {
-                Ok(None)
+                Ok((None, false))
             }
         };
 
@@ -7159,7 +7212,7 @@ pub async fn handle_compile_request(
         let device_opt =
             compile_stage_or_invalidate_split_cache(&req, device_res, "compile_device_failed")
                 .await?;
-        (core_opt, gui_opt, runner_opt, device_opt)
+        (core_opt, gui_opt, runner_opt, device_opt.0, device_opt.1)
     } else {
         // ─── Serial fallback ───────────────────────────────────────
         let core_opt = compile_stage_or_invalidate_split_cache(
@@ -7240,15 +7293,16 @@ pub async fn handle_compile_request(
                     &sidecar_path,
                     &session_id,
                     allow_direct_translation_unit_partial,
+                    false,
                 )
                 .await,
                 "compile_device_failed",
             )
             .await?
         } else {
-            None
+            (None, false)
         };
-        (core_opt, gui_opt, runner_opt, device_opt)
+        (core_opt, gui_opt, runner_opt, device_opt.0, device_opt.1)
     };
 
     let core_lib_path = core_lib_path_opt
@@ -7850,10 +7904,7 @@ pub async fn handle_compile_request(
         .unwrap_or(false)
         && runtime_host_runner_bin_path.is_some();
 
-    let device_sidecar_only_reload = !modules_to_load.is_empty()
-        && modules_to_load
-            .iter()
-            .all(|(name, _)| name.starts_with("__gpu_device:"));
+    let device_sidecar_only_reload = is_device_sidecar_only_reload(&modules_to_load);
 
     let runner_reload_policy = if planner_output.decision.is_in_process() {
         RunnerReloadPolicy::default()
@@ -7975,6 +8026,9 @@ pub async fn handle_compile_request(
 
     match runner_result {
         Ok(()) => {
+            if device_runtime_resume_deferred {
+                resume_active_runner_after_gpu_hmr(ctx, &session_id).await?;
+            }
             if device_sidecar_only_reload {
                 debug_log!(
                     "[HMR] Device-only runner reload dispatched; waiting for runner GPU sidecar status"
@@ -7995,6 +8049,9 @@ pub async fn handle_compile_request(
             }
         }
         Err(error) => {
+            if device_runtime_resume_deferred {
+                let _ = resume_active_runner_after_gpu_hmr(ctx, &session_id).await;
+            }
             let status = HmrStatus::compile_error("runner", vec![error.to_string()]);
             let _ = ctx.log_dc.send_text(status.to_json()).await;
             let candidate_messages = {
@@ -8310,6 +8367,36 @@ mod gpu_host_contract_tests {
         assert!(
             DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS > PLUGIN_TIMEOUT_SECS * 1_000
         );
+    }
+
+    #[test]
+    fn device_sidecar_only_reload_accepts_full_and_partial_markers() {
+        assert!(is_device_sidecar_only_reload(&[(
+            "__gpu_device:rocm:shade:abi".to_string(),
+            "/tmp/device.hsaco".to_string(),
+        )]));
+        assert!(is_device_sidecar_only_reload(&[(
+            "__gpu_device_partial:rocm:shade:abi".to_string(),
+            "/tmp/device.partial.hsaco".to_string(),
+        )]));
+        assert!(is_device_sidecar_only_reload(&[
+            (
+                "__gpu_device_partial:rocm:shade:abi".to_string(),
+                "/tmp/device.partial.hsaco".to_string(),
+            ),
+            (
+                "__gpu_device:rocm:all:abi".to_string(),
+                "/tmp/device.hsaco".to_string(),
+            ),
+        ]));
+        assert!(!is_device_sidecar_only_reload(&[]));
+        assert!(!is_device_sidecar_only_reload(&[
+            (
+                "__gpu_device_partial:rocm:shade:abi".to_string(),
+                "/tmp/device.partial.hsaco".to_string(),
+            ),
+            ("core".to_string(), "/tmp/libcore.so".to_string()),
+        ]));
     }
 
     #[test]
