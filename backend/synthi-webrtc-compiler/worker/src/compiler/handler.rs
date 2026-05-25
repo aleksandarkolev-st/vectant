@@ -1986,7 +1986,10 @@ fn validate_partial_device_artifact_exports(outcome: &DeviceCompileOutcome) -> R
 
     let unresolved_mangled = exported
         .iter()
-        .filter(|symbol| !expected.contains(*symbol) && looks_like_mangled_export(symbol))
+        .filter(|symbol| {
+            looks_like_mangled_export(symbol)
+                && !exported_symbol_matches_expected_source_identity(symbol, &expected)
+        })
         .cloned()
         .collect::<Vec<_>>();
     if !unresolved_mangled.is_empty() {
@@ -1998,6 +2001,16 @@ fn validate_partial_device_artifact_exports(outcome: &DeviceCompileOutcome) -> R
 
     let missing = expected
         .difference(&exported)
+        .filter(|expected_symbol| {
+            !exported
+                .iter()
+                .any(|exported_symbol| {
+                    exported_symbol_matches_expected_source_identity(exported_symbol, &expected)
+                        && exported_symbol_source_identity_candidates(exported_symbol)
+                            .iter()
+                            .any(|candidate| candidate == *expected_symbol)
+                })
+        })
         .cloned()
         .collect::<Vec<_>>();
     if !missing.is_empty() {
@@ -2009,6 +2022,7 @@ fn validate_partial_device_artifact_exports(outcome: &DeviceCompileOutcome) -> R
 
     let unexpected = exported
         .difference(&expected)
+        .filter(|symbol| !exported_symbol_matches_expected_source_identity(symbol, &expected))
         .cloned()
         .collect::<Vec<_>>();
     if !unexpected.is_empty() {
@@ -2024,6 +2038,85 @@ fn validate_partial_device_artifact_exports(outcome: &DeviceCompileOutcome) -> R
         exported.into_iter().collect::<Vec<_>>().join(",")
     );
     Ok(())
+}
+
+fn exported_symbol_matches_expected_source_identity(
+    exported_symbol: &str,
+    expected_symbols: &BTreeSet<String>,
+) -> bool {
+    if expected_symbols.contains(exported_symbol) {
+        return true;
+    }
+    let matches = exported_symbol_source_identity_candidates(exported_symbol)
+        .into_iter()
+        .filter(|candidate| expected_symbols.contains(candidate))
+        .collect::<BTreeSet<_>>();
+    matches.len() == 1
+}
+
+fn exported_symbol_source_identity_candidates(exported_symbol: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if let Some(components) = parse_itanium_mangled_source_components(exported_symbol) {
+        if !components.is_empty() {
+            candidates.push(components.join("::"));
+            if let Some(name) = components.last() {
+                candidates.push(name.clone());
+            }
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+fn parse_itanium_mangled_source_components(symbol: &str) -> Option<Vec<String>> {
+    let rest = symbol
+        .strip_prefix("_Z")
+        .or_else(|| symbol.strip_prefix("__Z"))?;
+    if let Some(nested) = rest.strip_prefix('N') {
+        let (components, _) = parse_itanium_component_sequence(nested, true)?;
+        return Some(components);
+    }
+    let (component, _) = parse_itanium_length_prefixed_component(rest)?;
+    Some(vec![component])
+}
+
+fn parse_itanium_component_sequence(
+    mut input: &str,
+    nested: bool,
+) -> Option<(Vec<String>, &str)> {
+    let mut components = Vec::new();
+    loop {
+        if nested && input.starts_with('E') {
+            return (!components.is_empty()).then_some((components, &input[1..]));
+        }
+        input = input.trim_start_matches(|ch| matches!(ch, 'K' | 'V' | 'R'));
+        let (component, rest) = parse_itanium_length_prefixed_component(input)?;
+        components.push(component);
+        input = rest;
+        if !nested {
+            return Some((components, input));
+        }
+    }
+}
+
+fn parse_itanium_length_prefixed_component(input: &str) -> Option<(String, &str)> {
+    let digits_len = input
+        .as_bytes()
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if digits_len == 0 {
+        return None;
+    }
+    let len = input.get(..digits_len)?.parse::<usize>().ok()?;
+    let start = digits_len;
+    let end = start.checked_add(len)?;
+    let component = input.get(start..end)?;
+    if component.is_empty() {
+        return None;
+    }
+    Some((component.to_string(), input.get(end..).unwrap_or_default()))
 }
 
 fn looks_like_mangled_export(symbol: &str) -> bool {
@@ -7733,7 +7826,7 @@ DECLARE_KERNEL(opaque_kernel)
             selected_artifact_kind: Some("source_include_bridge".to_string()),
             selected_artifact_bytes: Some(128),
             full_device_bytes: Some(1024),
-            artifact_exported_symbols: vec!["_Z5shadePf".to_string()],
+            artifact_exported_symbols: vec!["_Z7foreignPf".to_string()],
             diagnostics:
                 crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
             stderr: String::new(),
@@ -7743,6 +7836,52 @@ DECLARE_KERNEL(opaque_kernel)
         assert!(err
             .to_string()
             .contains("mangled symbols without explicit identity mapping"));
+    }
+
+    #[test]
+    fn partial_artifact_export_validation_matches_itanium_source_spelling() {
+        let outcome = DeviceCompileOutcome {
+            artifact_path: std::path::PathBuf::from("/tmp/device.hsaco"),
+            compiled_source: String::new(),
+            compiler_elapsed_ms: 0,
+            partial_module: true,
+            target_symbols: vec!["shade".to_string()],
+            fallback_used: false,
+            fallback_reason: None,
+            requested_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_bytes: Some(128),
+            full_device_bytes: Some(1024),
+            artifact_exported_symbols: vec!["_Z5shadePf".to_string()],
+            diagnostics:
+                crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
+            stderr: String::new(),
+        };
+
+        validate_partial_device_artifact_exports(&outcome).unwrap();
+    }
+
+    #[test]
+    fn partial_artifact_export_validation_matches_itanium_qualified_source_name() {
+        let outcome = DeviceCompileOutcome {
+            artifact_path: std::path::PathBuf::from("/tmp/device.hsaco"),
+            compiled_source: String::new(),
+            compiler_elapsed_ms: 0,
+            partial_module: true,
+            target_symbols: vec!["gpu::shade".to_string()],
+            fallback_used: false,
+            fallback_reason: None,
+            requested_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_kind: Some("source_include_bridge".to_string()),
+            selected_artifact_bytes: Some(128),
+            full_device_bytes: Some(1024),
+            artifact_exported_symbols: vec!["_ZN3gpu5shadeEPf".to_string()],
+            diagnostics:
+                crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
+            stderr: String::new(),
+        };
+
+        validate_partial_device_artifact_exports(&outcome).unwrap();
     }
 
     #[test]
