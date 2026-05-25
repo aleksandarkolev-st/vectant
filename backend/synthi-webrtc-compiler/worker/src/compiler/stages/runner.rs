@@ -162,6 +162,48 @@ fn runner_load_command(name: &str, path: &str) -> Result<String> {
     }
 }
 
+fn full_device_abi_from_marker(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("__gpu_device:")?;
+    let mut fields = rest.splitn(3, ':');
+    fields.next()?;
+    fields.next()?;
+    fields.next().filter(|abi| !abi.is_empty())
+}
+
+fn next_full_device_abi(modules_to_load: &[(String, String)]) -> Option<String> {
+    modules_to_load
+        .iter()
+        .filter_map(|(name, _)| full_device_abi_from_marker(name).map(str::to_string))
+        .last()
+}
+
+fn same_session_full_device_abi_changed(
+    current_session: Option<&str>,
+    requested_session: Option<&str>,
+    previous_abi: Option<&str>,
+    next_abi: Option<&str>,
+) -> bool {
+    runner_session_matches(current_session, requested_session)
+        && matches!(
+            (previous_abi, next_abi),
+            (Some(previous), Some(next)) if !previous.is_empty() && !next.is_empty() && previous != next
+        )
+}
+
+fn emit_abi_breaking_restart_marker(
+    previous_abi: &str,
+    next_abi: &str,
+    policy: &RunnerReloadPolicy,
+) {
+    eprintln!(
+        "[gpu-reload] plan=abi_breaking reason=device_abi_changed previous_abi={} next_abi={} reload_policy_reasons={}",
+        previous_abi,
+        next_abi,
+        policy.reason_summary()
+    );
+    eprintln!("[gpu-reload] cold_reload reason=abi_breaking");
+}
+
 fn runner_session_matches(current: Option<&str>, requested: Option<&str>) -> bool {
     match (current, requested) {
         (Some(current), Some(requested)) => current == requested,
@@ -308,6 +350,8 @@ pub async fn handle_runner_execution(
 
     let req_width = req.width.unwrap_or(800);
     let req_height = req.height.unwrap_or(600);
+    let next_device_abi = next_full_device_abi(&modules_to_load);
+    let mut pending_abi_breaking_restart_marker: Option<(String, String)> = None;
 
     debug_log!(
         "[Main] Restart check: is_gui={}, has_on_update={}, use_ai_split={}",
@@ -348,6 +392,19 @@ pub async fn handle_runner_execution(
         let resolution_same = state.width == req_width && state.height == req_height;
         let session_same =
             runner_session_matches(state.session_id.as_deref(), session_id.as_deref());
+        if same_session_full_device_abi_changed(
+            state.session_id.as_deref(),
+            session_id.as_deref(),
+            state.loaded_device_abi.as_deref(),
+            next_device_abi.as_deref(),
+        ) && !reload_policy.allow_existing_runner_reload
+        {
+            if let (Some(previous), Some(next)) =
+                (state.loaded_device_abi.as_ref(), next_device_abi.as_ref())
+            {
+                pending_abi_breaking_restart_marker = Some((previous.clone(), next.clone()));
+            }
+        }
         debug_log!("[Main] Existing runner: alive={}, is_gui={}, gui_mode_same={}, resolution_same={}, session_same={}, current_session={:?}, requested_session={:?}, has_on_update={}, reload_policy_allow_existing={}, reload_policy_reasons={}",
             runner_alive, state.is_gui, gui_mode_same, resolution_same, session_same, state.session_id.as_deref(), session_id.as_deref(), has_on_update, reload_policy.allow_existing_runner_reload, reload_policy.reason_summary());
 
@@ -376,6 +433,9 @@ pub async fn handle_runner_execution(
     } else if let Some(state) = guard.as_mut() {
         // We have an existing runner but can't do HMR - need to restart
         let gui_mode_changed = state.is_gui != req.is_gui;
+        if let Some((previous, next)) = pending_abi_breaking_restart_marker.take() {
+            emit_abi_breaking_restart_marker(&previous, &next, &reload_policy);
+        }
         debug_log!(
             "[Main] Restarting runner: gui_mode_changed={}, use_ai_split={}, reload_policy_reasons={}",
             gui_mode_changed,
@@ -1076,6 +1136,7 @@ pub async fn handle_runner_execution(
             module_hashes: ModuleHashes::new(),
             loaded_core_path: None,
             loaded_gui_path: None,
+            loaded_device_abi: None,
             loaded_widget_paths: HashMap::new(),
             widget_hashes: HashMap::new(),
         });
@@ -1285,6 +1346,9 @@ pub async fn handle_runner_execution(
         if !gui_lib_path.is_empty() {
             state.loaded_gui_path = Some(gui_lib_path.clone());
         }
+        if let Some(device_abi) = next_device_abi {
+            state.loaded_device_abi = Some(device_abi);
+        }
     }
 
     // Send build-status "done" so the frontend's compile() promise resolves.
@@ -1306,7 +1370,11 @@ pub async fn handle_runner_execution(
 
 #[cfg(test)]
 mod tests {
-    use super::{runner_load_command, runner_reuse_allowed, runner_session_matches, RunnerReloadPolicy};
+    use super::{
+        full_device_abi_from_marker, next_full_device_abi, runner_load_command,
+        runner_reuse_allowed, runner_session_matches, same_session_full_device_abi_changed,
+        RunnerReloadPolicy,
+    };
 
     #[test]
     fn gpu_device_load_command_preserves_legacy_shape_without_abi() {
@@ -1336,6 +1404,65 @@ mod tests {
             .unwrap(),
             "load_device_partial rocm /tmp/device_part.hsaco advance 12345\n"
         );
+    }
+
+    #[test]
+    fn full_device_abi_tracking_ignores_partial_markers() {
+        assert_eq!(
+            full_device_abi_from_marker("__gpu_device:rocm:advance:abi-full"),
+            Some("abi-full")
+        );
+        assert_eq!(
+            full_device_abi_from_marker("__gpu_device_partial:rocm:advance:abi-partial"),
+            None
+        );
+    }
+
+    #[test]
+    fn next_full_device_abi_uses_latest_full_device_marker() {
+        let modules = vec![
+            (
+                "__gpu_device:rocm:init,advance:abi-v1".to_string(),
+                "/tmp/device-a.hsaco".to_string(),
+            ),
+            (
+                "__gpu_device_partial:rocm:advance:partial-abi".to_string(),
+                "/tmp/device-part.hsaco".to_string(),
+            ),
+            (
+                "__gpu_device:rocm:init,advance:abi-v2".to_string(),
+                "/tmp/device-b.hsaco".to_string(),
+            ),
+        ];
+        assert_eq!(next_full_device_abi(&modules).as_deref(), Some("abi-v2"));
+    }
+
+    #[test]
+    fn device_abi_breaking_marker_requires_same_session_and_changed_full_abi() {
+        assert!(same_session_full_device_abi_changed(
+            Some("session-a"),
+            Some("session-a"),
+            Some("abi-v1"),
+            Some("abi-v2")
+        ));
+        assert!(!same_session_full_device_abi_changed(
+            Some("session-a"),
+            Some("session-b"),
+            Some("abi-v1"),
+            Some("abi-v2")
+        ));
+        assert!(!same_session_full_device_abi_changed(
+            Some("session-a"),
+            Some("session-a"),
+            Some("abi-v1"),
+            Some("abi-v1")
+        ));
+        assert!(!same_session_full_device_abi_changed(
+            Some("session-a"),
+            Some("session-a"),
+            None,
+            Some("abi-v2")
+        ));
     }
 
     #[test]

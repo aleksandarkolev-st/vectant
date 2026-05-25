@@ -644,6 +644,7 @@ pub async fn run_java(
         module_hashes: ModuleHashes::new(),
         loaded_core_path: None,
         loaded_gui_path: None,
+        loaded_device_abi: None,
         loaded_widget_paths: HashMap::new(),
         widget_hashes: HashMap::new(),
     });
