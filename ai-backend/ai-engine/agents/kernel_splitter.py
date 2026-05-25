@@ -1069,6 +1069,110 @@ def _kernel_hashes_for_generated_split(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _core_path_for_generated_split(
+    manifest: Optional[Mapping[str, Any]],
+    files: Mapping[str, str],
+) -> Optional[str]:
+    module_files = manifest.get("module_files") if isinstance(manifest, Mapping) else None
+    if isinstance(module_files, Mapping):
+        core = module_files.get("core")
+        if isinstance(core, str) and core.strip() in files:
+            return core.strip()
+    for path in sorted(files):
+        normalized = path.replace("\\", "/").lower()
+        if normalized.endswith("core.cpp") or normalized.endswith("/core.cpp"):
+            return path
+    return None
+
+
+def _stamp_core_device_kernel_sig_hashes(
+    *,
+    files: Mapping[str, str],
+    manifest: Optional[Mapping[str, Any]],
+    kernel_hashes: Mapping[str, str],
+) -> Dict[str, str]:
+    core_path = _core_path_for_generated_split(manifest, files)
+    if not core_path:
+        return dict(files)
+    core_source = files.get(core_path, "")
+    if not core_source:
+        return dict(files)
+    stamped = _replace_device_kernel_sig_hash_export(core_source, kernel_hashes)
+    if stamped == core_source:
+        return dict(files)
+    updated = dict(files)
+    updated[core_path] = stamped
+    return updated
+
+
+def _replace_device_kernel_sig_hash_export(
+    core_source: str,
+    kernel_hashes: Mapping[str, str],
+) -> str:
+    replacement = _render_device_kernel_sig_hash_export(kernel_hashes)
+    match = re.search(
+        r'extern\s+"C"\s+unsigned\s+long\s+long\s+device_kernel_sig_hash\s*\([^)]*\)\s*\{',
+        core_source,
+    )
+    if not match:
+        return core_source.rstrip() + "\n\n" + replacement + "\n"
+    open_brace = core_source.find("{", match.start(), match.end())
+    if open_brace < 0:
+        return core_source
+    close_brace = _matching_brace(core_source, open_brace)
+    if close_brace is None:
+        return core_source
+    return core_source[: match.start()] + replacement + core_source[close_brace + 1 :]
+
+
+def _render_device_kernel_sig_hash_export(kernel_hashes: Mapping[str, str]) -> str:
+    lines = [
+        'extern "C" unsigned long long device_kernel_sig_hash(const char* name) {',
+        "    auto synthi_kernel_name_eq = [](const char* left, const char* right) -> bool {",
+        "        if (!left || !right) return false;",
+        "        while (*left && *right && *left == *right) { ++left; ++right; }",
+        "        return *left == *right;",
+        "    };",
+    ]
+    for name, hash_hex in sorted((str(k), str(v)) for k, v in kernel_hashes.items()):
+        if not re.fullmatch(r"0x[0-9a-fA-F]{1,16}", hash_hex):
+            continue
+        escaped_name = name.replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(
+            f'    if (synthi_kernel_name_eq(name, "{escaped_name}")) return {hash_hex}ULL;'
+        )
+    lines.extend(["    return 0ULL;", "}"])
+    return "\n".join(lines)
+
+
+def _matching_brace(source: str, open_brace: int) -> Optional[int]:
+    if open_brace < 0 or open_brace >= len(source) or source[open_brace] != "{":
+        return None
+    depth = 0
+    in_string: Optional[str] = None
+    escaped = False
+    for index in range(open_brace, len(source)):
+        ch = source[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == in_string:
+                in_string = None
+            continue
+        if ch in {'"', "'"}:
+            in_string = ch
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
 def build_prompt(
     user_code: str,
     detection: Optional[GpuDetectionResult] = None,
@@ -1297,6 +1401,19 @@ async def run_kernel_splitter(
         manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
         source_files=scoped_source_map,
     )
+    stamped_files = _stamp_core_device_kernel_sig_hashes(
+        files=parsed["files"],
+        manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
+        kernel_hashes=parsed["kernel_hashes"],
+    )
+    if stamped_files != parsed["files"]:
+        parsed["files"] = stamped_files
+        verification = verify_split_output(
+            files=parsed["files"],
+            manifest_arch=arch_list,
+            manifest=parsed["manifest"] if isinstance(parsed["manifest"], dict) else None,
+            source_files=scoped_source_map,
+        )
 
     return KernelSplitResult(
         files=parsed["files"],

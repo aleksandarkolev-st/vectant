@@ -24,6 +24,7 @@ from agents.kernel_splitter import (
     _source_launch_graph_contract,
     _verifier_acceptance_gate_contract,
     _kernel_hashes_for_generated_split,
+    _stamp_core_device_kernel_sig_hashes,
     build_prompt,
     parse_kernel_split_response,
     run_kernel_splitter,
@@ -145,6 +146,37 @@ def test_kernel_hashes_are_recomputed_from_included_source_device_headers():
 
     assert set(hashes) == {"CameraRays"}
     assert hashes["CameraRays"].startswith("0x")
+
+
+def test_core_device_kernel_sig_hash_export_is_deterministically_stamped():
+    files = {
+        "core.cpp": (
+            'extern "C" unsigned long long device_kernel_sig_hash(const char* name) { '
+            'if (name) return 0x1234abcd5678ef01ULL; return 0ULL; }'
+        ),
+        "device.hip": '#include "src/Device/kernels/CameraRays.h"\n',
+    }
+    source_files = {
+        "src/Device/kernels/CameraRays.h": (
+            "GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) "
+            "CameraRays(HIPRTRenderData render_data) { render_data.random_number += 1; }"
+        )
+    }
+    hashes = _kernel_hashes_for_generated_split(
+        files=files,
+        manifest={"module_files": {"device": "device.hip", "core": "core.cpp"}},
+        source_files=source_files,
+    )
+
+    stamped = _stamp_core_device_kernel_sig_hashes(
+        files=files,
+        manifest={"module_files": {"core": "core.cpp"}},
+        kernel_hashes=hashes,
+    )
+
+    assert "0x1234abcd5678ef01ULL" not in stamped["core.cpp"]
+    assert f'{hashes["CameraRays"]}ULL' in stamped["core.cpp"]
+    assert 'synthi_kernel_name_eq(name, "CameraRays")' in stamped["core.cpp"]
 
 
 def test_device_preservation_contract_uses_selected_context_scope():
