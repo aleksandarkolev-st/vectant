@@ -600,6 +600,7 @@ struct DeviceCompileSources {
     full_source: String,
     full_filename: Option<String>,
     full_symbols: Vec<String>,
+    direct_workspace_source: bool,
     partial_source: Option<String>,
     partial_filename: Option<String>,
     partial_symbols: Vec<String>,
@@ -1842,6 +1843,36 @@ fn ai_delta_device_partial_payload(
     })
 }
 
+fn single_translation_unit_partial_payload(
+    generated_path: &str,
+    full_device_source: &str,
+    full_symbols: &[String],
+    affected_symbols: &[String],
+) -> Option<serde_json::Value> {
+    let full_symbol_set = normalized_symbol_set(full_symbols);
+    let affected_symbol_set = normalized_symbol_set(affected_symbols);
+    if full_symbol_set.is_empty()
+        || affected_symbol_set.is_empty()
+        || full_symbol_set != affected_symbol_set
+    {
+        return None;
+    }
+
+    let symbols = affected_symbol_set.into_iter().collect::<Vec<_>>();
+    let filename = partial_device_filename(generated_path, &symbols, full_device_source);
+    Some(serde_json::json!({
+        "content": full_device_source,
+        "filename": filename,
+        "symbols": symbols,
+        "source": "singleTranslationUnit",
+        "artifactKind": "kernel_translation_unit",
+        "sourcePaths": [],
+        "selectionReason": "single_translation_unit",
+        "fallbackReason": "partial_catalog_selection_unavailable",
+        "requirePartial": true,
+    }))
+}
+
 fn split_partial_device_source(
     split_data: &serde_json::Value,
 ) -> Option<DevicePartialCompileSource> {
@@ -1926,6 +1957,36 @@ fn split_reload_plan_name(split_data: &serde_json::Value) -> Option<&str> {
         })
 }
 
+fn manifest_device_source_matches(filename: &str, manifest: Option<&CompileManifest>) -> bool {
+    let Some(request) = normalized_request_filename(filename) else {
+        return false;
+    };
+    let Some(device) = manifest
+        .and_then(CompileManifest::device_source_filename)
+        .and_then(normalized_request_filename)
+    else {
+        return false;
+    };
+    request == device
+}
+
+fn direct_device_split_file_reload_plan(filename: &str) -> serde_json::Value {
+    let normalized =
+        normalized_request_filename(filename).unwrap_or_else(|| filename.replace('\\', "/"));
+    let generated = normalized.clone();
+    serde_json::json!({
+        "schemaVersion": crate::hmr::gpu_prod_contracts::RELOAD_PLAN_SCHEMA_VERSION,
+        "plan": "device_only",
+        "reasonCodes": [
+            "edit.direct_device_split_file",
+            "build.device_sidecar_only"
+        ],
+        "affectedUserFiles": [normalized],
+        "affectedGeneratedRoles": [generated],
+        "timingsMs": {},
+    })
+}
+
 fn can_compile_device_only_stage(
     split_data: &serde_json::Value,
     has_gpu_device_stage: bool,
@@ -1944,12 +2005,29 @@ fn can_compile_device_only_stage(
         && (!is_gui || has_previous_gui)
 }
 
+fn allow_direct_translation_unit_partial(
+    split_data: &serde_json::Value,
+    has_gpu_device_stage: bool,
+    has_previous_core: bool,
+    has_previous_gui: bool,
+    is_gui: bool,
+    request_filename: &str,
+    manifest: Option<&CompileManifest>,
+) -> bool {
+    has_gpu_device_stage
+        && matches!(split_reload_plan_name(split_data), Some("device_only"))
+        && has_previous_core
+        && (!is_gui || has_previous_gui)
+        && manifest_device_source_matches(request_filename, manifest)
+}
+
 async fn compile_device_sources_phase0(
     workspace_path: &Path,
     output_dir: &Path,
     timestamp: i64,
     sources: &DeviceCompileSources,
     manifest: &CompileManifest,
+    allow_direct_translation_unit_partial: bool,
 ) -> Result<Option<DeviceCompileOutcome>> {
     let mut fallback_reason: Option<String> = None;
     if let (Some(partial_source), Some(partial_filename)) = (
@@ -2059,16 +2137,54 @@ async fn compile_device_sources_phase0(
     )
     .await?;
     if let Some(outcome) = outcome.as_mut() {
-        outcome.partial_module = false;
-        outcome.target_symbols = sources.full_symbols.clone();
-        outcome.fallback_used = fallback_reason.is_some();
-        outcome.fallback_reason = fallback_reason;
-        outcome.requested_artifact_kind = sources.partial_artifact_kind.clone();
-        outcome.selected_artifact_kind = Some("full_device".to_string());
-        outcome.selected_artifact_bytes = Some(sources.full_source.len());
-        outcome.full_device_bytes = Some(sources.full_source.len());
+        finalize_full_device_outcome(
+            outcome,
+            sources,
+            fallback_reason,
+            allow_direct_translation_unit_partial,
+        )?;
     }
     Ok(outcome)
+}
+
+fn finalize_full_device_outcome(
+    outcome: &mut DeviceCompileOutcome,
+    sources: &DeviceCompileSources,
+    fallback_reason: Option<String>,
+    allow_direct_translation_unit_partial: bool,
+) -> Result<()> {
+    let fallback_used = fallback_reason.is_some();
+    let direct_translation_unit_partial = allow_direct_translation_unit_partial
+        && sources.direct_workspace_source
+        && sources.partial_source.is_none()
+        && sources.partial_filename.is_none()
+        && !fallback_used
+        && !sources.full_symbols.is_empty();
+
+    outcome.partial_module = direct_translation_unit_partial;
+    outcome.target_symbols = sources.full_symbols.clone();
+    outcome.fallback_used = fallback_used;
+    outcome.fallback_reason = fallback_reason;
+    outcome.requested_artifact_kind = if direct_translation_unit_partial {
+        Some("direct_device_translation_unit".to_string())
+    } else {
+        sources.partial_artifact_kind.clone()
+    };
+    outcome.selected_artifact_kind = Some(
+        if direct_translation_unit_partial {
+            "direct_device_translation_unit"
+        } else {
+            "full_device"
+        }
+        .to_string(),
+    );
+    outcome.selected_artifact_bytes = Some(sources.full_source.len());
+    outcome.full_device_bytes = Some(sources.full_source.len());
+
+    if direct_translation_unit_partial {
+        validate_partial_device_artifact_exports(outcome)?;
+    }
+    Ok(())
 }
 
 fn validate_partial_device_artifact_exports(outcome: &DeviceCompileOutcome) -> Result<()> {
@@ -2488,6 +2604,7 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
     manifest: &CompileManifest,
     sidecar_path: &Path,
     session_id: &str,
+    allow_direct_translation_unit_partial: bool,
 ) -> Result<Option<DeviceCompileOutcome>> {
     let workspace_path = ctx.workspace_path.as_path();
     let runtime_paused =
@@ -2506,9 +2623,15 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
                 return Err(error.context("runner runtime pause was not acknowledged"));
             }
         };
-    let device_result =
-        compile_device_sources_phase0(workspace_path, output_dir, timestamp, sources, manifest)
-            .await;
+    let device_result = compile_device_sources_phase0(
+        workspace_path,
+        output_dir,
+        timestamp,
+        sources,
+        manifest,
+        allow_direct_translation_unit_partial,
+    )
+    .await;
     if runtime_paused {
         if let Err(error) =
             send_active_runner_runtime_command(ctx, session_id, "synthi_resume_runtime", "resume")
@@ -4228,11 +4351,20 @@ pub async fn handle_compile_request(
                     "[HMR] FallbackDeterministic → split file edit ({})",
                     req.filename
                 );
-                serde_json::json!({
+                let mut split_payload = serde_json::json!({
                     "shared": { "content": shared_content, "filename": shared_filename },
                     "core": { "content": core_content, "filename": core_filename },
                     "gui": { "content": gui_content, "filename": gui_filename }
-                })
+                });
+                if req.prefer_gpu_pipeline && is_device_source_request(&req.filename) {
+                    if let Some(obj) = split_payload.as_object_mut() {
+                        obj.insert(
+                            "_synthi_reload_plan".to_string(),
+                            direct_device_split_file_reload_plan(&req.filename),
+                        );
+                    }
+                }
+                split_payload
             } else if enrichment.adapted_status.is_adapted {
                 // User is editing original source (main.cpp).  Diff-patch the
                 // changes into the split files without re-running AI.
@@ -4557,6 +4689,17 @@ pub async fn handle_compile_request(
                                         })
                                     })
                                 });
+                        let partial_device_payload = partial_device_payload.or_else(|| {
+                            single_translation_unit_partial_payload(
+                                &generated_path,
+                                &patched_device_source,
+                                &device_mapping_symbols_for_generated(
+                                    &sidecar_meta,
+                                    &generated_path,
+                                ),
+                                &device_patch.affected_symbols,
+                            )
+                        });
                         let mut split_payload = serde_json::json!({
                             "shared": { "content": shared_content, "filename": shared_filename },
                             "core": { "content": core_content, "filename": core_filename },
@@ -6358,6 +6501,7 @@ pub async fn handle_compile_request(
                 full_source: src,
                 full_filename: Some(split_device_filename),
                 full_symbols,
+                direct_workspace_source: false,
                 partial_source,
                 partial_filename,
                 partial_symbols,
@@ -6369,15 +6513,22 @@ pub async fn handle_compile_request(
         } else {
             match tokio::fs::read_to_string(ctx.workspace_path.join(device_filename)).await {
                 Ok(src) if !src.trim().is_empty() => {
+                    let full_symbols = extract_device_kernel_symbols(&src);
                     eprintln!(
-                        "[compile-device] source resolved from workspace file={} bytes={}",
+                        "[compile-device] source resolved from workspace file={} bytes={} mapped_symbols={}",
                         device_filename,
-                        src.len()
+                        src.len(),
+                        if full_symbols.is_empty() {
+                            "-".to_string()
+                        } else {
+                            full_symbols.join(",")
+                        }
                     );
                     Some(DeviceCompileSources {
                         full_source: src,
                         full_filename: Some(device_filename.to_string()),
-                        full_symbols: Vec::new(),
+                        full_symbols,
+                        direct_workspace_source: true,
                         partial_source: None,
                         partial_filename: None,
                         partial_symbols: Vec::new(),
@@ -6840,6 +6991,15 @@ pub async fn handle_compile_request(
         prev_gui_path.is_some(),
         req.is_gui,
     );
+    let allow_direct_translation_unit_partial = allow_direct_translation_unit_partial(
+        &split_data,
+        has_gpu_device_stage,
+        prev_core_path.is_some(),
+        prev_gui_path.is_some(),
+        req.is_gui,
+        &req.filename,
+        compile_manifest.as_ref(),
+    );
     if !tier0_bypassed {
         if device_only_compile_stage {
             eprintln!(
@@ -6896,6 +7056,7 @@ pub async fn handle_compile_request(
                 manifest,
                 &sidecar_path,
                 &session_id,
+                allow_direct_translation_unit_partial,
             )
             .await?
         } else {
@@ -6966,6 +7127,7 @@ pub async fn handle_compile_request(
                     manifest,
                     &sidecar_path,
                     &session_id,
+                    allow_direct_translation_unit_partial,
                 )
                 .await
             } else {
@@ -7077,6 +7239,7 @@ pub async fn handle_compile_request(
                     manifest,
                     &sidecar_path,
                     &session_id,
+                    allow_direct_translation_unit_partial,
                 )
                 .await,
                 "compile_device_failed",
@@ -7985,6 +8148,39 @@ mod gpu_host_contract_tests {
         format!("// synthi-gpu-hmr: source include partial\n#include \"{path}\"\n")
     }
 
+    fn fixture_rocm_manifest(device_path: &str) -> CompileManifest {
+        serde_json::from_value(serde_json::json!({
+            "compiler": "clang++",
+            "std": "c++26",
+            "common_flags": [],
+            "core_link_flags": [],
+            "gui_link_flags": [],
+            "shared_link_flags": [],
+            "runner_link_flags": [],
+            "module_files": {
+                "device": device_path
+            },
+            "system_packages": [],
+            "hot_reload_mode": "swap",
+            "confidence": {
+                "overall": "high",
+                "runner_synthesis": "high",
+                "link_flags": "high",
+                "notes": ""
+            },
+            "gpu": {
+                "vendor": "rocm",
+                "device_compiler": "hipcc",
+                "arch": ["gfx1201"],
+                "device_flags": ["-O3"],
+                "runtime_libs": ["amdhip64"],
+                "snapshot_mode": "auto",
+                "fatbin_strategy": "sidecar_module"
+            }
+        }))
+        .expect("fixture manifest should parse")
+    }
+
     fn fixture_device_outcome(
         partial_module: bool,
         target_symbols: Vec<String>,
@@ -8007,6 +8203,52 @@ mod gpu_host_contract_tests {
                 crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
             stderr: String::new(),
         }
+    }
+
+    #[test]
+    fn direct_workspace_partial_requires_manifest_device_hmr_context() {
+        let manifest = fixture_rocm_manifest("device.hip");
+        let split_data = serde_json::json!({
+            "_synthi_reload_plan": direct_device_split_file_reload_plan("device.hip")
+        });
+
+        assert!(manifest_device_source_matches("device.hip", Some(&manifest)));
+        assert!(allow_direct_translation_unit_partial(
+            &split_data,
+            true,
+            true,
+            true,
+            true,
+            "device.hip",
+            Some(&manifest),
+        ));
+        assert!(!allow_direct_translation_unit_partial(
+            &split_data,
+            true,
+            false,
+            true,
+            true,
+            "device.hip",
+            Some(&manifest),
+        ));
+        assert!(!allow_direct_translation_unit_partial(
+            &split_data,
+            true,
+            true,
+            true,
+            true,
+            "kernels/device_helpers.h",
+            Some(&manifest),
+        ));
+        assert!(!allow_direct_translation_unit_partial(
+            &serde_json::json!({}),
+            true,
+            true,
+            true,
+            true,
+            "device.hip",
+            Some(&manifest),
+        ));
     }
 
     #[test]
@@ -8097,6 +8339,49 @@ mod gpu_host_contract_tests {
         assert_eq!(
             outcome.fallback_reason.as_deref(),
             Some("partial_compile_failed")
+        );
+    }
+
+    #[test]
+    fn direct_workspace_translation_unit_hmr_requires_symbol_ownership() {
+        let source = fixture_kernel_source("shade");
+        let sources = DeviceCompileSources {
+            full_source: source.clone(),
+            full_filename: Some("device.hip".to_string()),
+            full_symbols: symbols(&["shade"]),
+            direct_workspace_source: true,
+            partial_source: None,
+            partial_filename: None,
+            partial_symbols: Vec::new(),
+            partial_source_paths: Vec::new(),
+            partial_required: false,
+            partial_artifact_kind: None,
+            partial_fallback_reason: None,
+        };
+
+        let mut outcome = fixture_device_outcome(false, Vec::new(), symbols(&["shade"]));
+        finalize_full_device_outcome(&mut outcome, &sources, None, true).unwrap();
+        assert!(outcome.partial_module);
+        assert_eq!(
+            outcome.selected_artifact_kind.as_deref(),
+            Some("direct_device_translation_unit")
+        );
+        assert_eq!(outcome.target_symbols, symbols(&["shade"]));
+        assert_eq!(device_hmr_result_label(&outcome), "gpu-hmr-partial");
+
+        let mut extra_export = fixture_device_outcome(
+            false,
+            Vec::new(),
+            symbols(&["shade", "unowned_kernel"]),
+        );
+        assert!(finalize_full_device_outcome(&mut extra_export, &sources, None, true).is_err());
+
+        let mut initial_compile = fixture_device_outcome(false, Vec::new(), symbols(&["shade"]));
+        finalize_full_device_outcome(&mut initial_compile, &sources, None, false).unwrap();
+        assert!(!initial_compile.partial_module);
+        assert_eq!(
+            initial_compile.selected_artifact_kind.as_deref(),
+            Some("full_device")
         );
     }
 
@@ -10334,6 +10619,43 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
             true,
             true
         ));
+    }
+
+    #[test]
+    fn single_translation_unit_partial_requires_exact_symbol_ownership() {
+        let source = "extern \"C\" __global__ void shade(float* x) { x[0] += 1.0f; }\n";
+        let payload = single_translation_unit_partial_payload(
+            ".synthi/generated/gpu/device.hip",
+            source,
+            &["shade".to_string()],
+            &["shade".to_string()],
+        )
+        .expect("single-symbol translation unit is a valid partial reload unit");
+
+        assert_eq!(
+            payload.get("artifactKind").and_then(serde_json::Value::as_str),
+            Some("kernel_translation_unit")
+        );
+        assert_eq!(
+            payload.get("requirePartial").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            payload
+                .get("symbols")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(serde_json::Value::as_str),
+            Some("shade")
+        );
+
+        assert!(single_translation_unit_partial_payload(
+            ".synthi/generated/gpu/device.hip",
+            source,
+            &["shade".to_string(), "trace".to_string()],
+            &["shade".to_string()],
+        )
+        .is_none());
     }
 
     #[test]
