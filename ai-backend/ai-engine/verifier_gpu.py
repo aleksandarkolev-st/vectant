@@ -41,6 +41,7 @@ re-prompts with the rejection notes appended to
 
 from __future__ import annotations
 
+import ast
 import re
 import posixpath
 from dataclasses import dataclass, field
@@ -908,6 +909,197 @@ def _device_kernel_params(source: str, name: str) -> List[str]:
     if not match:
         return []
     return _split_top_level_args(match.group("params"))
+
+
+def _device_kernel_launch_bound(source: str, name: str) -> Optional[int]:
+    masked = mask_comments_for_parsing(source)
+    match = re.search(
+        rf"\b(?:(?:extern\s+\"C\"\s+)?__global__\s+(?:void\s+)?)"
+        rf"(?:__launch_bounds__\s*\(\s*(?P<global_bound>[^,)]+)\s*(?:,[^)]*)?\)\s*)?"
+        rf"(?:void\s+)?"
+        rf"{re.escape(name)}\s*\(",
+        masked,
+        re.DOTALL,
+    )
+    if not match:
+        match = re.search(
+            rf"\bGLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+"
+            rf"(?:__launch_bounds__\s*\(\s*(?P<macro_bound>[^,)]+)\s*(?:,[^)]*)?\)\s*)?"
+            rf"{re.escape(name)}\s*\(",
+            masked,
+            re.DOTALL,
+        )
+    if not match:
+        return None
+    raw = match.groupdict().get("global_bound") or match.groupdict().get("macro_bound")
+    if not raw:
+        return None
+    return _eval_static_int_expr(raw, _static_integer_bindings(masked))
+
+
+def _strip_integer_suffixes(expr: str) -> str:
+    return re.sub(r"\b(0[xX][0-9A-Fa-f]+|\d+)[uUlL]*\b", r"\1", expr)
+
+
+def _sanitize_integer_expr(expr: str) -> str:
+    value = re.sub(
+        r"\(\s*(?:const\s+)?(?:unsigned\s+)?(?:int|long|short|size_t|std::size_t|uint32_t|std::uint32_t)\s*\)",
+        " ",
+        expr,
+    )
+    value = re.sub(r"\bstatic_cast\s*<[^>]+>\s*\(([^()]*)\)", r"(\1)", value)
+    value = _strip_integer_suffixes(value)
+    return value.strip()
+
+
+def _eval_int_ast(node: ast.AST) -> Optional[int]:
+    if isinstance(node, ast.Expression):
+        return _eval_int_ast(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return int(node.value)
+    if isinstance(node, ast.UnaryOp):
+        operand = _eval_int_ast(node.operand)
+        if operand is None:
+            return None
+        if isinstance(node.op, ast.UAdd):
+            return operand
+        if isinstance(node.op, ast.USub):
+            return -operand
+        return None
+    if isinstance(node, ast.BinOp):
+        left = _eval_int_ast(node.left)
+        right = _eval_int_ast(node.right)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, (ast.Div, ast.FloorDiv)):
+            return None if right == 0 else left // right
+        if isinstance(node.op, ast.Mod):
+            return None if right == 0 else left % right
+        if isinstance(node.op, ast.LShift):
+            return left << right
+        if isinstance(node.op, ast.RShift):
+            return left >> right
+        if isinstance(node.op, ast.BitOr):
+            return left | right
+        if isinstance(node.op, ast.BitAnd):
+            return left & right
+        if isinstance(node.op, ast.BitXor):
+            return left ^ right
+    return None
+
+
+def _eval_static_int_expr(expr: str, bindings: Mapping[str, int]) -> Optional[int]:
+    value = _sanitize_integer_expr(expr)
+    if not value:
+        return None
+
+    unresolved = False
+
+    def replace_identifier(match: re.Match[str]) -> str:
+        nonlocal unresolved
+        name = match.group(0)
+        if name in bindings:
+            return str(bindings[name])
+        unresolved = True
+        return name
+
+    value = re.sub(r"\b[A-Za-z_][A-Za-z0-9_:]*\b", replace_identifier, value)
+    if unresolved or not re.fullmatch(r"[\s0-9xXa-fA-F+\-*/%<>&|^()]+", value):
+        return None
+    try:
+        parsed = ast.parse(value, mode="eval")
+    except SyntaxError:
+        return None
+    return _eval_int_ast(parsed)
+
+
+def _static_integer_bindings(source: str) -> Dict[str, int]:
+    bindings: Dict[str, int] = {}
+    define_re = re.compile(
+        r"^\s*#\s*define\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s+(?P<expr>[^\r\n]+)",
+        re.MULTILINE,
+    )
+    decl_re = re.compile(
+        r"\b(?:constexpr\s+)?(?:static\s+)?(?:const\s+)?(?:unsigned\s+)?(?:int|long|short|size_t|std::size_t|uint32_t|std::uint32_t|auto)\s+"
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<expr>[^;]+);"
+    )
+    for _ in range(4):
+        changed = False
+        for match in define_re.finditer(source):
+            name = match.group("name")
+            if name in bindings:
+                continue
+            value = _eval_static_int_expr(match.group("expr"), bindings)
+            if value is not None:
+                bindings[name] = value
+                changed = True
+        for match in decl_re.finditer(source):
+            name = match.group("name")
+            if name in bindings:
+                continue
+            value = _eval_static_int_expr(match.group("expr"), bindings)
+            if value is not None:
+                bindings[name] = value
+                changed = True
+        if not changed:
+            break
+    return bindings
+
+
+def _dim3_constructor_threads(source: str, name: str, bindings: Mapping[str, int]) -> Optional[int]:
+    decl_re = re.compile(
+        rf"\b(?:dim3|Dim3)\s+{re.escape(name)}\s*(?:=)?\s*"
+        rf"(?:\{{(?P<brace>[^}}]*)\}}|\((?P<paren>[^)]*)\))",
+        re.DOTALL,
+    )
+    match = decl_re.search(source)
+    if not match:
+        return None
+    raw_args = match.group("brace") if match.group("brace") is not None else match.group("paren")
+    dims = _split_top_level_args(raw_args or "")
+    if not dims:
+        return None
+    values: List[int] = []
+    for dim in dims[:3]:
+        value = _eval_static_int_expr(dim, bindings)
+        if value is None:
+            return None
+        values.append(value)
+    while len(values) < 3:
+        values.append(1)
+    return values[0] * values[1] * values[2]
+
+
+def _launch_block_thread_count(core_source: str, block_expr: str) -> Optional[int]:
+    bindings = _static_integer_bindings(core_source)
+    direct = _eval_static_int_expr(block_expr, bindings)
+    if direct is not None:
+        return direct
+    name_match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*", block_expr)
+    if name_match:
+        return _dim3_constructor_threads(core_source, name_match.group(1), bindings)
+    ctor_match = re.fullmatch(
+        r"\s*(?:dim3|Dim3)?\s*(?:\{(?P<brace>.*)\}|\((?P<paren>.*)\))\s*",
+        block_expr,
+        re.DOTALL,
+    )
+    if ctor_match:
+        raw_args = ctor_match.group("brace") if ctor_match.group("brace") is not None else ctor_match.group("paren")
+        dims = _split_top_level_args(raw_args or "")
+        if dims:
+            values = [_eval_static_int_expr(dim, bindings) for dim in dims[:3]]
+            if all(value is not None for value in values):
+                int_values = [int(value) for value in values if value is not None]
+                while len(int_values) < 3:
+                    int_values.append(1)
+                return int_values[0] * int_values[1] * int_values[2]
+    return None
 
 
 def _device_kernel_pointer_param_indexes(source: str, name: str) -> List[int]:
@@ -1958,6 +2150,27 @@ def verify_split_output(
                                 "arguments. Pass aggregate launch parameters as one "
                                 "host variable, or flatten the generated kernel "
                                 "signature to match the host launch ABI."
+                            ),
+                            offending_module=core_path,
+                            offending_symbol=kernel_name,
+                        )
+                    )
+                launch_bound = _device_kernel_launch_bound(device_semantic_source, kernel_name)
+                block_threads = _launch_block_thread_count(core_source, args[3])
+                if (
+                    launch_bound is not None
+                    and block_threads is not None
+                    and block_threads > launch_bound
+                ):
+                    violations.append(
+                        Violation(
+                            rule="kernel_launch_bounds_exceeded",
+                            message=(
+                                "synthi_gpu_launch block dimensions must not exceed "
+                                "the target kernel's __launch_bounds__ maximum. "
+                                f"Kernel {kernel_name} declares launch bound "
+                                f"{launch_bound} but the host launch block has "
+                                f"{block_threads} threads."
                             ),
                             offending_module=core_path,
                             offending_symbol=kernel_name,

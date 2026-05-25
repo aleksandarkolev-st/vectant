@@ -1673,6 +1673,116 @@ def test_split_rejects_kernel_launch_abi_argument_count_mismatch():
     assert "kernel_launch_abi_mismatch" in rules
 
 
+def test_split_rejects_launch_block_exceeding_kernel_launch_bounds_literal():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'int n = 1; synthi_gpu_launch(nullptr, "step", 1, 256, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.hip": 'GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) step(int n) {}',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    rules = {v.rule for v in r.violations}
+    assert "kernel_launch_bounds_exceeded" in rules
+
+
+def test_split_rejects_launch_block_exceeding_kernel_launch_bounds_dim3():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'int n = 1; int threads_x = 16; int threads_y = 16; '
+            'Dim3 block{ (unsigned int)threads_x, (unsigned int)threads_y, 1 }; '
+            'synthi_gpu_launch(nullptr, "step", 1, block, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.hip": 'GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) step(int n) {}',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    rules = {v.rule for v in r.violations}
+    assert "kernel_launch_bounds_exceeded" in rules
+
+
+def test_split_accepts_launch_block_within_kernel_launch_bounds_dim3():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'int n = 1; int threads_x = 8; int threads_y = 8; '
+            'Dim3 block{ (unsigned int)threads_x, (unsigned int)threads_y, 1 }; '
+            'synthi_gpu_launch(nullptr, "step", 1, block, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.hip": 'GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64) step(int n) {}',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    rules = {v.rule for v in r.violations}
+    assert "kernel_launch_bounds_exceeded" not in rules
+
+
+def test_split_rejects_launch_block_exceeding_macro_kernel_launch_bounds():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'int n = 1; synthi_gpu_launch(nullptr, "step", 1, 128, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.hip": '#define STEP_THREADS 64\nGLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(STEP_THREADS) step(int n) {}',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    rules = {v.rule for v in r.violations}
+    assert "kernel_launch_bounds_exceeded" in rules
+
+
+def test_split_rejects_launch_block_exceeding_constexpr_kernel_launch_bounds():
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { return 0; }\n'
+            'extern "C" void core_on_update(void*, double) { '
+            'int n = 1; Dim3 block{ 16, 8, 1 }; '
+            'synthi_gpu_launch(nullptr, "step", 1, block, 0, nullptr, { &n }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.hip": 'constexpr int step_threads = 32 * 2;\n__global__ __launch_bounds__(step_threads) void step(int n) {}',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"])
+    rules = {v.rule for v in r.violations}
+    assert "kernel_launch_bounds_exceeded" in rules
+
+
 def test_split_rejects_runtime_unsafe_gpu_buffer_split():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* deviceX; };',

@@ -284,6 +284,10 @@ def _retry_remediation_playbook(rejection_notes: Sequence[str]) -> str:
         guidance.append(
             "- For each synthi_gpu_launch call, make the host initializer-list match the generated kernel parameter list exactly. If the kernel takes a LaunchParams-style struct, create one host variable and pass its address as a single argument; otherwise flatten the kernel signature to match the host launch ABI."
         )
+    if "kernel_launch_bounds_exceeded" in joined:
+        guidance.append(
+            "- For each synthi_gpu_launch call, choose block dimensions whose total thread count is no greater than that kernel's __launch_bounds__ value. Preserve project semantics while deriving the block shape from the kernel's declared launch bound or target-scoped constants."
+        )
     if "launch_site_unresolved" in joined:
         guidance.append(
             "- Do not invent placeholder host launches. Every synthi_gpu_launch kernel name must be an actual __global__ symbol emitted in the device role or a target-scoped source-device kernel preserved by the device role. If you add or keep a synthi_gpu_launch call, first ensure that exact kernel name is declared in device.hip/device.cu; otherwise remove the invented launch site instead of naming a fake kernel such as `my_function`."
@@ -316,6 +320,7 @@ def _verifier_acceptance_gate_contract() -> str:
             "- Generated GUI and runner code must not switch frameworks. Preserve the source render backend reported by deterministic context selection.",
             "- Device kernels and runtime-compiled kernel headers selected by source context must keep original kernel names and body semantics so later user body edits can map into the generated device role.",
             "- Host launch sites must not invent kernel names. Every `synthi_gpu_launch(...)` kernel string must match an actual generated or source-preserved device kernel symbol.",
+            "- Host launch block dimensions must respect source kernel `__launch_bounds__` when present. If a kernel declares `__launch_bounds__(N)`, the generated launch block must have at most N total threads.",
             "- Preserved source-device kernels are not all runtime entrypoints. Generate `synthi_gpu_launch(...)` calls only for host-reachable launch paths or the explicit first-frame pipeline you construct; do not launch every preserved kernel just because it appears in the device role.",
             "- Launch guards in `core_on_update` must be real launch results or persistent state/static flags. Never use local constants such as `bool initialized = false; if (initialized) { ... }` to gate runtime updates.",
         ]
