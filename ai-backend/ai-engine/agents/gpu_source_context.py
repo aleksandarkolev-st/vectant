@@ -8,6 +8,7 @@ import shlex
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from agents.abi_stamper import mask_comments_for_parsing
+from agents.launch_graph_extractor import extract_launch_graph
 from gpu_hmr.canonical import canonical_hash
 
 
@@ -125,6 +126,10 @@ def _drop_reason(path: str) -> Optional[str]:
     return None
 
 
+def _has_source_launch_site(path: str, source: str) -> bool:
+    return bool(extract_launch_graph({normalize_path(path): source or ""}))
+
+
 def _reason_and_priority(path: str, source: str, focus: Optional[str]) -> Tuple[int, str]:
     normalized = normalize_path(path)
     focus_path = normalize_path(focus or "")
@@ -141,6 +146,8 @@ def _reason_and_priority(path: str, source: str, focus: Optional[str]) -> Tuple[
             return (3, "kernel_declaration")
         return (4, "kernel_declaration")
     if "<<<" in parsed_source and ">>>" in parsed_source:
+        return (5, "kernel_launch_site")
+    if _has_source_launch_site(normalized, parsed_source):
         return (5, "kernel_launch_site")
     if _RENDER_RE.search(parsed_source):
         return (6, "render_backend")
@@ -786,6 +793,7 @@ def build_source_context_report(
             normalize_path(path).lower().endswith((".cu", ".cuh", ".hip"))
             or _KERNEL_DECL_RE.search(parsed_source) is not None
             or ("<<<" in parsed_source and ">>>" in parsed_source)
+            or _has_source_launch_site(path, parsed_source)
         )
         record = {
             "path": path,

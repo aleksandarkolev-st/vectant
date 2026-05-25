@@ -506,6 +506,56 @@ def test_selected_target_context_drops_unrelated_device_translation_units():
     assert report["deviceTuTopology"]["deviceTranslationUnits"][0]["path"] == "HIP-Basic/saxpy/main.hip"
 
 
+def test_selected_target_context_drops_unrelated_runtime_object_launch_sources():
+    files = {
+        "src/app/main.cpp": """
+        void setup(){ kernel.set_kernel_function_name("draw_pixels"); }
+        void draw(){ kernel.launch_asynchronous(8, 8, width, height, launch_args, stream); }
+        int main(){ return 0; }
+        """,
+        "src/tools/probe.cpp": """
+        void setup(){ probe.set_kernel_function_name("debug_kernel"); }
+        void run(){ probe.launch_asynchronous(1, 1, 1, 1, scratch_args, stream); }
+        """,
+        "compile_commands.json": """
+        [
+          {
+            "directory": "/repo/build",
+            "file": "/repo/src/app/main.cpp",
+            "arguments": ["clang++", "-Isrc", "-c", "/repo/src/app/main.cpp"]
+          }
+        ]
+        """,
+        ".cmake/api/v1/reply/codemodel-v2-release.json": """
+        {
+          "kind": "codemodel",
+          "configurations": [
+            {
+              "name": "Release",
+              "targets": [
+                {"name": "app", "id": "app::@real", "jsonFile": "target-app-Release.json"},
+                {"name": "probe", "id": "probe::@real", "jsonFile": "target-probe-Release.json"}
+              ]
+            }
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-app-Release.json": """
+        {"name": "app", "id": "app::@real", "type": "EXECUTABLE", "sources": [{"path": "src/app/main.cpp"}]}
+        """,
+        ".cmake/api/v1/reply/target-probe-Release.json": """
+        {"name": "probe", "id": "probe::@real", "type": "EXECUTABLE", "sources": [{"path": "src/tools/probe.cpp"}]}
+        """,
+    }
+
+    _prompt, report = build_project_source_context(files, focus="src/app/main.cpp")
+    included_paths = {item["path"] for item in report["included"]}
+    dropped = {item["path"]: item.get("dropReason") for item in report["dropped"]}
+
+    assert "src/app/main.cpp" in included_paths
+    assert dropped["src/tools/probe.cpp"] == "unrelated_target_device_source"
+
+
 def test_large_repo_context_selects_target_and_records_omissions():
     files = {
         "CMakeLists.txt": "add_executable(gpu_app src/app/main.cpp src/gpu/flow.hip)",

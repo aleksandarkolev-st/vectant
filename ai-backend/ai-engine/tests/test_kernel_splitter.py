@@ -642,6 +642,54 @@ def test_source_launch_graph_contract_reports_runtime_kernel_object_launches():
     assert "unrelated preserved kernel" in contract
 
 
+def test_source_launch_graph_contract_uses_selected_target_context_scope():
+    files = {
+        "src/app/main.cpp": (
+            'void setup(){ kernel.set_kernel_function_name("draw_pixels"); }\n'
+            "void draw(){ kernel.launch_asynchronous(8, 8, width, height, launch_args, stream); }\n"
+        ),
+        "src/tools/probe.cpp": (
+            'void setup(){ probe.set_kernel_function_name("debug_kernel"); }\n'
+            "void run(){ probe.launch_asynchronous(1, 1, 1, 1, scratch_args, stream); }\n"
+        ),
+        "compile_commands.json": """
+        [
+          {
+            "directory": "/repo/build",
+            "file": "/repo/src/app/main.cpp",
+            "arguments": ["clang++", "-Isrc", "-c", "/repo/src/app/main.cpp"]
+          }
+        ]
+        """,
+        ".cmake/api/v1/reply/codemodel-v2-release.json": """
+        {
+          "kind": "codemodel",
+          "configurations": [
+            {
+              "name": "Release",
+              "targets": [
+                {"name": "app", "id": "app::@real", "jsonFile": "target-app-Release.json"},
+                {"name": "probe", "id": "probe::@real", "jsonFile": "target-probe-Release.json"}
+              ]
+            }
+          ]
+        }
+        """,
+        ".cmake/api/v1/reply/target-app-Release.json": """
+        {"name": "app", "id": "app::@real", "type": "EXECUTABLE", "sources": [{"path": "src/app/main.cpp"}]}
+        """,
+        ".cmake/api/v1/reply/target-probe-Release.json": """
+        {"name": "probe", "id": "probe::@real", "type": "EXECUTABLE", "sources": [{"path": "src/tools/probe.cpp"}]}
+        """,
+    }
+    _prompt, report = build_project_source_context(files, focus="src/app/main.cpp")
+    scoped = _source_files_scoped_to_context(files, report)
+    contract = _source_launch_graph_contract(scoped)
+
+    assert "draw_pixels" in contract
+    assert "debug_kernel" not in contract
+
+
 def test_build_prompt_attaches_extra_instructions():
     p = build_prompt("x", extra_instructions="don't change kernel names")
     assert "EXTRA INSTRUCTIONS" in p
