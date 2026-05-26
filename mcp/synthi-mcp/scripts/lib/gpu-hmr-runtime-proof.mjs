@@ -1,5 +1,69 @@
 export const GPU_HMR_PROOF_SCHEMA_VERSION = 'synthi.gpu.hmr.proof.v1';
 
+export const GPU_HMR_PROOF_STATES = [
+  'gpu-hmr-compile-proven',
+  'gpu-hmr-symbol-bound',
+  'gpu-hmr-abi-proven',
+  'gpu-hmr-dispatch-proven',
+  'gpu-hmr-output-proven',
+  'gpu-hmr-host-preservation-proven',
+  'gpu-hmr-full-runtime-proven',
+];
+
+const GPU_HMR_PROOF_STATE_RANKS = new Map(
+  GPU_HMR_PROOF_STATES.map((state, index) => [state, index + 1]),
+);
+
+const GPU_HMR_DEGRADED_STATE_RANK_CAPS = new Map([
+  ['gpu-hmr-fake-launch-path', proofStateRank('gpu-hmr-symbol-bound')],
+  ['gpu-hmr-unknown-arg-provenance', proofStateRank('gpu-hmr-abi-proven')],
+  ['gpu-hmr-abi-unverified', proofStateRank('gpu-hmr-symbol-bound')],
+  ['gpu-hmr-dispatch-unobserved', proofStateRank('gpu-hmr-abi-proven')],
+  ['gpu-hmr-output-unobserved', proofStateRank('gpu-hmr-dispatch-proven')],
+  ['gpu-hmr-host-replaced', proofStateRank('gpu-hmr-output-proven')],
+  ['gpu-hmr-visual-only', proofStateRank('gpu-hmr-dispatch-proven')],
+]);
+
+function proofStateRank(state) {
+  return typeof state === 'string' ? GPU_HMR_PROOF_STATE_RANKS.get(state) ?? 0 : 0;
+}
+
+function degradedStateRankCap(state) {
+  if (state === null || state === undefined || state === '') return null;
+  return typeof state === 'string' ? GPU_HMR_DEGRADED_STATE_RANK_CAPS.get(state) ?? 0 : 0;
+}
+
+function effectiveProofRank(proof) {
+  const resultRank = proofStateRank(proof?.resultState);
+  const cap = degradedStateRankCap(proof?.degradedState);
+  return cap === null ? resultRank : Math.min(resultRank, cap);
+}
+
+function highestEffectiveProof(proofs) {
+  let best = null;
+  for (const proof of proofs) {
+    const effectiveRank = effectiveProofRank(proof);
+    if (effectiveRank > (best?.effectiveRank ?? 0)) {
+      best = { proof, effectiveRank };
+    }
+  }
+  return best ?? { proof: null, effectiveRank: 0 };
+}
+
+function stageResult(stageId, requiredState, evidenceRank, evidenceProof, degradedState, degradedReason) {
+  const requiredRank = proofStateRank(requiredState);
+  const passed = evidenceRank >= requiredRank;
+  return {
+    stageId,
+    requiredState,
+    status: passed ? 'passed' : 'blocked',
+    observedState: evidenceProof?.resultState ?? null,
+    effectiveRank: evidenceRank,
+    degradedState: passed ? null : degradedState ?? evidenceProof?.degradedState ?? null,
+    degradedReason: passed ? null : degradedReason ?? evidenceProof?.degradedReason ?? null,
+  };
+}
+
 export function classifyGpuHmrOutputProof(observation = {}) {
   const dispatchObserved = observation.dispatchObserved === true;
   const deterministicOutputObserved = observation.deterministicOutputObserved === true;
@@ -130,4 +194,108 @@ export function summarizeGpuHmrHostPreservationProof(proof) {
   const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
   const identity = proof.identityChecksPassed ? ' identity=passed' : ' identity=missing';
   return `gpu_host_preservation_proof=${result}${degraded}${reason}${identity}`;
+}
+
+export function classifyGpuHmrFullRuntimeProof(observation = {}) {
+  const sourceProofs = Array.isArray(observation.sourceProofs)
+    ? observation.sourceProofs.filter((proof) => proof && typeof proof === 'object')
+    : observation.sourceProof && typeof observation.sourceProof === 'object'
+      ? [observation.sourceProof]
+      : [];
+  const source = highestEffectiveProof(sourceProofs);
+  const outputProof = observation.outputProof && typeof observation.outputProof === 'object'
+    ? observation.outputProof
+    : null;
+  const hostPreservationProof =
+    observation.hostPreservationProof && typeof observation.hostPreservationProof === 'object'
+      ? observation.hostPreservationProof
+      : null;
+  const outputRank = effectiveProofRank(outputProof);
+  const hostRank = effectiveProofRank(hostPreservationProof);
+  const stages = [
+    stageResult(
+      'compile',
+      'gpu-hmr-compile-proven',
+      source.effectiveRank,
+      source.proof,
+      null,
+      'compile_evidence_not_collected',
+    ),
+    stageResult(
+      'symbol-binding',
+      'gpu-hmr-symbol-bound',
+      source.effectiveRank,
+      source.proof,
+      null,
+      'symbol_binding_evidence_not_collected',
+    ),
+    stageResult(
+      'abi',
+      'gpu-hmr-abi-proven',
+      source.effectiveRank,
+      source.proof,
+      'gpu-hmr-abi-unverified',
+      'abi_evidence_not_collected',
+    ),
+    stageResult(
+      'dispatch',
+      'gpu-hmr-dispatch-proven',
+      outputRank,
+      outputProof,
+      'gpu-hmr-dispatch-unobserved',
+      'runtime_dispatch_not_observed',
+    ),
+    stageResult(
+      'output',
+      'gpu-hmr-output-proven',
+      outputRank,
+      outputProof,
+      'gpu-hmr-output-unobserved',
+      'output_oracle_not_collected',
+    ),
+    stageResult(
+      'host-preservation',
+      'gpu-hmr-host-preservation-proven',
+      hostRank,
+      hostPreservationProof,
+      null,
+      'host_identity_checks_not_collected',
+    ),
+  ];
+
+  let resultState = null;
+  for (const stage of stages) {
+    if (stage.status !== 'passed') break;
+    resultState = stage.requiredState;
+  }
+  const firstBlocked = stages.find((stage) => stage.status !== 'passed') ?? null;
+  const fullRuntimeProven = firstBlocked === null;
+  return {
+    schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+    resultState: fullRuntimeProven ? 'gpu-hmr-full-runtime-proven' : resultState,
+    degradedState: firstBlocked?.degradedState ?? null,
+    degradedReason: firstBlocked?.degradedReason ?? null,
+    fullRuntimeProven,
+    stages,
+    componentStates: {
+      sourceEffectiveRank: source.effectiveRank,
+      sourceResultState: source.proof?.resultState ?? null,
+      outputEffectiveRank: outputRank,
+      outputResultState: outputProof?.resultState ?? null,
+      hostEffectiveRank: hostRank,
+      hostResultState: hostPreservationProof?.resultState ?? null,
+    },
+  };
+}
+
+export function summarizeGpuHmrFullRuntimeProof(proof) {
+  if (!proof || typeof proof !== 'object') return 'gpu_full_runtime_proof=missing';
+  const result = proof.resultState ? proof.resultState : 'missing';
+  const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
+  const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
+  const blocked = Array.isArray(proof.stages)
+    ? proof.stages.filter((stage) => stage.status !== 'passed').map((stage) => stage.stageId)
+    : [];
+  const blockedSummary = blocked.length ? ` blocked=${blocked.join(',')}` : '';
+  return `gpu_full_runtime_proof=${result}${degraded}${reason} full_runtime=${proof.fullRuntimeProven ? 'proven' : 'unproven'}${blockedSummary}`;
 }

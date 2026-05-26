@@ -19,8 +19,10 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
+  classifyGpuHmrFullRuntimeProof,
   classifyGpuHmrHostPreservationProof,
   classifyGpuHmrOutputProof,
+  summarizeGpuHmrFullRuntimeProof,
   summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
 } from './lib/gpu-hmr-runtime-proof.mjs';
@@ -181,6 +183,7 @@ const report = {
   evidence: {},
   output_proof: null,
   host_preservation_proof: null,
+  full_runtime_proof: null,
   compile_projection: {},
   started_at: new Date().toISOString(),
   finished_at: null,
@@ -1223,9 +1226,15 @@ function selfCheckRuntimeDispatchEvidence() {
     hostRestartObserved: true,
   });
   const hostUnprovenProof = classifyGpuHmrHostPreservationProof({});
+  const fullRuntimeBlockedProof = classifyGpuHmrFullRuntimeProof({
+    sourceProofs: [{ resultState: 'gpu-hmr-symbol-bound' }],
+    outputProof: visualOnlyProof,
+    hostPreservationProof: classifyGpuHmrHostPreservationProof({ identityChecksPassed: true }),
+  });
   if (
     hostReplacedProof.degradedState !== 'gpu-hmr-host-replaced'
     || hostUnprovenProof.degradedReason !== 'host_identity_checks_not_collected'
+    || fullRuntimeBlockedProof.degradedState !== 'gpu-hmr-abi-unverified'
   ) {
     throw new Error('host preservation proof classifier failed');
   }
@@ -1345,6 +1354,11 @@ async function collectRuntimeEvidence() {
   report.host_preservation_proof = classifyGpuHmrHostPreservationProof({
     hostRestartObserved: report.evidence.runner_policy_counts.runner_restarts > 0,
   });
+  report.full_runtime_proof = classifyGpuHmrFullRuntimeProof({
+    sourceProofs: report.phases.map((phase) => phase.gpu_proof).filter(Boolean),
+    outputProof: report.output_proof,
+    hostPreservationProof: report.host_preservation_proof,
+  });
   record(
     'runtime output proof',
     report.output_proof.degradedState ? 'warn' : 'pass',
@@ -1356,6 +1370,11 @@ async function collectRuntimeEvidence() {
       ? 'warn'
       : 'pass',
     summarizeGpuHmrHostPreservationProof(report.host_preservation_proof),
+  );
+  record(
+    'full runtime proof ladder',
+    report.full_runtime_proof.fullRuntimeProven ? 'pass' : 'warn',
+    summarizeGpuHmrFullRuntimeProof(report.full_runtime_proof),
   );
   record(
     'runtime evidence collected',
@@ -1422,6 +1441,8 @@ async function writeResults() {
     `OUTPUT_PROOF ${summarizeGpuHmrOutputProof(report.output_proof)}`,
     '',
     `HOST_PRESERVATION_PROOF ${summarizeGpuHmrHostPreservationProof(report.host_preservation_proof)}`,
+    '',
+    `FULL_RUNTIME_PROOF ${summarizeGpuHmrFullRuntimeProof(report.full_runtime_proof)}`,
     '',
     `EVIDENCE ${JSON.stringify(report.evidence)}`,
   ];
