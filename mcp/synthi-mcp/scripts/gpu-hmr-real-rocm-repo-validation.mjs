@@ -19,7 +19,9 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
+  classifyGpuHmrHostPreservationProof,
   classifyGpuHmrOutputProof,
+  summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
 } from './lib/gpu-hmr-runtime-proof.mjs';
 
@@ -178,6 +180,7 @@ const report = {
   docker: {},
   evidence: {},
   output_proof: null,
+  host_preservation_proof: null,
   compile_projection: {},
   started_at: new Date().toISOString(),
   finished_at: null,
@@ -976,6 +979,35 @@ function countMatches(lines, pattern) {
   return lines.filter((line) => pattern.test(line)).length;
 }
 
+function normalizeSessionMarker(value) {
+  return String(value ?? '').trim().replace(/^["']+|["',;:)]+$/g, '');
+}
+
+function runtimeSessionIdFromLine(line) {
+  const match = String(line ?? '').match(/\bruntime_session=([^\s]+)/i);
+  return match ? normalizeSessionMarker(match[1]) : null;
+}
+
+function sessionMarkerFromLine(line) {
+  const text = String(line ?? '');
+  const patterns = [
+    { kind: 'guest-registry', pattern: /\[GuestRegistry\]\s+session=([^\s]+)/i },
+    { kind: 'runner-env', pattern: /\[Runner\]\s+Session ID from env:\s*([^\s]+)/i },
+    { kind: 'runner-stdin-session', pattern: /\bStdin received:\s*set_session\s+([^\s]+)/i },
+    { kind: 'runner-command-session', pattern: /\[Runner\]\s+Processing command:\s*set_session\s+([^\s]+)/i },
+    { kind: 'runner-host-kv-session', pattern: /\[HOST-KV\]\s+Session already set:\s*([^\s]+)/i },
+    { kind: 'worker-send-session', pattern: /\bSending session to runner:\s*set_session\s+([^\s]+)/i },
+  ];
+  for (const { kind, pattern } of patterns) {
+    const match = text.match(pattern);
+    if (match) {
+      const sessionId = normalizeSessionMarker(match[1]);
+      if (sessionId) return { kind, sessionId };
+    }
+  }
+  return null;
+}
+
 function scopeLogTextToSession(text, slug) {
   const lines = String(text ?? '').split(/\r?\n/);
   if (!slug) {
@@ -984,22 +1016,58 @@ function scopeLogTextToSession(text, slug) {
       marker_found: false,
       dropped_before: 0,
       total_lines: lines.length,
+      marker_kind: null,
+      stopped_before: lines.length,
+      stop_marker_found: false,
+      stale_runtime_lines_dropped: 0,
     };
   }
-  const markerIndex = lines.findIndex((line) => line.includes(slug));
+  const markerIndex = lines.findIndex((line) => sessionMarkerFromLine(line)?.sessionId === slug);
   if (markerIndex < 0) {
     return {
       text: '',
       marker_found: false,
       dropped_before: lines.length,
       total_lines: lines.length,
+      marker_kind: null,
+      stopped_before: lines.length,
+      stop_marker_found: false,
+      stale_runtime_lines_dropped: 0,
     };
   }
+  const marker = sessionMarkerFromLine(lines[markerIndex]);
+  let stopIndex = lines.length;
+  for (let index = markerIndex + 1; index < lines.length; index += 1) {
+    const nextMarker = sessionMarkerFromLine(lines[index]);
+    if (nextMarker && nextMarker.sessionId !== slug) {
+      stopIndex = index;
+      break;
+    }
+  }
+  const staleRuntimeSessionIds = new Set();
+  for (let index = 0; index < markerIndex; index += 1) {
+    const runtimeSessionId = runtimeSessionIdFromLine(lines[index]);
+    if (runtimeSessionId) staleRuntimeSessionIds.add(runtimeSessionId);
+  }
+  let staleRuntimeLinesDropped = 0;
+  const scopedLines = [];
+  for (const line of lines.slice(markerIndex, stopIndex)) {
+    const runtimeSessionId = runtimeSessionIdFromLine(line);
+    if (runtimeSessionId && staleRuntimeSessionIds.has(runtimeSessionId)) {
+      staleRuntimeLinesDropped += 1;
+      continue;
+    }
+    scopedLines.push(line);
+  }
   return {
-    text: lines.slice(markerIndex).join('\n'),
+    text: scopedLines.join('\n'),
     marker_found: true,
     dropped_before: markerIndex,
     total_lines: lines.length,
+    marker_kind: marker?.kind ?? null,
+    stopped_before: stopIndex,
+    stop_marker_found: stopIndex < lines.length,
+    stale_runtime_lines_dropped: staleRuntimeLinesDropped,
   };
 }
 
@@ -1091,13 +1159,36 @@ function selfCheckRuntimeDispatchEvidence() {
   const scoped = scopeLogTextToSession(
     [
       '[gpu-runtime-boundary] synthi_gpu_launch kernel=stale grid=(1, 1, 1) dispatch=ok',
+      '[Main] Existing runner: requested_session=Some("target-session")',
+      '[gpu-runtime-boundary] synthi_gpu_launch kernel=stale-after-weak-marker grid=(1, 1, 1) dispatch=ok runtime_session=old-session',
+      '[Runner] Session ID from env: target-session',
+      '[gpu-runtime-boundary] synthi_gpu_launch kernel=still-stale grid=(1, 1, 1) dispatch=ok runtime_session=old-session',
+      '[gpu-runtime-boundary] synthi_gpu_launch kernel=current grid=(1, 1, 1) dispatch=ok runtime_session=new-session',
+      '[Runner] Session ID from env: other-session',
+      '[gpu-runtime-boundary] synthi_gpu_launch kernel=next-session grid=(1, 1, 1) dispatch=ok runtime_session=other-session',
+    ].join('\n'),
+    'target-session',
+  );
+  const scopedEvidence = runtimeDispatchEvidence(evidenceLines(scoped.text, /gpu-runtime-boundary/i));
+  if (
+    scoped.marker_kind !== 'runner-env'
+    || !scoped.stop_marker_found
+    || scoped.stale_runtime_lines_dropped !== 1
+    || scopedEvidence.success_count !== 1
+    || !scopedEvidence.success_lines[0]?.includes('kernel=current')
+  ) {
+    throw new Error('session-scoped dispatch evidence included stale or later-session dispatch lines');
+  }
+  const legacyScoped = scopeLogTextToSession(
+    [
+      '[gpu-runtime-boundary] synthi_gpu_launch kernel=stale grid=(1, 1, 1) dispatch=ok',
       '[Runner] Session ID from env: target-session',
       '[gpu-runtime-boundary] synthi_gpu_launch kernel=current grid=(1, 1, 1) dispatch=ok',
     ].join('\n'),
     'target-session',
   );
-  const scopedEvidence = runtimeDispatchEvidence(evidenceLines(scoped.text, /gpu-runtime-boundary/i));
-  if (scopedEvidence.success_count !== 1 || !scopedEvidence.success_lines[0]?.includes('kernel=current')) {
+  const legacyScopedEvidence = runtimeDispatchEvidence(evidenceLines(legacyScoped.text, /gpu-runtime-boundary/i));
+  if (legacyScopedEvidence.success_count !== 1 || !legacyScopedEvidence.success_lines[0]?.includes('kernel=current')) {
     throw new Error('session-scoped dispatch evidence included stale dispatch lines');
   }
   const provenance = runtimeArgProvenanceEvidence([
@@ -1127,6 +1218,16 @@ function selfCheckRuntimeDispatchEvidence() {
     || outputMissingProof.degradedState !== 'gpu-hmr-output-unobserved'
   ) {
     throw new Error('runtime output proof classifier failed');
+  }
+  const hostReplacedProof = classifyGpuHmrHostPreservationProof({
+    hostRestartObserved: true,
+  });
+  const hostUnprovenProof = classifyGpuHmrHostPreservationProof({});
+  if (
+    hostReplacedProof.degradedState !== 'gpu-hmr-host-replaced'
+    || hostUnprovenProof.degradedReason !== 'host_identity_checks_not_collected'
+  ) {
+    throw new Error('host preservation proof classifier failed');
   }
   console.log('runtime dispatch evidence self-check passed');
 }
@@ -1175,7 +1276,11 @@ async function collectRuntimeEvidence() {
     worker_session_scope: {
       slug: CFG.slug,
       marker_found: scopedWorkerLogs.marker_found,
+      marker_kind: scopedWorkerLogs.marker_kind,
       dropped_before: scopedWorkerLogs.dropped_before,
+      stopped_before: scopedWorkerLogs.stopped_before,
+      stop_marker_found: scopedWorkerLogs.stop_marker_found,
+      stale_runtime_lines_dropped: scopedWorkerLogs.stale_runtime_lines_dropped,
       total_lines: scopedWorkerLogs.total_lines,
     },
     ai_engine_log_lines: aiEvidence,
@@ -1237,10 +1342,20 @@ async function collectRuntimeEvidence() {
     visualFrameObserved: freshVisualFrames.length > 0,
     visualEvidenceRefs: freshVisualFrames.map((shot) => shot.path),
   });
+  report.host_preservation_proof = classifyGpuHmrHostPreservationProof({
+    hostRestartObserved: report.evidence.runner_policy_counts.runner_restarts > 0,
+  });
   record(
     'runtime output proof',
     report.output_proof.degradedState ? 'warn' : 'pass',
     summarizeGpuHmrOutputProof(report.output_proof),
+  );
+  record(
+    'host preservation proof',
+    report.host_preservation_proof.degradedState || !report.host_preservation_proof.resultState
+      ? 'warn'
+      : 'pass',
+    summarizeGpuHmrHostPreservationProof(report.host_preservation_proof),
   );
   record(
     'runtime evidence collected',
@@ -1305,6 +1420,8 @@ async function writeResults() {
     ...report.screenshots.map((shot) => `SCREENSHOT ${shot.label} visible=${shot.visible_pixels} luma=${shot.mean_luma.toFixed(1)} path=${shot.path}`),
     '',
     `OUTPUT_PROOF ${summarizeGpuHmrOutputProof(report.output_proof)}`,
+    '',
+    `HOST_PRESERVATION_PROOF ${summarizeGpuHmrHostPreservationProof(report.host_preservation_proof)}`,
     '',
     `EVIDENCE ${JSON.stringify(report.evidence)}`,
   ];

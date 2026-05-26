@@ -82,3 +82,52 @@ export function summarizeGpuHmrOutputProof(proof) {
   const visual = proof.visualFrameObserved ? ' visual=fresh-frame' : ' visual=none';
   return `gpu_output_proof=${result}${degraded}${reason}${oracle}${visual}`;
 }
+
+export function classifyGpuHmrHostPreservationProof(observation = {}) {
+  const hostReplacementObserved =
+    observation.hostReplacementObserved === true || observation.hostRestartObserved === true;
+  const identityChecksPassed = observation.identityChecksPassed === true;
+  const identityEvidenceRefs = Array.isArray(observation.identityEvidenceRefs)
+    ? observation.identityEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
+    : [];
+
+  if (hostReplacementObserved) {
+    return {
+      schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+      resultState: 'gpu-hmr-output-proven',
+      degradedState: 'gpu-hmr-host-replaced',
+      degradedReason: 'host_runtime_replaced_or_restarted',
+      identityChecksPassed: false,
+      identityEvidenceRefs,
+    };
+  }
+
+  if (identityChecksPassed) {
+    return {
+      schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+      resultState: 'gpu-hmr-host-preservation-proven',
+      degradedState: null,
+      degradedReason: null,
+      identityChecksPassed: true,
+      identityEvidenceRefs,
+    };
+  }
+
+  return {
+    schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+    resultState: null,
+    degradedState: null,
+    degradedReason: 'host_identity_checks_not_collected',
+    identityChecksPassed: false,
+    identityEvidenceRefs,
+  };
+}
+
+export function summarizeGpuHmrHostPreservationProof(proof) {
+  if (!proof || typeof proof !== 'object') return 'gpu_host_preservation_proof=missing';
+  const result = proof.resultState ? proof.resultState : 'missing';
+  const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
+  const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
+  const identity = proof.identityChecksPassed ? ' identity=passed' : ' identity=missing';
+  return `gpu_host_preservation_proof=${result}${degraded}${reason}${identity}`;
+}

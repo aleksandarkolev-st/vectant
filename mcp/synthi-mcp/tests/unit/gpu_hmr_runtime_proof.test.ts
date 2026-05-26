@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyGpuHmrHostPreservationProof,
   classifyGpuHmrOutputProof,
+  summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
 } from "../../scripts/lib/gpu-hmr-runtime-proof.mjs";
 
@@ -48,5 +50,37 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-output-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.outputOracle.passed).toBe(true);
+  });
+
+  it("reports host replacement only from explicit restart or replacement evidence", () => {
+    const proof = classifyGpuHmrHostPreservationProof({
+      hostRestartObserved: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-output-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-host-replaced");
+    expect(summarizeGpuHmrHostPreservationProof(proof)).toContain("gpu-hmr-host-replaced");
+  });
+
+  it("does not prove host preservation without identity checks", () => {
+    const proof = classifyGpuHmrHostPreservationProof({
+      hostRestartObserved: false,
+      identityChecksPassed: false,
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedState).toBeNull();
+    expect(proof.degradedReason).toBe("host_identity_checks_not_collected");
+  });
+
+  it("reports host-preservation-proven only when identity checks pass", () => {
+    const proof = classifyGpuHmrHostPreservationProof({
+      identityChecksPassed: true,
+      identityEvidenceRefs: ["identity-proof:1"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.identityEvidenceRefs).toEqual(["identity-proof:1"]);
   });
 });
