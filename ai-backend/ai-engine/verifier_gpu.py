@@ -2920,7 +2920,14 @@ def verify_split_output(
                     )
                 )
 
-    if declared_kernels and synthi_launch_count == 0:
+    source_preserved_mapping_only = _device_role_is_source_preserved_mapping_only(
+        declared_kernels=declared_kernels,
+        device_included_kernel_names=device_included_kernel_names,
+        core_source=core_source,
+        source_files=source_files or {},
+        type_sources=launch_type_sources,
+    )
+    if declared_kernels and synthi_launch_count == 0 and not source_preserved_mapping_only:
         violations.append(
             Violation(
                 rule="device_kernels_not_launched",
@@ -2966,6 +2973,102 @@ def _source_launch_kernels(source_files: Mapping[str, str]) -> Set[str]:
         for site in extract_launch_graph(source_files)
         if site.kernel
     }
+
+
+def _is_safe_source_launch_lvalue(expr: str) -> bool:
+    field = r"[A-Za-z_][A-Za-z0-9_]*"
+    return bool(
+        re.fullmatch(
+            rf"{field}(?:(?:->|\.){field}|\[[^\]\n;{{}}]+\])*",
+            expr.strip(),
+        )
+    )
+
+
+def _launch_expr_available_in_core(lookup_source: str, expr: str, full_core_source: str) -> bool:
+    text = expr.strip()
+    if not text:
+        return False
+    if text in {"0", "nullptr", "NULL"}:
+        return True
+    if _eval_static_int_expr(text, _static_integer_bindings(full_core_source)) is not None:
+        return True
+    identifiers = {
+        token
+        for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", text)
+        if token not in _CPP_DECL_KEYWORDS
+        and token not in {"dim3", "Dim3", "nullptr", "NULL"}
+    }
+    return all(re.search(rf"\b{re.escape(token)}\b", lookup_source) for token in identifiers)
+
+
+def _source_launch_available_in_core(
+    *,
+    core_source: str,
+    source_files: Mapping[str, str],
+    declared_kernels: Set[str],
+    type_sources: Iterable[str],
+) -> bool:
+    lookup_source = _function_body(core_source, "core_on_update")
+    if not lookup_source:
+        return False
+    for site in extract_launch_graph(source_files):
+        if not site.kernel or site.kernel not in declared_kernels:
+            continue
+        expressions = [site.grid, site.block, site.shared, site.stream]
+        launchable = True
+        for arg in site.args:
+            normalized = _normalize_launch_arg_identity(arg)
+            if (
+                not normalized
+                or not _is_safe_source_launch_lvalue(normalized)
+                or _source_launch_arg_synthetic_reason(
+                    core_source,
+                    type_sources,
+                    normalized,
+                )
+            ):
+                launchable = False
+                break
+            expressions.append(normalized)
+        if not launchable:
+            continue
+        if all(
+            _launch_expr_available_in_core(lookup_source, expr, core_source)
+            for expr in expressions
+        ):
+            return True
+    return False
+
+
+def _source_launch_declared_kernel_seen(
+    source_files: Mapping[str, str],
+    declared_kernels: Set[str],
+) -> bool:
+    return any(
+        site.kernel and site.kernel in declared_kernels
+        for site in extract_launch_graph(source_files)
+    )
+
+
+def _device_role_is_source_preserved_mapping_only(
+    *,
+    declared_kernels: Set[str],
+    device_included_kernel_names: Set[str],
+    core_source: str,
+    source_files: Mapping[str, str],
+    type_sources: Iterable[str],
+) -> bool:
+    if not declared_kernels or not declared_kernels.issubset(device_included_kernel_names):
+        return False
+    if not _source_launch_declared_kernel_seen(source_files, declared_kernels):
+        return False
+    return not _source_launch_available_in_core(
+        core_source=core_source,
+        source_files=source_files,
+        declared_kernels=declared_kernels,
+        type_sources=type_sources,
+    )
 
 
 def _is_lifecycle_launch_kernel(kernel: str) -> bool:

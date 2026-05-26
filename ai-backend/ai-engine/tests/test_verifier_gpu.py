@@ -859,6 +859,68 @@ def test_split_rejects_inert_device_kernels_without_host_launch():
     assert any(v.rule == "device_kernels_not_launched" for v in r.violations)
 
 
+def test_split_allows_source_include_mapping_without_safe_launch_owner():
+    source_files = {
+        "src/kernels.hip": (
+            "struct RenderData { float* pixels; int width; };\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) Shade(RenderData render_data) "
+            "{ render_data.pixels[0] = 1.0f; }\n"
+        ),
+        "src/render.cpp": "void render(RenderData render_data) { Shade<<<1, 64>>>(render_data); }\n",
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { (void)state; }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": '#include "src/kernels.hip"\n',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+
+    assert not any(v.rule == "device_kernels_not_launched" for v in r.violations)
+
+
+def test_split_rejects_source_include_kernel_without_original_launch_site():
+    source_files = {
+        "src/kernels.hip": (
+            "struct RenderData { float* pixels; int width; };\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) Shade(RenderData render_data) "
+            "{ render_data.pixels[0] = 1.0f; }\n"
+        ),
+        "src/render.cpp": "void render(RenderData render_data) { (void)render_data; }\n",
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int frame; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { (void)state; }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": '#include "src/kernels.hip"\n',
+    }
+
+    r = verify_split_output(files=files, manifest_arch=["gfx1201"], source_files=source_files)
+
+    assert any(v.rule == "device_kernels_not_launched" for v in r.violations)
+
+
 def test_split_rejects_constant_false_launch_guard():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { bool device_initialized; };',
