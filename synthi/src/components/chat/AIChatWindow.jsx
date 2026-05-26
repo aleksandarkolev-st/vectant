@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { Send, X, Plus, ChevronDown, ChevronRight, FileCode, Paperclip, Link, Unlink } from 'lucide-react';
+import { Send, X, ChevronDown, ChevronRight, FileCode, Paperclip, Link, Unlink, PanelLeft } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -27,6 +27,8 @@ import VectantOrb from './VectantOrb';
 import ChatEmptyState from './ChatEmptyState';
 import DiagnosticsDrawer from './DiagnosticsDrawer';
 import ReasoningCard from './ReasoningCard';
+import ChatRail from './ChatRail';
+import ChatSessionDropdown from './ChatSessionDropdown';
 import './chat.css';
 
 const formatTimestamp = (timestamp) => {
@@ -164,6 +166,9 @@ const AIChatWindow = ({
     const [pendingCommands, setPendingCommands] = useState([]); // {id, command, status: 'pending'|'approved'|'rejected'}
     const [contextFileAttached, setContextFileAttached] = useState(false); // active file NOT auto-attached as context
     const chatInputRef = useRef(null);
+    const shellRef = useRef(null);
+    const [railOpen, setRailOpen] = useState(false);
+    const [chatMode, setChatMode] = useState('wide');
 
     useEffect(() => {
         try {
@@ -779,6 +784,24 @@ const AIChatWindow = ({
         }
     }, [activeSession, setInputValue]);
 
+    // Chat width mode (rail on wide, dropdown on narrow). Observes the chat
+    // container itself, so it reacts to the docked panel being resized, not
+    // just the viewport.
+    useEffect(() => {
+        const el = shellRef.current;
+        if (!el) return undefined;
+        // Use the border-box width (offsetWidth), not contentRect — the panels
+        // have horizontal padding, so contentRect undercounts and a 420px panel
+        // would wrongly read as narrow. ≥380px → rail (floating window / widened
+        // dock); below → dropdown (the default docked panel ~300-345px).
+        const measure = () => setChatMode((el.offsetWidth || 0) < 380 ? 'narrow' : 'wide');
+        measure();
+        if (typeof ResizeObserver === 'undefined') return undefined;
+        const ro = new ResizeObserver(measure);
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, []);
+
     // Orb identity state — derived from existing chat signals.
     const orbState = progressStatus === 'Failed'
         ? 'error'
@@ -790,6 +813,7 @@ const AIChatWindow = ({
 
     return (
         <div
+            ref={shellRef}
             className={`${containerClass} ${isDragging ? 'ring-2 ring-inset' : ''}`}
             style={{ ...containerStyle, ...(isDragging ? { '--tw-ring-color': 'color-mix(in srgb, var(--accent-secondary) 60%, transparent)' } : {}) }}
             onDragOver={handleDragOver}
@@ -812,12 +836,56 @@ const AIChatWindow = ({
                     </div>
                 </div>
             )}
+            {/* Rail + Stream: collapsible rail (wide only; collapsed by default).
+                Holds sessions + New chat + the workspace diagnostics/context. */}
+            <ChatRail
+                open={railOpen && chatMode === 'wide'}
+                onClose={() => setRailOpen(false)}
+                sessions={chatSessions}
+                activeId={activeSession?.id}
+                onSelect={setActiveSessionId}
+                onNew={handleNewSession}
+                onCloseSession={handleCloseSession}
+            >
+                {isVisible && chatMode === 'wide' && (
+                    <DiagnosticsDrawer
+                        metrics={codeIntelMetrics}
+                        metricsError={metricsError}
+                        isMetricsLoading={isMetricsLoading}
+                        onRefresh={refreshMetrics}
+                        workspaceSlug={workspaceSlug}
+                        onPrefill={setInputValue}
+                    />
+                )}
+            </ChatRail>
+
             {/* Header */}
             <div className="flex flex-col" style={{ borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-app)' }}>
                 <div className="flex items-center justify-between px-3.5 py-2.5 relative">
                     <div className="flex items-center gap-2.5">
+                        {chatMode === 'wide' && (
+                            <button
+                                type="button"
+                                className="vx-rail-toggle th-focus-ring"
+                                onClick={() => setRailOpen(true)}
+                                title="Open menu"
+                                aria-label="Open chat menu"
+                            >
+                                <PanelLeft className="w-4 h-4" strokeWidth={2} />
+                            </button>
+                        )}
                         <VectantOrb state={orbState} size={24} paused={!isVisible} />
-                        <span className="text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>Vectant AI</span>
+                        {chatMode === 'wide' ? (
+                            <span className="text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>Vectant AI</span>
+                        ) : (
+                            <ChatSessionDropdown
+                                sessions={chatSessions}
+                                activeId={activeSession?.id}
+                                onSelect={setActiveSessionId}
+                                onNew={handleNewSession}
+                                onCloseSession={handleCloseSession}
+                            />
+                        )}
                         {(suggestedCode || fileSuggestions.length > 0) && (
                             <div className="text-[9px] font-semibold px-2 py-0.5 rounded-full" style={{ color: 'var(--accent-secondary)', background: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent)' }}>
                                 {fileSuggestions.length > 0 ? `${fileSuggestions.length} file${fileSuggestions.length > 1 ? 's' : ''}` : 'Ready'}
@@ -854,11 +922,8 @@ const AIChatWindow = ({
                     </div>
                 </div>
 
-                {/* Workspace diagnostics — Code Intel, shadow verify spend, and
-                    regression findings consolidated behind one discreet drawer
-                    so the chat reads clean (and a failing metrics fetch never
-                    leaks into the empty state). */}
-                {isVisible && (
+                {/* Diagnostics/context live in the rail on wide; inline here on narrow. */}
+                {isVisible && chatMode === 'narrow' && (
                     <DiagnosticsDrawer
                         metrics={codeIntelMetrics}
                         metricsError={metricsError}
@@ -869,41 +934,6 @@ const AIChatWindow = ({
                     />
                 )}
 
-                <div className="vx-tabs px-2.5 pb-2 overflow-x-auto">
-                    {chatSessions.map((session) => {
-                        const isActive = session.id === activeSession?.id;
-                        return (
-                            <button
-                                key={session.id}
-                                onClick={() => setActiveSessionId(session.id)}
-                                className={`vx-tab ${isActive ? 'vx-tab--active' : ''}`}
-                                title={session.title}
-                            >
-                                {isActive && <span className="vx-tab-dot" aria-hidden="true" />}
-                                <span className="vx-tab-title">{session.title}</span>
-                                {chatSessions.length > 1 && (
-                                    <span
-                                        role="button"
-                                        tabIndex={0}
-                                        className="vx-tab-close inline-flex"
-                                        title="Close chat"
-                                        onClick={(e) => { e.stopPropagation(); handleCloseSession(session.id); }}
-                                    >
-                                        <X className="w-2.5 h-2.5" strokeWidth={2} />
-                                    </span>
-                                )}
-                            </button>
-                        );
-                    })}
-                    <button
-                        onClick={handleNewSession}
-                        className="vx-tab-new"
-                        title="Start a new chat"
-                        aria-label="New chat"
-                    >
-                        <Plus className="w-3 h-3" strokeWidth={2} />
-                    </button>
-                </div>
             </div>
 
             {/* Messages Area */}
