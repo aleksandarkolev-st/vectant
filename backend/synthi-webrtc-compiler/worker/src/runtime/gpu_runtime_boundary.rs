@@ -33,6 +33,26 @@ pub struct ManagedBufferRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchArgProvenance {
+    pub index: usize,
+    pub value_ptr: usize,
+    pub value_size: usize,
+    pub observed_value: Option<usize>,
+    pub kind: String,
+    pub allocation_name: Option<String>,
+    pub allocation_ptr: Option<usize>,
+    pub allocation_bytes: Option<usize>,
+    pub allocation_offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct SynthiGpuLaunchArg {
+    pub value_ptr: *const c_void,
+    pub value_size: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchRecord {
     pub kernel_name: String,
     pub grid: (u32, u32, u32),
@@ -44,6 +64,8 @@ pub struct LaunchRecord {
     pub arg_count: usize,
     pub expected_generation: u64,
     pub active_generation: u64,
+    pub arg_provenance: Vec<LaunchArgProvenance>,
+    pub arg_provenance_complete: bool,
     pub dispatched: bool,
     pub dispatch_error: Option<String>,
 }
@@ -193,6 +215,194 @@ fn decode_launch_dims(label: &str, ptr: *const c_void, bytes: usize) -> DecodedL
     }
 }
 
+fn registered_allocation_for_value(
+    guard: &BoundaryState,
+    value: usize,
+) -> Option<&ManagedBufferRecord> {
+    guard.buffers_by_ptr.values().find(|record| {
+        value >= record.ptr
+            && value
+                .checked_sub(record.ptr)
+                .is_some_and(|offset| offset < record.bytes)
+    })
+}
+
+fn classify_arg_value(
+    guard: &BoundaryState,
+    index: usize,
+    value_ptr: *const c_void,
+    value_size: usize,
+) -> LaunchArgProvenance {
+    let value_ptr_usize = value_ptr as usize;
+    if value_ptr.is_null() {
+        return LaunchArgProvenance {
+            index,
+            value_ptr: value_ptr_usize,
+            value_size,
+            observed_value: None,
+            kind: "missing-arg-storage".to_string(),
+            allocation_name: None,
+            allocation_ptr: None,
+            allocation_bytes: None,
+            allocation_offset: None,
+        };
+    }
+
+    if value_size == 0 {
+        return LaunchArgProvenance {
+            index,
+            value_ptr: value_ptr_usize,
+            value_size,
+            observed_value: None,
+            kind: "legacy-unknown-size".to_string(),
+            allocation_name: None,
+            allocation_ptr: None,
+            allocation_bytes: None,
+            allocation_offset: None,
+        };
+    }
+
+    if value_size < std::mem::size_of::<usize>() {
+        return LaunchArgProvenance {
+            index,
+            value_ptr: value_ptr_usize,
+            value_size,
+            observed_value: None,
+            kind: "scalar-value".to_string(),
+            allocation_name: None,
+            allocation_ptr: None,
+            allocation_bytes: None,
+            allocation_offset: None,
+        };
+    }
+
+    if value_size > std::mem::size_of::<usize>() {
+        return LaunchArgProvenance {
+            index,
+            value_ptr: value_ptr_usize,
+            value_size,
+            observed_value: None,
+            kind: "aggregate-value".to_string(),
+            allocation_name: None,
+            allocation_ptr: None,
+            allocation_bytes: None,
+            allocation_offset: None,
+        };
+    }
+
+    let observed_value = unsafe { std::ptr::read_unaligned(value_ptr as *const usize) };
+    if observed_value == 0 {
+        return LaunchArgProvenance {
+            index,
+            value_ptr: value_ptr_usize,
+            value_size,
+            observed_value: Some(0),
+            kind: "null-value".to_string(),
+            allocation_name: None,
+            allocation_ptr: None,
+            allocation_bytes: None,
+            allocation_offset: None,
+        };
+    }
+
+    if let Some(record) = registered_allocation_for_value(guard, observed_value) {
+        return LaunchArgProvenance {
+            index,
+            value_ptr: value_ptr_usize,
+            value_size,
+            observed_value: Some(observed_value),
+            kind: "device-allocation".to_string(),
+            allocation_name: record.semantic_name.clone(),
+            allocation_ptr: Some(record.ptr),
+            allocation_bytes: Some(record.bytes),
+            allocation_offset: observed_value.checked_sub(record.ptr),
+        };
+    }
+
+    LaunchArgProvenance {
+        index,
+        value_ptr: value_ptr_usize,
+        value_size,
+        observed_value: Some(observed_value),
+        kind: "unknown-pointer-or-scalar".to_string(),
+        allocation_name: None,
+        allocation_ptr: None,
+        allocation_bytes: None,
+        allocation_offset: None,
+    }
+}
+
+fn arg_kind_is_runtime_proven(kind: &str) -> bool {
+    matches!(kind, "device-allocation" | "scalar-value")
+}
+
+fn classify_launch_args(
+    guard: &BoundaryState,
+    args: *const *const c_void,
+    arg_info: *const SynthiGpuLaunchArg,
+    arg_count: usize,
+) -> Vec<LaunchArgProvenance> {
+    if arg_count == 0 {
+        return Vec::new();
+    }
+    if !arg_info.is_null() {
+        return (0..arg_count)
+            .map(|index| {
+                let info = unsafe { std::ptr::read_unaligned(arg_info.add(index)) };
+                classify_arg_value(guard, index, info.value_ptr, info.value_size)
+            })
+            .collect();
+    }
+    if args.is_null() {
+        return (0..arg_count)
+            .map(|index| classify_arg_value(guard, index, std::ptr::null(), 0))
+            .collect();
+    }
+    (0..arg_count)
+        .map(|index| {
+            let value_ptr = unsafe { std::ptr::read_unaligned(args.add(index)) };
+            classify_arg_value(guard, index, value_ptr, 0)
+        })
+        .collect()
+}
+
+fn raw_arg_pointers(
+    _args: *const *const c_void,
+    arg_info: *const SynthiGpuLaunchArg,
+    arg_count: usize,
+) -> Vec<*const c_void> {
+    if arg_info.is_null() {
+        return Vec::new();
+    }
+    (0..arg_count)
+        .map(|index| unsafe { std::ptr::read_unaligned(arg_info.add(index)).value_ptr })
+        .collect()
+}
+
+fn arg_provenance_details(args: &[LaunchArgProvenance]) -> String {
+    if args.is_empty() {
+        return "-".to_string();
+    }
+    args.iter()
+        .map(|arg| {
+            let allocation = arg
+                .allocation_name
+                .as_deref()
+                .map(|name| format!(":{name}"))
+                .unwrap_or_default();
+            let observed = arg
+                .observed_value
+                .map(|value| format!(":0x{value:x}"))
+                .unwrap_or_default();
+            format!(
+                "{}:{}{}{}:size={}",
+                arg.index, arg.kind, allocation, observed, arg.value_size
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 #[no_mangle]
 pub extern "C" fn synthi_gpu_register_buffer(
     _gpu: *mut c_void,
@@ -264,6 +474,37 @@ pub extern "C" fn synthi_gpu_launch_raw_checked(
         shared_bytes,
         stream_token,
         args,
+        std::ptr::null(),
+        arg_count,
+        expected_generation,
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn synthi_gpu_launch_raw_arg_info_checked(
+    _gpu: *mut c_void,
+    kernel_name: *const c_char,
+    _grid: *const c_void,
+    grid_size: usize,
+    _block: *const c_void,
+    block_size: usize,
+    shared_bytes: usize,
+    stream_token: usize,
+    args: *const SynthiGpuLaunchArg,
+    arg_count: usize,
+    expected_generation: u64,
+) -> bool {
+    synthi_gpu_launch_raw_impl(
+        _gpu,
+        kernel_name,
+        _grid,
+        grid_size,
+        _block,
+        block_size,
+        shared_bytes,
+        stream_token,
+        std::ptr::null(),
+        args,
         arg_count,
         expected_generation,
     )
@@ -292,6 +533,36 @@ pub extern "C" fn synthi_gpu_launch_raw(
         shared_bytes,
         stream_token,
         args,
+        std::ptr::null(),
+        arg_count,
+        current_launch_generation(),
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn synthi_gpu_launch_raw_arg_info(
+    _gpu: *mut c_void,
+    kernel_name: *const c_char,
+    _grid: *const c_void,
+    grid_size: usize,
+    _block: *const c_void,
+    block_size: usize,
+    shared_bytes: usize,
+    stream_token: usize,
+    args: *const SynthiGpuLaunchArg,
+    arg_count: usize,
+) -> bool {
+    synthi_gpu_launch_raw_impl(
+        _gpu,
+        kernel_name,
+        _grid,
+        grid_size,
+        _block,
+        block_size,
+        shared_bytes,
+        stream_token,
+        std::ptr::null(),
+        args,
         arg_count,
         current_launch_generation(),
     )
@@ -307,6 +578,7 @@ fn synthi_gpu_launch_raw_impl(
     shared_bytes: usize,
     stream_token: usize,
     args: *const *const c_void,
+    arg_info: *const SynthiGpuLaunchArg,
     arg_count: usize,
     expected_generation: u64,
 ) -> bool {
@@ -325,14 +597,24 @@ fn synthi_gpu_launch_raw_impl(
         stream_token,
         arg_count,
     };
+    let arg_value_ptrs = raw_arg_pointers(args, arg_info, arg_count);
+    let dispatch_args = if arg_info.is_null() {
+        args
+    } else {
+        arg_value_ptrs.as_ptr()
+    };
 
-    let (launch_index, dispatcher) = {
+    let (launch_index, dispatcher, arg_provenance, arg_provenance_complete) = {
         let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
         for record in guard.buffers_by_ptr.values_mut() {
             // Until launch-graph write-set inference is connected, every launch
             // conservatively dirties every Synthi-managed buffer.
             record.dirty = true;
         }
+        let arg_provenance = classify_launch_args(&guard, args, arg_info, arg_count);
+        let arg_provenance_complete = arg_provenance
+            .iter()
+            .all(|arg| arg_kind_is_runtime_proven(&arg.kind));
         let launch_index = guard.launches.len();
         guard.launches.push(LaunchRecord {
             kernel_name: kernel_name.clone(),
@@ -345,6 +627,8 @@ fn synthi_gpu_launch_raw_impl(
             arg_count,
             expected_generation,
             active_generation,
+            arg_provenance: arg_provenance.clone(),
+            arg_provenance_complete,
             dispatched: false,
             dispatch_error: None,
         });
@@ -356,7 +640,12 @@ fn synthi_gpu_launch_raw_impl(
                 .expect("gpu runtime dispatcher mutex poisoned")
                 .clone()
         };
-        (launch_index, dispatcher)
+        (
+            launch_index,
+            dispatcher,
+            arg_provenance,
+            arg_provenance_complete,
+        )
     };
 
     let invalid_launch_dims = grid_decoded
@@ -369,7 +658,9 @@ fn synthi_gpu_launch_raw_impl(
     } else if stale_generation {
         Some(Err("reload_failed.stale_launch_pointer".to_string()))
     } else {
-        dispatcher.as_ref().map(|d| d.dispatch(&request, args))
+        dispatcher
+            .as_ref()
+            .map(|d| d.dispatch(&request, dispatch_args))
     };
 
     let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
@@ -432,6 +723,26 @@ fn synthi_gpu_launch_raw_impl(
             dispatch_label
         );
     }
+    let known_arg_count = arg_provenance
+        .iter()
+        .filter(|arg| arg_kind_is_runtime_proven(&arg.kind))
+        .count();
+    let unknown_arg_count = arg_provenance.len().saturating_sub(known_arg_count);
+    let degraded_state = if arg_provenance_complete {
+        "none"
+    } else {
+        "gpu-hmr-unknown-arg-provenance"
+    };
+    eprintln!(
+        "[gpu-runtime-boundary] launch_arg_provenance kernel={} generation={} complete={} known_args={} unknown_args={} degradedState={} details={}",
+        kernel_name,
+        active_generation,
+        arg_provenance_complete,
+        known_arg_count,
+        unknown_arg_count,
+        degraded_state,
+        log_safe(&arg_provenance_details(&arg_provenance))
+    );
     ok
 }
 
@@ -657,12 +968,133 @@ mod tests {
         assert_eq!(launches[0].grid, (12, 2, 1));
         assert_eq!(launches[0].block, (256, 1, 1));
         assert_eq!(launches[0].arg_count, 4);
+        assert_eq!(launches[0].arg_provenance.len(), 4);
+        assert!(!launches[0].arg_provenance_complete);
+        assert_eq!(launches[0].arg_provenance[0].kind, "missing-arg-storage");
         assert!(!launches[0].dispatched);
         assert_eq!(
             launches[0].dispatch_error.as_deref(),
             Some("no GPU launch dispatcher installed")
         );
         assert!(managed_buffers_snapshot()[0].dirty);
+    }
+
+    #[test]
+    fn launch_arg_info_records_registered_pointer_and_scalar_provenance() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let mut device_value = 7_u32;
+        let name = CString::new("registered").unwrap();
+        synthi_gpu_register_buffer(
+            std::ptr::null_mut(),
+            (&mut device_value as *mut u32).cast(),
+            std::mem::size_of_val(&device_value),
+            name.as_ptr(),
+            std::ptr::null(),
+        );
+
+        let device_ptr = (&mut device_value as *mut u32).cast::<c_void>();
+        let scalar = 42_u32;
+        let args = [
+            SynthiGpuLaunchArg {
+                value_ptr: (&device_ptr as *const *mut c_void).cast(),
+                value_size: std::mem::size_of_val(&device_ptr),
+            },
+            SynthiGpuLaunchArg {
+                value_ptr: (&scalar as *const u32).cast(),
+                value_size: std::mem::size_of_val(&scalar),
+            },
+        ];
+        let kernel = CString::new("with_provenance").unwrap();
+        let dim = 1_u32;
+
+        let ok = synthi_gpu_launch_raw_arg_info(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            args.as_ptr(),
+            args.len(),
+        );
+
+        assert!(!ok);
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert!(launches[0].arg_provenance_complete);
+        assert_eq!(launches[0].arg_provenance[0].kind, "device-allocation");
+        assert_eq!(
+            launches[0].arg_provenance[0].allocation_name.as_deref(),
+            Some("registered")
+        );
+        assert_eq!(launches[0].arg_provenance[1].kind, "scalar-value");
+    }
+
+    #[test]
+    fn launch_arg_info_marks_unknown_pointer_sized_values_unproven() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let unknown_ptr = 0x1000usize as *mut c_void;
+        let args = [SynthiGpuLaunchArg {
+            value_ptr: (&unknown_ptr as *const *mut c_void).cast(),
+            value_size: std::mem::size_of_val(&unknown_ptr),
+        }];
+        let kernel = CString::new("unknown_ptr").unwrap();
+        let dim = 1_u32;
+
+        let ok = synthi_gpu_launch_raw_arg_info(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            args.as_ptr(),
+            args.len(),
+        );
+
+        assert!(!ok);
+        let launches = launch_records_snapshot();
+        assert!(!launches[0].arg_provenance_complete);
+        assert_eq!(
+            launches[0].arg_provenance[0].kind,
+            "unknown-pointer-or-scalar"
+        );
+    }
+
+    #[test]
+    fn legacy_launch_args_without_sizes_are_unproven() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let scalar = 7_u32;
+        let raw_args = [(&scalar as *const u32).cast::<c_void>()];
+        let kernel = CString::new("legacy").unwrap();
+        let dim = 1_u32;
+
+        let ok = synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            raw_args.as_ptr(),
+            raw_args.len(),
+        );
+
+        assert!(!ok);
+        let launches = launch_records_snapshot();
+        assert!(!launches[0].arg_provenance_complete);
+        assert_eq!(launches[0].arg_provenance[0].kind, "legacy-unknown-size");
     }
 
     struct TestDispatcher {

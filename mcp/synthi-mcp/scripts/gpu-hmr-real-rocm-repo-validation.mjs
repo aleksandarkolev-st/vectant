@@ -1017,6 +1017,26 @@ function runtimeDispatchEvidence(workerEvidence) {
   };
 }
 
+function runtimeArgProvenanceEvidence(workerEvidence) {
+  const lines = workerEvidence.filter((line) =>
+    /\blaunch_arg_provenance\b/i.test(line)
+  );
+  const completeLines = lines.filter((line) => /\bcomplete=true\b/i.test(line));
+  const incompleteLines = lines.filter((line) => /\bcomplete=false\b/i.test(line));
+  const unknownCount = lines.reduce((total, line) => {
+    const match = line.match(/\bunknown_args=(\d+)/i);
+    return total + (match ? Number.parseInt(match[1], 10) || 0 : 0);
+  }, 0);
+  return {
+    total_count: lines.length,
+    complete_count: completeLines.length,
+    incomplete_count: incompleteLines.length,
+    unknown_arg_count: unknownCount,
+    complete_lines: completeLines.slice(-20),
+    incomplete_lines: incompleteLines.slice(-20),
+  };
+}
+
 function summarizeGpuProof(proof) {
   if (!proof?.resultState) return 'gpu_proof=missing';
   const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
@@ -1055,6 +1075,13 @@ function selfCheckRuntimeDispatchEvidence() {
   const scopedEvidence = runtimeDispatchEvidence(evidenceLines(scoped.text, /gpu-runtime-boundary/i));
   if (scopedEvidence.success_count !== 1 || !scopedEvidence.success_lines[0]?.includes('kernel=current')) {
     throw new Error('session-scoped dispatch evidence included stale dispatch lines');
+  }
+  const provenance = runtimeArgProvenanceEvidence([
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=current generation=2 complete=false known_args=1 unknown_args=2 degradedState=gpu-hmr-unknown-arg-provenance details=0:device-allocation:x:size=8',
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=known generation=2 complete=true known_args=2 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8',
+  ]);
+  if (provenance.total_count !== 2 || provenance.incomplete_count !== 1 || provenance.unknown_arg_count !== 2) {
+    throw new Error('runtime arg provenance evidence parser failed');
   }
   console.log('runtime dispatch evidence self-check passed');
 }
@@ -1095,6 +1122,7 @@ async function collectRuntimeEvidence() {
   const gpuDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch\/gpu/i);
   const compileHealCalls = countMatches(aiEvidence, /POST \/refactor\/heal/i);
   const runtimeDispatch = runtimeDispatchEvidence(workerEvidence);
+  const runtimeArgProvenance = runtimeArgProvenanceEvidence(workerEvidence);
   report.evidence = {
     worker_log_lines: workerEvidence,
     worker_log_lines_unscoped_tail: unscopedWorkerEvidence.slice(-50),
@@ -1119,6 +1147,7 @@ async function collectRuntimeEvidence() {
       runner_exit_errors: countMatches(workerEvidence, /Runner process exited|Rust cannot catch|fatal runtime/i),
     },
     runtime_dispatch: runtimeDispatch,
+    runtime_arg_provenance: runtimeArgProvenance,
   };
   if (runtimeDispatch.failure_count > 0) {
     record(
@@ -1133,6 +1162,16 @@ async function collectRuntimeEvidence() {
     record('runtime dispatch evidence', 'warn', `no worker log session marker captured for slug=${CFG.slug}`);
   } else {
     record('runtime dispatch evidence', 'warn', 'no synthi_gpu_launch dispatch lines captured');
+  }
+  if (runtimeArgProvenance.total_count > 0) {
+    const status = runtimeArgProvenance.incomplete_count > 0 ? 'warn' : 'pass';
+    record(
+      'runtime argument provenance',
+      status,
+      `records=${runtimeArgProvenance.total_count} complete=${runtimeArgProvenance.complete_count} incomplete=${runtimeArgProvenance.incomplete_count} unknown_args=${runtimeArgProvenance.unknown_arg_count}`,
+    );
+  } else {
+    record('runtime argument provenance', 'warn', 'no launch_arg_provenance lines captured');
   }
   record(
     'runtime evidence collected',
