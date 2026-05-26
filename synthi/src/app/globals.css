@@ -1984,6 +1984,7 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
 
 .vectant-logo-button--movable {
   cursor: grab;
+  touch-action: none;
 }
 
 .vectant-logo-button--movable:active,
