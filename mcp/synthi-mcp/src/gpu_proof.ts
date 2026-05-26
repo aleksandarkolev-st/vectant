@@ -1,0 +1,117 @@
+export const GPU_HMR_PROOF_SCHEMA_VERSION = "synthi.gpu.hmr.proof.v1";
+
+export const GPU_HMR_PROOF_STATES = [
+  "gpu-hmr-compile-proven",
+  "gpu-hmr-symbol-bound",
+  "gpu-hmr-abi-proven",
+  "gpu-hmr-dispatch-proven",
+  "gpu-hmr-output-proven",
+  "gpu-hmr-host-preservation-proven",
+  "gpu-hmr-full-runtime-proven",
+] as const;
+
+export type GpuHmrProofState = (typeof GPU_HMR_PROOF_STATES)[number];
+
+export interface GpuHmrProofTelemetry {
+  schemaVersion: string | null;
+  resultState: string;
+  degradedState: string | null;
+  degradedReason: string | null;
+  label: string | null;
+  source: "gpu_hmr_proof" | "gpu-proof-state";
+  observedAt: number;
+  raw: Record<string, unknown>;
+}
+
+export interface GpuHmrProofValidation {
+  requiredState: string;
+  requiredRank: number;
+  resultState: string | null;
+  resultRank: number;
+  satisfied: boolean;
+  reason?: string;
+}
+
+const PROOF_STATE_RANKS = new Map<string, number>(
+  GPU_HMR_PROOF_STATES.map((state, index) => [state, index + 1])
+);
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+export function isKnownGpuHmrProofState(value: unknown): value is GpuHmrProofState {
+  return typeof value === "string" && PROOF_STATE_RANKS.has(value);
+}
+
+export function gpuHmrProofStateRank(value: unknown): number {
+  return typeof value === "string" ? PROOF_STATE_RANKS.get(value) ?? 0 : 0;
+}
+
+export function classifyGpuHmrProofMessage(
+  msg: Record<string, unknown>,
+  observedAt = Date.now()
+): GpuHmrProofTelemetry | null {
+  const source =
+    msg.type === "gpu_hmr_proof"
+      ? "gpu_hmr_proof"
+      : msg.status === "gpu-proof-state"
+        ? "gpu-proof-state"
+        : null;
+  if (source === null) return null;
+
+  const resultState = stringOrNull(msg.resultState ?? msg.result_state);
+  if (resultState === null) return null;
+
+  return {
+    schemaVersion: stringOrNull(msg.schemaVersion ?? msg.schema_version),
+    resultState,
+    degradedState: stringOrNull(msg.degradedState ?? msg.degraded_state),
+    degradedReason: stringOrNull(msg.degradedReason ?? msg.degraded_reason),
+    label: stringOrNull(msg.label),
+    source,
+    observedAt,
+    raw: msg,
+  };
+}
+
+export function validateGpuHmrProofState(
+  proof: GpuHmrProofTelemetry | null,
+  requiredState: string
+): GpuHmrProofValidation {
+  const requiredRank = gpuHmrProofStateRank(requiredState);
+  if (requiredRank === 0) {
+    return {
+      requiredState,
+      requiredRank,
+      resultState: proof?.resultState ?? null,
+      resultRank: gpuHmrProofStateRank(proof?.resultState),
+      satisfied: false,
+      reason: "unknown_required_proof_state",
+    };
+  }
+  if (proof === null) {
+    return {
+      requiredState,
+      requiredRank,
+      resultState: null,
+      resultRank: 0,
+      satisfied: false,
+      reason: "proof_state_missing",
+    };
+  }
+
+  const resultRank = gpuHmrProofStateRank(proof.resultState);
+  return {
+    requiredState,
+    requiredRank,
+    resultState: proof.resultState,
+    resultRank,
+    satisfied: resultRank >= requiredRank,
+    ...(resultRank === 0
+      ? { reason: "unknown_result_proof_state" }
+      : resultRank < requiredRank
+        ? { reason: "proof_state_below_required" }
+        : {}),
+  };
+}

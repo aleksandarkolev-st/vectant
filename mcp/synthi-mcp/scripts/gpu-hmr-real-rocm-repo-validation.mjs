@@ -730,10 +730,16 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
     wait_hmr_status: wait?.status ?? null,
     wait_hmr_source: wait?.source ?? null,
     wait_hmr_detail: wait?.detail ?? null,
+    gpu_proof: wait?.gpu_proof ?? null,
+    gpu_proof_validation: wait?.gpu_proof_validation ?? null,
     wait_call_wall_ms: Date.now() - waitStart,
   };
   report.phases.push(phase);
-  record(phaseName, wait?.status === 'applied' ? 'pass' : 'fail', JSON.stringify(phase).slice(0, 1000));
+  record(
+    phaseName,
+    wait?.status === 'applied' ? 'pass' : 'fail',
+    `${summarizeGpuProof(phase.gpu_proof)} ${JSON.stringify(phase).slice(0, 1000)}`,
+  );
   if (wait?.status !== 'applied') throw new Error(`${phaseName} wait_hmr status=${wait?.status}`);
   return { compile, wait, phase };
 }
@@ -1011,6 +1017,14 @@ function runtimeDispatchEvidence(workerEvidence) {
   };
 }
 
+function summarizeGpuProof(proof) {
+  if (!proof?.resultState) return 'gpu_proof=missing';
+  const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
+  const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
+  const label = proof.label ? ` label=${proof.label}` : '';
+  return `gpu_proof=${proof.resultState}${degraded}${label}${reason}`;
+}
+
 function selfCheckRuntimeDispatchEvidence() {
   const evidence = runtimeDispatchEvidence([
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=first grid=(1, 1, 1) dispatch=ok',
@@ -1175,6 +1189,8 @@ async function writeResults() {
     ...report.checks.map((check) => `${check.status.toUpperCase()} ${check.name}${check.detail ? ` - ${check.detail}` : ''}`),
     '',
     ...report.phases.map((phase) => `PHASE ${phase.name} ${JSON.stringify(phase)}`),
+    '',
+    ...report.phases.map((phase) => `GPU_PROOF ${phase.name} ${summarizeGpuProof(phase.gpu_proof)}`),
     '',
     ...report.screenshots.map((shot) => `SCREENSHOT ${shot.label} visible=${shot.visible_pixels} luma=${shot.mean_luma.toFixed(1)} path=${shot.path}`),
     '',

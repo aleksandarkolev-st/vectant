@@ -356,6 +356,7 @@ use crate::hmr::gpu_device_fast_path::{
     try_direct_device_body_patch,
 };
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
+use crate::hmr::gpu_proof::{GpuHmrDegradedState, GpuHmrProofState, GpuHmrProofTelemetry};
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
 
 fn strip_c_like_comments(source: &str) -> String {
@@ -2381,6 +2382,49 @@ fn device_hmr_result_label(outcome: &DeviceCompileOutcome) -> &'static str {
     } else {
         "gpu-hmr-full-device"
     }
+}
+
+fn artifact_exports_expected_device_symbols(outcome: &DeviceCompileOutcome) -> bool {
+    let exported = normalized_symbol_set(&outcome.artifact_exported_symbols);
+    if exported.is_empty() {
+        return false;
+    }
+
+    let expected = normalized_symbol_set(&outcome.target_symbols);
+    if expected.is_empty() {
+        return false;
+    }
+
+    expected.iter().all(|expected_symbol| {
+        exported.iter().any(|exported_symbol| {
+            exported_symbol == expected_symbol
+                || exported_symbol_source_identity_candidates(exported_symbol)
+                    .iter()
+                    .any(|candidate| candidate == expected_symbol)
+        })
+    })
+}
+
+fn device_hmr_proof_telemetry(outcome: &DeviceCompileOutcome) -> GpuHmrProofTelemetry {
+    let result_state = if artifact_exports_expected_device_symbols(outcome) {
+        GpuHmrProofState::SymbolBound
+    } else {
+        GpuHmrProofState::CompileProven
+    };
+
+    let degraded_reason = match outcome.fallback_reason.as_deref() {
+        Some(reason) if !reason.trim().is_empty() => {
+            format!("runtime_dispatch_not_observed;fallback_reason={reason}")
+        }
+        _ => "runtime_dispatch_not_observed".to_string(),
+    };
+
+    GpuHmrProofTelemetry::new(
+        result_state,
+        Some(GpuHmrDegradedState::DispatchUnobserved),
+        Some(degraded_reason),
+        Some(device_hmr_result_label(outcome).to_string()),
+    )
 }
 
 fn device_reload_kernel_symbols(source: &str, outcome: &DeviceCompileOutcome) -> Vec<String> {
@@ -7387,6 +7431,7 @@ pub async fn handle_compile_request(
         eprintln!("[HMR] host_runner binary: {}", p);
     }
     if let Some(ref out) = device_compile_outcome {
+        let proof = device_hmr_proof_telemetry(out);
         let selected_artifact_bytes = out
             .selected_artifact_bytes
             .map(|bytes| bytes.to_string())
@@ -7411,6 +7456,15 @@ pub async fn handle_compile_request(
             selected_artifact_bytes,
             full_device_bytes
         );
+        eprintln!("[compile-device] {}", proof.to_log_line());
+        let status = HmrStatus::gpu_proof_state(
+            "device",
+            &proof.result_state,
+            proof.degraded_state.as_deref(),
+            proof.degraded_reason.as_deref(),
+            proof.label.as_deref(),
+        );
+        let _ = ctx.log_dc.send_text(status.to_json()).await;
     }
 
     // ULTRAPLAN Phase 9e — emit cache hit-rate snapshot after every
@@ -7890,6 +7944,7 @@ pub async fn handle_compile_request(
             } else {
                 "__gpu_device"
             };
+            let proof = device_hmr_proof_telemetry(device_outcome);
             eprintln!(
                 "[compile-device] reload package label={} fallbackUsed={} fallbackReason={} requestedArtifactKind={} selectedArtifactKind={} selectedArtifactBytes={} fullDeviceBytes={}",
                 device_hmr_result_label(device_outcome),
@@ -7912,6 +7967,7 @@ pub async fn handle_compile_request(
                     .map(|bytes| bytes.to_string())
                     .unwrap_or_else(|| "none".to_string())
             );
+            eprintln!("[compile-device] {}", proof.to_log_line());
             let device_cmd = format!(
                 "{}:{}:{}:{}",
                 marker,
@@ -8557,6 +8613,37 @@ mod gpu_host_contract_tests {
         assert_eq!(
             outcome.fallback_reason.as_deref(),
             Some("partial_compile_failed")
+        );
+    }
+
+    #[test]
+    fn device_hmr_proof_reports_symbol_bound_but_dispatch_unobserved() {
+        let outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["_Z5shadePi"]));
+
+        let proof = device_hmr_proof_telemetry(&outcome);
+
+        assert_eq!(proof.result_state, "gpu-hmr-symbol-bound");
+        assert_eq!(
+            proof.degraded_state.as_deref(),
+            Some("gpu-hmr-dispatch-unobserved")
+        );
+        assert_eq!(
+            proof.degraded_reason.as_deref(),
+            Some("runtime_dispatch_not_observed")
+        );
+        assert_eq!(proof.label.as_deref(), Some("gpu-hmr-partial"));
+    }
+
+    #[test]
+    fn device_hmr_proof_stays_compile_proven_without_export_evidence() {
+        let outcome = fixture_device_outcome(true, symbols(&["shade"]), Vec::new());
+
+        let proof = device_hmr_proof_telemetry(&outcome);
+
+        assert_eq!(proof.result_state, "gpu-hmr-compile-proven");
+        assert_eq!(
+            proof.degraded_state.as_deref(),
+            Some("gpu-hmr-dispatch-unobserved")
         );
     }
 

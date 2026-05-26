@@ -145,6 +145,23 @@ const TOOLS = [
           type: "string",
           description: "Optional terminal HMR module filter, for example 'device' to wait for GPU sidecar HMR instead of the first core/gui status.",
         },
+        requiredGpuProofState: {
+          type: "string",
+          enum: [
+            "gpu-hmr-compile-proven",
+            "gpu-hmr-symbol-bound",
+            "gpu-hmr-abi-proven",
+            "gpu-hmr-dispatch-proven",
+            "gpu-hmr-output-proven",
+            "gpu-hmr-host-preservation-proven",
+            "gpu-hmr-full-runtime-proven",
+          ],
+          description: "Optional minimum GPU HMR proof state. If the latest GPU proof telemetry is missing or below this state, the tool returns gpu_hmr_proof_insufficient instead of treating HMR applied as full correctness.",
+        },
+        requireGpuFullRuntimeProof: {
+          type: "boolean",
+          description: "Shortcut for requiredGpuProofState='gpu-hmr-full-runtime-proven'. This must only pass when the full proof ladder has been satisfied.",
+        },
       },
       required: [],
     },

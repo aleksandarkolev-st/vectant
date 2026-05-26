@@ -1,4 +1,8 @@
 import type { RTCDataChannel } from "werift";
+import {
+  classifyGpuHmrProofMessage,
+  type GpuHmrProofTelemetry,
+} from "./gpu_proof.js";
 
 /**
  * HMR normalizer. Parses the four wire families emitted by the worker on the
@@ -135,6 +139,7 @@ function terminalModule(detail: Record<string, unknown>): string | null {
 export class HmrNormalizer {
   private readonly listeners = new Set<MessageHandler>();
   private readonly unbind: () => void;
+  private latestProof: GpuHmrProofTelemetry | null = null;
 
   constructor(dc: RTCDataChannel) {
     const dcListener = (ev: Event): void => {
@@ -154,6 +159,8 @@ export class HmrNormalizer {
       } catch {
         return;
       }
+      const proof = classifyGpuHmrProofMessage(parsed);
+      if (proof) this.latestProof = proof;
       for (const listener of this.listeners) listener(parsed);
     };
     dc.addEventListener("message", dcListener);
@@ -165,6 +172,10 @@ export class HmrNormalizer {
     return (): void => {
       this.listeners.delete(cb);
     };
+  }
+
+  latestGpuProof(): GpuHmrProofTelemetry | null {
+    return this.latestProof;
   }
 
   /**

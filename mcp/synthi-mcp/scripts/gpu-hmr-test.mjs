@@ -1578,6 +1578,21 @@ function gpuHmrFallbackTelemetry(logText) {
   };
 }
 
+function summarizeGpuProof(proof) {
+  if (!proof?.resultState) return 'gpu_proof=missing';
+  const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
+  const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
+  const label = proof.label ? ` label=${proof.label}` : '';
+  return `gpu_proof=${proof.resultState}${degraded}${label}${reason}`;
+}
+
+function recordGpuProof(phase, name, hmr) {
+  const proof = hmr?.gpu_proof ?? null;
+  const ok = typeof proof?.resultState === 'string' && proof.resultState.startsWith('gpu-hmr-');
+  record(phase, name, ok ? 'pass' : 'fail', summarizeGpuProof(proof));
+  return proof;
+}
+
 async function assertNoGpuHmrFallback(phase, name, checkpoint, maxBytes = 8 * 1024 * 1024) {
   const logOpts = checkpoint?.fileSize != null
     ? { fromOffset: checkpoint.fileSize }
@@ -1838,6 +1853,7 @@ async function phaseFlow(ctx) {
     return record('FLOW', 'inward compile dispatch', 'warn', baseline.reason);
   }
   record('FLOW', 'inward compile dispatch', 'pass');
+  recordGpuProof('FLOW', 'inward truthful proof state', baseline.hmr);
 
   const baselineLaunch = await awaitWorkerLogRegex(
     /synthi_gpu_launch kernel=particle_flow|Device sidecar reload vendor=.*result=Success/,
@@ -1867,6 +1883,7 @@ async function phaseFlow(ctx) {
     return record('FLOW', 'outward edit dispatch', 'warn', flip.reason);
   }
   record('FLOW', 'outward edit dispatch', 'pass');
+  recordGpuProof('FLOW', 'outward truthful proof state', flip.hmr);
 
   const fastSwap = await awaitWorkerLogRegex(
     /\[gpu-reload\].*plan=device_only|state_preserved:\s*true|Device sidecar reload vendor=.*result=Success/,
@@ -2428,7 +2445,7 @@ async function selfCheck() {
     { path: 'gui.cpp', content: GUI_CPP },
     { path: 'host_runner.cpp', content: HOST_RUNNER_CPP },
     { path: 'device.cu', content: DEVICE_CU_PHASE0 },
-    { path: '.synthi/build_manifest.json', content: JSON.stringify(manifestFor('cuda', 'vector'), null, 2) },
+    { path: '.synthi/build_manifest.json', content: JSON.stringify(manifestFor('cuda', 'vector', 'sm_80'), null, 2) },
   ];
   const flowFiles = [
     { path: 'shared.h', content: FLOW_SHARED_H },
@@ -2436,7 +2453,7 @@ async function selfCheck() {
     { path: 'gui.cpp', content: FLOW_GUI_CPP },
     { path: 'host_runner.cpp', content: HOST_RUNNER_CPP },
     { path: 'device.cu', content: FLOW_DEVICE_INWARD },
-    { path: '.synthi/build_manifest.json', content: JSON.stringify(manifestFor('cuda', 'flow'), null, 2) },
+    { path: '.synthi/build_manifest.json', content: JSON.stringify(manifestFor('cuda', 'flow', 'sm_80'), null, 2) },
   ];
   const vectorContract = verifySeedFixtureContract(vectorFiles);
   const flowContract = verifySeedFixtureContract(flowFiles);
@@ -2458,10 +2475,22 @@ async function selfCheck() {
   const partialTelemetry = gpuHmrFallbackTelemetry(
     '[compile-device] reload package label=gpu-hmr-partial fallbackUsed=false selectedArtifactKind=source_include_bridge\n',
   );
+  const proofSummary = summarizeGpuProof({
+    resultState: 'gpu-hmr-symbol-bound',
+    degradedState: 'gpu-hmr-dispatch-unobserved',
+    degradedReason: 'runtime_dispatch_not_observed',
+    label: 'gpu-hmr-partial',
+  });
   const degradedTelemetry = gpuHmrFallbackTelemetry(
     '[compile-device] reload package label=gpu-hmr-degraded-full-device fallbackUsed=true fallbackReason=partial_compile_failed selectedArtifactKind=full_device\n',
   );
-  if (!partialTelemetry.label || partialTelemetry.degraded || !degradedTelemetry.degraded) {
+  if (
+    !partialTelemetry.label ||
+    partialTelemetry.degraded ||
+    !degradedTelemetry.degraded ||
+    !proofSummary.includes('gpu-hmr-symbol-bound') ||
+    !proofSummary.includes('gpu-hmr-dispatch-unobserved')
+  ) {
     console.error('gpu-hmr-test self-check failed: fallback telemetry parser did not classify labels');
     process.exitCode = 1;
     return;

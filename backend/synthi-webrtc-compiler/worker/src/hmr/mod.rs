@@ -63,6 +63,7 @@ pub mod gpu_module_adapter;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_module_manager;
 pub mod gpu_prod_contracts;
+pub mod gpu_proof;
 #[cfg(feature = "gpu-hmr")]
 pub mod gpu_reload_orchestrator;
 #[cfg(feature = "gpu-hmr")]
