@@ -1042,6 +1042,25 @@ function runtimeArgProvenanceEvidence(workerEvidence) {
   };
 }
 
+function runtimeSessionEvidence(workerEvidence) {
+  const ids = [];
+  const lines = [];
+  for (const line of workerEvidence) {
+    if (!/\bgpu-runtime-boundary\b/i.test(line)) continue;
+    const match = line.match(/\bruntime_session=([^\s]+)/i);
+    if (!match) continue;
+    ids.push(match[1]);
+    lines.push(line);
+  }
+  const unique_ids = [...new Set(ids)].sort();
+  return {
+    record_count: ids.length,
+    unique_ids,
+    consistent: unique_ids.length === 1,
+    lines: lines.slice(-20),
+  };
+}
+
 function summarizeGpuProof(proof) {
   if (!proof?.resultState) return 'gpu_proof=missing';
   const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
@@ -1087,6 +1106,13 @@ function selfCheckRuntimeDispatchEvidence() {
   ]);
   if (provenance.total_count !== 2 || provenance.incomplete_count !== 1 || provenance.unknown_arg_count !== 2) {
     throw new Error('runtime arg provenance evidence parser failed');
+  }
+  const runtimeSession = runtimeSessionEvidence([
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=current grid=(1, 1, 1) dispatch=ok runtime_session=pid1-100',
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=current generation=2 runtime_session=pid1-100 complete=true known_args=1 unknown_args=0 degradedState=none details=-',
+  ]);
+  if (!runtimeSession.consistent || runtimeSession.unique_ids[0] !== 'pid1-100') {
+    throw new Error('runtime session evidence parser failed');
   }
   const visualOnlyProof = classifyGpuHmrOutputProof({
     dispatchObserved: true,
@@ -1142,6 +1168,7 @@ async function collectRuntimeEvidence() {
   const compileHealCalls = countMatches(aiEvidence, /POST \/refactor\/heal/i);
   const runtimeDispatch = runtimeDispatchEvidence(workerEvidence);
   const runtimeArgProvenance = runtimeArgProvenanceEvidence(workerEvidence);
+  const runtimeSession = runtimeSessionEvidence(workerEvidence);
   report.evidence = {
     worker_log_lines: workerEvidence,
     worker_log_lines_unscoped_tail: unscopedWorkerEvidence.slice(-50),
@@ -1167,6 +1194,7 @@ async function collectRuntimeEvidence() {
     },
     runtime_dispatch: runtimeDispatch,
     runtime_arg_provenance: runtimeArgProvenance,
+    runtime_session: runtimeSession,
   };
   if (runtimeDispatch.failure_count > 0) {
     record(
@@ -1191,6 +1219,15 @@ async function collectRuntimeEvidence() {
     );
   } else {
     record('runtime argument provenance', 'warn', 'no launch_arg_provenance lines captured');
+  }
+  if (runtimeSession.record_count > 0) {
+    record(
+      'runtime session provenance',
+      runtimeSession.consistent ? 'pass' : 'warn',
+      `records=${runtimeSession.record_count} ids=${runtimeSession.unique_ids.join(',')}`,
+    );
+  } else {
+    record('runtime session provenance', 'warn', 'no runtime_session launch evidence captured');
   }
   const freshVisualFrames = report.screenshots.filter(
     (shot) => shot && shot.width >= 320 && shot.height >= 240 && shot.visible_pixels > 500,

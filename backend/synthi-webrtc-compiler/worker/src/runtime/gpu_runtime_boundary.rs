@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_void, CStr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::runtime::capability::HmrStatus;
 
@@ -62,6 +63,7 @@ const SYNTHI_GPU_ARG_KIND_AGGREGATE: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchRecord {
+    pub runtime_session_id: String,
     pub kernel_name: String,
     pub grid: (u32, u32, u32),
     pub block: (u32, u32, u32),
@@ -107,6 +109,7 @@ struct BoundaryState {
 static STATE: OnceLock<Mutex<BoundaryState>> = OnceLock::new();
 static DISPATCHER: OnceLock<Mutex<Option<Arc<dyn GpuLaunchDispatcher>>>> = OnceLock::new();
 static LAUNCH_GENERATION: AtomicU64 = AtomicU64::new(1);
+static RUNTIME_SESSION_ID: OnceLock<String> = OnceLock::new();
 #[cfg(test)]
 static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -140,6 +143,18 @@ pub fn clear_launch_dispatcher() -> Option<Arc<dyn GpuLaunchDispatcher>> {
 
 pub fn current_launch_generation() -> u64 {
     LAUNCH_GENERATION.load(Ordering::SeqCst)
+}
+
+pub fn runtime_session_id() -> &'static str {
+    RUNTIME_SESSION_ID
+        .get_or_init(|| {
+            let start_nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0);
+            format!("pid{}-{}", std::process::id(), start_nanos)
+        })
+        .as_str()
 }
 
 fn cstr(ptr: *const c_char) -> Option<String> {
@@ -654,6 +669,7 @@ fn synthi_gpu_launch_raw_impl(
     let grid = grid_decoded.dims;
     let block = block_decoded.dims;
     let active_generation = current_launch_generation();
+    let runtime_session_id = runtime_session_id().to_string();
     let stale_generation = expected_generation != 0 && expected_generation != active_generation;
     let request = GpuLaunchRequest {
         kernel_name: kernel_name.clone(),
@@ -683,6 +699,7 @@ fn synthi_gpu_launch_raw_impl(
             .all(|arg| arg_kind_is_runtime_proven(&arg.kind));
         let launch_index = guard.launches.len();
         guard.launches.push(LaunchRecord {
+            runtime_session_id: runtime_session_id.clone(),
             kernel_name: kernel_name.clone(),
             grid,
             block,
@@ -766,7 +783,7 @@ fn synthi_gpu_launch_raw_impl(
 
     if let Some(error) = dispatch_error.as_deref() {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} error={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={} error={}",
             kernel_name,
             grid,
             block,
@@ -774,19 +791,21 @@ fn synthi_gpu_launch_raw_impl(
             stream_token,
             shared_bytes,
             dispatch_label,
+            runtime_session_id,
             log_safe(error)
         );
         maybe_emit_launch_failure_status(&kernel_name, error, dispatch_label, active_generation);
     } else {
         eprintln!(
-            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={}",
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} runtime_session={}",
             kernel_name,
             grid,
             block,
             arg_count,
             stream_token,
             shared_bytes,
-            dispatch_label
+            dispatch_label,
+            runtime_session_id
         );
     }
     let known_arg_count = arg_provenance
@@ -800,9 +819,10 @@ fn synthi_gpu_launch_raw_impl(
         "gpu-hmr-unknown-arg-provenance"
     };
     eprintln!(
-        "[gpu-runtime-boundary] launch_arg_provenance kernel={} generation={} complete={} known_args={} unknown_args={} degradedState={} details={}",
+        "[gpu-runtime-boundary] launch_arg_provenance kernel={} generation={} runtime_session={} complete={} known_args={} unknown_args={} degradedState={} details={}",
         kernel_name,
         active_generation,
+        runtime_session_id,
         arg_provenance_complete,
         known_arg_count,
         unknown_arg_count,
@@ -1031,6 +1051,7 @@ mod tests {
         let launches = launch_records_snapshot();
         assert_eq!(launches.len(), 1);
         assert_eq!(launches[0].kernel_name, "vec_add");
+        assert_eq!(launches[0].runtime_session_id, runtime_session_id());
         assert_eq!(launches[0].grid, (12, 2, 1));
         assert_eq!(launches[0].block, (256, 1, 1));
         assert_eq!(launches[0].arg_count, 4);
