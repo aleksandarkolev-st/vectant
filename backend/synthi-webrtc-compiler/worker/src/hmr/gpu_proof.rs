@@ -143,6 +143,8 @@ pub struct GpuHmrProofEvidenceRef {
     #[serde(rename = "artifactUri", skip_serializing_if = "Option::is_none")]
     pub artifact_uri: Option<String>,
     pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -588,6 +590,7 @@ mod tests {
                 file_path: Some("build/device.hsaco".to_string()),
                 artifact_uri: Some("artifact:sha256:artifact-a".to_string()),
                 summary: "Compiled device artifact bytes".to_string(),
+                metadata: None,
             }],
             visual_evidence_refs: Vec::new(),
             created_at: Some(created_at),

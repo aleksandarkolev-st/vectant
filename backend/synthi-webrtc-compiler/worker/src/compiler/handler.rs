@@ -2438,6 +2438,7 @@ fn device_hmr_proof_stage_results(
     artifact_evidence_id: &str,
     compiler_evidence_id: &str,
     symbol_evidence_id: &str,
+    abi_evidence_id: &str,
     symbol_bound: bool,
     proof: &GpuHmrProofTelemetry,
 ) -> Vec<GpuHmrProofStageResult> {
@@ -2488,9 +2489,9 @@ fn device_hmr_proof_stage_results(
             completed_at: created_at.to_string(),
             input_artifact_ids: vec![selected_artifact_id.to_string()],
             output_artifact_ids: Vec::new(),
-            evidence_refs: Vec::new(),
+            evidence_refs: vec![abi_evidence_id.to_string()],
             degraded_state: Some(GpuHmrDegradedState::AbiUnverified.as_str().to_string()),
-            degraded_reason: Some("abi_evidence_not_collected".to_string()),
+            degraded_reason: Some("abi_layout_size_alignment_unverified".to_string()),
         },
         GpuHmrProofStageResult {
             stage_id: "runtime-dispatch-observation".to_string(),
@@ -2550,6 +2551,23 @@ async fn write_device_hmr_proof_artifact(
     });
     let symbol_evidence_hash = sha256_hex_str(&symbol_material.to_string());
     let symbol_evidence_id = format!("evidence:device-symbols:{symbol_evidence_hash}");
+    let kernel_abi_fingerprint = kernel_abi_fingerprint_source(&outcome.compiled_source);
+    let constant_global_layout_hash =
+        device_constant_global_layout_fingerprint(&outcome.compiled_source);
+    let abi_material = serde_json::json!({
+        "schemaVersion": "synthi.gpu.hmr.abi_metadata.v1",
+        "kernelSymbols": extract_device_kernel_symbols(&outcome.compiled_source),
+        "kernelSignatures": extract_device_kernel_signatures(&outcome.compiled_source),
+        "kernelAbiFingerprintHash": sha256_hex_str(&kernel_abi_fingerprint),
+        "constantGlobalLayoutHash": &constant_global_layout_hash,
+        "partialModule": outcome.partial_module,
+        "targetSymbols": &outcome.target_symbols,
+        "artifactExportedSymbols": &outcome.artifact_exported_symbols,
+        "selectedArtifactKind": outcome.selected_artifact_kind.as_deref(),
+        "requestedArtifactKind": outcome.requested_artifact_kind.as_deref(),
+    });
+    let abi_evidence_hash = sha256_hex_str(&abi_material.to_string());
+    let abi_evidence_id = format!("evidence:device-abi-metadata:{abi_evidence_hash}");
 
     let mut evidence_refs = vec![
         GpuHmrProofEvidenceRef {
@@ -2570,6 +2588,12 @@ async fn write_device_hmr_proof_artifact(
                     .as_deref()
                     .unwrap_or("unspecified")
             ),
+            metadata: Some(serde_json::json!({
+                "artifactBytes": artifact_bytes.len(),
+                "partialModule": outcome.partial_module,
+                "selectedArtifactKind": outcome.selected_artifact_kind.as_deref(),
+                "requestedArtifactKind": outcome.requested_artifact_kind.as_deref(),
+            })),
         },
         GpuHmrProofEvidenceRef {
             evidence_id: compiler_evidence_id.clone(),
@@ -2585,6 +2609,11 @@ async fn write_device_hmr_proof_artifact(
                 outcome.compiler_elapsed_ms,
                 outcome.stderr.len()
             ),
+            metadata: Some(serde_json::json!({
+                "compilerElapsedMs": outcome.compiler_elapsed_ms,
+                "stderrBytes": outcome.stderr.len(),
+                "diagnostics": &outcome.diagnostics,
+            })),
         },
         GpuHmrProofEvidenceRef {
             evidence_id: symbol_evidence_id.clone(),
@@ -2601,6 +2630,27 @@ async fn write_device_hmr_proof_artifact(
                 outcome.artifact_exported_symbols.len(),
                 artifact_exports_expected_device_symbols(outcome)
             ),
+            metadata: Some(symbol_material),
+        },
+        GpuHmrProofEvidenceRef {
+            evidence_id: abi_evidence_id.clone(),
+            kind: "device-abi-metadata".to_string(),
+            content_hash: format!("sha256:{abi_evidence_hash}"),
+            producer_subsystem: "worker.compile_device".to_string(),
+            timestamp: created_at.clone(),
+            session_id: Some(runtime_session_id.clone()),
+            file_path: None,
+            artifact_uri: Some(selected_artifact_id.clone()),
+            summary: format!(
+                "kernel_signatures={} constant_global_layout_hash={} metadata_only=true",
+                abi_material
+                    .get("kernelSignatures")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| items.len())
+                    .unwrap_or(0),
+                constant_global_layout_hash
+            ),
+            metadata: Some(abi_material),
         },
     ];
 
@@ -2616,6 +2666,7 @@ async fn write_device_hmr_proof_artifact(
             file_path: None,
             artifact_uri: Some(selected_artifact_id.clone()),
             summary: reason.to_string(),
+            metadata: None,
         });
     }
 
@@ -2627,6 +2678,7 @@ async fn write_device_hmr_proof_artifact(
         &artifact_evidence_id,
         &compiler_evidence_id,
         &symbol_evidence_id,
+        &abi_evidence_id,
         symbol_bound,
         proof,
     );
@@ -8897,6 +8949,7 @@ mod gpu_host_contract_tests {
             "evidence:artifact",
             "evidence:compiler",
             "evidence:symbols",
+            "evidence:abi",
             artifact_exports_expected_device_symbols(&outcome),
             &proof,
         );
@@ -8912,13 +8965,109 @@ mod gpu_host_contract_tests {
         );
         assert_eq!(
             stages[2].degraded_reason.as_deref(),
-            Some("abi_evidence_not_collected")
+            Some("abi_layout_size_alignment_unverified")
         );
+        assert_eq!(stages[2].evidence_refs, vec!["evidence:abi".to_string()]);
         assert_eq!(stages[3].stage_id, "runtime-dispatch-observation");
         assert_eq!(
             stages[3].degraded_state.as_deref(),
             Some("gpu-hmr-dispatch-unobserved")
         );
+    }
+
+    #[tokio::test]
+    async fn device_hmr_proof_artifact_records_metadata_only_abi_evidence() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact_path = temp.path().join("device.hsaco");
+        tokio::fs::write(&artifact_path, b"device-artifact")
+            .await
+            .unwrap();
+        let mut outcome =
+            fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        outcome.artifact_path = artifact_path;
+        outcome.compiled_source = r#"
+extern "C" __global__ void shade(float* pixels, int count) {}
+__constant__ int scale;
+"#
+        .to_string();
+        outcome.requested_artifact_kind = Some("source_include_bridge".to_string());
+        outcome.selected_artifact_kind = Some("source_include_bridge".to_string());
+        let proof = device_hmr_proof_telemetry(&outcome);
+
+        let written = write_device_hmr_proof_artifact(
+            temp.path(),
+            Some("workspace"),
+            "runtime-session",
+            "source-edit:unit",
+            &outcome,
+            &proof,
+        )
+        .await
+        .unwrap();
+        let artifact = crate::hmr::gpu_proof::read_proof_artifact(&written.path)
+            .await
+            .unwrap();
+        let abi_evidence = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| evidence.kind == "device-abi-metadata")
+            .expect("ABI metadata evidence should be recorded");
+        let metadata = abi_evidence
+            .metadata
+            .as_ref()
+            .expect("ABI metadata evidence should include structured metadata");
+
+        assert!(abi_evidence
+            .evidence_id
+            .starts_with("evidence:device-abi-metadata:"));
+        assert_eq!(
+            metadata
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_str),
+            Some("synthi.gpu.hmr.abi_metadata.v1")
+        );
+        assert_eq!(
+            metadata
+                .get("kernelSignatures")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            metadata
+                .get("partialModule")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            metadata
+                .get("selectedArtifactKind")
+                .and_then(serde_json::Value::as_str),
+            Some("source_include_bridge")
+        );
+        assert!(metadata
+            .get("kernelAbiFingerprintHash")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|hash| hash.len() == 64));
+        assert!(metadata
+            .get("constantGlobalLayoutHash")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|hash| !hash.is_empty()));
+        let abi_stage = artifact
+            .stage_results
+            .iter()
+            .find(|stage| stage.stage_id == "abi-compatibility")
+            .expect("ABI proof stage should be recorded");
+        assert_eq!(abi_stage.status, "blocked");
+        assert_eq!(
+            abi_stage.degraded_state.as_deref(),
+            Some("gpu-hmr-abi-unverified")
+        );
+        assert_eq!(
+            abi_stage.degraded_reason.as_deref(),
+            Some("abi_layout_size_alignment_unverified")
+        );
+        assert_eq!(abi_stage.evidence_refs, vec![abi_evidence.evidence_id.clone()]);
     }
 
     #[test]
