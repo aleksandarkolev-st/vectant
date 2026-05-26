@@ -65,7 +65,12 @@ function stageResult(stageId, requiredState, evidenceRank, evidenceProof, degrad
 }
 
 export function classifyGpuHmrOutputProof(observation = {}) {
-  const dispatchObserved = observation.dispatchObserved === true;
+  const dispatchProof = observation.dispatchProof && typeof observation.dispatchProof === 'object'
+    ? observation.dispatchProof
+    : null;
+  const dispatchUsable = dispatchProof
+    ? effectiveProofRank(dispatchProof) >= proofStateRank('gpu-hmr-dispatch-proven')
+    : observation.dispatchObserved === true;
   const deterministicOutputObserved = observation.deterministicOutputObserved === true;
   const deterministicOracleProvided = observation.deterministicOracleProvided === true;
   const deterministicOraclePassed =
@@ -78,12 +83,12 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     ? observation.visualEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
 
-  if (!dispatchObserved) {
+  if (!dispatchUsable) {
     return {
       schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
-      resultState: null,
-      degradedState: 'gpu-hmr-dispatch-unobserved',
-      degradedReason: 'runtime_dispatch_not_observed',
+      resultState: dispatchProof?.resultState ?? null,
+      degradedState: dispatchProof?.degradedState ?? 'gpu-hmr-dispatch-unobserved',
+      degradedReason: dispatchProof?.degradedReason ?? 'runtime_dispatch_not_observed',
       outputOracle: {
         provided: deterministicOracleProvided,
         observed: deterministicOutputObserved,
@@ -92,6 +97,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       visualFrameObserved,
       evidenceRefs,
       visualEvidenceRefs,
+      dispatchProof,
     };
   }
 
@@ -109,6 +115,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       visualFrameObserved,
       evidenceRefs,
       visualEvidenceRefs,
+      dispatchProof,
     };
   }
 
@@ -132,6 +139,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     visualFrameObserved,
     evidenceRefs,
     visualEvidenceRefs,
+    dispatchProof,
   };
 }
 
@@ -145,6 +153,67 @@ export function summarizeGpuHmrOutputProof(proof) {
     : '';
   const visual = proof.visualFrameObserved ? ' visual=fresh-frame' : ' visual=none';
   return `gpu_output_proof=${result}${degraded}${reason}${oracle}${visual}`;
+}
+
+export function classifyGpuHmrDispatchProof(observation = {}) {
+  const dispatchObserved = observation.dispatchObserved === true;
+  const argProvenanceObserved = observation.argProvenanceObserved === true;
+  const argProvenanceComplete = observation.argProvenanceComplete === true;
+  const unknownArgCount = Number.isFinite(observation.unknownArgCount)
+    ? Math.max(0, Number(observation.unknownArgCount))
+    : 0;
+
+  if (!dispatchObserved) {
+    return {
+      schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+      resultState: null,
+      degradedState: 'gpu-hmr-dispatch-unobserved',
+      degradedReason: 'runtime_dispatch_not_observed',
+      dispatchObserved: false,
+      argProvenanceObserved,
+      argProvenanceComplete: false,
+      unknownArgCount,
+    };
+  }
+
+  if (!argProvenanceObserved || !argProvenanceComplete || unknownArgCount > 0) {
+    return {
+      schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+      resultState: 'gpu-hmr-dispatch-proven',
+      degradedState: 'gpu-hmr-unknown-arg-provenance',
+      degradedReason: argProvenanceObserved
+        ? 'launch_argument_provenance_incomplete'
+        : 'launch_argument_provenance_not_collected',
+      dispatchObserved: true,
+      argProvenanceObserved,
+      argProvenanceComplete: false,
+      unknownArgCount,
+    };
+  }
+
+  return {
+    schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+    resultState: 'gpu-hmr-dispatch-proven',
+    degradedState: null,
+    degradedReason: null,
+    dispatchObserved: true,
+    argProvenanceObserved: true,
+    argProvenanceComplete: true,
+    unknownArgCount: 0,
+  };
+}
+
+export function summarizeGpuHmrDispatchProof(proof) {
+  if (!proof || typeof proof !== 'object') return 'gpu_dispatch_proof=missing';
+  const result = proof.resultState ? proof.resultState : 'missing';
+  const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
+  const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
+  const dispatch = proof.dispatchObserved ? ' dispatch=observed' : ' dispatch=missing';
+  const provenance = proof.argProvenanceObserved
+    ? ` provenance=${proof.argProvenanceComplete ? 'complete' : 'incomplete'}`
+    : ' provenance=missing';
+  const unknown = Number.isFinite(proof.unknownArgCount) ? ` unknown_args=${proof.unknownArgCount}` : '';
+  return `gpu_dispatch_proof=${result}${degraded}${reason}${dispatch}${provenance}${unknown}`;
 }
 
 export function classifyGpuHmrAbiProof(observation = {}) {
@@ -260,6 +329,16 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
   const outputRank = effectiveProofRank(outputProof);
   const hostRank = effectiveProofRank(hostPreservationProof);
   const abiRank = effectiveProofRank(abiProof);
+  const dispatchProof = observation.dispatchProof && typeof observation.dispatchProof === 'object'
+    ? observation.dispatchProof
+    : outputRank >= proofStateRank('gpu-hmr-dispatch-proven')
+      ? classifyGpuHmrDispatchProof({
+          dispatchObserved: true,
+          argProvenanceObserved: true,
+          argProvenanceComplete: true,
+        })
+      : classifyGpuHmrDispatchProof({});
+  const dispatchRank = effectiveProofRank(dispatchProof);
   const stages = [
     stageResult(
       'compile',
@@ -288,10 +367,10 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
     stageResult(
       'dispatch',
       'gpu-hmr-dispatch-proven',
-      outputRank,
-      outputProof,
-      'gpu-hmr-dispatch-unobserved',
-      'runtime_dispatch_not_observed',
+      dispatchRank,
+      dispatchProof,
+      dispatchProof?.degradedState ?? 'gpu-hmr-dispatch-unobserved',
+      dispatchProof?.degradedReason ?? 'runtime_dispatch_not_observed',
     ),
     stageResult(
       'output',
@@ -330,6 +409,8 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       sourceResultState: source.proof?.resultState ?? null,
       abiEffectiveRank: abiRank,
       abiResultState: abiProof?.resultState ?? null,
+      dispatchEffectiveRank: dispatchRank,
+      dispatchResultState: dispatchProof?.resultState ?? null,
       outputEffectiveRank: outputRank,
       outputResultState: outputProof?.resultState ?? null,
       hostEffectiveRank: hostRank,

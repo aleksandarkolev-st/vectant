@@ -49,7 +49,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
+  classifyGpuHmrDispatchProof,
   classifyGpuHmrOutputProof,
+  summarizeGpuHmrDispatchProof,
   summarizeGpuHmrOutputProof,
 } from './lib/gpu-hmr-runtime-proof.mjs';
 
@@ -116,6 +118,7 @@ function log(kind, msg) {
 }
 
 const results = [];
+const runtimeDispatchProofs = [];
 const runtimeOutputProofs = [];
 function record(phase, name, status, detail = '') {
   results.push({ phase, name, status, detail, ts: new Date().toISOString() });
@@ -130,6 +133,8 @@ function recordRuntimeOutputProof(phase, name, observation) {
     proof,
     observation: {
       dispatchObserved: observation?.dispatchObserved === true,
+      dispatchProofState: observation?.dispatchProof?.resultState ?? null,
+      dispatchProofDegradedState: observation?.dispatchProof?.degradedState ?? null,
       deterministicOutputObserved: observation?.deterministicOutputObserved === true,
       deterministicOracleProvided: observation?.deterministicOracleProvided === true,
       deterministicOraclePassed: observation?.deterministicOraclePassed === true,
@@ -138,6 +143,26 @@ function recordRuntimeOutputProof(phase, name, observation) {
     ts: new Date().toISOString(),
   });
   record(phase, name, proof.degradedState ? 'warn' : 'pass', summarizeGpuHmrOutputProof(proof));
+  return proof;
+}
+
+function recordRuntimeDispatchProof(phase, name, observation) {
+  const proof = classifyGpuHmrDispatchProof(observation);
+  runtimeDispatchProofs.push({
+    phase,
+    name,
+    proof,
+    observation: {
+      dispatchObserved: observation?.dispatchObserved === true,
+      argProvenanceObserved: observation?.argProvenanceObserved === true,
+      argProvenanceComplete: observation?.argProvenanceComplete === true,
+      unknownArgCount: Number.isFinite(observation?.unknownArgCount)
+        ? Number(observation.unknownArgCount)
+        : null,
+    },
+    ts: new Date().toISOString(),
+  });
+  record(phase, name, proof.degradedState ? 'warn' : 'pass', summarizeGpuHmrDispatchProof(proof));
   return proof;
 }
 function shouldRun(phase) {
@@ -1551,6 +1576,15 @@ function firstMatchingLine(logText, regex) {
   return null;
 }
 
+function matchingLines(logText, regex) {
+  const lines = [];
+  for (const line of String(logText ?? '').split(/\r?\n/)) {
+    regex.lastIndex = 0;
+    if (regex.test(line)) lines.push(line.trim());
+  }
+  return lines;
+}
+
 function lastMatchingLine(logText, regex) {
   let latest = null;
   for (const line of String(logText ?? '').split(/\r?\n/)) {
@@ -1558,6 +1592,31 @@ function lastMatchingLine(logText, regex) {
     if (regex.test(line)) latest = line.trim();
   }
   return latest;
+}
+
+function launchArgProvenanceEvidence(logText, expectedKernels = []) {
+  const kernelPattern = expectedKernels.length
+    ? `(?:${expectedKernels.map(escapeRegex).join('|')})`
+    : String.raw`\S+`;
+  const lines = matchingLines(
+    logText,
+    new RegExp(String.raw`\[gpu-runtime-boundary\]\s+launch_arg_provenance\s+kernel=${kernelPattern}\b`),
+  );
+  let incompleteCount = 0;
+  let unknownArgCount = 0;
+  for (const line of lines) {
+    const complete = /\bcomplete=true\b/.test(line);
+    const unknown = Number(line.match(/\bunknown_args=(\d+)/)?.[1] ?? 0);
+    unknownArgCount += Number.isFinite(unknown) ? unknown : 0;
+    if (!complete || unknown > 0) incompleteCount += 1;
+  }
+  return {
+    totalCount: lines.length,
+    incompleteCount,
+    unknownArgCount,
+    complete: lines.length > 0 && incompleteCount === 0 && unknownArgCount === 0,
+    lines,
+  };
 }
 
 function summarizeLogLine(line) {
@@ -1684,6 +1743,41 @@ async function awaitGpuDispatchOk(phase, name, checkpoint, expectedKernels = [],
   }
   record(phase, name, 'fail', 'no successful GPU runtime dispatch observed after edit');
   return false;
+}
+
+async function awaitRuntimeDispatchProof(
+  phase,
+  name,
+  checkpoint,
+  expectedKernels = [],
+  dispatchObserved = false,
+  timeoutMs = 12000,
+) {
+  const maxBytes = 8 * 1024 * 1024;
+  if (dispatchObserved) {
+    const kernelPattern = expectedKernels.length
+      ? `(?:${expectedKernels.map(escapeRegex).join('|')})`
+      : String.raw`\S+`;
+    await awaitWorkerLogRegex(
+      new RegExp(String.raw`\[gpu-runtime-boundary\]\s+launch_arg_provenance\s+kernel=${kernelPattern}\b`),
+      timeoutMs,
+      { after: checkpoint, maxBytes },
+    );
+  }
+  const logOpts = checkpoint?.fileSize != null
+    ? { fromOffset: checkpoint.fileSize }
+    : checkpoint?.at
+      ? { since: checkpoint.at }
+      : {};
+  const tail = await readWorkerLogTail(maxBytes, logOpts);
+  const window = workerLogSearchWindow(tail, { after: checkpoint });
+  const provenance = launchArgProvenanceEvidence(window, expectedKernels);
+  return recordRuntimeDispatchProof(phase, name, {
+    dispatchObserved,
+    argProvenanceObserved: provenance.totalCount > 0,
+    argProvenanceComplete: provenance.complete,
+    unknownArgCount: provenance.unknownArgCount,
+  });
 }
 
 function parseGuiReadbacks(logText) {
@@ -1894,10 +1988,17 @@ async function phaseFlow(ctx) {
     baselineStart,
     kernelNamesFromSource(FLOW_DEVICE_INWARD),
   );
+  const inwardDispatchProof = await awaitRuntimeDispatchProof(
+    'FLOW',
+    'inward dispatch provenance proof',
+    baselineStart,
+    kernelNamesFromSource(FLOW_DEVICE_INWARD),
+    inwardDispatchObserved,
+  );
 
   const inwardScreenshot = await captureMcpScreenshot('flow-inward');
   recordRuntimeOutputProof('FLOW', 'inward output proof', {
-    dispatchObserved: inwardDispatchObserved,
+    dispatchProof: inwardDispatchProof,
     visualFrameObserved: Boolean(inwardScreenshot),
     visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
   });
@@ -1934,6 +2035,13 @@ async function phaseFlow(ctx) {
     flipStart,
     kernelNamesFromSource(FLOW_DEVICE_OUTWARD),
   );
+  const outwardDispatchProof = await awaitRuntimeDispatchProof(
+    'FLOW',
+    'outward dispatch provenance proof',
+    flipStart,
+    kernelNamesFromSource(FLOW_DEVICE_OUTWARD),
+    outwardDispatchObserved,
+  );
 
   const trend = await awaitWorkerLogRegex(
     /\[gpu-flow-demo\].*trend=outward/,
@@ -1946,7 +2054,7 @@ async function phaseFlow(ctx) {
 
   const outwardScreenshot = await captureMcpScreenshot('flow-outward');
   recordRuntimeOutputProof('FLOW', 'outward output proof', {
-    dispatchObserved: outwardDispatchObserved,
+    dispatchProof: outwardDispatchProof,
     visualFrameObserved: Boolean(outwardScreenshot),
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
   });
@@ -2457,6 +2565,7 @@ async function writeSummary() {
       drainTimeoutMs: CFG.drainTimeoutMs,
     },
     summary: { total: results.length, passed, warned, failed, skipped },
+    runtime_dispatch_proofs: runtimeDispatchProofs,
     runtime_output_proofs: runtimeOutputProofs,
     results,
   };
@@ -2555,11 +2664,24 @@ async function selfCheck() {
     dispatchObserved: true,
     visualFrameObserved: true,
   });
+  const dispatchProof = classifyGpuHmrDispatchProof({
+    dispatchObserved: true,
+    argProvenanceObserved: true,
+    argProvenanceComplete: true,
+  });
+  const unknownArgDispatchProof = classifyGpuHmrDispatchProof({
+    dispatchObserved: true,
+    argProvenanceObserved: true,
+    argProvenanceComplete: false,
+    unknownArgCount: 1,
+  });
   if (
     outputProof.resultState !== 'gpu-hmr-dispatch-proven'
     || outputProof.degradedState !== 'gpu-hmr-visual-only'
+    || dispatchProof.degradedState !== null
+    || unknownArgDispatchProof.degradedState !== 'gpu-hmr-unknown-arg-provenance'
   ) {
-    console.error('gpu-hmr-test self-check failed: visual-only output proof classifier failed');
+    console.error('gpu-hmr-test self-check failed: dispatch/output proof classifier failed');
     process.exitCode = 1;
     return;
   }

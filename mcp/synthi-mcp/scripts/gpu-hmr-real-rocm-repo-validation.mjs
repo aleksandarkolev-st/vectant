@@ -20,10 +20,12 @@ import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
   classifyGpuHmrAbiProof,
+  classifyGpuHmrDispatchProof,
   classifyGpuHmrFullRuntimeProof,
   classifyGpuHmrHostPreservationProof,
   classifyGpuHmrOutputProof,
   summarizeGpuHmrAbiProof,
+  summarizeGpuHmrDispatchProof,
   summarizeGpuHmrFullRuntimeProof,
   summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
@@ -185,6 +187,7 @@ const report = {
   evidence: {},
   proof_artifacts: [],
   abi_proof: null,
+  dispatch_proof: null,
   output_proof: null,
   host_preservation_proof: null,
   full_runtime_proof: null,
@@ -1353,11 +1356,18 @@ function selfCheckRuntimeDispatchEvidence() {
     dispatchObserved: true,
     visualFrameObserved: false,
   });
+  const dispatchUnknownProof = classifyGpuHmrDispatchProof({
+    dispatchObserved: true,
+    argProvenanceObserved: true,
+    argProvenanceComplete: false,
+    unknownArgCount: 2,
+  });
   if (
     visualOnlyProof.degradedState !== 'gpu-hmr-visual-only'
     || outputMissingProof.degradedState !== 'gpu-hmr-output-unobserved'
+    || dispatchUnknownProof.degradedState !== 'gpu-hmr-unknown-arg-provenance'
   ) {
-    throw new Error('runtime output proof classifier failed');
+    throw new Error('runtime dispatch/output proof classifier failed');
   }
   const hostReplacedProof = classifyGpuHmrHostPreservationProof({
     hostRestartObserved: true,
@@ -1370,6 +1380,11 @@ function selfCheckRuntimeDispatchEvidence() {
   const fullRuntimeBlockedProof = classifyGpuHmrFullRuntimeProof({
     sourceProofs: [{ resultState: 'gpu-hmr-symbol-bound' }],
     abiProof: abiMetadataOnlyProof,
+    dispatchProof: classifyGpuHmrDispatchProof({
+      dispatchObserved: true,
+      argProvenanceObserved: true,
+      argProvenanceComplete: true,
+    }),
     outputProof: visualOnlyProof,
     hostPreservationProof: classifyGpuHmrHostPreservationProof({ identityChecksPassed: true }),
   });
@@ -1501,8 +1516,16 @@ async function collectRuntimeEvidence() {
     (shot) => shot && shot.width >= 320 && shot.height >= 240 && shot.visible_pixels > 500,
   );
   report.abi_proof = abiProofFromProofArtifacts(proofArtifactRecords);
-  report.output_proof = classifyGpuHmrOutputProof({
+  report.dispatch_proof = classifyGpuHmrDispatchProof({
     dispatchObserved: runtimeDispatch.success_count > 0 && scopedWorkerLogs.marker_found,
+    argProvenanceObserved: runtimeArgProvenance.total_count > 0,
+    argProvenanceComplete: runtimeArgProvenance.total_count > 0
+      && runtimeArgProvenance.incomplete_count === 0
+      && runtimeArgProvenance.unknown_arg_count === 0,
+    unknownArgCount: runtimeArgProvenance.unknown_arg_count,
+  });
+  report.output_proof = classifyGpuHmrOutputProof({
+    dispatchProof: report.dispatch_proof,
     visualFrameObserved: freshVisualFrames.length > 0,
     visualEvidenceRefs: freshVisualFrames.map((shot) => shot.path),
   });
@@ -1512,6 +1535,7 @@ async function collectRuntimeEvidence() {
   report.full_runtime_proof = classifyGpuHmrFullRuntimeProof({
     sourceProofs: report.phases.map((phase) => phase.gpu_proof).filter(Boolean),
     abiProof: report.abi_proof,
+    dispatchProof: report.dispatch_proof,
     outputProof: report.output_proof,
     hostPreservationProof: report.host_preservation_proof,
   });
@@ -1519,6 +1543,11 @@ async function collectRuntimeEvidence() {
     'runtime ABI proof',
     report.abi_proof.degradedState ? 'warn' : 'pass',
     summarizeGpuHmrAbiProof(report.abi_proof),
+  );
+  record(
+    'runtime dispatch proof',
+    report.dispatch_proof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrDispatchProof(report.dispatch_proof),
   );
   record(
     'runtime output proof',
@@ -1600,6 +1629,8 @@ async function writeResults() {
     ...report.screenshots.map((shot) => `SCREENSHOT ${shot.label} visible=${shot.visible_pixels} luma=${shot.mean_luma.toFixed(1)} path=${shot.path}`),
     '',
     `ABI_PROOF ${summarizeGpuHmrAbiProof(report.abi_proof)}`,
+    '',
+    `DISPATCH_PROOF ${summarizeGpuHmrDispatchProof(report.dispatch_proof)}`,
     '',
     `OUTPUT_PROOF ${summarizeGpuHmrOutputProof(report.output_proof)}`,
     '',

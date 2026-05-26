@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyGpuHmrAbiProof,
+  classifyGpuHmrDispatchProof,
   classifyGpuHmrFullRuntimeProof,
   classifyGpuHmrHostPreservationProof,
   classifyGpuHmrOutputProof,
   summarizeGpuHmrAbiProof,
+  summarizeGpuHmrDispatchProof,
   summarizeGpuHmrFullRuntimeProof,
   summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
@@ -122,6 +124,55 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.layoutSizeAlignmentVerified).toBe(true);
   });
 
+  it("requires session dispatch before dispatch proof can be considered", () => {
+    const proof = classifyGpuHmrDispatchProof({});
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedState).toBe("gpu-hmr-dispatch-unobserved");
+    expect(summarizeGpuHmrDispatchProof(proof)).toContain("dispatch=missing");
+  });
+
+  it("downgrades observed dispatch without argument provenance", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      dispatchObserved: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-unknown-arg-provenance");
+    expect(proof.degradedReason).toBe("launch_argument_provenance_not_collected");
+  });
+
+  it("reports dispatch-proven only with complete argument provenance", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      dispatchObserved: true,
+      argProvenanceObserved: true,
+      argProvenanceComplete: true,
+      unknownArgCount: 0,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(summarizeGpuHmrDispatchProof(proof)).toContain("provenance=complete");
+  });
+
+  it("blocks output proof when dispatch argument provenance is incomplete", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: classifyGpuHmrDispatchProof({
+        dispatchObserved: true,
+        argProvenanceObserved: true,
+        argProvenanceComplete: false,
+        unknownArgCount: 1,
+      }),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-unknown-arg-provenance");
+    expect(proof.degradedReason).toBe("launch_argument_provenance_incomplete");
+  });
+
   it("blocks full runtime proof at ABI when source proof has not reached ABI", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: [{ resultState: "gpu-hmr-symbol-bound" }],
@@ -164,12 +215,47 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.fullRuntimeProven).toBe(false);
   });
 
+  it("blocks full runtime proof at dispatch when argument provenance is incomplete", () => {
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      abiProof: classifyGpuHmrAbiProof({
+        metadataObserved: true,
+        layoutSizeAlignmentVerified: true,
+      }),
+      dispatchProof: classifyGpuHmrDispatchProof({
+        dispatchObserved: true,
+        argProvenanceObserved: true,
+        argProvenanceComplete: false,
+        unknownArgCount: 1,
+      }),
+      outputProof: classifyGpuHmrOutputProof({
+        dispatchObserved: true,
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+      }),
+      hostPreservationProof: classifyGpuHmrHostPreservationProof({
+        identityChecksPassed: true,
+      }),
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-unknown-arg-provenance");
+    expect(proof.fullRuntimeProven).toBe(false);
+    expect(summarizeGpuHmrFullRuntimeProof(proof)).toContain("blocked=dispatch");
+  });
+
   it("reports full-runtime-proven only when every required component passes", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
       abiProof: classifyGpuHmrAbiProof({
         metadataObserved: true,
         layoutSizeAlignmentVerified: true,
+      }),
+      dispatchProof: classifyGpuHmrDispatchProof({
+        dispatchObserved: true,
+        argProvenanceObserved: true,
+        argProvenanceComplete: true,
       }),
       outputProof: classifyGpuHmrOutputProof({
         dispatchObserved: true,
@@ -193,6 +279,11 @@ describe("GPU HMR runtime output proof classification", () => {
       abiProof: classifyGpuHmrAbiProof({
         metadataObserved: true,
         layoutSizeAlignmentVerified: true,
+      }),
+      dispatchProof: classifyGpuHmrDispatchProof({
+        dispatchObserved: true,
+        argProvenanceObserved: true,
+        argProvenanceComplete: true,
       }),
       outputProof: classifyGpuHmrOutputProof({
         dispatchObserved: true,
