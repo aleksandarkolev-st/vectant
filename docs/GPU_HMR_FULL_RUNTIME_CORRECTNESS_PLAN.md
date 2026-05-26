@@ -837,6 +837,272 @@ Accepted capability examples:
 
 If a backend has a known unsafe byte-load path, the system must use the safer loader and report the fallback. Correctness beats RAM purity.
 
+## Vectant Implementation Surface Map
+
+This section maps the architecture to the existing Vectant subsystems. It is intentionally file-level rather than fixture-level. The implementation must keep these boundaries generic and must not hardcode HIPRT, renderer names, symbol names, paths, or fixture behavior.
+
+### GPU Module Ownership
+
+Primary files:
+
+- `backend/synthi-webrtc-compiler/worker/src/hmr/gpu_module_manager.rs`
+- `backend/synthi-webrtc-compiler/worker/src/hmr/gpu_module_adapter.rs`
+
+Current role:
+
+- Owns primary and standby module slots.
+- Tracks partial modules.
+- Resolves kernel function handles.
+- Merges partial reloads into the active kernel table.
+- Promotes standby to primary.
+- Unloads retired modules immediately after the reload transaction.
+
+Target role:
+
+- Own the capsule generation registry.
+- Replace primary/standby-only semantics with `CapsuleGeneration` records.
+- Track generation id, artifact id, ABI membrane hash, exported symbol set, dependency closure hash, function handles, proof hash, stream epochs, and retirement state.
+- Publish dispatch entries by generation.
+- Keep retired generations alive until stream epoch retirement proves they can be unloaded.
+
+Required changes:
+
+- Add a capsule generation data model.
+- Add dispatch table hash computation before and after publish.
+- Add generation lineage records to the proof artifact.
+- Split "publish new generation" from "retire old generation."
+- Preserve existing full-drain behavior as a conservative fallback when epoch retirement is unavailable.
+
+### Reload Transaction
+
+Primary file:
+
+- `backend/synthi-webrtc-compiler/worker/src/hmr/gpu_module_adapter.rs`
+
+Current role:
+
+- Reads the selected artifact from a filesystem path.
+- Drains the context before loading on non-first loads.
+- Loads standby module.
+- Resolves function handles.
+- Swaps or merges the module table.
+- Immediately unloads retired modules.
+- Installs a new launch dispatcher.
+
+Target role:
+
+- Accept a verified artifact path, RAM artifact bytes, or RAM blob id.
+- Load the new artifact as a capsule candidate.
+- Resolve all required function handles before publication.
+- Validate ABI membrane, symbol ownership, and replacement scope before publication.
+- Atomically publish dispatch entries to the new generation.
+- Register retirement fences for old generations.
+- Defer unload until retirement proof passes.
+
+Required changes:
+
+- Introduce a reload request artifact source enum.
+- Add loader capability detection/reporting.
+- Move synchronization from mandatory pre-swap full-context drain to capability-driven epoch retirement, with conservative drain fallback.
+- Emit `gpu-hmr-epoch-swap-proven`, `gpu-hmr-epoch-retirement-pending`, or `gpu-hmr-epoch-swap-unverified` as appropriate.
+
+### Stable Runtime Launch Boundary
+
+Primary files:
+
+- `backend/synthi-webrtc-compiler/worker/src/runtime/gpu_runtime_boundary.rs`
+- `backend/synthi-webrtc-compiler/worker/src/compiler/stages/gpu_runtime_contract.rs`
+
+Current role:
+
+- Provides `synthi_gpu_launch` and raw checked launch wrappers.
+- Maintains a launch generation.
+- Records launch attempts.
+- Routes launches through an installed dispatcher.
+- Captures stream token and launch dimensions.
+
+Target role:
+
+- Keep the host-facing launch ABI stable.
+- Move from one global dispatcher generation to symbol/generation dispatch entries.
+- Record the capsule generation actually used by each launch.
+- Record dispatch-observed evidence into structured proof artifacts.
+- Provide runtime hooks needed for argument provenance, stream identity, and output probe correlation.
+
+Required changes:
+
+- Add per-symbol dispatch generation ids.
+- Add launch records that include artifact id, capsule id, and dispatch table entry id.
+- Preserve stale-pointer rejection, but make the evidence structured.
+- Ensure generated host code cannot fake full runtime proof by calling a regenerated launch path with invented state.
+
+### Stream Retirement And Ordering
+
+Primary file:
+
+- `backend/synthi-webrtc-compiler/worker/src/hmr/gpu_stream_drain.rs`
+
+Current role:
+
+- Provides context synchronization and stream synchronization helpers.
+- Records drain scope, elapsed time, and driver result.
+
+Target role:
+
+- Track stream usage by capsule generation.
+- Insert or observe retirement fences for streams that may still use the old generation.
+- Query fence completion.
+- Allow old capsules to unload only after all relevant fences pass.
+- Fall back to full stream/context drain only when finer-grained epoch retirement is unavailable.
+
+Required changes:
+
+- Add event/fence abstraction with backend capability metadata.
+- Add retirement fence ids to proof artifact evidence.
+- Distinguish "epoch retirement proven" from "context drain fallback used."
+- Reject or degrade graph-capture/replay paths until ordering evidence exists.
+
+### Fission Engine And Deterministic Fast Path
+
+Primary files:
+
+- `backend/synthi-webrtc-compiler/worker/src/hmr/gpu_device_fast_path.rs`
+- `backend/synthi-webrtc-compiler/worker/src/compiler/handler.rs`
+- `backend/synthi-webrtc-compiler/worker/src/hmr/gpu_prod_contracts.rs`
+
+Current role:
+
+- Detects device-only edits.
+- Builds partial device sources.
+- Supports source include bridge partial artifacts.
+- Selects partial artifact catalog entries.
+- Validates symbol ownership and safe export sets.
+- Writes sidecar verifier reports and reload plan reports.
+
+Target role:
+
+- Formalize candidate selection as `FissionIsland`.
+- Emit deterministic acceptance/rejection evidence for source spans, include closure, symbol ownership, dependency closure, ABI membrane, and oracle requirement.
+- Provide structured rejection reasons to GPU AI delta when local proof fails.
+- Keep deterministic local proof as the first path.
+
+Required changes:
+
+- Add `FissionIsland` schema and verifier result schema.
+- Promote existing partial artifact selection metadata into fission island fields.
+- Normalize rejection reason codes so AI delta, UI, MCP validation, and proof artifacts share the same vocabulary.
+- Record accepted/rejected fission candidates in the structured proof artifact.
+
+### Device Compile And RAM Artifact Output
+
+Primary files:
+
+- `backend/synthi-webrtc-compiler/worker/src/compiler/stages/compile_device.rs`
+- `backend/synthi-webrtc-compiler/worker/src/compiler/handler.rs`
+
+Current role:
+
+- Writes device source to disk.
+- Compiles a loadable device artifact.
+- Records artifact path, bytes, exported symbols, selected artifact kind, and timing.
+- Uses artifact cache keys and dependency hashes.
+
+Target role:
+
+- Emit a content-addressed artifact id.
+- Carry artifact bytes or RAM blob ids alongside filesystem paths.
+- Record artifact bytes hash and dependency closure hash as proof evidence.
+- Preserve path-based artifact loading only as a loader capability fallback.
+
+Required changes:
+
+- Add artifact source transport metadata: `ram`, `filesystem`, or `filesystem-fallback`.
+- Add RAM blob id and bytes hash to compile output.
+- Extend reload packaging to carry artifact bytes/blob id when supported.
+- Keep artifact cache behavior content-addressed so RAM transport does not remove reproducibility.
+
+### Manifest And Reload Request Shape
+
+Primary files:
+
+- `backend/synthi-webrtc-compiler/worker/src/hmr/compile_manifest.rs`
+- `ai-backend/ai-engine/build_manifest.py`
+- `backend/synthi-webrtc-compiler/worker/src/hmr/integration.rs`
+
+Current role:
+
+- Describes generated roles, GPU vendor/toolchain settings, artifact path, artifact hash, exported symbols, and capabilities.
+- Bridges AI-side manifest output into worker-side reload behavior.
+
+Target role:
+
+- Allow reload requests to carry either `artifact_path` or a RAM artifact reference.
+- Carry fission island ids, ABI membrane ids, loader capability requirements, and oracle requirements.
+- Preserve compatibility with path-only backends by recording explicit degraded transport states.
+
+Required changes:
+
+- Extend manifest/reload schemas with optional artifact transport fields.
+- Keep path fields for compatibility, but make proof artifacts identify the selected artifact by content hash/id.
+- Validate that RAM artifact metadata and path artifact metadata agree when both are present.
+
+### GPU AI Delta And Agentic Planning
+
+Primary files:
+
+- `ai-backend/ai-engine/agents/gpu_mod_delta.py`
+- `ai-backend/ai-engine/main.py`
+- `backend/synthi-webrtc-compiler/worker/src/compiler/handler.rs`
+- `ai-backend/ai-engine/agents/kernel_splitter.py`
+
+Current role:
+
+- `/refactor/diff_patch/gpu` produces anchor-based edit lists and a reload-plan hint.
+- Rust applies edits, verifies policies, updates sidecar state, and prepares partial device compile packages.
+- `AiDeltaDeviceScope` already carries source, filename, symbols, artifact kind, source paths, dependency hash, compile command hash, and verifier evidence id.
+
+Target role:
+
+- Evolve GPU AI delta into an AI fission planner.
+- Return optional `fissionCandidate` data with proposed source spans, symbols, artifact kind, include closure, expected ABI scope, and oracle proposal.
+- Use AI delta only after deterministic local proof fails or when explicitly requested for repair/planning.
+- Keep AI out of proof certification.
+
+Required changes:
+
+- Extend GPU delta prompt/response parsing with optional `fissionCandidate`.
+- Pass deterministic local proof rejection reasons into the prompt.
+- Record AI proposal ids separately from deterministic verifier evidence ids.
+- Reject AI proposals that fail deterministic ABI, symbol, dependency, oracle, provenance, or stream checks.
+
+### Proof Storage And Validation
+
+Primary files:
+
+- `backend/synthi-webrtc-compiler/worker/src/hmr/gpu_prod_contracts.rs`
+- MCP validation scripts under `mcp/synthi-mcp/scripts`
+- frontend status surfaces under `synthi/src/components` and `synthi/src/lib`
+
+Current role:
+
+- Normalizes split sidecar contracts.
+- Promotes verifier reports into run reports.
+- MCP validation currently consumes tool output, logs, screenshots, and status state.
+- UI reports HMR status and GPU HMR state.
+
+Target role:
+
+- Make structured proof artifacts the source of truth.
+- Reference logs, screenshots, hashes, compile output, and visual evidence as evidence refs only.
+- Surface degraded states exactly, including epoch, RAM transport, AI-delta fallback, and output-oracle gaps.
+
+Required changes:
+
+- Add proof artifact writer and reader.
+- Update MCP validation to read proof artifact result states.
+- Update UI labels to avoid claiming full runtime correctness unless `gpu-hmr-full-runtime-proven`.
+- Ensure `synthi_compile`, `synthi_wait_hmr`, and `synthi_screenshot` validation links visual evidence to proof artifacts rather than treating screenshots as proof.
+
 ## Replacement Scope Contract
 
 Replacement scope must be formal. The runtime must know whether it is replacing:
