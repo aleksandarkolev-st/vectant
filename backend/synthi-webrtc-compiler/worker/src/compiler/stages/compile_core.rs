@@ -3,7 +3,8 @@ use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::stages::ai_utils::calculate_hash;
 use crate::compiler::stages::compile_helpers::{
-    compile_to_object_command, cpp_compile_command, link_object_to_so_command, object_path_for_so,
+    compile_to_object_command, cpp_compile_command, filter_unresolved_manifest_library_flags,
+    link_object_to_so_command, object_path_for_so,
 };
 use crate::hmr::compile_manifest::{CompileManifest, ModuleKind};
 use crate::hmr::incremental_cache::IncrementalCache;
@@ -223,15 +224,24 @@ pub async fn compile_core(
                             |m| {
                                 let mut cmd =
                                     cpp_compile_command(m.select_compiler(ModuleKind::Core));
+                                let retry_compiler = m.select_compiler(ModuleKind::Core);
                                 cmd.arg(format!("-std={}", m.std));
                                 for f in &m.common_flags {
                                     cmd.arg(f);
                                 }
                                 cmd.arg(fname).arg("-I.").arg("-o").arg(&core_out);
-                                for f in &m.core_link_flags {
+                                let mut retry_link_flags = m.core_link_flags.clone();
+                                retry_link_flags.push("-ldl".to_string());
+                                retry_link_flags.push("-pthread".to_string());
+                                retry_link_flags.push("-rdynamic".to_string());
+                                let filtered_link_flags = filter_unresolved_manifest_library_flags(
+                                    retry_compiler,
+                                    &retry_link_flags,
+                                    dir_path,
+                                );
+                                for f in filtered_link_flags {
                                     cmd.arg(f);
                                 }
-                                cmd.arg("-ldl").arg("-pthread").arg("-rdynamic");
                                 cmd.current_dir(dir_path);
                                 cmd
                             },

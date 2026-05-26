@@ -16,10 +16,12 @@
 
 #![cfg(feature = "gpu-hmr")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_void, CStr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+
+use crate::runtime::capability::HmrStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedBufferRecord {
@@ -69,6 +71,7 @@ struct BoundaryState {
     buffers_by_ptr: HashMap<usize, ManagedBufferRecord>,
     ptr_by_name: HashMap<String, usize>,
     launches: Vec<LaunchRecord>,
+    reported_failure_keys: HashSet<String>,
 }
 
 static STATE: OnceLock<Mutex<BoundaryState>> = OnceLock::new();
@@ -124,31 +127,70 @@ fn clamp_dim(value: u64) -> u32 {
     value.max(1).min(u32::MAX as u64) as u32
 }
 
-fn read_launch_dims(ptr: *const c_void, bytes: usize) -> (u32, u32, u32) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DecodedLaunchDims {
+    dims: (u32, u32, u32),
+    invalid_reason: Option<String>,
+}
+
+fn invalid_launch_dim_reason(label: &str, values: &[(usize, u64)]) -> Option<String> {
+    for (index, value) in values {
+        if *value == 0 {
+            return Some(format!("{label}[{index}] is zero"));
+        }
+        if *value == u32::MAX as u64 || *value == u64::MAX {
+            return Some(format!("{label}[{index}] is sentinel-max"));
+        }
+    }
+    None
+}
+
+fn decode_launch_dims(label: &str, ptr: *const c_void, bytes: usize) -> DecodedLaunchDims {
     if ptr.is_null() || bytes == 0 {
-        return (1, 1, 1);
+        return DecodedLaunchDims {
+            dims: (1, 1, 1),
+            invalid_reason: None,
+        };
     }
 
     unsafe {
         if bytes >= 12 {
             let p = ptr as *const u32;
-            return (
-                clamp_dim(std::ptr::read_unaligned(p) as u64),
-                clamp_dim(std::ptr::read_unaligned(p.add(1)) as u64),
-                clamp_dim(std::ptr::read_unaligned(p.add(2)) as u64),
-            );
+            let raw = [
+                std::ptr::read_unaligned(p) as u64,
+                std::ptr::read_unaligned(p.add(1)) as u64,
+                std::ptr::read_unaligned(p.add(2)) as u64,
+            ];
+            return DecodedLaunchDims {
+                dims: (clamp_dim(raw[0]), clamp_dim(raw[1]), clamp_dim(raw[2])),
+                invalid_reason: invalid_launch_dim_reason(
+                    label,
+                    &[(0, raw[0]), (1, raw[1]), (2, raw[2])],
+                ),
+            };
         }
         if bytes >= std::mem::size_of::<usize>() {
             let n = std::ptr::read_unaligned(ptr as *const usize);
-            return (clamp_dim(n as u64), 1, 1);
+            let raw = n as u64;
+            return DecodedLaunchDims {
+                dims: (clamp_dim(raw), 1, 1),
+                invalid_reason: invalid_launch_dim_reason(label, &[(0, raw)]),
+            };
         }
         if bytes >= std::mem::size_of::<u32>() {
             let n = std::ptr::read_unaligned(ptr as *const u32);
-            return (clamp_dim(n as u64), 1, 1);
+            let raw = n as u64;
+            return DecodedLaunchDims {
+                dims: (clamp_dim(raw), 1, 1),
+                invalid_reason: invalid_launch_dim_reason(label, &[(0, raw)]),
+            };
         }
     }
 
-    (1, 1, 1)
+    DecodedLaunchDims {
+        dims: (1, 1, 1),
+        invalid_reason: None,
+    }
 }
 
 #[no_mangle]
@@ -269,8 +311,10 @@ fn synthi_gpu_launch_raw_impl(
     expected_generation: u64,
 ) -> bool {
     let kernel_name = cstr(kernel_name).unwrap_or_else(|| "<unknown>".to_string());
-    let grid = read_launch_dims(_grid, grid_size);
-    let block = read_launch_dims(_block, block_size);
+    let grid_decoded = decode_launch_dims("grid", _grid, grid_size);
+    let block_decoded = decode_launch_dims("block", _block, block_size);
+    let grid = grid_decoded.dims;
+    let block = block_decoded.dims;
     let active_generation = current_launch_generation();
     let stale_generation = expected_generation != 0 && expected_generation != active_generation;
     let request = GpuLaunchRequest {
@@ -315,7 +359,14 @@ fn synthi_gpu_launch_raw_impl(
         (launch_index, dispatcher)
     };
 
-    let dispatch_result = if stale_generation {
+    let invalid_launch_dims = grid_decoded
+        .invalid_reason
+        .or(block_decoded.invalid_reason)
+        .map(|reason| format!("gpu_launch_invalid_dimensions: {reason}"));
+
+    let dispatch_result = if let Some(reason) = invalid_launch_dims {
+        Some(Err(reason))
+    } else if stale_generation {
         Some(Err("reload_failed.stale_launch_pointer".to_string()))
     } else {
         dispatcher.as_ref().map(|d| d.dispatch(&request, args))
@@ -337,31 +388,50 @@ fn synthi_gpu_launch_raw_impl(
     }
     drop(guard);
 
-    let ok = {
+    let (ok, dispatch_error) = {
         let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
-        guard
-            .launches
-            .get(launch_index)
-            .map(|record| record.dispatch_error.is_none())
-            .unwrap_or(false)
+        match guard.launches.get(launch_index) {
+            Some(record) => (record.dispatch_error.is_none(), record.dispatch_error.clone()),
+            None => (false, Some("launch record disappeared".to_string())),
+        }
+    };
+    let dispatch_label = if stale_generation {
+        "stale-pointer"
+    } else if dispatcher.is_some() {
+        if ok {
+            "ok"
+        } else {
+            "failed"
+        }
+    } else {
+        "missing-dispatcher"
     };
 
-    eprintln!(
-        "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={}",
-        kernel_name,
-        grid,
-        block,
-        arg_count,
-        stream_token,
-        shared_bytes,
-        if stale_generation {
-            "stale-pointer"
-        } else if dispatcher.is_some() {
-            if ok { "ok" } else { "failed" }
-        } else {
-            "missing-dispatcher"
-        }
-    );
+    if let Some(error) = dispatch_error.as_deref() {
+        eprintln!(
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={} error={}",
+            kernel_name,
+            grid,
+            block,
+            arg_count,
+            stream_token,
+            shared_bytes,
+            dispatch_label,
+            log_safe(error)
+        );
+        maybe_emit_launch_failure_status(&kernel_name, error, dispatch_label, active_generation);
+    } else {
+        eprintln!(
+            "[gpu-runtime-boundary] synthi_gpu_launch kernel={} grid={:?} block={:?} args={} stream={} shared_bytes={} dispatch={}",
+            kernel_name,
+            grid,
+            block,
+            arg_count,
+            stream_token,
+            shared_bytes,
+            dispatch_label
+        );
+    }
     ok
 }
 
@@ -424,6 +494,73 @@ pub fn managed_buffers_snapshot() -> Vec<ManagedBufferRecord> {
 pub fn launch_records_snapshot() -> Vec<LaunchRecord> {
     let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     guard.launches.clone()
+}
+
+pub fn launch_record_count() -> usize {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard.launches.len()
+}
+
+pub fn failed_launch_records_since(start: usize) -> Vec<LaunchRecord> {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard
+        .launches
+        .iter()
+        .skip(start)
+        .filter(|record| record.dispatch_error.is_some())
+        .cloned()
+        .collect()
+}
+
+fn log_safe(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            '\r' | '\n' | '\t' => ' ',
+            other => other,
+        })
+        .collect()
+}
+
+fn maybe_emit_launch_failure_status(
+    kernel_name: &str,
+    error: &str,
+    dispatch_label: &str,
+    active_generation: u64,
+) {
+    if dispatch_label == "missing-dispatcher" {
+        return;
+    }
+
+    let safe_error = log_safe(error);
+    let safe_kernel = log_safe(kernel_name);
+    let key = format!("{active_generation}:{safe_kernel}:{safe_error}");
+    let should_emit = {
+        let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+        guard.reported_failure_keys.insert(key)
+    };
+    if !should_emit {
+        return;
+    }
+
+    eprintln!(
+        "[gpu-runtime-boundary] gpu_runtime_error kind=launch_failed kernel={} generation={} error={}",
+        safe_kernel, active_generation, safe_error
+    );
+    eprintln!(
+        "[gpu-runtime-boundary] gpu-hmr-rejected fallbackUsed=false fallbackReason=runtime_launch_failed kernel={} generation={}",
+        safe_kernel, active_generation
+    );
+    let status = HmrStatus::gpu_rejected_with_fallback_reason(
+        "device",
+        &format!(
+            "GPU kernel launch failed after sidecar reload: kernel={} error={}",
+            safe_kernel, safe_error
+        ),
+        "Keep runtime running but mark GPU HMR degraded until the launch succeeds",
+        "runtime_launch_failed",
+    );
+    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
 }
 
 #[cfg(test)]
@@ -594,6 +731,84 @@ mod tests {
     }
 
     #[test]
+    fn invalid_launch_dimensions_reject_before_dispatch() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: calls.clone(),
+        }));
+
+        let kernel = CString::new("invalid_dims").unwrap();
+        let grid = [u32::MAX, 1, 1];
+        let block = [16_u32, 16, 1];
+        let ok = synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            grid.as_ptr().cast(),
+            std::mem::size_of_val(&grid),
+            block.as_ptr().cast(),
+            std::mem::size_of_val(&block),
+            0,
+            0,
+            std::ptr::null(),
+            1,
+        );
+
+        assert!(!ok);
+        assert!(calls.lock().unwrap().is_empty());
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].kernel_name, "invalid_dims");
+        assert_eq!(launches[0].grid, (u32::MAX, 1, 1));
+        assert_eq!(launches[0].block, (16, 16, 1));
+        assert!(!launches[0].dispatched);
+        let error = launches[0].dispatch_error.as_deref().unwrap_or_default();
+        assert!(error.contains("gpu_launch_invalid_dimensions"));
+        assert!(error.contains("grid[0] is sentinel-max"));
+    }
+
+    #[test]
+    fn zero_launch_dimensions_reject_before_dispatch() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let calls = std::sync::Arc::new(Mutex::new(Vec::new()));
+        install_launch_dispatcher(Arc::new(TestDispatcher {
+            should_fail: false,
+            calls: calls.clone(),
+        }));
+
+        let kernel = CString::new("zero_dims").unwrap();
+        let grid = [1_u32, 1, 1];
+        let block = [0_u32, 16, 1];
+        let ok = synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            grid.as_ptr().cast(),
+            std::mem::size_of_val(&grid),
+            block.as_ptr().cast(),
+            std::mem::size_of_val(&block),
+            0,
+            0,
+            std::ptr::null(),
+            1,
+        );
+
+        assert!(!ok);
+        assert!(calls.lock().unwrap().is_empty());
+        let launches = launch_records_snapshot();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].kernel_name, "zero_dims");
+        assert_eq!(launches[0].grid, (1, 1, 1));
+        assert_eq!(launches[0].block, (1, 16, 1));
+        assert!(!launches[0].dispatched);
+        let error = launches[0].dispatch_error.as_deref().unwrap_or_default();
+        assert!(error.contains("gpu_launch_invalid_dimensions"));
+        assert!(error.contains("block[0] is zero"));
+    }
+
+    #[test]
     fn launch_dispatcher_failure_returns_false_and_records_error() {
         let _guard = test_guard_for_test();
         reset_for_test();
@@ -618,6 +833,11 @@ mod tests {
         );
 
         assert!(!ok);
+        assert_eq!(launch_record_count(), 1);
+        let failed = failed_launch_records_since(0);
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].kernel_name, "bad");
+        assert!(failed_launch_records_since(1).is_empty());
         let launches = launch_records_snapshot();
         assert!(!launches[0].dispatched);
         assert_eq!(

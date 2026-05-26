@@ -268,6 +268,9 @@ mod tests {
     unsafe extern "C" fn stub_ctx_get(_c: *mut *mut c_void) -> CuResult {
         0
     }
+    unsafe extern "C" fn stub_ctx_set(_c: *mut c_void) -> CuResult {
+        0
+    }
     unsafe extern "C" fn stub_load_data(_m: *mut *mut c_void, _i: *const c_void) -> CuResult {
         0
     }
@@ -314,6 +317,7 @@ mod tests {
             cu_init: stub_init,
             cu_device_get: stub_device_get,
             cu_ctx_get_current: stub_ctx_get,
+            cu_ctx_set_current: stub_ctx_set,
             cu_module_load_data: stub_load_data,
             cu_module_load: stub_load_file,
             cu_module_unload: stub_unload,

@@ -236,34 +236,43 @@ async fn fetch_turn_credentials() -> Vec<webrtc::ice_transport::ice_server::RTCI
 fn js_key_to_x11_keysym(key: &str) -> u32 {
     match key {
         " " => 0x0020,
-        "Enter" | "Return"      => 0xFF0D,
-        "Escape"                => 0xFF1B,
-        "Backspace"             => 0xFF08,
-        "Tab"                   => 0xFF09,
-        "Delete"                => 0xFFFF,
-        "Insert"                => 0xFF63,
-        "Home"                  => 0xFF50,
-        "End"                   => 0xFF57,
-        "PageUp"                => 0xFF55,
-        "PageDown"              => 0xFF56,
-        "ArrowLeft"             => 0xFF51,
-        "ArrowUp"               => 0xFF52,
-        "ArrowRight"            => 0xFF53,
-        "ArrowDown"             => 0xFF54,
-        "F1"  => 0xFFBE, "F2"  => 0xFFBF, "F3"  => 0xFFC0, "F4"  => 0xFFC1,
-        "F5"  => 0xFFC2, "F6"  => 0xFFC3, "F7"  => 0xFFC4, "F8"  => 0xFFC5,
-        "F9"  => 0xFFC6, "F10" => 0xFFC7, "F11" => 0xFFC8, "F12" => 0xFFC9,
-        "Shift"   | "ShiftLeft"   => 0xFFE1,
-        "ShiftRight"              => 0xFFE2,
+        "Enter" | "Return" => 0xFF0D,
+        "Escape" => 0xFF1B,
+        "Backspace" => 0xFF08,
+        "Tab" => 0xFF09,
+        "Delete" => 0xFFFF,
+        "Insert" => 0xFF63,
+        "Home" => 0xFF50,
+        "End" => 0xFF57,
+        "PageUp" => 0xFF55,
+        "PageDown" => 0xFF56,
+        "ArrowLeft" => 0xFF51,
+        "ArrowUp" => 0xFF52,
+        "ArrowRight" => 0xFF53,
+        "ArrowDown" => 0xFF54,
+        "F1" => 0xFFBE,
+        "F2" => 0xFFBF,
+        "F3" => 0xFFC0,
+        "F4" => 0xFFC1,
+        "F5" => 0xFFC2,
+        "F6" => 0xFFC3,
+        "F7" => 0xFFC4,
+        "F8" => 0xFFC5,
+        "F9" => 0xFFC6,
+        "F10" => 0xFFC7,
+        "F11" => 0xFFC8,
+        "F12" => 0xFFC9,
+        "Shift" | "ShiftLeft" => 0xFFE1,
+        "ShiftRight" => 0xFFE2,
         "Control" | "ControlLeft" => 0xFFE3,
-        "ControlRight"            => 0xFFE4,
-        "Alt"     | "AltLeft"     => 0xFFE9,
-        "AltRight"                => 0xFFEA,
-        "Meta"    | "MetaLeft"    => 0xFFEB,
-        "MetaRight"               => 0xFFEC,
-        "CapsLock"                => 0xFFE5,
-        "NumLock"                 => 0xFF7F,
-        "ScrollLock"              => 0xFF14,
+        "ControlRight" => 0xFFE4,
+        "Alt" | "AltLeft" => 0xFFE9,
+        "AltRight" => 0xFFEA,
+        "Meta" | "MetaLeft" => 0xFFEB,
+        "MetaRight" => 0xFFEC,
+        "CapsLock" => 0xFFE5,
+        "NumLock" => 0xFF7F,
+        "ScrollLock" => 0xFF14,
         // Single character — for printable ASCII the keysym IS the codepoint.
         // X11 distinguishes upper-case vs lower-case via separate keysyms,
         // which is correct (XK_a = 0x61, XK_A = 0x41) — pass the raw char
@@ -686,7 +695,11 @@ async fn dc_send_with_backpressure(
                 // Bail immediately if the channel transitioned to closed mid-send.
                 let state = dc.ready_state();
                 if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
-                    return Err(anyhow::anyhow!("DataChannel not open (state={:?}): {}", state, e));
+                    return Err(anyhow::anyhow!(
+                        "DataChannel not open (state={:?}): {}",
+                        state,
+                        e
+                    ));
                 }
 
                 retries += 1;
@@ -748,7 +761,11 @@ async fn dc_send_text_with_backpressure(
             Err(e) => {
                 let state = dc.ready_state();
                 if state != webrtc::data_channel::data_channel_state::RTCDataChannelState::Open {
-                    return Err(anyhow::anyhow!("DataChannel not open (state={:?}): {}", state, e));
+                    return Err(anyhow::anyhow!(
+                        "DataChannel not open (state={:?}): {}",
+                        state,
+                        e
+                    ));
                 }
 
                 retries += 1;
@@ -803,12 +820,14 @@ fn install_x11_error_handlers() {
             }
         };
 
-        type XSetIOErrorHandlerFn =
-            unsafe extern "C" fn(extern "C" fn(*mut c_void) -> c_int)
-                -> extern "C" fn(*mut c_void) -> c_int;
+        type XSetIOErrorHandlerFn = unsafe extern "C" fn(
+            extern "C" fn(*mut c_void) -> c_int,
+        )
+            -> extern "C" fn(*mut c_void) -> c_int;
         type XSetErrorHandlerFn =
-            unsafe extern "C" fn(extern "C" fn(*mut c_void, *mut c_void) -> c_int)
-                -> extern "C" fn(*mut c_void, *mut c_void) -> c_int;
+            unsafe extern "C" fn(
+                extern "C" fn(*mut c_void, *mut c_void) -> c_int,
+            ) -> extern "C" fn(*mut c_void, *mut c_void) -> c_int;
 
         if let Ok(set_io) = lib.get::<XSetIOErrorHandlerFn>(b"XSetIOErrorHandler\0") {
             set_io(xio_noop);
@@ -1079,7 +1098,10 @@ async fn main() -> Result<()> {
     // compiled artifacts from this cache, so the resolver avoids noexec mounts
     // unless an operator explicitly overrides the path.
     let cache_dir = hmr::runtime_artifact_cache::incremental_compile_cache_dir();
-    debug_log!("[Cache] Incremental compile cache dir: {}", cache_dir.display());
+    debug_log!(
+        "[Cache] Incremental compile cache dir: {}",
+        cache_dir.display()
+    );
     let incremental_cache = Arc::new(
         IncrementalCache::new(cache_dir)
             .await
@@ -1930,10 +1952,7 @@ fn directory_has_entries(path: &std::path::Path) -> bool {
     }
 }
 
-async fn copy_workspace_tree(
-    src_root: &std::path::Path,
-    dst_root: &std::path::Path,
-) -> Result<()> {
+async fn copy_workspace_tree(src_root: &std::path::Path, dst_root: &std::path::Path) -> Result<()> {
     tokio::fs::create_dir_all(dst_root)
         .await
         .with_context(|| format!("Failed to create {}", dst_root.display()))?;
@@ -1958,13 +1977,15 @@ async fn copy_workspace_tree(
                 if let Some(parent) = dst_path.parent() {
                     tokio::fs::create_dir_all(parent).await.ok();
                 }
-                tokio::fs::copy(&src_path, &dst_path).await.with_context(|| {
-                    format!(
-                        "Failed to copy {} -> {}",
-                        src_path.display(),
-                        dst_path.display()
-                    )
-                })?;
+                tokio::fs::copy(&src_path, &dst_path)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to copy {} -> {}",
+                            src_path.display(),
+                            dst_path.display()
+                        )
+                    })?;
             }
         }
     }

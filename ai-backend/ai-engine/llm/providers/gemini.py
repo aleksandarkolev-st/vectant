@@ -28,6 +28,28 @@ from llm.prompts import build_prompt, build_fullfile_prompt, build_patch_prompt,
 load_dotenv()  # Load once at import
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _env_float_min(name: str, default: float, minimum: float) -> float:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value >= minimum else default
+
+
 def _get_metrics_collector():
     """Lazy import to avoid circular dependencies."""
     try:
@@ -58,6 +80,18 @@ class GeminiProvider(AiProvider):
             max_output_tokens=131072,
         )
 
+    def _generation_config_for_mode(self, mode: str) -> genai.GenerationConfig:
+        if mode == "split":
+            return genai.GenerationConfig(
+                temperature=_env_float_min("SYNTHI_GEMINI_SPLIT_TEMPERATURE", 0.0, 0.0),
+                top_p=_env_float_min("SYNTHI_GEMINI_SPLIT_TOP_P", 0.8, 0.0),
+                top_k=int(_env_float_min("SYNTHI_GEMINI_SPLIT_TOP_K", 40.0, 1.0)),
+                max_output_tokens=int(
+                    _env_float_min("SYNTHI_GEMINI_SPLIT_MAX_OUTPUT_TOKENS", 131072.0, 1.0)
+                ),
+            )
+        return self.generation_config
+
     def _get_client(self, api_key: Optional[str], model_name: str) -> genai.GenerativeModel:
         key = api_key or os.getenv("GEMINI_API_KEY")
         if not key:
@@ -72,6 +106,15 @@ class GeminiProvider(AiProvider):
                 generation_config=self.generation_config,
             )
         return self._clients[cache_key]
+
+    def _timeout_seconds(self, mode: str, prompt_len: int) -> float:
+        default_timeout = _env_float("SYNTHI_GEMINI_TIMEOUT_SEC", 120.0)
+        if mode == "split":
+            split_default = 300.0 if prompt_len >= 200_000 else 180.0
+            return _env_float("SYNTHI_GEMINI_SPLIT_TIMEOUT_SEC", split_default)
+        if mode == "delta":
+            return _env_float("SYNTHI_GEMINI_DELTA_TIMEOUT_SEC", default_timeout)
+        return default_timeout
 
     async def ask_llm(
         self,
@@ -135,11 +178,19 @@ class GeminiProvider(AiProvider):
             total_tokens = 0
 
             # Non-streaming — more reliable than streaming which hangs on this model
-            print(f"[Gemini] Calling API for mode={mode_lower}, prompt_len={len(full_prompt)} chars")
+            timeout_seconds = self._timeout_seconds(mode_lower, len(full_prompt))
+            print(
+                f"[Gemini] Calling API for mode={mode_lower}, "
+                f"prompt_len={len(full_prompt)} chars, timeout={timeout_seconds:.1f}s"
+            )
             try:
                 resp = await asyncio.wait_for(
-                    client.generate_content_async(full_prompt, stream=False),
-                    timeout=120.0,
+                    client.generate_content_async(
+                        full_prompt,
+                        stream=False,
+                        generation_config=self._generation_config_for_mode(mode_lower),
+                    ),
+                    timeout=timeout_seconds,
                 )
                 combined = resp.text.strip()
                 total_tokens = _count_tokens(combined)

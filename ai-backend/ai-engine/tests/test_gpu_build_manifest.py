@@ -197,6 +197,7 @@ def test_normalizes_ai_gpu_manifest_defaults_for_rocm():
     assert "-ldl" in parsed.runner_link_flags
     assert "--use_fast_math" not in parsed.gpu.device_flags
     assert "--generate-code=arch=compute_80,code=sm_80" not in parsed.gpu.device_flags
+    assert "-I." in parsed.gpu.device_flags
     assert "-O3" in parsed.gpu.device_flags
     assert "-lineinfo" in parsed.gpu.device_flags
 
@@ -390,6 +391,217 @@ def test_gpu_manifest_resolves_cmake_variable_link_items():
     for flag in ("-lSDL2", "-lglfw", "-lGL"):
         assert flag in normalized["gui_link_flags"]
         assert flag in normalized["runner_link_flags"]
+
+
+def test_gpu_manifest_reads_cmake_file_api_target_link_fragments():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        link_hint_sources={
+            ".cmake/api/v1/reply/target-HIPRTPathTracer-Release.json": json.dumps(
+                {
+                    "type": "EXECUTABLE",
+                    "link": {
+                        "commandFragments": [
+                            {"role": "flags", "fragment": "-O3 -DNDEBUG"},
+                            {"role": "libraryPath", "fragment": "-L/opt/render/lib"},
+                            {
+                                "role": "libraries",
+                                "fragment": "/usr/lib/x86_64-linux-gnu/libOpenGL.so",
+                            },
+                            {"role": "libraries", "fragment": "-lglfw"},
+                        ]
+                    },
+                }
+            ),
+            ".cmake/api/v1/reply/target-helper-Release.json": json.dumps(
+                {
+                    "type": "STATIC_LIBRARY",
+                    "link": {
+                        "commandFragments": [
+                            {"role": "libraries", "fragment": "-lhelper_only"},
+                        ]
+                    },
+                }
+            ),
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+    )
+
+    for flag in ("-L/opt/render/lib", "/usr/lib/x86_64-linux-gnu/libOpenGL.so", "-lglfw"):
+        assert flag in normalized["gui_link_flags"]
+        assert flag in normalized["runner_link_flags"]
+    assert "-lhelper_only" not in normalized["gui_link_flags"]
+    assert "-O3" not in normalized["gui_link_flags"]
+
+
+def test_gpu_manifest_derives_device_include_and_define_flags_from_compile_database():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        link_hint_sources={
+            "src/Compiler/GPUKernel.cpp": "int main(){return 0;}",
+            "compile_commands.json": """
+            [
+              {
+                "directory": "/tmp/source/HIPRT-Path-Tracer/build",
+                "command": "/usr/bin/c++ -DDEVICE_INCLUDES_DIRECTORY=\\\"../src/\\\" -I/tmp/source/HIPRT-Path-Tracer/src -isystem /tmp/source/HIPRT-Path-Tracer/thirdparties/HIPRT-Fork/hiprt/.. -isystem /tmp/source/HIPRT-Path-Tracer/build/_deps/oidnbinaries-src/include -O3 -DNDEBUG -std=gnu++20 -o CMakeFiles/app.o -c /tmp/source/HIPRT-Path-Tracer/src/Compiler/GPUKernel.cpp",
+                "file": "/tmp/source/HIPRT-Path-Tracer/src/Compiler/GPUKernel.cpp"
+              }
+            ]
+            """,
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+    )
+
+    flags = normalized["gpu"]["device_flags"]
+
+    assert "-Isrc" in flags
+    assert flags.count("-isystem") == 2
+    assert "thirdparties/HIPRT-Fork/hiprt/.." in flags
+    assert "build/_deps/oidnbinaries-src/include" in flags
+    assert "-DDEVICE_INCLUDES_DIRECTORY=../src/" in flags
+    assert "-DNDEBUG" in flags
+
+
+def test_gpu_manifest_restricts_compile_database_device_flags_to_focus_entry():
+    normalized = normalize_gpu_split_manifest(
+        {"gpu": {"vendor": "rocm", "arch": ["gfx1201"]}},
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        link_hint_sources={
+            "src/main.cpp": "int main(){return 0;}",
+            "tools/helper.cpp": "int helper(){return 0;}",
+            "compile_commands.json": json.dumps(
+                [
+                    {
+                        "directory": "/repo/app/build",
+                        "command": "/usr/bin/c++ -DMAIN_TARGET=1 -I/repo/app/src -std=gnu++20 -c /repo/app/src/main.cpp",
+                        "file": "/repo/app/src/main.cpp",
+                    },
+                    {
+                        "directory": "/repo/app/build",
+                        "command": "/usr/bin/c++ -DHELPER_ONLY=1 -I/repo/app/tools -std=gnu++14 -c /repo/app/tools/helper.cpp",
+                        "file": "/repo/app/tools/helper.cpp",
+                    },
+                ]
+            ),
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+        focus_path="src/main.cpp",
+    )
+
+    flags = normalized["gpu"]["device_flags"]
+
+    assert "-DMAIN_TARGET=1" in flags
+    assert "-Isrc" in flags
+    assert "-std=gnu++20" in flags
+    assert "-DHELPER_ONLY=1" not in flags
+    assert "-Itools" not in flags
+    assert "-std=gnu++14" not in flags
+
+
+def test_gpu_manifest_prefers_focus_cmake_target_device_flags_over_repo_compile_database():
+    normalized = normalize_gpu_split_manifest(
+        {
+            "gpu": {
+                "vendor": "rocm",
+                "arch": ["gfx1201"],
+                "device_flags": ["-O3", "-lineinfo", "-std=gnu++14"],
+            }
+        },
+        split_files={
+            "shared.h": "",
+            "core.cpp": "",
+            "gui.cpp": "",
+            "host_runner.cpp": "",
+            "device.hip": "",
+        },
+        link_hint_sources={
+            ".cmake/api/v1/reply/target-HIPRTPathTracer-Release.json": json.dumps(
+                {
+                    "name": "HIPRTPathTracer",
+                    "type": "EXECUTABLE",
+                    "sources": [{"path": "src/main.cpp"}],
+                    "compileGroups": [
+                        {
+                            "language": "CXX",
+                            "defines": [{"define": "TARGET_DEFINE=1"}],
+                            "includes": [
+                                {"path": "/repo/HIPRT-Path-Tracer/src"},
+                                {"path": "/repo/HIPRT-Path-Tracer/thirdparty/hiprt", "isSystem": True},
+                            ],
+                            "compileCommandFragments": [{"fragment": "-DNDEBUG -std=gnu++20"}],
+                        }
+                    ],
+                }
+            ),
+            ".cmake/api/v1/reply/target-helper-Release.json": json.dumps(
+                {
+                    "name": "helper",
+                    "type": "EXECUTABLE",
+                    "sources": [{"path": "tools/helper.cpp"}],
+                    "compileGroups": [
+                        {
+                            "language": "CXX",
+                            "defines": [{"define": "HELPER_ONLY=1"}],
+                            "compileCommandFragments": [{"fragment": "-std=gnu++11"}],
+                        }
+                    ],
+                }
+            ),
+            "compile_commands.json": json.dumps(
+                [
+                    {
+                        "directory": "/repo/HIPRT-Path-Tracer/build",
+                        "command": "/usr/bin/c++ -I/repo/HIPRT-Path-Tracer/src -std=gnu++20 -c /repo/HIPRT-Path-Tracer/src/main.cpp",
+                        "file": "/repo/HIPRT-Path-Tracer/src/main.cpp",
+                    },
+                    {
+                        "directory": "/repo/HIPRT-Path-Tracer/build",
+                        "command": "/usr/bin/c++ -DHELPER_ONLY=1 -std=gnu99 -c /repo/HIPRT-Path-Tracer/thirdparty/helper.c",
+                        "file": "/repo/HIPRT-Path-Tracer/thirdparty/helper.c",
+                    },
+                ]
+            ),
+            "src/main.cpp": "int main() { return 0; }",
+        },
+        vendor_hint="rocm",
+        arch_hint=None,
+        focus_path="src/main.cpp",
+    )
+
+    flags = normalized["gpu"]["device_flags"]
+
+    assert "-DTARGET_DEFINE=1" in flags
+    assert "-DHELPER_ONLY=1" not in flags
+    assert "-Isrc" in flags
+    assert "-isystem" in flags
+    assert "thirdparty/hiprt" in flags
+    assert "-std=gnu++20" in flags
+    assert "-std=gnu++14" not in flags
+    assert "-std=gnu++11" not in flags
+    assert "-std=gnu99" not in flags
 
 
 def test_gpu_manifest_accepts_optional_source_link_hints_but_does_not_require_them():

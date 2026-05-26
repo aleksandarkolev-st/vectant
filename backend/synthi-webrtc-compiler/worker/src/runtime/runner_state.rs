@@ -39,6 +39,7 @@ pub struct RunnerState {
     // Loaded module paths (for determining what to reload)
     pub loaded_core_path: Option<String>,
     pub loaded_gui_path: Option<String>,
+    pub loaded_device_abi: Option<String>,
     // Widget-level compilation state
     pub loaded_widget_paths: HashMap<String, String>, // widget_id -> so_path
     pub widget_hashes: HashMap<String, u64>,          // widget_id -> content_hash
@@ -72,6 +73,7 @@ impl RunnerState {
             module_hashes: ModuleHashes::default(),
             loaded_core_path: None,
             loaded_gui_path: None,
+            loaded_device_abi: None,
             loaded_widget_paths: HashMap::new(),
             widget_hashes: HashMap::new(),
         }

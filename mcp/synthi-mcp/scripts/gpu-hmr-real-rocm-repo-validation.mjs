@@ -17,6 +17,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
+import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,6 +46,8 @@ const CFG = {
   repoUrl: configuredRepoUrl,
   repoName: configuredRepoName,
   repoPath: path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_REPO_PATH ?? `tmp/real-rocm/${configuredRepoName}`),
+  repoCommit: process.env.SYNTHI_REAL_ROCM_COMMIT ?? '',
+  initSubmodules: process.env.SYNTHI_REAL_ROCM_INIT_SUBMODULES !== '0',
   entryFile: process.env.SYNTHI_REAL_ROCM_ENTRY ?? 'HIP-Basic/saxpy/main.hip',
   deltaFile: process.env.SYNTHI_REAL_ROCM_DELTA_FILE
     ?? process.env.SYNTHI_REAL_ROCM_ENTRY
@@ -61,6 +64,9 @@ const CFG = {
   cmakeConfigName: process.env.SYNTHI_REAL_ROCM_CMAKE_CONFIG ?? 'Release',
   cmakeTargetType: process.env.SYNTHI_REAL_ROCM_TARGET_TYPE ?? 'EXECUTABLE',
   cmakeTargetIdNamespace: process.env.SYNTHI_REAL_ROCM_TARGET_ID_NAMESPACE ?? 'real-rocm',
+  buildMetadataDir: process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR
+    ? path.resolve(REPO_ROOT, process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR)
+    : '',
   gpuMode: process.env.SYNTHI_REAL_ROCM_GPU_MODE ?? 'rocm',
   buildUpstream: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM !== '0',
   runUpstream: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM !== '0',
@@ -73,7 +79,15 @@ const CFG = {
   deltaAfter:
     process.env.SYNTHI_REAL_ROCM_DELTA_AFTER ??
     'd_y[global_idx] = (a + 0.25f) * d_x[global_idx] + d_y[global_idx];',
+  secondDeltaFile: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_FILE
+    ?? process.env.SYNTHI_REAL_ROCM_DELTA_FILE
+    ?? process.env.SYNTHI_REAL_ROCM_ENTRY
+    ?? 'HIP-Basic/saxpy/main.hip',
+  secondDeltaBefore: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE ?? '',
+  secondDeltaAfter: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER ?? '',
+  extraDeltasJson: process.env.SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON ?? '',
   maxFileBytes: Number(process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? 512 * 1024),
+  compileContextMaxBytes: Number(process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? 48 * 1024 * 1024),
   writeBatchSize: Number(process.env.SYNTHI_REAL_ROCM_WRITE_BATCH_SIZE ?? 200),
   slug: process.env.SLUG ?? `gpu-real-rocm-${configuredRepoName}-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`,
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
@@ -92,6 +106,7 @@ const CFG = {
   firstCompileTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FIRST_TIMEOUT_MS ?? 300000),
   hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 90000),
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
+  screenshotRetryDelayMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
   expectScreenshot: process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT === '1',
   hmrWaitModule: process.env.SYNTHI_REAL_ROCM_HMR_WAIT_MODULE ?? 'device',
@@ -113,8 +128,42 @@ const report = {
   repo_commit: null,
   entry_file: CFG.entryFile,
   delta_file: CFG.deltaFile,
+  second_delta_file: CFG.secondDeltaBefore || CFG.secondDeltaAfter ? CFG.secondDeltaFile : null,
   target_name: CFG.targetName,
+  model: CFG.geminiModel,
+  gpu_vendor: CFG.gpuMode,
   gpu_arch: CFG.gpuArch,
+  containers: {
+    mcp: CFG.mcpContainer,
+    worker: CFG.workerContainer,
+    ai_engine: CFG.aiEngineContainer,
+  },
+  command: {
+    cwd: process.cwd(),
+    argv: process.argv,
+    env: {
+      SYNTHI_REAL_ROCM_REPO_URL: process.env.SYNTHI_REAL_ROCM_REPO_URL ?? '',
+      SYNTHI_REAL_ROCM_COMMIT: process.env.SYNTHI_REAL_ROCM_COMMIT ?? '',
+      SYNTHI_REAL_ROCM_ENTRY: process.env.SYNTHI_REAL_ROCM_ENTRY ?? '',
+      SYNTHI_REAL_ROCM_DELTA_FILE: process.env.SYNTHI_REAL_ROCM_DELTA_FILE ?? '',
+      SYNTHI_REAL_ROCM_SECOND_DELTA_FILE: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_FILE ?? '',
+      SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON: process.env.SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON ?? '',
+      SYNTHI_REAL_ROCM_TARGET: process.env.SYNTHI_REAL_ROCM_TARGET ?? '',
+      SYNTHI_REAL_ROCM_BUILD_SUBDIR: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? '',
+      SYNTHI_REAL_ROCM_BUILD_UPSTREAM: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM ?? '',
+      SYNTHI_REAL_ROCM_RUN_UPSTREAM: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM ?? '',
+      SYNTHI_REAL_ROCM_MAX_FILE_BYTES: process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? '',
+      SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES: process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? '',
+      SYNTHI_REAL_ROCM_BUILD_METADATA_DIR: process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR ?? '',
+      SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE ?? '',
+      SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER ?? '',
+      SYNTHI_GEMINI_MODEL: process.env.SYNTHI_GEMINI_MODEL ?? '',
+      SYNTHI_GPU_ARCH: process.env.SYNTHI_GPU_ARCH ?? '',
+      MCP_CONTAINER: process.env.MCP_CONTAINER ?? '',
+      WORKER_CONTAINER: process.env.WORKER_CONTAINER ?? '',
+      AI_ENGINE_CONTAINER: process.env.AI_ENGINE_CONTAINER ?? '',
+    },
+  },
   file_count: 0,
   seeded_file_count: 0,
   skipped_file_count: 0,
@@ -122,7 +171,9 @@ const report = {
   phases: [],
   screenshots: [],
   logs: {},
+  docker: {},
   evidence: {},
+  compile_projection: {},
   started_at: new Date().toISOString(),
   finished_at: null,
 };
@@ -164,16 +215,68 @@ async function httpJson(method, url, body, headers = {}) {
 async function ensureRepo() {
   if (!existsSync(CFG.repoPath)) {
     await mkdir(path.dirname(CFG.repoPath), { recursive: true });
-    await execText('git', ['clone', '--depth', '1', CFG.repoUrl, CFG.repoPath], 180000, true);
+    const cloneArgs = CFG.repoCommit
+      ? ['clone', CFG.repoUrl, CFG.repoPath]
+      : ['clone', '--depth', '1', CFG.repoUrl, CFG.repoPath];
+    await execText('git', cloneArgs, 300000, true);
+  }
+  if (CFG.repoCommit) {
+    const fetched = await execText(
+      'git',
+      ['-C', CFG.repoPath, 'fetch', '--depth', '1', 'origin', CFG.repoCommit],
+      300000,
+      false,
+    );
+    if (fetched === undefined) {
+      await execText('git', ['-C', CFG.repoPath, 'fetch', 'origin'], 300000, true);
+    }
+    await execText('git', ['-C', CFG.repoPath, 'checkout', '--force', CFG.repoCommit], 120000, true);
+  }
+  if (CFG.initSubmodules) {
+    const gitmodules = path.join(CFG.repoPath, '.gitmodules');
+    if (existsSync(gitmodules)) {
+      await execText(
+        'git',
+        ['-C', CFG.repoPath, 'submodule', 'update', '--init', '--recursive'],
+        600000,
+        true,
+      );
+    }
   }
   const commit = await execText('git', ['-C', CFG.repoPath, 'rev-parse', 'HEAD'], 30000, true);
   report.repo_commit = commit.trim();
-  const count = await execText('git', ['-C', CFG.repoPath, 'ls-files'], 30000, true);
-  report.file_count = count.split(/\r?\n/).filter(Boolean).length;
+  report.submodules = CFG.initSubmodules
+    ? await execText('git', ['-C', CFG.repoPath, 'submodule', 'status', '--recursive'], 60000, false)
+    : 'submodule initialization disabled';
+  const files = await listTrackedFiles();
+  report.file_count = files.length;
   record('real ROCm repo', 'pass', `${CFG.repoUrl} @ ${report.repo_commit.slice(0, 12)} files=${report.file_count}`);
 }
 
+async function listTrackedFiles() {
+  const args = ['-C', CFG.repoPath, 'ls-files', '-z'];
+  if (CFG.initSubmodules) args.push('--recurse-submodules');
+  const raw = await execText('git', args, 120000, true);
+  return raw.split('\0').filter(Boolean).sort();
+}
+
 async function prepareUpstreamBuild() {
+  if (CFG.buildMetadataDir) {
+    const metadata = await collectBuildMetadataFromHost(CFG.buildMetadataDir);
+    report.phases.push({
+      name: 'upstream_gpu_build_run',
+      timings: 'configure_ms=cached\nbuild_ms=skipped\nrun_ms=skipped',
+      output: `using cached CMake metadata from ${CFG.buildMetadataDir}`,
+    });
+    report.logs.upstream_run = 'upstream configure/build/run skipped; using cached CMake metadata\n';
+    record(
+      'upstream GPU target metadata configured',
+      'pass',
+      `cached_metadata=${CFG.buildMetadataDir} build=skipped run=skipped`,
+    );
+    return metadata;
+  }
+
   const buildPath = `${CFG.workerRepoPath}/${CFG.buildSubdir}/build`;
   const shell = [
     'set -e',
@@ -224,6 +327,41 @@ printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\n' "$((configured-start))" "$
   return collectBuildMetadataFromWorker(buildPath);
 }
 
+async function collectBuildMetadataFromHost(metadataDir) {
+  const compileHostPath = path.join(metadataDir, 'compile_commands.json');
+  const replyHostPath = path.join(metadataDir, 'reply');
+  if (!existsSync(compileHostPath)) {
+    throw new Error(`cached CMake metadata missing compile_commands.json: ${compileHostPath}`);
+  }
+  if (!existsSync(replyHostPath)) {
+    throw new Error(`cached CMake metadata missing reply directory: ${replyHostPath}`);
+  }
+
+  const compileCommandsJson = normalizeCompileCommands(await readFile(compileHostPath, 'utf8'));
+  const replyFiles = [];
+  const projectionHints = {
+    target_source_paths: new Set(),
+    target_include_dirs: new Set(),
+    matched_target_files: [],
+  };
+  for (const name of (await readdir(replyHostPath)).sort()) {
+    if (!name.endsWith('.json')) continue;
+    const content = normalizeBuildMetadataText(await readFile(path.join(replyHostPath, name), 'utf8'));
+    replyFiles.push({ path: `.cmake/api/v1/reply/${name}`, content });
+    collectProjectionHintsFromCmakeReply(name, content, projectionHints);
+  }
+  if (!replyFiles.length) {
+    throw new Error(`cached CMake metadata reply directory did not contain JSON metadata: ${replyHostPath}`);
+  }
+  return {
+    compileCommandsJson,
+    cmakeReplyFiles: replyFiles,
+    targetSourcePaths: [...projectionHints.target_source_paths].sort(),
+    targetIncludeDirs: [...projectionHints.target_include_dirs].sort(),
+    matchedTargetFiles: projectionHints.matched_target_files.sort(),
+  };
+}
+
 async function collectBuildMetadataFromWorker(buildPath) {
   const metadataDir = await mkdtemp(path.join(path.resolve(REPO_ROOT, 'tmp'), 'real-rocm-build-metadata-'));
   const compileHostPath = path.join(metadataDir, 'compile_commands.json');
@@ -243,15 +381,68 @@ async function collectBuildMetadataFromWorker(buildPath) {
 
   const compileCommandsJson = normalizeCompileCommands(await readFile(compileHostPath, 'utf8'));
   const replyFiles = [];
+  const projectionHints = {
+    target_source_paths: new Set(),
+    target_include_dirs: new Set(),
+    matched_target_files: [],
+  };
   for (const name of (await readdir(replyHostPath)).sort()) {
     if (!name.endsWith('.json')) continue;
     const content = normalizeBuildMetadataText(await readFile(path.join(replyHostPath, name), 'utf8'));
     replyFiles.push({ path: `.cmake/api/v1/reply/${name}`, content });
+    collectProjectionHintsFromCmakeReply(name, content, projectionHints);
   }
   if (!replyFiles.length) {
     throw new Error('CMake File API reply directory did not contain JSON metadata');
   }
-  return { compileCommandsJson, cmakeReplyFiles: replyFiles };
+  return {
+    compileCommandsJson,
+    cmakeReplyFiles: replyFiles,
+    targetSourcePaths: [...projectionHints.target_source_paths].sort(),
+    targetIncludeDirs: [...projectionHints.target_include_dirs].sort(),
+    matchedTargetFiles: projectionHints.matched_target_files.sort(),
+  };
+}
+
+function collectProjectionHintsFromCmakeReply(name, content, projectionHints) {
+  let json;
+  try {
+    json = JSON.parse(content);
+  } catch {
+    return;
+  }
+  if (json?.kind !== 'target' && !name.startsWith(`target-${CFG.targetName}-`)) return;
+  if (json?.name !== CFG.targetName) return;
+  if (CFG.cmakeTargetType && json?.type && json.type !== CFG.cmakeTargetType) return;
+
+  projectionHints.matched_target_files.push(name);
+  for (const source of json.sources ?? []) {
+    const rel = repoRelativePath(source?.path);
+    if (rel) projectionHints.target_source_paths.add(rel);
+  }
+  for (const group of json.compileGroups ?? []) {
+    for (const include of group.includes ?? []) {
+      const rel = repoRelativePath(include?.path);
+      if (rel) projectionHints.target_include_dirs.add(rel);
+    }
+  }
+}
+
+function repoRelativePath(rawPath) {
+  if (!rawPath) return null;
+  const workerRoot = CFG.workerRepoPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  const workspaceRoot = CFG.workspaceRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  let value = String(rawPath)
+    .replace(/\\/g, '/')
+    .replaceAll(workerRoot, workspaceRoot);
+  if (value === workspaceRoot || value === `${workspaceRoot}/.`) return null;
+  if (value.startsWith(`${workspaceRoot}/`)) value = value.slice(workspaceRoot.length + 1);
+  if (path.posix.isAbsolute(value)) return null;
+  const normalized = path.posix.normalize(value);
+  if (!normalized || normalized === '.' || normalized.startsWith('../') || normalized === '..') {
+    return null;
+  }
+  return normalized;
 }
 
 function normalizeBuildMetadataText(raw) {
@@ -287,8 +478,7 @@ function shQuote(value) {
 }
 
 async function collectRepoFiles(buildMetadata) {
-  const raw = await execText('git', ['-C', CFG.repoPath, 'ls-files', '-z'], 30000, true);
-  const rels = raw.split('\0').filter(Boolean).sort();
+  const rels = await listTrackedFiles();
   const files = [];
   const skipped = [];
   for (const rel of rels) {
@@ -322,10 +512,79 @@ async function collectRepoFiles(buildMetadata) {
   return files;
 }
 
+function pathIsWithinDir(filePath, dirPath) {
+  const cleanDir = String(dirPath ?? '').replace(/\/+$/, '');
+  return cleanDir && (filePath === cleanDir || filePath.startsWith(`${cleanDir}/`));
+}
+
+function byteLength(text) {
+  return Buffer.byteLength(String(text ?? ''), 'utf8');
+}
+
+function buildCompileProjection(files, focusPath, buildMetadata, phaseName) {
+  const normalizedFocus = String(focusPath ?? '').replace(/\\/g, '/');
+  const targetSources = new Set(buildMetadata.targetSourcePaths ?? []);
+  const includeDirs = (buildMetadata.targetIncludeDirs ?? [])
+    .filter((dir) => dir && dir !== '.')
+    .sort((a, b) => b.length - a.length);
+  const candidates = [];
+
+  for (const file of files) {
+    if (file.path === normalizedFocus) continue;
+    const isMetadata = file.path === 'compile_commands.json' || file.path.startsWith('.cmake/api/v1/reply/');
+    const isTargetSource = targetSources.has(file.path);
+    const includeDir = includeDirs.find((dir) => pathIsWithinDir(file.path, dir));
+    if (!isMetadata && !isTargetSource && !includeDir) continue;
+    const priority = isMetadata ? 0 : isTargetSource ? 1 : 2;
+    candidates.push({
+      file,
+      priority,
+      reason: isMetadata ? 'build_metadata' : isTargetSource ? 'target_source' : `include_dir:${includeDir}`,
+      bytes: byteLength(file.content),
+    });
+  }
+
+  candidates.sort((a, b) => a.priority - b.priority || a.file.path.localeCompare(b.file.path));
+
+  const selected = [];
+  const omitted = [];
+  let totalBytes = 0;
+  for (const candidate of candidates) {
+    if (totalBytes + candidate.bytes > CFG.compileContextMaxBytes && candidate.priority > 1) {
+      omitted.push(candidate);
+      continue;
+    }
+    selected.push({ name: candidate.file.path, content: candidate.file.content });
+    totalBytes += candidate.bytes;
+  }
+
+  const summary = {
+    phase: phaseName,
+    selected_files: selected.length,
+    selected_bytes: totalBytes,
+    omitted_files: omitted.length,
+    omitted_bytes: omitted.reduce((sum, item) => sum + item.bytes, 0),
+    target_source_paths: targetSources.size,
+    target_include_dirs: includeDirs.length,
+    matched_target_files: buildMetadata.matchedTargetFiles ?? [],
+    max_bytes: CFG.compileContextMaxBytes,
+  };
+  report.compile_projection[phaseName] = summary;
+  record(
+    'compile projection',
+    'pass',
+    `${phaseName} selected=${summary.selected_files} bytes=${summary.selected_bytes} omitted=${summary.omitted_files}`,
+  );
+  return selected;
+}
+
 async function createWorkspace() {
-  const workspace = await httpJson('POST', `${CFG.frontendUrl}/api/workspace`, {
+  const workspace = await createValidationWorkspace({
+    frontendUrl: CFG.frontendUrl,
     name: CFG.workspaceName,
     slug: CFG.slug,
+    httpJson,
+    record,
   });
   record('create workspace', 'pass', `id=${workspace.id ?? 'n/a'} slug=${CFG.slug}`);
 }
@@ -577,49 +836,122 @@ async function currentHmrFromEventLog(state, sinceTs, startedAt) {
 
 async function captureScreenshot(label) {
   if (!mcpState?.client) return null;
-  for (let attempt = 1; attempt <= CFG.screenshotAttempts; attempt += 1) {
+  const attempts = Math.max(1, CFG.screenshotAttempts);
+  let lastRow = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const shot = await mcpState.client.toolCallRaw('synthi_screenshot', { freshness_max_ms: CFG.screenshotFreshnessMaxMs }, 30000).catch((e) => ({ error: e.message }));
     const content = Array.isArray(shot?.content) ? shot.content : [];
     const imageBlock = content.find((block) => block?.type === 'image' && typeof block.data === 'string');
     if (imageBlock?.data) {
-      const outPath = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}.png`);
+      const suffix = attempt === 1 ? '' : `-attempt-${attempt}`;
+      const outPath = path.join(ARTIFACT_DIR, `${CFG.slug}-${label}${suffix}.png`);
       const bytes = Buffer.from(imageBlock.data, 'base64');
       await writeFile(outPath, bytes);
-      const sharpImage = sharp(bytes);
-      const meta = await sharpImage.metadata();
-      const stats = await sharpImage.greyscale().raw().toBuffer().then((buf) => {
-        let visible = 0;
-        let sum = 0;
-        for (const value of buf) {
-          sum += value;
-          if (value > 8) visible += 1;
-        }
-        return { visible, mean: buf.length ? sum / buf.length : 0 };
-      });
-      const row = { label, path: outPath, width: meta.width, height: meta.height, visible_pixels: stats.visible, mean_luma: stats.mean, bytes: bytes.length };
+      const stats = await analyzeImage(bytes);
+      const row = { label, path: outPath, width: stats.width, height: stats.height, visible_pixels: stats.visible_pixels, mean_luma: stats.mean_luma, bytes: bytes.length, attempt };
       report.screenshots.push(row);
-      record(`screenshot ${label}`, stats.visible > 500 ? 'pass' : 'warn', JSON.stringify(row));
-      return row;
+      const ok = row.width >= 320 && row.height >= 240 && row.visible_pixels > 500;
+      if (ok) {
+        record(`screenshot ${label}`, 'pass', JSON.stringify(row));
+        return row;
+      }
+      lastRow = row;
+      const status = CFG.expectScreenshot ? 'warn' : 'info';
+      record(`screenshot ${label} retry`, status, `attempt=${attempt}/${attempts} ${JSON.stringify(row)}`);
+      if (attempt < attempts) {
+        await sleep(CFG.screenshotRetryDelayMs);
+      }
+      continue;
     }
     const text = content.find((block) => block?.type === 'text')?.text;
     const detail = shot?.error ?? text ?? (shot?.isError ? JSON.stringify(shot?.structuredContent ?? shot) : 'no data');
     record(`screenshot ${label}`, 'warn', `attempt=${attempt} ${detail}`);
-    await sleep(1000);
+    await sleep(CFG.screenshotRetryDelayMs);
   }
   if (!CFG.expectScreenshot) {
-    record(`screenshot ${label}`, 'info', 'not_applicable_for_non_visual_target');
-    return null;
+    const detail = lastRow
+      ? `visual_proof_unavailable not_visibly_non_black ${JSON.stringify(lastRow)}`
+      : 'visual_proof_unavailable no_frame_captured screenshot_optional';
+    record(`screenshot ${label}`, 'warn', detail);
+    return lastRow;
   }
-  throw new Error(`screenshot ${label} was expected but no frame was captured`);
-  return null;
+  const detail = lastRow ? JSON.stringify(lastRow) : 'no frame was captured';
+  record(`screenshot ${label}`, 'fail', detail);
+  throw new Error(`screenshot ${label} was expected but was not visibly non-black`);
+}
+
+async function analyzeImage(input) {
+  const { data, info } = await sharp(input).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  let visible = 0;
+  let lumaTotal = 0;
+  for (let i = 0; i < data.length; i += info.channels) {
+    const r = data[i] ?? 0;
+    const g = data[i + 1] ?? 0;
+    const b = data[i + 2] ?? 0;
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    lumaTotal += luma;
+    if (luma > 24 || Math.max(r, g, b) - Math.min(r, g, b) > 30) visible += 1;
+  }
+  const pixels = Math.max(1, info.width * info.height);
+  return { width: info.width, height: info.height, visible_pixels: visible, mean_luma: lumaTotal / pixels };
+}
+
+function editSource(source, before, after, label) {
+  if (!before || before === after) throw new Error(`${label} source delta must be non-empty and change the source`);
+  if (!source.includes(before)) throw new Error(`${label} source delta did not match the selected file`);
+  return source.replace(before, after);
 }
 
 function editConfiguredSource(source) {
-  const before = CFG.deltaBefore;
-  const after = CFG.deltaAfter;
-  if (!before || before === after) throw new Error('configured source delta must be non-empty and change the source');
-  if (!source.includes(before)) throw new Error('configured source delta did not match the selected entry file');
-  return source.replace(before, after);
+  return editSource(source, CFG.deltaBefore, CFG.deltaAfter, 'configured');
+}
+
+function safePhaseLabel(label, index) {
+  return cleanIdentifier(label || `extra-${index + 1}`).replace(/\./g, '-');
+}
+
+function parseExtraDeltas() {
+  const deltas = [];
+  if (CFG.secondDeltaBefore || CFG.secondDeltaAfter) {
+    if (!CFG.secondDeltaBefore || !CFG.secondDeltaAfter) {
+      throw new Error('second source delta requires both SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE and SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER');
+    }
+    deltas.push({
+      label: 'second',
+      file: CFG.secondDeltaFile,
+      before: CFG.secondDeltaBefore,
+      after: CFG.secondDeltaAfter,
+    });
+  }
+  if (!CFG.extraDeltasJson.trim()) return deltas;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(CFG.extraDeltasJson);
+  } catch (err) {
+    throw new Error(`SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON is not valid JSON: ${err.message}`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error('SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON must be a JSON array');
+  }
+  parsed.forEach((entry, index) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`extra delta ${index + 1} must be an object`);
+    }
+    const file = String(entry.file ?? entry.path ?? CFG.deltaFile).replace(/\\/g, '/');
+    const before = typeof entry.before === 'string' ? entry.before : '';
+    const after = typeof entry.after === 'string' ? entry.after : '';
+    if (!file || !before || !after || before === after) {
+      throw new Error(`extra delta ${index + 1} requires file/path, before, and after strings that change the source`);
+    }
+    deltas.push({
+      label: safePhaseLabel(entry.label, index),
+      file,
+      before,
+      after,
+    });
+  });
+  return deltas;
 }
 
 function evidenceLines(text, pattern) {
@@ -633,8 +965,91 @@ function countMatches(lines, pattern) {
   return lines.filter((line) => pattern.test(line)).length;
 }
 
+function scopeLogTextToSession(text, slug) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  if (!slug) {
+    return {
+      text: lines.join('\n'),
+      marker_found: false,
+      dropped_before: 0,
+      total_lines: lines.length,
+    };
+  }
+  const markerIndex = lines.findIndex((line) => line.includes(slug));
+  if (markerIndex < 0) {
+    return {
+      text: '',
+      marker_found: false,
+      dropped_before: lines.length,
+      total_lines: lines.length,
+    };
+  }
+  return {
+    text: lines.slice(markerIndex).join('\n'),
+    marker_found: true,
+    dropped_before: markerIndex,
+    total_lines: lines.length,
+  };
+}
+
+function runtimeDispatchEvidence(workerEvidence) {
+  const dispatchFailureLines = workerEvidence.filter((line) =>
+    /\bsynthi_gpu_launch\b.*\bdispatch=(failed|stale-pointer|missing-dispatcher)\b/i.test(line)
+  );
+  const dispatchSuccessLines = workerEvidence.filter((line) =>
+    /\bsynthi_gpu_launch\b.*\bdispatch=ok\b/i.test(line)
+  );
+  const dispatchSuccessCount = countMatches(
+    workerEvidence,
+    /\bsynthi_gpu_launch\b.*\bdispatch=ok\b/i,
+  );
+  return {
+    success_count: dispatchSuccessCount,
+    success_lines: dispatchSuccessLines.slice(-20),
+    failure_count: dispatchFailureLines.length,
+    failure_lines: dispatchFailureLines.slice(0, 20),
+  };
+}
+
+function selfCheckRuntimeDispatchEvidence() {
+  const evidence = runtimeDispatchEvidence([
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=first grid=(1, 1, 1) dispatch=ok',
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=second grid=(1, 1, 1) dispatch=failed',
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=third grid=(1, 1, 1) dispatch=stale-pointer',
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=fourth grid=(1, 1, 1) dispatch=missing-dispatcher',
+    '[gpu-runtime-boundary] unrelated launch line dispatch=failed',
+  ]);
+  if (evidence.success_count !== 1) {
+    throw new Error(`expected one dispatch success, got ${evidence.success_count}`);
+  }
+  if (evidence.failure_count !== 3) {
+    throw new Error(`expected three dispatch failures, got ${evidence.failure_count}`);
+  }
+  if (evidence.failure_lines.some((line) => !/\bsynthi_gpu_launch\b/.test(line))) {
+    throw new Error('dispatch failure evidence included a non-launch line');
+  }
+  const scoped = scopeLogTextToSession(
+    [
+      '[gpu-runtime-boundary] synthi_gpu_launch kernel=stale grid=(1, 1, 1) dispatch=ok',
+      '[Runner] Session ID from env: target-session',
+      '[gpu-runtime-boundary] synthi_gpu_launch kernel=current grid=(1, 1, 1) dispatch=ok',
+    ].join('\n'),
+    'target-session',
+  );
+  const scopedEvidence = runtimeDispatchEvidence(evidenceLines(scoped.text, /gpu-runtime-boundary/i));
+  if (scopedEvidence.success_count !== 1 || !scopedEvidence.success_lines[0]?.includes('kernel=current')) {
+    throw new Error('session-scoped dispatch evidence included stale dispatch lines');
+  }
+  console.log('runtime dispatch evidence self-check passed');
+}
+
 async function collectRuntimeEvidence() {
   if (CFG.mcpTransport !== 'docker') return;
+  report.docker = {
+    mcp: await dockerContainerSnapshot(CFG.mcpContainer),
+    worker: await dockerContainerSnapshot(CFG.workerContainer),
+    ai_engine: await dockerContainerSnapshot(CFG.aiEngineContainer),
+  };
   const workerLogs = await execText(
     'docker',
     ['logs', '--timestamps', '--since', report.started_at, CFG.workerContainer],
@@ -647,9 +1062,14 @@ async function collectRuntimeEvidence() {
     120000,
     false,
   );
+  const scopedWorkerLogs = scopeLogTextToSession(workerLogs, CFG.slug);
   const workerEvidence = evidenceLines(
+    scopedWorkerLogs.text,
+    /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|gpu-runtime-boundary|synthi_gpu_launch|gpu_runtime_error|gpu-hmr-rejected|Runner process exited|fatal|Rust cannot catch/i,
+  );
+  const unscopedWorkerEvidence = evidenceLines(
     workerLogs,
-    /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|Runner process exited|fatal|Rust cannot catch/i,
+    /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|gpu-runtime-boundary|synthi_gpu_launch|gpu_runtime_error|gpu-hmr-rejected|Runner process exited|fatal|Rust cannot catch/i,
   );
   const aiEvidence = evidenceLines(
     aiLogs,
@@ -658,8 +1078,16 @@ async function collectRuntimeEvidence() {
   const genericDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch(?!\/gpu)/i);
   const gpuDeltaCalls = countMatches(aiEvidence, /POST \/refactor\/diff_patch\/gpu/i);
   const compileHealCalls = countMatches(aiEvidence, /POST \/refactor\/heal/i);
+  const runtimeDispatch = runtimeDispatchEvidence(workerEvidence);
   report.evidence = {
     worker_log_lines: workerEvidence,
+    worker_log_lines_unscoped_tail: unscopedWorkerEvidence.slice(-50),
+    worker_session_scope: {
+      slug: CFG.slug,
+      marker_found: scopedWorkerLogs.marker_found,
+      dropped_before: scopedWorkerLogs.dropped_before,
+      total_lines: scopedWorkerLogs.total_lines,
+    },
     ai_engine_log_lines: aiEvidence,
     ai_call_counts: {
       split: countMatches(aiEvidence, /mode=split/i),
@@ -674,12 +1102,50 @@ async function collectRuntimeEvidence() {
       runner_restarts: countMatches(workerEvidence, /Restarting runner/i),
       runner_exit_errors: countMatches(workerEvidence, /Runner process exited|Rust cannot catch|fatal runtime/i),
     },
+    runtime_dispatch: runtimeDispatch,
   };
+  if (runtimeDispatch.failure_count > 0) {
+    record(
+      'runtime dispatch failures',
+      'fail',
+      runtimeDispatch.failure_lines.slice(0, 3).join(' | ').slice(0, 1200),
+    );
+    process.exitCode = 1;
+  } else if (runtimeDispatch.success_count > 0 && scopedWorkerLogs.marker_found) {
+    record('runtime dispatch successes', 'pass', `dispatch_ok=${runtimeDispatch.success_count}`);
+  } else if (!scopedWorkerLogs.marker_found) {
+    record('runtime dispatch evidence', 'warn', `no worker log session marker captured for slug=${CFG.slug}`);
+  } else {
+    record('runtime dispatch evidence', 'warn', 'no synthi_gpu_launch dispatch lines captured');
+  }
   record(
     'runtime evidence collected',
     'pass',
     `ai_split=${report.evidence.ai_call_counts.split} ai_delta=${report.evidence.ai_call_counts.total_delta} ai_gpu_delta=${report.evidence.ai_call_counts.gpu_delta} ai_compile_heal=${report.evidence.ai_call_counts.compile_heal} restart_policy_blocks=${report.evidence.runner_policy_counts.existing_reload_blocked}`,
   );
+}
+
+async function dockerContainerSnapshot(containerName) {
+  const raw = await execText(
+    'docker',
+    [
+      'inspect',
+      containerName,
+      '--format',
+      '{{.Name}}|{{.Config.Image}}|{{.Image}}|{{.State.Status}}',
+    ],
+    30000,
+    false,
+  );
+  if (!raw) return { container: containerName, available: false };
+  const [name, config_image, image_id, status] = raw.split('|');
+  return {
+    container: containerName,
+    name: name?.replace(/^\//, '') ?? containerName,
+    config_image,
+    image_id,
+    status,
+  };
 }
 
 async function writeResults() {
@@ -693,9 +1159,18 @@ async function writeResults() {
     `repo_commit: ${report.repo_commit}`,
     `entry_file: ${report.entry_file}`,
     `delta_file: ${report.delta_file}`,
+    `second_delta_file: ${report.second_delta_file ?? ''}`,
+    `extra_deltas: ${JSON.stringify(report.extra_deltas ?? [])}`,
+    `model: ${report.model}`,
+    `gpu_vendor: ${report.gpu_vendor}`,
+    `gpu_arch: ${report.gpu_arch}`,
+    `containers: ${JSON.stringify(report.containers)}`,
+    `docker: ${JSON.stringify(report.docker)}`,
+    `command: ${JSON.stringify(report.command)}`,
     `file_count: ${report.file_count}`,
     `seeded_file_count: ${report.seeded_file_count}`,
     `skipped_file_count: ${report.skipped_file_count}`,
+    `compile_projection: ${JSON.stringify(report.compile_projection)}`,
     '',
     ...report.checks.map((check) => `${check.status.toUpperCase()} ${check.name}${check.detail ? ` - ${check.detail}` : ''}`),
     '',
@@ -715,13 +1190,37 @@ async function run() {
   await ensureRepo();
   const buildMetadata = await prepareUpstreamBuild();
   const files = await collectRepoFiles(buildMetadata);
+  const fileContentByPath = new Map(files.map((file) => [file.path, file.content]));
+  const updateFileContent = (filePath, content) => {
+    const normalized = String(filePath ?? '').replace(/\\/g, '/');
+    fileContentByPath.set(normalized, content);
+    const file = files.find((candidate) => candidate.path === normalized);
+    if (file) file.content = content;
+  };
+  const contentForPath = (filePath) => {
+    const normalized = String(filePath ?? '').replace(/\\/g, '/');
+    if (!fileContentByPath.has(normalized)) {
+      throw new Error(`delta file missing from seeded files: ${normalized}`);
+    }
+    return fileContentByPath.get(normalized);
+  };
+  const extraDeltas = parseExtraDeltas();
+  report.extra_deltas = extraDeltas.map((delta) => ({
+    label: delta.label,
+    file: delta.file,
+    before_sha256: createHash('sha256').update(delta.before).digest('hex'),
+    after_sha256: createHash('sha256').update(delta.after).digest('hex'),
+  }));
   const primary = files.find((file) => file.path === CFG.entryFile);
   if (!primary) throw new Error(`entry file missing from seeded files: ${CFG.entryFile}`);
   const deltaPrimary = files.find((file) => file.path === CFG.deltaFile);
   if (!deltaPrimary) throw new Error(`delta file missing from seeded files: ${CFG.deltaFile}`);
-  const firstAdditionalFiles = files
-    .filter((file) => file.path !== CFG.entryFile)
-    .map((file) => ({ name: file.path, content: file.content }));
+  const firstAdditionalFiles = buildCompileProjection(
+    files,
+    CFG.entryFile,
+    buildMetadata,
+    'first_real_repo_ai_split_compile',
+  );
 
   await createWorkspace();
   await writeFilesBatch(files);
@@ -743,16 +1242,20 @@ async function run() {
   }, CFG.firstCompileTimeoutMs, 'first_real_repo_ai_split_compile');
   await captureScreenshot('first-compile');
 
-  const edited = editConfiguredSource(deltaPrimary.content);
-  const hmrAdditionalFiles = files
-    .filter((file) => file.path !== CFG.deltaFile)
-    .map((file) => ({ name: file.path, content: file.content }));
+  const edited = editConfiguredSource(contentForPath(CFG.deltaFile));
+  const hmrAdditionalFiles = buildCompileProjection(
+    files,
+    CFG.deltaFile,
+    buildMetadata,
+    'real_repo_user_source_delta_hmr',
+  );
   await httpJson(
     'POST',
     `${CFG.collabUrl}/git/${CFG.slug}/write-files-batch`,
     { files: [{ path: CFG.deltaFile, encoding: 'utf8', content: edited }], syncToGcs: CFG.syncToGcs },
     { 'x-user-id': CFG.hostId },
   );
+  updateFileContent(CFG.deltaFile, edited);
   await compileViaMcp({
     language: 'cpp',
     filename: CFG.deltaFile,
@@ -769,19 +1272,70 @@ async function run() {
     height: CFG.height,
   }, CFG.hmrTimeoutMs, 'real_repo_user_source_delta_hmr');
   await captureScreenshot('post-hmr');
+
+  for (let index = 0; index < extraDeltas.length; index += 1) {
+    const delta = extraDeltas[index];
+    const label = safePhaseLabel(delta.label, index);
+    const phaseName = `real_repo_${label}_user_source_delta_hmr`;
+    const screenshotLabel = `post-${label}-hmr`;
+    const editedSource = editSource(
+      contentForPath(delta.file),
+      delta.before,
+      delta.after,
+      `${label} configured`,
+    );
+    const additionalFiles = buildCompileProjection(
+      files,
+      delta.file,
+      buildMetadata,
+      phaseName,
+    );
+    await httpJson(
+      'POST',
+      `${CFG.collabUrl}/git/${CFG.slug}/write-files-batch`,
+      { files: [{ path: delta.file, encoding: 'utf8', content: editedSource }], syncToGcs: CFG.syncToGcs },
+      { 'x-user-id': CFG.hostId },
+    );
+    updateFileContent(delta.file, editedSource);
+    await compileViaMcp({
+      language: 'cpp',
+      filename: delta.file,
+      source: editedSource,
+      files: additionalFiles,
+      is_gui: CFG.expectScreenshot,
+      use_ai_split: true,
+      user_requested_ai: true,
+      prefer_gpu_pipeline: true,
+      gpu_mode: CFG.gpuMode,
+      gpu_arch: CFG.gpuArch,
+      slug: CFG.slug,
+      width: CFG.width,
+      height: CFG.height,
+    }, CFG.hmrTimeoutMs, phaseName);
+    await captureScreenshot(screenshotLabel);
+  }
 }
 
-run()
-  .catch((err) => {
-    record('fatal', 'fail', err.stack || err.message);
+if (process.argv.includes('--self-check')) {
+  try {
+    selfCheckRuntimeDispatchEvidence();
+  } catch (err) {
+    console.error(err.stack || err.message);
     process.exitCode = 1;
-  })
-  .finally(async () => {
-    if (mcpState?.proc) {
-      try { mcpState.proc.kill('SIGTERM'); } catch { /* ignore */ }
-    }
-    await collectRuntimeEvidence().catch((err) => {
-      record('runtime evidence collected', 'warn', err.stack || err.message);
+  }
+} else {
+  run()
+    .catch((err) => {
+      record('fatal', 'fail', err.stack || err.message);
+      process.exitCode = 1;
+    })
+    .finally(async () => {
+      if (mcpState?.proc) {
+        try { mcpState.proc.kill('SIGTERM'); } catch { /* ignore */ }
+      }
+      await collectRuntimeEvidence().catch((err) => {
+        record('runtime evidence collected', 'warn', err.stack || err.message);
+      });
+      await writeResults().catch((err) => console.error(err));
     });
-    await writeResults().catch((err) => console.error(err));
-  });
+}

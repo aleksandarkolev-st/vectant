@@ -16,6 +16,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
+import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -381,7 +382,13 @@ async function detectArch(vendor) {
 }
 
 async function createWorkspace({ name, slug }) {
-  return httpJson('POST', `${CFG.frontendUrl}/api/workspace`, { name, slug });
+  return createValidationWorkspace({
+    frontendUrl: CFG.frontendUrl,
+    name,
+    slug,
+    httpJson,
+    record,
+  });
 }
 
 async function writeFilesBatch({ slug, files }) {

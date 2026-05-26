@@ -347,9 +347,7 @@ fn toolchain_capabilities_from_manifest(manifest: &Value, flags_hash: &str) -> V
     let device_link_budget_ms = gpu
         .and_then(|g| {
             g.get("device_link_budget_ms").or_else(|| {
-                device_link.and_then(|link| {
-                    link.get("budget_ms").or_else(|| link.get("budgetMs"))
-                })
+                device_link.and_then(|link| link.get("budget_ms").or_else(|| link.get("budgetMs")))
             })
         })
         .and_then(Value::as_u64)
@@ -357,9 +355,8 @@ fn toolchain_capabilities_from_manifest(manifest: &Value, flags_hash: &str) -> V
     let estimated_device_link_ms = gpu
         .and_then(|g| {
             g.get("device_link_estimated_ms").or_else(|| {
-                device_link.and_then(|link| {
-                    link.get("estimated_ms").or_else(|| link.get("estimatedMs"))
-                })
+                device_link
+                    .and_then(|link| link.get("estimated_ms").or_else(|| link.get("estimatedMs")))
             })
         })
         .and_then(Value::as_u64)
@@ -460,7 +457,10 @@ fn generated_roles_from_manifest(manifest: &Value) -> Value {
     Value::Object(roles)
 }
 
-fn device_roles_from_manifest(manifest: &Value, module_files: Option<&Map<String, Value>>) -> Value {
+fn device_roles_from_manifest(
+    manifest: &Value,
+    module_files: Option<&Map<String, Value>>,
+) -> Value {
     let gpu = manifest.get("gpu").and_then(Value::as_object);
     if let Some(device_roles) = gpu
         .and_then(|g| g.get("device_roles").or_else(|| g.get("deviceRoles")))
@@ -537,7 +537,10 @@ fn device_role_id_for_path(path: &str) -> String {
         .next()
         .filter(|value| !value.is_empty())
         .unwrap_or("device");
-    let stem = filename.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(filename);
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(filename);
     let slug = stem
         .chars()
         .map(|ch| {
@@ -681,7 +684,11 @@ fn promote_build_metadata(root: &mut Map<String, Value>, source_context_report: 
             selected_target.get("configuration").cloned(),
         );
         insert_if_missing_or_null(target, "targetType", selected_target.get("type").cloned());
-        insert_if_missing_or_null(target, "sourceFiles", selected_target.get("sourceFiles").cloned());
+        insert_if_missing_or_null(
+            target,
+            "sourceFiles",
+            selected_target.get("sourceFiles").cloned(),
+        );
     }
 }
 
@@ -826,7 +833,8 @@ fn promote_template_evidence(root: &mut Map<String, Value>, effective_flags_hash
     if !is_compiler_derived_template_evidence(producer) {
         invalidation.push("template_evidence_not_compiler_derived");
     }
-    let accepted_flags_hashes = accepted_template_effective_flags_hashes(root, effective_flags_hash);
+    let accepted_flags_hashes =
+        accepted_template_effective_flags_hashes(root, effective_flags_hash);
     if evidence_flags_hash.is_empty()
         || !accepted_flags_hashes
             .iter()
@@ -1120,10 +1128,16 @@ fn memory_refresh_policy(root: &Map<String, Value>, stats: &Value) -> Value {
             "fragmentation_ratio",
         ],
     );
-    let largest_free_block =
-        numeric_u64(root, stats, &["largestFreeBlockBytes", "largest_free_block_bytes"]);
-    let pending_allocation =
-        numeric_u64(root, stats, &["pendingAllocationBytes", "pending_allocation_bytes"]);
+    let largest_free_block = numeric_u64(
+        root,
+        stats,
+        &["largestFreeBlockBytes", "largest_free_block_bytes"],
+    );
+    let pending_allocation = numeric_u64(
+        root,
+        stats,
+        &["pendingAllocationBytes", "pending_allocation_bytes"],
+    );
     let failure_reason = string_field(
         root,
         stats,
@@ -1264,10 +1278,7 @@ fn promote_launch_indirection_report(root: &mut Map<String, Value>) {
         .or_else(|| root.get("launch_indirection_report").cloned())
         .filter(|v| !v.is_null())
         .unwrap_or_else(default_launch_indirection_report);
-    let table_version = report
-        .get("tableVersion")
-        .cloned()
-        .unwrap_or(Value::Null);
+    let table_version = report.get("tableVersion").cloned().unwrap_or(Value::Null);
     let stale_checks = report
         .get("staleLaunchPointerChecks")
         .cloned()
@@ -1306,8 +1317,7 @@ fn default_stale_launch_pointer_checks() -> Value {
 }
 
 fn launch_indirection_ok(root: &Map<String, Value>) -> bool {
-    root
-        .get("launchIndirectionReport")
+    root.get("launchIndirectionReport")
         .and_then(|v| v.get("status"))
         .and_then(Value::as_str)
         == Some("pass")
@@ -1618,11 +1628,8 @@ fn ranked_reload_options(
         && launch_ok
         && !gpu_tainted
         && !memory_refresh_required;
-    let warm_safety = profile_current
-        && template_fresh
-        && launch_ok
-        && !gpu_tainted
-        && !memory_refresh_required;
+    let warm_safety =
+        profile_current && template_fresh && launch_ok && !gpu_tainted && !memory_refresh_required;
     let device_only_requires_consent = device_only_safety && unsafe_debug_mode;
     let warm_requires_consent =
         warm_safety && (requires_rdc || rdc_over_budget || unsafe_debug_mode);
@@ -2045,8 +2052,10 @@ fn failure_card_template(reason_codes: &[String]) -> Option<FailureCardTemplate>
         return Some(FailureCardTemplate {
             category: "unsupported_project_shape",
             problem: "Device-only reload rejected.",
-            reason: "The selected-target parser could not build a reliable before/after device AST.",
-            next_action: "Fix the parse error or use AI delta/full re-split instead of the direct fast path.",
+            reason:
+                "The selected-target parser could not build a reliable before/after device AST.",
+            next_action:
+                "Fix the parse error or use AI delta/full re-split instead of the direct fast path.",
         });
     }
     if has_reason(reason_codes, "warm_rebuild_budget_exceeded") {
@@ -2054,7 +2063,8 @@ fn failure_card_template(reason_codes: &[String]) -> Option<FailureCardTemplate>
             category: "warm_rebuild_budget_exceeded",
             problem: "Warm rebuild skipped.",
             reason: "The deterministic warm path exceeded its latency budget.",
-            next_action: "Use a normal incremental build, AI delta, or request consent for the slower path.",
+            next_action:
+                "Use a normal incremental build, AI delta, or request consent for the slower path.",
         });
     }
     if has_reason(reason_codes, "incremental_device_link_unsupported") {
@@ -2080,7 +2090,8 @@ fn failure_card_template(reason_codes: &[String]) -> Option<FailureCardTemplate>
             category: "multi_role_ai_delta_requires_consent",
             problem: "AI delta requires developer consent.",
             reason: "The proposed AI delta touches multiple generated roles.",
-            next_action: "Review the proposed role changes or run a full re-split with explicit consent.",
+            next_action:
+                "Review the proposed role changes or run a full re-split with explicit consent.",
         });
     }
     if has_reason(reason_codes, "state_loss_requires_consent") {
@@ -2101,8 +2112,7 @@ fn failure_card_template(reason_codes: &[String]) -> Option<FailureCardTemplate>
             next_action: "Refresh or cold restart the runner before attempting a reload that needs the affected VRAM allocation.",
         });
     }
-    if has_reason(reason_codes, "gpu_device_tainted")
-        || has_reason(reason_codes, "gpu_driver_tdr")
+    if has_reason(reason_codes, "gpu_device_tainted") || has_reason(reason_codes, "gpu_driver_tdr")
     {
         return Some(FailureCardTemplate {
             category: "gpu_device_tainted",
@@ -2123,7 +2133,8 @@ fn failure_card_template(reason_codes: &[String]) -> Option<FailureCardTemplate>
         return Some(FailureCardTemplate {
             category: "arbiter_user_consent_required",
             problem: "Reload requires developer consent.",
-            reason: "The Arbiter selected a costly, disruptive, experimental, or state-affecting path.",
+            reason:
+                "The Arbiter selected a costly, disruptive, experimental, or state-affecting path.",
             next_action: "Request developer consent before executing this path.",
         });
     }
@@ -2244,10 +2255,7 @@ fn run_report(
                 Value::String("not_measured".to_string())
             }
         });
-    let memory_arena_stats = root
-        .get("memoryArenaStats")
-        .cloned()
-        .unwrap_or(Value::Null);
+    let memory_arena_stats = root.get("memoryArenaStats").cloned().unwrap_or(Value::Null);
     let memory_refresh_policy = root
         .get("memoryRefreshPolicy")
         .cloned()
@@ -2260,20 +2268,12 @@ fn run_report(
     let vram_fragmentation_ratio = root
         .get("vramFragmentationRatio")
         .cloned()
-        .or_else(|| {
-            memory_refresh_policy
-                .get("vramFragmentationRatio")
-                .cloned()
-        })
+        .or_else(|| memory_refresh_policy.get("vramFragmentationRatio").cloned())
         .unwrap_or(Value::Null);
     let largest_free_block_bytes = root
         .get("largestFreeBlockBytes")
         .cloned()
-        .or_else(|| {
-            memory_refresh_policy
-                .get("largestFreeBlockBytes")
-                .cloned()
-        })
+        .or_else(|| memory_refresh_policy.get("largestFreeBlockBytes").cloned())
         .unwrap_or(Value::Null);
     let gpu_fault_policy = root.get("gpuFaultPolicy").cloned().unwrap_or(Value::Null);
     let isolation_backend = root
@@ -2281,7 +2281,11 @@ fn run_report(
         .cloned()
         .or_else(|| {
             root.get("isolationReport")
-                .and_then(|report| report.get("isolationBackend").or_else(|| report.get("backend")))
+                .and_then(|report| {
+                    report
+                        .get("isolationBackend")
+                        .or_else(|| report.get("backend"))
+                })
                 .cloned()
         })
         .unwrap_or(Value::Null);
@@ -2924,7 +2928,10 @@ mod tests {
             device_only.get("safety").and_then(Value::as_str),
             Some("fail")
         );
-        assert!(has_reason(device_only, "stale_launch_pointer_check_missing"));
+        assert!(has_reason(
+            device_only,
+            "stale_launch_pointer_check_missing"
+        ));
         assert_eq!(
             migrated
                 .pointer("/runReport/staleLaunchPointerChecks/status")
@@ -2973,8 +2980,7 @@ mod tests {
         let mut launch_report = launch_indirection_report();
         launch_report["status"] = Value::String("fail".to_string());
         launch_report["stalePointerRisk"] = Value::String("detected".to_string());
-        launch_report["staleLaunchPointerChecks"]["status"] =
-            Value::String("fail".to_string());
+        launch_report["staleLaunchPointerChecks"]["status"] = Value::String("fail".to_string());
         let sidecar = json!({
             "compile_manifest": manifest,
             "lastReloadPlanReport": plan,
@@ -3604,7 +3610,11 @@ mod tests {
     fn source_context_template_evidence_accepts_target_compile_command_hash() {
         let manifest = gpu_compile_manifest();
         let focus_flags_hash = effective_flags_hash_for(&manifest);
-        let device_flags_hash = stable_hash(&json!(["--offload-arch=gfx1201", "-O3", "src/gpu/kernels.hip"]));
+        let device_flags_hash = stable_hash(&json!([
+            "--offload-arch=gfx1201",
+            "-O3",
+            "src/gpu/kernels.hip"
+        ]));
         let plan = reload_plan("warm_rebuild", vec!["device"]);
         let sidecar = json!({
             "compile_manifest": manifest,
@@ -4010,13 +4020,11 @@ mod tests {
                 .and_then(Value::as_str),
             Some("ai_delta")
         );
-        assert!(
-            migrated
-                .pointer("/runReport/failureCard/formatted")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .contains("Problem:\n  Warm rebuild rejected.")
-        );
+        assert!(migrated
+            .pointer("/runReport/failureCard/formatted")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("Problem:\n  Warm rebuild rejected."));
     }
 
     #[test]
@@ -4103,7 +4111,9 @@ mod tests {
             Some("compile-db-1")
         );
         assert_eq!(
-            migrated.pointer("/cmakeCodemodelHash").and_then(Value::as_str),
+            migrated
+                .pointer("/cmakeCodemodelHash")
+                .and_then(Value::as_str),
             Some("codemodel-1")
         );
         assert_eq!(
@@ -4191,7 +4201,9 @@ mod tests {
             Some("gpu-workspace")
         );
         assert_eq!(
-            report.pointer("/sourceContextFiles/0").and_then(Value::as_str),
+            report
+                .pointer("/sourceContextFiles/0")
+                .and_then(Value::as_str),
             Some("src/gpu/flow.hip")
         );
         assert_eq!(
@@ -4203,7 +4215,9 @@ mod tests {
             Some("rocm")
         );
         assert_eq!(
-            report.pointer("/warmPathEstimateMs").and_then(Value::as_u64),
+            report
+                .pointer("/warmPathEstimateMs")
+                .and_then(Value::as_u64),
             Some(5000)
         );
         assert_eq!(
@@ -4211,7 +4225,9 @@ mod tests {
             Some(1800)
         );
         assert_eq!(
-            report.pointer("/deviceLinkRequired").and_then(Value::as_bool),
+            report
+                .pointer("/deviceLinkRequired")
+                .and_then(Value::as_bool),
             Some(false)
         );
         assert_eq!(

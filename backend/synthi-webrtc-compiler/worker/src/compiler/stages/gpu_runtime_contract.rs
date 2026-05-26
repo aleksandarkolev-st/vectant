@@ -38,6 +38,49 @@ pub fn render_gpu_runtime_header(gpu: &GpuBuildBlock) -> String {
 {vendor_define}
 #define SYNTHI_GPU_VENDOR "{vendor_string}"
 
+#ifndef SYNTHI_GPU_VECTOR_TYPES_READY
+#define SYNTHI_GPU_VECTOR_TYPES_READY 1
+#if defined(__has_include)
+#  if SYNTHI_GPU_VENDOR_ROCM && __has_include(<hip/hip_vector_types.h>)
+#    include <hip/hip_vector_types.h>
+#    define SYNTHI_GPU_HAS_VENDOR_VECTOR_TYPES 1
+#  elif SYNTHI_GPU_VENDOR_CUDA && __has_include(<vector_types.h>)
+#    include <vector_types.h>
+#    define SYNTHI_GPU_HAS_VENDOR_VECTOR_TYPES 1
+#  endif
+#endif
+#ifndef SYNTHI_GPU_HAS_VENDOR_VECTOR_TYPES
+#define SYNTHI_GPU_HAS_VENDOR_VECTOR_TYPES 0
+#endif
+#if !SYNTHI_GPU_HAS_VENDOR_VECTOR_TYPES
+struct int2 {{ int x; int y; }};
+struct int3 {{ int x; int y; int z; }};
+struct int4 {{ int x; int y; int z; int w; }};
+struct uint2 {{ unsigned int x; unsigned int y; }};
+struct uint3 {{ unsigned int x; unsigned int y; unsigned int z; }};
+struct uint4 {{ unsigned int x; unsigned int y; unsigned int z; unsigned int w; }};
+struct float2 {{ float x; float y; }};
+struct float3 {{ float x; float y; float z; }};
+struct float4 {{ float x; float y; float z; float w; }};
+inline constexpr int2 make_int2(int x, int y) {{ return int2{{x, y}}; }}
+inline constexpr int3 make_int3(int x, int y, int z) {{ return int3{{x, y, z}}; }}
+inline constexpr int4 make_int4(int x, int y, int z, int w) {{ return int4{{x, y, z, w}}; }}
+inline constexpr uint2 make_uint2(unsigned int x, unsigned int y) {{ return uint2{{x, y}}; }}
+inline constexpr uint3 make_uint3(unsigned int x, unsigned int y, unsigned int z) {{ return uint3{{x, y, z}}; }}
+inline constexpr uint4 make_uint4(unsigned int x, unsigned int y, unsigned int z, unsigned int w) {{ return uint4{{x, y, z, w}}; }}
+inline constexpr float2 make_float2(float x, float y) {{ return float2{{x, y}}; }}
+inline constexpr float3 make_float3(float x, float y, float z) {{ return float3{{x, y, z}}; }}
+inline constexpr float4 make_float4(float x, float y, float z, float w) {{ return float4{{x, y, z, w}}; }}
+#endif
+struct Dim3 {{
+    unsigned int x;
+    unsigned int y;
+    unsigned int z;
+    constexpr Dim3(unsigned int x_ = 1, unsigned int y_ = 1, unsigned int z_ = 1)
+        : x(x_), y(y_), z(z_) {{}}
+}};
+#endif
+
 extern "C" {{
 
 struct DeviceDescriptor {{
@@ -124,12 +167,18 @@ inline std::uintptr_t synthi_gpu_stream_token(std::nullptr_t) {{
 }}
 
 template <typename Stream>
+inline std::uintptr_t synthi_gpu_stream_token_impl(Stream stream, std::true_type) {{
+    return reinterpret_cast<std::uintptr_t>(stream);
+}}
+
+template <typename Stream>
+inline std::uintptr_t synthi_gpu_stream_token_impl(Stream stream, std::false_type) {{
+    return static_cast<std::uintptr_t>(stream);
+}}
+
+template <typename Stream>
 inline std::uintptr_t synthi_gpu_stream_token(Stream stream) {{
-    if constexpr (std::is_pointer_v<Stream>) {{
-        return reinterpret_cast<std::uintptr_t>(stream);
-    }} else {{
-        return static_cast<std::uintptr_t>(stream);
-    }}
+    return synthi_gpu_stream_token_impl(stream, typename std::is_pointer<Stream>::type());
 }}
 
 template <typename Grid, typename Block, typename Stream>
@@ -250,6 +299,10 @@ mod tests {
         assert!(rocm.contains("#define SYNTHI_GPU_VENDOR_ROCM 1"));
         assert!(!cuda.contains("cuda_runtime.h"));
         assert!(!rocm.contains("hip/hip_runtime.h"));
+        assert!(rocm.contains("#    include <hip/hip_vector_types.h>"));
+        assert!(cuda.contains("#    include <vector_types.h>"));
+        assert!(rocm.contains("struct Dim3"));
+        assert!(rocm.contains("struct float3"));
     }
 
     #[test]
@@ -266,13 +319,15 @@ mod tests {
             &smoke_path,
             r#"#include "synthi_gpu_runtime.h"
 
-struct Dim3 { unsigned int x; unsigned int y; unsigned int z; };
-
 void smoke(SynthiGpuRuntime* gpu) {
     Dim3 grid{1, 1, 1};
     Dim3 block{32, 1, 1};
+    float3 point{0.0f, 1.0f, 2.0f};
+    int2 resolution{800, 600};
     int value = 0;
     const void* arg = &value;
+    (void)point;
+    (void)resolution;
     (void)synthi_gpu_stream_token(nullptr);
     (void)synthi_gpu_stream_token(static_cast<void*>(nullptr));
     (void)synthi_gpu_stream_token(0);
@@ -284,7 +339,7 @@ void smoke(SynthiGpuRuntime* gpu) {
 
         let compiler = std::env::var("CXX").unwrap_or_else(|_| "c++".to_string());
         let output = Command::new(&compiler)
-            .arg("-std=c++17")
+            .arg("-std=c++11")
             .arg("-fsyntax-only")
             .arg("-I")
             .arg(dir.path())
@@ -294,7 +349,7 @@ void smoke(SynthiGpuRuntime* gpu) {
 
         assert!(
             output.status.success(),
-            "generated GPU runtime header failed C++ syntax check\nstdout:\n{}\nstderr:\n{}",
+            "generated GPU runtime header failed C++11 syntax check\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
