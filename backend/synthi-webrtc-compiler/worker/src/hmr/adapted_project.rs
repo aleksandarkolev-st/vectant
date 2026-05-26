@@ -187,12 +187,12 @@ pub fn detect_adapted_project(workspace_dir: &Path) -> AdaptedProjectStatus {
                     ),
                     None => AdaptedProjectStatus::adapted(core, gui, shared_path),
                 },
-                (Some(_), None) => {
-                    AdaptedProjectStatus::not_adapted("manifest core module found but no gui module")
-                }
-                (None, Some(_)) => {
-                    AdaptedProjectStatus::not_adapted("manifest gui module found but no core module")
-                }
+                (Some(_), None) => AdaptedProjectStatus::not_adapted(
+                    "manifest core module found but no gui module",
+                ),
+                (None, Some(_)) => AdaptedProjectStatus::not_adapted(
+                    "manifest gui module found but no core module",
+                ),
                 (None, None) => AdaptedProjectStatus::not_adapted(
                     "manifest module_files declared but no core/gui split files found",
                 ),

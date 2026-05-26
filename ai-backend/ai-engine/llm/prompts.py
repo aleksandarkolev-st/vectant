@@ -2720,6 +2720,27 @@ def _needs_code_changes(prompt: str) -> bool:
     return _detect_query_intent(prompt) == "change"
 
 
+def build_split_mode_prompt(
+    code: str,
+    lang: str,
+    split_prompt: str = "",
+) -> str:
+    """Build the transport wrapper for split prompts.
+
+    Split prompts define their own strict response format. Do not reuse the
+    general JSON-only suffix here: GPU splits must return both the generated
+    role file block and the architecture cache block.
+    """
+
+    return (
+        (split_prompt or "")
+        + f"\n\nHere is the code to split (language: {lang}):\n```{lang}\n{code}\n```"
+        + "\n\nRespond exactly in the split prompt's required format: "
+        + "<JSON>...</JSON> first, followed by <synthi_arch_cache>...</synthi_arch_cache>. "
+        + "No prose before, between, or after those blocks."
+    )
+
+
 def build_prompt(
     code: str,
     lang: str,
@@ -3603,19 +3624,22 @@ shared.h:
 host_runner.cpp:
   - Owns EVERYTHING the split modules are forbidden from.
 
-# BUILD HINT SCANNING (read user source before guessing flags)
+# BUILD METADATA SCANNING (do not force source annotations)
 
-Before synthesizing link flags, SCAN the user's source for explicit build
-hints. If present, copy them VERBATIM into the manifest rather than guessing:
+Before synthesizing link flags, read project build metadata first:
+CMakeLists.txt, compile_commands.json, presets, package config output already
+present in the request, and any explicit compile/link command the user project
+already owns. Copy those flags into the manifest rather than guessing.
+
+Optional source hints are accepted for compatibility, but they are not required
+from users and must never be the only production path:
 
   #pragma comment(lib, "X")          -> add "-lX" to gui_link_flags
-  // LINK: -lX -L/path -I/path       -> parse, copy verbatim into gui_link_flags
+  // LINK: -lX -L/path -I/path       -> parse only when already present
   // REQUIRES: libx-dev              -> add to system_packages
   // BUILD: g++ main.cpp -lfoo       -> treat as authoritative
 
-User hints ALWAYS override your inference. Copy them VERBATIM.
-If a hint is present, set confidence.link_flags = "high" because the user
-told you what they need.
+Never invent framework link flags from include names alone.
 
 # INCLUDE → LINK RULE (mandatory, generic — applies to ALL libraries)
 
@@ -3688,9 +3712,9 @@ confidence.runner_synthesis:
              pattern that prevents a clean rewrite
 
 confidence.link_flags:
-  "high"   - well-known library OR user provided explicit // LINK: hint
-  "medium" - library identified but standard flags vary by distro
-  "low"    - couldn't identify library; guessed from header names
+  "high"   - link flags came from build metadata or existing explicit hints
+  "medium" - library identified but build metadata is partial
+  "low"    - link flags could not be proven; request manifest repair or fallback
 
 confidence.overall: minimum of the two above
 confidence.notes: free-form explanation of any low confidences
@@ -3837,6 +3861,15 @@ but refactor the application into the current Synthi GPU HMR semantic roles.
 The role names are fixed runtime slots, but source filenames are not: emit
 appropriate paths and map each role in
 `compile_manifest.module_files`.
+
+Every code fragment in this prompt is a structural template. Identifier names
+inside examples are not project facts. Do not copy example kernel names,
+state-field names, buffer names, constants, backend handles, or file names into
+the generated split unless the same identifier is present in the user's source
+context or you introduce a project-derived helper with a real generated
+definition, descriptor entry, and launch site. If source-device preservation or
+the source launch graph lists project kernels, those project names are the
+authority.
 
 # OUTPUT ROLES
 
@@ -4018,7 +4051,7 @@ change what `gui_on_render` draws without changing the host ABI.
 
 Use an explicit guarded launch/readback shape, not a fire-and-forget launch:
 
-    bool launched = synthi_gpu_launch(nullptr, "update_particles", grid, block,
+    bool launched = synthi_gpu_launch(nullptr, "PROJECT_UPDATE_KERNEL", grid, block,
                                       0, nullptr,
                                       { &state->d_particles, &count_arg, &dt_arg });
     if (launched) {
@@ -4046,6 +4079,35 @@ returns true; only then run the update kernel and copy device outputs back. The
 first frame must have on-screen, non-overlapping data from the host mirrors,
 not uninitialized zeros or offscreen values.
 
+Do not synthesize host launches for every kernel that appears in a preserved
+device source/header. Preserved kernels are device-role mapping artifacts unless
+there is a real source-reachable launch path or a first-frame/update pipeline
+you construct with initialized buffers and correct arguments. If a preserved
+kernel is not runtime-reachable, keep it in the device role for mapping and do
+not invent `synthi_gpu_launch(...)` calls for it.
+
+For large source-backed kernels with aggregate launch parameters, pointer-rich
+render state, descriptor tables, acceleration structures, texture objects, or
+other project runtime state you cannot fully reconstruct from target-scoped
+source context, do not call that source kernel from generated `core_on_update`.
+Preserve the kernel in the device role for mapping/HMR, but do not create an
+unsafe runtime launch that can block or hang. If the split still needs to prove
+the Synthi launch boundary, emit a small generated lifecycle init/setup/reset
+kernel with fully initialized Synthi-owned scalar/buffer arguments, include it
+in `device_descriptor`, and launch that lifecycle kernel. The lifecycle kernel
+must not replace the preserved source kernel in the mapping report, and it must
+not be used as evidence that the source kernel's real application argument ABI
+was reconstructed.
+
+Never create a local launch guard initialized to false and then branch on it in
+`core_on_update`. This rejected shape makes the launch path unreachable:
+
+    bool initialized = false;
+    if (initialized) { ... }
+
+Use a persistent state/static flag for lifecycle state, and assign per-frame
+launch guards directly from `synthi_gpu_launch(...)`.
+
 When preserving an existing user kernel such as `advance_particle_field`, still
 emit a generated init/seed kernel for the Synthi device role if the original
 project initialized arrays on the host. For separate arrays, that init kernel
@@ -4063,7 +4125,7 @@ buffer or to only the displayed coordinates. If the update launch passes
 those device pointers too:
 
     if (!state->device_initialized) {
-        bool initialized = synthi_gpu_launch(nullptr, "init_particle_field",
+        bool initialized = synthi_gpu_launch(nullptr, "PROJECT_INIT_KERNEL",
                                              grid, block, 0, nullptr,
                                              { &state->d_x, &state->d_y,
                                                &state->d_vx, &state->d_vy,
@@ -4074,7 +4136,7 @@ those device pointers too:
 
 The matching device kernel must receive and write every pointer it is given:
 
-    extern "C" __global__ void init_particle_field(float* x, float* y,
+    extern "C" __global__ void PROJECT_INIT_KERNEL(float* x, float* y,
                                                    float* vx, float* vy,
                                                    unsigned int* rgba,
                                                    int count) {
@@ -4108,14 +4170,14 @@ host data before the sidecar dispatcher is available.
 A valid update shape is:
 
     if (!state->device_initialized) {
-        bool initialized = synthi_gpu_launch(nullptr, "init_particles", grid,
+        bool initialized = synthi_gpu_launch(nullptr, "PROJECT_INIT_KERNEL", grid,
                                              block, 0, nullptr,
                                              { &state->d_particles, &count_arg });
         if (initialized) state->device_initialized = true;
         return;
     }
 
-    bool updated = synthi_gpu_launch(nullptr, "update_particles", grid, block,
+    bool updated = synthi_gpu_launch(nullptr, "PROJECT_UPDATE_KERNEL", grid, block,
                                      0, nullptr,
                                      { &state->d_particles, &count_arg, &dt_arg });
     if (updated) {
@@ -4223,7 +4285,7 @@ extern "C" const DeviceDescriptor* device_descriptor();
 //    The first field is const char*, not an integer. Use the runtime vendor
 //    macro and static arch/kernel string arrays:
 //    static const char* arches[] = { "gfx1201" };  // use the target arch
-//    static const char* kernels[] = { "update_particles" };
+//    static const char* kernels[] = { "ACTUAL_PROJECT_KERNEL" };
 //    static DeviceDescriptor d = { SYNTHI_GPU_VENDOR, arches, kernels, 1, 1, 0 };
 
 // 2. device_on_load — natively patch deserialisation across an ABI edit.
@@ -4294,12 +4356,18 @@ extern "C" unsigned long long device_kernel_sig_hash(const char* name);
 
 # GENERATED ROLE FILES ARE SELF-CONTAINED
 
-Provided workspace files are context, not compilation inputs for the generated
-hot modules. Do not include original user project headers or sources from the
-generated roles. Quoted includes in generated role files may only refer to
-other emitted Synthi role files, usually the shared role, or to
+Provided workspace files are context, not compilation inputs for generated
+core/gui/shared/host_runner modules. Do not include original user project
+headers or sources from those generated roles. Quoted includes there may only
+refer to other emitted Synthi role files, usually the shared role, or to
 `"synthi_gpu_runtime.h"`. Standard library and GPU runtime includes must use
 angle brackets.
+
+The generated device role has one narrow exception: it may quote-include
+target-scoped device source/header files explicitly selected by the source
+device preservation contract. This is only for preserving source-authoritative
+kernel bodies in large runtime-compiled projects. It is not permission to
+include arbitrary application, renderer, UI, or host project headers.
 
 Invalid generated output:
 
@@ -4310,9 +4378,10 @@ Invalid generated output:
 ```
 
 Instead, copy or adapt the necessary structs, constants, function bodies, and
-kernel declarations into the generated `shared`, `core`, `gui`, and `device`
-roles. The split must compile after Synthi writes only the generated role files
-plus its runtime header.
+kernel declarations into the generated `shared`, `core`, `gui`, and where
+needed `device` roles. The split must compile after Synthi writes the generated
+role files, its runtime header, and any verifier-selected target device source
+projection referenced by the generated device role.
 
 # ABI HASH STAMP
 
@@ -4363,7 +4432,7 @@ fields, emit a `files` array plus a `gpu` sub-object:
     "gpu": {
       "vendor": "cuda",                       // or "rocm"
       "device_compiler": "nvcc",              // or "clang-cuda" or "hipcc"
-      "arch": ["sm_80"],                      // ["gfx90a"] for ROCm
+      "arch": ["<selected-target-arch>"],
       "device_flags": ["-O3", "-lineinfo", "--use_fast_math"],
       "runtime_libs": ["cudart", "cuda"],     // ["amdhip64"] for ROCm
       "snapshot_mode": "auto",
@@ -4371,12 +4440,39 @@ fields, emit a `files` array plus a `gpu` sub-object:
     }
 
 `fatbin_strategy` must be `"sidecar_module"` — embedded fatbins are
-not HMR-compatible. Pick `arch` from the source's targeting hints
-(comments, `#pragma`, etc.) or default to `sm_80` (CUDA) /
-`gfx90a` (ROCm) when the source doesn't specify.
+not HMR-compatible. Pick `arch` only from selected-target build
+metadata, explicit request metadata, or source targeting hints. Do not
+invent a CUDA or ROCm default when the target architecture is missing;
+emit a verifier-readable manifest failure instead.
 Use vendor-correct device flags: CUDA may use `--use_fast_math`, but
 ROCm/HIP must not. A ROCm `device_flags` list should usually be
 `["-O3", "-lineinfo"]`.
+
+# GENERATED-MODULE LINK MANIFEST SCOPE
+
+Build metadata describes the user's original target; the generated hot
+modules are smaller adapter modules. Do not blindly copy every transitive
+CMake target library into `core_link_flags`, `gui_link_flags`, or
+`runner_link_flags`.
+
+Only include link flags that are required by the generated role source you
+emit:
+
+  - `core_link_flags`: libraries directly referenced by generated core.cpp.
+  - `gui_link_flags`: libraries directly referenced by generated gui.cpp.
+  - `runner_link_flags`: libraries directly referenced by generated
+    host_runner.cpp.
+  - `gpu.runtime_libs`: GPU runtime libraries needed by the selected vendor
+    loader path.
+
+If a dependency appears only in the original application but your generated
+role source does not include its headers or call its symbols, omit it from the
+generated module manifest. If build metadata contains semantic CMake imported
+target names such as `Pkg::Target`, `OpenGL::GL`, or package component names,
+do not convert those names into guessed `-l...` flags. Use concrete linker
+flags already present in the metadata, package-config output, or explicit
+toolchain evidence. Otherwise leave the role flag out and set
+`confidence.link_flags` below high with an explanation.
 
 # NO-SHIM CONTRACT
 
@@ -4512,9 +4608,35 @@ Rules:
   unchanged, set `reload_plan` to `device_only`.
 - If both host and device files change without ABI drift, set
   `reload_plan` to `mixed`.
+- Edits are applied to the CURRENT generated role files below, not to the
+  original user source. Every `anchor` must be copied verbatim from the
+  matching CURRENT FILES block and must appear exactly once there. For
+  `module: "device"`, use an anchor from the CURRENT generated `device`
+  block, even when the USER DIFF line has a different spelling in the
+  original `.cu` / `.hip` source.
+- Generated role files must stay self-contained. Do not add quoted
+  `#include "..."` lines for original workspace or project headers. Quoted
+  includes may only target emitted Synthi role files such as `shared.h` or
+  `synthi_gpu_runtime.h`. Copy or adapt required structs, constants, and
+  helpers into the generated roles instead.
 
 ARCHITECTURE CACHE:
 {ARCHITECTURE}
+
+USER-TO-GENERATED DEVICE MAPPING REPORT:
+```json
+{MAPPING_REPORT}
+```
+
+COMPILE MANIFEST:
+```json
+{COMPILE_MANIFEST}
+```
+
+CURRENT RELOAD PLAN REPORT:
+```json
+{RELOAD_PLAN_REPORT}
+```
 
 CURRENT FILES:
 shared.h:

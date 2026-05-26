@@ -64,9 +64,9 @@ use crate::hmr::adapter_trait::{
 use crate::hmr::compile_manifest::{DeviceVendor, SnapshotMode};
 use crate::hmr::device_snapshot::BufferRegistry;
 use crate::hmr::gpu_driver_loader::{
-    self, CuFunction, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable,
+    self, CuContext, CuFunction, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable,
 };
-use crate::hmr::gpu_module_manager::{GpuModuleManager, ModuleManagerError};
+use crate::hmr::gpu_module_manager::{GpuModuleManager, KernelResolution, ModuleManagerError};
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
@@ -261,6 +261,70 @@ impl GpuLaunchDispatcher for DriverLaunchDispatcher {
 /// invariant for the planner) but `driver_state` reports
 /// `unavailable` so the planner knows to fall through to cold
 /// restart. The full swap path lands in Phase 3.
+#[derive(Debug, Clone)]
+struct DeviceReloadOwnership {
+    partial_reload: bool,
+    expected_symbols: Vec<String>,
+    touched_symbols: Vec<String>,
+    retired_module_count: usize,
+    replaced_primary: bool,
+}
+
+fn sorted_unique_symbols(symbols: &[String]) -> Vec<String> {
+    let mut out = symbols
+        .iter()
+        .map(|symbol| symbol.trim())
+        .filter(|symbol| !symbol.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn kernel_resolution_specs(symbols: &[String]) -> Result<Vec<KernelResolution>, String> {
+    let mut out = Vec::new();
+    for symbol in symbols {
+        let symbol = symbol.trim();
+        if symbol.is_empty() {
+            continue;
+        }
+        let (logical_name, driver_name) = symbol
+            .split_once('=')
+            .map(|(logical, driver)| (logical.trim(), driver.trim()))
+            .unwrap_or((symbol, symbol));
+        if logical_name.is_empty() || driver_name.is_empty() {
+            return Err(format!("invalid GPU kernel symbol mapping: {symbol:?}"));
+        }
+        out.push(KernelResolution {
+            logical_name: logical_name.to_string(),
+            driver_name: driver_name.to_string(),
+        });
+    }
+    Ok(out)
+}
+
+fn logical_kernel_symbols(symbols: &[String]) -> Result<Vec<String>, String> {
+    let out = kernel_resolution_specs(symbols)?
+        .into_iter()
+        .map(|symbol| symbol.logical_name)
+        .collect::<Vec<_>>();
+    Ok(sorted_unique_symbols(&out))
+}
+
+fn resolved_kernel_symbols(manager: &GpuModuleManager) -> Vec<String> {
+    let mut out = manager
+        .kernel_table()
+        .names()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
 pub struct GpuModuleAdapter {
     config: GpuModuleAdapterConfig,
     phase: GpuPhase,
@@ -304,6 +368,11 @@ pub struct GpuModuleAdapter {
     /// `info().extra["driver_error"]` for telemetry. Cleared on
     /// the next successful load attempt.
     last_driver_error: Option<DriverLoadError>,
+    /// Current GPU context captured on the runner thread before a
+    /// reload worker is spawned. CUDA and HIP module APIs bind context
+    /// per thread, so the reload thread must re-bind the same context
+    /// before loading a replacement sidecar.
+    reload_context: Option<u64>,
     /// Test-only symbol table injection. This lets adapter-level
     /// unit tests exercise real load/swap/unload sequencing without
     /// requiring libcuda.so.1 or a GPU in CI.
@@ -325,6 +394,7 @@ impl GpuModuleAdapter {
             last_reload_log: Vec::new(),
             last_device_abi_version: None,
             last_driver_error: None,
+            reload_context: None,
             #[cfg(test)]
             test_symbols: None,
         }
@@ -381,15 +451,26 @@ impl GpuModuleAdapter {
     /// resolved. Exposed so the adapter test can prove the table is
     /// complete without poking private state.
     pub fn required_driver_symbols(&self) -> Vec<&'static str> {
-        let v = self.config.vendor;
-        vec![
-            v.module_load_symbol(),
-            v.module_unload_symbol(),
-            v.module_get_function_symbol(),
-            v.launch_kernel_symbol(),
-            v.ctx_synchronize_symbol(),
-            v.stream_synchronize_symbol(),
-        ]
+        gpu_driver_loader::required_symbol_names(self.config.vendor).to_vec()
+    }
+
+    pub fn capture_current_context_for_reload(&mut self) -> Result<Option<u64>, String> {
+        let Some(symbols) = self.symbols() else {
+            self.reload_context = None;
+            return Ok(None);
+        };
+        let mut context: CuContext = std::ptr::null_mut();
+        let code = unsafe { (symbols.cu_ctx_get_current)(&mut context as *mut CuContext) };
+        if code != 0 {
+            return Err(format!("GPU context query failed before sidecar reload: {code}"));
+        }
+        if context.is_null() {
+            self.reload_context = None;
+            return Ok(None);
+        }
+        let context_value = context as u64;
+        self.reload_context = Some(context_value);
+        Ok(Some(context_value))
     }
 
     pub fn last_reload_log(&self) -> &[String] {
@@ -436,6 +517,17 @@ impl GpuModuleAdapter {
         }
     }
 
+    fn bind_reload_context(&self, symbols: &GpuDriverSymbolTable) -> Result<(), String> {
+        let Some(context) = self.reload_context else {
+            return Ok(());
+        };
+        let code = unsafe { (symbols.cu_ctx_set_current)(context as CuContext) };
+        if code != 0 {
+            return Err(format!("GPU context bind failed before sidecar reload: {code}"));
+        }
+        Ok(())
+    }
+
     fn request_touches_device(req: &AdapterReloadRequest) -> bool {
         req.changed_files.iter().any(|path| {
             let p = path.as_str();
@@ -473,6 +565,14 @@ impl GpuModuleAdapter {
 
     fn classify_plan(&self, req: &AdapterReloadRequest) -> GpuReloadPlan {
         let path_plan = Self::classify_plan_from_paths(req);
+        let partial_device_reload = req
+            .build_manifest
+            .capabilities
+            .iter()
+            .any(|capability| capability == "gpu_sidecar_partial_module");
+        if partial_device_reload {
+            return path_plan;
+        }
         let current_abi = req.build_manifest.abi_version.trim();
         if Self::request_touches_device(req) && !current_abi.is_empty() {
             if let Some(previous_abi) = self.last_device_abi_version.as_deref() {
@@ -485,6 +585,14 @@ impl GpuModuleAdapter {
     }
 
     fn remember_device_abi(&mut self, req: &AdapterReloadRequest) {
+        if req
+            .build_manifest
+            .capabilities
+            .iter()
+            .any(|capability| capability == "gpu_sidecar_partial_module")
+        {
+            return;
+        }
         let abi = req.build_manifest.abi_version.trim();
         if !abi.is_empty() {
             self.last_device_abi_version = Some(abi.to_string());
@@ -501,8 +609,42 @@ impl GpuModuleAdapter {
         let report = plan_gpu_reload(&cfg, input);
         self.last_reload_log = report.log_lines.clone();
         for line in &self.last_reload_log {
-            println!("{line}");
+            eprintln!("{line}");
         }
+    }
+
+    fn emit_runtime_ownership_report(
+        &mut self,
+        ownership: &DeviceReloadOwnership,
+        artifact: &str,
+    ) {
+        let label = if ownership.partial_reload {
+            "gpu-hmr-partial"
+        } else {
+            "gpu-hmr-full-device"
+        };
+        let expected = if ownership.expected_symbols.is_empty() {
+            "-".to_string()
+        } else {
+            ownership.expected_symbols.join(",")
+        };
+        let touched = if ownership.touched_symbols.is_empty() {
+            "-".to_string()
+        } else {
+            ownership.touched_symbols.join(",")
+        };
+        let line = format!(
+            "[gpu-reload] runtime_ownership label={} partial={} artifact={} expected_symbols={} touched_symbols={} retired_modules={} replaced_primary={}",
+            label,
+            ownership.partial_reload,
+            artifact,
+            expected,
+            touched,
+            ownership.retired_module_count,
+            ownership.replaced_primary
+        );
+        eprintln!("{line}");
+        self.last_reload_log.push(line);
     }
 
     fn module_manager_error(err: ModuleManagerError) -> String {
@@ -594,6 +736,7 @@ impl Adapter for GpuModuleAdapter {
         clear_launch_dispatcher();
         self.last_reload_log.clear();
         self.last_device_abi_version = None;
+        self.reload_context = None;
         self.phase = GpuPhase::ShutDown;
         self.health = AdapterHealth::Unknown;
         Ok(())
@@ -699,7 +842,20 @@ impl Adapter for GpuModuleAdapter {
                 };
             }
         };
+        if let Err(error) = self.bind_reload_context(&symbols) {
+            self.health = AdapterHealth::Degraded;
+            self.phase = GpuPhase::Ready;
+            return AdapterReloadResult::Failed {
+                error,
+                recoverable: true,
+            };
+        }
 
+        let partial_device_reload = req
+            .build_manifest
+            .capabilities
+            .iter()
+            .any(|capability| capability == "gpu_sidecar_partial_module");
         let first_device_load =
             self.active_module_handle.is_none() && self.module_manager.primary().is_none();
         if first_device_load {
@@ -743,7 +899,18 @@ impl Adapter for GpuModuleAdapter {
             };
         }
 
-        let load_result = (|| -> Result<(), String> {
+        let load_result = (|| -> Result<DeviceReloadOwnership, String> {
+            if partial_device_reload && first_device_load {
+                return Err(
+                    "partial GPU sidecar reload requires an existing full device module".into(),
+                );
+            }
+            if partial_device_reload && req.build_manifest.exported_symbols.is_empty() {
+                return Err("partial GPU sidecar reload has no target symbols".into());
+            }
+            let kernel_resolutions = kernel_resolution_specs(&req.build_manifest.exported_symbols)?;
+            let expected_symbols = logical_kernel_symbols(&req.build_manifest.exported_symbols)?;
+            let previous_table = self.module_manager.kernel_table().clone();
             if self.config.vendor == GpuVendor::Rocm {
                 self.module_manager
                     .load_standby_from_file(&symbols, artifact, blob.len())
@@ -754,22 +921,51 @@ impl Adapter for GpuModuleAdapter {
                     .map_err(Self::module_manager_error)?;
             }
             self.module_manager
-                .resolve_kernels(&symbols, &req.build_manifest.exported_symbols)
+                .resolve_kernel_symbols(&symbols, &kernel_resolutions)
                 .map_err(Self::module_manager_error)?;
-            let retired = self
-                .module_manager
-                .swap()
-                .map_err(Self::module_manager_error)?;
-            if let Some(retired) = retired {
+            let touched_symbols = resolved_kernel_symbols(&self.module_manager);
+            if touched_symbols != expected_symbols {
+                return Err(format!(
+                    "GPU runtime symbol ownership mismatch: expected={} touched={}",
+                    expected_symbols.join(","),
+                    touched_symbols.join(",")
+                ));
+            }
+            let mut replaced_primary = false;
+            let retired = if partial_device_reload {
+                self.module_manager
+                    .merge_standby_partial(previous_table, &expected_symbols)
+                    .map_err(Self::module_manager_error)?
+            } else {
+                let mut retired = Vec::new();
+                if let Some(slot) = self
+                    .module_manager
+                    .swap()
+                    .map_err(Self::module_manager_error)?
+                {
+                    replaced_primary = true;
+                    retired.push(slot);
+                }
+                retired.extend(self.module_manager.drain_partial_modules());
+                retired
+            };
+            let retired_module_count = retired.len();
+            for retired in retired {
                 self.module_manager
                     .unload_retired(&symbols, retired)
                     .map_err(Self::module_manager_error)?;
             }
-            Ok(())
+            Ok(DeviceReloadOwnership {
+                partial_reload: partial_device_reload,
+                expected_symbols,
+                touched_symbols,
+                retired_module_count,
+                replaced_primary,
+            })
         })();
 
         match load_result {
-            Ok(()) => {
+            Ok(ownership) => {
                 self.active_module_handle = self.module_manager.primary().map(|s| s.handle);
                 self.kernel_table.clear();
                 for name in self.module_manager.kernel_table().names() {
@@ -783,15 +979,20 @@ impl Adapter for GpuModuleAdapter {
                 }));
                 self.emit_report(GpuSwapInputs {
                     plan,
-                    reason: "device-file-only-edit".into(),
+                    reason: if partial_device_reload {
+                        "device-partial-file-only-edit".into()
+                    } else {
+                        "device-file-only-edit".into()
+                    },
                     streams_synced: 1,
                     force_drain_timeout: false,
                     snapshot_bytes,
                     snapshot_ms: started.elapsed().as_millis() as u64,
                     dirty_buffers,
-                    expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
-                    matched_kernel_hashes: self.kernel_table.len() as u32,
+                    expected_kernel_hashes: ownership.expected_symbols.len() as u32,
+                    matched_kernel_hashes: ownership.touched_symbols.len() as u32,
                 });
+                self.emit_runtime_ownership_report(&ownership, artifact);
                 self.phase = GpuPhase::Ready;
                 self.health = AdapterHealth::Healthy;
                 self.remember_device_abi(req);
@@ -855,11 +1056,11 @@ mod tests {
     };
     use crate::runtime::gpu_runtime_boundary::{
         reset_for_test, synthi_gpu_launch_raw, synthi_gpu_register_buffer,
+        test_guard_for_test as runtime_boundary_test_guard,
     };
     use std::ffi::{c_void, CString};
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     fn dummy_request() -> AdapterReloadRequest {
         AdapterReloadRequest {
@@ -872,19 +1073,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn kernel_resolution_specs_keep_logical_launch_names() {
+        let specs = vec![
+            "shade=_Z5shadePf".to_string(),
+            "gpu::trace=_ZN3gpu5traceEPf".to_string(),
+            "plain".to_string(),
+        ];
+        let resolutions = kernel_resolution_specs(&specs).unwrap();
+        assert_eq!(resolutions[0].logical_name, "shade");
+        assert_eq!(resolutions[0].driver_name, "_Z5shadePf");
+        assert_eq!(resolutions[1].logical_name, "gpu::trace");
+        assert_eq!(resolutions[1].driver_name, "_ZN3gpu5traceEPf");
+        assert_eq!(resolutions[2].logical_name, "plain");
+        assert_eq!(resolutions[2].driver_name, "plain");
+        assert_eq!(
+            logical_kernel_symbols(&specs).unwrap(),
+            vec![
+                "gpu::trace".to_string(),
+                "plain".to_string(),
+                "shade".to_string()
+            ]
+        );
+    }
+
     static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x1000);
+    static CTX_SET_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static CTX_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
     static LAUNCH_CALLS: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_GRID_X: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_BLOCK_X: AtomicUsize = AtomicUsize::new(0);
-    static RUNTIME_BOUNDARY_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn runtime_boundary_test_guard() -> MutexGuard<'static, ()> {
-        RUNTIME_BOUNDARY_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("gpu runtime boundary adapter-test mutex poisoned")
-    }
-
     unsafe extern "C" fn ok_init(_flags: u32) -> CuResult {
         0
     }
@@ -899,6 +1117,13 @@ mod tests {
     unsafe extern "C" fn ok_ctx_get_current(ctx: *mut CuContext) -> CuResult {
         if !ctx.is_null() {
             *ctx = 0x44 as CuContext;
+        }
+        0
+    }
+
+    unsafe extern "C" fn ok_ctx_set_current(ctx: CuContext) -> CuResult {
+        if !ctx.is_null() {
+            CTX_SET_CALLS.fetch_add(1, Ordering::SeqCst);
         }
         0
     }
@@ -954,6 +1179,7 @@ mod tests {
     }
 
     unsafe extern "C" fn ok_ctx_synchronize() -> CuResult {
+        CTX_SYNC_CALLS.fetch_add(1, Ordering::SeqCst);
         0
     }
 
@@ -989,6 +1215,7 @@ mod tests {
             cu_init: ok_init,
             cu_device_get: ok_device_get,
             cu_ctx_get_current: ok_ctx_get_current,
+            cu_ctx_set_current: ok_ctx_set_current,
             cu_module_load_data: ok_module_load_data,
             cu_module_load: ok_module_load,
             cu_module_unload: ok_module_unload,
@@ -1089,13 +1316,23 @@ mod tests {
     fn required_symbol_table_is_complete_cuda() {
         let a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
         let syms = a.required_driver_symbols();
+        let expected = gpu_driver_loader::required_symbol_names(GpuVendor::Cuda);
+        assert_eq!(syms.as_slice(), expected.as_slice());
+        assert!(syms.contains(&"cuInit"));
+        assert!(syms.contains(&"cuDeviceGet"));
+        assert!(syms.contains(&"cuCtxGetCurrent"));
+        assert!(syms.contains(&"cuCtxSetCurrent"));
         assert!(syms.contains(&"cuModuleLoadData"));
+        assert!(syms.contains(&"cuModuleLoad"));
         assert!(syms.contains(&"cuModuleUnload"));
         assert!(syms.contains(&"cuModuleGetFunction"));
         assert!(syms.contains(&"cuLaunchKernel"));
         assert!(syms.contains(&"cuCtxSynchronize"));
         assert!(syms.contains(&"cuStreamSynchronize"));
-        assert_eq!(syms.len(), 6);
+        assert!(syms.contains(&"cuMemAlloc_v2"));
+        assert!(syms.contains(&"cuMemFree_v2"));
+        assert!(syms.contains(&"cuMemcpyDtoD_v2"));
+        assert_eq!(syms.len(), expected.len());
     }
 
     #[test]
@@ -1106,13 +1343,23 @@ mod tests {
         };
         let a = GpuModuleAdapter::new(cfg);
         let syms = a.required_driver_symbols();
+        let expected = gpu_driver_loader::required_symbol_names(GpuVendor::Rocm);
+        assert_eq!(syms.as_slice(), expected.as_slice());
+        assert!(syms.contains(&"hipInit"));
+        assert!(syms.contains(&"hipDeviceGet"));
+        assert!(syms.contains(&"hipCtxGetCurrent"));
+        assert!(syms.contains(&"hipCtxSetCurrent"));
         assert!(syms.contains(&"hipModuleLoadData"));
+        assert!(syms.contains(&"hipModuleLoad"));
         assert!(syms.contains(&"hipModuleUnload"));
         assert!(syms.contains(&"hipModuleGetFunction"));
         assert!(syms.contains(&"hipModuleLaunchKernel"));
         assert!(syms.contains(&"hipDeviceSynchronize"));
         assert!(syms.contains(&"hipStreamSynchronize"));
-        assert_eq!(syms.len(), 6);
+        assert!(syms.contains(&"hipMalloc"));
+        assert!(syms.contains(&"hipFree"));
+        assert!(syms.contains(&"hipMemcpyDtoD"));
+        assert_eq!(syms.len(), expected.len());
     }
 
     #[test]
@@ -1409,6 +1656,146 @@ mod tests {
             .last_reload_log()
             .iter()
             .any(|l| l.contains("device_on_load invoked")));
+    }
+
+    #[test]
+    fn partial_reload_does_not_replace_full_device_abi() {
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-1").unwrap();
+        second.write_all(b"fake-cubin-2").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+
+        let mut a = adapter_with_symbols(stub_symbols());
+        assert!(matches!(
+            a.reload(&request_with_artifact_and_abi(
+                &first_path,
+                vec!["device.cu".into()],
+                "sig-v1"
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+
+        let mut partial =
+            request_with_artifact_and_abi(&second_path, vec!["device.cu".into()], "sig-v2");
+        partial
+            .build_manifest
+            .capabilities
+            .push("gpu_sidecar_partial_module".into());
+        assert!(matches!(
+            a.reload(&partial),
+            AdapterReloadResult::Success { .. }
+        ));
+
+        assert_eq!(a.module_manager.swap_count(), 2);
+        assert_eq!(a.last_device_abi_version.as_deref(), Some("sig-v1"));
+        assert!(a
+            .last_reload_log()
+            .iter()
+            .any(|l| l.contains("reason=device-partial-file-only-edit")));
+        let ownership = a
+            .last_reload_log()
+            .iter()
+            .find(|l| l.contains("runtime_ownership"))
+            .expect("runtime ownership report");
+        assert!(ownership.contains("label=gpu-hmr-partial"));
+        assert!(ownership.contains("partial=true"));
+        assert!(ownership.contains("expected_symbols=vec_add"));
+        assert!(ownership.contains("touched_symbols=vec_add"));
+        assert!(ownership.contains("replaced_primary=false"));
+    }
+
+    #[test]
+    fn partial_reload_drains_context_before_module_load() {
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        let mut partial_file = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-1").unwrap();
+        second.write_all(b"fake-cubin-2").unwrap();
+        partial_file.write_all(b"fake-cubin-3").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let partial_path = partial_file.path().to_string_lossy().to_string();
+
+        CTX_SYNC_CALLS.store(0, Ordering::SeqCst);
+        let mut a = adapter_with_symbols(stub_symbols());
+        assert!(matches!(
+            a.reload(&request_with_artifact_and_abi(
+                &first_path,
+                vec!["device.cu".into()],
+                "sig-v1"
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), 0);
+
+        assert!(matches!(
+            a.reload(&request_with_artifact_and_abi(
+                &second_path,
+                vec!["device.cu".into()],
+                "sig-v1"
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        let full_reload_syncs = CTX_SYNC_CALLS.load(Ordering::SeqCst);
+        assert!(full_reload_syncs > 0);
+
+        let mut partial =
+            request_with_artifact_and_abi(&partial_path, vec!["device.cu".into()], "sig-v2");
+        partial
+            .build_manifest
+            .capabilities
+            .push("gpu_sidecar_partial_module".into());
+        assert!(matches!(
+            a.reload(&partial),
+            AdapterReloadResult::Success { .. }
+        ));
+        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), full_reload_syncs + 1);
+    }
+
+    #[test]
+    fn captured_context_is_bound_before_reload() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+
+        CTX_SET_CALLS.store(0, Ordering::SeqCst);
+        let mut a = adapter_with_symbols(stub_symbols());
+        assert_eq!(a.capture_current_context_for_reload().unwrap(), Some(0x44));
+
+        assert!(matches!(
+            a.reload(&request_with_artifact(
+                &path,
+                vec!["device.cu".into()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        assert_eq!(CTX_SET_CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn runtime_ownership_reports_resolved_unique_symbols() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let mut req = request_with_artifact(&path, vec!["device.cu".into()]);
+        req.build_manifest.exported_symbols = vec![
+            "beta_kernel".into(),
+            "alpha_kernel".into(),
+            "beta_kernel".into(),
+        ];
+
+        let mut a = adapter_with_symbols(stub_symbols());
+        assert!(matches!(a.reload(&req), AdapterReloadResult::Success { .. }));
+
+        let ownership = a
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("runtime_ownership"))
+            .expect("runtime ownership report");
+        assert!(ownership.contains("expected_symbols=alpha_kernel,beta_kernel"));
+        assert!(ownership.contains("touched_symbols=alpha_kernel,beta_kernel"));
     }
 
     #[test]

@@ -1,5 +1,10 @@
 import { session } from "../session.js";
 import {
+  classifyHmrMessage,
+  type HmrClassification,
+  type HmrTerminalEvent,
+} from "../hmr.js";
+import {
   errorFromException,
   jsonResponse,
   type ToolResponse,
@@ -7,9 +12,32 @@ import {
 
 interface WaitHmrArgs {
   timeoutMs?: unknown;
+  module?: unknown;
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000;
+const POST_APPLY_OBSERVE_ENV = "SYNTHI_MCP_HMR_POST_APPLY_OBSERVE_MS";
+
+function resolvePostApplyObserveMs(pipelineBudgetMs: number): number {
+  const raw = process.env[POST_APPLY_OBSERVE_ENV];
+  if (raw !== undefined) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return pipelineBudgetMs;
+}
+
+function terminalEventFromClassification(
+  cls: HmrClassification,
+  elapsedMs: number
+): HmrTerminalEvent {
+  return {
+    status: cls.status,
+    source: cls.source,
+    elapsedMs,
+    detail: cls.detail,
+  };
+}
 
 export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
   const a = (args ?? {}) as WaitHmrArgs;
@@ -17,39 +45,125 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     typeof a.timeoutMs === "number" && a.timeoutMs > 0
       ? a.timeoutMs
       : DEFAULT_TIMEOUT_MS;
+  const module = typeof a.module === "string" && a.module.trim() ? a.module.trim() : undefined;
+  let unsubscribePostApply: (() => void) | null = null;
 
   try {
     const start = Date.now();
     const attached = session.require();
-    const result = await attached.channels.hmr.waitForTerminal({ timeoutMs });
+    let sawAppliedTerminal = false;
+    let postApplyTerminal: HmrClassification | null = null;
+    let notifyPostApplyTerminal: (() => void) | null = null;
+    unsubscribePostApply = attached.channels.hmr.onMessage((msg) => {
+      const cls = classifyHmrMessage(msg);
+      if (!cls) return;
+      if (cls.status === "applied") {
+        sawAppliedTerminal = true;
+        return;
+      }
+      if (!sawAppliedTerminal || postApplyTerminal) return;
+      postApplyTerminal = cls;
+      notifyPostApplyTerminal?.();
+    });
+
+    const waitForPostApplyTerminal = (
+      timeoutMs: number
+    ): { promise: Promise<HmrClassification | null>; cancel: () => void } => {
+      if (postApplyTerminal) {
+        return { promise: Promise.resolve(postApplyTerminal), cancel: () => {} };
+      }
+      if (timeoutMs <= 0) {
+        return { promise: Promise.resolve(null), cancel: () => {} };
+      }
+      let cancel = (): void => {};
+      const promise = new Promise<HmrClassification | null>((resolve) => {
+        let settled = false;
+        const settle = (value: HmrClassification | null): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (notifyPostApplyTerminal === onTerminal) notifyPostApplyTerminal = null;
+          resolve(value);
+        };
+        const onTerminal = (): void => settle(postApplyTerminal);
+        notifyPostApplyTerminal = onTerminal;
+        const timer = setTimeout(() => settle(null), timeoutMs);
+        cancel = (): void => settle(null);
+      });
+      return { promise, cancel };
+    };
+
+    const result = await attached.channels.hmr.waitForTerminal({ timeoutMs, module });
     let frameGate: Record<string, unknown> | undefined;
 
     if (result.status === "applied") {
       const tHmr = Date.now();
       const budget = session.pipelineBudgetMs();
+      const remaining = Math.max(0, timeoutMs - (Date.now() - start));
       if (session.frameSeqGateEnabled()) {
-        const remaining = Math.max(0, timeoutMs - (Date.now() - start));
-        const satisfiedBy = await session.awaitFrameAdvanceAtOrAfter(
-          tHmr + budget,
-          remaining
-        );
-        frameGate = satisfiedBy
-          ? {
-              status: "satisfied",
-              frame_seq: satisfiedBy.frame_seq,
-              ts_ms: satisfiedBy.ts_ms,
-              pipeline_budget_ms: budget,
-            }
-          : {
-              status: "timeout",
-              pipeline_budget_ms: budget,
-              note: "no post-budget frame_advance observed; screenshot may reflect pre-reload frame",
-            };
+        const postApplyWait = waitForPostApplyTerminal(remaining);
+        const outcome = await Promise.race([
+          session
+            .awaitFrameAdvanceAtOrAfter(tHmr + budget, remaining)
+            .then((satisfiedBy) => ({ kind: "frame" as const, satisfiedBy })),
+          postApplyWait.promise.then((terminal) => ({
+            kind: "terminal" as const,
+            terminal,
+          })),
+        ]);
+        postApplyWait.cancel();
+        if (outcome.kind === "terminal" && outcome.terminal) {
+          const late = terminalEventFromClassification(outcome.terminal, Date.now() - start);
+          return jsonResponse({
+            status: late.status,
+            elapsedMs: Date.now() - start,
+            hmrElapsedMs: late.elapsedMs,
+            source: late.source,
+            detail: late.detail ?? null,
+            post_apply_terminal: true,
+          });
+        }
+        if (outcome.kind === "terminal") {
+          frameGate = {
+            status: "timeout",
+            pipeline_budget_ms: budget,
+            note: "no post-budget frame_advance observed; screenshot may reflect pre-reload frame",
+          };
+        }
+        if (outcome.kind === "frame") {
+          const satisfiedBy = outcome.satisfiedBy;
+          frameGate = satisfiedBy
+            ? {
+                status: "satisfied",
+                frame_seq: satisfiedBy.frame_seq,
+                ts_ms: satisfiedBy.ts_ms,
+                pipeline_budget_ms: budget,
+              }
+            : {
+                status: "timeout",
+                pipeline_budget_ms: budget,
+                note: "no post-budget frame_advance observed; screenshot may reflect pre-reload frame",
+              };
+        }
       } else {
+        const observeMs = Math.min(resolvePostApplyObserveMs(budget), remaining);
+        const lateTerminal = await waitForPostApplyTerminal(observeMs).promise;
+        if (lateTerminal) {
+          const late = terminalEventFromClassification(lateTerminal, Date.now() - start);
+          return jsonResponse({
+            status: late.status,
+            elapsedMs: Date.now() - start,
+            hmrElapsedMs: late.elapsedMs,
+            source: late.source,
+            detail: late.detail ?? null,
+            post_apply_terminal: true,
+          });
+        }
         frameGate = {
           status: "disabled",
           reason: "no_frame_advance_observed",
           pipeline_budget_ms: budget,
+          post_apply_observe_ms: observeMs,
         };
       }
     }
@@ -64,5 +178,7 @@ export async function waitHmrTool(args: unknown): Promise<ToolResponse> {
     });
   } catch (err) {
     return errorFromException("wait_hmr_failed", err);
+  } finally {
+    unsubscribePostApply?.();
   }
 }

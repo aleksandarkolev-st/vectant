@@ -85,6 +85,7 @@ const summarizeLog = (logs = []) => {
 
 const AIChatWindow = ({
     onClose,
+    onDockRight = null,
     isVisible = true,
     activeFile,
     currentCode,
@@ -335,6 +336,45 @@ const AIChatWindow = ({
         setPendingCommands([]);
         scrollLockRef.current = false;
     }, [activeSessionId]);
+
+    // ── External "Ask AI" entry point ─────────────────────────────────
+    // The editor's selection context menu (SelectionContextMenu) and any
+    // other surface can ask the chat to consider a code snippet by
+    // dispatching `synthi:ask-ai` with { text, language, filePath,
+    // startLine, endLine }. We prepend a fenced-code prompt template so
+    // the user just types their question and hits Enter.
+    useEffect(() => {
+        const handler = (e) => {
+            const d = e?.detail || {};
+            const text = typeof d.text === 'string' ? d.text : '';
+            if (!text) return;
+            const lang = (typeof d.language === 'string' && d.language) ? d.language : '';
+            const file = (typeof d.filePath === 'string' && d.filePath) ? d.filePath : '';
+            const startLine = Number.isFinite(d.startLine) ? d.startLine : null;
+            const endLine = Number.isFinite(d.endLine) ? d.endLine : null;
+            const range = startLine && endLine && endLine !== startLine
+                ? `${startLine}-${endLine}`
+                : (startLine ? String(startLine) : '');
+            const header = file
+                ? `About \`${file}\`${range ? ` (lines ${range})` : ''}:`
+                : 'About this snippet:';
+            const snippet = `${header}\n\n\`\`\`${lang}\n${text}\n\`\`\`\n\n`;
+            setInputValue((prev) => (prev ? `${prev}\n\n${snippet}` : snippet));
+            // Focus the input and place the caret at the start so the
+            // user can type their question above the pasted snippet.
+            requestAnimationFrame(() => {
+                const el = chatInputRef.current;
+                if (!el) return;
+                try {
+                    el.focus();
+                    el.setSelectionRange(0, 0);
+                    el.scrollTop = 0;
+                } catch {}
+            });
+        };
+        window.addEventListener('synthi:ask-ai', handler);
+        return () => window.removeEventListener('synthi:ask-ai', handler);
+    }, [setInputValue]);
 
     // ── AI Jumpstart: auto-send initial prompt when it changes ──
     // Tracks the last prompt actually consumed (not just "consumed at all")
@@ -735,14 +775,22 @@ const AIChatWindow = ({
 
     if (!isVisible) return null;
 
+    // Floating overlay treatment: sits inset from the right edge as a
+    // distinct card with a brand-gradient rim and depth shadow — reads
+    // as "AI is here over your editor" rather than "permanent panel".
     const containerClass = docked
         ? 'h-full w-full min-w-0 max-w-full bg-transparent flex flex-col min-h-0'
-        : 'fixed top-10 right-0 bottom-0 w-[340px] flex flex-col min-h-0 z-40';
+        : 'fixed top-10 right-3 bottom-11 w-[420px] flex flex-col min-h-0 z-40 rounded-xl overflow-hidden';
 
     const containerStyle = docked ? undefined : {
-        background: 'var(--bg-app)',
-        borderLeft: '1px solid var(--border-subtle)',
-        boxShadow: '0 0 40px rgba(0,0,0,0.5)',
+        background: 'var(--bg-panel)',
+        border: '1px solid color-mix(in srgb, var(--brand-stop-3) 22%, transparent)',
+        boxShadow:
+            '0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 14%, transparent), ' +
+            '0 24px 60px -12px rgba(0,0,0,0.7), ' +
+            '0 0 32px -8px color-mix(in srgb, var(--brand-stop-3) 24%, transparent)',
+        backdropFilter: 'blur(8px) saturate(140%)',
+        WebkitBackdropFilter: 'blur(8px) saturate(140%)',
     };
 
     const codeContainerStyle = {
@@ -792,14 +840,34 @@ const AIChatWindow = ({
                             </div>
                         )}
                     </div>
-                    <button
-                        onClick={onClose}
-                        className="p-1.5 rounded-lg transition-all duration-200"
-                        style={{ color: 'var(--text-muted)' }}
-                        title="Close chat"
-                    >
-                        <X className="w-3.5 h-3.5" strokeWidth={1.5} />
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                        {!docked && typeof onDockRight === 'function' && (
+                            <button
+                                type="button"
+                                onClick={onDockRight}
+                                className="px-2 py-1 rounded-md text-[10px] font-semibold transition-all duration-200"
+                                style={{
+                                    color: 'var(--accent-secondary)',
+                                    background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)',
+                                    border: '1px solid color-mix(in srgb, var(--accent-primary) 20%, transparent)',
+                                }}
+                                title="Dock chat to the right"
+                            >
+                                Dock right
+                            </button>
+                        )}
+                        {typeof onClose === 'function' && (
+                            <button
+                                type="button"
+                                onClick={onClose}
+                                className="p-1.5 rounded-lg transition-all duration-200"
+                                style={{ color: 'var(--text-muted)' }}
+                                title="Close chat"
+                            >
+                                <X className="w-3.5 h-3.5" strokeWidth={1.5} />
+                            </button>
+                        )}
+                    </div>
                 </div>
 
                 {/* Code Intel */}
@@ -939,17 +1007,28 @@ const AIChatWindow = ({
                 <div className="space-y-3 min-w-0 relative z-10">
                     {timeline.length === 0 ? (
                         <div className="relative flex flex-col items-center justify-center h-56 px-4 pt-8">
-                            {/* Big ambient glow behind everything */}
-                            <div className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[280px] h-[200px] rounded-full blur-[80px]" style={{ background: 'color-mix(in srgb, var(--accent-primary) 7%, transparent)' }}></div>
-                            <div className="pointer-events-none absolute top-[35%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[180px] h-[100px] rounded-full blur-[50px]" style={{ background: 'color-mix(in srgb, var(--accent-secondary) 5%, transparent)' }}></div>
-                            {/* Icon */}
+                            {/* Ambient brand-gradient glow — AI is a signature moment */}
+                            <div className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[300px] h-[220px] rounded-full blur-[80px]" style={{ background: 'radial-gradient(circle, color-mix(in srgb, var(--brand-stop-3) 22%, transparent) 0%, color-mix(in srgb, var(--brand-stop-1) 12%, transparent) 50%, transparent 75%)' }}></div>
+                            <div className="pointer-events-none absolute top-[35%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[200px] h-[120px] rounded-full blur-[60px]" style={{ background: 'color-mix(in srgb, var(--brand-stop-4) 14%, transparent)' }}></div>
+                            {/* Icon — full brand-gradient fill, the AI's identity moment */}
                             <div className="relative z-10">
-                                <div className="relative w-14 h-14 rounded-2xl flex items-center justify-center mb-4" style={{ background: 'linear-gradient(to bottom right, color-mix(in srgb, var(--accent-primary) 25%, transparent), color-mix(in srgb, var(--accent-secondary) 15%, transparent))', border: '1px solid color-mix(in srgb, var(--accent-primary) 20%, transparent)', boxShadow: '0 0 40px color-mix(in srgb, var(--accent-primary) 18%, transparent)' }}>
-                                    <Sparkles className="w-6 h-6" style={{ color: 'var(--accent-secondary)' }} strokeWidth={1.5} />
+                                <div
+                                    className="relative w-14 h-14 rounded-2xl flex items-center justify-center mb-4"
+                                    style={{
+                                        background: 'var(--brand-gradient)',
+                                        boxShadow:
+                                            '0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 35%, transparent), ' +
+                                            '0 8px 28px -4px color-mix(in srgb, var(--brand-stop-3) 42%, transparent), ' +
+                                            '0 0 40px color-mix(in srgb, var(--brand-stop-1) 26%, transparent)',
+                                    }}
+                                >
+                                    <Sparkles className="w-6 h-6 text-white" strokeWidth={1.75} />
                                 </div>
                             </div>
-                            <h3 className="relative z-10 text-[14px] font-semibold mb-1.5" style={{ color: 'var(--text-primary)' }}>What can I help with?</h3>
-                            <p className="relative z-10 text-[11px] leading-relaxed text-center max-w-[220px]" style={{ color: 'var(--text-muted)' }}>
+                            <h3 className="relative z-10 text-[14px] font-semibold mb-1.5" style={{ color: 'var(--text-primary)' }}>
+                                What can <span className="vt-brand-text font-bold">Vectant</span> help with?
+                            </h3>
+                            <p className="relative z-10 text-[11px] leading-relaxed text-center max-w-[240px]" style={{ color: 'var(--text-muted)' }}>
                                 Explain code, fix bugs, add features, or refactor your project.
                             </p>
                         </div>
@@ -1515,7 +1594,16 @@ const AIChatWindow = ({
                     );
                 })()}
                 <div className="flex gap-2">
-                    <div className="flex-1 flex flex-col gap-0 rounded-xl overflow-hidden transition-all duration-200" style={{ border: '1px solid var(--border-subtle)', background: 'var(--bg-editor)' }}>
+                    <div
+                        className="vt-ambient-top flex-1 flex flex-col gap-0 rounded-xl overflow-hidden transition-all duration-200"
+                        style={{
+                            border: '1px solid var(--border-subtle)',
+                            background: 'var(--bg-editor)',
+                            boxShadow: isLoading
+                                ? '0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 22%, transparent), 0 0 18px -4px color-mix(in srgb, var(--brand-stop-3) 28%, transparent)'
+                                : undefined,
+                        }}
+                    >
                         <textarea
                             ref={chatInputRef}
                             value={inputValue}
@@ -1529,7 +1617,7 @@ const AIChatWindow = ({
                                 e.target.style.height = newHeight + 'px';
                             }}
                             onKeyPress={handleKeyPress}
-                            placeholder="Ask Synthi anything..."
+                            placeholder="Ask Vectant anything…"
                             disabled={isLoading || !clientReady}
                             className="w-full min-h-[36px] max-h-[120px] resize-none overflow-y-auto min-w-0 border-none bg-transparent px-3 pt-2.5 pb-1.5 text-[12px] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50"
                             rows={1}
@@ -1751,8 +1839,16 @@ const AIChatWindow = ({
                                     disabled={!inputValue.trim() || isLoading || !clientReady}
                                     title="Send message (Enter)"
                                     size="sm"
-                                    className="h-6 w-6 p-0 bg-transparent disabled:opacity-50"
-                                    style={{ color: 'var(--accent-secondary)' }}
+                                    className={`h-6 w-6 p-0 disabled:opacity-50 rounded-md ${isLoading ? 'vt-brand-pulse' : ''}`}
+                                    style={{
+                                        background: isLoading
+                                            ? 'var(--brand-gradient)'
+                                            : (inputValue.trim() ? 'var(--brand-gradient)' : 'transparent'),
+                                        color: '#ffffff',
+                                        boxShadow: inputValue.trim()
+                                            ? '0 0 14px -4px color-mix(in srgb, var(--brand-stop-3) 38%, transparent)'
+                                            : 'none',
+                                    }}
                                 >
                                     <Send className="w-3.5 h-3.5" strokeWidth={2} />
                                 </Button>

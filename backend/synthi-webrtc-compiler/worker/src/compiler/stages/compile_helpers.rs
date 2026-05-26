@@ -37,6 +37,7 @@
 // content-hash cache misses.
 
 use crate::infra::utils::system_command;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tokio::process::Command;
 
@@ -226,19 +227,21 @@ pub fn compile_to_object_command(
 ///   - `workspace_dir`: set as the command's cwd
 pub fn link_object_to_so_command(
     compiler_exe: &str,
-    object_file: &std::path::Path,
-    so_out: &std::path::Path,
+    object_file: &Path,
+    so_out: &Path,
     link_flags: &[String],
-    workspace_dir: &std::path::Path,
+    workspace_dir: &Path,
 ) -> Command {
     // Plain system_command (not cpp_compile_command) — the link step
     // isn't cachable by ccache, so we skip the wrapper entirely to
     // avoid the extra process spawn.
     let mut cmd = crate::infra::utils::system_command(compiler_exe);
+    let resolved_link_flags =
+        filter_unresolved_manifest_library_flags(compiler_exe, link_flags, workspace_dir);
     cmd.arg("-shared");
     cmd.arg(object_file);
     cmd.arg("-o").arg(so_out);
-    for f in link_flags {
+    for f in &resolved_link_flags {
         cmd.arg(f);
     }
     cmd.current_dir(workspace_dir);
@@ -269,15 +272,17 @@ pub fn object_path_for_so(so_path: &std::path::Path) -> std::path::PathBuf {
 /// Same rationale for no ccache wrap as `link_object_to_so_command`.
 pub fn link_object_to_exec_command(
     compiler_exe: &str,
-    object_file: &std::path::Path,
-    exec_out: &std::path::Path,
+    object_file: &Path,
+    exec_out: &Path,
     link_flags: &[String],
-    workspace_dir: &std::path::Path,
+    workspace_dir: &Path,
 ) -> Command {
     let mut cmd = crate::infra::utils::system_command(compiler_exe);
+    let resolved_link_flags =
+        filter_unresolved_manifest_library_flags(compiler_exe, link_flags, workspace_dir);
     cmd.arg(object_file);
     cmd.arg("-o").arg(exec_out);
-    for f in link_flags {
+    for f in &resolved_link_flags {
         cmd.arg(f);
     }
     cmd.current_dir(workspace_dir);
@@ -294,6 +299,264 @@ pub fn object_path_for_exec(exec_path: &std::path::Path) -> std::path::PathBuf {
         .unwrap_or("out");
     let parent = exec_path.parent().unwrap_or(std::path::Path::new("."));
     parent.join(format!("{}.o", stem))
+}
+
+pub(crate) fn filter_unresolved_manifest_library_flags(
+    compiler_exe: &str,
+    link_flags: &[String],
+    workspace_dir: &Path,
+) -> Vec<String> {
+    let search_dirs = link_search_dirs(link_flags, workspace_dir);
+    let mut filtered = Vec::with_capacity(link_flags.len());
+    let mut i = 0usize;
+
+    while i < link_flags.len() {
+        let flag = &link_flags[i];
+
+        if contains_unresolved_build_placeholder(flag) {
+            eprintln!(
+                "[LinkFlags] skipping unresolved manifest link placeholder {}",
+                flag
+            );
+            i += 1;
+            continue;
+        }
+
+        if flag == "-L" {
+            if let Some(dir) = link_flags.get(i + 1) {
+                if contains_unresolved_build_placeholder(dir) {
+                    eprintln!(
+                        "[LinkFlags] skipping unresolved manifest library path -L {}",
+                        dir
+                    );
+                    i += 2;
+                    continue;
+                }
+            }
+        } else if let Some(dir) = flag.strip_prefix("-L") {
+            if !dir.is_empty() && contains_unresolved_build_placeholder(dir) {
+                eprintln!(
+                    "[LinkFlags] skipping unresolved manifest library path {}",
+                    flag
+                );
+                i += 1;
+                continue;
+            }
+        }
+
+        if flag == "-l" {
+            if let Some(name) = link_flags.get(i + 1) {
+                if contains_unresolved_build_placeholder(name) {
+                    eprintln!(
+                        "[LinkFlags] skipping unresolved manifest library flag -l {}",
+                        name
+                    );
+                    i += 2;
+                    continue;
+                }
+                if library_resolves(compiler_exe, name, &search_dirs, workspace_dir) {
+                    filtered.push(flag.clone());
+                    filtered.push(name.clone());
+                } else {
+                    eprintln!(
+                        "[LinkFlags] skipping unresolved manifest library flag -l {}",
+                        name
+                    );
+                }
+                i += 2;
+                continue;
+            }
+        }
+
+        if let Some(name) = library_name_from_link_flag(flag) {
+            if library_resolves(compiler_exe, name, &search_dirs, workspace_dir) {
+                filtered.push(flag.clone());
+            } else {
+                eprintln!(
+                    "[LinkFlags] skipping unresolved manifest library flag {}",
+                    flag
+                );
+            }
+            i += 1;
+            continue;
+        }
+
+        if is_library_file_argument(flag) {
+            if library_file_argument_resolves(compiler_exe, flag, &search_dirs, workspace_dir) {
+                filtered.push(flag.clone());
+            } else {
+                eprintln!(
+                    "[LinkFlags] skipping unresolved manifest library path {}",
+                    flag
+                );
+            }
+            i += 1;
+            continue;
+        }
+
+        filtered.push(flag.clone());
+        i += 1;
+    }
+
+    filtered
+}
+
+fn contains_unresolved_build_placeholder(flag: &str) -> bool {
+    flag.contains("${") || flag.contains("$<")
+}
+
+fn library_name_from_link_flag(flag: &str) -> Option<&str> {
+    if let Some(name) = flag.strip_prefix("-l:") {
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    if let Some(name) = flag.strip_prefix("-l") {
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn link_search_dirs(link_flags: &[String], workspace_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let mut i = 0usize;
+
+    while i < link_flags.len() {
+        let flag = &link_flags[i];
+        if flag == "-L" {
+            if let Some(dir) = link_flags.get(i + 1) {
+                dirs.push(resolve_link_dir(dir, workspace_dir));
+                i += 2;
+                continue;
+            }
+        } else if let Some(dir) = flag.strip_prefix("-L") {
+            if !dir.is_empty() {
+                dirs.push(resolve_link_dir(dir, workspace_dir));
+            }
+        }
+        i += 1;
+    }
+
+    if let Some(paths) = std::env::var_os("LIBRARY_PATH") {
+        dirs.extend(std::env::split_paths(&paths));
+    }
+
+    dirs
+}
+
+fn resolve_link_dir(dir: &str, workspace_dir: &Path) -> PathBuf {
+    let path = PathBuf::from(dir);
+    if path.is_absolute() {
+        path
+    } else {
+        workspace_dir.join(path)
+    }
+}
+
+fn library_resolves(
+    compiler_exe: &str,
+    name: &str,
+    search_dirs: &[PathBuf],
+    workspace_dir: &Path,
+) -> bool {
+    let candidates = library_candidate_names(name);
+    if candidates
+        .iter()
+        .any(|candidate| library_exists_in_dirs(candidate, search_dirs))
+    {
+        return true;
+    }
+
+    compiler_reports_library(compiler_exe, &candidates, search_dirs, workspace_dir)
+}
+
+fn library_candidate_names(name: &str) -> Vec<String> {
+    if name.contains('/')
+        || name.contains(".so")
+        || name.ends_with(".a")
+        || name.ends_with(".dylib")
+        || name.ends_with(".lib")
+    {
+        return vec![name.to_string()];
+    }
+    vec![format!("lib{}.so", name), format!("lib{}.a", name)]
+}
+
+fn is_library_file_argument(flag: &str) -> bool {
+    if flag.starts_with('-') {
+        return false;
+    }
+    let lower = flag.to_ascii_lowercase();
+    lower.ends_with(".a")
+        || lower.ends_with(".so")
+        || lower.contains(".so.")
+        || lower.ends_with(".dylib")
+        || lower.ends_with(".lib")
+}
+
+fn library_file_argument_resolves(
+    compiler_exe: &str,
+    flag: &str,
+    search_dirs: &[PathBuf],
+    workspace_dir: &Path,
+) -> bool {
+    let path = PathBuf::from(flag);
+    if path.is_absolute() {
+        return path.is_file();
+    }
+    if workspace_dir.join(&path).is_file() {
+        return true;
+    }
+    if flag.contains('/') || flag.contains('\\') {
+        return false;
+    }
+    library_exists_in_dirs(flag, search_dirs)
+        || compiler_reports_library(compiler_exe, &[flag.to_string()], search_dirs, workspace_dir)
+}
+
+fn library_exists_in_dirs(candidate: &str, search_dirs: &[PathBuf]) -> bool {
+    search_dirs.iter().any(|dir| dir.join(candidate).is_file())
+}
+
+fn compiler_reports_library(
+    compiler_exe: &str,
+    candidates: &[String],
+    search_dirs: &[PathBuf],
+    workspace_dir: &Path,
+) -> bool {
+    for candidate in candidates {
+        let mut probe = std::process::Command::new(compiler_exe);
+        for dir in search_dirs {
+            probe.arg(format!("-L{}", dir.display()));
+        }
+        probe.arg(format!("-print-file-name={}", candidate));
+        probe.current_dir(workspace_dir);
+
+        let Ok(output) = probe.output() else {
+            continue;
+        };
+        if !output.status.success() {
+            continue;
+        }
+
+        let resolved = String::from_utf8_lossy(&output.stdout);
+        let resolved = resolved.trim();
+        if resolved.is_empty() || resolved == candidate {
+            continue;
+        }
+
+        let resolved_path = Path::new(resolved);
+        if resolved_path.is_absolute() && resolved_path.exists() {
+            return true;
+        }
+        if workspace_dir.join(resolved_path).exists() {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn is_cpp_compiler(program: &str) -> bool {
@@ -339,6 +602,91 @@ pub fn is_device_compiler(program: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_library_names_from_link_flags() {
+        assert_eq!(library_name_from_link_flag("-lSDL2"), Some("SDL2"));
+        assert_eq!(
+            library_name_from_link_flag("-l:libcustom.so"),
+            Some("libcustom.so")
+        );
+        assert_eq!(library_name_from_link_flag("-L/usr/lib"), None);
+        assert_eq!(library_name_from_link_flag("-pthread"), None);
+    }
+
+    #[test]
+    fn filters_unresolved_libraries_but_keeps_resolved_search_dir_libraries() {
+        let workspace = temp_workspace("synthi-link-filter");
+        let lib_dir = workspace.join("lib");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::write(lib_dir.join("libpresent.so"), b"").unwrap();
+
+        let flags = vec![
+            "-L".to_string(),
+            "lib".to_string(),
+            "-lpresent".to_string(),
+            "-lmissing".to_string(),
+            "-Wl,--as-needed".to_string(),
+            "-l:libpresent.so".to_string(),
+        ];
+
+        let filtered = filter_unresolved_manifest_library_flags(
+            "compiler-that-does-not-exist",
+            &flags,
+            &workspace,
+        );
+
+        assert!(filtered.contains(&"-L".to_string()));
+        assert!(filtered.contains(&"lib".to_string()));
+        assert!(filtered.contains(&"-lpresent".to_string()));
+        assert!(filtered.contains(&"-l:libpresent.so".to_string()));
+        assert!(filtered.contains(&"-Wl,--as-needed".to_string()));
+        assert!(!filtered.contains(&"-lmissing".to_string()));
+
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn filters_unresolved_cmake_placeholders_and_missing_library_paths() {
+        let workspace = temp_workspace("synthi-link-filter-paths");
+        let lib_dir = workspace.join("thirdparty");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::write(lib_dir.join("libpresent.a"), b"").unwrap();
+
+        let flags = vec![
+            "-L".to_string(),
+            "${UNRESOLVED_LIB_DIR}".to_string(),
+            "-L${OTHER_UNRESOLVED_LIB_DIR}".to_string(),
+            "${CLIP_X11_PNG_LIBRARY}".to_string(),
+            "${CMAKE_CURRENT_SOURCE_DIR}/contrib/embree/win/embree4.lib".to_string(),
+            "thirdparty/libpresent.a".to_string(),
+            "missing/libmissing.a".to_string(),
+            "-Wl,--as-needed".to_string(),
+        ];
+
+        let filtered = filter_unresolved_manifest_library_flags(
+            "compiler-that-does-not-exist",
+            &flags,
+            &workspace,
+        );
+
+        assert!(!filtered.iter().any(|flag| flag.contains("${")));
+        assert!(filtered.contains(&"thirdparty/libpresent.a".to_string()));
+        assert!(!filtered.contains(&"missing/libmissing.a".to_string()));
+        assert!(filtered.contains(&"-Wl,--as-needed".to_string()));
+
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    fn temp_workspace(prefix: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("{}-{}-{}", prefix, std::process::id(), stamp));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn recognises_standard_cpp_compilers() {

@@ -1,0 +1,83 @@
+"""GPU HMR contract helpers for identity, hashing, and projections."""
+
+from gpu_hmr.canonical import (
+    GPU_HMR_IDENTITY_POLICY,
+    CanonicalHashPolicy,
+    CanonicalizationError,
+    canonical_hash,
+    canonical_json_bytes,
+    canonicalize,
+)
+from gpu_hmr.contracts import (
+    AcceptedPointer,
+    AcceptedPromotionRecord,
+    AiGenerationIdentity,
+    CandidateSpecManifest,
+    CandidateVerificationRecord,
+    CompileCandidateIdentity,
+    GeneratedRoleRef,
+    PromotionIdentity,
+    RoleGenerationPackage,
+    RoleScopePackage,
+    RuntimeVerificationIdentity,
+    SelectedTargetIdentity,
+    SourceSplitIdentity,
+    SourceToGeneratedMapping,
+    VerifierReport,
+)
+from gpu_hmr.reason_codes import (
+    ReasonCodeEntry,
+    ReasonCodeRegistry,
+    UnknownReasonCodeError,
+    assert_registered_reason_codes,
+    get_reason_code,
+    load_reason_code_registry,
+    reason_code_map,
+    unknown_reason_codes,
+)
+from gpu_hmr.broker import (
+    BrokerError,
+    GpuHmrBroker,
+    get_gpu_hmr_broker,
+    reset_gpu_hmr_broker_for_tests,
+)
+from gpu_hmr.metadata import resolve_target_metadata
+from gpu_hmr.projection import build_target_scoped_projection
+
+__all__ = [
+    "AcceptedPointer",
+    "AcceptedPromotionRecord",
+    "AiGenerationIdentity",
+    "BrokerError",
+    "CandidateSpecManifest",
+    "CandidateVerificationRecord",
+    "CanonicalHashPolicy",
+    "CanonicalizationError",
+    "CompileCandidateIdentity",
+    "GPU_HMR_IDENTITY_POLICY",
+    "GeneratedRoleRef",
+    "GpuHmrBroker",
+    "PromotionIdentity",
+    "RoleGenerationPackage",
+    "RoleScopePackage",
+    "RuntimeVerificationIdentity",
+    "SelectedTargetIdentity",
+    "SourceSplitIdentity",
+    "SourceToGeneratedMapping",
+    "ReasonCodeEntry",
+    "ReasonCodeRegistry",
+    "UnknownReasonCodeError",
+    "VerifierReport",
+    "assert_registered_reason_codes",
+    "canonical_hash",
+    "canonical_json_bytes",
+    "canonicalize",
+    "build_target_scoped_projection",
+    "get_reason_code",
+    "get_gpu_hmr_broker",
+    "load_reason_code_registry",
+    "reason_code_map",
+    "reset_gpu_hmr_broker_for_tests",
+    "resolve_target_metadata",
+    "unknown_reason_codes",
+]

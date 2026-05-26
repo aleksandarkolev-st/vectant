@@ -1,0 +1,31 @@
+slug: gpu-scale-validation-sdl2-ambiguous-20260521c
+repo_commit: dfd215553f0f237a5cad30d5a5559f28dcc232ff
+model: gemini-3.1-flash-lite-preview
+vendor: rocm
+arch: gfx1201
+render_backend: sdl2
+template_evidence_mode: fresh
+cmake_target_mode: ambiguous
+hmr_delta_mode: ai_user_delta
+validation_profile: full
+source_file_mix: {"cpp":13,"hpp":18,"h":10,"hip":11,"cu":0,"total":52}
+workspace_file_count: 299
+relevant_file_count: 59
+generated_roles: {}
+prod_run_report: null
+
+PASS gpu target - rocm arch=gfx1201 render_backend=sdl2 cmake_target_mode=ambiguous template_evidence=fresh hmr_delta_mode=ai_user_delta validation_profile=full
+PASS source file mix - {"cpp":13,"hpp":18,"h":10,"hip":11,"cu":0,"total":52}
+PASS ordinary user project guard - 299 files, no Synthi ABI or generated role filenames
+PASS render backend dependency preflight - SDL2: libsdl2-dev
+PASS create workspace - id=cmpfbn3uu000vl2016qd2rhrj slug=gpu-scale-validation-sdl2-ambiguous-20260521c
+PASS seed scale workspace - 299 files
+PASS mcp tools/list - count=42
+PASS mcp attach - attached
+PASS ambiguous_cmake_target_rejected explicit fallback - target_resolution_ambiguous
+PASS worker saw full ambiguous target file set - [AI Split] ENTER (cache_key=15564425698369977781, src_len=375, files=299, gpu_mode=rocm, gpu_arch=gfx1201
+PASS ai-engine rejected ambiguous CMake target before split generation - deterministic unsupported project rejection: GPU split requires one selected CMake target, but target resolution is ambiguous
+
+PHASE ambiguous_cmake_target_rejected wait=expected_unsupported source=deterministic_validation wait_ms=120 terminal_wait_ms=120 wall_ms=153 detail={"compile":{"ok":true,"session_id":"gpu-scale-validation-sdl2-ambiguous-20260521c","language":"cpp","filename":"src/app/main.cpp","dispatched_at":1779357718239,"note":"Compile dispatched. Await terminal HMR status via synthi_wait({condition:\"hmr\"}). Responses stream on build-log."},"wait":{"status":"compile-error","elapsedMs":120,"hmrElapsedMs":120,"source":"hmr_status","detail":{"status":"compile-error","module":"pipeline","errors":["GPU split endpoint failed for a GPU-preferred compile: AI e frame_gate={"status":"not_applicable","reason":"target_resolution_ambiguous"}
+
+

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 /// Debug log macro — only prints when SYNTHI_WORKER_VERBOSE=1 is set.
 /// Use instead of `eprintln!`/`println!` for non-error debug output.
 #[macro_export]

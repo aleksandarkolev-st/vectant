@@ -16,11 +16,14 @@ from typing import Dict, Iterable, Mapping
 
 
 _GLOBAL_DECL_RE = re.compile(
-    r"__global__\s+(?:void\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
+    r"(?:"
+    r"__global__\s+(?:void\s+)?"
+    r"|GLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+(?:__launch_bounds__\s*\([^)]*\)\s*)?"
+    r")(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
     re.MULTILINE,
 )
 _CONSTANT_DECL_RE = re.compile(
-    r"__constant__\s+(?P<decl>[^;]+);",
+    r"\b(?P<storage>__constant__|__device__|__managed__)\s+(?P<decl>[^;]+);",
     re.MULTILINE,
 )
 _HASH_KEY = b"synthi-gpu-hmr-v1"
@@ -57,13 +60,15 @@ def collect_kernel_stamps(source: str) -> Iterable[KernelAbiStamp]:
 
 def extract_kernel_signatures(source: str) -> Dict[str, str]:
     sigs: Dict[str, str] = {}
+    masked = mask_comments_for_parsing(source)
     cursor = 0
     while True:
-        match = _GLOBAL_DECL_RE.search(source, cursor)
+        match = _GLOBAL_DECL_RE.search(masked, cursor)
         if not match:
             break
         name = match.group("name")
-        params, end = _read_balanced(source, match.end() - 1, "(", ")")
+        _params, end = _read_balanced(masked, match.end() - 1, "(", ")")
+        params = source[match.end() : max(match.end(), end - 1)]
         sigs[name] = params
         cursor = max(end, match.end())
     return sigs
@@ -71,8 +76,12 @@ def extract_kernel_signatures(source: str) -> Dict[str, str]:
 
 def constant_layout_hash(source: str) -> str:
     decls = []
-    for match in _CONSTANT_DECL_RE.finditer(source):
-        decls.append(re.sub(r"\s+", " ", match.group("decl")).strip())
+    masked = mask_comments_for_parsing(source)
+    for match in _CONSTANT_DECL_RE.finditer(masked):
+        decl = re.sub(r"\s+", " ", source[match.start("decl") : match.end("decl")]).strip()
+        if "(" in decl:
+            continue
+        decls.append(f"{match.group('storage')} {decl}")
     return _hash64_hex(";".join(sorted(decls)))
 
 
@@ -90,6 +99,56 @@ def write_split_meta(files: Mapping[str, str]) -> dict:
             "constant_layout_hash": constant_layout_hash(device_source),
         }
     }
+
+
+def mask_comments_for_parsing(source: str) -> str:
+    """Replace C/C++ comments with whitespace while preserving offsets."""
+
+    chars = list(source or "")
+    i = 0
+    n = len(chars)
+    in_string: str | None = None
+    escaped = False
+    while i < n:
+        ch = chars[i]
+        nxt = chars[i + 1] if i + 1 < n else ""
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == in_string:
+                in_string = None
+            i += 1
+            continue
+        if ch in {'"', "'"}:
+            in_string = ch
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            chars[i] = " "
+            chars[i + 1] = " "
+            i += 2
+            while i < n and chars[i] not in "\r\n":
+                chars[i] = " "
+                i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            chars[i] = " "
+            chars[i + 1] = " "
+            i += 2
+            while i < n:
+                if chars[i] == "*" and i + 1 < n and chars[i + 1] == "/":
+                    chars[i] = " "
+                    chars[i + 1] = " "
+                    i += 2
+                    break
+                if chars[i] not in "\r\n":
+                    chars[i] = " "
+                i += 1
+            continue
+        i += 1
+    return "".join(chars)
 
 
 def _normalize_param(param: str) -> str:

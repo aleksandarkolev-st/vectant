@@ -438,7 +438,12 @@ impl HmrOrchestrator {
 
     /// Access the integration pipeline, creating it lazily on first use.
     pub fn pipeline(&mut self, preview_id: &str) -> &mut HmrPipeline {
-        if self.hmr_pipeline.is_none() {
+        let needs_new_pipeline = self
+            .hmr_pipeline
+            .as_ref()
+            .map(|pipeline| pipeline.lifecycle.preview_id() != preview_id)
+            .unwrap_or(true);
+        if needs_new_pipeline {
             self.hmr_pipeline = Some(HmrPipeline::new(preview_id));
         }
         self.hmr_pipeline.as_mut().unwrap()

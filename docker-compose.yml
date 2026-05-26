@@ -175,6 +175,9 @@ services:
     environment:
       SYNTHI_AI_MODEL: "gemini-3-flash-preview-preview"
       SYNTHI_GEMINI_MODEL: "${SYNTHI_GEMINI_MODEL:-}"
+      AI_ENGINE_AUTH_DISABLED: "${AI_ENGINE_AUTH_DISABLED:-true}"
+      GEMINI_API_KEY: "${GEMINI_API_KEY:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
       OPENAI_API_KEY: "dummy"
       # Tell resolve_workspace_path() where to find slug-rooted repos.
       # The collab-data named volume is shared with collab-server (which

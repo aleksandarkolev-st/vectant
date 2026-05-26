@@ -1,5 +1,5 @@
 use libloading::{Library, Symbol};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_void, CString};
 use std::io::{self, BufRead, Write};
 use std::ptr;
@@ -78,6 +78,111 @@ use host_kv::{
     create_kv_api, // Removed module_slot_to_u32, read_schema_table, KV_STORE, HostKvSchemaEvent, SynthiHostContextV1
 };
 
+fn device_load_abi_version(kernels: &[String], abi_arg: Option<&str>) -> String {
+    abi_arg
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "-")
+        .map(str::to_string)
+        .unwrap_or_else(|| kernels.join("|"))
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn is_runtime_execution_paused(runtime_paused: bool, gpu_reload_inflight_count: usize) -> bool {
+    runtime_paused || gpu_reload_inflight_count > 0
+}
+
+#[cfg(not(feature = "gpu-hmr"))]
+fn is_runtime_execution_paused(runtime_paused: bool, _gpu_reload_inflight_count: usize) -> bool {
+    runtime_paused
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn is_runtime_control_command(command: &str) -> bool {
+    matches!(
+        command,
+        "synthi_pause_runtime" | "pause_runtime" | "synthi_resume_runtime" | "resume_runtime"
+    )
+}
+
+#[cfg(not(feature = "gpu-hmr"))]
+fn is_runtime_control_command(_command: &str) -> bool {
+    false
+}
+
+fn runner_command_name(command: &str) -> Option<&str> {
+    command.split_whitespace().next()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn should_process_runner_command(command: &str, gpu_reload_inflight_count: usize) -> bool {
+    gpu_reload_inflight_count == 0 || is_runtime_control_command(command)
+}
+
+#[cfg(not(feature = "gpu-hmr"))]
+fn should_process_runner_command(_command: &str, _gpu_reload_inflight_count: usize) -> bool {
+    true
+}
+
+fn runtime_control_status_payload(
+    status: &str,
+    token: Option<&str>,
+    runtime_paused: bool,
+    gpu_reload_inflight_count: usize,
+) -> String {
+    let mut payload = serde_json::json!({
+        "status": status,
+        "module": "runner",
+        "runtimePaused": runtime_paused,
+        "gpuReloadInflightCount": gpu_reload_inflight_count,
+    });
+    if let Some(token) = token.filter(|value| !value.trim().is_empty()) {
+        payload["runtimeControlToken"] = serde_json::Value::String(token.to_string());
+    }
+    payload.to_string()
+}
+
+fn emit_runtime_control_status(
+    status: &str,
+    token: Option<&str>,
+    runtime_paused: bool,
+    gpu_reload_inflight_count: usize,
+) {
+    eprintln!(
+        "[Runner] [HMR-STATUS] {}",
+        runtime_control_status_payload(status, token, runtime_paused, gpu_reload_inflight_count)
+    );
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn decode_gpu_kernel_command_token(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = *bytes.get(i + 1)?;
+            let lo = *bytes.get(i + 2)?;
+            let decoded = hex_nibble(hi)? << 4 | hex_nibble(lo)?;
+            out.push(decoded);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 use loader::ModuleLoader; // Removed LoadResult
 
 use state_manager::StateManager;
@@ -106,6 +211,34 @@ struct GpuReloadCompletion {
     kernels: String,
     adapter: GpuModuleAdapter,
     result: AdapterReloadResult,
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn emit_gpu_reload_completion(completion: &GpuReloadCompletion) {
+    eprintln!(
+        "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact={} kernels={} result={:?}",
+        completion.language, completion.artifact_path, completion.kernels, completion.result
+    );
+    let status = match &completion.result {
+        AdapterReloadResult::Success {
+            state_preserved, ..
+        } => HmrStatus::Applied {
+            module: "device".into(),
+            capability: "GPU sidecar HMR".into(),
+            state_preserved: *state_preserved,
+        },
+        AdapterReloadResult::Failed { error, .. } => HmrStatus::rejected_with_fallback(
+            "device",
+            error,
+            "Keep previous GPU sidecar loaded",
+        ),
+        AdapterReloadResult::Unsupported { reason } => HmrStatus::rejected_with_fallback(
+            "device",
+            reason,
+            "Full GPU sidecar reload required",
+        ),
+    };
+    eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
 }
 
 // ============================================================
@@ -138,6 +271,47 @@ struct GpuReloadCompletion {
 enum RunnerCommand {
     Legacy(String),
     Ipc(process_isolation::IpcMessage),
+}
+
+fn runner_command_to_text(cmd_wrapper: RunnerCommand) -> String {
+    match cmd_wrapper {
+        RunnerCommand::Legacy(c) => c,
+        RunnerCommand::Ipc(msg) => match msg {
+            process_isolation::IpcMessage::LoadModule { slot, path, .. } => {
+                format!("load {} {}", slot, path)
+            }
+            process_isolation::IpcMessage::ReloadModule { slot, path, .. } => {
+                format!("reload {} {}", slot, path)
+            }
+            process_isolation::IpcMessage::InputEvent { kind, a, b, c } => {
+                // Map numeric events back to legacy string commands
+                match kind {
+                    0 => format!("input motion {} {}", a, b), // x, y
+                    1 => format!(
+                        "input button {} {} {} {}",
+                        if b == 1 { "down" } else { "up" }, // state
+                        a,                                  // button
+                        (c >> 16) as i16,
+                        (c & 0xFFFF) as i16
+                    ), // x, y packed
+                    2 => format!(
+                        "input key {} {}",
+                        if a == 1 { "down" } else { "up" },
+                        b
+                    ), // state, keycode
+                    _ => String::new(),
+                }
+            }
+            process_isolation::IpcMessage::Ping { seq } => {
+                debug_log!("[Runner] Ping received (seq={})", seq);
+                String::new()
+            }
+            _ => {
+                debug_log!("[Runner] Unhandled IPC message: {:?}", msg);
+                String::new()
+            }
+        },
+    }
 }
 
 /// ULTRAPLAN Lightning Phase 10g.2 — backend selection for runtime.
@@ -423,7 +597,7 @@ fn main() {
         let setup = conn.setup();
         let min_kc = setup.min_keycode;
         let max_kc = setup.max_keycode;
-        let count  = max_kc - min_kc + 1;
+        let count = max_kc - min_kc + 1;
         match conn.get_keyboard_mapping(min_kc, count) {
             Ok(cookie) => match cookie.reply() {
                 Ok(mapping) => {
@@ -451,7 +625,10 @@ fn main() {
                 }
             },
             Err(e) => {
-                eprintln!("[Runner] get_keyboard_mapping failed: {}. Keyboard XTest injection disabled.", e);
+                eprintln!(
+                    "[Runner] get_keyboard_mapping failed: {}. Keyboard XTest injection disabled.",
+                    e
+                );
                 std::collections::HashMap::new()
             }
         }
@@ -729,6 +906,12 @@ fn main() {
     // Flicker prevention: skip render for one frame after a module load
     // so the new module's on_load has executed before on_render is called.
     let mut skip_render_frames: u32 = 0;
+    // GPU sidecar HMR can spend seconds in the device compiler while the
+    // current module keeps rendering. Let the worker quiesce user module
+    // update/render during that window without stopping stdin, status
+    // processing, frame presentation, or capture.
+    let mut runtime_paused: bool = false;
+    let mut deferred_commands: VecDeque<String> = VecDeque::new();
 
     // ============================================================
     // MODULE LOADER WITH ABI VALIDATION
@@ -848,36 +1031,16 @@ fn main() {
     loop {
         #[cfg(feature = "gpu-hmr")]
         while let Ok(completion) = gpu_reload_rx.try_recv() {
-            eprintln!(
-                "[Runner] [GPU HMR] Device sidecar reload vendor={} artifact={} kernels={} result={:?}",
-                completion.language,
-                completion.artifact_path,
-                completion.kernels,
-                completion.result
-            );
-            let status = match &completion.result {
-                AdapterReloadResult::Success {
-                    state_preserved, ..
-                } => HmrStatus::Applied {
-                    module: "device".into(),
-                    capability: "GPU sidecar HMR".into(),
-                    state_preserved: *state_preserved,
-                },
-                AdapterReloadResult::Failed { error, .. } => HmrStatus::rejected_with_fallback(
-                    "device",
-                    error,
-                    "Keep previous GPU sidecar loaded",
-                ),
-                AdapterReloadResult::Unsupported { reason } => HmrStatus::rejected_with_fallback(
-                    "device",
-                    reason,
-                    "Full GPU sidecar reload required",
-                ),
-            };
-            eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+            emit_gpu_reload_completion(&completion);
             gpu_reload_inflight.remove(&completion.language);
             gpu_adapters.insert(completion.language, completion.adapter);
         }
+
+        #[cfg(feature = "gpu-hmr")]
+        let runtime_execution_paused =
+            is_runtime_execution_paused(runtime_paused, gpu_reload_inflight.len());
+        #[cfg(not(feature = "gpu-hmr"))]
+        let runtime_execution_paused = is_runtime_execution_paused(runtime_paused, 0);
 
         // Poll SDL2 events and pass them to loaded modules.
         //
@@ -898,7 +1061,7 @@ fn main() {
         // into a local Vec<SDL_Event> that outlives the pointer
         // collection used for dispatch.
         #[cfg(target_os = "linux")]
-        if !window.is_null() {
+        if !window.is_null() && !runtime_execution_paused {
             // Collect event pointers from whichever source. The
             // storage behind the pointers lives in either
             // sdl2_backend's event_arena (trait path) or the local
@@ -1055,46 +1218,44 @@ fn main() {
         }
 
         // Process all pending commands
-        while let Ok(cmd_wrapper) = rx.try_recv() {
-            let cmd = match cmd_wrapper {
-                RunnerCommand::Legacy(c) => c,
-                RunnerCommand::Ipc(msg) => {
-                    match msg {
-                        process_isolation::IpcMessage::LoadModule { slot, path, .. } => {
-                            format!("load {} {}", slot, path)
-                        }
-                        process_isolation::IpcMessage::ReloadModule { slot, path, .. } => {
-                            format!("reload {} {}", slot, path)
-                        }
-                        process_isolation::IpcMessage::InputEvent { kind, a, b, c } => {
-                            // Map numeric events back to legacy string commands
-                            match kind {
-                                0 => format!("input motion {} {}", a, b), // x, y
-                                1 => format!(
-                                    "input button {} {} {} {}",
-                                    if b == 1 { "down" } else { "up" }, // state
-                                    a,                                  // button
-                                    (c >> 16) as i16,
-                                    (c & 0xFFFF) as i16
-                                ), // x, y packed
-                                2 => format!(
-                                    "input key {} {}",
-                                    if a == 1 { "down" } else { "up" },
-                                    b
-                                ), // state, keycode
-                                _ => String::new(),
-                            }
-                        }
-                        process_isolation::IpcMessage::Ping { seq } => {
-                            debug_log!("[Runner] Ping received (seq={})", seq);
-                            String::new()
-                        }
-                        _ => {
-                            debug_log!("[Runner] Unhandled IPC message: {:?}", msg);
-                            String::new()
-                        }
-                    }
+        loop {
+            #[cfg(feature = "gpu-hmr")]
+            let gpu_reload_inflight_count = gpu_reload_inflight.len();
+            #[cfg(not(feature = "gpu-hmr"))]
+            let gpu_reload_inflight_count = 0usize;
+
+            let cmd = if gpu_reload_inflight_count == 0 {
+                if let Some(cmd) = deferred_commands.pop_front() {
+                    cmd
+                } else {
+                    let Ok(cmd_wrapper) = rx.try_recv() else {
+                        break;
+                    };
+                    runner_command_to_text(cmd_wrapper)
                 }
+            } else if let Some(index) = deferred_commands.iter().position(|cmd| {
+                runner_command_name(cmd)
+                    .map(|name| should_process_runner_command(name, gpu_reload_inflight_count))
+                    .unwrap_or(false)
+            }) {
+                deferred_commands.remove(index).unwrap_or_default()
+            } else {
+                let mut selected = None;
+                while let Ok(cmd_wrapper) = rx.try_recv() {
+                    let cmd = runner_command_to_text(cmd_wrapper);
+                    let Some(name) = runner_command_name(&cmd) else {
+                        continue;
+                    };
+                    if should_process_runner_command(name, gpu_reload_inflight_count) {
+                        selected = Some(cmd);
+                        break;
+                    }
+                    deferred_commands.push_back(cmd);
+                }
+                let Some(cmd) = selected else {
+                    break;
+                };
+                cmd
             };
 
             if cmd.is_empty() {
@@ -1106,6 +1267,11 @@ fn main() {
             let parts: Vec<&str> = cmd.split_whitespace().collect();
             if parts.is_empty() {
                 continue;
+            }
+
+            if !should_process_runner_command(parts[0], gpu_reload_inflight_count) {
+                deferred_commands.push_back(cmd);
+                break;
             }
 
             match parts[0] {
@@ -1247,14 +1413,20 @@ fn main() {
                                     // `js_key_to_x11_keysym`. Backward-compatible:
                                     // older callers omit the field, in which case
                                     // only SDL gets the event (today's behaviour).
-                                    if parts.len() >= 5 && xtest_ready && !keysym_to_keycode.is_empty() {
+                                    if parts.len() >= 5
+                                        && xtest_ready
+                                        && !keysym_to_keycode.is_empty()
+                                    {
                                         let keysym = parts[4].parse::<u32>().unwrap_or(0);
                                         if keysym != 0 {
                                             if let Some(&xkc) = keysym_to_keycode.get(&keysym) {
                                                 if let Some(ref conn) = x11_conn {
                                                     // XTest event types: 2 = KeyPress, 3 = KeyRelease.
-                                                    let event_type: u8 = if type_str == "down" { 2 } else { 3 };
-                                                    let _ = conn.xtest_fake_input(event_type, xkc, 0, x11_root, 0, 0, 0);
+                                                    let event_type: u8 =
+                                                        if type_str == "down" { 2 } else { 3 };
+                                                    let _ = conn.xtest_fake_input(
+                                                        event_type, xkc, 0, x11_root, 0, 0, 0,
+                                                    );
                                                     let _ = conn.flush();
                                                 }
                                             }
@@ -1267,6 +1439,40 @@ fn main() {
                             }
                         }
                     }
+                }
+                "synthi_pause_runtime" | "pause_runtime" => {
+                    let control_token = parts.get(1).copied();
+                    if !runtime_paused {
+                        runtime_paused = true;
+                        eprintln!("[Runner] Runtime update/render paused for external HMR work");
+                    }
+                    #[cfg(feature = "gpu-hmr")]
+                    let gpu_reload_inflight_count = gpu_reload_inflight.len();
+                    #[cfg(not(feature = "gpu-hmr"))]
+                    let gpu_reload_inflight_count = 0;
+                    emit_runtime_control_status(
+                        "runtime-paused",
+                        control_token,
+                        runtime_paused,
+                        gpu_reload_inflight_count,
+                    );
+                }
+                "synthi_resume_runtime" | "resume_runtime" => {
+                    let control_token = parts.get(1).copied();
+                    if runtime_paused {
+                        runtime_paused = false;
+                        eprintln!("[Runner] Runtime update/render resumed");
+                    }
+                    #[cfg(feature = "gpu-hmr")]
+                    let gpu_reload_inflight_count = gpu_reload_inflight.len();
+                    #[cfg(not(feature = "gpu-hmr"))]
+                    let gpu_reload_inflight_count = 0;
+                    emit_runtime_control_status(
+                        "runtime-resumed",
+                        control_token,
+                        runtime_paused,
+                        gpu_reload_inflight_count,
+                    );
                 }
                 "load" => {
                     // usage: load <name> <path>
@@ -1313,12 +1519,13 @@ fn main() {
                     // before on_render uses it — prevents flicker
                     skip_render_frames = 1;
                 }
-                "load_device" => {
-                    // usage: load_device <cuda|rocm|hip> <cubin|hsaco> <kernel1,kernel2,...|->
+                "load_device" | "load_device_partial" => {
+                    // usage: load_device[_partial] <cuda|rocm|hip> <cubin|hsaco> <kernel1,kernel2,...|-> [abi_fingerprint]
                     #[cfg(feature = "gpu-hmr")]
                     {
+                        let partial_device_load = parts[0] == "load_device_partial";
                         if parts.len() < 3 {
-                            eprintln!("[Runner] [GPU HMR] Invalid load_device command format");
+                            eprintln!("[Runner] [GPU HMR] Invalid {} command format", parts[0]);
                             continue;
                         }
 
@@ -1328,8 +1535,18 @@ fn main() {
                         let kernels: Vec<String> = kernels_arg
                             .split(',')
                             .filter(|s| !s.trim().is_empty() && *s != "-")
-                            .map(|s| s.trim().to_string())
+                            .filter_map(|s| {
+                                let raw = s.trim();
+                                decode_gpu_kernel_command_token(raw).or_else(|| {
+                                    eprintln!(
+                                        "[Runner] [GPU HMR] Ignoring invalid encoded kernel token '{}'",
+                                        raw
+                                    );
+                                    None
+                                })
+                            })
                             .collect();
+                        let abi_version = device_load_abi_version(&kernels, parts.get(4).copied());
 
                         let (language, vendor) = match vendor_raw {
                             "cuda" => ("cuda", GpuVendor::Cuda),
@@ -1343,6 +1560,13 @@ fn main() {
                         let artifact_hash = std::fs::metadata(artifact_path)
                             .map(|m| m.len().to_string())
                             .unwrap_or_else(|_| "unknown".to_string());
+                        let mut capabilities = vec![
+                            "gpu_sidecar_module".to_string(),
+                            "synthi_gpu_launch".to_string(),
+                        ];
+                        if partial_device_load {
+                            capabilities.push("gpu_sidecar_partial_module".to_string());
+                        }
                         let manifest = BuildManifest::for_language(
                             session_id
                                 .clone()
@@ -1351,7 +1575,7 @@ fn main() {
                         )
                         .with_slot(BuildSlot::Custom("device".into()))
                         .with_artifact(artifact_path, &artifact_hash)
-                        .with_abi_version(&kernels.join("|"))
+                        .with_abi_version(&abi_version)
                         .with_state_schema_hash(&artifact_hash)
                         .with_dirty_units(vec![if vendor == GpuVendor::Cuda {
                             "device.cu".to_string()
@@ -1359,10 +1583,7 @@ fn main() {
                             "device.hip".to_string()
                         }])
                         .with_exported_symbols(kernels.clone())
-                        .with_capabilities(vec![
-                            "gpu_sidecar_module".to_string(),
-                            "synthi_gpu_launch".to_string(),
-                        ])
+                        .with_capabilities(capabilities)
                         .with_snapshot_modes(vec![SnapshotMode::Binary]);
 
                         let req = AdapterReloadRequest {
@@ -1390,23 +1611,19 @@ fn main() {
                             continue;
                         }
 
-                        let mut adapter =
-                            gpu_adapters
-                                .remove(language)
-                                .unwrap_or_else(|| {
-                                    let mut adapter =
-                                        GpuModuleAdapter::new(GpuModuleAdapterConfig {
-                                            vendor,
-                                            ..Default::default()
-                                        });
-                                    if let Err(e) = adapter.initialize() {
-                                        eprintln!(
-                                            "[Runner] [GPU HMR] Device adapter init failed vendor={}: {}",
-                                            language, e
-                                        );
-                                    }
-                                    adapter
-                                });
+                        let mut adapter = gpu_adapters.remove(language).unwrap_or_else(|| {
+                            let mut adapter = GpuModuleAdapter::new(GpuModuleAdapterConfig {
+                                vendor,
+                                ..Default::default()
+                            });
+                            if let Err(e) = adapter.initialize() {
+                                eprintln!(
+                                    "[Runner] [GPU HMR] Device adapter init failed vendor={}: {}",
+                                    language, e
+                                );
+                            }
+                            adapter
+                        });
 
                         let completion_tx = gpu_reload_tx.clone();
                         let language_owned = language.to_string();
@@ -1414,11 +1631,37 @@ fn main() {
                         let kernels_log = kernels.join(",");
                         gpu_reload_inflight.insert(language_owned.clone(), Instant::now());
                         eprintln!(
-                            "[Runner] [GPU HMR] Device sidecar reload started vendor={} artifact={} kernels={}",
+                            "[Runner] [GPU HMR] Device sidecar reload started vendor={} artifact={} kernels={} partial={}",
                             language_owned,
                             artifact_path_owned,
-                            kernels_log
+                            kernels_log,
+                            partial_device_load
                         );
+                        if let Err(error) = adapter.capture_current_context_for_reload() {
+                            eprintln!(
+                                "[Runner] [GPU HMR] Device context capture failed vendor={}: {}",
+                                language, error
+                            );
+                        }
+
+                        if partial_device_load {
+                            let result = adapter.reload(&req);
+                            let completion = GpuReloadCompletion {
+                                language: language_owned,
+                                artifact_path: artifact_path_owned,
+                                kernels: kernels_log,
+                                adapter,
+                                result,
+                            };
+                            emit_gpu_reload_completion(&completion);
+                            let GpuReloadCompletion {
+                                language, adapter, ..
+                            } = completion;
+                            gpu_reload_inflight.remove(&language);
+                            gpu_adapters.insert(language, adapter);
+                            continue;
+                        }
+
                         thread::spawn(move || {
                             let result = adapter.reload(&req);
                             let _ = completion_tx.send(GpuReloadCompletion {
@@ -1530,115 +1773,119 @@ fn main() {
             }
         });
 
-        for name in &keys {
-            if let Some(lib) = modules.get(name) {
-                unsafe {
-                    // Try new symbol names first, then legacy
-                    let update_func: Option<Symbol<unsafe extern "C" fn(*mut c_void, f64)>> =
-                        if name == "core" {
-                            lib.get(b"core_on_update")
-                                .ok()
-                                .or_else(|| lib.get(b"on_update").ok())
-                        } else if name == "gui" {
-                            // GUI doesn't have on_update in new ABI (only on_render)
-                            lib.get(b"gui_on_update")
-                                .ok()
-                                .or_else(|| lib.get(b"on_update").ok())
-                        } else {
-                            lib.get(b"on_update").ok()
-                        };
+        if !runtime_execution_paused {
+            for name in &keys {
+                if let Some(lib) = modules.get(name) {
+                    unsafe {
+                        // Try new symbol names first, then legacy
+                        let update_func: Option<Symbol<unsafe extern "C" fn(*mut c_void, f64)>> =
+                            if name == "core" {
+                                lib.get(b"core_on_update")
+                                    .ok()
+                                    .or_else(|| lib.get(b"on_update").ok())
+                            } else if name == "gui" {
+                                // GUI doesn't have on_update in new ABI (only on_render)
+                                lib.get(b"gui_on_update")
+                                    .ok()
+                                    .or_else(|| lib.get(b"on_update").ok())
+                            } else {
+                                lib.get(b"on_update").ok()
+                            };
 
-                    if let Some(f) = update_func {
-                        // INDEPENDENT SWAP: Use module-specific state for GUI
-                        let state_ptr = if name == "gui" {
-                            module_states
-                                .get(name)
-                                .map(|s| s.state_ptr)
-                                .unwrap_or(app_state.raw)
-                        } else {
-                            // For core/main, use shared app_state.raw
-                            app_state.raw
-                        };
+                        if let Some(f) = update_func {
+                            // INDEPENDENT SWAP: Use module-specific state for GUI
+                            let state_ptr = if name == "gui" {
+                                module_states
+                                    .get(name)
+                                    .map(|s| s.state_ptr)
+                                    .unwrap_or(app_state.raw)
+                            } else {
+                                // For core/main, use shared app_state.raw
+                                app_state.raw
+                            };
 
-                        // Execute with crash protection on Linux
-                        #[cfg(unix)]
-                        {
-                            let module_name = name.clone();
-                            // Set current library path for source map lookup on crash
-                            if let Some(lib_path) = loaded_paths.get(name) {
-                                set_current_lib_path(lib_path);
-                            }
-
-                            // Enter crash supervisor context for this module
-                            if supervisor_enabled {
-                                let slot = ModuleSlot::from_str(name).unwrap_or(ModuleSlot::Main);
-                                crash_supervisor.enter_context(slot);
-                            }
-
-                            let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);
-                            let func_ptr = *f;
-                            let result = execute_with_protection(&module_name, move || {
-                                let state_ptr = state_ptr_wrapper.0 as *mut std::ffi::c_void;
-                                func_ptr(state_ptr, dt);
-                            });
-
-                            // Exit crash supervisor context
-                            if supervisor_enabled {
-                                crash_supervisor.exit_context();
-                            }
-
-                            if let Err(crash_info) = result {
-                                // Crash recovered! Log and continue with old module
-                                eprintln!("{}", generate_crash_report(&crash_info));
-
-                                // Use CrashSupervisor to determine recovery action
-                                let recovery_action = if supervisor_enabled {
-                                    crash_supervisor.report_crash(&crash_info)
-                                } else {
-                                    RecoveryAction::HotReload
-                                };
-
-                                // Check if supervisor thinks we should restart
-                                // (too many consecutive crashes without recovery).
-                                // NOTE: We intentionally do NOT treat SIGSEGV as
-                                // unconditionally fatal because our thread-based
-                                // crash protection isolates the crash to the plugin
-                                // thread.  The runner's own heap and SDL state are
-                                // safe since the faulting thread is terminated via
-                                // pthread_exit and never touches shared state again.
-                                let force_restart = recovery_action == RecoveryAction::FullRestart
-                                    || recovery_action == RecoveryAction::Fatal
-                                    || (supervisor_enabled
-                                        && crash_supervisor.should_force_restart());
-
-                                let status =
-                                    HmrCrashStatus::from_crash(&crash_info, !force_restart);
-                                debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
-                                debug_log!("[Runner] Recovery action: {:?}", recovery_action);
-
-                                if force_restart {
-                                    eprintln!("[Runner] Too many consecutive crashes (action={:?}). Exiting for cold restart.", recovery_action);
-                                    std::process::exit(1);
+                            // Execute with crash protection on Linux
+                            #[cfg(unix)]
+                            {
+                                let module_name = name.clone();
+                                // Set current library path for source map lookup on crash
+                                if let Some(lib_path) = loaded_paths.get(name) {
+                                    set_current_lib_path(lib_path);
                                 }
 
-                                // On successful hot reload, reset crash count
-                                if recovery_action == RecoveryAction::HotReload
-                                    && supervisor_enabled
-                                {
-                                    // Don't reset here - reset after successful reload
+                                // Enter crash supervisor context for this module
+                                if supervisor_enabled {
+                                    let slot =
+                                        ModuleSlot::from_str(name).unwrap_or(ModuleSlot::Main);
+                                    crash_supervisor.enter_context(slot);
                                 }
 
-                                // Skip this module for now, continue with others
-                                continue;
+                                let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);
+                                let func_ptr = *f;
+                                let result = execute_with_protection(&module_name, move || {
+                                    let state_ptr = state_ptr_wrapper.0 as *mut std::ffi::c_void;
+                                    func_ptr(state_ptr, dt);
+                                });
+
+                                // Exit crash supervisor context
+                                if supervisor_enabled {
+                                    crash_supervisor.exit_context();
+                                }
+
+                                if let Err(crash_info) = result {
+                                    // Crash recovered! Log and continue with old module
+                                    eprintln!("{}", generate_crash_report(&crash_info));
+
+                                    // Use CrashSupervisor to determine recovery action
+                                    let recovery_action = if supervisor_enabled {
+                                        crash_supervisor.report_crash(&crash_info)
+                                    } else {
+                                        RecoveryAction::HotReload
+                                    };
+
+                                    // Check if supervisor thinks we should restart
+                                    // (too many consecutive crashes without recovery).
+                                    // NOTE: We intentionally do NOT treat SIGSEGV as
+                                    // unconditionally fatal because our thread-based
+                                    // crash protection isolates the crash to the plugin
+                                    // thread.  The runner's own heap and SDL state are
+                                    // safe since the faulting thread is terminated via
+                                    // pthread_exit and never touches shared state again.
+                                    let force_restart = recovery_action
+                                        == RecoveryAction::FullRestart
+                                        || recovery_action == RecoveryAction::Fatal
+                                        || (supervisor_enabled
+                                            && crash_supervisor.should_force_restart());
+
+                                    let status =
+                                        HmrCrashStatus::from_crash(&crash_info, !force_restart);
+                                    debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                    debug_log!("[Runner] Recovery action: {:?}", recovery_action);
+
+                                    if force_restart {
+                                        eprintln!("[Runner] Too many consecutive crashes (action={:?}). Exiting for cold restart.", recovery_action);
+                                        std::process::exit(1);
+                                    }
+
+                                    // On successful hot reload, reset crash count
+                                    if recovery_action == RecoveryAction::HotReload
+                                        && supervisor_enabled
+                                    {
+                                        // Don't reset here - reset after successful reload
+                                    }
+
+                                    // Skip this module for now, continue with others
+                                    continue;
+                                }
+
+                                // Successful execution - reset crash count if supervisor enabled
+                                // Note: We only reset on successful frame completion, not per-module
                             }
 
-                            // Successful execution - reset crash count if supervisor enabled
-                            // Note: We only reset on successful frame completion, not per-module
-                        }
-
-                        #[cfg(not(unix))]
-                        {
-                            f(state_ptr, dt);
+                            #[cfg(not(unix))]
+                            {
+                                f(state_ptr, dt);
+                            }
                         }
                     }
                 }
@@ -1662,7 +1909,10 @@ fn main() {
         // Flicker prevention: after a module load, skip rendering for one
         // frame so on_load has time to initialize state.  The previous
         // frame stays visible on the X11 framebuffer (ximagesrc captures it).
-        if skip_render_frames > 0 {
+        if runtime_execution_paused {
+            // Keep presenting/capturing the last completed frame while
+            // compile work happens outside the runner process.
+        } else if skip_render_frames > 0 {
             skip_render_frames -= 1;
         } else if let Some(lib) = modules.get("gui") {
             unsafe {
@@ -1833,3 +2083,113 @@ fn main() {
         }
     } // end of loop
 } // end of main
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        decode_gpu_kernel_command_token, device_load_abi_version, is_runtime_execution_paused,
+        runtime_control_status_payload, should_process_runner_command,
+    };
+
+    #[test]
+    fn device_load_abi_version_prefers_protocol_fingerprint() {
+        let kernels = vec!["advance".to_string(), "init".to_string()];
+        assert_eq!(
+            device_load_abi_version(&kernels, Some("12345")),
+            "12345".to_string()
+        );
+    }
+
+    #[test]
+    fn device_load_abi_version_preserves_legacy_kernel_list() {
+        let kernels = vec!["advance".to_string(), "init".to_string()];
+        assert_eq!(
+            device_load_abi_version(&kernels, None),
+            "advance|init".to_string()
+        );
+    }
+
+    #[test]
+    fn gpu_kernel_command_token_decodes_delimited_symbol_identity() {
+        assert_eq!(
+            decode_gpu_kernel_command_token("gpu%3A%3Ashade%3D_ZN3gpu5shadeEPf").as_deref(),
+            Some("gpu::shade=_ZN3gpu5shadeEPf")
+        );
+    }
+
+    #[test]
+    fn gpu_kernel_command_token_rejects_invalid_escape() {
+        assert!(decode_gpu_kernel_command_token("shade%XX").is_none());
+    }
+
+    #[test]
+    fn runtime_control_status_payload_carries_token_and_pause_state() {
+        let payload = runtime_control_status_payload(
+            "runtime-paused",
+            Some("runner-control-3"),
+            true,
+            2,
+        );
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(value["status"], "runtime-paused");
+        assert_eq!(value["module"], "runner");
+        assert_eq!(value["runtimeControlToken"], "runner-control-3");
+        assert_eq!(value["runtimePaused"], true);
+        assert_eq!(value["gpuReloadInflightCount"], 2);
+    }
+
+    #[test]
+    fn runtime_control_status_payload_omits_blank_token() {
+        let payload = runtime_control_status_payload("runtime-resumed", Some(""), false, 0);
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+
+        assert_eq!(value["status"], "runtime-resumed");
+        assert!(value.get("runtimeControlToken").is_none());
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn runtime_execution_pauses_while_gpu_reload_is_inflight() {
+        assert!(is_runtime_execution_paused(false, 1));
+        assert!(is_runtime_execution_paused(true, 0));
+        assert!(!is_runtime_execution_paused(false, 0));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn runner_defers_module_commands_while_gpu_reload_is_inflight() {
+        assert!(!should_process_runner_command("load", 1));
+        assert!(!should_process_runner_command("reload", 1));
+        assert!(!should_process_runner_command("load_device", 1));
+        assert!(should_process_runner_command("load", 0));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn runner_allows_runtime_control_while_gpu_reload_is_inflight() {
+        assert!(should_process_runner_command("synthi_pause_runtime", 1));
+        assert!(should_process_runner_command("pause_runtime", 1));
+        assert!(should_process_runner_command("synthi_resume_runtime", 1));
+        assert!(should_process_runner_command("resume_runtime", 1));
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn runner_stops_draining_commands_after_gpu_reload_starts() {
+        let mut inflight_reloads = 0usize;
+        let mut processed = Vec::new();
+
+        for command in ["load_device", "load_core", "load_gui"] {
+            if !should_process_runner_command(command, inflight_reloads) {
+                break;
+            }
+            processed.push(command);
+            if command == "load_device" {
+                inflight_reloads += 1;
+            }
+        }
+
+        assert_eq!(processed, vec!["load_device"]);
+    }
+}

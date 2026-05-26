@@ -1,280 +1,171 @@
 {
-  "slug": "gpu-scale-validation-glfw-userfiles-20260519233656",
-  "repo_commit": "e11d4d8494ccc65b23b31696725aa28b5af6e540",
-  "model": "gemini-3.1-flash-lite-preview",
+  "slug": "gpu-scale-validation-20260525024300",
+  "repo_commit": "3a11bf31111a39a3558bb6085dec2087c65285a2",
+  "model": "gemini-3.5-flash",
   "vendor": "rocm",
   "arch": "gfx1201",
-  "render_backend": "glfw",
+  "render_backend": "sdl2",
+  "cmake_target_mode": "single",
+  "hmr_delta_mode": "ai_user_delta",
+  "validation_profile": "full",
   "source_file_mix": {
     "cpp": 13,
-    "hpp": 17,
+    "hpp": 18,
     "h": 10,
     "hip": 11,
     "cu": 0,
-    "total": 51
+    "total": 52
   },
-  "workspace_file_count": 293,
-  "relevant_file_count": 53,
-  "started_at": "2026-05-19T20:36:56.338Z",
-  "finished_at": "2026-05-19T20:37:20.453Z",
+  "template_evidence_mode": "missing",
+  "workspace_file_count": 297,
+  "relevant_file_count": 57,
+  "framework_dependency": {
+    "backend": "sdl2",
+    "label": "SDL2",
+    "packages": [
+      "libsdl2-dev"
+    ],
+    "status": "available"
+  },
+  "started_at": "2026-05-25T02:43:00.346Z",
+  "finished_at": "2026-05-25T02:44:29.519Z",
   "compose_files": [
     "docker-compose.yml",
     "docker-compose.gpu-amd.yml"
   ],
   "containers": {
     "worker": {
-      "id": "31879e24d7edde373b3b60f8da7344ed81c8af9d5195ae7f5b6c83fa718aa212",
-      "image_id": "sha256:424db90ffa5dc2ed3654a0f45ade396f0946beaf1a0018432914264f0c8812a5",
-      "image": "vectant-ade-worker-gpu:local",
-      "created": "2026-05-19T20:36:10.75038694Z"
+      "id": "348e540ac6cc1350113a033c3d3b3b96ddde8112612e272e1a82d6a4bb66ca83",
+      "image_id": "sha256:8b4809c9b944824d57364bce74e6637dbec631661005bb28ef6ea67a3683bf0d",
+      "image": "vectant-ade-worker",
+      "created": "2026-05-25T02:35:36.319569924Z"
     },
     "ai_engine": {
-      "id": "fe1d5e4e67742a60c83cd8460ba6ec31d6a74bbb1c79ae29bd5de2ec6a4732a7",
-      "image_id": "sha256:c853a600c060d96fa7b24758857c179ff2567c9f84566ea40238c790fbd3dae9",
+      "id": "c65c08354cef8f70ed746d73e6bfd15edb7c37d454396c944f95da62e89eb8da",
+      "image_id": "sha256:5e9a533b8d30096db944ddf9c57a401830bf78543250e7c5a422fafec782566a",
       "image": "vectant-ade-ai-engine",
-      "created": "2026-05-19T20:36:10.739939961Z"
+      "created": "2026-05-25T02:13:16.929337609Z"
     },
     "mcp": {
-      "id": "d70c2617823f0663b7eb8ff3e04740497c2ced001e68c7c8e263392d3a52afdd",
-      "image_id": "sha256:3ff448f728c67aed80e87a98f2ea807e27b7db5397a86b3a1b9744d56a5f0ba2",
+      "id": "c03b3cbf8b381a8b4cda87d05574d4eeae87d54462610f67d36a5925ed8d9725",
+      "image_id": "sha256:d678384d6b1d5f3fe8c7f6a3dbdba4706c5ba3e3720df4ccdd49e8695462e759",
       "image": "vectant-ade-mcp",
-      "created": "2026-05-19T20:36:21.50325871Z"
+      "created": "2026-05-25T02:15:50.438665188Z"
     }
   },
   "env": {
-    "SYNTHI_GEMINI_MODEL": "gemini-3.1-flash-lite-preview",
-    "SYNTHI_GPU_VENDOR": "auto",
+    "SYNTHI_GEMINI_MODEL": "gemini-3.5-flash",
+    "SYNTHI_GPU_VENDOR": "",
     "SYNTHI_GPU_ARCH": "gfx1201",
-    "SYNTHI_SCALE_RENDER_BACKEND": "glfw",
-    "SYNTHI_SYNC_TO_GCS": "0"
+    "SYNTHI_SCALE_RENDER_BACKEND": "sdl2",
+    "SYNTHI_SCALE_CMAKE_TARGET_MODE": "single",
+    "SYNTHI_SCALE_HMR_DELTA_MODE": "ai_user_delta",
+    "SYNTHI_SCALE_VALIDATION_PROFILE": "full",
+    "SYNTHI_SCALE_TEMPLATE_EVIDENCE": "missing",
+    "SYNTHI_SCALE_TARGET_FILE_COUNT": "0",
+    "SYNTHI_SYNC_TO_GCS": ""
   },
-  "worker_restarted_before_run": true,
-  "ai_engine_restarted_before_run": true,
-  "split_cache_bypassed_by_worker_restart": true,
-  "generated_roles": {
-    "shared": "shared.h",
-    "core": "core.cpp",
-    "gui": "gui.cpp",
-    "host_runner": "host_runner.cpp",
-    "device": "device.hip"
-  },
+  "worker_restarted_before_run": false,
+  "ai_engine_restarted_before_run": false,
+  "split_cache_bypassed_by_worker_restart": false,
+  "generated_roles": {},
+  "launch_indirection": {},
+  "warm_rebuild": {},
+  "runtime_policy": {},
+  "direct_device_fast_path": {},
+  "ai_delta_observations": [],
   "phases": [
     {
       "name": "first_ai_split_compile",
-      "compile_dispatched_at": "2026-05-19T20:37:01.285Z",
-      "wait_hmr_started_at": "2026-05-19T20:37:01.290Z",
-      "wait_hmr_finished_at": "2026-05-19T20:37:15.300Z",
-      "wait_hmr_elapsed_ms": 14015,
-      "wait_hmr_terminal_elapsed_ms": 14015,
-      "wait_hmr_status": "applied",
-      "wait_hmr_source": "candidate_notification",
-      "wait_hmr_detail": {
-        "preview_id": "gpu-scale-validation-glfw-userfiles-20260519233656",
-        "generation": 1,
-        "total_reload_ms": 1256
-      },
-      "frame_gate": {
-        "status": "disabled",
-        "reason": "no_frame_advance_observed",
-        "pipeline_budget_ms": 80
-      },
-      "wall_elapsed_ms": 14015,
-      "worker_log_markers": [
-        "[AI Split] ENTER (cache_key=623742474748146535, src_len=377, files=293, gpu_mode=rocm, gpu_arch=gfx1201, gpu_markers=true)",
-        "GPU markers detected; calling GPU split endpoint: http://ai-engine:8000/refactor/split/gpu",
-        "GPU split endpoint returned a 5-file split",
-        "[compile-device] hipcc -> /tmp/.tmpZyLKNg/build/device_1779223032.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmpZyLKNg/build/device_1779223032.hsaco\", \"device.hip\"] }",
-        "[compile-device] hipcc ok  artifact=/tmp/.tmpZyLKNg/build/device_1779223032.hsaco  diagnostics_kernels=0"
-      ]
-    },
-    {
-      "name": "device_only_hmr",
-      "compile_dispatched_at": "2026-05-19T20:37:18.088Z",
-      "wait_hmr_started_at": "2026-05-19T20:37:18.093Z",
-      "wait_hmr_finished_at": "2026-05-19T20:37:19.143Z",
-      "wait_hmr_elapsed_ms": 1046,
-      "wait_hmr_terminal_elapsed_ms": 921,
-      "wait_hmr_status": "applied",
+      "expected_hmr_module": "device",
+      "compile_dispatched_at": "2026-05-25T02:43:05.461Z",
+      "wait_hmr_started_at": "2026-05-25T02:43:05.476Z",
+      "wait_hmr_finished_at": "2026-05-25T02:44:29.469Z",
+      "wait_hmr_elapsed_ms": 18913,
+      "wait_hmr_terminal_elapsed_ms": 18913,
+      "wait_hmr_status": "compile-error",
       "wait_hmr_source": "hmr_status",
       "wait_hmr_detail": {
-        "status": "applied",
-        "module": "device",
-        "capability": "GPU sidecar HMR",
-        "state_preserved": true
+        "status": "compile-error",
+        "module": "pipeline",
+        "errors": [
+          "device compile failed (exit exit status: 1): .synthi/generated/gpu/device.hip:98:12: error: no member named 'kResetPadding' in namespace 'scale'; did you mean simply 'kResetPadding'?\n   98 |   if (px < scale::kResetPadding) {\n      |            ^~~~~~~~~~~~~~~~~~~~\n      |            kResetPadding\n.synthi/generated/gpu/device.hip:9:17: note: 'kResetPadding' declared here\n    9 | constexpr float kResetPadding = 18.0f;\n      |                 ^\n.synthi/generated/gpu/device.hip:99:28: error: no member named 'kResetPadding' in namespace 'scale'; did you mean simply 'kResetPadding'?\n   99 |     px = params.bounds_x - scale::kResetPadding;\n      |                            ^~~~~~~~~~~~~~~~~~~~\n      |                            kResetPadding\n.synthi/generated/gpu/device.hip:9:17: note: 'kResetPadding' declared here\n    9 | constexpr float kResetPadding = 18.0f;\n      |                 ^\n.synthi/generated/gpu/device.hip:101:37: error: no member named 'kResetPadding' in namespace 'scale'; did you mean simply 'kResetPadding'?\n  101 |   } else if (px > params.bounds_x - scale::kResetPadding) {\n      |                                     ^~~~~~~~~~~~~~~~~~~~\n      |                                     kResetPadding\n.synthi/generated/gpu/device.hip:9:17: note: 'kResetPadding' declared here\n    9 | constexpr float kResetPadding = 18.0f;\n      |                 ^\n.synthi/generated/gpu/device.hip:102:10: error: no member named 'kResetPadding' in namespace 'scale'; did you mean simply 'kResetPadding'?\n  102 |     px = scale::kResetPadding;\n      |          ^~~~~~~~~~~~~~~~~~~~\n      |          kResetPadding\n.synthi/generated/gpu/device.hip:9:17: note: 'kResetPadding' declared here\n    9 | constexpr float kResetPadding = 18.0f;\n      |                 ^\n.synthi/generated/gpu/device.hip:105:12: error: no member named 'kResetPadding' in namespace 'scale'; did you mean simply 'kResetPadding'?\n  105 |   if (py < scale::kResetPadding) {\n      |            ^~~~~~~~~~~~~~~~~~~~\n      |            kResetPadding\n.synthi/generated/gpu/device.hip:9:17: note: 'kResetPadding' declared here\n    9 | constexpr float kResetPadding = 18.0f;\n      |                 ^\n.synthi/generated/gpu/device.hip:106:28: error: no member named 'kResetPadding' in namespace 'scale'; did you mean simply 'kResetPadding'?\n  106 |     py = params.bounds_y - scale::kResetPadding;\n      |                            ^~~~~~~~~~~~~~~~~~~~\n      |                            kResetPadding\n.synthi/generated/gpu/device.hip:9:17: note: 'kResetPadding' declared here\n    9 | constexpr float kResetPadding = 18.0f;\n      |                 ^\n.synthi/generated/gpu/device.hip:108:37: error: no member named 'kResetPadding' in namespace 'scale'; did you mean simply 'kResetPadding'?\n  108 |   } else if (py > params.bounds_y - scale::kResetPadding) {\n      |                                     ^~~~~~~~~~~~~~~~~~~~\n      |                                     kResetPadding\n.synthi/generated/gpu/device.hip:9:17: note: 'kResetPadding' declared here\n    9 | constexpr float kResetPadding = 18.0f;\n      |                 ^\n.synthi/generated/gpu/device.hip:109:10: error: no member named 'kResetPadding' in namespace 'scale'; did you mean simply 'kResetPadding'?\n  109 |     py = scale::kResetPadding;\n      |          ^~~~~~~~~~~~~~~~~~~~\n      |          kResetPadding\n.synthi/generated/gpu/device.hip:9:17: note: 'kResetPadding' declared here\n    9 | constexpr float kResetPadding = 18.0f;\n      |                 ^\n8 errors generated when compiling for gfx1201.\nfailed to execute:/opt/rocm/lib/llvm/bin/clang++  --offload-arch=gfx1201 --driver-mode=g++ --hip-link  --offload-device-only --no-gpu-bundle-output -O3 -lineinfo -std=c++20 -Isrc -DSCALE_GPU_TARGET=rocm -DSCALE_GPU_ARCH=gfx1201 -I. -o \"/tmp/.tmpGmI58W/build/device_1779677030.hsaco\" -x hip .synthi/generated/gpu/device.hip"
+        ]
       },
-      "frame_gate": {
-        "status": "satisfied",
-        "frame_seq": 117,
-        "ts_ms": 1779223039147,
-        "pipeline_budget_ms": 80
-      },
-      "wall_elapsed_ms": 1055,
+      "frame_gate": null,
+      "wall_elapsed_ms": 84008,
       "worker_log_markers": [
-        "[compile-device] hipcc -> /tmp/.tmpZyLKNg/build/device_1779223038.hsaco  args=CommandArgs { inner: [\"--genco\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-o\", \"/tmp/.tmpZyLKNg/build/device_1779223038.hsaco\", \"device.hip\"] }",
-        "[compile-device] hipcc ok  artifact=/tmp/.tmpZyLKNg/build/device_1779223038.hsaco  diagnostics_kernels=0",
-        "Device sidecar reload vendor=rocm artifact=/tmp/.tmpZyLKNg/build/device_1779223038.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 5, state_preserved: true }"
+        "[AI Split] ENTER (cache_key=11645005572544728305, src_len=375, files=297, gpu_mode=rocm, gpu_arch=gfx1201, gpu_markers=true)",
+        "GPU markers detected; calling GPU split endpoint: http://ai-engine:8000/refactor/split/gpu",
+        "GPU split endpoint returned a 5-file split",
+        "[compile-device] hipcc -> /tmp/.tmpGmI58W/build/device_1779677030.hsaco  timeout_secs=180 args=CommandArgs { inner: [\"--offload-device-only\", \"--no-gpu-bundle-output\", \"--offload-arch=gfx1201\", \"-O3\", \"-lineinfo\", \"-std=c++20\", \"-Isrc\", \"-DSCALE_GPU_TARGET=rocm\", \"-DSCALE_GPU_ARCH=gfx1201\", \"-I.\", \"-o\", \"/tmp/.tmpGmI58W/build/device_1779677030.hsaco\", \".synthi/generated/gpu/device.hip\"] }",
+        "[compile-device] hipcc FAILED status=exit status: 1 compiler_ms=661",
+        "[compile-device] hipcc FAILED status=exit status: 1 compiler_ms=681",
+        "[compile-device] hipcc FAILED status=exit status: 1 compiler_ms=696"
       ]
     }
   ],
-  "screenshots": [
-    {
-      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-glfw-userfiles-20260519233656-first-compile.png",
-      "width": 800,
-      "height": 600,
-      "visible_pixels": 0,
-      "mean_luma": 0,
-      "captured_after_phase": "first-compile",
-      "attempt": 1,
-      "seq": 2
-    },
-    {
-      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-glfw-userfiles-20260519233656-first-compile-attempt-2.png",
-      "width": 800,
-      "height": 600,
-      "visible_pixels": 41090,
-      "mean_luma": 20.117791298796128,
-      "captured_after_phase": "first-compile",
-      "attempt": 2,
-      "seq": 32
-    },
-    {
-      "path": "C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-glfw-userfiles-20260519233656-post-hmr.png",
-      "width": 800,
-      "height": 600,
-      "visible_pixels": 41001,
-      "mean_luma": 18.82518082867473,
-      "captured_after_phase": "post-hmr",
-      "attempt": 1,
-      "seq": 132,
-      "differs_from_first": true
-    }
-  ],
+  "screenshots": [],
   "checks": [
     {
       "name": "gpu target",
       "status": "pass",
-      "detail": "rocm arch=gfx1201 render_backend=glfw",
-      "ts": "2026-05-19T20:36:57.353Z"
+      "detail": "rocm arch=gfx1201 render_backend=sdl2 cmake_target_mode=single template_evidence=missing hmr_delta_mode=ai_user_delta validation_profile=full",
+      "ts": "2026-05-25T02:43:01.302Z"
     },
     {
       "name": "source file mix",
       "status": "pass",
-      "detail": "{\"cpp\":13,\"hpp\":17,\"h\":10,\"hip\":11,\"cu\":0,\"total\":51}",
-      "ts": "2026-05-19T20:36:57.355Z"
+      "detail": "{\"cpp\":13,\"hpp\":18,\"h\":10,\"hip\":11,\"cu\":0,\"total\":52}",
+      "ts": "2026-05-25T02:43:01.304Z"
     },
     {
       "name": "ordinary user project guard",
       "status": "pass",
-      "detail": "293 files, no Synthi ABI or generated role filenames",
-      "ts": "2026-05-19T20:36:57.356Z"
+      "detail": "297 files, no Synthi ABI or generated role filenames",
+      "ts": "2026-05-25T02:43:01.305Z"
+    },
+    {
+      "name": "render backend dependency preflight",
+      "status": "pass",
+      "detail": "SDL2: libsdl2-dev",
+      "ts": "2026-05-25T02:43:02.156Z"
+    },
+    {
+      "name": "validation workspace auth fallback",
+      "status": "warn",
+      "detail": "frontend workspace API requires auth; using collab-backed validation workspace slug=gpu-scale-validation-20260525024300",
+      "ts": "2026-05-25T02:43:02.199Z"
     },
     {
       "name": "create workspace",
       "status": "pass",
-      "detail": "id=cmpd3g2q8000dpt01uedmgj99 slug=gpu-scale-validation-glfw-userfiles-20260519233656",
-      "ts": "2026-05-19T20:36:58.158Z"
+      "detail": "id=gpu-scale-validation-20260525024300 slug=gpu-scale-validation-20260525024300",
+      "ts": "2026-05-25T02:43:02.199Z"
     },
     {
       "name": "seed scale workspace",
       "status": "pass",
-      "detail": "293 files",
-      "ts": "2026-05-19T20:36:59.580Z"
+      "detail": "297 files",
+      "ts": "2026-05-25T02:43:03.618Z"
     },
     {
       "name": "mcp tools/list",
       "status": "pass",
       "detail": "count=42",
-      "ts": "2026-05-19T20:37:00.096Z"
+      "ts": "2026-05-25T02:43:04.156Z"
     },
     {
       "name": "mcp attach",
       "status": "pass",
       "detail": "attached",
-      "ts": "2026-05-19T20:37:01.285Z"
+      "ts": "2026-05-25T02:43:05.461Z"
     },
     {
-      "name": "first compile via MCP",
-      "status": "pass",
-      "detail": "files=293",
-      "ts": "2026-05-19T20:37:15.362Z"
-    },
-    {
-      "name": "worker saw full file set",
-      "status": "pass",
-      "detail": "[AI Split] ENTER (cache_key=623742474748146535, src_len=377, files=293, gpu_mode=rocm, gpu_arch=gfx1201",
-      "ts": "2026-05-19T20:37:15.431Z"
-    },
-    {
-      "name": "ai-engine saw full file set",
-      "status": "pass",
-      "detail": "[split/gpu] request file context count=293 focus=src/app/main.cpp names=['src/app/main.cpp",
-      "ts": "2026-05-19T20:37:15.508Z"
-    },
-    {
-      "name": "screenshot first-compile retry",
-      "status": "warn",
-      "detail": "800x600 visible=0 luma=0.0 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-glfw-userfiles-20260519233656-first-compile.png attempt=1/6",
-      "ts": "2026-05-19T20:37:16.033Z"
-    },
-    {
-      "name": "screenshot first-compile",
-      "status": "pass",
-      "detail": "800x600 visible=41090 luma=20.1 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-glfw-userfiles-20260519233656-first-compile-attempt-2.png attempt=2",
-      "ts": "2026-05-19T20:37:17.081Z"
-    },
-    {
-      "name": "generated split preserved GLFW/OpenGL backend",
-      "status": "pass",
-      "detail": "no SDL markers in generated roles",
-      "ts": "2026-05-19T20:37:18.087Z"
-    },
-    {
-      "name": "generated split contains HMR ABI",
-      "status": "pass",
-      "detail": "shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip",
-      "ts": "2026-05-19T20:37:18.087Z"
-    },
-    {
-      "name": "read generated split from worker",
-      "status": "pass",
-      "detail": "worker=/tmp/.tmpZyLKNg",
-      "ts": "2026-05-19T20:37:18.087Z"
-    },
-    {
-      "name": "generated split kept internal",
-      "status": "pass",
-      "detail": "shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip supplied inline to HMR compile only",
-      "ts": "2026-05-19T20:37:18.087Z"
-    },
-    {
-      "name": "device edit compile via MCP",
-      "status": "pass",
-      "detail": "device.hip",
-      "ts": "2026-05-19T20:37:19.205Z"
-    },
-    {
-      "name": "workspace visible tree remains user files only",
-      "status": "pass",
-      "detail": "309 listed files; no generated split artifacts",
-      "ts": "2026-05-19T20:37:19.243Z"
-    },
-    {
-      "name": "device-only GPU HMR observed",
-      "status": "pass",
-      "detail": "Device sidecar reload vendor=rocm artifact=/tmp/.tmpZyLKNg/build/device_1779223038.hsaco kernels=advance_particle_field,init_particle_field result=Success { reload_ms: 5, state_preserved: true }",
-      "ts": "2026-05-19T20:37:19.338Z"
-    },
-    {
-      "name": "screenshot post-hmr",
-      "status": "pass",
-      "detail": "800x600 visible=41001 luma=18.8 path=C:\\Users\\polek\\Downloads\\test-agent\\vectant-ade\\mcp\\synthi-mcp\\.gpu-hmr-test-artifacts\\gpu-scale-validation-glfw-userfiles-20260519233656-post-hmr.png",
-      "ts": "2026-05-19T20:37:20.390Z"
-    },
-    {
-      "name": "runner stayed alive after GPU HMR",
-      "status": "pass",
-      "detail": "no runner crash marker",
-      "ts": "2026-05-19T20:37:20.453Z"
+      "name": "fatal",
+      "status": "fail",
+      "detail": "Error: first_ai_split_compile wait_hmr status=compile-error detail={\"status\":\"compile-error\",\"elapsedMs\":18913,\"hmrElapsedMs\":18913,\"source\":\"hmr_status\",\"detail\":{\"status\":\"compile-error\",\"module\":\"pipeline\",\"errors\":[\"device compile failed (exit exit status: 1): .synthi/generated/gpu/device.hip:98:12: error: no member named 'kResetPadding' in namespace 'scale'; did you mean simply 'kResetPadding'?\\n   98 |   if (px < scale::kResetPadding) {\\n      |            ^~~~~~~~~~~~~~~~~~~~\\n      |            kResetPadding\\n.synthi/generated/gpu/device.hip:9:17: note:\n    at compileViaMcp (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-scale-validation.mjs:1857:11)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at async run (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-scale-validation.mjs:3274:3)",
+      "ts": "2026-05-25T02:44:29.519Z"
     }
   ]
 }

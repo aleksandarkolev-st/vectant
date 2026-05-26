@@ -41,11 +41,19 @@ re-prompts with the rejection notes appended to
 
 from __future__ import annotations
 
+import ast
 import re
 import posixpath
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Iterable, List, Mapping, Optional, Set
+from typing import Dict, Iterable, List, Mapping, Optional, Set
+
+from agents.launch_graph_extractor import extract_launch_graph
+from agents.abi_stamper import mask_comments_for_parsing, normalize_param_list
+from agents.gpu_device_markers import (
+    DEVICE_ANNOTATION_MACRO_PATTERN,
+    GPU_DEVICE_MARKER_RE,
+)
 
 
 HealTier = str  # "compile_hard" | "compile_soft" | "runtime"
@@ -90,10 +98,164 @@ class HealVerificationResult:
 
 
 _GLOBAL_DECL_RE = re.compile(
-    r"__global__\s+(?:void\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
+    r"(?:"
+    r"__global__\s+(?:void\s+)?"
+    r"|GLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+(?:__launch_bounds__\s*\([^)]*\)\s*)?"
+    r")(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(",
     re.MULTILINE,
 )
 _QUOTED_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
+_ANY_INCLUDE_RE = re.compile(
+    r'^\s*#\s*include\s*(?P<delimiter>[<"])(?P<path>[^>"]+)[>"]',
+    re.MULTILINE,
+)
+_STANDARD_SYSTEM_INCLUDES = {
+    "algorithm",
+    "array",
+    "atomic",
+    "bit",
+    "cassert",
+    "cctype",
+    "cerrno",
+    "cfloat",
+    "chrono",
+    "climits",
+    "cmath",
+    "condition_variable",
+    "cstddef",
+    "cstdint",
+    "cstdio",
+    "cstdlib",
+    "cstring",
+    "deque",
+    "exception",
+    "filesystem",
+    "fstream",
+    "functional",
+    "initializer_list",
+    "iostream",
+    "limits",
+    "list",
+    "map",
+    "memory",
+    "mutex",
+    "new",
+    "optional",
+    "queue",
+    "set",
+    "span",
+    "sstream",
+    "stdexcept",
+    "string",
+    "string_view",
+    "thread",
+    "tuple",
+    "type_traits",
+    "unordered_map",
+    "unordered_set",
+    "utility",
+    "variant",
+    "vector",
+    "assert.h",
+    "ctype.h",
+    "dlfcn.h",
+    "errno.h",
+    "fcntl.h",
+    "float.h",
+    "inttypes.h",
+    "limits.h",
+    "math.h",
+    "pthread.h",
+    "signal.h",
+    "stdalign.h",
+    "stdarg.h",
+    "stdbool.h",
+    "stddef.h",
+    "stdint.h",
+    "stdio.h",
+    "stdlib.h",
+    "string.h",
+    "time.h",
+    "unistd.h",
+    "windows.h",
+}
+_ALLOWED_GENERATED_SYSTEM_INCLUDE_PREFIXES = (
+    "cuda/",
+    "EGL/",
+    "GL/",
+    "GLES2/",
+    "GLES3/",
+    "GLFW/",
+    "glad/",
+    "hip/",
+    "hiprt/",
+    "linux/",
+    "OpenGL/",
+    "SDL2/",
+    "sys/",
+    "vulkan/",
+    "webgpu/",
+)
+_GPU_SDK_VECTOR_TYPE_NAMES = {
+    "char2",
+    "char3",
+    "char4",
+    "uchar2",
+    "uchar3",
+    "uchar4",
+    "short2",
+    "short3",
+    "short4",
+    "ushort2",
+    "ushort3",
+    "ushort4",
+    "int2",
+    "int3",
+    "int4",
+    "uint2",
+    "uint3",
+    "uint4",
+    "long2",
+    "long3",
+    "long4",
+    "ulong2",
+    "ulong3",
+    "ulong4",
+    "longlong2",
+    "longlong3",
+    "longlong4",
+    "ulonglong2",
+    "ulonglong3",
+    "ulonglong4",
+    "float2",
+    "float3",
+    "float4",
+    "double2",
+    "double3",
+    "double4",
+    "dim3",
+}
+_GPU_SDK_VECTOR_TYPE_PATTERN = "|".join(
+    re.escape(name)
+    for name in sorted(_GPU_SDK_VECTOR_TYPE_NAMES, key=len, reverse=True)
+)
+_GPU_SDK_VECTOR_STRUCT_RE = re.compile(
+    r"\b(?:struct|class)\s+(?P<name>"
+    + _GPU_SDK_VECTOR_TYPE_PATTERN
+    + r")\b"
+)
+_GPU_SDK_VECTOR_MAKE_FUNCTION_RE = re.compile(
+    r"\b(?:(?:static|inline|constexpr|consteval|__host__|__device__|"
+    rf"__forceinline__|__inline__|{DEVICE_ANNOTATION_MACRO_PATTERN})\s+)*"
+    r"(?P<vector_type>"
+    + _GPU_SDK_VECTOR_TYPE_PATTERN
+    + r")\s+"
+    r"(?P<name>make_(?P=vector_type))\s*"
+    r"\([^;{}]*\)\s*"
+    r"(?:noexcept\s*)?"
+    r"\{",
+    re.DOTALL,
+)
 _FORBIDDEN_GPU_RUNTIME_ACCESSOR_RE = re.compile(
     r"\b(?P<name>"
     r"synthi_get_gpu_context|"
@@ -104,7 +266,8 @@ _FORBIDDEN_GPU_RUNTIME_ACCESSOR_RE = re.compile(
 )
 _PLACEHOLDER_RENDER_RE = re.compile(
     r"\b(?:TODO|stub|placeholder|rendering logic|draw(?:ing)?\s+code\s+here|"
-    r"render(?:ing)?\s+code\s+here|omitted)\b",
+    r"render(?:ing)?\s+code\s+here|drawing\s+loop|real\s+implementation|omitted)\b"
+    r"|\.{3}\s*(?:draw(?:ing)?|render(?:ing)?)",
     re.IGNORECASE,
 )
 _GUI_BACKEND_PRESENT_RE = re.compile(
@@ -140,6 +303,21 @@ _SDL_SUBSTANTIAL_DRAW_RE = re.compile(
 )
 _OPENGL_RENDER_API_RE = re.compile(
     r"\b(?:glBegin|glDrawArrays|glDrawElements|glDrawPixels|glVertex[234][a-zA-Z]*)\s*\("
+)
+_GUI_RENDER_EFFECT_RE = re.compile(
+    r"\b(?:"
+    r"SDL_Render(?:FillRect|DrawRect|DrawLine|DrawLines|DrawPoints|Copy|CopyEx|Geometry)|"
+    r"gl(?:Begin|DrawArrays|DrawElements|DrawPixels|Vertex[234][A-Za-z]*|Color[34][A-Za-z]*|TexCoord[234]?[A-Za-z]*)|"
+    r"Draw(?:Pixel|Line|Circle|Rectangle|Triangle|Texture|Text|FPS|Poly|Spline|Ring)[A-Za-z0-9_]*|"
+    r"sfRenderWindow_draw[A-Za-z0-9_]*"
+    r")\s*\("
+)
+_GUI_RENDER_CONTEXT_RE = re.compile(
+    r"\b(?:GLFW/glfw3\.h|GL/gl\.h|OpenGL/gl\.h|gl[A-Z][A-Za-z0-9_]*\s*\()"
+)
+_OPENGL_SURFACE_API_RE = re.compile(
+    r"\b(?:glClear|glClearColor|glViewport|glMatrixMode|glOrtho|gluOrtho2D|"
+    r"glBegin|glDrawArrays|glDrawElements|glDrawPixels|glVertex[234][a-zA-Z]*)\s*\("
 )
 _OPENGL_PROJECTION_RE = re.compile(
     r"\b(?:glOrtho|gluOrtho2D|glFrustum|glMatrixMode\s*\(\s*GL_PROJECTION|glm::ortho)\b"
@@ -413,6 +591,41 @@ _SYNTHI_LAUNCH_CALL_RE = re.compile(
     r"\bsynthi_gpu_launch\s*\(\s*[^,]+,\s*[\"'](?P<name>[A-Za-z_][A-Za-z0-9_]*)[\"']",
     re.DOTALL,
 )
+_SYNTHI_LAUNCH_BYPASS_RE = re.compile(
+    r"\bsynthi_gpu_(?:launch_raw(?:_checked)?|launch_table|launch_generation)\s*\(",
+    re.DOTALL,
+)
+_CPP_CAST_RE = re.compile(
+    r"\b(?:reinterpret_cast|static_cast|const_cast)\s*<(?P<type>[^>]+)>\s*"
+    r"\(\s*(?P<expr>.*?)\s*\)\s*$",
+    re.DOTALL,
+)
+_CPP_C_STYLE_VOID_CAST_RE = re.compile(
+    r"^\(\s*(?:const\s+)?void\s*\*\s*\)\s*",
+    re.DOTALL,
+)
+_CPP_DECL_TYPE_TEMPLATE = (
+    r"(?:^|[;\n{{}}])\s*"
+    r"(?P<type>"
+    r"(?:(?:static|inline|thread_local|extern|const|constexpr|volatile|mutable)\s+)*"
+    r"(?:struct\s+|class\s+)?"
+    r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*"
+    r"(?:\s*<[^;{{}}()=]+>)?"
+    r"(?:\s*[*&])?"
+    r")\s+"
+    r"{name}\b\s*(?:\[[^\]]*\])?\s*(?:[=;{{,)]|\))"
+)
+_CPP_DECL_KEYWORDS = {
+    "return",
+    "if",
+    "for",
+    "while",
+    "switch",
+    "case",
+    "else",
+    "sizeof",
+    "alignof",
+}
 
 
 def _iter_call_bodies(source: str, name: str) -> Iterable[str]:
@@ -461,31 +674,550 @@ def _split_top_level_args(body: str) -> List[str]:
 
 
 def _function_body(source: str, name: str) -> str:
-    match = re.search(rf"\b{name}\s*\([^)]*\)\s*\{{", source)
-    if not match:
-        return ""
-    i = match.end()
+    masked = mask_comments_for_parsing(source)
+    for match in re.finditer(rf"\b{re.escape(name)}\s*\(", masked):
+        params_end = _balanced_end(masked, match.end() - 1, "(", ")")
+        if params_end is None:
+            continue
+        body_open = _next_function_body_open(masked, params_end)
+        if body_open is None:
+            continue
+        body_close = _balanced_end(masked, body_open, "{", "}")
+        if body_close is None:
+            continue
+        return source[body_open + 1 : body_close - 1]
+    return ""
+
+
+def _balanced_end(source: str, open_index: int, open_ch: str, close_ch: str) -> Optional[int]:
+    if open_index < 0 or open_index >= len(source) or source[open_index] != open_ch:
+        return None
+    i = open_index + 1
     depth = 1
-    while i < len(source) and depth:
-        if source[i] == "{":
+    while i < len(source):
+        if source[i] == open_ch:
             depth += 1
-        elif source[i] == "}":
+        elif source[i] == close_ch:
             depth -= 1
+            if depth == 0:
+                return i + 1
         i += 1
-    if depth != 0:
-        return ""
-    return source[match.end(): i - 1]
+    return None
+
+
+def _next_function_body_open(masked_source: str, start: int) -> Optional[int]:
+    i = start
+    n = len(masked_source)
+    while i < n:
+        while i < n and masked_source[i].isspace():
+            i += 1
+        if i >= n:
+            return None
+        if masked_source[i] == "{":
+            return i
+        if masked_source[i] == "#":
+            while i < n and masked_source[i] not in "\r\n":
+                i += 1
+            continue
+        return None
+    return None
+
+
+def _function_param_names(source: str, name: str) -> List[str]:
+    match = re.search(rf"\b{name}\s*\((?P<params>[^)]*)\)", source, re.DOTALL)
+    if not match:
+        return []
+    names: List[str] = []
+    for param in _split_top_level_args(match.group("params")):
+        tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", param)
+        if tokens:
+            names.append(tokens[-1])
+    return names
+
+
+def _normalize_cpp_type_name(type_text: str) -> str:
+    value = re.sub(r"/\*.*?\*/", " ", type_text, flags=re.DOTALL)
+    value = re.sub(r"\b(?:const|volatile|static|inline|thread_local|extern|mutable)\b", " ", value)
+    value = re.sub(r"\b(?:struct|class)\b", " ", value)
+    value = value.replace("*", " ").replace("&", " ")
+    value = re.sub(r"\s+", "", value)
+    value = value.strip(":")
+    return value
+
+
+def _cpp_type_compatible(a: str, b: str) -> bool:
+    left = _normalize_cpp_type_name(a)
+    right = _normalize_cpp_type_name(b)
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    return left.rsplit("::", 1)[-1] == right.rsplit("::", 1)[-1]
+
+
+def _cpp_type_basename(type_text: str) -> str:
+    normalized = _normalize_cpp_type_name(type_text)
+    return normalized.rsplit("::", 1)[-1] if normalized else ""
+
+
+def _declared_record_type_basenames(source: str) -> Set[str]:
+    return {
+        match.group("name")
+        for match in re.finditer(
+            r"\b(?:struct|class)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b",
+            source,
+        )
+    }
+
+
+def _record_fields_for_type(type_text: str, type_sources: Iterable[str]) -> List[tuple[str, str]]:
+    type_name = _normalize_cpp_type_name(type_text).rsplit("::", 1)[-1]
+    if not type_name:
+        return []
+    record_re = re.compile(
+        rf"\b(?:struct|class)\s+{re.escape(type_name)}\s*\{{(?P<body>.*?)\}}\s*;",
+        re.DOTALL,
+    )
+    fields: List[tuple[str, str]] = []
+    for source in type_sources:
+        match = record_re.search(source)
+        if not match:
+            continue
+        for raw_declaration in match.group("body").split(";"):
+            declaration = raw_declaration.strip()
+            if not declaration or "(" in declaration:
+                continue
+            field_match = re.search(
+                r"^(?P<type>[A-Za-z_][A-Za-z0-9_:<>]*(?:\s+[A-Za-z_][A-Za-z0-9_:<>]*)*(?:\s*[*&])*)\s+"
+                r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]+\])?\s*(?:=[^;]*)?$",
+                declaration,
+            )
+            if not field_match:
+                continue
+            fields.append(
+                (
+                    re.sub(r"\s+", " ", field_match.group("type")).strip(),
+                    field_match.group("name"),
+                )
+            )
+        if fields:
+            return fields
+    return []
+
+
+def _record_type_has_pointer_members(
+    type_text: str,
+    type_sources: Iterable[str],
+    *,
+    seen: Optional[Set[str]] = None,
+    depth: int = 0,
+) -> bool:
+    if depth > 4:
+        return False
+    normalized = _normalize_cpp_type_name(type_text)
+    if not normalized:
+        return False
+    if seen is None:
+        seen = set()
+    if normalized in seen:
+        return False
+    seen.add(normalized)
+    sources = tuple(type_sources)
+    for field_type, _field_name in _record_fields_for_type(normalized, sources):
+        if "*" in field_type or "&" in field_type:
+            return True
+        if _record_type_has_pointer_members(field_type, sources, seen=seen, depth=depth + 1):
+            return True
+    return False
+
+
+def _iter_namespace_bodies(source: str) -> Iterable[tuple[str, str]]:
+    namespace_re = re.compile(r"\bnamespace\s+(?P<namespace>[A-Za-z_][A-Za-z0-9_]*)\s*\{")
+    for match in namespace_re.finditer(source):
+        body_start = match.end()
+        depth = 1
+        cursor = body_start
+        while cursor < len(source) and depth:
+            if source[cursor] == "{":
+                depth += 1
+            elif source[cursor] == "}":
+                depth -= 1
+            cursor += 1
+        if depth == 0:
+            yield match.group("namespace"), source[body_start : cursor - 1]
+
+
+def _namespaced_shared_symbols(shared_source: str) -> Dict[str, Set[str]]:
+    symbols: Dict[str, Set[str]] = {}
+    symbol_re = re.compile(
+        r"\b(?:constexpr|const)\s+"
+        r"(?:[A-Za-z_][A-Za-z0-9_:<>]*\s+)+"
+        r"(?P<name>k[A-Z][A-Za-z0-9_]*)\b"
+    )
+    for namespace, body in _iter_namespace_bodies(shared_source):
+        names = {match.group("name") for match in symbol_re.finditer(body)}
+        if names:
+            symbols.setdefault(namespace, set()).update(names)
+    return symbols
+
+
+def _uses_shared_symbol_unqualified(source: str, namespace: str, symbol: str) -> bool:
+    if re.search(rf"\busing\s+namespace\s+{re.escape(namespace)}\s*;", source):
+        return False
+    if re.search(rf"\busing\s+{re.escape(namespace)}::{re.escape(symbol)}\s*;", source):
+        return False
+    bare_re = re.compile(rf"(?<![:.\w]){re.escape(symbol)}\b")
+    for match in bare_re.finditer(source):
+        prefix_start = max(0, match.start() - len(namespace) - 2)
+        if source[prefix_start:match.start()] == f"{namespace}::":
+            continue
+        return True
+    return False
+
+
+def _strip_cpp_casts(expr: str) -> str:
+    out = expr.strip()
+    changed = True
+    while changed:
+        changed = False
+        cast = _CPP_CAST_RE.match(out)
+        if cast:
+            out = cast.group("expr").strip()
+            changed = True
+        out2 = _CPP_C_STYLE_VOID_CAST_RE.sub("", out).strip()
+        if out2 != out:
+            out = out2
+            changed = True
+    return out.strip()
+
+
+def _return_state_variable(expr: str) -> Optional[str]:
+    value = _strip_cpp_casts(expr)
+    value = re.sub(r"^\s*&\s*", "", value)
+    value = value.strip()
+    while value.startswith("(") and value.endswith(")"):
+        value = value[1:-1].strip()
+    match = re.match(r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*$", value)
+    return match.group("name") if match else None
+
+
+def _declared_variable_type(source: str, name: str) -> Optional[str]:
+    pattern = re.compile(
+        _CPP_DECL_TYPE_TEMPLATE.format(name=re.escape(name)),
+        re.DOTALL,
+    )
+    for match in pattern.finditer(source):
+        type_name = _normalize_cpp_type_name(match.group("type"))
+        if not type_name or type_name in _CPP_DECL_KEYWORDS:
+            continue
+        return type_name
+    return None
+
+
+def _core_returned_state_types(core_source: str) -> Set[str]:
+    body = _function_body(core_source, "core_on_load")
+    if not body:
+        return set()
+    types: Set[str] = set()
+    search_blobs = (body, core_source)
+    for match in re.finditer(r"\breturn\s+(?P<expr>[^;]+);", body):
+        variable = _return_state_variable(match.group("expr"))
+        if not variable or variable in {"nullptr", "NULL", "null"}:
+            continue
+        for blob in search_blobs:
+            declared_type = _declared_variable_type(blob, variable)
+            if declared_type:
+                types.add(declared_type)
+                break
+    return types
+
+
+def _gui_render_state_cast_types(gui_source: str) -> Set[str]:
+    body = _function_body(gui_source, "gui_on_render")
+    if not body:
+        return set()
+    param_names = _function_param_names(gui_source, "gui_on_render")
+    if not param_names:
+        return set()
+    state_param = param_names[0]
+    cast_types: Set[str] = set()
+    escaped = re.escape(state_param)
+    cpp_cast_re = re.compile(
+        rf"\b(?:reinterpret_cast|static_cast|const_cast)\s*<(?P<type>[^>]+)>\s*"
+        rf"\(\s*{escaped}\s*\)",
+        re.DOTALL,
+    )
+    c_style_cast_re = re.compile(
+        rf"\(\s*(?P<type>[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*"
+        rf"(?:\s*<[^;{{}}()=]+>)?\s*[*&]?)\s*\)\s*{escaped}\b",
+        re.DOTALL,
+    )
+    for pattern in (cpp_cast_re, c_style_cast_re):
+        for match in pattern.finditer(body):
+            normalized = _normalize_cpp_type_name(match.group("type"))
+            if normalized and normalized not in {"void", "auto"}:
+                cast_types.add(normalized)
+    return cast_types
 
 
 def _device_kernel_params(source: str, name: str) -> List[str]:
+    masked = mask_comments_for_parsing(source)
     match = re.search(
-        rf"\b__global__\s+(?:void\s+)?{re.escape(name)}\s*\((?P<params>[^)]*)\)",
-        source,
+        rf"\b(?:"
+        rf"(?:extern\s+\"C\"\s+)?__global__\s+(?:void\s+)?"
+        rf"|GLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+"
+        rf"(?:__launch_bounds__\s*\([^)]*\)\s*)?"
+        rf")"
+        rf"{re.escape(name)}\s*\((?P<params>[^)]*)\)",
+        masked,
         re.DOTALL,
     )
     if not match:
         return []
     return _split_top_level_args(match.group("params"))
+
+
+def _device_kernel_launch_bound(source: str, name: str) -> Optional[int]:
+    masked = mask_comments_for_parsing(source)
+    match = re.search(
+        rf"\b(?:(?:extern\s+\"C\"\s+)?__global__\s+(?:void\s+)?)"
+        rf"(?:__launch_bounds__\s*\(\s*(?P<global_bound>[^,)]+)\s*(?:,[^)]*)?\)\s*)?"
+        rf"(?:void\s+)?"
+        rf"{re.escape(name)}\s*\(",
+        masked,
+        re.DOTALL,
+    )
+    if not match:
+        match = re.search(
+            rf"\bGLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+"
+            rf"(?:__launch_bounds__\s*\(\s*(?P<macro_bound>[^,)]+)\s*(?:,[^)]*)?\)\s*)?"
+            rf"{re.escape(name)}\s*\(",
+            masked,
+            re.DOTALL,
+        )
+    if not match:
+        return None
+    raw = match.groupdict().get("global_bound") or match.groupdict().get("macro_bound")
+    if not raw:
+        return None
+    return _eval_static_int_expr(raw, _static_integer_bindings(masked))
+
+
+def _strip_integer_suffixes(expr: str) -> str:
+    return re.sub(r"\b(0[xX][0-9A-Fa-f]+|\d+)[uUlL]*\b", r"\1", expr)
+
+
+def _sanitize_integer_expr(expr: str) -> str:
+    value = re.sub(
+        r"\(\s*(?:const\s+)?(?:unsigned\s+)?(?:int|long|short|size_t|std::size_t|uint32_t|std::uint32_t)\s*\)",
+        " ",
+        expr,
+    )
+    value = re.sub(r"\bstatic_cast\s*<[^>]+>\s*\(([^()]*)\)", r"(\1)", value)
+    value = _strip_integer_suffixes(value)
+    return value.strip()
+
+
+def _eval_int_ast(node: ast.AST) -> Optional[int]:
+    if isinstance(node, ast.Expression):
+        return _eval_int_ast(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return int(node.value)
+    if isinstance(node, ast.UnaryOp):
+        operand = _eval_int_ast(node.operand)
+        if operand is None:
+            return None
+        if isinstance(node.op, ast.UAdd):
+            return operand
+        if isinstance(node.op, ast.USub):
+            return -operand
+        return None
+    if isinstance(node, ast.BinOp):
+        left = _eval_int_ast(node.left)
+        right = _eval_int_ast(node.right)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, (ast.Div, ast.FloorDiv)):
+            return None if right == 0 else left // right
+        if isinstance(node.op, ast.Mod):
+            return None if right == 0 else left % right
+        if isinstance(node.op, ast.LShift):
+            return left << right
+        if isinstance(node.op, ast.RShift):
+            return left >> right
+        if isinstance(node.op, ast.BitOr):
+            return left | right
+        if isinstance(node.op, ast.BitAnd):
+            return left & right
+        if isinstance(node.op, ast.BitXor):
+            return left ^ right
+    return None
+
+
+def _eval_static_int_expr(expr: str, bindings: Mapping[str, int]) -> Optional[int]:
+    value = _sanitize_integer_expr(expr)
+    if not value:
+        return None
+
+    unresolved = False
+
+    def replace_identifier(match: re.Match[str]) -> str:
+        nonlocal unresolved
+        name = match.group(0)
+        if name in bindings:
+            return str(bindings[name])
+        unresolved = True
+        return name
+
+    value = re.sub(r"\b[A-Za-z_][A-Za-z0-9_:]*\b", replace_identifier, value)
+    if unresolved or not re.fullmatch(r"[\s0-9xXa-fA-F+\-*/%<>&|^()]+", value):
+        return None
+    try:
+        parsed = ast.parse(value, mode="eval")
+    except SyntaxError:
+        return None
+    return _eval_int_ast(parsed)
+
+
+def _static_integer_bindings(source: str) -> Dict[str, int]:
+    bindings: Dict[str, int] = {}
+    define_re = re.compile(
+        r"^\s*#\s*define\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s+(?P<expr>[^\r\n]+)",
+        re.MULTILINE,
+    )
+    decl_re = re.compile(
+        r"\b(?:constexpr\s+)?(?:static\s+)?(?:const\s+)?(?:unsigned\s+)?(?:int|long|short|size_t|std::size_t|uint32_t|std::uint32_t|auto)\s+"
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<expr>[^;]+);"
+    )
+    for _ in range(4):
+        changed = False
+        for match in define_re.finditer(source):
+            name = match.group("name")
+            if name in bindings:
+                continue
+            value = _eval_static_int_expr(match.group("expr"), bindings)
+            if value is not None:
+                bindings[name] = value
+                changed = True
+        for match in decl_re.finditer(source):
+            name = match.group("name")
+            if name in bindings:
+                continue
+            value = _eval_static_int_expr(match.group("expr"), bindings)
+            if value is not None:
+                bindings[name] = value
+                changed = True
+        if not changed:
+            break
+    return bindings
+
+
+def _dim3_constructor_values(
+    source: str,
+    name: str,
+    bindings: Mapping[str, int],
+) -> Optional[List[int]]:
+    decl_re = re.compile(
+        rf"\b(?:dim3|Dim3)\s+{re.escape(name)}\s*(?:=)?\s*"
+        rf"(?:\{{(?P<brace>[^}}]*)\}}|\((?P<paren>[^)]*)\))",
+        re.DOTALL,
+    )
+    match = decl_re.search(source)
+    if not match:
+        return None
+    raw_args = match.group("brace") if match.group("brace") is not None else match.group("paren")
+    dims = _split_top_level_args(raw_args or "")
+    if not dims:
+        return None
+    values: List[int] = []
+    for dim in dims[:3]:
+        value = _eval_static_int_expr(dim, bindings)
+        if value is None:
+            return None
+        values.append(value)
+    while len(values) < 3:
+        values.append(1)
+    return values
+
+
+def _dim3_constructor_threads(source: str, name: str, bindings: Mapping[str, int]) -> Optional[int]:
+    values = _dim3_constructor_values(source, name, bindings)
+    if values is None:
+        return None
+    return values[0] * values[1] * values[2]
+
+
+def _launch_dim_values(core_source: str, dim_expr: str) -> Optional[List[int]]:
+    bindings = _static_integer_bindings(core_source)
+    direct = _eval_static_int_expr(dim_expr, bindings)
+    if direct is not None:
+        return [direct, 1, 1]
+    name_match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*", dim_expr)
+    if name_match:
+        return _dim3_constructor_values(core_source, name_match.group(1), bindings)
+    ctor_match = re.fullmatch(
+        r"\s*(?:dim3|Dim3)?\s*(?:\{(?P<brace>.*)\}|\((?P<paren>.*)\))\s*",
+        dim_expr,
+        re.DOTALL,
+    )
+    if not ctor_match:
+        return None
+    raw_args = ctor_match.group("brace") if ctor_match.group("brace") is not None else ctor_match.group("paren")
+    dims = _split_top_level_args(raw_args or "")
+    if not dims:
+        return None
+    values = [_eval_static_int_expr(dim, bindings) for dim in dims[:3]]
+    if not all(value is not None for value in values):
+        return None
+    int_values = [int(value) for value in values if value is not None]
+    while len(int_values) < 3:
+        int_values.append(1)
+    return int_values
+
+
+def _invalid_launch_dim_reason(core_source: str, dim_expr: str, label: str) -> Optional[str]:
+    values = _launch_dim_values(core_source, dim_expr)
+    if values is None:
+        return None
+    max_u32 = (1 << 32) - 1
+    for index, value in enumerate(values):
+        if value <= 0:
+            return f"{label}[{index}] must be positive, got {value}"
+        if value >= max_u32:
+            return f"{label}[{index}] must be less than {max_u32}, got {value}"
+    return None
+
+
+def _launch_block_thread_count(core_source: str, block_expr: str) -> Optional[int]:
+    bindings = _static_integer_bindings(core_source)
+    direct = _eval_static_int_expr(block_expr, bindings)
+    if direct is not None:
+        return direct
+    name_match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*", block_expr)
+    if name_match:
+        return _dim3_constructor_threads(core_source, name_match.group(1), bindings)
+    ctor_match = re.fullmatch(
+        r"\s*(?:dim3|Dim3)?\s*(?:\{(?P<brace>.*)\}|\((?P<paren>.*)\))\s*",
+        block_expr,
+        re.DOTALL,
+    )
+    if ctor_match:
+        raw_args = ctor_match.group("brace") if ctor_match.group("brace") is not None else ctor_match.group("paren")
+        dims = _split_top_level_args(raw_args or "")
+        if dims:
+            values = [_eval_static_int_expr(dim, bindings) for dim in dims[:3]]
+            if all(value is not None for value in values):
+                int_values = [int(value) for value in values if value is not None]
+                while len(int_values) < 3:
+                    int_values.append(1)
+                return int_values[0] * int_values[1] * int_values[2]
+    return None
 
 
 def _device_kernel_pointer_param_indexes(source: str, name: str) -> List[int]:
@@ -501,6 +1233,92 @@ def _device_kernel_pointer_param_names(source: str, name: str) -> List[str]:
         if tokens:
             names.append(tokens[-1])
     return names
+
+
+def _device_kernel_pointer_param_init_requirements(source: str, name: str) -> dict[int, bool]:
+    requirements: dict[int, bool] = {}
+    for index, param in enumerate(_device_kernel_params(source, name)):
+        if "*" not in param:
+            continue
+        tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", param)
+        if not tokens:
+            requirements[index] = True
+            continue
+        requirements[index] = _pointer_param_requires_initialization(
+            source,
+            name,
+            declaration=param,
+            param_name=tokens[-1],
+        )
+    return requirements
+
+
+def _pointer_param_requires_initialization(
+    source: str,
+    kernel_name: str,
+    *,
+    declaration: str,
+    param_name: str,
+) -> bool:
+    star_at = declaration.find("*")
+    if star_at < 0:
+        return False
+    if re.search(r"\bconst\b", declaration[:star_at]):
+        return True
+    body = _function_body(source, kernel_name)
+    if not body:
+        return True
+    return _pointer_param_body_requires_initialization(body, param_name)
+
+
+def _pointer_param_body_requires_initialization(body: str, param_name: str) -> bool:
+    masked = mask_comments_for_parsing(body)
+    pattern = re.compile(rf"\b{re.escape(param_name)}\b")
+    for match in pattern.finditer(masked):
+        if _pointer_param_occurrence_is_plain_write(masked, match):
+            continue
+        if _pointer_param_occurrence_is_address_check(masked, match):
+            continue
+        return True
+    return False
+
+
+def _pointer_param_occurrence_is_plain_write(body: str, match: re.Match[str]) -> bool:
+    tail = body[match.end() :]
+    tail = re.sub(r"^\s*", "", tail)
+    if tail.startswith("["):
+        close = _balanced_end(tail, 0, "[", "]")
+        if close is None:
+            return False
+        after = tail[close:]
+    elif tail.startswith("->"):
+        field = re.match(r"->\s*[A-Za-z_][A-Za-z0-9_]*", tail)
+        if not field:
+            return False
+        after = tail[field.end() :]
+    else:
+        head = body[max(0, match.start() - 4) : match.start()]
+        if not re.search(r"(?:^|[^A-Za-z0-9_])\*\s*$", head):
+            return False
+        after = tail
+
+    assign = re.match(r"\s*(?P<op>[+\-*/%&|^]?=)", after)
+    if not assign:
+        return False
+    return assign.group("op") == "="
+
+
+def _pointer_param_occurrence_is_address_check(body: str, match: re.Match[str]) -> bool:
+    start = max(0, match.start() - 32)
+    end = min(len(body), match.end() + 32)
+    window = body[start:end]
+    relative_start = match.start() - start
+    relative_end = match.end() - start
+    before = window[:relative_start]
+    after = window[relative_end:]
+    if re.search(r"\b(?:if|while)\s*\([^()]*$", before) and re.match(r"\s*(?:\)|&&|\|\|)", after):
+        return True
+    return False
 
 
 def _launch_kernel_name(arg: str) -> Optional[str]:
@@ -521,8 +1339,74 @@ def _normalize_launch_buffer_arg(arg: str) -> str:
     return re.sub(r"\s+", "", arg)
 
 
+def _simple_launch_arg_owner(arg: str) -> Optional[str]:
+    owner = _normalize_launch_buffer_arg(arg)
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", owner):
+        return owner
+    return None
+
+
+def _local_launch_arg_declaration(
+    function_body: str,
+    owner: str,
+) -> Optional[tuple[str, str]]:
+    owner_re = re.escape(owner)
+    declaration_re = re.compile(
+        rf"(?:^|[;{{]\s*)"
+        rf"(?P<type>(?:static\s+|const\s+|volatile\s+)*"
+        rf"[A-Za-z_][A-Za-z0-9_:<>]*(?:\s+[A-Za-z_][A-Za-z0-9_:<>]*)*(?:\s*[*&])?)\s+"
+        rf"{owner_re}\b\s*(?P<init>\{{\s*\}}|=\s*\{{\s*\}}|=\s*[^;]+|;)",
+        re.DOTALL,
+    )
+    matches = list(declaration_re.finditer(mask_comments_for_parsing(function_body)))
+    if not matches:
+        return None
+    match = matches[-1]
+    return (
+        re.sub(r"\s+", " ", match.group("type")).strip(),
+        match.group("init").strip(),
+    )
+
+
+def _source_launch_arg_synthetic_reason(
+    core_source: str,
+    type_sources: Iterable[str],
+    launch_arg: str,
+) -> Optional[str]:
+    owner = _simple_launch_arg_owner(launch_arg)
+    if not owner:
+        return None
+    body = _function_body(core_source, "core_on_update")
+    if not body:
+        return None
+    masked_body = mask_comments_for_parsing(body)
+    if re.search(
+        rf"\b{re.escape(owner)}(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+\s*=\s*(?:nullptr|NULL)\b",
+        masked_body,
+    ):
+        return "launch argument aggregate assigns member pointers to null"
+
+    declaration = _local_launch_arg_declaration(masked_body, owner)
+    if declaration is None:
+        return None
+    type_text, initializer = declaration
+    value_initialized = initializer in {"{}", "= {}"}
+    if value_initialized and _record_type_has_pointer_members(type_text, tuple(type_sources)):
+        return "launch argument aggregate is value-initialized and contains pointer members"
+    return None
+
+
+def _strip_cpp_comments(source: str) -> str:
+    return re.sub(r"//.*?$|/\*.*?\*/", " ", source, flags=re.MULTILINE | re.DOTALL)
+
+
 def _missing_init_launch_buffers(core_source: str, device_source: str) -> Set[str]:
+    return set(_missing_init_launch_buffer_sources(core_source, device_source))
+
+
+def _missing_init_launch_buffer_sources(core_source: str, device_source: str) -> dict[str, Set[str]]:
     required: Set[str] = set()
+    required_by_kernel: dict[str, Set[str]] = {}
     initialized: Set[str] = set()
     for body in _iter_call_bodies(core_source, "synthi_gpu_launch"):
         args = _split_top_level_args(body)
@@ -534,19 +1418,65 @@ def _missing_init_launch_buffers(core_source: str, device_source: str) -> Set[st
         launch_args = _launch_initializer_args(args[-1])
         if not launch_args:
             continue
-        pointer_indexes = _device_kernel_pointer_param_indexes(device_source, kernel_name)
-        pointer_buffers = {
+        pointer_requirements = _device_kernel_pointer_param_init_requirements(
+            device_source,
+            kernel_name,
+        )
+        all_pointer_buffers = {
             _normalize_launch_buffer_arg(launch_args[i])
-            for i in pointer_indexes
+            for i in pointer_requirements
+            if i < len(launch_args)
+        }
+        required_pointer_buffers = {
+            _normalize_launch_buffer_arg(launch_args[i])
+            for i, requires_init in pointer_requirements.items()
+            if requires_init
             if i < len(launch_args)
         }
         if re.search(r"(?:init|seed|setup|reset)", kernel_name, re.IGNORECASE):
-            initialized.update(pointer_buffers)
+            initialized.update(all_pointer_buffers)
         else:
-            required.update(pointer_buffers)
-    if not required:
-        return set()
-    return {buf for buf in required if buf not in initialized}
+            required.update(required_pointer_buffers)
+            for pointer_buffer in required_pointer_buffers:
+                required_by_kernel.setdefault(pointer_buffer, set()).add(kernel_name)
+    return {
+        buf: required_by_kernel.get(buf, set())
+        for buf in required
+        if buf not in initialized
+    }
+
+
+def _host_runner_routes_gui_module(host_runner_source: str) -> bool:
+    if not host_runner_source:
+        return True
+
+    resolves_gui_render = bool(
+        re.search(
+            r"\b(?:dlsym|GetProcAddress)\s*\([^;]*[\"']gui_on_render[\"']",
+            host_runner_source,
+            re.DOTALL,
+        )
+        or re.search(
+            r"\bgui_on_render\s*\(",
+            _strip_cpp_comments(host_runner_source),
+        )
+    )
+    if not resolves_gui_render:
+        return False
+
+    code = _strip_cpp_comments(host_runner_source)
+    call_pattern = re.compile(
+        r"\b(?!(?:dlsym|GetProcAddress|decltype|typedef|using|if|while|for|switch)\b)"
+        r"(?P<callee>[A-Za-z_][A-Za-z0-9_]*(?:\s*(?:->|\.)\s*[A-Za-z_][A-Za-z0-9_]*)*)"
+        r"\s*\((?P<args>[^(){};]*)\)\s*;",
+        re.DOTALL,
+    )
+    for match in call_pattern.finditer(code):
+        callee = re.sub(r"\s+", "", match.group("callee"))
+        args = match.group("args")
+        if "render" in callee.lower() and re.search(r"\b(?:state|core_state|app_state)\b", args):
+            return True
+    return False
 
 
 def _mirror_allocated_in_load(core_load_body: str, mirror: str) -> bool:
@@ -588,8 +1518,99 @@ def _source_device_files(source_files: Optional[Mapping[str, str]]) -> Mapping[s
     return {
         path: source
         for path, source in source_files.items()
-        if path.replace("\\", "/").lower().endswith((".cu", ".hip"))
+        if _is_source_device_file(path, source)
     }
+
+
+def _resolve_source_include(
+    include_path: str,
+    source_device_sources: Mapping[str, str],
+) -> Optional[str]:
+    normalized = include_path.replace("\\", "/").lstrip("./")
+    if normalized in source_device_sources:
+        return normalized
+    matches = [
+        path
+        for path in source_device_sources
+        if path.endswith("/" + normalized)
+        or (path.startswith("src/") and path[4:] == normalized)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _resolve_project_include(
+    include_path: str,
+    source_files: Optional[Mapping[str, str]],
+) -> Optional[str]:
+    if not source_files:
+        return None
+    normalized_sources = {path.replace("\\", "/"): source for path, source in source_files.items()}
+    normalized = include_path.replace("\\", "/").lstrip("./")
+    if normalized in normalized_sources:
+        return normalized
+    matches = [
+        path
+        for path in normalized_sources
+        if path.endswith("/" + normalized)
+        or (path.startswith("src/") and path[4:] == normalized)
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    basename = normalized.rsplit("/", 1)[-1]
+    basename_matches = [
+        path
+        for path in normalized_sources
+        if path.rsplit("/", 1)[-1] == basename
+    ]
+    if len(basename_matches) == 1:
+        return basename_matches[0]
+    return None
+
+
+def _is_allowed_generated_system_include(include_path: str) -> bool:
+    normalized = include_path.replace("\\", "/").lstrip("./")
+    if not normalized:
+        return False
+    if normalized in _STANDARD_SYSTEM_INCLUDES:
+        return True
+    return normalized.startswith(_ALLOWED_GENERATED_SYSTEM_INCLUDE_PREFIXES)
+
+
+def _device_role_included_source_files(
+    device_source: str,
+    source_device_sources: Mapping[str, str],
+) -> Mapping[str, str]:
+    included: dict[str, str] = {}
+    queue: List[str] = []
+    for match in _QUOTED_INCLUDE_RE.finditer(device_source):
+        resolved = _resolve_source_include(match.group(1).strip(), source_device_sources)
+        if resolved is not None:
+            queue.append(resolved)
+    while queue:
+        resolved = queue.pop(0)
+        if resolved in included:
+            continue
+        source = source_device_sources.get(resolved)
+        if source is None:
+            continue
+        included[resolved] = source
+        for match in _QUOTED_INCLUDE_RE.finditer(source):
+            child = _resolve_source_include(match.group(1).strip(), source_device_sources)
+            if child is not None and child not in included:
+                queue.append(child)
+    return included
+
+
+def _is_source_device_file(path: str, source: str) -> bool:
+    normalized = path.replace("\\", "/").lower()
+    masked = mask_comments_for_parsing(source)
+    if normalized.endswith((".cu", ".hip")):
+        return True
+    if not normalized.endswith((".cuh", ".hpp", ".hh", ".h")):
+        return False
+    return bool(GPU_DEVICE_MARKER_RE.search(masked))
 
 
 def _render_backends_in_sources(sources: Iterable[str]) -> Set[str]:
@@ -604,18 +1625,24 @@ def _render_backends_in_sources(sources: Iterable[str]) -> Set[str]:
 def _source_device_identifiers(source_device_sources: Mapping[str, str]) -> Set[str]:
     identifiers: Set[str] = set()
     for source in source_device_sources.values():
-        if "__global__" not in source and "__device__" not in source:
+        masked = mask_comments_for_parsing(source)
+        if not GPU_DEVICE_MARKER_RE.search(masked):
             continue
-        identifiers.update(_SOURCE_DEVICE_IDENTIFIER_RE.findall(source))
+        identifiers.update(_SOURCE_DEVICE_IDENTIFIER_RE.findall(masked))
     return identifiers
 
 
 def _source_device_constant_declarations(source_device_sources: Mapping[str, str]) -> Mapping[str, str]:
     declarations: dict[str, str] = {}
     for source in source_device_sources.values():
-        if "__global__" not in source and "__device__" not in source:
+        masked = mask_comments_for_parsing(source)
+        if (
+            "__global__" not in masked
+            and "__device__" not in masked
+            and "GLOBAL_KERNEL_SIGNATURE" not in masked
+        ):
             continue
-        for match in _SOURCE_DEVICE_CONST_DECL_RE.finditer(source):
+        for match in _SOURCE_DEVICE_CONST_DECL_RE.finditer(masked):
             declarations[match.group("name")] = re.sub(r"\s+", " ", match.group("type").strip())
     return declarations
 
@@ -752,6 +1779,12 @@ def verify_split_output(
     source_render_backends = _render_backends_in_sources(
         source_files.values() if source_files else []
     )
+    device_included_sources = _device_role_included_source_files(device_source, source_device_sources)
+    device_semantic_source = "\n".join(
+        [device_source, *device_included_sources.values()]
+    )
+    source_launch_args_by_kernel = _source_launch_args_by_kernel(source_files or {})
+    source_launch_kernels = _source_launch_kernels(source_files or {})
 
     allowed_include_paths: Set[str] = {"synthi_gpu_runtime.h"}
     for path in (shared_path, core_path, gui_path, host_runner_path, device_path):
@@ -765,8 +1798,9 @@ def verify_split_output(
         if not src:
             continue
         role_dir = posixpath.dirname(_normalize_generated_path(role_path))
-        for match in _QUOTED_INCLUDE_RE.finditer(src):
-            included = match.group(1).strip()
+        for match in _ANY_INCLUDE_RE.finditer(src):
+            included = match.group("path").strip()
+            delimiter = match.group("delimiter")
             normalized_include = _normalize_generated_path(included)
             basename = posixpath.basename(normalized_include)
             resolved_from_role = _normalize_generated_path(
@@ -776,29 +1810,77 @@ def verify_split_output(
                 normalized_include in allowed_include_paths
                 or basename in allowed_include_paths
                 or resolved_from_role in allowed_include_paths
+                or (
+                    role_path == device_path
+                    and _resolve_source_include(included, source_device_sources) is not None
+                )
             ):
                 continue
+            if (
+                role_path != device_path
+                and _resolve_project_include(included, source_files) is not None
+            ) or (
+                role_path != device_path
+                and not _is_allowed_generated_system_include(included)
+            ) or delimiter == '"':
+                violations.append(
+                    Violation(
+                        rule="generated_role_includes_project_header",
+                        message=(
+                            f"Generated role file includes project header {included!r}. "
+                            "GPU split output must be self-contained role code: use the "
+                            "provided workspace files as source context and copy/adapt "
+                            "needed structs, constants, and helpers into the generated "
+                            "roles instead of including original user project headers."
+                        ),
+                        offending_module=role_path,
+                        offending_symbol=included,
+                    )
+                )
+                continue
+        for match in _GPU_SDK_VECTOR_STRUCT_RE.finditer(mask_comments_for_parsing(src)):
             violations.append(
                 Violation(
-                    rule="generated_role_includes_project_header",
+                    rule="generated_role_redeclares_gpu_sdk_type",
                     message=(
-                        f"Generated role file includes project header {included!r}. "
-                        "GPU split output must be self-contained role code: use the "
-                        "provided workspace files as source context and copy/adapt "
-                        "needed structs, constants, and helpers into the generated "
-                        "roles instead of including original user project headers."
+                        f"Generated role file redeclares GPU SDK vector type "
+                        f"{match.group('name')!r}. HIP/CUDA runtime headers own "
+                        "these ABI names; generated roles must use the SDK type "
+                        "instead of shadowing it with local structs."
                     ),
                     offending_module=role_path,
-                    offending_symbol=included,
+                    offending_symbol=match.group("name"),
+                )
+            )
+        for match in _GPU_SDK_VECTOR_MAKE_FUNCTION_RE.finditer(mask_comments_for_parsing(src)):
+            violations.append(
+                Violation(
+                    rule="generated_role_redeclares_gpu_sdk_type",
+                    message=(
+                        f"Generated role file redeclares GPU SDK vector constructor "
+                        f"helper {match.group('name')!r}. HIP/CUDA runtime headers "
+                        "own these ABI helper names; generated roles must use the "
+                        "SDK helper instead of shadowing it with local definitions."
+                    ),
+                    offending_module=role_path,
+                    offending_symbol=match.group("name"),
                 )
             )
 
-    declared_kernels = set(_collect_kernel_signatures(device_source).keys())
+    declared_kernel_signatures = _collect_kernel_signatures(device_source)
+    device_included_kernel_names: Set[str] = set()
+    for included_source in device_included_sources.values():
+        for kernel, signature in _collect_kernel_signatures(included_source).items():
+            declared_kernel_signatures.setdefault(kernel, signature)
+            device_included_kernel_names.add(kernel)
+    declared_kernels = set(declared_kernel_signatures.keys())
     source_kernel_names: Set[str] = set()
     source_kernel_bodies: dict[str, str] = {}
+    source_kernel_signatures: dict[str, str] = {}
     for source in source_device_sources.values():
-        for kernel in _collect_kernel_signatures(source).keys():
+        for kernel, signature in _collect_kernel_signatures(source).items():
             source_kernel_names.add(kernel)
+            source_kernel_signatures.setdefault(kernel, signature)
             source_kernel_bodies.setdefault(kernel, _function_body(source, kernel))
     for kernel in sorted(source_kernel_names):
         if kernel not in declared_kernels:
@@ -815,7 +1897,25 @@ def verify_split_output(
                     offending_symbol=kernel,
                 )
             )
+        elif normalize_param_list(source_kernel_signatures.get(kernel, "")) != normalize_param_list(
+            declared_kernel_signatures.get(kernel, "")
+        ):
+            violations.append(
+                Violation(
+                    rule="source_device_kernel_signature_not_preserved",
+                    message=(
+                        f"The generated device role changes original kernel {kernel!r} "
+                        "parameters. Preserve the source kernel signature so host "
+                        "launch ABI, signature hashes, and device-only HMR mappings "
+                        "refer to the same callable kernel."
+                    ),
+                    offending_module=device_path,
+                    offending_symbol=kernel,
+                )
+            )
         elif (
+            kernel not in device_included_kernel_names
+            and
             not _source_body_effectively_empty(source_kernel_bodies.get(kernel, ""))
             and _source_body_effectively_empty(_function_body(device_source, kernel))
         ):
@@ -832,7 +1932,8 @@ def verify_split_output(
                     offending_symbol=kernel,
                 )
             )
-    for match in _GLOBAL_DECL_RE.finditer(device_source):
+    masked_device_source = mask_comments_for_parsing(device_source)
+    for match in _GLOBAL_DECL_RE.finditer(masked_device_source):
         prefix = device_source[max(0, match.start() - 48) : match.start()]
         if 'extern "C"' not in prefix:
             violations.append(
@@ -855,7 +1956,7 @@ def verify_split_output(
         if not re.search(
             rf"\b(?:constexpr\s+|const\s+|__constant__\s+)*{type_pattern}\s+"
             rf"{re.escape(identifier)}\s*=",
-            device_source,
+            device_semantic_source,
         ):
             violations.append(
                 Violation(
@@ -872,7 +1973,7 @@ def verify_split_output(
                 )
             )
     for identifier in sorted(_source_device_identifiers(source_device_sources)):
-        if identifier not in device_source:
+        if identifier not in device_semantic_source:
             violations.append(
                 Violation(
                     rule="source_device_identifier_not_preserved",
@@ -887,7 +1988,7 @@ def verify_split_output(
                     offending_symbol=identifier,
                 )
             )
-        elif len(re.findall(rf"\b{re.escape(identifier)}\b", device_source)) < 2:
+        elif len(re.findall(rf"\b{re.escape(identifier)}\b", device_semantic_source)) < 2:
             violations.append(
                 Violation(
                     rule="source_device_identifier_not_used",
@@ -929,6 +2030,12 @@ def verify_split_output(
         )
 
     core_source = files.get(core_path) or ""
+    launch_type_sources = (
+        shared_source,
+        core_source,
+        device_semantic_source,
+        source_blob,
+    )
     for symbol in ("core_on_load", "core_on_update"):
         if not re.search(rf'extern\s+"C"[^;{{\n]*\b{symbol}\s*\(', core_source):
             violations.append(
@@ -1064,6 +2171,28 @@ def verify_split_output(
                 offending_symbol="core_on_update",
             )
         )
+    core_update_body = _function_body(core_source, "core_on_update")
+    for match in re.finditer(
+        r"\b(?:bool|auto)(?:\s+const)?\s+"
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*false\s*;\s*"
+        r"if\s*\(\s*(?P=name)\s*\)",
+        core_update_body,
+    ):
+        violations.append(
+            Violation(
+                rule="constant_false_launch_guard",
+                message=(
+                    f"core_on_update initializes launch guard {match.group('name')!r} "
+                    "to false and immediately guards runtime state updates on that "
+                    "constant. This makes later GPU launch paths unreachable and can "
+                    "compile into a black preview. Assign the guard from a real "
+                    "synthi_gpu_launch(...) result, or remove the dead branch and "
+                    "preserve a reachable source launch path."
+                ),
+                offending_module=core_path,
+                offending_symbol=match.group("name"),
+            )
+        )
     if (
         re.search(r"\bsynthi_gpu_launch\s*\(", core_source)
         and re.search(r"\b(?:cuda|hip)Memcpy\s*\(", core_source)
@@ -1080,9 +2209,20 @@ def verify_split_output(
                 offending_module=core_path,
             )
         )
+    missing_init_buffer_sources = (
+        _missing_init_launch_buffer_sources(core_source, device_semantic_source)
+        if _GPU_MEM_ALLOC_RE.search(core_source)
+        else {}
+    )
+    missing_init_buffers = set(missing_init_buffer_sources)
+    missing_init_detail = "; ".join(
+        f"{buffer} via {', '.join(sorted(kernels))}"
+        if kernels
+        else buffer
+        for buffer, kernels in sorted(missing_init_buffer_sources.items())
+    )
     if (
-        re.search(r"\bsynthi_gpu_launch\s*\(", core_source)
-        and _GPU_MEM_ALLOC_RE.search(core_source)
+        missing_init_buffers
         and not _GPU_MEM_INIT_RE.search(core_source)
         and not _GPU_INIT_KERNEL_LAUNCH_RE.search(core_source)
     ):
@@ -1099,16 +2239,13 @@ def verify_split_output(
                     "raw HostToDevice copies in core_on_load are rejected, the "
                     "init kernel should fill every device buffer from the same "
                     "constructor/setup math used for the first-frame host mirror."
+                    + (f" Missing: {missing_init_detail}." if missing_init_detail else "")
                 ),
                 offending_module=core_path,
+                offending_symbol=missing_init_detail or None,
             )
         )
-    missing_init_buffers = (
-        _missing_init_launch_buffers(core_source, device_source)
-        if _GPU_MEM_ALLOC_RE.search(core_source)
-        else set()
-    )
-    if missing_init_buffers:
+    if missing_init_buffers and _GPU_INIT_KERNEL_LAUNCH_RE.search(core_source):
         buffer_list = ", ".join(sorted(missing_init_buffers))
         violations.append(
             Violation(
@@ -1152,6 +2289,7 @@ def verify_split_output(
             )
             continue
 
+        kernel_name = _launch_kernel_name(args[1])
         launch_args = args[-1].strip()
         if "(uintptr_t)" in launch_args or "reinterpret_cast" in launch_args or re.search(
             r"\(\s*const\s+void\s*\*\s*\)", launch_args
@@ -1171,6 +2309,114 @@ def verify_split_output(
 
         if launch_args.endswith("}"):
             entries = _split_top_level_args(launch_args[1:-1])
+            invalid_grid = _invalid_launch_dim_reason(core_source, args[2], "grid")
+            invalid_block = _invalid_launch_dim_reason(core_source, args[3], "block")
+            if invalid_grid or invalid_block:
+                reason = invalid_grid or invalid_block or "invalid launch dimensions"
+                violations.append(
+                    Violation(
+                        rule="invalid_synthi_launch_dimensions",
+                        message=(
+                            "synthi_gpu_launch grid and block dimensions must be "
+                            "statically positive when the verifier can evaluate "
+                            f"them. {reason}."
+                        ),
+                        offending_module=core_path,
+                        offending_symbol=kernel_name,
+                    )
+                )
+            if kernel_name:
+                kernel_params = _device_kernel_params(device_semantic_source, kernel_name)
+                if kernel_params and len(entries) != len(kernel_params):
+                    violations.append(
+                        Violation(
+                            rule="kernel_launch_abi_mismatch",
+                            message=(
+                                "synthi_gpu_launch argument count must match "
+                                "the generated kernel parameter list exactly. "
+                                f"Kernel {kernel_name} declares {len(kernel_params)} "
+                                f"parameters but the host launch passes {len(entries)} "
+                                "arguments. Pass aggregate launch parameters as one "
+                                "host variable, or flatten the generated kernel "
+                                "signature to match the host launch ABI."
+                            ),
+                            offending_module=core_path,
+                            offending_symbol=kernel_name,
+                        )
+                    )
+                launch_bound = _device_kernel_launch_bound(device_semantic_source, kernel_name)
+                block_threads = _launch_block_thread_count(core_source, args[3])
+                if (
+                    launch_bound is not None
+                    and block_threads is not None
+                    and block_threads > launch_bound
+                ):
+                    violations.append(
+                        Violation(
+                            rule="kernel_launch_bounds_exceeded",
+                            message=(
+                                "synthi_gpu_launch block dimensions must not exceed "
+                                "the target kernel's __launch_bounds__ maximum. "
+                                f"Kernel {kernel_name} declares launch bound "
+                                f"{launch_bound} but the host launch block has "
+                                f"{block_threads} threads."
+                            ),
+                            offending_module=core_path,
+                            offending_symbol=kernel_name,
+                        )
+                    )
+                source_launch_args = source_launch_args_by_kernel.get(kernel_name, [])
+                if source_launch_args:
+                    generated_arg_identities = [
+                        _normalize_launch_arg_identity(entry)
+                        for entry in entries
+                        if entry.strip()
+                    ]
+                    if generated_arg_identities not in source_launch_args:
+                        expected = " or ".join(
+                            "{" + ", ".join(args) + "}" for args in source_launch_args[:3]
+                        )
+                        violations.append(
+                            Violation(
+                                rule="source_launch_args_not_preserved",
+                                message=(
+                                    "Generated core launches a source-reachable kernel "
+                                    f"{kernel_name!r} but does not preserve the source "
+                                    "launch argument ownership. Source launch args are "
+                                    f"{expected}; generated launch args are "
+                                    f"{{{', '.join(generated_arg_identities)}}}. "
+                                    "Do not synthesize a different aggregate or argument "
+                                    "object for a preserved source kernel."
+                                ),
+                                offending_module=core_path,
+                                offending_symbol=kernel_name,
+                            )
+                        )
+                    for entry in entries:
+                        synthetic_reason = _source_launch_arg_synthetic_reason(
+                            core_source,
+                            launch_type_sources,
+                            entry,
+                        )
+                        if synthetic_reason:
+                            violations.append(
+                                Violation(
+                                    rule="source_launch_args_synthetic_aggregate",
+                                    message=(
+                                        "Generated core launches a source-reachable "
+                                        f"kernel {kernel_name!r} with an argument owner "
+                                        "that has the same name as the source launch "
+                                        "graph but is locally synthesized in "
+                                        f"core_on_update: {synthetic_reason}. Preserve "
+                                        "the real source-owned argument object or remove "
+                                        "the runtime launch instead of dispatching a "
+                                        "zero/null placeholder aggregate."
+                                    ),
+                                    offending_module=core_path,
+                                    offending_symbol=kernel_name,
+                                )
+                            )
+                            break
             for entry in entries:
                 stripped = entry.strip()
                 if stripped and not stripped.startswith("&"):
@@ -1189,6 +2435,71 @@ def verify_split_output(
 
     gui_source = files.get(gui_path) or ""
     host_runner_source = files.get(host_runner_path) or ""
+    core_state_types = _core_returned_state_types(core_source)
+    gui_state_cast_types = _gui_render_state_cast_types(gui_source)
+    shared_record_types = _declared_record_type_basenames(shared_source)
+    for core_state_type in sorted(core_state_types):
+        core_state_basename = _cpp_type_basename(core_state_type)
+        if core_state_basename and core_state_basename not in shared_record_types:
+            violations.append(
+                Violation(
+                    rule="generated.host_state_type_not_shared",
+                    message=(
+                        "core_on_load returns host-visible state type "
+                        f"{core_state_type}, but that record type is not declared "
+                        "in shared.h. Core and GUI are separate generated roles; "
+                        "any state layout passed across that boundary must be in "
+                        "the shared role before a split can be accepted."
+                    ),
+                    offending_module=core_path,
+                    offending_symbol=core_state_type,
+                )
+            )
+    if core_state_types and gui_state_cast_types:
+        for gui_state_type in sorted(gui_state_cast_types):
+            if any(_cpp_type_compatible(core_type, gui_state_type) for core_type in core_state_types):
+                continue
+            core_type_list = ", ".join(sorted(core_state_types))
+            violations.append(
+                Violation(
+                    rule="generated.core_gui_state_abi_mismatch",
+                    message=(
+                        "core_on_load returns host-visible state object type "
+                        f"{core_type_list}, but gui_on_render casts the runner-provided "
+                        f"state pointer to {gui_state_type}. The Synthi runner passes "
+                        "the core state to gui_on_render; generated core and GUI roles "
+                        "must agree on one shared host-visible state layout before a "
+                        "split can be accepted."
+                    ),
+                    offending_module=gui_path,
+                    offending_symbol=f"{core_type_list}->{gui_state_type}",
+                )
+            )
+    for namespace, symbols in sorted(_namespaced_shared_symbols(shared_source).items()):
+        for role_path, role_source in (
+            (core_path, core_source),
+            (gui_path, gui_source),
+            (host_runner_path, host_runner_source),
+        ):
+            if not role_path or not role_source:
+                continue
+            for symbol in sorted(symbols):
+                if _uses_shared_symbol_unqualified(role_source, namespace, symbol):
+                    violations.append(
+                        Violation(
+                            rule="generated.shared_namespace_symbol_unqualified",
+                            message=(
+                                "shared.h declares "
+                                f"{namespace}::{symbol}, but generated role "
+                                f"{role_path} uses {symbol} without qualifying it "
+                                "or importing it with a using declaration. Generated "
+                                "roles must preserve shared namespace boundaries so "
+                                "compile repair is not required to guess symbol scope."
+                            ),
+                            offending_module=role_path,
+                            offending_symbol=f"{namespace}::{symbol}",
+                        )
+                    )
     generated_render_backends = _render_backends_in_sources(
         (shared_source, core_source, gui_source, host_runner_source)
     )
@@ -1237,6 +2548,29 @@ def verify_split_output(
                 offending_symbol=placeholder_render.group(0),
             )
         )
+    gui_render_body = _function_body(gui_source, "gui_on_render")
+    gui_has_render_context = bool(
+        source_render_backends
+        or _GUI_RENDER_CONTEXT_RE.search(gui_source)
+    )
+    if (
+        gui_has_render_context
+        and gui_render_body
+        and not _GUI_RENDER_EFFECT_RE.search(_strip_cpp_comments(gui_render_body))
+    ):
+        violations.append(
+            Violation(
+                rule="gui_render_no_effect",
+                message=(
+                    "The gui_on_render body does not contain any concrete "
+                    "backend drawing operation. A cast, comment, or empty "
+                    "function can compile but produces a black frame; render "
+                    "a visible primitive, texture, pixel buffer, UI widget, or "
+                    "other backend-specific representation from preserved state."
+                ),
+                offending_module=gui_path,
+            )
+        )
     render_present = _GUI_BACKEND_PRESENT_RE.search(gui_source)
     if render_present:
         symbol = render_present.group("name")
@@ -1282,6 +2616,26 @@ def verify_split_output(
                     "remain black under screenshot validation; render filled "
                     "rects, lines, geometry, textures, or another visible "
                     "backend-specific representation from preserved state."
+                ),
+                offending_module=gui_path,
+            )
+        )
+    if (
+        "glfw" in source_render_backends
+        and _OPENGL_SURFACE_API_RE.search(gui_source)
+        and not _OPENGL_RENDER_API_RE.search(gui_source)
+    ):
+        violations.append(
+            Violation(
+                rule="gui_render_too_sparse",
+                message=(
+                    "The gui role uses GLFW/OpenGL APIs but only clears or "
+                    "sets up the surface without drawing any substantial "
+                    "visible primitive. A first frame that only clears can "
+                    "compile yet remain black under screenshot validation; "
+                    "draw filled geometry, points, lines, textured quads, or "
+                    "another visible OpenGL representation from preserved "
+                    "state."
                 ),
                 offending_module=gui_path,
             )
@@ -1476,18 +2830,22 @@ def verify_split_output(
                 offending_module=host_runner_path,
             )
         )
-    if host_runner_source and not re.search(r"\bgui_on_(?:load|render)\b|libgui", host_runner_source):
+    if not _host_runner_routes_gui_module(host_runner_source):
         violations.append(
             Violation(
                 rule="host_runner_omits_gui_module",
                 message=(
-                    "The host_runner role must load/call the generated GUI module "
-                    "or otherwise route rendering through gui_on_render every frame."
+                    "The host_runner role must resolve and invoke the generated "
+                    "GUI render entrypoint every frame. Marker variables or "
+                    "dead references to libgui/gui_on_render are not enough; "
+                    "route the core state through gui_on_render before the "
+                    "backend presents the frame."
                 ),
                 offending_module=host_runner_path,
             )
         )
 
+    synthi_launch_count = 0
     for host_path in (core_path, gui_path, host_runner_path):
         src = files.get(host_path)
         if not src:
@@ -1508,7 +2866,23 @@ def verify_split_output(
                     offending_symbol=kernel,
                 )
             )
+        for match in _SYNTHI_LAUNCH_BYPASS_RE.finditer(src):
+            symbol = match.group(0).split("(", 1)[0]
+            violations.append(
+                Violation(
+                    rule="launch_indirection_bypassed",
+                    message=(
+                        f"Host file {host_path} calls {symbol} directly. "
+                        "Generated roles must call synthi_gpu_launch(...) so "
+                        "the runtime can use the generation-checked launch "
+                        "indirection table and reject stale launch pointers."
+                    ),
+                    offending_module=host_path,
+                    offending_symbol=symbol,
+                )
+            )
         for match in _SYNTHI_LAUNCH_CALL_RE.finditer(src):
+            synthi_launch_count += 1
             kernel = match.group("name")
             if kernel not in declared_kernels:
                 violations.append(
@@ -1524,6 +2898,50 @@ def verify_split_output(
                         offending_symbol=kernel,
                     )
                 )
+            elif (
+                source_launch_kernels
+                and kernel not in source_launch_kernels
+                and not _is_lifecycle_launch_kernel(kernel)
+            ):
+                violations.append(
+                    Violation(
+                        rule="non_source_reachable_launch_site",
+                        message=(
+                            f"Host file {host_path} launches {kernel!r}, but the "
+                            "source launch graph does not contain that kernel. "
+                            "Generated host code must preserve source-reachable "
+                            "launch ownership instead of launching preserved "
+                            "device symbols opportunistically. Only explicit "
+                            "lifecycle initialization/setup/reset kernels may be "
+                            "introduced outside the source launch graph."
+                        ),
+                        offending_module=host_path,
+                        offending_symbol=kernel,
+                    )
+                )
+
+    source_preserved_mapping_only = _device_role_is_source_preserved_mapping_only(
+        declared_kernels=declared_kernels,
+        device_included_kernel_names=device_included_kernel_names,
+        core_source=core_source,
+        source_files=source_files or {},
+        type_sources=launch_type_sources,
+    )
+    if declared_kernels and synthi_launch_count == 0 and not source_preserved_mapping_only:
+        violations.append(
+            Violation(
+                rule="device_kernels_not_launched",
+                message=(
+                    "The generated device role declares GPU kernels, but no "
+                    "generated host role launches them through synthi_gpu_launch(...). "
+                    "A split that only advertises kernels can compile and reload "
+                    "yet produce an inert or black preview; preserve at least one "
+                    "reachable source launch path through the Synthi launch "
+                    "indirection table."
+                ),
+                offending_module=core_path,
+            )
+        )
 
     return SplitVerificationResult(ok=not violations, violations=violations)
 
@@ -1531,6 +2949,148 @@ def verify_split_output(
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers — kernel signature extraction + edit application
 # ─────────────────────────────────────────────────────────────────────────────
+def _source_launch_args_by_kernel(source_files: Mapping[str, str]) -> dict[str, List[List[str]]]:
+    by_kernel: dict[str, List[List[str]]] = {}
+    for site in extract_launch_graph(source_files):
+        if not site.kernel or not site.args:
+            continue
+        normalized = [
+            _normalize_launch_arg_identity(arg)
+            for arg in site.args
+            if arg.strip()
+        ]
+        if not normalized:
+            continue
+        options = by_kernel.setdefault(site.kernel, [])
+        if normalized not in options:
+            options.append(normalized)
+    return by_kernel
+
+
+def _source_launch_kernels(source_files: Mapping[str, str]) -> Set[str]:
+    return {
+        site.kernel
+        for site in extract_launch_graph(source_files)
+        if site.kernel
+    }
+
+
+def _is_safe_source_launch_lvalue(expr: str) -> bool:
+    field = r"[A-Za-z_][A-Za-z0-9_]*"
+    return bool(
+        re.fullmatch(
+            rf"{field}(?:(?:->|\.){field}|\[[^\]\n;{{}}]+\])*",
+            expr.strip(),
+        )
+    )
+
+
+def _launch_expr_available_in_core(lookup_source: str, expr: str, full_core_source: str) -> bool:
+    text = expr.strip()
+    if not text:
+        return False
+    if text in {"0", "nullptr", "NULL"}:
+        return True
+    if _eval_static_int_expr(text, _static_integer_bindings(full_core_source)) is not None:
+        return True
+    identifiers = {
+        token
+        for token in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", text)
+        if token not in _CPP_DECL_KEYWORDS
+        and token not in {"dim3", "Dim3", "nullptr", "NULL"}
+    }
+    return all(re.search(rf"\b{re.escape(token)}\b", lookup_source) for token in identifiers)
+
+
+def _source_launch_available_in_core(
+    *,
+    core_source: str,
+    source_files: Mapping[str, str],
+    declared_kernels: Set[str],
+    type_sources: Iterable[str],
+) -> bool:
+    lookup_source = _function_body(core_source, "core_on_update")
+    if not lookup_source:
+        return False
+    for site in extract_launch_graph(source_files):
+        if not site.kernel or site.kernel not in declared_kernels:
+            continue
+        expressions = [site.grid, site.block, site.shared, site.stream]
+        launchable = True
+        for arg in site.args:
+            normalized = _normalize_launch_arg_identity(arg)
+            if (
+                not normalized
+                or not _is_safe_source_launch_lvalue(normalized)
+                or _source_launch_arg_synthetic_reason(
+                    core_source,
+                    type_sources,
+                    normalized,
+                )
+            ):
+                launchable = False
+                break
+            expressions.append(normalized)
+        if not launchable:
+            continue
+        if all(
+            _launch_expr_available_in_core(lookup_source, expr, core_source)
+            for expr in expressions
+        ):
+            return True
+    return False
+
+
+def _source_launch_declared_kernel_seen(
+    source_files: Mapping[str, str],
+    declared_kernels: Set[str],
+) -> bool:
+    return any(
+        site.kernel and site.kernel in declared_kernels
+        for site in extract_launch_graph(source_files)
+    )
+
+
+def _device_role_is_source_preserved_mapping_only(
+    *,
+    declared_kernels: Set[str],
+    device_included_kernel_names: Set[str],
+    core_source: str,
+    source_files: Mapping[str, str],
+    type_sources: Iterable[str],
+) -> bool:
+    if not declared_kernels or not declared_kernels.issubset(device_included_kernel_names):
+        return False
+    if not _source_launch_declared_kernel_seen(source_files, declared_kernels):
+        return False
+    return not _source_launch_available_in_core(
+        core_source=core_source,
+        source_files=source_files,
+        declared_kernels=declared_kernels,
+        type_sources=type_sources,
+    )
+
+
+def _is_lifecycle_launch_kernel(kernel: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:^|_)(?:init|initialize|seed|setup|reset)(?:_|$)",
+            kernel,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _normalize_launch_arg_identity(expr: str) -> str:
+    text = expr.strip()
+    while text.startswith("&"):
+        text = text[1:].strip()
+    while text.startswith("(") and text.endswith(")"):
+        inner = text[1:-1].strip()
+        if not inner:
+            break
+        text = inner
+    return re.sub(r"\s+", "", text)
 
 
 def _collect_new_kernels(
@@ -1544,7 +3104,7 @@ def _collect_new_kernels(
     found: Set[str] = set()
     for edit in device_edits:
         content = edit.get("content", "") or ""
-        for m in _GLOBAL_DECL_RE.finditer(content):
+        for m in _GLOBAL_DECL_RE.finditer(mask_comments_for_parsing(content)):
             name = m.group("name")
             if name and name not in existing_kernels:
                 found.add(name)
@@ -1558,18 +3118,19 @@ def _collect_kernel_signatures(source: str) -> dict[str, str]:
     change" without writing a C++ parser.
     """
     sigs: dict[str, str] = {}
+    masked = mask_comments_for_parsing(source)
     cursor = 0
     while True:
-        m = _GLOBAL_DECL_RE.search(source, cursor)
+        m = _GLOBAL_DECL_RE.search(masked, cursor)
         if not m:
             break
         name = m.group("name")
         paren_start = m.end()  # m.end() is position right after '('
         depth = 1
         i = paren_start
-        n = len(source)
+        n = len(masked)
         while i < n and depth > 0:
-            c = source[i]
+            c = masked[i]
             if c == "(":
                 depth += 1
             elif c == ")":

@@ -47,6 +47,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,6 +84,8 @@ const CFG = {
   workerContainer: process.env.WORKER_CONTAINER ?? 'synthi-ide-worker-1',
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
+  mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
+    ?? ((process.env.GOOGLE_API_KEY ?? '') ? 'gemini_api' : 'agent_side'),
   useMcpCompile: (process.env.SYNTHI_GPU_USE_MCP ?? '1') !== '0',
   directAiFallback: process.env.SYNTHI_GPU_DIRECT_AI_FALLBACK === '1',
   skipPhases: new Set((process.env.SKIP_PHASES ?? '').split(',').map((s) => s.trim()).filter(Boolean)),
@@ -227,7 +230,13 @@ async function resolveDockerContainers() {
 // ───────────────────────── collab + frontend wire ─────────────────────────
 
 async function createWorkspace({ name, slug }) {
-  return httpJson('POST', `${CFG.frontendUrl}/api/workspace`, { name, slug });
+  return createValidationWorkspace({
+    frontendUrl: CFG.frontendUrl,
+    name,
+    slug,
+    httpJson,
+    record: (name, status, detail) => record('seed', name, status, detail),
+  });
 }
 
 async function writeFilesBatch({ slug, userId, files, syncToGcs }) {
@@ -284,11 +293,15 @@ async function readWorkerLogTail(maxBytes = 2 * 1024 * 1024, opts = {}) {
   try {
     const st = await stat(CFG.workerLogPath);
     const fd = await import('node:fs').then((m) => m.promises.open(CFG.workerLogPath, 'r'));
-    const start = Math.max(0, st.size - maxBytes);
+    const requestedOffset = Number.isFinite(opts.fromOffset) ? Number(opts.fromOffset) : null;
+    const start = requestedOffset != null && requestedOffset <= st.size
+      ? requestedOffset
+      : Math.max(0, st.size - maxBytes);
     const buf = Buffer.alloc(st.size - start);
     await fd.read(buf, 0, buf.length, start);
     await fd.close();
-    return buf.toString('utf8');
+    const text = buf.toString('utf8');
+    return requestedOffset == null ? text.slice(-maxBytes) : text;
   } catch (e) {
     return new Promise((resolve) => {
       const tailLines = String(Math.max(1000, Math.ceil(maxBytes / 128)));
@@ -308,7 +321,13 @@ async function readWorkerLogTail(maxBytes = 2 * 1024 * 1024, opts = {}) {
 
 async function workerLogCheckpoint(maxBytes = 2 * 1024 * 1024) {
   const at = new Date(Date.now() - 2000).toISOString();
-  return { at, tail: await readWorkerLogTail(maxBytes) };
+  let fileSize = null;
+  try {
+    fileSize = existsSync(CFG.workerLogPath) ? (await stat(CFG.workerLogPath)).size : null;
+  } catch {
+    fileSize = null;
+  }
+  return { at, fileSize, tail: await readWorkerLogTail(maxBytes) };
 }
 
 function workerLogWindow(tail, afterTail) {
@@ -320,6 +339,7 @@ function workerLogWindow(tail, afterTail) {
 }
 
 function workerLogSearchWindow(tail, opts = {}) {
+  if (opts.after?.fileSize != null && existsSync(CFG.workerLogPath)) return tail;
   // Docker captures stdout/stderr separately, so execFile cannot preserve
   // cross-stream ordering. With a timestamp checkpoint, --since is already the
   // boundary; applying a stderr-derived anchor can discard stdout planner logs.
@@ -330,7 +350,11 @@ function workerLogSearchWindow(tail, opts = {}) {
 async function awaitWorkerLogRegex(regex, timeoutMs, opts = {}) {
   const deadline = Date.now() + timeoutMs;
   const maxBytes = opts.maxBytes ?? 2 * 1024 * 1024;
-  const logOpts = opts.after?.at ? { since: opts.after.at } : {};
+  const logOpts = opts.after?.fileSize != null
+    ? { fromOffset: opts.after.fileSize }
+    : opts.after?.at
+      ? { since: opts.after.at }
+      : {};
   while (Date.now() < deadline) {
     const tail = await readWorkerLogTail(maxBytes, logOpts);
     const window = workerLogSearchWindow(tail, opts);
@@ -434,7 +458,7 @@ async function startMcp() {
     const mcpEnv = {
       SYNTHI_SESSION_ID: CFG.slug,
       SYNTHI_SIGNALING_URL: CFG.mcpSignalingUrl,
-      SYNTHI_VISION_BACKEND: 'gemini_api',
+      SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
       SYNTHI_PROMETHEUS_HOST: '0.0.0.0',
@@ -452,7 +476,7 @@ async function startMcp() {
       ...process.env,
       SYNTHI_SESSION_ID: CFG.slug,
       SYNTHI_SIGNALING_URL: CFG.signalingUrl,
-      SYNTHI_VISION_BACKEND: 'gemini_api',
+      SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
       GOOGLE_API_KEY: CFG.googleApiKey,
       SYNTHI_GEMINI_MODEL: CFG.geminiModel,
       SYNTHI_PROMETHEUS_HOST: '127.0.0.1',
@@ -540,7 +564,7 @@ function archForVendor(vendor, tc = null) {
   if (CFG.gpuArch && CFG.gpuArch.toLowerCase() !== 'auto') return CFG.gpuArch;
   if (vendor === 'cuda' && tc?.worker?.cudaArch) return tc.worker.cudaArch;
   if (vendor === 'rocm' && tc?.worker?.rocmArch) return tc.worker.rocmArch;
-  return vendor === 'rocm' ? 'gfx90a' : 'sm_80';
+  throw new Error(`could not resolve ${vendor} GPU arch; set SYNTHI_GPU_ARCH explicitly`);
 }
 
 async function probeToolchain() {
@@ -579,8 +603,8 @@ function vendorsForConfig(tc) {
   if (CFG.vendor === 'auto') {
     const detected = autoVendorFromToolchain(tc);
     if (detected) return [detected];
-    record('preflight', 'auto GPU vendor detection', 'warn', 'no CUDA/ROCm worker GPU/toolchain detected; defaulting to cuda for skip-aware validation');
-    return ['cuda'];
+    record('preflight', 'auto GPU vendor detection', 'skip', 'no CUDA/ROCm worker GPU/toolchain detected');
+    return [];
   }
   return [CFG.vendor];
 }
@@ -743,10 +767,11 @@ extern "C" void gui_on_render(void* state_void) {
     if (s && s->d_c) {
         cudaMemcpy(sample, s->d_c, sizeof(sample), cudaMemcpyDeviceToHost);
     }
-    std::printf("[gui] frame=%llu c[0..7]=%g %g %g %g %g %g %g %g\\n",
+    std::fprintf(stderr, "[gui] frame=%llu c[0..7]=%g %g %g %g %g %g %g %g\\n",
         (unsigned long long) (s ? s->frame : 0),
         sample[0], sample[1], sample[2], sample[3],
         sample[4], sample[5], sample[6], sample[7]);
+    std::fflush(stderr);
 }
 `;
 
@@ -824,6 +849,9 @@ extern "C" __global__ void vec_add(const float* a, const float* b, float* c, int
     }
 }
 `;
+
+const VECTOR_ADD_READBACK = [0, 3, 6, 9, 12, 15, 18, 21];
+const VECTOR_MUL_READBACK = [0, 2, 8, 18, 32, 50, 72, 98];
 
 // Phase-2 abi-breaking edit: extra parameter — signature changes.
 const DEVICE_CU_PHASE2_ABI_BREAK = `// device.cu — abi-breaking edit (extra parameter)
@@ -1492,6 +1520,190 @@ function hasStatePreserved(logText) {
   return /state_preserved:\s*true/.test(logText ?? '');
 }
 
+function firstMatchingLine(logText, regex) {
+  for (const line of String(logText ?? '').split(/\r?\n/)) {
+    regex.lastIndex = 0;
+    if (regex.test(line)) return line.trim();
+  }
+  return null;
+}
+
+function lastMatchingLine(logText, regex) {
+  let latest = null;
+  for (const line of String(logText ?? '').split(/\r?\n/)) {
+    regex.lastIndex = 0;
+    if (regex.test(line)) latest = line.trim();
+  }
+  return latest;
+}
+
+function summarizeLogLine(line) {
+  return String(line ?? '').replace(/\s+/g, ' ').slice(0, 240);
+}
+
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function kernelNamesFromSource(source) {
+  const masked = String(source ?? '').replace(/\/\/[^\n\r]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  const names = new Set();
+  const kernelRe = /(?:extern\s+"C"\s+)?(?:__global__\s+(?:void\s+)?|GLOBAL_KERNEL_SIGNATURE\s*\([^)]*\)\s+(?:__launch_bounds__\s*\([^)]*\)\s*)?)([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+  for (const match of masked.matchAll(kernelRe)) {
+    names.add(match[1]);
+  }
+  return [...names].sort();
+}
+
+function gpuHmrFallbackTelemetry(logText) {
+  const label = lastMatchingLine(
+    logText,
+    /\bgpu-hmr-(partial|degraded-full-device|rejected|full-device)\b/,
+  );
+  const fallbackTrue = lastMatchingLine(logText, /\bfallbackUsed=true\b/);
+  const fallbackFalse = lastMatchingLine(logText, /\bfallbackUsed=false\b/);
+  const selected = lastMatchingLine(logText, /\bselectedArtifactKind=[^\s]+/);
+  const latestPartial = label && /\bgpu-hmr-partial\b/.test(label);
+  return {
+    degraded: label && /\bgpu-hmr-degraded-full-device\b/.test(label)
+      ? label
+      : latestPartial
+        ? null
+        : fallbackTrue,
+    rejected: label && /\bgpu-hmr-rejected\b/.test(label) ? label : null,
+    label,
+    fallbackTrue,
+    fallbackFalse,
+    selected,
+  };
+}
+
+async function assertNoGpuHmrFallback(phase, name, checkpoint, maxBytes = 8 * 1024 * 1024) {
+  const logOpts = checkpoint?.fileSize != null
+    ? { fromOffset: checkpoint.fileSize }
+    : checkpoint?.at
+      ? { since: checkpoint.at }
+      : {};
+  const tail = await readWorkerLogTail(maxBytes, logOpts);
+  const window = workerLogSearchWindow(tail, { after: checkpoint });
+  const telemetry = gpuHmrFallbackTelemetry(window);
+  if (telemetry.degraded) {
+    record(phase, name, 'fail', `degraded fallback observed: ${summarizeLogLine(telemetry.degraded)}`);
+    return telemetry;
+  }
+  if (telemetry.rejected) {
+    record(phase, name, 'fail', `HMR rejection observed: ${summarizeLogLine(telemetry.rejected)}`);
+    return telemetry;
+  }
+  if (telemetry.label && /\bgpu-hmr-full-device\b/.test(telemetry.label)) {
+    record(phase, name, 'fail', `full-device compile observed after edit: ${summarizeLogLine(telemetry.label)}`);
+    return telemetry;
+  }
+  if (telemetry.label || telemetry.fallbackFalse) {
+    record(
+      phase,
+      name,
+      'pass',
+      summarizeLogLine(telemetry.label || telemetry.fallbackFalse || telemetry.selected),
+    );
+    return telemetry;
+  }
+  record(phase, name, 'fail', 'no gpu-hmr label or fallbackUsed telemetry found after edit');
+  return telemetry;
+}
+
+async function awaitGpuDispatchOk(phase, name, checkpoint, expectedKernels = [], timeoutMs = 12000) {
+  const maxBytes = 8 * 1024 * 1024;
+  const kernelPattern = expectedKernels.length
+    ? `(?:${expectedKernels.map(escapeRegex).join('|')})`
+    : String.raw`\S+`;
+  const dispatchRe = new RegExp(
+    String.raw`\[gpu-runtime-boundary\]\s+synthi_gpu_launch\s+kernel=${kernelPattern}\b.*dispatch=(ok|failed|stale-pointer|missing-dispatcher)`,
+  );
+  const failureRe = new RegExp(
+    String.raw`\[gpu-runtime-boundary\]\s+synthi_gpu_launch\s+kernel=${kernelPattern}\b.*dispatch=(failed|stale-pointer|missing-dispatcher)\b`,
+  );
+  const successRe = new RegExp(
+    String.raw`\[gpu-runtime-boundary\]\s+synthi_gpu_launch\s+kernel=${kernelPattern}\b.*dispatch=ok\b`,
+  );
+  const dispatch = await awaitWorkerLogRegex(
+    dispatchRe,
+    timeoutMs,
+    { after: checkpoint, maxBytes },
+  );
+  const window = dispatch.window ?? dispatch.tail ?? '';
+  const failure = firstMatchingLine(window, failureRe);
+  if (failure) {
+    record(phase, name, 'fail', summarizeLogLine(failure));
+    return false;
+  }
+  const success = firstMatchingLine(window, successRe);
+  if (success) {
+    record(phase, name, 'pass', summarizeLogLine(success));
+    return true;
+  }
+  record(phase, name, 'fail', 'no successful GPU runtime dispatch observed after edit');
+  return false;
+}
+
+function parseGuiReadbacks(logText) {
+  const samples = [];
+  const re = /\[gui\]\s+frame=(\d+)\s+c\[0\.\.7\]=([^\n\r]+)/g;
+  for (const m of (logText ?? '').matchAll(re)) {
+    const values = m[2].trim().split(/\s+/).map(Number);
+    if (values.length < 8 || values.slice(0, 8).some((v) => !Number.isFinite(v))) continue;
+    samples.push({
+      frame: Number(m[1]),
+      values: values.slice(0, 8),
+      raw: m[0],
+    });
+  }
+  return samples;
+}
+
+function readbackMatches(values, expected) {
+  if (!Array.isArray(values) || values.length < expected.length) return false;
+  return expected.every((want, i) => Math.abs(values[i] - want) <= 0.001);
+}
+
+function formatReadback(values) {
+  return `[${(values ?? []).map((v) => Number.isFinite(v) ? Number(v).toFixed(3) : String(v)).join(', ')}]`;
+}
+
+async function awaitGuiReadback(phase, name, expected, checkpoint, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+  const maxBytes = 8 * 1024 * 1024;
+  const logOpts = checkpoint?.fileSize != null
+    ? { fromOffset: checkpoint.fileSize }
+    : checkpoint?.at
+      ? { since: checkpoint.at }
+      : {};
+  let latest = null;
+  while (Date.now() < deadline) {
+    const tail = await readWorkerLogTail(maxBytes, logOpts);
+    const window = workerLogSearchWindow(tail, { after: checkpoint });
+    const samples = parseGuiReadbacks(window);
+    for (let i = samples.length - 1; i >= 0; --i) {
+      if (readbackMatches(samples[i].values, expected)) {
+        record(
+          phase,
+          name,
+          'pass',
+          `frame=${samples[i].frame} values=${formatReadback(samples[i].values)}`,
+        );
+        return samples[i];
+      }
+    }
+    if (samples.length) latest = samples[samples.length - 1];
+    await sleep(500);
+  }
+  const detail = latest
+    ? `latest frame=${latest.frame} values=${formatReadback(latest.values)} expected=${formatReadback(expected)}`
+    : `no [gui] readback observed expected=${formatReadback(expected)}`;
+  record(phase, name, 'fail', detail);
+  throw new Error(`${phase} ${name}: ${detail}`);
+}
+
 // ───────────────────────── phases ─────────────────────────
 
 async function preflight() {
@@ -1635,6 +1847,12 @@ async function phaseFlow(ctx) {
   record('FLOW', 'inward GPU launch observed',
     baselineLaunch.matched ? 'pass' : 'warn',
     baselineLaunch.snippet || 'no particle_flow launch marker');
+  await awaitGpuDispatchOk(
+    'FLOW',
+    'inward GPU dispatch ok',
+    baselineStart,
+    kernelNamesFromSource(FLOW_DEVICE_INWARD),
+  );
 
   await captureMcpScreenshot('flow-inward');
 
@@ -1658,6 +1876,17 @@ async function phaseFlow(ctx) {
   record('FLOW', 'outward device edit hot-swapped',
     fastSwap.matched ? 'pass' : 'warn',
     fastSwap.snippet || 'no device-only HMR marker');
+  await assertNoGpuHmrFallback(
+    'FLOW',
+    'outward HMR has no full-device fallback',
+    flipStart,
+  );
+  await awaitGpuDispatchOk(
+    'FLOW',
+    'outward GPU dispatch ok',
+    flipStart,
+    kernelNamesFromSource(FLOW_DEVICE_OUTWARD),
+  );
 
   const trend = await awaitWorkerLogRegex(
     /\[gpu-flow-demo\].*trend=outward/,
@@ -1677,6 +1906,7 @@ async function phaseP0(ctx) {
   if (skipIfNoGpuToolchain('P0', ctx, 'toolchain smoke')) return;
 
   log('info', '── Phase P0: toolchain smoke ──');
+  const p0LogStart = await workerLogCheckpoint(8 * 1024 * 1024);
   const compile = await postCompile({
     ctx,
     slug: CFG.slug,
@@ -1700,6 +1930,21 @@ async function phaseP0(ctx) {
   );
   record('P0', 'gpu adapter loaded cubin/hsaco', sawCubin.matched ? 'pass' : 'warn',
     sawCubin.snippet || 'no marker');
+  await awaitGpuDispatchOk(
+    'P0',
+    'baseline GPU dispatch ok',
+    p0LogStart,
+    kernelNamesFromSource(DEVICE_CU_PHASE0),
+  );
+
+  if (ctx.fixture === 'vector') {
+    await awaitGuiReadback(
+      'P0',
+      'baseline numeric GPU readback',
+      VECTOR_ADD_READBACK,
+      p0LogStart,
+    );
+  }
 
   // ccache must NOT wrap nvcc/hipcc (§5.3 regression check).
   const tail = await readWorkerLogTail();
@@ -1733,8 +1978,28 @@ async function phaseP1(ctx) {
     /\[gpu-reload\]\s+plan=(device_only|cold|host_only|mixed|abi_breaking)/,
     CFG.hmrTimeoutMs,
     { after: preTail, maxBytes: 8 * 1024 * 1024 });
+  await assertNoGpuHmrFallback(
+    'P1',
+    'edit HMR has no full-device fallback',
+    preTail,
+  );
+  await awaitGpuDispatchOk(
+    'P1',
+    'post-edit GPU dispatch ok',
+    preTail,
+    kernelNamesFromSource(DEVICE_CU_PHASE1_EDIT),
+  );
   record('P1', 'reload plan emitted', reload.matched ? 'pass' : 'warn',
     reload.snippet || 'no plan marker — orchestrator not wired yet');
+
+  if (ctx.fixture === 'vector') {
+    await awaitGuiReadback(
+      'P1',
+      'post-edit numeric GPU readback',
+      VECTOR_MUL_READBACK,
+      preTail,
+    );
+  }
 
   const reused = await awaitWorkerLogRegex(
     /reused buffer\s+[A-Za-z0-9_]+=0x|state_preserved:\s*true/,
@@ -1746,7 +2011,14 @@ async function phaseP1(ctx) {
 
   // If we saw both pre and post pointer lines, assert at least one match.
   if (prePtrs.length > 0) {
-    const postTail = await readWorkerLogTail(8 * 1024 * 1024, preTail.at ? { since: preTail.at } : {});
+    const postTail = await readWorkerLogTail(
+      8 * 1024 * 1024,
+      preTail.fileSize != null
+        ? { fromOffset: preTail.fileSize }
+        : preTail.at
+          ? { since: preTail.at }
+          : {},
+    );
     const postPtrs = extractBufferPointers(workerLogSearchWindow(postTail, { after: preTail }));
     const overlap = prePtrs.filter((p) => postPtrs.includes(p));
     record('P1', 'pre/post pointer overlap',
@@ -1851,6 +2123,25 @@ async function phaseP2(ctx) {
     } else {
       record('P2', `fast swap within budget (${CFG.fastSwapBudgetMs}ms)`, 'warn',
         `no plan=device_only marker (wall=${Date.now() - tFast0}ms)`);
+    }
+    await assertNoGpuHmrFallback(
+      'P2',
+      'fast-swap HMR has no full-device fallback',
+      fastLogStart,
+    );
+    await awaitGpuDispatchOk(
+      'P2',
+      'fast-swap GPU dispatch ok',
+      fastLogStart,
+      kernelNamesFromSource(DEVICE_CU_PHASE2_FAST),
+    );
+    if (ctx.fixture === 'vector') {
+      await awaitGuiReadback(
+        'P2',
+        'fast-swap numeric GPU readback',
+        VECTOR_MUL_READBACK,
+        fastLogStart,
+      );
     }
   }
 
@@ -2155,6 +2446,43 @@ async function selfCheck() {
       ...flowContract.findings.map((f) => `flow:${f}`),
     ];
     console.error(`gpu-hmr-test self-check failed: ${findings.join(', ')}`);
+    process.exitCode = 1;
+    return;
+  }
+  const sampleReadback = parseGuiReadbacks('[gui] frame=7 c[0..7]=0 3 6 9 12 15 18 21\n');
+  if (!readbackMatches(sampleReadback[0]?.values, VECTOR_ADD_READBACK)) {
+    console.error('gpu-hmr-test self-check failed: readback parser did not match vector baseline');
+    process.exitCode = 1;
+    return;
+  }
+  const partialTelemetry = gpuHmrFallbackTelemetry(
+    '[compile-device] reload package label=gpu-hmr-partial fallbackUsed=false selectedArtifactKind=source_include_bridge\n',
+  );
+  const degradedTelemetry = gpuHmrFallbackTelemetry(
+    '[compile-device] reload package label=gpu-hmr-degraded-full-device fallbackUsed=true fallbackReason=partial_compile_failed selectedArtifactKind=full_device\n',
+  );
+  if (!partialTelemetry.label || partialTelemetry.degraded || !degradedTelemetry.degraded) {
+    console.error('gpu-hmr-test self-check failed: fallback telemetry parser did not classify labels');
+    process.exitCode = 1;
+    return;
+  }
+  const dispatchOk = firstMatchingLine(
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=any grid=(1, 1, 1) block=(1, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=ok\n',
+    /\[gpu-runtime-boundary\]\s+synthi_gpu_launch\s+kernel=\S+.*dispatch=ok\b/,
+  );
+  const dispatchFailed = firstMatchingLine(
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=any grid=(1, 1, 1) block=(1, 1, 1) args=1 stream=0 shared_bytes=0 dispatch=failed error=cuLaunchKernel returned 1\n',
+    /\[gpu-runtime-boundary\]\s+synthi_gpu_launch\s+kernel=\S+.*dispatch=(failed|stale-pointer|missing-dispatcher)\b/,
+  );
+  const vectorKernels = kernelNamesFromSource(DEVICE_CU_PHASE0);
+  const flowKernels = kernelNamesFromSource(FLOW_DEVICE_INWARD);
+  if (
+    !dispatchOk
+    || !dispatchFailed
+    || vectorKernels.join(',') !== 'vec_add'
+    || flowKernels.join(',') !== 'particle_flow'
+  ) {
+    console.error('gpu-hmr-test self-check failed: dispatch telemetry parser did not classify launch status');
     process.exitCode = 1;
     return;
   }

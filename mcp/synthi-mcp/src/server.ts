@@ -141,6 +141,10 @@ const TOOLS = [
           description: "Maximum wait in milliseconds. Default 60000 (accommodates Tier 3 AI-split + compile latency).",
           default: 60000,
         },
+        module: {
+          type: "string",
+          description: "Optional terminal HMR module filter, for example 'device' to wait for GPU sidecar HMR instead of the first core/gui status.",
+        },
       },
       required: [],
     },
@@ -193,6 +197,19 @@ const TOOLS = [
         user_requested_deterministic: {
           type: "boolean",
           description: "Explicit opt-in to deterministic split (Loop A). Default false.",
+        },
+        force_gpu_ai_delta: {
+          type: "boolean",
+          description:
+            "Force GPU source edits through the verifier-gated GPU AI delta path instead of the local direct-device fast path.",
+        },
+        use_gpu_ai_delta: {
+          type: "boolean",
+          description: "Alias for force_gpu_ai_delta.",
+        },
+        force_ai_delta: {
+          type: "boolean",
+          description: "Alias for force_gpu_ai_delta.",
         },
         prefer_gpu_pipeline: {
           type: "boolean",

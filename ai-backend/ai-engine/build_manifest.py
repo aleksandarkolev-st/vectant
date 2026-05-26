@@ -49,8 +49,10 @@ See HMR_AGNOSTIC_ULTRAPLAN.md §5.3 for the full Point 3 design.
 """
 from __future__ import annotations
 
+import json
 import re
-from typing import Any, List, Literal, Mapping, Optional, Set, Tuple
+import shlex
+from typing import Any, Dict, List, Literal, Mapping, Optional, Set, Tuple
 
 try:
     from pydantic import BaseModel, Field, field_validator, ConfigDict
@@ -75,6 +77,7 @@ DeviceCompiler = Literal["nvcc", "clang-cuda", "hipcc"]
 DeviceVendor   = Literal["cuda", "rocm"]
 SnapshotMode   = Literal["driver_checkpoint", "userspace", "auto"]
 FatbinStrategy = Literal["sidecar_module"]
+SUPPORTED_GPU_VENDORS = {"cuda", "rocm"}
 
 
 class GpuBuildBlock(BaseModel):
@@ -93,6 +96,11 @@ class GpuBuildBlock(BaseModel):
     runtime_libs: List[str] = Field(default_factory=list)
     snapshot_mode: SnapshotMode = "auto"
     fatbin_strategy: FatbinStrategy = "sidecar_module"
+    # Production GPU HMR metadata. V1 still compiles a single generated
+    # sidecar, but the manifest must carry role/link topology so RDC and
+    # future multi-device-TU paths are explicit instead of inferred.
+    device_roles: List[dict] = Field(default_factory=list)
+    device_link: dict = Field(default_factory=dict)
 
     if _PYDANTIC_V2:
         model_config = ConfigDict(extra="ignore")
@@ -322,12 +330,256 @@ def manifest_to_dict(manifest: BuildManifest) -> dict:
     return manifest.dict()  # type: ignore[attr-defined]
 
 
+GPU_GENERATED_ROLE_ROOT = ".synthi/generated/gpu"
+
+
+def _gpu_internal_role_paths(vendor: str) -> dict[str, str]:
+    device_ext = "hip" if vendor == "rocm" else "cu"
+    return {
+        "shared": f"{GPU_GENERATED_ROLE_ROOT}/shared.h",
+        "core": f"{GPU_GENERATED_ROLE_ROOT}/core.cpp",
+        "gui": f"{GPU_GENERATED_ROLE_ROOT}/gui.cpp",
+        "host_runner": f"{GPU_GENERATED_ROLE_ROOT}/host_runner.cpp",
+        "device": f"{GPU_GENERATED_ROLE_ROOT}/device.{device_ext}",
+    }
+
+
+def _normalize_gpu_vendor(raw: Any) -> Optional[str]:
+    vendor = str(raw or "").strip().lower()
+    if vendor in {"hip", "amd", "amdhip"}:
+        return "rocm"
+    if vendor in SUPPORTED_GPU_VENDORS:
+        return vendor
+    return None
+
+
+def _gpu_device_role_id(path: str) -> str:
+    normalized = str(path or "device").replace("\\", "/").rsplit("/", 1)[-1]
+    stem = normalized.rsplit(".", 1)[0] or "device"
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", stem).strip("_") or "device"
+    return f"device.{slug}"
+
+
+def _gpu_device_link_bundle_id(raw_bundle_id: Any, affected_roles: List[str]) -> str:
+    if raw_bundle_id:
+        return str(raw_bundle_id)
+    role_seed = "__".join(role for role in affected_roles if role) or "device"
+    role_seed = role_seed.replace("device.", "")
+    slug = re.sub(r"[^A-Za-z0-9_]+", "_", role_seed).strip("_") or "device"
+    return f"device.bundle.{slug[:96]}"
+
+
+def _gpu_rdc_required(device_flags: Any) -> bool:
+    flags = _normalize_str_list(device_flags)
+    return any(
+        flag in {"-fgpu-rdc", "--device-c", "--gpu-rdc"}
+        or flag.startswith("--relocatable-device-code")
+        or flag == "-rdc=true"
+        or (flag.startswith("-rdc=") and flag.rsplit("=", 1)[-1].lower() in {"1", "true", "on"})
+        for flag in flags
+    )
+
+
+def _normalize_gpu_device_roles(
+    raw_roles: Any,
+    *,
+    device_path: str,
+    compiler: str,
+    arch: List[str],
+    device_flags: List[str],
+) -> List[dict]:
+    roles: List[dict] = []
+    if isinstance(raw_roles, list):
+        for item in raw_roles:
+            if not isinstance(item, Mapping):
+                continue
+            path = str(item.get("path") or item.get("generated_path") or "").replace("\\", "/")
+            if not path:
+                continue
+            role_arch = _normalize_str_list(item.get("arch")) or list(arch)
+            roles.append(
+                {
+                    "id": str(item.get("id") or _gpu_device_role_id(path)),
+                    "path": path,
+                    "source_files": _normalize_str_list(
+                        item.get("source_files") or item.get("sourceFiles")
+                    ),
+                    "compiler": str(item.get("compiler") or compiler),
+                    "arch": role_arch,
+                    "requires_rdc": bool(item.get("requires_rdc"))
+                    or bool(item.get("requiresRdc"))
+                    or _gpu_rdc_required(device_flags),
+                }
+            )
+    if not roles:
+        roles.append(
+            {
+                "id": _gpu_device_role_id(device_path),
+                "path": device_path,
+                "source_files": [],
+                "compiler": compiler,
+                "arch": list(arch),
+                "requires_rdc": _gpu_rdc_required(device_flags),
+            }
+        )
+    return roles
+
+
+def _normalize_gpu_device_link(raw_link: Any, *, device_roles: List[dict], device_flags: List[str]) -> dict:
+    link = dict(raw_link) if isinstance(raw_link, Mapping) else {}
+    affected_roles = _normalize_str_list(link.get("affected_roles") or link.get("affectedRoles")) or [
+        str(role.get("id")) for role in device_roles
+    ]
+    requires_rdc = bool(
+        link.get("requires_rdc")
+        or link.get("requiresRdc")
+        or _gpu_rdc_required(device_flags)
+        or any(role.get("requires_rdc") for role in device_roles)
+    )
+    return {
+        "requires_rdc": requires_rdc,
+        "bundle_id": _gpu_device_link_bundle_id(
+            link.get("bundle_id") or link.get("bundleId"),
+            affected_roles,
+        ),
+        "affected_roles": affected_roles,
+        "supports_incremental": bool(
+            link.get("supports_incremental") or link.get("supportsIncremental")
+        ),
+        "estimated_ms": int(link.get("estimated_ms") or link.get("estimatedMs") or (8000 if requires_rdc else 0)),
+        "budget_ms": int(link.get("budget_ms") or link.get("budgetMs") or 5000),
+    }
+
+
+def _lookup_generated_role_content(
+    split_files: Mapping[str, str],
+    *,
+    role: str,
+    declared_path: Optional[str],
+    vendor: str,
+) -> tuple[Optional[str], Optional[str]]:
+    normalized_files = {str(k).replace("\\", "/"): v for k, v in split_files.items()}
+    default_device = "device.hip" if vendor == "rocm" else "device.cu"
+    fallback_names = {
+        "shared": ["shared.h"],
+        "core": ["core.cpp"],
+        "gui": ["gui.cpp"],
+        "host_runner": ["host_runner.cpp"],
+        "device": [default_device, "device.cu", "device.hip"],
+    }
+    candidates = []
+    if declared_path:
+        normalized = str(declared_path).replace("\\", "/")
+        candidates.extend([normalized, normalized.rsplit("/", 1)[-1]])
+    candidates.extend([role, *fallback_names.get(role, [])])
+    if role == "device":
+        candidates.extend(
+            path
+            for path in normalized_files
+            if path.lower().endswith((".cu", ".hip"))
+        )
+    for candidate in candidates:
+        if candidate in normalized_files:
+            value = normalized_files[candidate]
+            return (value if isinstance(value, str) else str(value), candidate)
+    return None, None
+
+
+def internalize_gpu_generated_artifacts(
+    split_files: Mapping[str, str],
+    manifest: Mapping[str, Any],
+) -> tuple[dict[str, str], dict, dict]:
+    """Move generated GPU role filenames under Synthi-owned internal paths."""
+
+    manifest_out = dict(manifest)
+    gpu = dict(manifest_out.get("gpu") if isinstance(manifest_out.get("gpu"), dict) else {})
+    vendor = _normalize_gpu_vendor(gpu.get("vendor"))
+    if not vendor:
+        raise ManifestRejection(
+            "GPU generated artifact internalization requires an explicit supported "
+            "gpu.vendor from the verified compile manifest; refusing to default to CUDA."
+        )
+    declared_roles = dict(
+        manifest_out.get("module_files")
+        if isinstance(manifest_out.get("module_files"), Mapping)
+        else {}
+    )
+    internal_roles = _gpu_internal_role_paths(vendor)
+    internal_files: dict[str, str] = {}
+    mappings = []
+    missing_roles = []
+
+    for role, internal_path in internal_roles.items():
+        content, source_path = _lookup_generated_role_content(
+            split_files,
+            role=role,
+            declared_path=declared_roles.get(role),
+            vendor=vendor,
+        )
+        if content is None:
+            missing_roles.append(role)
+            continue
+        internal_files[internal_path] = content
+        mappings.append(
+            {
+                "role": role,
+                "sourcePath": source_path,
+                "internalPath": internal_path,
+            }
+        )
+
+    if missing_roles:
+        raise ManifestRejection(
+            "GPU split is missing required generated role content: "
+            + ", ".join(sorted(missing_roles))
+        )
+
+    manifest_out["module_files"] = internal_roles
+    manifest_out["files"] = list(internal_roles.values())
+    if gpu:
+        arch = _normalize_str_list(gpu.get("arch"))
+        device_flags = _normalize_gpu_device_flags(gpu.get("device_flags"), vendor)
+        compiler = str(gpu.get("device_compiler") or ("hipcc" if vendor == "rocm" else "nvcc"))
+        gpu["device_roles"] = _normalize_gpu_device_roles(
+            gpu.get("device_roles"),
+            device_path=internal_roles["device"],
+            compiler=compiler,
+            arch=arch,
+            device_flags=device_flags,
+        )
+        for role in gpu["device_roles"]:
+            role["path"] = internal_roles["device"]
+        gpu["device_link"] = _normalize_gpu_device_link(
+            gpu.get("device_link"),
+            device_roles=gpu["device_roles"],
+            device_flags=device_flags,
+        )
+        manifest_out["gpu"] = gpu
+    consumed_paths = {m["sourcePath"] for m in mappings if m["sourcePath"]}
+    report = {
+        "schemaVersion": "synthi.gpu.generated_artifact_purity.v1",
+        "rolesAreInternal": True,
+        "internalRoot": GPU_GENERATED_ROLE_ROOT,
+        "userWorkspaceMaterialization": "forbidden",
+        "mappings": mappings,
+        "missingRoles": missing_roles,
+        "droppedExtraGeneratedFiles": sorted(
+            str(path).replace("\\", "/")
+            for path in split_files
+            if str(path).replace("\\", "/") not in consumed_paths
+        ),
+    }
+    return internal_files, manifest_out, report
+
+
 def normalize_gpu_split_manifest(
     raw: Mapping[str, Any] | None,
     *,
     split_files: Mapping[str, str],
+    link_hint_sources: Optional[Mapping[str, str]] = None,
     vendor_hint: Optional[str] = None,
     arch_hint: Optional[str] = None,
+    focus_path: Optional[str] = None,
 ) -> dict:
     """Fill mechanical defaults the GPU splitter prompt may omit.
 
@@ -345,10 +597,21 @@ def normalize_gpu_split_manifest(
         return fallback
 
     gpu = dict(manifest.get("gpu") if isinstance(manifest.get("gpu"), dict) else {})
-    vendor = str(gpu.get("vendor") or vendor_hint or "").lower()
-    if vendor not in {"cuda", "rocm"}:
-        device_name = file_by(lambda base, full: base.endswith(".hip") or ".hip" in full)
-        vendor = "rocm" if device_name else "cuda"
+    vendor = _normalize_gpu_vendor(gpu.get("vendor") or vendor_hint)
+    if not vendor:
+        raise ManifestRejection(
+            "GPU split manifest is missing a supported gpu.vendor from selected "
+            "target metadata; refusing to infer vendor from filenames."
+        )
+
+    arch_values = _normalize_str_list(gpu.get("arch"))
+    if arch_hint:
+        arch_values = [arch_hint]
+    elif not arch_values:
+        raise ManifestRejection(
+            "GPU split manifest is missing gpu.arch and no selected-target "
+            "architecture hint was supplied; refusing to default the GPU arch."
+        )
 
     default_device = "device.hip" if vendor == "rocm" else "device.cu"
     roles = dict(manifest.get("module_files") if isinstance(manifest.get("module_files"), dict) else {})
@@ -395,13 +658,11 @@ def normalize_gpu_split_manifest(
     if vendor == "rocm":
         compiler = "hipcc"
         manifest["compiler"] = "clang++"
-        arch = arch_hint or "gfx90a"
         include_flags = ["-D__HIP_PLATFORM_AMD__", "-I/opt/rocm/include"]
         link_flags = ["-L/opt/rocm/lib", "-lamdhip64"]
         runtime_libs = ["amdhip64"]
     else:
         compiler = "nvcc"
-        arch = arch_hint or "sm_80"
         include_flags = ["-I/usr/local/cuda/include"]
         link_flags = ["-L/usr/local/cuda/lib64", "-L/usr/local/cuda/lib64/stubs", "-lcudart", "-lcuda"]
         runtime_libs = ["cudart", "cuda"]
@@ -421,8 +682,6 @@ def normalize_gpu_split_manifest(
                 values.append(flag)
         manifest[field] = values
 
-    source_blob = "\n".join(str(v) for v in split_files.values())
-
     def add_host_link_flags(flags: List[str]) -> None:
         for field in ("gui_link_flags", "runner_link_flags"):
             values = list(manifest.get(field) or [])
@@ -431,22 +690,17 @@ def normalize_gpu_split_manifest(
                     values.append(flag)
             manifest[field] = values
 
+    project_sources = link_hint_sources or {}
+    metadata_flags = _extract_build_metadata_link_flags(project_sources, focus_path=focus_path)
+    if metadata_flags:
+        add_host_link_flags(metadata_flags)
+
+    source_blobs = [str(v) for v in split_files.values()]
+    source_blobs.extend(str(v) for v in project_sources.values())
+    source_blob = "\n".join(source_blobs)
     hinted_flags = _extract_source_link_hints(source_blob)
     if hinted_flags:
         add_host_link_flags(hinted_flags)
-
-    if "SDL2/" in source_blob or "SDL_" in source_blob:
-        add_host_link_flags(["-lSDL2"])
-    if "GLFW/" in source_blob or "GLFWwindow" in source_blob or "glfw" in source_blob:
-        add_host_link_flags(["-lglfw"])
-    if (
-        "GL/" in source_blob
-        or "glClear" in source_blob
-        or "glBegin" in source_blob
-        or "glDraw" in source_blob
-        or "glVertex" in source_blob
-    ):
-        add_host_link_flags(["-lGL"])
 
     runner_flags = list(manifest.get("runner_link_flags") or [])
     for flag in ("-ldl", "-pthread", "-rdynamic"):
@@ -454,13 +708,26 @@ def normalize_gpu_split_manifest(
             runner_flags.append(flag)
     manifest["runner_link_flags"] = runner_flags
 
+    metadata_device_flags = _extract_build_metadata_device_flags(project_sources, vendor, focus_path=focus_path)
+    raw_device_flags = _normalize_str_list(gpu.get("device_flags"))
+    raw_device_flags.extend(metadata_device_flags)
+
     gpu["vendor"] = vendor
     gpu["device_compiler"] = compiler
-    if arch_hint:
-        gpu["arch"] = [arch_hint]
-    elif not isinstance(gpu.get("arch"), list) or not gpu.get("arch"):
-        gpu["arch"] = [arch]
-    gpu["device_flags"] = _normalize_gpu_device_flags(gpu.get("device_flags"), vendor)
+    gpu["arch"] = arch_values
+    gpu["device_flags"] = _normalize_gpu_device_flags(raw_device_flags, vendor)
+    gpu["device_roles"] = _normalize_gpu_device_roles(
+        gpu.get("device_roles"),
+        device_path=str(roles.get("device") or default_device),
+        compiler=compiler,
+        arch=_normalize_str_list(gpu.get("arch")),
+        device_flags=gpu["device_flags"],
+    )
+    gpu["device_link"] = _normalize_gpu_device_link(
+        gpu.get("device_link"),
+        device_roles=gpu["device_roles"],
+        device_flags=gpu["device_flags"],
+    )
     if not isinstance(gpu.get("runtime_libs"), list) or not gpu.get("runtime_libs"):
         gpu["runtime_libs"] = runtime_libs
     gpu.setdefault("snapshot_mode", "auto")
@@ -469,12 +736,477 @@ def normalize_gpu_split_manifest(
     return manifest
 
 
-def _extract_source_link_hints(source: str) -> List[str]:
-    """Extract explicit linker hints embedded in generated split sources.
+def _extract_build_metadata_device_flags(
+    source_files: Mapping[str, str],
+    vendor: str,
+    *,
+    focus_path: Optional[str] = None,
+) -> List[str]:
+    cmake_flags = _extract_cmake_file_api_device_flags(source_files, vendor, focus_path=focus_path)
+    if cmake_flags:
+        return cmake_flags
 
-    The AI sometimes preserves user-side `// LINK: -lfoo -lbar` comments or
-    emits MSVC-style `#pragma comment(lib, "foo")` hints. Linux linkers do not
-    consume either form directly, so normalize them into manifest link flags.
+    compile_db = source_files.get("compile_commands.json")
+    if not compile_db:
+        return []
+    try:
+        entries = json.loads(compile_db)
+    except Exception:
+        return []
+    if not isinstance(entries, list):
+        return []
+
+    source_keys = [
+        str(path).replace("\\", "/").lstrip("./")
+        for path in source_files
+        if str(path).replace("\\", "/").lower().endswith((".c", ".cc", ".cpp", ".cxx", ".cu", ".cuh", ".hip", ".h", ".hh", ".hpp", ".hxx"))
+    ]
+    project_roots = _infer_compile_command_project_roots(entries, source_keys)
+    flags: List[str] = []
+    for entry in _compile_database_entries_for_focus(entries, project_roots, focus_path):
+        if not isinstance(entry, Mapping):
+            continue
+        args = entry.get("arguments")
+        if isinstance(args, list):
+            tokens = [str(arg) for arg in args]
+        else:
+            command = entry.get("command")
+            if not isinstance(command, str):
+                continue
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                continue
+        flags.extend(_device_flags_from_compile_tokens(tokens, project_roots, vendor))
+    return _dedupe_preserve_order(flags)
+
+
+def _compile_database_entries_for_focus(
+    entries: Any,
+    project_roots: List[str],
+    focus_path: Optional[str],
+) -> List[Mapping[str, Any]]:
+    normalized_entries = [
+        entry for entry in (entries if isinstance(entries, list) else []) if isinstance(entry, Mapping)
+    ]
+    if not focus_path:
+        return normalized_entries
+    focused: List[Mapping[str, Any]] = []
+    for entry in normalized_entries:
+        entry_file = _compile_database_entry_file(entry, project_roots)
+        if entry_file and _path_matches(entry_file, focus_path):
+            focused.append(entry)
+    return focused
+
+
+def _compile_database_entry_file(entry: Mapping[str, Any], project_roots: List[str]) -> str:
+    raw_file = str(entry.get("file") or "").strip()
+    if not raw_file:
+        return ""
+    return _normalize_project_path(_rewrite_compile_metadata_path(raw_file, project_roots))
+
+
+def _infer_compile_command_project_roots(entries: Any, source_keys: List[str]) -> List[str]:
+    roots: List[str] = []
+    for entry in (entries if isinstance(entries, list) else []):
+        if not isinstance(entry, Mapping):
+            continue
+        raw_file = str(entry.get("file") or "").replace("\\", "/")
+        if not raw_file.startswith("/"):
+            continue
+        for rel in sorted(source_keys, key=len, reverse=True):
+            suffix = "/" + rel
+            if raw_file.endswith(suffix):
+                root = raw_file[: -len(suffix)].rstrip("/")
+                if root and root not in roots:
+                    roots.append(root)
+                break
+    return roots
+
+
+def _device_flags_from_compile_tokens(tokens: List[str], project_roots: List[str], vendor: str) -> List[str]:
+    flags: List[str] = []
+    skip_next = False
+    paired_path_flags = {"-I", "-isystem", "-iquote", "-idirafter", "--include-directory", "-include"}
+    for index, token in enumerate(tokens[1:], start=1):
+        if skip_next:
+            skip_next = False
+            continue
+        if token in {"-o", "-c", "-MF", "-MT", "-MQ"}:
+            skip_next = True
+            continue
+        if token.startswith(("-o", "-MF", "-MT", "-MQ")):
+            continue
+        if token in paired_path_flags:
+            if index + 1 >= len(tokens):
+                continue
+            value = _rewrite_compile_metadata_path(tokens[index + 1], project_roots)
+            if value:
+                flags.extend([token, value])
+            skip_next = True
+            continue
+        if token.startswith("-I") and len(token) > 2:
+            value = _rewrite_compile_metadata_path(token[2:], project_roots)
+            if value:
+                flags.append("-I" + value)
+            continue
+        if token.startswith("-D") or token.startswith("-U"):
+            flags.append(token)
+            continue
+        if token.startswith("-std="):
+            flags.append(token)
+            continue
+        if vendor == "cuda" and token.startswith(("--expt-", "--use_fast_math", "--use-fast-math")):
+            flags.append(token)
+            continue
+        if vendor == "rocm" and token in {"-fgpu-rdc", "--gpu-rdc"}:
+            flags.append(token)
+            continue
+    return flags
+
+
+def _rewrite_compile_metadata_path(path: str, project_roots: List[str]) -> str:
+    value = str(path).strip().strip('"').strip("'").replace("\\", "/")
+    if not value:
+        return ""
+    for root in sorted(project_roots, key=len, reverse=True):
+        prefix = root.rstrip("/") + "/"
+        if value == root.rstrip("/"):
+            return "."
+        if value.startswith(prefix):
+            return value[len(prefix):] or "."
+    return value
+
+
+def _dedupe_preserve_order(values: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: Set[str] = set()
+    paired_path_flags = {"-I", "-isystem", "-iquote", "-idirafter", "--include-directory", "-include"}
+    index = 0
+    while index < len(values):
+        value = values[index]
+        if not value:
+            index += 1
+            continue
+        if value in paired_path_flags and index + 1 < len(values):
+            pair_value = values[index + 1]
+            key = f"{value}\0{pair_value}"
+            if pair_value and key not in seen:
+                out.extend([value, pair_value])
+                seen.add(key)
+            index += 2
+            continue
+        if value not in seen:
+            out.append(value)
+            seen.add(value)
+        index += 1
+    return out
+
+
+def _normalize_project_path(path: str) -> str:
+    return str(path).replace("\\", "/").lstrip("./")
+
+
+def _path_matches(candidate: str, wanted: str) -> bool:
+    left = _normalize_project_path(candidate)
+    right = _normalize_project_path(wanted)
+    return left == right or left.endswith("/" + right) or right.endswith("/" + left)
+
+
+def _link_token_to_flag(token: str) -> Optional[str]:
+    token = token.strip().strip('"').strip("'")
+    if not token:
+        return None
+    if token in {"PRIVATE", "PUBLIC", "INTERFACE", "debug", "optimized", "general"}:
+        return None
+    if token.startswith("$<"):
+        return None
+    if token.startswith("${"):
+        return None
+    if token.startswith(("-", "/LIBPATH:")):
+        return token
+    if token.endswith((".a", ".so", ".dylib", ".lib")) or "/" in token or "\\" in token:
+        return token
+    if "::" in token:
+        token = token.rsplit("::", 1)[-1]
+    if re.match(r"^[A-Za-z0-9_.+-]+$", token):
+        return f"-l{token}"
+    return None
+
+
+def _extract_cmake_set_variables(text: str) -> Dict[str, List[str]]:
+    variables: Dict[str, List[str]] = {}
+    for match in re.finditer(
+        r"\bset\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s+([^)]+)\)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        name = match.group(1)
+        body = re.sub(r"#.*", " ", match.group(2))
+        values = [token for token in re.split(r"[\s\r\n]+", body) if token]
+        if values:
+            variables[name] = values
+    return variables
+
+
+def _expand_cmake_link_token(token: str, variables: Mapping[str, List[str]]) -> List[str]:
+    token = token.strip()
+    if not (token.startswith("${") and token.endswith("}")):
+        return [token]
+    name = token[2:-1].strip()
+    if not name:
+        return []
+    if name in variables:
+        return variables[name]
+    for suffix in ("_LIBRARIES", "_LIBRARY", "_LIBS", "_LIB"):
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return [name[: -len(suffix)]]
+    return [token]
+
+
+def _extract_build_metadata_link_flags(
+    source_files: Mapping[str, str],
+    *,
+    focus_path: Optional[str] = None,
+) -> List[str]:
+    """Extract linker flags from project build metadata.
+
+    This is intentionally generic. It reads user-owned build files such as
+    CMakeLists.txt instead of requiring source comments or a framework catalog.
+    """
+
+    flags: List[str] = []
+    seen: Set[str] = set()
+
+    def add(flag: Optional[str]) -> None:
+        if not flag or flag in seen:
+            return
+        flags.append(flag)
+        seen.add(flag)
+
+    for flag in _extract_cmake_file_api_link_flags(source_files, focus_path=focus_path):
+        add(flag)
+
+    for path, text in source_files.items():
+        normalized = str(path).replace("\\", "/")
+        if normalized.rsplit("/", 1)[-1] != "CMakeLists.txt":
+            continue
+        variables = _extract_cmake_set_variables(str(text))
+        for match in re.finditer(
+            r"target_link_libraries\s*\(\s*([A-Za-z0-9_.:+-]+)\s+([^)]+)\)",
+            str(text),
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            body = re.sub(r"#.*", " ", match.group(2))
+            for token in re.split(r"[\s\r\n]+", body):
+                for expanded in _expand_cmake_link_token(token, variables):
+                    add(_link_token_to_flag(expanded))
+    return flags
+
+
+def _split_command_fragment(fragment: str) -> List[str]:
+    try:
+        return shlex.split(fragment, posix=True)
+    except ValueError:
+        return [token for token in re.split(r"[\s\r\n]+", fragment) if token]
+
+
+def _target_sources_from_cmake_payload(payload: Mapping[str, Any]) -> List[str]:
+    sources = payload.get("sources")
+    if not isinstance(sources, list):
+        return []
+    out: List[str] = []
+    for item in sources:
+        if not isinstance(item, Mapping):
+            continue
+        path = item.get("path")
+        if isinstance(path, str) and path.strip():
+            out.append(_normalize_project_path(path))
+    return out
+
+
+def _cmake_target_payloads(
+    source_files: Mapping[str, str],
+    *,
+    focus_path: Optional[str] = None,
+) -> List[Mapping[str, Any]]:
+    records: List[Tuple[int, Mapping[str, Any]]] = []
+    for path, text in source_files.items():
+        normalized = str(path).replace("\\", "/")
+        base = normalized.rsplit("/", 1)[-1]
+        if not (
+            normalized.endswith(".json")
+            and base.startswith("target-")
+            and "/.cmake/api/v1/reply/" in f"/{normalized}"
+        ):
+            continue
+        try:
+            payload = json.loads(str(text))
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        sources = _target_sources_from_cmake_payload(payload)
+        score = 1
+        if focus_path and any(_path_matches(source, focus_path) for source in sources):
+            score += 100
+        if str(payload.get("type") or "").upper() == "EXECUTABLE":
+            score += 10
+        records.append((score, payload))
+
+    if not records:
+        return []
+    max_score = max(score for score, _payload in records)
+    return [payload for score, payload in records if score == max_score]
+
+
+def _flags_from_cmake_compile_group(
+    group: Mapping[str, Any],
+    *,
+    project_roots: List[str],
+    vendor: str,
+) -> List[str]:
+    flags: List[str] = []
+    for item in group.get("defines") or []:
+        if not isinstance(item, Mapping):
+            continue
+        define = str(item.get("define") or "").strip()
+        if define:
+            flags.append("-D" + define)
+    for item in group.get("includes") or []:
+        if not isinstance(item, Mapping):
+            continue
+        path = _rewrite_compile_metadata_path(str(item.get("path") or ""), project_roots)
+        if not path:
+            continue
+        if item.get("isSystem"):
+            flags.extend(["-isystem", path])
+        else:
+            flags.append("-I" + path)
+    for item in group.get("compileCommandFragments") or []:
+        if not isinstance(item, Mapping):
+            continue
+        tokens = _split_command_fragment(str(item.get("fragment") or ""))
+        flags.extend(_device_flags_from_compile_tokens(["compiler"] + tokens, project_roots, vendor))
+    if not any(flag.startswith("-std=") for flag in flags):
+        standard = group.get("languageStandard")
+        if isinstance(standard, Mapping):
+            value = str(standard.get("standard") or "").strip()
+            if value:
+                language = str(group.get("language") or "").upper()
+                if language in {"CXX", "CUDA", "HIP"}:
+                    flags.append(f"-std=gnu++{value}")
+    return flags
+
+
+def _extract_cmake_file_api_device_flags(
+    source_files: Mapping[str, str],
+    vendor: str,
+    *,
+    focus_path: Optional[str] = None,
+) -> List[str]:
+    payloads = _cmake_target_payloads(source_files, focus_path=focus_path)
+    if not payloads:
+        return []
+    source_keys = [
+        str(path).replace("\\", "/").lstrip("./")
+        for path in source_files
+        if str(path)
+        .replace("\\", "/")
+        .lower()
+        .endswith((".c", ".cc", ".cpp", ".cxx", ".cu", ".cuh", ".hip", ".h", ".hh", ".hpp", ".hxx"))
+    ]
+    entries = []
+    compile_db = source_files.get("compile_commands.json")
+    if compile_db:
+        try:
+            parsed = json.loads(compile_db)
+            if isinstance(parsed, list):
+                entries = parsed
+        except Exception:
+            entries = []
+    project_roots = _infer_compile_command_project_roots(entries, source_keys)
+    flags: List[str] = []
+    for payload in payloads:
+        groups = payload.get("compileGroups")
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, Mapping):
+                continue
+            language = str(group.get("language") or "").upper()
+            if language not in {"CXX", "CUDA", "HIP"}:
+                continue
+            flags.extend(
+                _flags_from_cmake_compile_group(
+                    group,
+                    project_roots=project_roots,
+                    vendor=vendor,
+                )
+            )
+    return _dedupe_preserve_order(flags)
+
+
+def _extract_cmake_file_api_link_flags(
+    source_files: Mapping[str, str],
+    *,
+    focus_path: Optional[str] = None,
+) -> List[str]:
+    """Extract target-scoped link flags from CMake File API target replies.
+
+    CMake's File API has already resolved imported targets such as
+    OpenGL::GL/GLEW::GLEW to concrete link fragments. Prefer executable target
+    replies when present so helper/static-library targets do not widen the
+    generated module link scope.
+    """
+
+    target_records: List[Tuple[bool, List[str]]] = []
+    payloads = _cmake_target_payloads(source_files, focus_path=focus_path)
+    if not payloads:
+        payloads = _cmake_target_payloads(source_files)
+    for payload in payloads:
+        link = payload.get("link")
+        fragments = link.get("commandFragments") if isinstance(link, Mapping) else None
+        if not isinstance(fragments, list):
+            continue
+        flags: List[str] = []
+        seen: Set[str] = set()
+        for item in fragments:
+            if not isinstance(item, Mapping):
+                continue
+            role = str(item.get("role") or "")
+            if role not in {"libraries", "libraryPath", "framework", "frameworkPath"}:
+                continue
+            for token in _split_command_fragment(str(item.get("fragment") or "")):
+                flag = _link_token_to_flag(token)
+                if flag and flag not in seen:
+                    flags.append(flag)
+                    seen.add(flag)
+        if flags:
+            target_records.append((str(payload.get("type") or "").upper() == "EXECUTABLE", flags))
+
+    if any(is_executable for is_executable, _flags in target_records):
+        target_records = [
+            (is_executable, flags)
+            for is_executable, flags in target_records
+            if is_executable
+        ]
+
+    out: List[str] = []
+    seen_out: Set[str] = set()
+    for _is_executable, flags in target_records:
+        for flag in flags:
+            if flag not in seen_out:
+                out.append(flag)
+                seen_out.add(flag)
+    return out
+
+
+def _extract_source_link_hints(source: str) -> List[str]:
+    """Extract optional explicit linker hints embedded in project sources.
+
+    These are accepted for compatibility with existing fixtures and MSVC-style
+    pragmas, but production correctness must not depend on users writing them.
     """
 
     flags: List[str] = []
@@ -484,11 +1216,10 @@ def _extract_source_link_hints(source: str) -> List[str]:
         flag = flag.strip()
         if not flag:
             return
-        if not flag.startswith("-l") and re.match(r"^[A-Za-z0-9_.+-]+$", flag):
-            flag = f"-l{flag}"
-        if flag.startswith("-l") and flag not in seen:
-            flags.append(flag)
-            seen.add(flag)
+        normalized = _link_token_to_flag(flag)
+        if normalized and normalized not in seen:
+            flags.append(normalized)
+            seen.add(normalized)
 
     for match in re.finditer(r"(?im)^\s*//\s*LINK:\s*(.+)$", source):
         for token in match.group(1).split():
@@ -540,18 +1271,35 @@ def _normalize_gpu_device_flags(raw_flags: Any, vendor: str) -> List[str]:
 
     normalized: List[str] = []
     seen: Set[str] = set()
+    seen_pairs: Set[str] = set()
+    paired_path_flags = {"-I", "-isystem", "-iquote", "-idirafter", "--include-directory", "-include"}
 
     def add(flag: str) -> None:
         if flag and flag not in seen:
             normalized.append(flag)
             seen.add(flag)
 
-    for raw in raw_flags:
+    index = 0
+    while index < len(raw_flags):
+        raw = raw_flags[index]
         flag = str(raw).strip()
         if not flag:
+            index += 1
             continue
+        if flag in paired_path_flags and index + 1 < len(raw_flags):
+            value = str(raw_flags[index + 1]).strip()
+            pair_key = f"{flag}\0{value}"
+            if value and pair_key not in seen_pairs:
+                normalized.extend([flag, value])
+                seen_pairs.add(pair_key)
+            index += 2
+            continue
+        if flag.startswith("-std="):
+            normalized = [existing for existing in normalized if not existing.startswith("-std=")]
+            seen = {existing for existing in seen if not existing.startswith("-std=")}
         if vendor == "rocm" and flag in {"--use_fast_math", "--use-fast-math"}:
             # hipcc's clang device path rejects nvcc's CUDA-only spelling.
+            index += 1
             continue
         if vendor == "rocm" and (
             flag.startswith("-arch=sm_")
@@ -559,16 +1307,19 @@ def _normalize_gpu_device_flags(raw_flags: Any, vendor: str) -> List[str]:
             or flag.startswith("-gencode")
             or flag.startswith("--generate-code")
         ):
+            index += 1
             continue
         if vendor == "cuda" and (
             flag.startswith("--offload-arch=gfx")
             or flag.startswith("--amdgpu-target=")
             or flag.startswith("--rocm-path")
         ):
+            index += 1
             continue
         add(flag)
+        index += 1
 
-    for default in ("-O3", "-lineinfo"):
+    for default in ("-I.", "-O3", "-lineinfo"):
         add(default)
 
     return normalized

@@ -128,16 +128,64 @@ export function generateDerivedVariables(ui) {
   const vars = new Map();
   if (!ui) return vars;
 
-  const p = ui.accentPrimary || '#327464';
-  const s = ui.accentSecondary || '#3d8b78';
-  const t = ui.accentTertiary || '#4a9e8a';
+  const p = ui.accentPrimary || '#6c6885';
+  const as = ui.accentSecondary || p;
+  const at = ui.accentTertiary || p;
 
-  vars.set('--accent-gradient', `linear-gradient(135deg, ${p} 0%, ${s} 50%, ${t} 100%)`);
+  // ── Attention accent ──
+  // Historically called "attention-purple" because the original Vectant
+  // Dark used purple. We keep the variable name for compatibility but
+  // derive it from the active theme's accent so every theme gets its
+  // own signature colour instead of a fixed purple. A theme that wants
+  // to preserve its own brand purple can still set `ui.attentionPurple`.
+  const att = ui.attentionPurple || p;
+  vars.set('--attention-purple', att);
+  const attRgb = hexToRgb(att);
+  if (attRgb) {
+    vars.set('--attention-glow', `0 0 22px rgba(${attRgb.r}, ${attRgb.g}, ${attRgb.b}, 0.38)`);
+    vars.set(
+      '--attention-rim',
+      `0 0 0 1px rgba(${attRgb.r}, ${attRgb.g}, ${attRgb.b}, 0.28), 0 0 16px -2px rgba(${attRgb.r}, ${attRgb.g}, ${attRgb.b}, 0.36)`
+    );
+  }
 
-  // Parse hex to rgba for glow
+  // ── Brand gradient stops ──
+  // Default to the theme's accent palette so the brand gradient (used
+  // by the bottom status bar, primary CTAs, etc.) follows the active
+  // theme. A theme can pin its own multi-stop identity via
+  // `ui.brandStops: { p1, p2, p3, p4 }` — Vectant Dark does this to
+  // keep its pink → red → purple → blue brand gradient.
+  const brand = ui.brandStops || {};
+  const b1 = brand.p1 || as;
+  const b2 = brand.p2 || p;
+  const b3 = brand.p3 || at;
+  const b4 = brand.p4 || p;
+  vars.set('--brand-stop-1', b1);
+  vars.set('--brand-stop-2', b2);
+  vars.set('--brand-stop-3', b3);
+  vars.set('--brand-stop-4', b4);
+  const brandGradient = `linear-gradient(135deg, ${b1} 17%, ${b2} 40%, ${b3} 71%, ${b4} 100%)`;
+  const brandGradientH = `linear-gradient(90deg, ${b1} 17%, ${b2} 40%, ${b3} 71%, ${b4} 100%)`;
+  vars.set('--brand-gradient', brandGradient);
+  vars.set('--brand-gradient-horizontal', brandGradientH);
+
+  // ── Accent gradient ──
+  // For "signature moments" (logo, run state, primary CTAs) we want
+  // the actual brand colors. For "calm" gradients (toggles, hovers)
+  // we want the desaturated accent. Default --accent-gradient to the
+  // brand gradient; themes that want a calmer accent gradient can
+  // set `ui.accentGradient` to override.
+  vars.set('--accent-gradient', ui.accentGradient || brandGradient);
+
+  // Parse hex to rgba for glow (accent-glow uses the calm accent,
+  // brand-glow uses the brand mid-stop)
   const rgb = hexToRgb(p);
   if (rgb) {
-    vars.set('--accent-glow', `0 0 20px rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.4)`);
+    vars.set('--accent-glow', `0 0 24px rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.28)`);
+  }
+  const bRgb = hexToRgb(b3);
+  if (bRgb) {
+    vars.set('--brand-glow', `0 0 22px rgba(${bRgb.r}, ${bRgb.g}, ${bRgb.b}, 0.32)`);
   }
 
   // ── Disabled text alias (used by several components) ──

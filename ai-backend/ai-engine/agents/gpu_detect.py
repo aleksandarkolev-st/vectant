@@ -23,10 +23,9 @@ The vendor hint is a separate axis from `is_gpu`:
     is_gpu=True,  vendor_hint="rocm"     → HIP-only source.
     is_gpu=True,  vendor_hint="ambiguous"→ both vendors mentioned, or
                                            only `__global__` with no
-                                           include directives. Caller
-                                           defaults to `cuda` and lets
-                                           the user override via the
-                                           manifest's `gpu.vendor`.
+                                           include directives. Caller must
+                                           resolve this from target metadata
+                                           or explicit request settings.
 
 The signals we look for were chosen because each one *uniquely*
 implies GPU code — no false positives from ordinary C++:
