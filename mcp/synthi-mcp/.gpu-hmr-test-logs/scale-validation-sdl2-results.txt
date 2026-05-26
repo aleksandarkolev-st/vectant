@@ -1,54 +1,33 @@
-slug: gpu-gemini35-smoke-20260521232503
-repo_commit: 05636e17e93204287de6dda4ed925c2c2ee261e6
+slug: gpu-scale-validation-20260525024300
+repo_commit: 3a11bf31111a39a3558bb6085dec2087c65285a2
 model: gemini-3.5-flash
 vendor: rocm
 arch: gfx1201
 render_backend: sdl2
 template_evidence_mode: missing
 cmake_target_mode: single
-hmr_delta_mode: natural_user_delta
-validation_profile: natural
+hmr_delta_mode: ai_user_delta
+validation_profile: full
 source_file_mix: {"cpp":13,"hpp":18,"h":10,"hip":11,"cu":0,"total":52}
 workspace_file_count: 297
 relevant_file_count: 57
-generated_roles: {"shared":".synthi/generated/gpu/shared.h","core":".synthi/generated/gpu/core.cpp","gui":".synthi/generated/gpu/gui.cpp","host_runner":".synthi/generated/gpu/host_runner.cpp","device":".synthi/generated/gpu/device.hip"}
-prod_run_report: {"schemaVersion":"synthi.gpu.run_report.v1","arbiterDecision":"skip","selectedPlan":null,"compileDbHash":"74da1bb7537dce11d2c43813f3d1416c7cc8a361f898a07cea22c3657166aa7d","cmakeCodemodelHash":"11be3590f1b45b6dd50abb3af99b8dba23858a9370a3e1afbcd6dc3061a95356","targetResolutionMethod":"single_executable_target_containing_focus","cmakeTargetCount":1,"targetName":"particle_field","toolchainCapabilityProfileHash":"88c6e2071639dc994f38c117f057261c19e3aab56ec0d502320f8b96246d3cfa","templateEvidenceStatus":"missing","affectedTemplateInstantiationCount":0,"affectedHeaderGraphStatus":"bounded"}
+generated_roles: {}
+prod_run_report: null
 
-PASS gpu target - rocm arch=gfx1201 render_backend=sdl2 cmake_target_mode=single template_evidence=missing hmr_delta_mode=natural_user_delta validation_profile=natural
+PASS gpu target - rocm arch=gfx1201 render_backend=sdl2 cmake_target_mode=single template_evidence=missing hmr_delta_mode=ai_user_delta validation_profile=full
 PASS source file mix - {"cpp":13,"hpp":18,"h":10,"hip":11,"cu":0,"total":52}
 PASS ordinary user project guard - 297 files, no Synthi ABI or generated role filenames
 PASS render backend dependency preflight - SDL2: libsdl2-dev
-PASS create workspace - id=cmpfxwiup000dp601yj79wwj6 slug=gpu-gemini35-smoke-20260521232503
+WARN validation workspace auth fallback - frontend workspace API requires auth; using collab-backed validation workspace slug=gpu-scale-validation-20260525024300
+PASS create workspace - id=gpu-scale-validation-20260525024300 slug=gpu-scale-validation-20260525024300
 PASS seed scale workspace - 297 files
 PASS mcp tools/list - count=42
 PASS mcp attach - attached
-PASS first compile via MCP - files=297
-PASS worker saw full file set - [AI Split] ENTER (cache_key=6523892863318836657, src_len=375, files=297, gpu_mode=rocm, gpu_arch=gfx1201
-PASS ai-engine saw full file set or split cache hit - [split/gpu] request file context count=297
-PASS screenshot first-compile - 800x600 visible=35456 luma=17.1 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-gemini35-smoke-20260521232503-first-compile.png
-PASS generated split preserved SDL2 backend - framework markers present
-PASS generated split contains HMR ABI - .synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip
-PASS generated launch sites use indirection table - launchSites=2 tableVersion=1
-PASS stale launch pointer check passed - reload_failed.stale_launch_pointer
-PASS missing template evidence blocks warm rebuild - reason=template_evidence_missing warm=fail
-PASS production run report records target, capability, cache, and header graph - target=particle_field arbiter=skip headers=3
-PASS read generated split from worker - worker=/tmp/.tmpuNaZEW
-PASS generated split kept internal - .synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip supplied inline to HMR compile only
-PASS user device-source natural compile via MCP - src/gpu/particle_kernels.hip
-PASS workspace visible tree remains user files only - 317 listed files; no generated split artifacts
-PASS natural body edit avoided full AI re-split - no full AI split marker after body edit
-PASS user_device_delta GPU AI delta worker not called - no GPU AI delta worker marker
-PASS user_device_delta GPU AI delta backend not called - no GpuDiffPatch marker
-PASS device-only GPU HMR observed - [gpu-reload] plan=device_only  reason=device-file-only-edit
-PASS screenshot post-hmr - 800x600 visible=32731 luma=16.5 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-gemini35-smoke-20260521232503-post-hmr.png
-PASS runner stayed alive after GPU HMR - no runner crash marker
-PASS direct device-only sidecar report accepted body edit - edit.kernel_body_only,abi.kernel_signature_unchanged,abi.constant_global_layout_unchanged,mapping.device_role_valid,parser.user_baseline_ast_passed,parser.user_candidate_ast_passed,parser.generated_device_ast_passed,build.selected_compile_command_present,build.effective_flags_hash_present,build.device_sidecar_only,mapping.kernel.advance_particle_field
-PASS natural validation skipped forced negative gates - ordinary first split, device body edit, and bounded header edit completed without forced AI delta
+FAIL fatal - Error: first_ai_split_compile wait_hmr status=compile-error detail={"status":"compile-error","elapsedMs":18913,"hmrElapsedMs":18913,"source":"hmr_status","detail":{"status":"compile-error","module":"pipeline","errors":["device compile failed (exit exit status: 1): .synthi/generated/gpu/device.hip:98:12: error: no member named 'kResetPadding' in namespace 'scale'; did you mean simply 'kResetPadding'?\n   98 |   if (px < scale::kResetPadding) {\n      |            ^~~~~~~~~~~~~~~~~~~~\n      |            kResetPadding\n.synthi/generated/gpu/device.hip:9:17: note:
+    at compileViaMcp (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-scale-validation.mjs:1857:11)
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at async run (file:///C:/Users/polek/Downloads/test-agent/vectant-ade/mcp/synthi-mcp/scripts/gpu-hmr-scale-validation.mjs:3274:3)
 
-PHASE first_ai_split_compile wait=applied source=hmr_status wait_ms=21606 terminal_wait_ms=21524 wall_ms=81626 detail={"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true} frame_gate={"status":"satisfied","frame_seq":12,"ts_ms":1779395190885,"pipeline_budget_ms":80}
-PHASE natural_device_body_hmr wait=applied source=hmr_status wait_ms=1072 terminal_wait_ms=893 wall_ms=1087 detail={"status":"applied","module":"device","capability":"GPU sidecar HMR","state_preserved":true} frame_gate={"status":"satisfied","frame_seq":132,"ts_ms":1779395194892,"pipeline_budget_ms":80}
+PHASE first_ai_split_compile wait=compile-error source=hmr_status wait_ms=18913 terminal_wait_ms=18913 wall_ms=84008 detail={"status":"compile-error","module":"pipeline","errors":["device compile failed (exit exit status: 1): .synthi/generated/gpu/device.hip:98:12: error: no member named 'kResetPadding' in namespace 'scale'; did you mean simply 'kResetPadding'?\n   98 |   if (px < scale::kResetPadding) {\n      |            ^~~~~~~~~~~~~~~~~~~~\n      |            kResetPadding\n.synthi/generated/gpu/device.hip:9:17: note: 'kResetPadding' declared here\n    9 | constexpr float kResetPadding = 18.0f;\n      |         
 
-AI_DELTA user_device_delta mode=natural_user_delta profile=natural worker_called=false backend_called=false worker_marker= backend_marker=
 
-SCREENSHOT first-compile 800x600 visible=35456 luma=17.1 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-gemini35-smoke-20260521232503-first-compile.png differs=
-SCREENSHOT post-hmr 800x600 visible=32731 luma=16.5 path=C:\Users\polek\Downloads\test-agent\vectant-ade\mcp\synthi-mcp\.gpu-hmr-test-artifacts\gpu-gemini35-smoke-20260521232503-post-hmr.png differs=true

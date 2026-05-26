@@ -1,5 +1,5 @@
-use crate::hmr::orchestrator::{HmrOrchestrator, SavedState};
 use crate::hmr::integration::HmrPipeline;
+use crate::hmr::orchestrator::{HmrOrchestrator, SavedState};
 use crate::runtime::capability::{detect_capabilities, HmrCapability, HmrStatus};
 use crate::runtime::legacy_module_state::{AppState, ModuleState};
 use crate::runtime::loader::{LoadResult, ModuleLoader};
@@ -278,14 +278,14 @@ pub unsafe fn process_load_command(
                     if let Some(ref json_str) = ss.json {
                         if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(json_str) {
                             use crate::hmr::state_manager::SchemaVersion;
-                            let schema_v = SchemaVersion { major: 1, minor: 0, patch: 0 };
-                            let cp_result = orchestrator.capture_checkpoint(
-                                name, &json_val, schema_v, 1, 0,
-                            );
-                            eprintln!(
-                                "[Runner] [HMR] Checkpoint capture result: {:?}",
-                                cp_result
-                            );
+                            let schema_v = SchemaVersion {
+                                major: 1,
+                                minor: 0,
+                                patch: 0,
+                            };
+                            let cp_result =
+                                orchestrator.capture_checkpoint(name, &json_val, schema_v, 1, 0);
+                            eprintln!("[Runner] [HMR] Checkpoint capture result: {:?}", cp_result);
                         }
                     }
                 }
@@ -403,13 +403,17 @@ pub unsafe fn process_load_command(
                 // This gives a richer decision: direct restore, migrate, or discard.
                 let restore_outcome = {
                     use crate::hmr::state_manager::SchemaVersion;
-                    let target_schema = SchemaVersion { major: 1, minor: 0, patch: 0 };
+                    let target_schema = SchemaVersion {
+                        major: 1,
+                        minor: 0,
+                        patch: 0,
+                    };
                     orchestrator.orchestrate_state_restore(
                         name,
                         target_schema,
-                        1,  // abi_version
-                        0,  // source_hash
-                        vec![],  // required_fields (discover from template)
+                        1,      // abi_version
+                        0,      // source_hash
+                        vec![], // required_fields (discover from template)
                     )
                 };
 
@@ -417,12 +421,17 @@ pub unsafe fn process_load_command(
                     use crate::hmr::state_restore_orchestrator::RestoreStrategy;
                     match &outcome.strategy {
                         RestoreStrategy::Direct => {
-                            eprintln!("[Runner] [HMR] Checkpoint restore: Direct (no migration needed)");
+                            eprintln!(
+                                "[Runner] [HMR] Checkpoint restore: Direct (no migration needed)"
+                            );
                             // Still use the orchestrator's load path for the actual pointer
                             false // fall through to load_module_state below
                         }
                         RestoreStrategy::Migrate { steps } => {
-                            eprintln!("[Runner] [HMR] Checkpoint restore: Migrate ({} steps)", steps);
+                            eprintln!(
+                                "[Runner] [HMR] Checkpoint restore: Migrate ({} steps)",
+                                steps
+                            );
                             false // migration is handled by load_module_state
                         }
                         RestoreStrategy::Discard { reason } => {
@@ -550,7 +559,10 @@ pub unsafe fn process_load_command(
                         "[Runner] [HOST-KV] Module '{}' declares {} namespaces: {:?}",
                         name,
                         schemas.len(),
-                        schemas.iter().map(|(ns, _)| ns.as_str()).collect::<Vec<_>>()
+                        schemas
+                            .iter()
+                            .map(|(ns, _)| ns.as_str())
+                            .collect::<Vec<_>>()
                     );
 
                     // Register schemas and handle any resets

@@ -32,6 +32,13 @@ pub struct PromotionPolicy {
     /// Maximum latency for the health check itself (ms).
     pub max_health_latency_ms: u64,
 
+    /// Whether health probe latency is a promotion gate.
+    ///
+    /// A healthy probe proves the candidate responded correctly. Probe latency is
+    /// useful performance telemetry, but it is not a safety property unless a
+    /// caller explicitly opts into enforcing this SLA.
+    pub enforce_health_latency_budget: bool,
+
     /// Minimum time since candidate creation before promotion (ms).
     /// Prevents promoting too quickly on flaky builds.
     pub min_age_ms: u64,
@@ -51,6 +58,7 @@ impl Default for PromotionPolicy {
         Self {
             require_health_check: true,
             max_health_latency_ms: 1000,
+            enforce_health_latency_budget: false,
             min_age_ms: 0,
             max_age_ms: 30_000,
             enforce_latency_budget: true,
@@ -65,8 +73,8 @@ pub fn evaluate_promotion(
     policy: &PromotionPolicy,
     total_reload_ms: u64,
 ) -> PromotionVerdict {
-    let enforce_warm_latency_budget = policy.enforce_latency_budget
-        && matches!(candidate.decision, ReloadDecision::WarmReload);
+    let enforce_warm_latency_budget =
+        policy.enforce_latency_budget && matches!(candidate.decision, ReloadDecision::WarmReload);
 
     // Must be in Validated state
     if candidate.state != CandidateState::Validated {
@@ -89,7 +97,9 @@ pub fn evaluate_promotion(
                 };
             }
             Some(HealthCheckResult::Healthy { latency_ms }) => {
-                if enforce_warm_latency_budget && *latency_ms > policy.max_health_latency_ms {
+                if policy.enforce_health_latency_budget
+                    && *latency_ms > policy.max_health_latency_ms
+                {
                     return PromotionVerdict::Reject {
                         reason: format!(
                             "health check latency {}ms exceeds max {}ms",
@@ -208,6 +218,31 @@ mod tests {
         match evaluate_promotion(&c, &policy, 5000) {
             PromotionVerdict::Reject { reason } => {
                 assert!(reason.contains("budget"));
+            }
+            other => panic!("Expected Reject, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn promote_when_health_latency_exceeds_probe_budget_by_default() {
+        let c = validated_candidate_with(ReloadDecision::WarmReload, 1500);
+        let policy = PromotionPolicy::default();
+        assert_eq!(
+            evaluate_promotion(&c, &policy, 1500),
+            PromotionVerdict::Promote
+        );
+    }
+
+    #[test]
+    fn reject_when_health_latency_budget_is_explicitly_enforced() {
+        let c = validated_candidate_with(ReloadDecision::WarmReload, 1500);
+        let policy = PromotionPolicy {
+            enforce_health_latency_budget: true,
+            ..PromotionPolicy::default()
+        };
+        match evaluate_promotion(&c, &policy, 1500) {
+            PromotionVerdict::Reject { reason } => {
+                assert!(reason.contains("health check latency"));
             }
             other => panic!("Expected Reject, got {:?}", other),
         }

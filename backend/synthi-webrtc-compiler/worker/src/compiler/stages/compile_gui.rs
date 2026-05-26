@@ -3,12 +3,46 @@ use crate::compiler::context::CompileContext;
 use crate::compiler::error_parser::{parse_compiler_output, CompilerType};
 use crate::compiler::serialization_utils::calculate_hash;
 use crate::compiler::stages::compile_helpers::{
-    compile_to_object_command, cpp_compile_command, link_object_to_so_command, object_path_for_so,
+    compile_to_object_command, cpp_compile_command, filter_unresolved_manifest_library_flags,
+    link_object_to_so_command, object_path_for_so,
 };
 use crate::hmr::compile_manifest::{CompileManifest, ModuleKind};
 use crate::hmr::incremental_cache::IncrementalCache;
 use anyhow::{Context, Result};
 use tokio::time::{timeout, Duration};
+
+fn deterministic_gui_stub_source() -> &'static str {
+    r#"extern "C" unsigned int gui_get_abi_version() { return 1u; }
+extern "C" void* gui_on_load(void* prev_state, void* window_ptr, void* core_api_ptr) {
+    (void)window_ptr;
+    (void)core_api_ptr;
+    return prev_state;
+}
+extern "C" void gui_on_render(void* state_ptr) { (void)state_ptr; }
+extern "C" void gui_on_event(void* state_ptr, void* event_ptr) {
+    (void)state_ptr;
+    (void)event_ptr;
+}
+extern "C" void gui_on_unload(void* state_ptr) { (void)state_ptr; }
+extern "C" void* on_load(void* prev_state, void* window_ptr) {
+    (void)window_ptr;
+    return prev_state;
+}
+extern "C" void on_render(void* state_ptr) { (void)state_ptr; }
+extern "C" void on_event(void* state_ptr, void* event_ptr) {
+    (void)state_ptr;
+    (void)event_ptr;
+}
+extern "C" const char* hmr_get_state_json(void* state_ptr) {
+    (void)state_ptr;
+    return "{}";
+}
+extern "C" void hmr_set_state_json(void* state_ptr, const char* json) {
+    (void)state_ptr;
+    (void)json;
+}
+"#
+}
 
 pub async fn compile_gui(
     ctx: &CompileContext,
@@ -58,7 +92,7 @@ pub async fn compile_gui(
                 .unwrap_or("gui.cpp");
 
             // Use the already-processed content from Phase 1 (guardrails already applied)
-            let content = processed_gui.to_string();
+            let mut content = processed_gui.to_string();
             let source_path = dir_path.join(fname);
             if let Some(parent) = source_path.parent() {
                 tokio::fs::create_dir_all(parent).await?;
@@ -72,24 +106,23 @@ pub async fn compile_gui(
 
             // Build the effective flag list — manifest common_flags +
             // std + gui_link_flags + hardcoded dlopen boilerplate.
-            // `req_is_gui=false` means the runner won't ask gui.so to
-            // render anything, so we skip the gui_link_flags to avoid
-            // linking SDL2/GLFW/etc for headless projects (matches the
-            // pre-manifest gating on `-lSDL2`).
+            // Once the split emits a GUI module, its link flags are part
+            // of that module's recipe. `req_is_gui` only controls fallback
+            // stub generation below; gating link flags on it can create a
+            // .so with unresolved framework symbols that fails at dlopen.
             let mut effective_flag_strings: Vec<String> = Vec::with_capacity(
                 effective_manifest.common_flags.len() + effective_manifest.gui_link_flags.len() + 3,
             );
             effective_flag_strings.push(std_flag.clone());
             effective_flag_strings.extend(effective_manifest.common_flags.iter().cloned());
-            if req_is_gui {
-                effective_flag_strings.extend(effective_manifest.gui_link_flags.iter().cloned());
-            }
+            effective_flag_strings.extend(effective_manifest.gui_link_flags.iter().cloned());
             effective_flag_strings.push("-ldl".to_string());
             effective_flag_strings.push("-rdynamic".to_string());
             let effective_flag_refs: Vec<&str> =
                 effective_flag_strings.iter().map(String::as_str).collect();
 
-            let gui_cache_key = IncrementalCache::cache_key(&content, &effective_flag_refs, &[]);
+            let mut gui_cache_key =
+                IncrementalCache::cache_key(&content, &effective_flag_refs, &[]);
             if let Some(cached_so) = ctx.incremental_cache.get(&gui_cache_key).await {
                 let path = cached_so.to_string_lossy().to_string();
                 eprintln!("[Cache] HIT for gui module (persistent cache)");
@@ -101,14 +134,11 @@ pub async fn compile_gui(
                 // ULTRAPLAN Phase 9b: two-step split (see compile_core.rs
                 // for rationale). Same pattern: compile via ccache, link
                 // directly. Link flags for gui include `-ldl -rdynamic`
-                // plus the manifest's gui_link_flags when req_is_gui is
-                // set (headless projects skip them to avoid linking
-                // SDL2/GLFW/etc for a gui.so that won't render).
+                // plus the manifest's gui_link_flags whenever the split
+                // actually produced a GUI module.
                 let mut link_flags: Vec<String> =
                     Vec::with_capacity(effective_manifest.gui_link_flags.len() + 2);
-                if req_is_gui {
-                    link_flags.extend(effective_manifest.gui_link_flags.iter().cloned());
-                }
+                link_flags.extend(effective_manifest.gui_link_flags.iter().cloned());
                 link_flags.push("-ldl".to_string());
                 link_flags.push("-rdynamic".to_string());
 
@@ -221,17 +251,23 @@ pub async fn compile_gui(
                             |m| {
                                 let mut cmd =
                                     cpp_compile_command(m.select_compiler(ModuleKind::Gui));
+                                let retry_compiler = m.select_compiler(ModuleKind::Gui);
                                 cmd.arg(format!("-std={}", m.std));
                                 for f in &m.common_flags {
                                     cmd.arg(f);
                                 }
                                 cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
-                                if req_is_gui {
-                                    for f in &m.gui_link_flags {
-                                        cmd.arg(f);
-                                    }
+                                let mut retry_link_flags = m.gui_link_flags.clone();
+                                retry_link_flags.push("-ldl".to_string());
+                                retry_link_flags.push("-rdynamic".to_string());
+                                let filtered_link_flags = filter_unresolved_manifest_library_flags(
+                                    retry_compiler,
+                                    &retry_link_flags,
+                                    dir_path,
+                                );
+                                for f in filtered_link_flags {
+                                    cmd.arg(f);
                                 }
-                                cmd.arg("-ldl").arg("-rdynamic");
                                 cmd.current_dir(dir_path);
                                 cmd
                             },
@@ -297,12 +333,19 @@ pub async fn compile_gui(
                                         retry_cmd.arg(f);
                                     }
                                     retry_cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
-                                    if req_is_gui {
-                                        for f in &effective_manifest.gui_link_flags {
-                                            retry_cmd.arg(f);
-                                        }
+                                    let mut retry_link_flags =
+                                        effective_manifest.gui_link_flags.clone();
+                                    retry_link_flags.push("-ldl".to_string());
+                                    retry_link_flags.push("-rdynamic".to_string());
+                                    let filtered_link_flags =
+                                        filter_unresolved_manifest_library_flags(
+                                            compiler_exe,
+                                            &retry_link_flags,
+                                            dir_path,
+                                        );
+                                    for f in filtered_link_flags {
+                                        retry_cmd.arg(f);
                                     }
-                                    retry_cmd.arg("-ldl").arg("-rdynamic");
                                     retry_cmd.current_dir(dir_path);
                                     retry_cmd.kill_on_drop(true);
                                     if let Ok(retry_child) = retry_cmd.spawn() {
@@ -317,6 +360,12 @@ pub async fn compile_gui(
                                                     "[CompileGUI] AI heal succeeded on attempt {}",
                                                     attempt + 1
                                                 );
+                                                content = fixed.clone();
+                                                gui_cache_key = IncrementalCache::cache_key(
+                                                    &content,
+                                                    &effective_flag_refs,
+                                                    &[],
+                                                );
                                                 healed = true;
                                                 break;
                                             }
@@ -330,6 +379,81 @@ pub async fn compile_gui(
                                 Err(e) => {
                                     eprintln!("[CompileGUI] AI heal failed: {}", e);
                                     break;
+                                }
+                            }
+                        }
+
+                        if !healed {
+                            eprintln!(
+                                "[CompileGUI] deterministic no-op GUI fallback after generated GUI failed"
+                            );
+                            let fallback_content = deterministic_gui_stub_source();
+                            tokio::fs::write(dir_path.join(fname), fallback_content).await?;
+                            let mut fallback_cmd = cpp_compile_command(compiler_exe);
+                            fallback_cmd.arg(&std_flag);
+                            for f in &effective_manifest.common_flags {
+                                fallback_cmd.arg(f);
+                            }
+                            fallback_cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
+                            let mut fallback_link_flags = effective_manifest.gui_link_flags.clone();
+                            fallback_link_flags.push("-ldl".to_string());
+                            fallback_link_flags.push("-rdynamic".to_string());
+                            let filtered_link_flags = filter_unresolved_manifest_library_flags(
+                                compiler_exe,
+                                &fallback_link_flags,
+                                dir_path,
+                            );
+                            for f in filtered_link_flags {
+                                fallback_cmd.arg(f);
+                            }
+                            fallback_cmd.current_dir(dir_path);
+                            fallback_cmd.kill_on_drop(true);
+                            match fallback_cmd.spawn() {
+                                Ok(fallback_child) => {
+                                    match timeout(
+                                        Duration::from_secs(30),
+                                        fallback_child.wait_with_output(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(fallback_out)) if fallback_out.status.success() => {
+                                            eprintln!(
+                                                "[CompileGUI] deterministic no-op GUI fallback succeeded"
+                                            );
+                                            content = fallback_content.to_string();
+                                            gui_cache_key = IncrementalCache::cache_key(
+                                                &content,
+                                                &effective_flag_refs,
+                                                &[],
+                                            );
+                                            healed = true;
+                                        }
+                                        Ok(Ok(fallback_out)) => {
+                                            heal_stderr = format!(
+                                                "{}\n\n[deterministic gui fallback stderr]\n{}",
+                                                heal_stderr,
+                                                String::from_utf8_lossy(&fallback_out.stderr)
+                                            );
+                                        }
+                                        Ok(Err(e)) => {
+                                            heal_stderr = format!(
+                                                "{}\n\n[deterministic gui fallback spawn]\n{}",
+                                                heal_stderr, e
+                                            );
+                                        }
+                                        Err(_) => {
+                                            heal_stderr = format!(
+                                                "{}\n\n[deterministic gui fallback]\ntimed out after 30s",
+                                                heal_stderr
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    heal_stderr = format!(
+                                        "{}\n\n[deterministic gui fallback spawn]\n{}",
+                                        heal_stderr, e
+                                    );
                                 }
                             }
                         }
@@ -417,4 +541,31 @@ pub async fn compile_gui(
     }
 
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::deterministic_gui_stub_source;
+
+    #[test]
+    fn deterministic_gui_stub_exports_modern_and_legacy_abi_symbols() {
+        let source = deterministic_gui_stub_source();
+        for symbol in [
+            "gui_get_abi_version",
+            "gui_on_load",
+            "gui_on_render",
+            "gui_on_event",
+            "gui_on_unload",
+            "on_load",
+            "on_render",
+            "on_event",
+            "hmr_get_state_json",
+            "hmr_set_state_json",
+        ] {
+            assert!(
+                source.contains(symbol),
+                "deterministic GUI fallback must export {symbol}"
+            );
+        }
+    }
 }

@@ -17,6 +17,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
+import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,7 +41,9 @@ const CFG = {
   workerContainer: process.env.WORKER_CONTAINER ?? 'synthi-ide-worker-1',
   workerLogPath: process.env.WORKER_LOG_PATH
     ?? path.resolve(__dirname, '../../../backend/synthi-webrtc-compiler/.run/worker.log'),
-  googleApiKey: process.env.GOOGLE_API_KEY ?? '',
+  googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
+  mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
+    ?? ((process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY) ? 'gemini_api' : 'agent_side'),
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
   fixture: (process.env.SYNTHI_GPU_AGENT_FIXTURE ?? 'flow').toLowerCase(),
   mode: (process.env.SYNTHI_GPU_AGENT_MODE ?? 'validate').toLowerCase(),
@@ -164,7 +167,13 @@ async function detectArch(vendor) {
 }
 
 async function createWorkspace({ name, slug }) {
-  return httpJson('POST', `${CFG.frontendUrl}/api/workspace`, { name, slug });
+  return createValidationWorkspace({
+    frontendUrl: CFG.frontendUrl,
+    name,
+    slug,
+    httpJson,
+    record,
+  });
 }
 
 async function writeFilesBatch({ slug, files }) {
@@ -356,8 +365,9 @@ async function startMcp() {
       '-i',
       '-e', `SYNTHI_SESSION_ID=${CFG.slug}`,
       '-e', `SYNTHI_SIGNALING_URL=${CFG.mcpSignalingUrl}`,
-      '-e', 'SYNTHI_VISION_BACKEND=gemini_api',
+      '-e', `SYNTHI_VISION_BACKEND=${CFG.mcpVisionBackend}`,
       '-e', `GOOGLE_API_KEY=${CFG.googleApiKey}`,
+      '-e', `GEMINI_API_KEY=${CFG.googleApiKey}`,
       '-e', `SYNTHI_GEMINI_MODEL=${CFG.geminiModel}`,
       CFG.mcpContainer,
       'node',
@@ -371,8 +381,9 @@ async function startMcp() {
         ...process.env,
         SYNTHI_SESSION_ID: CFG.slug,
         SYNTHI_SIGNALING_URL: CFG.signalingUrl,
-        SYNTHI_VISION_BACKEND: 'gemini_api',
+        SYNTHI_VISION_BACKEND: CFG.mcpVisionBackend,
         GOOGLE_API_KEY: CFG.googleApiKey,
+        GEMINI_API_KEY: CFG.googleApiKey,
         SYNTHI_GEMINI_MODEL: CFG.geminiModel,
       },
     });
@@ -871,6 +882,7 @@ async function compileGeneratedDevice(split, editedDevice) {
     user_requested_deterministic: true,
     prefer_gpu_pipeline: true,
     gpu_mode: split.manifest.gpu.vendor,
+    gpu_arch: CFG.gpuArch,
     compile_manifest: split.manifest,
     slug: CFG.slug,
     width: 800,
@@ -998,6 +1010,7 @@ async function run() {
     user_requested_ai: true,
     prefer_gpu_pipeline: true,
     gpu_mode: vendor,
+    gpu_arch: CFG.gpuArch,
     slug: CFG.slug,
     width: 800,
     height: 600,

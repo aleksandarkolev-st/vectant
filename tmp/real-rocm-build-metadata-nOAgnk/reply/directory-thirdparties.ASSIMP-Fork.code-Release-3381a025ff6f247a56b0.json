@@ -1,0 +1,164 @@
+{
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"INSTALL"
+		],
+		"files" : 
+		[
+			"thirdparties/ASSIMP-Fork/code/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 1551,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 1559,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 1560,
+				"parent" : 0
+			}
+		]
+	},
+	"installers" : 
+	[
+		{
+			"backtrace" : 1,
+			"component" : "libassimp5.4.3-dev",
+			"destination" : "lib",
+			"paths" : 
+			[
+				"thirdparties/ASSIMP-Fork/lib/libassimp.a"
+			],
+			"targetId" : "assimp::@f2af112bcf79f096d1e5",
+			"targetIndex" : 2,
+			"type" : "target"
+		},
+		{
+			"backtrace" : 2,
+			"component" : "assimp-dev",
+			"destination" : "include/assimp",
+			"paths" : 
+			[
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/anim.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/aabb.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/ai_assert.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/camera.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/color4.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/color4.inl",
+				"build/thirdparties/ASSIMP-Fork/code/../include/assimp/config.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/ColladaMetaData.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/commonMetaData.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/defs.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/cfileio.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/light.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/material.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/material.inl",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/matrix3x3.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/matrix3x3.inl",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/matrix4x4.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/matrix4x4.inl",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/mesh.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/ObjMaterial.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/pbrmaterial.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/GltfMaterial.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/postprocess.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/quaternion.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/quaternion.inl",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/scene.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/metadata.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/texture.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/types.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/vector2.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/vector2.inl",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/vector3.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/vector3.inl",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/version.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/cimport.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/AssertHandler.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/importerdesc.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Importer.hpp",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/DefaultLogger.hpp",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/ProgressHandler.hpp",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/IOStream.hpp",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/IOSystem.hpp",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Logger.hpp",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/LogStream.hpp",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/NullLogger.hpp",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/cexport.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Exporter.hpp",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/DefaultIOStream.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/DefaultIOSystem.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/ZipArchiveIOSystem.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/SceneCombiner.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/fast_atof.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/qnan.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/BaseImporter.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Hash.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/MemoryIOWrapper.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/ParsingUtils.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/StreamReader.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/StreamWriter.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/StringComparison.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/StringUtils.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/SGSpatialSort.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/GenericProperty.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/SpatialSort.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/SkeletonMeshBuilder.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/SmallVector.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/SmoothingGroups.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/SmoothingGroups.inl",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/StandardShapes.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/RemoveComments.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Subdivision.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Vertex.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/LineSplitter.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/TinyFormatter.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Profiler.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/LogAux.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Bitmap.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/XMLTools.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/IOStreamBuffer.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/CreateAnimMesh.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/XmlParser.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/BlobIOSystem.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/MathFunctions.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Exceptional.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/ByteSwapper.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Base64.hpp"
+			],
+			"type" : "file"
+		},
+		{
+			"backtrace" : 3,
+			"component" : "assimp-dev",
+			"destination" : "include/assimp/Compiler",
+			"paths" : 
+			[
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Compiler/pushpack1.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Compiler/poppack1.h",
+				"thirdparties/ASSIMP-Fork/code/../include/assimp/Compiler/pstdint.h"
+			],
+			"type" : "file"
+		}
+	],
+	"paths" : 
+	{
+		"build" : "thirdparties/ASSIMP-Fork/code",
+		"source" : "thirdparties/ASSIMP-Fork/code"
+	}
+}

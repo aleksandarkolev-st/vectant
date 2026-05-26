@@ -53,6 +53,12 @@ pub struct ModuleSlot {
     pub blob_bytes: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PartialModuleSlot {
+    slot: ModuleSlot,
+    symbols: Vec<String>,
+}
+
 impl ModuleSlot {
     pub fn module_ptr(&self) -> CuModule {
         self.handle as CuModule
@@ -94,6 +100,22 @@ impl KernelTable {
 
     pub fn clear(&mut self) {
         self.by_name.clear();
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KernelResolution {
+    pub logical_name: String,
+    pub driver_name: String,
+}
+
+impl KernelResolution {
+    pub fn identity(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            logical_name: name.clone(),
+            driver_name: name,
+        }
     }
 }
 
@@ -200,6 +222,7 @@ impl std::fmt::Display for ModuleManagerError {
 pub struct GpuModuleManager {
     primary: Option<ModuleSlot>,
     standby: Option<ModuleSlot>,
+    partials: Vec<PartialModuleSlot>,
     kernels: KernelTable,
     /// Last driver error, set whenever a call returned non-zero.
     /// Cleared when the offending slot is cleared.
@@ -228,6 +251,10 @@ impl GpuModuleManager {
 
     pub fn kernel_table(&self) -> &KernelTable {
         &self.kernels
+    }
+
+    pub fn partial_module_count(&self) -> usize {
+        self.partials.len()
     }
 
     pub fn last_error(&self) -> Option<&ModuleManagerError> {
@@ -340,6 +367,19 @@ impl GpuModuleManager {
         symbols: &GpuDriverSymbolTable,
         kernel_names: &[String],
     ) -> Result<usize, ModuleManagerError> {
+        let resolutions = kernel_names
+            .iter()
+            .cloned()
+            .map(KernelResolution::identity)
+            .collect::<Vec<_>>();
+        self.resolve_kernel_symbols(symbols, &resolutions)
+    }
+
+    pub fn resolve_kernel_symbols(
+        &mut self,
+        symbols: &GpuDriverSymbolTable,
+        kernels: &[KernelResolution],
+    ) -> Result<usize, ModuleManagerError> {
         let slot = self.standby.ok_or_else(|| {
             let err = ModuleManagerError::NoTarget;
             self.last_error = Some(err.clone());
@@ -349,9 +389,21 @@ impl GpuModuleManager {
         // failure doesn't leave a half-populated state on the
         // manager. Only the final success path swaps it in.
         let mut next = KernelTable::new();
-        for name in kernel_names {
-            let cstr = CString::new(name.as_str())
-                .map_err(|_| ModuleManagerError::InvalidKernelName(name.clone()))?;
+        for kernel in kernels {
+            let logical_name = kernel.logical_name.trim();
+            let driver_name = kernel.driver_name.trim();
+            if logical_name.is_empty() || driver_name.is_empty() {
+                let err = ModuleManagerError::InvalidKernelName(kernel.logical_name.clone());
+                self.last_error = Some(err.clone());
+                return Err(err);
+            }
+            if CString::new(logical_name).is_err() {
+                let err = ModuleManagerError::InvalidKernelName(kernel.logical_name.clone());
+                self.last_error = Some(err.clone());
+                return Err(err);
+            }
+            let cstr = CString::new(driver_name)
+                .map_err(|_| ModuleManagerError::InvalidKernelName(kernel.driver_name.clone()))?;
             let mut hfunc: CuFunction = std::ptr::null_mut();
             // SAFETY: slot.module_ptr() is the value returned by
             // cuModuleLoadData earlier; the name pointer lives
@@ -371,7 +423,7 @@ impl GpuModuleManager {
                 self.last_error = Some(err.clone());
                 return Err(err);
             }
-            next.insert(name.clone(), hfunc as u64);
+            next.insert(logical_name.to_string(), hfunc as u64);
         }
         self.kernels = next;
         Ok(self.kernels.len())
@@ -394,6 +446,89 @@ impl GpuModuleManager {
         self.primary = Some(new_primary);
         self.swap_count += 1;
         Ok(retired)
+    }
+
+    /// Merges a standby module that contains only a subset of kernels into the
+    /// active launch table. The primary module remains loaded for every symbol
+    /// outside `replaced_symbols`; the partial module stays resident for the
+    /// replacement function handles.
+    pub fn merge_standby_partial(
+        &mut self,
+        previous: KernelTable,
+        replaced_symbols: &[String],
+    ) -> Result<Vec<ModuleSlot>, ModuleManagerError> {
+        let new_partial = match self.standby.take() {
+            Some(s) => s,
+            None => {
+                let err = ModuleManagerError::NoStandby;
+                self.last_error = Some(err.clone());
+                return Err(err);
+            }
+        };
+        if self.primary.is_none() {
+            self.standby = Some(new_partial);
+            let err = ModuleManagerError::NoPrimary;
+            self.last_error = Some(err.clone());
+            return Err(err);
+        }
+
+        let mut partial_symbols = Vec::new();
+        for symbol in replaced_symbols {
+            if self.kernels.get(symbol).is_none() {
+                self.standby = Some(new_partial);
+                let err = ModuleManagerError::UnknownKernel(symbol.clone());
+                self.last_error = Some(err.clone());
+                return Err(err);
+            }
+            if !partial_symbols.iter().any(|existing| existing == symbol) {
+                partial_symbols.push(symbol.clone());
+            }
+        }
+        if partial_symbols.is_empty() {
+            self.standby = Some(new_partial);
+            let err = ModuleManagerError::NoTarget;
+            self.last_error = Some(err.clone());
+            return Err(err);
+        }
+
+        let partial_table = std::mem::take(&mut self.kernels);
+        let mut merged = previous;
+        for symbol in &partial_symbols {
+            if let Some(handle) = partial_table.get(symbol) {
+                merged.insert(symbol.clone(), handle);
+            }
+        }
+
+        let mut retired = Vec::new();
+        let mut retained = Vec::new();
+        for partial in self.partials.drain(..) {
+            if partial.symbols.iter().all(|symbol| {
+                partial_symbols
+                    .iter()
+                    .any(|new_symbol| new_symbol == symbol)
+            }) {
+                retired.push(partial.slot);
+            } else {
+                retained.push(partial);
+            }
+        }
+        retained.push(PartialModuleSlot {
+            slot: new_partial,
+            symbols: partial_symbols,
+        });
+
+        self.partials = retained;
+        self.kernels = merged;
+        self.swap_count += 1;
+        self.last_error = None;
+        Ok(retired)
+    }
+
+    pub fn drain_partial_modules(&mut self) -> Vec<ModuleSlot> {
+        self.partials
+            .drain(..)
+            .map(|partial| partial.slot)
+            .collect()
     }
 
     /// Unloads a retired module handle. Wraps `cuModuleUnload`.
@@ -480,7 +615,7 @@ impl GpuModuleManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::c_void;
+    use std::ffi::{c_void, CStr};
 
     // ── Stub symbol table ───────────────────────────────────
     //
@@ -539,6 +674,7 @@ mod tests {
 
     thread_local! {
         static STATE: RefCell<StubState> = const { RefCell::new(StubState::fresh()) };
+        static GET_FN_NAMES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     }
 
     fn with_state<R>(f: impl FnOnce(&StubState) -> R) -> R {
@@ -546,6 +682,9 @@ mod tests {
     }
     fn with_state_mut<R>(f: impl FnOnce(&mut StubState) -> R) -> R {
         STATE.with(|s| f(&mut s.borrow_mut()))
+    }
+    fn get_fn_names() -> Vec<String> {
+        GET_FN_NAMES.with(|names| names.borrow().clone())
     }
 
     unsafe extern "C" fn stub_load_data(module: *mut CuModule, _image: *const c_void) -> CuResult {
@@ -572,10 +711,16 @@ mod tests {
     unsafe extern "C" fn stub_get_function(
         hfunc: *mut CuFunction,
         _hmod: CuModule,
-        _name: *const u8,
+        name: *const u8,
     ) -> CuResult {
         with_state_mut(|s| {
             s.get_fn_calls += 1;
+            if !name.is_null() {
+                let decoded = unsafe { CStr::from_ptr(name as *const i8) }
+                    .to_string_lossy()
+                    .to_string();
+                GET_FN_NAMES.with(|names| names.borrow_mut().push(decoded));
+            }
             let r = s.get_fn_result;
             if r == 0 {
                 let h = s.next_fn_handle;
@@ -618,6 +763,9 @@ mod tests {
     unsafe extern "C" fn stub_ctx_get(_c: *mut *mut c_void) -> CuResult {
         0
     }
+    unsafe extern "C" fn stub_ctx_set(_c: *mut c_void) -> CuResult {
+        0
+    }
     unsafe extern "C" fn stub_ctx_sync() -> CuResult {
         0
     }
@@ -639,6 +787,7 @@ mod tests {
             cu_init: stub_init,
             cu_device_get: stub_device_get,
             cu_ctx_get_current: stub_ctx_get,
+            cu_ctx_set_current: stub_ctx_set,
             cu_module_load_data: stub_load_data,
             cu_module_load: stub_load_file,
             cu_module_unload: stub_unload,
@@ -654,6 +803,7 @@ mod tests {
 
     fn reset_counters() {
         with_state_mut(|s| *s = StubState::fresh());
+        GET_FN_NAMES.with(|names| names.borrow_mut().clear());
     }
 
     // ── Actual assertions ──────────────────────────────────
@@ -731,6 +881,27 @@ mod tests {
     }
 
     #[test]
+    fn resolve_kernel_symbols_uses_driver_name_and_keeps_logical_key() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+        m.load_standby(&t, &[1, 2]).unwrap();
+        let n = m
+            .resolve_kernel_symbols(
+                &t,
+                &[KernelResolution {
+                    logical_name: "shade".into(),
+                    driver_name: "_Z5shadePf".into(),
+                }],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(get_fn_names(), vec!["_Z5shadePf".to_string()]);
+        assert!(m.kernel_table().get("shade").is_some());
+        assert!(m.kernel_table().get("_Z5shadePf").is_none());
+    }
+
+    #[test]
     fn resolve_kernels_fails_without_standby() {
         let mut m = GpuModuleManager::new();
         let t = stub_table();
@@ -788,6 +959,78 @@ mod tests {
         assert_eq!(retired.unwrap(), first);
         assert_eq!(m.primary().unwrap(), second);
         assert_eq!(m.swap_count(), 2);
+    }
+
+    #[test]
+    fn partial_merge_overrides_changed_symbols_and_keeps_primary() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+
+        let primary = m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["shade".into(), "trace".into()])
+            .unwrap();
+        let original_shade = m.kernel_table().get("shade").unwrap();
+        let original_trace = m.kernel_table().get("trace").unwrap();
+        m.swap().unwrap();
+
+        m.load_standby(&t, &[4, 5]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        let previous = {
+            let mut table = KernelTable::new();
+            table.insert("shade", original_shade);
+            table.insert("trace", original_trace);
+            table
+        };
+        let retired = m
+            .merge_standby_partial(previous, &["shade".to_string()])
+            .unwrap();
+
+        assert!(retired.is_empty());
+        assert_eq!(m.primary().unwrap(), primary);
+        assert_eq!(m.partial_module_count(), 1);
+        assert_ne!(m.kernel_table().get("shade"), Some(original_shade));
+        assert_eq!(m.kernel_table().get("trace"), Some(original_trace));
+        assert_eq!(m.swap_count(), 2);
+    }
+
+    #[test]
+    fn repeated_partial_merge_retires_superseded_partial_module() {
+        reset_counters();
+        let mut m = GpuModuleManager::new();
+        let t = stub_table();
+
+        m.load_standby(&t, &[1, 2, 3]).unwrap();
+        m.resolve_kernels(&t, &["shade".into(), "trace".into()])
+            .unwrap();
+        let original_shade = m.kernel_table().get("shade").unwrap();
+        let original_trace = m.kernel_table().get("trace").unwrap();
+        m.swap().unwrap();
+
+        let mut previous = KernelTable::new();
+        previous.insert("shade", original_shade);
+        previous.insert("trace", original_trace);
+        m.load_standby(&t, &[4, 5]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        m.merge_standby_partial(previous, &["shade".to_string()])
+            .unwrap();
+        let first_partial_handle = m.partials[0].slot.handle;
+        let first_shade = m.kernel_table().get("shade").unwrap();
+
+        let mut previous = KernelTable::new();
+        previous.insert("shade", first_shade);
+        previous.insert("trace", original_trace);
+        m.load_standby(&t, &[6, 7]).unwrap();
+        m.resolve_kernels(&t, &["shade".into()]).unwrap();
+        let retired = m
+            .merge_standby_partial(previous, &["shade".to_string()])
+            .unwrap();
+
+        assert_eq!(retired.len(), 1);
+        assert_eq!(retired[0].handle, first_partial_handle);
+        assert_eq!(m.partial_module_count(), 1);
+        assert_eq!(m.kernel_table().get("trace"), Some(original_trace));
+        assert_ne!(m.kernel_table().get("shade"), Some(first_shade));
     }
 
     #[test]

@@ -24,6 +24,47 @@ fn get_ai_split_cache() -> &'static tokio::sync::Mutex<std::collections::HashMap
     AI_SPLIT_CACHE.get_or_init(|| tokio::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+fn ai_split_cache_key(req: &CompileRequest) -> u64 {
+    let gpu_mode = req
+        .gpu_mode
+        .as_deref()
+        .unwrap_or("auto")
+        .to_ascii_lowercase();
+    let split_model = std::env::var("SYNTHI_GEMINI_MODEL")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let has_gpu_markers = request_has_gpu_markers(req);
+    let file_context = request_file_context(req);
+    let arch_hint = gpu_arch_hint(req);
+    // Cache entries are accepted split artifacts. Keep this tied to the
+    // prompt/verifier contract, not just source text, so newly hardened
+    // deterministic split verifiers do not reuse stale generated roles.
+    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v16-compile-verified-cache";
+    calculate_hash(&(
+        AI_SPLIT_CACHE_SCHEMA_VERSION,
+        req.language.as_str(),
+        req.filename.as_str(),
+        &file_context,
+        req.prefer_gpu_pipeline,
+        gpu_mode.as_str(),
+        arch_hint.as_deref().unwrap_or(""),
+        has_gpu_markers,
+        split_model.as_deref().unwrap_or(""),
+    ))
+}
+
+pub async fn invalidate_ai_split_cache(req: &CompileRequest, reason: &str) {
+    let cache_key = ai_split_cache_key(req);
+    let mut cache = get_ai_split_cache().lock().await;
+    if cache.remove(&cache_key).is_some() {
+        eprintln!(
+            "[AI Split] invalidated cache key={} reason={}",
+            cache_key, reason
+        );
+    }
+}
+
 pub fn calculate_hash<T: Hash>(t: &T) -> u64 {
     let mut s = DefaultHasher::new();
     t.hash(&mut s);
@@ -48,7 +89,7 @@ fn add_ai_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
     }
 }
 
-/// HTTP timeout for AI backend calls (diff_patch, heal, manifest heal, split).
+/// Single provider-call timeout for AI backend requests.
 ///
 /// Previously hardcoded per call site (60s for diff_patch/heal/manifest_heal,
 /// 150s for split). Raised and unified after live Gemini calls were observed
@@ -56,16 +97,43 @@ fn add_ai_auth(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
 /// AI had already produced a correct answer, falling through to Tier 3 full
 /// re-split and wasting ~60s per save.
 ///
-/// 180s is the worst-case ceiling for any Gemini model we currently call.
+/// 180s is the default single-call ceiling.
 /// Operators can override with `SYNTHI_AI_HTTP_TIMEOUT_SECS` if a slower
 /// model or degraded service requires more headroom, or set it lower to
 /// fail fast in CI.
+const DEFAULT_AI_HTTP_TIMEOUT_SECS: u64 = 180;
+const GPU_SPLIT_MAX_PROVIDER_ATTEMPTS: u64 = 3;
+const GPU_SPLIT_VERIFIER_OVERHEAD_SECS: u64 = 90;
+
 fn ai_http_timeout() -> std::time::Duration {
     let secs: u64 = std::env::var("SYNTHI_AI_HTTP_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(180);
+        .unwrap_or(DEFAULT_AI_HTTP_TIMEOUT_SECS);
     std::time::Duration::from_secs(secs)
+}
+
+/// Endpoint-level timeout for AI requests sent through the JSON helper.
+///
+/// `/refactor/split/gpu` can perform multiple provider attempts in one HTTP
+/// request because the AI engine retries verifier-rejected splits before
+/// returning. Its client-side timeout therefore needs to cover the whole
+/// verifier-gated endpoint budget, not just one Gemini call.
+fn ai_http_timeout_for_url(url: &str) -> std::time::Duration {
+    if url.ends_with("/refactor/split/gpu") {
+        let secs = std::env::var("SYNTHI_AI_GPU_SPLIT_HTTP_TIMEOUT_SECS")
+            .or_else(|_| std::env::var("SYNTHI_AI_HTTP_TIMEOUT_SECS"))
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(default_gpu_split_http_timeout_secs());
+        return std::time::Duration::from_secs(secs);
+    }
+    ai_http_timeout()
+}
+
+fn default_gpu_split_http_timeout_secs() -> u64 {
+    DEFAULT_AI_HTTP_TIMEOUT_SECS * GPU_SPLIT_MAX_PROVIDER_ATTEMPTS
+        + GPU_SPLIT_VERIFIER_OVERHEAD_SECS
 }
 
 fn summarize_ai_error_body(body: &str) -> String {
@@ -169,7 +237,7 @@ async fn post_ai_json(
 ) -> Result<serde_json::Value> {
     let resp = add_ai_auth(client.post(url))
         .json(payload)
-        .timeout(ai_http_timeout())
+        .timeout(ai_http_timeout_for_url(url))
         .send()
         .await?;
     let status = resp.status();
@@ -182,13 +250,8 @@ async fn post_ai_json(
             summarize_ai_error_body(&body)
         ));
     }
-    serde_json::from_str::<serde_json::Value>(&body).map_err(|e| {
-        anyhow!(
-            "AI endpoint {} returned invalid JSON body: {}",
-            url,
-            e
-        )
-    })
+    serde_json::from_str::<serde_json::Value>(&body)
+        .map_err(|e| anyhow!("AI endpoint {} returned invalid JSON body: {}", url, e))
 }
 
 fn text_has_gpu_markers(source: &str) -> bool {
@@ -346,6 +409,50 @@ fn insert_split_role(
     );
 }
 
+pub async fn update_ai_split_cache_role(
+    req: &CompileRequest,
+    role: &str,
+    filename: &str,
+    content: String,
+) -> bool {
+    if role.trim().is_empty() || filename.trim().is_empty() || content.trim().is_empty() {
+        return false;
+    }
+
+    let cache_key = ai_split_cache_key(req);
+    let mut cache = get_ai_split_cache().lock().await;
+    let Some(cached) = cache.get_mut(&cache_key) else {
+        return false;
+    };
+    let Some(obj) = cached.result.as_object_mut() else {
+        return false;
+    };
+
+    insert_split_role(obj, role, filename, content.clone());
+    if let Some(filename_entry) = obj
+        .get_mut(filename)
+        .and_then(|value| value.as_object_mut())
+    {
+        filename_entry.insert(
+            "filename".to_string(),
+            serde_json::Value::String(filename.to_string()),
+        );
+        filename_entry.insert("content".to_string(), serde_json::Value::String(content));
+    }
+    eprintln!(
+        "[AI Split] updated cached generated role key={} role={} file={} bytes={}",
+        cache_key,
+        role,
+        filename,
+        obj.get(role)
+            .and_then(|value| value.get("content"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::len)
+            .unwrap_or(0)
+    );
+    true
+}
+
 fn normalize_split_response(
     mut split: serde_json::Value,
     manifest: Option<&serde_json::Value>,
@@ -429,25 +536,7 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
     let has_gpu_markers = request_has_gpu_markers(req);
     let file_context = request_file_context(req);
     let arch_hint = gpu_arch_hint(req);
-    // Split output depends on more than raw source now: the same file can
-    // produce different output depending on the user's project files and GPU
-    // target. Include both so large multi-file projects and arch changes do
-    // not reuse stale monolithic split output.
-    // Cache entries are accepted split artifacts. Keep this tied to the
-    // prompt/verifier contract, not just source text, so newly hardened
-    // deterministic split verifiers do not reuse stale generated roles.
-    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v8-launch-abi";
-    let source_hash = calculate_hash(&(
-        AI_SPLIT_CACHE_SCHEMA_VERSION,
-        req.language.as_str(),
-        req.filename.as_str(),
-        &file_context,
-        req.prefer_gpu_pipeline,
-        gpu_mode.as_str(),
-        arch_hint.as_deref().unwrap_or(""),
-        has_gpu_markers,
-        split_model.as_deref().unwrap_or(""),
-    ));
+    let source_hash = ai_split_cache_key(req);
 
     eprintln!(
         "[AI Split] ENTER (cache_key={}, src_len={}, files={}, gpu_mode={}, gpu_arch={}, gpu_markers={})",
@@ -542,10 +631,8 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             "[AI Split] GPU markers detected; calling GPU split endpoint: {}",
             gpu_split_url
         );
-        let gpu_result: Result<serde_json::Value, anyhow::Error> = async {
-            post_ai_json(&client, &gpu_split_url, &payload).await
-        }
-        .await;
+        let gpu_result: Result<serde_json::Value, anyhow::Error> =
+            async { post_ai_json(&client, &gpu_split_url, &payload).await }.await;
         match gpu_result {
             Ok(json) if json.get("result").and_then(|r| r.as_str()).is_some() => {
                 eprintln!("[AI Split] GPU split endpoint returned a 5-file split");
@@ -579,10 +666,8 @@ pub async fn perform_ai_split(req: &CompileRequest) -> Result<serde_json::Value>
             "[AI Split] Calling VERIFIED AI split endpoint: {}",
             verified_url
         );
-        let verified_result: Result<serde_json::Value, anyhow::Error> = async {
-            post_ai_json(&client, &verified_url, &payload).await
-        }
-        .await;
+        let verified_result: Result<serde_json::Value, anyhow::Error> =
+            async { post_ai_json(&client, &verified_url, &payload).await }.await;
 
         match verified_result {
             Ok(json) if json.get("result").and_then(|r| r.as_str()).is_some() => json,
@@ -1448,6 +1533,16 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn gpu_split_timeout_covers_provider_retry_budget() {
+        assert_eq!(
+            default_gpu_split_http_timeout_secs(),
+            DEFAULT_AI_HTTP_TIMEOUT_SECS * GPU_SPLIT_MAX_PROVIDER_ATTEMPTS
+                + GPU_SPLIT_VERIFIER_OVERHEAD_SECS
+        );
+        assert!(default_gpu_split_http_timeout_secs() > DEFAULT_AI_HTTP_TIMEOUT_SECS);
+    }
+
+    #[test]
     fn detects_gpu_markers_in_source_text() {
         assert!(text_has_gpu_markers("__global__ void step(float* x) {}"));
         assert!(text_has_gpu_markers("#include <hip/hip_runtime.h>"));
@@ -1598,5 +1693,113 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("particle_flow"));
+    }
+
+    #[tokio::test]
+    async fn invalidates_split_cache_after_compile_failure() {
+        let req = CompileRequest {
+            language: "cpp".to_string(),
+            filename: "src/cache_poison_probe.cpp".to_string(),
+            source: "__global__ void cache_poison_probe(float* x) { x[0] = 1.0f; }".to_string(),
+            session_id: None,
+            files: Vec::new(),
+            is_gui: true,
+            width: None,
+            height: None,
+            supports_h265: None,
+            use_ai_split: true,
+            user_requested_ai: false,
+            user_requested_deterministic: false,
+            force_gpu_ai_delta: false,
+            prefer_gpu_pipeline: true,
+            gpu_mode: Some("rocm".to_string()),
+            gpu_arch: Some("gfx1201".to_string()),
+            compile_manifest: None,
+            target: None,
+            project_root: None,
+            slug: None,
+        };
+        let key = ai_split_cache_key(&req);
+        get_ai_split_cache().lock().await.insert(
+            key,
+            CachedSplit {
+                result: json!({"core": {"content": "{", "filename": "core.cpp"}}),
+                original_source: req.source.clone(),
+            },
+        );
+
+        invalidate_ai_split_cache(&req, "compile_core_failed").await;
+
+        assert!(get_ai_split_cache().lock().await.get(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn updates_cached_device_role_after_verified_heal() {
+        let req = CompileRequest {
+            language: "cpp".to_string(),
+            filename: "src/healed_cache_probe.cpp".to_string(),
+            source: "__global__ void healed_cache_probe(float* x) { x[0] = 1.0f; }".to_string(),
+            session_id: None,
+            files: Vec::new(),
+            is_gui: true,
+            width: None,
+            height: None,
+            supports_h265: None,
+            use_ai_split: true,
+            user_requested_ai: false,
+            user_requested_deterministic: false,
+            force_gpu_ai_delta: false,
+            prefer_gpu_pipeline: true,
+            gpu_mode: Some("rocm".to_string()),
+            gpu_arch: Some("gfx1201".to_string()),
+            compile_manifest: None,
+            target: None,
+            project_root: None,
+            slug: None,
+        };
+        let key = ai_split_cache_key(&req);
+        get_ai_split_cache().lock().await.insert(
+            key,
+            CachedSplit {
+                result: json!({
+                    "device": {
+                        "filename": ".synthi/generated/gpu/device.hip",
+                        "content": "bad generated device"
+                    },
+                    ".synthi/generated/gpu/device.hip": {
+                        "filename": ".synthi/generated/gpu/device.hip",
+                        "content": "bad generated device"
+                    }
+                }),
+                original_source: req.source.clone(),
+            },
+        );
+
+        assert!(
+            update_ai_split_cache_role(
+                &req,
+                "device",
+                ".synthi/generated/gpu/device.hip",
+                "verified healed device".to_string(),
+            )
+            .await
+        );
+
+        let cache = get_ai_split_cache().lock().await;
+        let cached = cache.get(&key).expect("cache entry");
+        assert_eq!(
+            cached
+                .result
+                .pointer("/device/content")
+                .and_then(serde_json::Value::as_str),
+            Some("verified healed device")
+        );
+        assert_eq!(
+            cached
+                .result
+                .pointer("/.synthi~1generated~1gpu~1device.hip/content")
+                .and_then(serde_json::Value::as_str),
+            Some("verified healed device")
+        );
     }
 }

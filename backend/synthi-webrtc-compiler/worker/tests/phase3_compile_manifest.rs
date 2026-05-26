@@ -28,9 +28,7 @@
 //   cargo test --test phase3_compile_manifest
 // from `backend/synthi-webrtc-compiler/worker/`.
 
-use worker::hmr::compile_manifest::{
-    CompileManifest, ConfidenceLevel, HotReloadMode, ModuleKind,
-};
+use worker::hmr::compile_manifest::{CompileManifest, ConfidenceLevel, HotReloadMode, ModuleKind};
 
 const SAMPLE_SDL2_JSON: &str = r#"{
     "compiler": "g++",

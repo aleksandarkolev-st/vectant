@@ -1,7 +1,7 @@
 # PROTOTYPING AI ENGINE WITH PYTHON, LATER SWITCH TO RUST
 from __future__ import annotations
 
-from typing import List, Optional, Union, Tuple
+from typing import Any, List, Mapping, Optional, Union, Tuple
 import re
 import requests
 import json
@@ -2083,6 +2083,7 @@ from agents.kernel_splitter import (  # noqa: E402
     split_provider_failure_verification as _split_provider_failure_verification,
     split_agentic_report as _split_agentic_report,
     split_attempt_record as _split_attempt_record,
+    split_repair_retry_notes as _split_repair_retry_notes,
 )
 from agents.gpu_device_mapping import build_device_mapping_report  # noqa: E402
 from agents.gpu_launch_indirection import build_launch_indirection_report  # noqa: E402
@@ -2109,6 +2110,118 @@ def _file_map_from_request(req: AnalyzeAiRequest) -> dict[str, str]:
     if req.code:
         files.setdefault(req.focus or "input.cpp", req.code)
     return files
+
+
+_DEVICE_MAPPING_LOCAL_INCLUDE_RE = re.compile(
+    r'^\s*#\s*include\s+"(?P<path>[^"]+)"',
+    re.MULTILINE,
+)
+
+
+def _normalize_device_mapping_path(path: str) -> str:
+    normalized = str(path).replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    parts: list[str] = []
+    for part in normalized.split("/"):
+        if not part or part == ".":
+            continue
+        if part == ".." and parts and parts[-1] != "..":
+            parts.pop()
+        elif part == "..":
+            parts.append(part)
+        else:
+            parts.append(part)
+    return "/".join(parts)
+
+
+def _resolve_device_mapping_include(
+    source_path: str,
+    include_path: str,
+    file_map: Mapping[str, str],
+) -> Optional[str]:
+    include = _normalize_device_mapping_path(include_path)
+    candidates: list[str] = []
+    if not include.startswith("/"):
+        parent = str(PurePosixPath(source_path).parent)
+        if parent == ".":
+            parent = ""
+        candidates.append(
+            _normalize_device_mapping_path(f"{parent}/{include}" if parent else include)
+        )
+    candidates.append(include)
+    for candidate in candidates:
+        if candidate in file_map:
+            return candidate
+    return None
+
+
+def _expand_device_mapping_local_include_scope(
+    scoped_paths: set[str],
+    file_map: Mapping[str, str],
+) -> set[str]:
+    expanded = set(scoped_paths)
+    stack = sorted(scoped_paths)
+    while stack:
+        current = stack.pop()
+        source = file_map.get(current)
+        if source is None:
+            continue
+        for match in _DEVICE_MAPPING_LOCAL_INCLUDE_RE.finditer(source):
+            resolved = _resolve_device_mapping_include(
+                current,
+                match.group("path"),
+                file_map,
+            )
+            if resolved and resolved not in expanded:
+                expanded.add(resolved)
+                stack.append(resolved)
+    return expanded
+
+
+def _device_mapping_source_scope(
+    file_map: Mapping[str, str],
+    source_context_report: Optional[Mapping[str, Any]],
+) -> Mapping[str, str]:
+    if not isinstance(source_context_report, Mapping):
+        return file_map
+
+    scoped_paths: set[str] = set()
+    for section in ("included", "criticalDropped"):
+        items = source_context_report.get(section)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, Mapping) and isinstance(item.get("path"), str):
+                scoped_paths.add(str(item["path"]).replace("\\", "/"))
+
+    topology = source_context_report.get("deviceTuTopology")
+    if isinstance(topology, Mapping):
+        device_tus = topology.get("deviceTranslationUnits")
+        if isinstance(device_tus, list):
+            for item in device_tus:
+                if isinstance(item, Mapping) and isinstance(item.get("path"), str):
+                    scoped_paths.add(str(item["path"]).replace("\\", "/"))
+
+    if not scoped_paths:
+        return file_map
+
+    normalized_file_map = {
+        _normalize_device_mapping_path(path): source
+        for path, source in file_map.items()
+    }
+    scoped_paths = _expand_device_mapping_local_include_scope(
+        {
+            _normalize_device_mapping_path(path)
+            for path in scoped_paths
+        },
+        normalized_file_map,
+    )
+    return {
+        path: normalized_file_map[path]
+        for path in sorted(scoped_paths)
+        if path in normalized_file_map
+    }
 
 
 # ══════════════════════════════════════════════════════════════
@@ -2239,7 +2352,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
     split_model = (
         req.model
         or os.getenv("SYNTHI_GEMINI_MODEL")
-        or "gemini-3.1-flash-lite-preview"
+        or "gemini-3.5-flash"
     )
     split_prompt = req.prompt
     max_split_attempts = 3
@@ -2411,6 +2524,9 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         notes = "\n".join(
             f"- {v.rule}: {v.message}" for v in split.verification.violations
         )
+        repair_retry_notes = _split_repair_retry_notes(split.repair_report)
+        if repair_retry_notes:
+            notes = "\n".join([notes, *repair_retry_notes])
         logger.info(
             "[split/gpu] verifier rejected split attempt %s/%s: %s",
             attempt,
@@ -2457,6 +2573,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
                 or os.getenv("SYNTHI_GPU_ARCH")
                 or None
             ),
+            focus_path=req.focus,
         )
         manifest_parsed = parse_manifest(manifest_raw)
         validate_manifest_v1(manifest_parsed)
@@ -2468,7 +2585,7 @@ async def refactor_split_gpu(req: VerifiedAiRequest):
         validate_manifest_v1(manifest_parsed)
         manifest_out = manifest_to_dict(manifest_parsed)
         device_mapping_report = build_device_mapping_report(
-            source_files=file_map,
+            source_files=_device_mapping_source_scope(file_map, split.source_context_report),
             generated_files=split_files_out,
             manifest=manifest_out,
         )
@@ -2682,6 +2799,30 @@ def _unwrap_heal_content(result: str) -> str:
         )
 
 
+_EXTERN_C_FUNCTION_RE = re.compile(
+    r'extern\s+"C"\s+(?:[A-Za-z_][A-Za-z0-9_:<>\s*&]*\s+)*'
+    r'(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(',
+    re.DOTALL,
+)
+
+
+def _extern_c_function_names(source: str) -> set[str]:
+    """Return exported C ABI function names from generated role source."""
+
+    if not source:
+        return set()
+    masked = re.sub(r"//.*?$|/\*.*?\*/", "", source, flags=re.MULTILINE | re.DOTALL)
+    return {match.group("name") for match in _EXTERN_C_FUNCTION_RE.finditer(masked)}
+
+
+def _missing_preserved_exports(original: str, candidate: str) -> list[str]:
+    required = _extern_c_function_names(original)
+    if not required:
+        return []
+    present = _extern_c_function_names(candidate)
+    return sorted(required - present)
+
+
 @app.post("/refactor/heal")
 async def refactor_heal(req: HealRequest):
     """
@@ -2709,23 +2850,70 @@ async def refactor_heal(req: HealRequest):
         print(f"[Heal] architecture hint ({len(req.architecture)} chars) injected into prompt")
 
     try:
-        ai_response = await provider.ask_llm(
-            prompt,
-            "cpp",
-            None,
-            mode="delta",
-            model="gemini-3.1-flash-lite-preview",
-        )
+        async def run_heal_once(heal_prompt: str) -> str:
+            ai_response = await provider.ask_llm(
+                heal_prompt,
+                "cpp",
+                None,
+                mode="delta",
+                model="gemini-3.1-flash-lite-preview",
+            )
 
-        # Strip markdown fences if present
-        result = ai_response.strip()
-        if result.startswith("```cpp"):
-            result = result[6:]
-        elif result.startswith("```"):
-            result = result[3:]
-        if result.endswith("```"):
-            result = result[:-3]
-        result = _unwrap_heal_content(result.strip())
+            # Strip markdown fences if present
+            result = ai_response.strip()
+            if result.startswith("```cpp"):
+                result = result[6:]
+            elif result.startswith("```"):
+                result = result[3:]
+            if result.endswith("```"):
+                result = result[:-3]
+            result = _unwrap_heal_content(result.strip())
+            try:
+                from agents.gpu_split_repair import sanitize_generated_heal_output
+
+                sanitized, sanitized_changed = sanitize_generated_heal_output(
+                    module=req.module_name,
+                    source=result,
+                    errors=req.error_messages,
+                )
+                if sanitized_changed:
+                    print(f"[Heal] deterministic generated-role sanitizer adjusted {req.module_name}")
+                    result = sanitized
+            except Exception as sanitizer_error:
+                print(f"[Heal] sanitizer skipped for {req.module_name}: {sanitizer_error}")
+            return result
+
+        result = await run_heal_once(prompt)
+        missing_exports = _missing_preserved_exports(req.module_content, result)
+        if missing_exports:
+            print(
+                f"[Heal] rejected {req.module_name} repair because it removed exports: "
+                f"{','.join(missing_exports)}"
+            )
+            retry_prompt = "\n".join(
+                [
+                    prompt,
+                    "",
+                    "PREVIOUS REPAIR WAS REJECTED BY A DETERMINISTIC ABI CHECK.",
+                    "It removed these existing extern C exports:",
+                    ", ".join(missing_exports),
+                    "",
+                    "Return a new complete fixed file that preserves every listed export.",
+                    "Do not replace the module with a header or a different role.",
+                    "",
+                    "REJECTED REPAIR:",
+                    "```",
+                    result,
+                    "```",
+                ]
+            )
+            result = await run_heal_once(retry_prompt)
+            missing_exports = _missing_preserved_exports(req.module_content, result)
+            if missing_exports:
+                raise ValueError(
+                    "AI heal removed required exports after retry: "
+                    + ",".join(missing_exports)
+                )
 
         elapsed = time.time() - start_time
         print(f"[Heal] {req.module_name} fixed in {elapsed:.2f}s")
@@ -2843,6 +3031,17 @@ try:
     logger.info("Code Intelligence module loaded")
 except ImportError as e:
     logger.warning(f"Code Intelligence module not available: {e}")
+
+
+# =============================================================================
+# GPU HMR split-broker contract API
+# =============================================================================
+try:
+    from gpu_hmr.api import router as gpu_hmr_router
+    app.include_router(gpu_hmr_router)
+    logger.info("GPU HMR split-broker module loaded")
+except ImportError as e:
+    logger.warning(f"GPU HMR split-broker module not available: {e}")
 
 
 # =============================================================================
