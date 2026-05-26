@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyGpuHmrProofMessage,
+  gpuHmrDegradedStateRankCap,
   gpuHmrProofStateRank,
   validateGpuHmrProofState,
 } from "../../src/gpu_proof.js";
@@ -43,6 +44,9 @@ describe("GPU HMR proof-state validation", () => {
     expect(gpuHmrProofStateRank("gpu-hmr-dispatch-proven")).toBeGreaterThan(
       gpuHmrProofStateRank("gpu-hmr-abi-proven")
     );
+    expect(gpuHmrDegradedStateRankCap("gpu-hmr-output-unobserved")).toBe(
+      gpuHmrProofStateRank("gpu-hmr-dispatch-proven")
+    );
   });
 
   it("rejects weaker proof than the caller requested", () => {
@@ -56,5 +60,54 @@ describe("GPU HMR proof-state validation", () => {
     expect(validation.satisfied).toBe(false);
     expect(validation.reason).toBe("proof_state_below_required");
     expect(validation.resultState).toBe("gpu-hmr-symbol-bound");
+  });
+
+  it("caps overclaimed proof by degraded state", () => {
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      degradedState: "gpu-hmr-output-unobserved",
+    });
+
+    const dispatchValidation = validateGpuHmrProofState(proof, "gpu-hmr-dispatch-proven");
+    expect(dispatchValidation.satisfied).toBe(true);
+    expect(dispatchValidation.effectiveResultRank).toBe(
+      gpuHmrProofStateRank("gpu-hmr-dispatch-proven")
+    );
+
+    const fullValidation = validateGpuHmrProofState(proof, "gpu-hmr-full-runtime-proven");
+    expect(fullValidation.satisfied).toBe(false);
+    expect(fullValidation.reason).toBe("degraded_state_blocks_required_proof");
+    expect(fullValidation.degradedStateRankCap).toBe(
+      gpuHmrProofStateRank("gpu-hmr-dispatch-proven")
+    );
+  });
+
+  it("blocks dispatch proof when dispatch was unobserved", () => {
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      degradedState: "gpu-hmr-dispatch-unobserved",
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-dispatch-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("degraded_state_blocks_required_proof");
+    expect(validation.effectiveResultRank).toBe(gpuHmrProofStateRank("gpu-hmr-abi-proven"));
+  });
+
+  it("treats unknown degraded states as proof blockers", () => {
+    const proof = classifyGpuHmrProofMessage({
+      status: "gpu-proof-state",
+      resultState: "gpu-hmr-full-runtime-proven",
+      degradedState: "gpu-hmr-new-unknown-degradation",
+    });
+
+    const validation = validateGpuHmrProofState(proof, "gpu-hmr-compile-proven");
+
+    expect(validation.satisfied).toBe(false);
+    expect(validation.reason).toBe("unknown_degraded_proof_state");
+    expect(validation.effectiveResultRank).toBe(0);
   });
 });
