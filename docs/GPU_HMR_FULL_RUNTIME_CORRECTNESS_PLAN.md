@@ -8,6 +8,8 @@ The goal is deliberately stricter than "the device artifact compiled" or "the ru
 
 The system must be hostile to fake success.
 
+The source of truth for correctness must be a structured proof artifact. Logs, screenshots, changed hashes, and terminal labels are supporting evidence only. They may help diagnose a run, but they must not be the authoritative proof state.
+
 ## Current Baseline
 
 The current system can prove several important lower-level facts:
@@ -40,6 +42,8 @@ The system did not prove full HIPRT render correctness:
 - The generated core did not preserve the real HIPRT render loop.
 
 Therefore HIPRT is currently partial artifact reload proven, not full runtime render proven.
+
+The current runtime replacement model is also still too stall-heavy for the desired production architecture. It can load a standby module, promote it, and unload retired modules, but the safe path is still organized around synchronization before replacement. The target architecture must move toward generation-published capsules: old code remains live for in-flight work, new launches use the new generation, and retirement happens only after stream fences prove the old generation is no longer reachable.
 
 ## Non-Negotiable Production Rule
 
@@ -150,14 +154,60 @@ Signature hash alone is not enough. A struct layout change, constant layout chan
 
 This state does not imply the kernel actually ran.
 
-### `gpu-hmr-dispatch-proven`
+### `gpu-hmr-epoch-swap-proven`
 
-The current runtime session dispatched the expected kernel after the replacement.
+The replacement artifact was published through a generation-aware dispatch capsule without requiring a full pre-swap synchronization of unrelated work.
+
+This stage proves safe replacement publication and old-generation lifetime management. It is stronger and more truthful than "synchronize the whole context, swap, unload" because it records which generation each dispatch can use and keeps old code alive until in-flight streams pass an epoch fence.
+
+Required evidence:
+
+- old generation id,
+- new generation id,
+- old artifact id,
+- new artifact id,
+- publish timestamp,
+- dispatch table hash before publish,
+- dispatch table hash after publish,
+- changed dispatch entries,
+- ABI membrane proof id,
+- exported symbol set for the new capsule,
+- dependency closure hash for the new capsule,
+- function handle ids for changed entries,
+- stream ids using the old generation at publish time,
+- retirement fence ids,
+- old generation retired status,
+- old generation retirement timestamp when retired,
+- delayed-unload result,
+- degraded reason if old generation is still pending retirement.
+
+Required stage payload shape:
+
+```json
+{
+  "oldGeneration": 17,
+  "newGeneration": 18,
+  "oldArtifactId": "artifact:...",
+  "newArtifactId": "artifact:...",
+  "publishTimestamp": "2026-05-26T00:00:00Z",
+  "dispatchTableHashBefore": "sha256:...",
+  "dispatchTableHashAfter": "sha256:...",
+  "streamsUsingOldGeneration": ["stream:..."],
+  "retirementFenceIds": ["event:..."],
+  "oldGenerationRetired": true
+}
+```
+
+This state does not imply the new kernel has been dispatched. It also does not prove argument provenance or output correctness.
+
+### `gpu-hmr-dispatch-observed`
+
+The current runtime session observed a launch of the expected kernel after the replacement.
 
 Required evidence:
 
 - workspace/session slug,
-- runtime session marker found in logs,
+- runtime session id from structured runtime state,
 - dispatch observation timestamp,
 - kernel name,
 - artifact version used by dispatch,
@@ -172,14 +222,39 @@ Required evidence:
 - no stale dispatch evidence from another session,
 - runtime touched-symbol report matches selected artifact.
 
+This state does not imply the launch was safe. A kernel dispatch can be observed while argument provenance, stream ordering, ABI, or replacement scope remains unsafe.
+
+### `gpu-hmr-dispatch-safe-proven`
+
+The current runtime session observed the expected dispatch and proved the dispatch was safe to count as runtime HMR evidence.
+
+Required evidence:
+
+- all `gpu-hmr-dispatch-observed` evidence,
+- ABI proof id for the dispatched artifact,
+- argument provenance proof id,
+- stream ordering proof id,
+- replacement scope proof id,
+- current dispatcher generation,
+- selected artifact id,
+- runtime artifact id used by dispatch,
+- no unknown/generated/null-live-object argument where source semantics require live state,
+- no stale launch pointer,
+- no dispatch failure for the selected kernel in the current session.
+
 This state does not imply output correctness.
 
-### `gpu-hmr-output-proven`
+### `gpu-hmr-output-oracle-proven`
 
-The HMR edit changed or preserved output as expected in a deterministic probe.
+The HMR edit changed or preserved output according to an explicit deterministic oracle.
 
 Required evidence depends on the project class:
 
+- edit contract id,
+- oracle kind,
+- oracle expected value,
+- oracle actual value,
+- oracle pass/fail status,
 - render target hash,
 - accumulation buffer hash,
 - sentinel buffer value,
@@ -193,7 +268,7 @@ Required evidence depends on the project class:
 
 For floating point renderers, use tolerant comparison unless the pipeline is proven bit-stable.
 
-Screenshots are supplemental evidence. They are not enough for this state.
+Screenshots and visible output are mandatory supporting evidence for render workflows. They prove that a fresh visual frame exists, but they are not enough for this state without an oracle such as a sentinel value, checksum, selected pixel expectation, or edit contract.
 
 ### `gpu-hmr-host-preservation-proven`
 
@@ -222,8 +297,10 @@ All previous proof stages passed:
 - compile proven,
 - symbol bound,
 - ABI proven,
-- dispatch proven,
-- output proven,
+- epoch swap proven,
+- dispatch observed,
+- dispatch safe proven,
+- output oracle proven,
 - host preservation proven.
 
 Only this state may be described as full runtime render correctness.
@@ -258,7 +335,8 @@ At least one kernel argument lacks verified provenance.
 
 Action:
 
-- block `gpu-hmr-dispatch-proven` if the argument is used for launch,
+- allow `gpu-hmr-dispatch-observed` if the current session really launched,
+- block `gpu-hmr-dispatch-safe-proven` if the argument is used for launch,
 - block `gpu-hmr-full-runtime-proven`,
 - report the unknown argument index/name/type.
 
@@ -286,7 +364,7 @@ Dispatch happened, but no deterministic output/readback proof was collected.
 
 Action:
 
-- stop at dispatch-proven,
+- stop at `gpu-hmr-dispatch-safe-proven`,
 - require probe mode for full runtime correctness.
 
 ### `gpu-hmr-host-replaced`
@@ -299,6 +377,38 @@ Action:
 - report replacement scope and reason,
 - reject full runtime correctness unless the validation explicitly targeted a restart path.
 
+### `gpu-hmr-epoch-retirement-pending`
+
+The new generation was published, but at least one old generation is still live because stream fences have not completed.
+
+Action:
+
+- allow `gpu-hmr-epoch-swap-proven` only if old-generation lifetime is explicitly tracked,
+- block unload of the old capsule,
+- block `gpu-hmr-full-runtime-proven` until retirement completes or the validation explicitly accepts pending retirement as a lower state,
+- report stream ids and fence ids still keeping the old generation alive.
+
+### `gpu-hmr-epoch-swap-unverified`
+
+The runtime replaced dispatch entries without structured generation lineage, dispatch table hashes, or retirement fence evidence.
+
+Action:
+
+- downgrade to pre-epoch replacement proof,
+- block `gpu-hmr-epoch-swap-proven`,
+- block `gpu-hmr-full-runtime-proven`.
+
+### `gpu-hmr-ram-io-unavailable`
+
+The compile/reload path requested RAM-only artifact transport, but the selected vendor/toolchain/backend could only load through a filesystem path.
+
+Action:
+
+- record the loader capability and fallback transport,
+- allow lower proof states if the artifact hash and path are verified,
+- block any claim that the run used RAM-only artifact transport,
+- do not hardcode the degraded state to HIPRT, ROCm, CUDA, or any renderer.
+
 ### `gpu-hmr-visual-only`
 
 A screenshot or visual frame exists, but no deterministic output proof exists.
@@ -306,7 +416,55 @@ A screenshot or visual frame exists, but no deterministic output proof exists.
 Action:
 
 - report visual evidence as supplemental,
-- block output-proven and full-runtime-proven.
+- block `gpu-hmr-output-oracle-proven` and `gpu-hmr-full-runtime-proven`.
+
+## Structured Proof Artifact Contract
+
+Every validation run must produce a structured proof artifact. This artifact is the source of truth used by MCP validation, UI labels, and terminal summaries.
+
+Logs, screenshots, visual diffs, compile output, and changed hashes must be referenced by the artifact as evidence, not parsed after the fact as proof. If a fact is only present in a log line and not in the proof artifact, it is diagnostic evidence only.
+
+Required top-level fields:
+
+```json
+{
+  "schemaVersion": "synthi.gpu.hmr.proof.v1",
+  "proofId": "gpu-proof:...",
+  "workspaceSlug": "hiprt-validation-...",
+  "runtimeSessionId": "runtime-session:...",
+  "sourceEditId": "source-edit:...",
+  "selectedArtifactId": "artifact:...",
+  "resultState": "gpu-hmr-dispatch-observed",
+  "degradedState": "gpu-hmr-output-unobserved",
+  "degradedReason": "output oracle was not collected",
+  "stageResults": [],
+  "evidenceRefs": [],
+  "visualEvidenceRefs": [],
+  "createdAt": "2026-05-26T00:00:00Z"
+}
+```
+
+Required stage record fields:
+
+- stable stage id,
+- stage name,
+- status,
+- started and completed timestamps,
+- input artifact ids,
+- output artifact ids,
+- evidence refs,
+- degraded state and reason when not fully proven.
+
+Required evidence ref fields:
+
+- evidence id,
+- evidence kind,
+- content hash,
+- producer subsystem,
+- timestamp,
+- session id where applicable,
+- file path or artifact URI,
+- summary.
 
 ## State Provenance Contract
 
@@ -399,6 +557,34 @@ Inputs:
 - target ISA/arch,
 - artifact schema version.
 
+### ABI Extractor Contract
+
+Every ABI hash must declare its extractor. An ABI field with no concrete extractor is unverified and must downgrade to `gpu-hmr-abi-unverified`.
+
+Accepted extraction sources:
+
+- Clang AST or clang record-layout dump for kernel parameter types, struct/class/union layouts, field offsets, field sizes, alignments, and host/device-visible type identities.
+- Compiled artifact symbol table for exported, mangled, and demangled symbol identity.
+- Compiler invocation metadata for target ISA/arch, flags, include roots, and device library identity.
+- DWARF or LLVM metadata as a cross-check when debug metadata is present and trustworthy.
+- Runtime metadata only when the runtime boundary explicitly records it with a stable schema and artifact/session id.
+- Vendor/runtime wrapper instrumentation for texture objects, surface objects, CUDA graph nodes, HIPRT handles, streams, and events.
+
+Rejected extraction sources for ABI proof:
+
+- regex-only source scanning,
+- AI text,
+- logs without a structured evidence id,
+- inferred struct layout from generated launch aggregates,
+- assumed texture/surface bindings,
+- guessed parameter sizes or alignments.
+
+V1 ABI proof scope:
+
+- Prove kernel signature, exported symbol identity, compiler command, target arch, source include root, device/global constant layout, and parameter-visible record layouts through Clang AST/layout dumps where available.
+- Treat texture/surface binding metadata as unverified unless the runtime wrapper or compiler metadata exposes it explicitly.
+- Treat HIPRT/CUDA opaque handles as ABI-safe only for type identity; runtime handle provenance is handled by dispatch safety, not ABI proof.
+
 ### ABI Safe Scope
 
 Safe hot replacement requires:
@@ -469,6 +655,188 @@ Accepted synchronization evidence:
 
 Missing ordering evidence downgrades to compile/symbol/ABI proof only.
 
+## Epoch-Grafted Artifact Capsules
+
+The target production replacement model is an epoch-grafted capsule system modeled on organ grafting plus blood circulation.
+
+Instead of treating HMR as "compile, unload old module, synchronize everything, load new module," the runtime owns small living capsule generations.
+
+```text
+stable host dispatch table
+    |
+    | points to current capsule generation
+    v
+capsule generation N:
+    - fissioned code object
+    - ABI membrane hash
+    - exported symbol set
+    - dependency closure hash
+    - function handles
+    - proof hash
+    - stream epoch counters
+```
+
+### Capsule Contents
+
+Each capsule generation must record:
+
+- generation id,
+- artifact id,
+- artifact kind,
+- artifact hash,
+- loader backend,
+- loader capability record,
+- fission island id,
+- fissioned code object bytes hash,
+- ABI membrane hash,
+- ABI proof id,
+- exported symbol set,
+- dependency closure hash,
+- compile command hash,
+- function handle ids,
+- dispatch table hash contribution,
+- proof hash,
+- stream epoch counters,
+- creation timestamp,
+- publish timestamp,
+- retirement state.
+
+The capsule record must be generic across GPU vendors. It may mention HIPRT, CUDA, ROCm, OptiX, Vulkan compute, or other backends only as observed runtime/toolchain metadata.
+
+### Epoch Swap Flow
+
+On edit:
+
+1. Prove the edit stays inside an ABI membrane.
+2. Compile only the fission island, preferably with RAM artifact transport.
+3. Load the new capsule into memory.
+4. Resolve function handles for the exported symbol set.
+5. Hash the dispatch table before publish.
+6. Atomically publish dispatch entries to generation `N+1`.
+7. Hash the dispatch table after publish.
+8. Keep generation `N` alive.
+9. Record which streams can still use generation `N`.
+10. Insert or observe retirement fences for those streams.
+11. Retire and unload generation `N` only after every relevant stream passes its epoch fence.
+
+The publication step is the moment the runtime may claim `gpu-hmr-epoch-swap-proven`, provided the proof artifact records the generation lineage and retirement evidence. If old generation retirement is still pending, the proof must say so explicitly.
+
+### Why This Is Better Than Full Synchronize-Then-Swap
+
+Full synchronization before swap is simple but pessimistic. It stalls unrelated work and can hide whether the replacement was actually safe for in-flight launches.
+
+Epoch capsules separate three facts:
+
+- new generation publication,
+- old generation lifetime,
+- old generation retirement.
+
+That separation gives a stronger proof: old launches finish on old code, new launches use new code, and module unload is delayed until stream evidence allows it.
+
+### Dispatch Table Rules
+
+The stable host dispatch table must not be rebuilt by generated renderer logic for complex projects. It should be owned by the runtime boundary and point to capsule generations.
+
+Dispatch table updates must be:
+
+- atomic at the logical symbol entry level,
+- generation stamped,
+- hashable before and after publish,
+- scoped to verified replacement symbols,
+- rejected if the new capsule exports unknown unsafe symbols,
+- rejected if ABI membrane proof failed,
+- rejected if function handle resolution is incomplete.
+
+### Retirement Rules
+
+Old capsules must stay loaded while any stream can still dispatch or finish work from that generation.
+
+Required retirement evidence:
+
+- stream id,
+- old generation id,
+- last observed launch id for that generation on the stream,
+- event/fence id,
+- fence insertion timestamp,
+- fence completion timestamp,
+- unload timestamp,
+- unload driver result.
+
+If a backend cannot expose per-stream fences or events for the affected launch path, the system may fall back to conservative stream/context synchronization, but it must record that as a degraded retirement strategy. It must not pretend the run used epoch retirement.
+
+## RAM Artifact Transport Contract
+
+The target fast path should avoid unnecessary disk round trips between compile, artifact selection, reload, and proof collection.
+
+RAM artifact transport means the selected fission island artifact is carried through the pipeline as bytes or as a content-addressed in-memory blob reference, not only as a filesystem path.
+
+### RAM Transport Goals
+
+RAM transport should reduce:
+
+- compile-to-load latency,
+- filesystem contention,
+- stale artifact risk,
+- accidental cross-session artifact selection,
+- path-specific behavior in tests and fixtures.
+
+### RAM Transport Artifact Record
+
+Each RAM-capable artifact must record:
+
+```json
+{
+  "artifactId": "artifact:...",
+  "transport": "ram",
+  "artifactKind": "source_include_bridge",
+  "bytesHash": "sha256:...",
+  "bytesLength": 123456,
+  "exportedSymbols": ["..."],
+  "compileCommandHash": "sha256:...",
+  "dependencyClosureHash": "sha256:...",
+  "loaderCapability": "module-load-data",
+  "fallbackPath": null
+}
+```
+
+If a backend requires a path-based loader, the artifact record must say:
+
+```json
+{
+  "transport": "filesystem-fallback",
+  "requestedTransport": "ram",
+  "degradedState": "gpu-hmr-ram-io-unavailable",
+  "loaderCapability": "module-load-file",
+  "fallbackPathHash": "sha256:..."
+}
+```
+
+### RAM I/O Insertion Points
+
+RAM I/O should be added at these subsystem boundaries:
+
+- compile output: device compilation emits artifact bytes or a RAM blob id in addition to any path,
+- partial artifact selection: selected fission island carries bytes/hash/symbol metadata forward,
+- reload request: adapter accepts either artifact bytes/blob id or verified artifact path,
+- module manager load API: backend loader chooses data load, file load, or explicit fallback based on capability,
+- proof writer: proof artifact references bytes hash/blob id as the source of truth,
+- MCP validation: validation reads proof artifact and evidence refs, not stale paths.
+
+### Loader Capability Rule
+
+RAM transport must be capability-driven. It must not hardcode behavior for HIPRT, ROCm, CUDA, a renderer name, or a fixture path.
+
+Accepted capability examples:
+
+- `module-load-data`,
+- `module-load-file`,
+- `module-load-data-disabled-by-backend`,
+- `module-load-data-unsafe-on-target`,
+- `memfd-or-tempfile-required`,
+- `unknown`.
+
+If a backend has a known unsafe byte-load path, the system must use the safer loader and report the fallback. Correctness beats RAM purity.
+
 ## Replacement Scope Contract
 
 Replacement scope must be formal. The runtime must know whether it is replacing:
@@ -510,9 +878,86 @@ Any of the following requires degraded reporting:
 - dispatch evidence missing,
 - output evidence missing.
 
+## Grand Fission Engine
+
+The grand fission engine is the subsystem that decides how narrow a replacement artifact can be before compilation and capsule publication.
+
+It must be generic: fission is about dependency, ABI, symbol, and runtime ownership boundaries. It is not a HIPRT-specific, CUDA-specific, ROCm-specific, or renderer-specific trick.
+
+### Fission Island
+
+A fission island is a proposed hot-reloadable unit.
+
+Required island fields:
+
+- island id,
+- source edit id,
+- source paths,
+- source spans,
+- generated role path where applicable,
+- target symbols,
+- exported symbols expected from artifact,
+- artifact kind,
+- include closure,
+- dependency closure hash,
+- ABI membrane id,
+- compile recipe hash,
+- compile command hash,
+- loader capability requirement,
+- output oracle proposal or required oracle id,
+- original host launch mapping id where applicable,
+- verifier evidence ids,
+- AI proposal id when AI was involved.
+
+### Fission Pipeline
+
+The engine should run this pipeline:
+
+1. Discover changed source spans.
+2. Map spans to source-backed or generated device roles.
+3. Propose candidate fission islands.
+4. Deterministically verify source mapping and include closure.
+5. Deterministically verify symbol ownership and safe export set.
+6. Deterministically verify ABI membrane compatibility.
+7. Select the narrowest viable island.
+8. Compile the island, preferably through RAM artifact transport.
+9. Load it as a capsule generation.
+10. Publish through epoch dispatch.
+11. Run dispatch, output, visual, and host-preservation proof.
+
+### Narrow Fission First
+
+The selection preference should be:
+
+1. single body-only kernel/function replacement,
+2. source-include-backed partial artifact,
+3. safe multi-symbol artifact,
+4. full device sidecar,
+5. host rebuild,
+6. runner restart.
+
+The system may choose a wider scope only when the structured proof artifact records why narrower candidates were rejected.
+
+### Fission Rejection Reasons
+
+Common rejection reasons:
+
+- edit crosses ABI membrane,
+- include closure unknown,
+- symbol ownership ambiguous,
+- exported symbols include unsafe unknowns,
+- compile recipe unavailable,
+- RAM loader capability unavailable,
+- argument provenance would be unknown,
+- output oracle missing,
+- original host launch mapping missing,
+- stream retirement cannot be proven.
+
+These reasons should be reusable by AI delta as repair context, but they remain deterministic verifier outputs.
+
 ## Deterministic Probe Contract
 
-Full runtime correctness for renderers requires deterministic probe mode.
+Full runtime correctness for renderers requires deterministic probe mode and an explicit output oracle.
 
 ### Probe Mode Requirements
 
@@ -529,6 +974,36 @@ The runtime or validation harness must set:
 - stable denoising/postprocessing state,
 - known output target,
 - known synchronization point before readback.
+
+### Output Oracle Requirements
+
+An output oracle must define what result is expected before validation runs. "A frame changed", "a hash changed", or "the screenshot is non-black" is not an oracle.
+
+Accepted oracle kinds:
+
+- edit contract: a declared before/after expectation for the edit,
+- sentinel buffer value,
+- kernel-side checksum,
+- render target hash with a known expected hash,
+- accumulation buffer hash with a known expected hash,
+- selected pixel values with tolerance,
+- per-pass checksum,
+- dispatch counter with expected increment.
+
+Required oracle record fields:
+
+- oracle id,
+- oracle kind,
+- producer,
+- expected value,
+- actual value,
+- tolerance where applicable,
+- pass/fail status,
+- output target id,
+- readback timestamp after HMR,
+- session id,
+- artifact id,
+- visual evidence ref for render workflows.
 
 ### Probe Outputs
 
@@ -574,9 +1049,13 @@ For floating point renderers:
 }
 ```
 
+For render workflows, `synthi_screenshot` or equivalent fresh visual capture is still required as visual evidence. Visual evidence cannot replace the oracle.
+
 ## Host Preservation Proof
 
 The system must prove it did not replace too much.
+
+Host preservation cannot be proven by reading logs after the run. The runtime must snapshot identities before and after the HMR window and write those records into the structured proof artifact.
 
 ### Required Identity Checks
 
@@ -609,6 +1088,24 @@ The validation must assert:
 - no runner restart occurred during the HMR window.
 
 If any assertion fails, report `gpu-hmr-host-replaced` or a narrower degraded state.
+
+### Host Preservation Instrumentation Contract
+
+The runtime must intentionally instrument identities it later claims as preserved.
+
+Required instrumentation sources:
+
+- runner process identity from the runner process itself,
+- host/core module identity from the module loader,
+- GUI module identity from the module loader,
+- core and GUI state pointers from the runtime call boundary,
+- project session id from runner session state,
+- device context identity from the GPU runtime wrapper where available,
+- stream identities from the GPU runtime wrapper where available,
+- persistent allocation identities from allocation registration/wrappers,
+- output buffer identity from probe registration.
+
+Renderer object identity, scene buffer identity, HIPRT acceleration handles, texture objects, surface objects, graph nodes, and event dependencies are optional only until a renderer adapter or runtime wrapper records them. If they are required for a project class and no instrumentation exists, host preservation must be degraded rather than inferred.
 
 ## Original Host Path Attachment
 
@@ -661,6 +1158,93 @@ AI may assist, but it must not certify runtime correctness.
 - proposing patch candidates for non-body edits,
 - generating test scaffolds that deterministic verifiers then check.
 
+### Existing GPU AI Delta Role
+
+The existing GPU AI delta path is the correct front door for AI-assisted fission. It should evolve from "patch generated roles" into "propose a scoped fission candidate."
+
+Current useful responsibilities:
+
+- translate a user edit into generated-role edits,
+- preserve anchor-based edit application,
+- carry reload-plan hints,
+- operate on scoped device prompt sources,
+- let Rust apply deterministic policy and ABI checks after the model responds.
+
+Production responsibilities to add:
+
+- propose fission island fields,
+- propose affected symbol set,
+- propose source/include closure,
+- propose artifact kind,
+- propose output oracle candidates,
+- include the local proof failure reasons it is trying to repair,
+- return a structured proposal id that the proof artifact can reference.
+
+Suggested AI delta response extension:
+
+```json
+{
+  "reload_plan": "device_only",
+  "edits": [],
+  "fissionCandidate": {
+    "sourcePaths": [],
+    "sourceSpans": [],
+    "symbols": [],
+    "artifactKind": "source_include_bridge",
+    "expectedAbiScope": "membrane-preserving",
+    "oracleProposal": {
+      "kind": "pixel-or-checksum",
+      "target": "deterministic-output-contract"
+    }
+  }
+}
+```
+
+The runtime must treat this as a proposal. It becomes a real fission island only after deterministic verification.
+
+### Local Proof And AI Delta Fallback Policy
+
+AI delta is fallback for candidate generation, never fallback for proof.
+
+The correct flow is:
+
+```text
+local deterministic proof
+  -> pass: compile capsule
+  -> fail: AI delta proposes repair/fission candidate
+        -> deterministic proof again
+              -> pass: compile capsule
+              -> fail: full rebuild / cold reload / degraded state
+```
+
+If local proof fails before runtime publication, AI delta may be called with structured reason codes such as:
+
+- `mapping_ambiguous`,
+- `partial_artifact_unavailable`,
+- `symbol_ownership_uncertain`,
+- `abi_membrane_rejected`,
+- `include_closure_unknown`,
+- `output_oracle_missing`,
+- `ram_transport_unavailable`,
+- `epoch_retirement_unavailable`.
+
+AI may propose a narrower island, a safer generated-role patch, an oracle, or a repair. The deterministic verifier must re-check everything before compile/load/publish.
+
+If proof fails after runtime publication stages, AI delta must not bless the failed artifact. The runtime must keep or roll back to the old generation, quarantine or reject the new capsule, write the structured proof failure, and optionally send that failure report to AI delta or GPU heal to propose a new attempt.
+
+### AI Agent Plug-In Points
+
+Useful AI plug-ins:
+
+- fission planner: proposes island boundaries and target symbols,
+- oracle designer: proposes sentinel/checksum/pixel probes,
+- launch attachment scout: suggests original host launch instrumentation points,
+- proof failure explainer: turns structured rejection reasons into developer-readable guidance,
+- fission cache ranker: ranks likely fast paths using prior timings,
+- repair proposer: proposes scoped edits after compile/proof rejection.
+
+These agents must output structured proposals with ids. They must not write proof states.
+
 ### AI Must Not Decide
 
 - ABI safety,
@@ -669,6 +1253,14 @@ AI may assist, but it must not certify runtime correctness.
 - output correctness,
 - host preservation correctness,
 - whether a generated temporary is equivalent to live renderer state.
+
+AI also must not decide:
+
+- that an epoch swap is safe,
+- that an old generation can be unloaded,
+- that RAM transport happened,
+- that a backend-specific loader behavior is safe without capability evidence,
+- that a visual screenshot satisfies an output oracle.
 
 ### AI Body-Only Edit Classification
 
@@ -717,13 +1309,15 @@ For HIPRT-scale projects, generated artifact patching can prove compile/symbol/r
 
 Goal:
 
-Make every result report the highest proof state actually achieved.
+Make every result report the highest proof state actually achieved through a structured proof artifact.
 
 Implementation:
 
 - Add proof-state enum in worker/runtime telemetry.
 - Add degraded/failure states listed in this plan.
+- Add structured proof artifact schema and writer.
 - Emit proof-state transitions from compile, symbol inspection, ABI gate, reload, dispatch observation, output probe, and host preservation checks.
+- Make MCP validation read proof artifacts as source of truth rather than inferring correctness from logs.
 - Update MCP validation to fail if it expected full runtime proof but only received compile/reload proof.
 - Update UI/terminal labels to show proof state clearly.
 
@@ -732,6 +1326,7 @@ Tests:
 - compile-only result reports `gpu-hmr-compile-proven`,
 - symbol-bound result reports `gpu-hmr-symbol-bound`,
 - partial reload without dispatch reports `gpu-hmr-dispatch-unobserved`,
+- observed dispatch with unsafe/unknown arguments reports `gpu-hmr-dispatch-observed` but not `gpu-hmr-dispatch-safe-proven`,
 - visual-only result reports `gpu-hmr-visual-only`,
 - host restart during device HMR reports `gpu-hmr-host-replaced`,
 - no success path silently reports full runtime proof without output probe.
@@ -768,9 +1363,10 @@ Replace signature-hash-only thinking with a formal ABI gate.
 Implementation:
 
 - Extend artifact metadata with parameter count/size/alignment where available.
-- Hash visible struct/class/union layouts.
-- Hash constant memory and device global layouts.
-- Record texture/surface binding metadata.
+- Hash visible struct/class/union layouts from Clang AST or clang record-layout dumps.
+- Hash constant memory and device global layouts from declared extractor output and compiled artifact symbols.
+- Record texture/surface binding metadata only when compiler metadata or runtime wrapper instrumentation exposes it.
+- Store extractor name, version, command, input hash, and evidence id for every ABI hash.
 - Compare compile command, target arch, compiler version, and device library identity.
 - Fail ABI proof on layout, binding, symbol, or flag uncertainty.
 
@@ -805,7 +1401,38 @@ Tests:
 - unrelated stream does not block replacement,
 - graph capture state blocks partial replacement unless explicitly handled.
 
-### Milestone 5: Host Preservation Proof
+### Milestone 5: Epoch Capsules And RAM Artifact Transport
+
+Goal:
+
+Replace primary/standby immediate-unload semantics with generation-published capsules and add RAM-capable artifact transport.
+
+Implementation:
+
+- Add capsule generation records to the GPU module manager.
+- Add artifact ids, ABI membrane hashes, exported symbol sets, dependency closure hashes, function handle ids, proof hashes, and stream epoch counters to capsule metadata.
+- Add dispatch table hash before/after publication.
+- Publish changed dispatch entries atomically by generation.
+- Keep old capsules loaded after publication.
+- Track streams using old generations.
+- Add retirement fence records and delayed unload.
+- Add RAM artifact/blob id support to compile output and reload requests.
+- Add backend loader capability records instead of vendor hardcoding.
+- Record filesystem fallback as `gpu-hmr-ram-io-unavailable` when RAM load is unavailable or unsafe.
+- Emit `gpu-hmr-epoch-swap-proven` stage evidence into the proof artifact.
+
+Tests:
+
+- new capsule generation publishes without unloading old generation,
+- dispatch table hash changes only for expected symbols,
+- old generation remains live while a stream fence is pending,
+- old generation unloads only after fence completion,
+- failed function resolution does not publish a generation,
+- RAM artifact path loads through data loader when capability allows,
+- file-loader fallback records degraded RAM transport state,
+- proof artifact contains old/new generation lineage.
+
+### Milestone 6: Host Preservation Proof
 
 Goal:
 
@@ -827,29 +1454,58 @@ Tests:
 - runner restart downgrades proof,
 - scene buffer change without expected reason downgrades proof.
 
-### Milestone 6: Deterministic Probe Framework
+### Milestone 7: Deterministic Probe Framework
 
 Goal:
 
-Add output correctness proof.
+Add output correctness proof backed by explicit oracles and fresh visual evidence for render workflows.
 
 Implementation:
 
 - Define small project readback probe first.
 - Add generic probe API for kernel-side sentinel/checksum.
+- Add edit contract schema for expected before/after output.
 - Add renderer probe adapter interface.
 - For HIPRT, start with a fixed-scene/fixed-camera/fixed-seed probe if the original runtime path can expose output buffers.
 - Add tolerance policy for floating point.
+- Write oracle results and visual evidence refs into the structured proof artifact.
 
 Tests:
 
 - small fixture before/after scalar check,
 - small fixture buffer hash check,
 - tolerant pixel comparison,
-- missing output probe prevents `gpu-hmr-output-proven`,
+- missing output probe prevents `gpu-hmr-output-oracle-proven`,
 - stale screenshot cannot satisfy output proof.
 
-### Milestone 7: Original Host Path Attachment
+### Milestone 8: Grand Fission Engine And AI Delta Integration
+
+Goal:
+
+Turn GPU AI delta and deterministic fast-path selection into a generic fission engine.
+
+Implementation:
+
+- Define `FissionIsland` schema.
+- Extend GPU AI delta response with optional `fissionCandidate`.
+- Feed local proof rejection reasons into AI delta.
+- Promote AI proposals only after deterministic verifier acceptance.
+- Record AI proposal id and deterministic verifier evidence ids separately.
+- Rank candidates by narrowness, proof completeness, compile cost, and historical timing.
+- Generate or require output oracle contracts for selected islands.
+- Preserve existing deterministic local path as first attempt.
+- Ensure AI delta is fallback for candidate generation only, never proof.
+
+Tests:
+
+- local proof pass does not call AI delta,
+- local proof failure calls AI delta with reason codes,
+- AI fission proposal is rejected when deterministic verifier rejects ABI/layout/symbol evidence,
+- accepted AI proposal records both AI proposal id and verifier evidence id,
+- missing oracle proposal blocks output proof,
+- post-publication proof failure quarantines new capsule instead of AI-blessing it.
+
+### Milestone 9: Original Host Path Attachment
 
 Goal:
 
@@ -872,14 +1528,29 @@ Tests:
 - stream synchronization occurs before swap,
 - output probe passes after edit.
 
-### Milestone 8: HIPRT Full Runtime Validation
+### Milestone 10: HIPRT Full Runtime Validation
 
 Goal:
 
 Prove HIPRT full runtime render correctness or clearly report the highest achieved proof state.
 
+### HIPRT Target Progression
+
+HIPRT validation must not rely only on `MegaKernel`.
+
+Required HIPRT progression:
+
+1. Prove a smaller non-`MegaKernel` HIPRT kernel or pass with a deterministic output oracle.
+2. Prove a source-include-backed HIPRT partial artifact reload for that smaller target.
+3. Prove original host-path dispatch and host-preservation for that smaller target.
+4. Use `MegaKernel` as the final HIPRT acceptance target.
+
+`MegaKernel` is the final target because it exercises the broadest runtime state surface: render data aggregate, scene buffers, HIPRT handles, material and camera state, accumulation, stream ordering, and render output correctness.
+
 Required run metadata:
 
+- proof artifact id,
+- proof artifact schema version,
 - repo URL,
 - commit,
 - target,
@@ -896,6 +1567,7 @@ Required run metadata:
 - compile command hash,
 - dependency hash,
 - ABI proof id,
+- epoch swap proof id,
 - runtime session slug,
 - stream ordering proof id,
 - host preservation proof id,
@@ -907,9 +1579,12 @@ Acceptance:
 - no unknown argument provenance,
 - selected artifact exports expected symbols only,
 - ABI gate passes,
+- epoch capsule publish passes or a lower degraded state is reported,
+- dispatch is observed in the current session,
+- dispatch safety proof passes,
 - affected streams are synchronized,
-- runtime dispatches expected kernel in current session,
-- output probe passes,
+- output oracle passes,
+- fresh visual output is captured for render workflows,
 - host/core/gui/renderer identity preserved,
 - result state is `gpu-hmr-full-runtime-proven`.
 
@@ -940,13 +1615,20 @@ Each implementation patch should be committed separately:
 
 1. proof-state enum and terminal/UI reporting,
 2. MCP proof-state validation,
-3. argument provenance telemetry,
-4. ABI gate metadata,
-5. stream ordering enforcement,
-6. host preservation identity checks,
-7. small deterministic readback probe,
-8. original host path attachment prototype,
-9. HIPRT deterministic probe integration.
+3. structured proof artifact writer,
+4. argument provenance telemetry,
+5. ABI extractor metadata,
+6. dispatch observed/safe split,
+7. stream ordering enforcement,
+8. epoch capsule generation model,
+9. RAM artifact transport abstraction,
+10. delayed capsule retirement,
+11. host preservation identity checks,
+12. small deterministic oracle/readback probe,
+13. GPU AI delta fission-candidate proposal,
+14. grand fission engine verifier,
+15. original host path attachment prototype,
+16. HIPRT deterministic probe integration.
 
 Before each commit:
 
@@ -961,12 +1643,17 @@ Before each commit:
 The system is not production-grade for senior AMD/NVIDIA kernel engineers until:
 
 - full proof-state ladder is implemented,
+- structured proof artifact is the source of truth,
 - fake launch paths are rejected,
 - argument provenance is enforced,
 - ABI compatibility is formal,
 - stream ordering is proven,
+- epoch capsule publication and retirement are proven,
+- RAM artifact transport is implemented or degraded explicitly by capability,
+- AI delta is constrained to candidate generation and repair proposals,
+- the fission engine records deterministic acceptance/rejection evidence,
 - partial replacement scope is enforced,
-- deterministic output probes exist,
+- deterministic output oracles exist,
 - host preservation is proven,
 - HIPRT or an equivalently complex project reaches `gpu-hmr-full-runtime-proven`,
 - failures/degraded states are visible in terminal, UI, MCP artifacts, and logs,
@@ -975,6 +1662,7 @@ The system is not production-grade for senior AMD/NVIDIA kernel engineers until:
 Until then, accurate wording is:
 
 - "partial artifact compile/reload proven" when only compile/symbol/reload passed,
-- "dispatch proven" when session-scoped dispatch is observed,
-- "output proven" when deterministic readback passes,
+- "dispatch observed" when session-scoped dispatch is observed but safety is unproven,
+- "dispatch safe proven" when dispatch observation, ABI, argument provenance, stream ordering, and replacement scope all pass,
+- "output oracle proven" when deterministic readback passes an explicit oracle,
 - "full runtime proven" only when the entire ladder passes.
