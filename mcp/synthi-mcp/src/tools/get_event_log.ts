@@ -6,6 +6,8 @@ const VALID_KINDS: readonly EventKind[] = [
   "lifecycle",
   "hmr",
   "input",
+  "frame",
+  "lease",
   "locator_resolution",
   "console",
   "error",

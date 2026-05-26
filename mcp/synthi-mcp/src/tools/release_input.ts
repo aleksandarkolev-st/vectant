@@ -1,5 +1,8 @@
 import { session } from "../session.js";
 import { leaseRegistry } from "../arbitration/lease.js";
+import { brokerError, brokerInputEnforced } from "../broker/index.js";
+import { resolveLeaseMode } from "../arbitration/lease.js";
+import { requestSharedLease } from "./shared_lease.js";
 import {
   errorResponse,
   jsonResponse,
@@ -33,6 +36,36 @@ export async function releaseInputTool(args: unknown): Promise<ToolResponse> {
     leaseId = a.lease_id;
   }
 
+  if (leaseId === undefined && brokerInputEnforced()) {
+    return errorResponse("FORBIDDEN", brokerError("FORBIDDEN", {
+      reason: "release_all_disabled_in_enforce_mode",
+    }) as unknown as Record<string, unknown>);
+  }
+
+  if (leaseId !== undefined) {
+    const shared = await requestSharedLease(attached, { op: "release", lease_id: leaseId });
+    if (shared?.ok === false) {
+      return errorResponse(shared.error, shared.detail);
+    }
+    if (shared?.ok === true) {
+      leaseRegistry.release(leaseId, attached.sessionId);
+      session.touch();
+      return jsonResponse({
+        ok: true,
+        released: shared.released ?? [leaseId],
+        enforcement: "session-shared-worker",
+      });
+    }
+    if (brokerInputEnforced()) {
+      return errorResponse("LEASE_DENIED", brokerError("LEASE_DENIED", {
+        reason: "shared_session_lease_authority_unavailable",
+        required_authority: "worker",
+        lease_id: leaseId,
+        session_id: attached.sessionId,
+      }) as unknown as Record<string, unknown>);
+    }
+  }
+
   const result = leaseRegistry.release(leaseId);
   session.touch();
   if (result.not_found !== null) {
@@ -41,6 +74,6 @@ export async function releaseInputTool(args: unknown): Promise<ToolResponse> {
   return jsonResponse({
     ok: true,
     released: result.released,
-    enforcement: "wire-only",
+    enforcement: brokerInputEnforced() ? "server" : resolveLeaseMode() === "single-holder" ? "mcp-local" : "wire-only",
   });
 }

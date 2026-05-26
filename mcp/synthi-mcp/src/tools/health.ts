@@ -1,4 +1,5 @@
 import { session } from "../session.js";
+import { currentBrokerHealthStatus, currentBrokerLifecycleEvent } from "../broker/index.js";
 import { errorFromException, jsonResponse, type ToolResponse } from "./shared.js";
 
 /**
@@ -33,6 +34,8 @@ export async function healthTool(_args: unknown): Promise<ToolResponse> {
         unsafe_mode: unsafe,
         attached_at: attachedAt,
         last_activity_at: lastActivity,
+        broker: currentBrokerHealthStatus(),
+        broker_lifecycle: currentBrokerLifecycleEvent(),
         ...(warming !== null ? { warming_progress: warming } : {}),
         ...(timing !== null ? { frame_timing: timing } : {}),
       });
@@ -52,6 +55,8 @@ export async function healthTool(_args: unknown): Promise<ToolResponse> {
       signaling_url: attached.signalingUrl,
       attached_at: attachedAt,
       last_activity_at: lastActivity,
+      broker: currentBrokerHealthStatus(),
+      broker_lifecycle: currentBrokerLifecycleEvent(),
       ...(warming !== null ? { warming_progress: warming } : {}),
       ...(timing !== null ? { frame_timing: timing } : {}),
       peer: {

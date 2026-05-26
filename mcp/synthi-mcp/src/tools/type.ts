@@ -1,14 +1,14 @@
-import { session } from "../session.js";
-import { encodeTypeSequence } from "../wire/input.js";
+import { keyboardTool } from "./keyboard.js";
 import {
-  errorFromException,
   errorResponse,
-  jsonResponse,
   type ToolResponse,
 } from "./shared.js";
 
 interface TypeArgs {
   text?: unknown;
+  lease_id?: unknown;
+  based_on_frame_seq?: unknown;
+  based_on_viewport?: unknown;
 }
 
 export async function typeTool(args: unknown): Promise<ToolResponse> {
@@ -18,18 +18,12 @@ export async function typeTool(args: unknown): Promise<ToolResponse> {
       hint: "text must be a string.",
     });
   }
-  if (a.text.length === 0) {
-    return jsonResponse({ ok: true, charsSent: 0 });
-  }
 
-  try {
-    const attached = session.require();
-    const frames = encodeTypeSequence(attached.sessionId, a.text);
-    // MVP rate cap: 500 keys/sec. encodeTypeSequence emits 2 frames per char
-    // (down+up), so 2ms between frames → ≤500 keys/sec.
-    await attached.channels.sendInput(frames, { interFrameDelayMs: 2 });
-    return jsonResponse({ ok: true, charsSent: a.text.length });
-  } catch (err) {
-    return errorFromException("type_failed", err);
-  }
+  return keyboardTool({
+    action: "type",
+    text: a.text,
+    lease_id: a.lease_id,
+    based_on_frame_seq: a.based_on_frame_seq,
+    based_on_viewport: a.based_on_viewport,
+  });
 }

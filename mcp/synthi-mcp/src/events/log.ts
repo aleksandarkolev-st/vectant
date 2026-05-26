@@ -51,6 +51,10 @@ export class EventLog {
     return this.entries.length;
   }
 
+  firstSeq(): number | null {
+    return this.entries[0]?.seq ?? null;
+  }
+
   lastSeq(): number {
     return this.seqCounter;
   }

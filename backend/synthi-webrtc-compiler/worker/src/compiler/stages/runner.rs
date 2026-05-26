@@ -384,6 +384,9 @@ pub async fn handle_runner_execution(
 
     let req_width = req.width.unwrap_or(800);
     let req_height = req.height.unwrap_or(600);
+    // Xvfb/GStreamer emits physical Xvfb pixels, and input events target
+    // that same pixel space.
+    let producer_dpr = 1.0_f64;
     let next_device_abi = next_full_device_abi(&modules_to_load);
     let mut pending_abi_breaking_restart_marker: Option<(String, String)> = None;
 
@@ -783,6 +786,9 @@ pub async fn handle_runner_execution(
                 let video_fanout = ctx.video_fanout.clone();
                 let log_dc_for_frame_advance = ctx.log_dc.clone();
                 let session_id_for_frame_timing = session_id.clone();
+                let producer_viewport_width = req_width;
+                let producer_viewport_height = req_height;
+                let producer_viewport_dpr = producer_dpr;
                 tokio::spawn(async move {
                     let mut frame_seq: u64 = 0;
                     let mut dispatched: u64 = 0;
@@ -825,15 +831,21 @@ pub async fn handle_runner_execution(
                             if let Some(ref sid) = session_id_for_frame_timing {
                                 crate::infra::frame_timing::record_end_of_frame(sid);
                             }
-                            if frame_seq % EMIT_EVERY_N_FRAMES == 0 {
+                            if frame_seq == 1 || frame_seq % EMIT_EVERY_N_FRAMES == 0 {
                                 let ts_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .map(|d| d.as_millis() as u64)
                                     .unwrap_or(0);
-                                let msg = format!(
-                                    r#"{{"type":"frame-advance","frame_seq":{},"ts_ms":{}}}"#,
-                                    frame_seq, ts_ms
-                                );
+                                let msg = serde_json::json!({
+                                    "type": "frame-advance",
+                                    "frame_seq": frame_seq,
+                                    "ts_ms": ts_ms,
+                                    "viewport": {
+                                        "w": producer_viewport_width,
+                                        "h": producer_viewport_height,
+                                        "dpr": producer_viewport_dpr,
+                                    },
+                                }).to_string();
                                 let dc = log_dc_for_frame_advance.clone();
                                 tokio::spawn(async move {
                                     let _ = dc.send_text(msg).await;
@@ -1241,6 +1253,12 @@ pub async fn handle_runner_execution(
                 "sessionId": session_id,
                 "width": state.width,
                 "height": state.height,
+                "dpr": producer_dpr,
+                "viewport": {
+                    "w": state.width,
+                    "h": state.height,
+                    "dpr": producer_dpr,
+                },
             });
             let _ = ctx.log_dc.send_text(gui_start.to_string()).await;
         }
