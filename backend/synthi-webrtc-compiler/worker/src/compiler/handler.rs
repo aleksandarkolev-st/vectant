@@ -356,7 +356,11 @@ use crate::hmr::gpu_device_fast_path::{
     try_direct_device_body_patch,
 };
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
-use crate::hmr::gpu_proof::{GpuHmrDegradedState, GpuHmrProofState, GpuHmrProofTelemetry};
+use crate::hmr::gpu_proof::{
+    sha256_hex_bytes, sha256_hex_str, write_proof_artifact, GpuHmrDegradedState,
+    GpuHmrProofArtifact, GpuHmrProofArtifactInput, GpuHmrProofArtifactWrite,
+    GpuHmrProofEvidenceRef, GpuHmrProofStageResult, GpuHmrProofState, GpuHmrProofTelemetry,
+};
 use crate::hmr::loop_classifier::{classify_loop, LoopClassifierInput};
 
 fn strip_c_like_comments(source: &str) -> String {
@@ -2425,6 +2429,186 @@ fn device_hmr_proof_telemetry(outcome: &DeviceCompileOutcome) -> GpuHmrProofTele
         Some(degraded_reason),
         Some(device_hmr_result_label(outcome).to_string()),
     )
+}
+
+async fn write_device_hmr_proof_artifact(
+    workspace: &Path,
+    workspace_slug: Option<&str>,
+    session_id: &str,
+    source_hash: &str,
+    outcome: &DeviceCompileOutcome,
+    proof: &GpuHmrProofTelemetry,
+) -> Result<GpuHmrProofArtifactWrite> {
+    let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let artifact_bytes = tokio::fs::read(&outcome.artifact_path)
+        .await
+        .with_context(|| {
+            format!(
+                "reading selected GPU HMR artifact for proof {}",
+                outcome.artifact_path.display()
+            )
+        })?;
+    let artifact_hash = sha256_hex_bytes(&artifact_bytes);
+    let selected_artifact_id = format!("artifact:sha256:{artifact_hash}");
+    let source_edit_id = format!("source-edit:{source_hash}");
+    let runtime_session_id = format!("runtime-session:{session_id}");
+    let workspace_slug = workspace_slug
+        .filter(|slug| !slug.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            workspace
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "workspace".to_string());
+    let artifact_path = workspace_relative_string(workspace, &outcome.artifact_path);
+
+    let artifact_evidence_id = format!("evidence:device-artifact:{artifact_hash}");
+    let compiler_evidence_hash = sha256_hex_str(&outcome.stderr);
+    let compiler_evidence_id = format!("evidence:device-compiler:{compiler_evidence_hash}");
+    let symbol_material = serde_json::json!({
+        "targetSymbols": &outcome.target_symbols,
+        "artifactExportedSymbols": &outcome.artifact_exported_symbols,
+        "symbolBound": artifact_exports_expected_device_symbols(outcome),
+    });
+    let symbol_evidence_hash = sha256_hex_str(&symbol_material.to_string());
+    let symbol_evidence_id = format!("evidence:device-symbols:{symbol_evidence_hash}");
+
+    let mut evidence_refs = vec![
+        GpuHmrProofEvidenceRef {
+            evidence_id: artifact_evidence_id.clone(),
+            kind: "device-artifact".to_string(),
+            content_hash: format!("sha256:{artifact_hash}"),
+            producer_subsystem: "worker.compile_device".to_string(),
+            timestamp: created_at.clone(),
+            session_id: Some(runtime_session_id.clone()),
+            file_path: Some(artifact_path),
+            artifact_uri: Some(selected_artifact_id.clone()),
+            summary: format!(
+                "Selected device artifact bytes={} partial={} selected_kind={}",
+                artifact_bytes.len(),
+                outcome.partial_module,
+                outcome
+                    .selected_artifact_kind
+                    .as_deref()
+                    .unwrap_or("unspecified")
+            ),
+        },
+        GpuHmrProofEvidenceRef {
+            evidence_id: compiler_evidence_id.clone(),
+            kind: "device-compiler-output".to_string(),
+            content_hash: format!("sha256:{compiler_evidence_hash}"),
+            producer_subsystem: "worker.compile_device".to_string(),
+            timestamp: created_at.clone(),
+            session_id: Some(runtime_session_id.clone()),
+            file_path: None,
+            artifact_uri: None,
+            summary: format!(
+                "Device compiler completed in {} ms with stderr_bytes={}",
+                outcome.compiler_elapsed_ms,
+                outcome.stderr.len()
+            ),
+        },
+        GpuHmrProofEvidenceRef {
+            evidence_id: symbol_evidence_id.clone(),
+            kind: "device-symbol-set".to_string(),
+            content_hash: format!("sha256:{symbol_evidence_hash}"),
+            producer_subsystem: "worker.compile_device".to_string(),
+            timestamp: created_at.clone(),
+            session_id: Some(runtime_session_id.clone()),
+            file_path: None,
+            artifact_uri: Some(selected_artifact_id.clone()),
+            summary: format!(
+                "target_symbols={} exported_symbols={} symbol_bound={}",
+                outcome.target_symbols.len(),
+                outcome.artifact_exported_symbols.len(),
+                artifact_exports_expected_device_symbols(outcome)
+            ),
+        },
+    ];
+
+    if let Some(reason) = outcome.fallback_reason.as_deref() {
+        let fallback_hash = sha256_hex_str(reason);
+        evidence_refs.push(GpuHmrProofEvidenceRef {
+            evidence_id: format!("evidence:device-fallback:{fallback_hash}"),
+            kind: "device-fallback-reason".to_string(),
+            content_hash: format!("sha256:{fallback_hash}"),
+            producer_subsystem: "worker.compile_device".to_string(),
+            timestamp: created_at.clone(),
+            session_id: Some(runtime_session_id.clone()),
+            file_path: None,
+            artifact_uri: Some(selected_artifact_id.clone()),
+            summary: reason.to_string(),
+        });
+    }
+
+    let symbol_bound = artifact_exports_expected_device_symbols(outcome);
+    let symbol_stage_status = if symbol_bound { "passed" } else { "blocked" };
+    let symbol_degraded_reason = if symbol_bound {
+        None
+    } else {
+        Some("expected_device_symbols_not_bound".to_string())
+    };
+
+    let stage_results = vec![
+        GpuHmrProofStageResult {
+            stage_id: "device-compile".to_string(),
+            stage_name: "Device artifact compile".to_string(),
+            status: "passed".to_string(),
+            started_at: created_at.clone(),
+            completed_at: created_at.clone(),
+            input_artifact_ids: vec![source_edit_id.clone()],
+            output_artifact_ids: vec![selected_artifact_id.clone()],
+            evidence_refs: vec![artifact_evidence_id, compiler_evidence_id],
+            degraded_state: None,
+            degraded_reason: None,
+        },
+        GpuHmrProofStageResult {
+            stage_id: "symbol-binding".to_string(),
+            stage_name: "Expected device symbol binding".to_string(),
+            status: symbol_stage_status.to_string(),
+            started_at: created_at.clone(),
+            completed_at: created_at.clone(),
+            input_artifact_ids: vec![selected_artifact_id.clone()],
+            output_artifact_ids: vec![selected_artifact_id.clone()],
+            evidence_refs: vec![symbol_evidence_id],
+            degraded_state: if symbol_bound {
+                None
+            } else {
+                proof.degraded_state.clone()
+            },
+            degraded_reason: symbol_degraded_reason,
+        },
+        GpuHmrProofStageResult {
+            stage_id: "runtime-dispatch-observation".to_string(),
+            stage_name: "Runtime dispatch observation".to_string(),
+            status: "blocked".to_string(),
+            started_at: created_at.clone(),
+            completed_at: created_at.clone(),
+            input_artifact_ids: vec![selected_artifact_id.clone()],
+            output_artifact_ids: Vec::new(),
+            evidence_refs: Vec::new(),
+            degraded_state: proof.degraded_state.clone(),
+            degraded_reason: proof.degraded_reason.clone(),
+        },
+    ];
+
+    let artifact = GpuHmrProofArtifact::new(GpuHmrProofArtifactInput {
+        workspace_slug,
+        runtime_session_id,
+        source_edit_id,
+        selected_artifact_id,
+        result_state: proof.result_state.clone(),
+        degraded_state: proof.degraded_state.clone(),
+        degraded_reason: proof.degraded_reason.clone(),
+        stage_results,
+        evidence_refs,
+        visual_evidence_refs: Vec::new(),
+        created_at: Some(created_at),
+    });
+
+    write_proof_artifact(workspace, &artifact).await
 }
 
 fn device_reload_kernel_symbols(source: &str, outcome: &DeviceCompileOutcome) -> Vec<String> {
@@ -7430,8 +7614,19 @@ pub async fn handle_compile_request(
     if let Some(ref p) = host_runner_bin_path {
         eprintln!("[HMR] host_runner binary: {}", p);
     }
+    let mut device_hmr_proof: Option<GpuHmrProofTelemetry> = None;
     if let Some(ref out) = device_compile_outcome {
         let proof = device_hmr_proof_telemetry(out);
+        let proof_artifact = write_device_hmr_proof_artifact(
+            &ctx.workspace_path,
+            req.slug.as_deref(),
+            &session_id,
+            &source_hash_str,
+            out,
+            &proof,
+        )
+        .await?;
+        let proof = proof.with_artifact_ref(proof_artifact.proof_id, proof_artifact.relative_path);
         let selected_artifact_bytes = out
             .selected_artifact_bytes
             .map(|bytes| bytes.to_string())
@@ -7457,14 +7652,17 @@ pub async fn handle_compile_request(
             full_device_bytes
         );
         eprintln!("[compile-device] {}", proof.to_log_line());
-        let status = HmrStatus::gpu_proof_state(
+        let status = HmrStatus::gpu_proof_state_with_artifact(
             "device",
             &proof.result_state,
             proof.degraded_state.as_deref(),
             proof.degraded_reason.as_deref(),
             proof.label.as_deref(),
+            proof.proof_id.as_deref(),
+            proof.proof_artifact_path.as_deref(),
         );
         let _ = ctx.log_dc.send_text(status.to_json()).await;
+        device_hmr_proof = Some(proof);
     }
 
     // ULTRAPLAN Phase 9e — emit cache hit-rate snapshot after every
@@ -7944,7 +8142,10 @@ pub async fn handle_compile_request(
             } else {
                 "__gpu_device"
             };
-            let proof = device_hmr_proof_telemetry(device_outcome);
+            let proof = device_hmr_proof
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| device_hmr_proof_telemetry(device_outcome));
             eprintln!(
                 "[compile-device] reload package label={} fallbackUsed={} fallbackReason={} requestedArtifactKind={} selectedArtifactKind={} selectedArtifactBytes={} fullDeviceBytes={}",
                 device_hmr_result_label(device_outcome),

@@ -70,6 +70,8 @@ function gpuProofPayload(proof: GpuHmrProofTelemetry | null): Record<string, unk
   if (proof === null) return null;
   return {
     schemaVersion: proof.schemaVersion,
+    proofId: proof.proofId,
+    proofArtifactPath: proof.proofArtifactPath,
     resultState: proof.resultState,
     degradedState: proof.degradedState,
     degradedReason: proof.degradedReason,

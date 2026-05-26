@@ -1583,7 +1583,9 @@ function summarizeGpuProof(proof) {
   const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
   const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
   const label = proof.label ? ` label=${proof.label}` : '';
-  return `gpu_proof=${proof.resultState}${degraded}${label}${reason}`;
+  const proofId = proof.proofId ? ` proof_id=${proof.proofId}` : '';
+  const proofPath = proof.proofArtifactPath ? ` proof_path=${proof.proofArtifactPath}` : '';
+  return `gpu_proof=${proof.resultState}${degraded}${label}${reason}${proofId}${proofPath}`;
 }
 
 function recordGpuProof(phase, name, hmr) {

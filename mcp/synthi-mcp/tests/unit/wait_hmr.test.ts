@@ -148,6 +148,8 @@ describe("synthi_wait_hmr", () => {
         degradedState: "gpu-hmr-dispatch-unobserved",
         degradedReason: "runtime_dispatch_not_observed",
         label: "gpu-hmr-partial",
+        proofId: "gpu-proof:abc",
+        proofArtifactPath: ".synthi/gpu-hmr/proofs/gpu-proof_abc.json",
       });
       return { status: "applied", source: "hmr_status", elapsedMs: 10 };
     });
@@ -157,10 +159,11 @@ describe("synthi_wait_hmr", () => {
     expect(fake).toBeDefined();
     expect(res.isError).toBeUndefined();
     const body = res.structuredContent as {
-      gpu_proof?: { resultState?: string; degradedState?: string };
+      gpu_proof?: { resultState?: string; degradedState?: string; proofId?: string };
     };
     expect(body.gpu_proof?.resultState).toBe("gpu-hmr-symbol-bound");
     expect(body.gpu_proof?.degradedState).toBe("gpu-hmr-dispatch-unobserved");
+    expect(body.gpu_proof?.proofId).toBe("gpu-proof:abc");
   });
 
   it("fails wait_hmr when requested GPU proof is stronger than observed", async () => {

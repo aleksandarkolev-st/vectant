@@ -845,6 +845,10 @@ pub enum HmrStatus {
         module: String,
         #[serde(rename = "schemaVersion")]
         schema_version: String,
+        #[serde(rename = "proofId", skip_serializing_if = "Option::is_none")]
+        proof_id: Option<String>,
+        #[serde(rename = "proofArtifactPath", skip_serializing_if = "Option::is_none")]
+        proof_artifact_path: Option<String>,
         #[serde(rename = "resultState")]
         result_state: String,
         #[serde(rename = "degradedState", skip_serializing_if = "Option::is_none")]
@@ -953,9 +957,31 @@ impl HmrStatus {
         degraded_reason: Option<&str>,
         label: Option<&str>,
     ) -> Self {
+        Self::gpu_proof_state_with_artifact(
+            module,
+            result_state,
+            degraded_state,
+            degraded_reason,
+            label,
+            None,
+            None,
+        )
+    }
+
+    pub fn gpu_proof_state_with_artifact(
+        module: &str,
+        result_state: &str,
+        degraded_state: Option<&str>,
+        degraded_reason: Option<&str>,
+        label: Option<&str>,
+        proof_id: Option<&str>,
+        proof_artifact_path: Option<&str>,
+    ) -> Self {
         HmrStatus::GpuProofState {
             module: module.to_string(),
             schema_version: crate::hmr::gpu_proof::GPU_HMR_PROOF_SCHEMA_VERSION.to_string(),
+            proof_id: proof_id.map(str::to_string),
+            proof_artifact_path: proof_artifact_path.map(str::to_string),
             result_state: result_state.to_string(),
             degraded_state: degraded_state.map(str::to_string),
             degraded_reason: degraded_reason.map(str::to_string),
@@ -1133,5 +1159,24 @@ mod tests {
         assert!(json.contains(r#""schemaVersion":"synthi.gpu.hmr.proof.v1""#));
         assert!(json.contains(r#""resultState":"gpu-hmr-symbol-bound""#));
         assert!(json.contains(r#""degradedState":"gpu-hmr-dispatch-unobserved""#));
+    }
+
+    #[test]
+    fn gpu_proof_state_status_carries_artifact_refs() {
+        let status = HmrStatus::gpu_proof_state_with_artifact(
+            "device",
+            "gpu-hmr-symbol-bound",
+            Some("gpu-hmr-dispatch-unobserved"),
+            Some("runtime_dispatch_not_observed"),
+            Some("gpu-hmr-partial"),
+            Some("gpu-proof:abc"),
+            Some(".synthi/gpu-hmr/proofs/gpu-proof_abc.json"),
+        );
+        let json = status.to_json();
+
+        assert!(json.contains(r#""proofId":"gpu-proof:abc""#));
+        assert!(json.contains(
+            r#""proofArtifactPath":".synthi/gpu-hmr/proofs/gpu-proof_abc.json""#
+        ));
     }
 }

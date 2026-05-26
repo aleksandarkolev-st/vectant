@@ -14,6 +14,8 @@ export type GpuHmrProofState = (typeof GPU_HMR_PROOF_STATES)[number];
 
 export interface GpuHmrProofTelemetry {
   schemaVersion: string | null;
+  proofId: string | null;
+  proofArtifactPath: string | null;
   resultState: string;
   degradedState: string | null;
   degradedReason: string | null;
@@ -65,6 +67,8 @@ export function classifyGpuHmrProofMessage(
 
   return {
     schemaVersion: stringOrNull(msg.schemaVersion ?? msg.schema_version),
+    proofId: stringOrNull(msg.proofId ?? msg.proof_id),
+    proofArtifactPath: stringOrNull(msg.proofArtifactPath ?? msg.proof_artifact_path),
     resultState,
     degradedState: stringOrNull(msg.degradedState ?? msg.degraded_state),
     degradedReason: stringOrNull(msg.degradedReason ?? msg.degraded_reason),

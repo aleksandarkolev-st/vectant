@@ -14,10 +14,14 @@ describe("GPU HMR proof-state validation", () => {
       degradedState: "gpu-hmr-dispatch-unobserved",
       degradedReason: "runtime_dispatch_not_observed",
       label: "gpu-hmr-partial",
+      proofId: "gpu-proof:abc",
+      proofArtifactPath: ".synthi/gpu-hmr/proofs/gpu-proof_abc.json",
     });
 
     expect(proof?.schemaVersion).toBe("synthi.gpu.hmr.proof.v1");
     expect(proof?.source).toBe("gpu-proof-state");
+    expect(proof?.proofId).toBe("gpu-proof:abc");
+    expect(proof?.proofArtifactPath).toBe(".synthi/gpu-hmr/proofs/gpu-proof_abc.json");
     expect(proof?.resultState).toBe("gpu-hmr-symbol-bound");
   });
 
