@@ -965,9 +965,39 @@ function countMatches(lines, pattern) {
   return lines.filter((line) => pattern.test(line)).length;
 }
 
+function scopeLogTextToSession(text, slug) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  if (!slug) {
+    return {
+      text: lines.join('\n'),
+      marker_found: false,
+      dropped_before: 0,
+      total_lines: lines.length,
+    };
+  }
+  const markerIndex = lines.findIndex((line) => line.includes(slug));
+  if (markerIndex < 0) {
+    return {
+      text: '',
+      marker_found: false,
+      dropped_before: lines.length,
+      total_lines: lines.length,
+    };
+  }
+  return {
+    text: lines.slice(markerIndex).join('\n'),
+    marker_found: true,
+    dropped_before: markerIndex,
+    total_lines: lines.length,
+  };
+}
+
 function runtimeDispatchEvidence(workerEvidence) {
   const dispatchFailureLines = workerEvidence.filter((line) =>
     /\bsynthi_gpu_launch\b.*\bdispatch=(failed|stale-pointer|missing-dispatcher)\b/i.test(line)
+  );
+  const dispatchSuccessLines = workerEvidence.filter((line) =>
+    /\bsynthi_gpu_launch\b.*\bdispatch=ok\b/i.test(line)
   );
   const dispatchSuccessCount = countMatches(
     workerEvidence,
@@ -975,6 +1005,7 @@ function runtimeDispatchEvidence(workerEvidence) {
   );
   return {
     success_count: dispatchSuccessCount,
+    success_lines: dispatchSuccessLines.slice(-20),
     failure_count: dispatchFailureLines.length,
     failure_lines: dispatchFailureLines.slice(0, 20),
   };
@@ -996,6 +1027,18 @@ function selfCheckRuntimeDispatchEvidence() {
   }
   if (evidence.failure_lines.some((line) => !/\bsynthi_gpu_launch\b/.test(line))) {
     throw new Error('dispatch failure evidence included a non-launch line');
+  }
+  const scoped = scopeLogTextToSession(
+    [
+      '[gpu-runtime-boundary] synthi_gpu_launch kernel=stale grid=(1, 1, 1) dispatch=ok',
+      '[Runner] Session ID from env: target-session',
+      '[gpu-runtime-boundary] synthi_gpu_launch kernel=current grid=(1, 1, 1) dispatch=ok',
+    ].join('\n'),
+    'target-session',
+  );
+  const scopedEvidence = runtimeDispatchEvidence(evidenceLines(scoped.text, /gpu-runtime-boundary/i));
+  if (scopedEvidence.success_count !== 1 || !scopedEvidence.success_lines[0]?.includes('kernel=current')) {
+    throw new Error('session-scoped dispatch evidence included stale dispatch lines');
   }
   console.log('runtime dispatch evidence self-check passed');
 }
@@ -1019,7 +1062,12 @@ async function collectRuntimeEvidence() {
     120000,
     false,
   );
+  const scopedWorkerLogs = scopeLogTextToSession(workerLogs, CFG.slug);
   const workerEvidence = evidenceLines(
+    scopedWorkerLogs.text,
+    /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|gpu-runtime-boundary|synthi_gpu_launch|gpu_runtime_error|gpu-hmr-rejected|Runner process exited|fatal|Rust cannot catch/i,
+  );
+  const unscopedWorkerEvidence = evidenceLines(
     workerLogs,
     /GPU AI Delta|device_only fast path|natural fallback|HMR Planner|reload_policy|HMR MODE|Restarting runner|gpu-reload|compile-device|Device sidecar|gpu-runtime-boundary|synthi_gpu_launch|gpu_runtime_error|gpu-hmr-rejected|Runner process exited|fatal|Rust cannot catch/i,
   );
@@ -1033,6 +1081,13 @@ async function collectRuntimeEvidence() {
   const runtimeDispatch = runtimeDispatchEvidence(workerEvidence);
   report.evidence = {
     worker_log_lines: workerEvidence,
+    worker_log_lines_unscoped_tail: unscopedWorkerEvidence.slice(-50),
+    worker_session_scope: {
+      slug: CFG.slug,
+      marker_found: scopedWorkerLogs.marker_found,
+      dropped_before: scopedWorkerLogs.dropped_before,
+      total_lines: scopedWorkerLogs.total_lines,
+    },
     ai_engine_log_lines: aiEvidence,
     ai_call_counts: {
       split: countMatches(aiEvidence, /mode=split/i),
@@ -1056,8 +1111,10 @@ async function collectRuntimeEvidence() {
       runtimeDispatch.failure_lines.slice(0, 3).join(' | ').slice(0, 1200),
     );
     process.exitCode = 1;
-  } else if (runtimeDispatch.success_count > 0) {
+  } else if (runtimeDispatch.success_count > 0 && scopedWorkerLogs.marker_found) {
     record('runtime dispatch successes', 'pass', `dispatch_ok=${runtimeDispatch.success_count}`);
+  } else if (!scopedWorkerLogs.marker_found) {
+    record('runtime dispatch evidence', 'warn', `no worker log session marker captured for slug=${CFG.slug}`);
   } else {
     record('runtime dispatch evidence', 'warn', 'no synthi_gpu_launch dispatch lines captured');
   }
