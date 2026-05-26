@@ -502,11 +502,11 @@ impl GpuModuleManager {
         let mut retired = Vec::new();
         let mut retained = Vec::new();
         for partial in self.partials.drain(..) {
-            if partial
-                .symbols
-                .iter()
-                .all(|symbol| partial_symbols.iter().any(|new_symbol| new_symbol == symbol))
-            {
+            if partial.symbols.iter().all(|symbol| {
+                partial_symbols
+                    .iter()
+                    .any(|new_symbol| new_symbol == symbol)
+            }) {
                 retired.push(partial.slot);
             } else {
                 retained.push(partial);
@@ -525,7 +525,10 @@ impl GpuModuleManager {
     }
 
     pub fn drain_partial_modules(&mut self) -> Vec<ModuleSlot> {
-        self.partials.drain(..).map(|partial| partial.slot).collect()
+        self.partials
+            .drain(..)
+            .map(|partial| partial.slot)
+            .collect()
     }
 
     /// Unloads a retired module handle. Wraps `cuModuleUnload`.

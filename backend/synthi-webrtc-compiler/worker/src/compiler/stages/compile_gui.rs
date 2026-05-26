@@ -395,8 +395,7 @@ pub async fn compile_gui(
                                 fallback_cmd.arg(f);
                             }
                             fallback_cmd.arg(fname).arg("-I.").arg("-o").arg(&gui_out);
-                            let mut fallback_link_flags =
-                                effective_manifest.gui_link_flags.clone();
+                            let mut fallback_link_flags = effective_manifest.gui_link_flags.clone();
                             fallback_link_flags.push("-ldl".to_string());
                             fallback_link_flags.push("-rdynamic".to_string());
                             let filtered_link_flags = filter_unresolved_manifest_library_flags(

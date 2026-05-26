@@ -40,8 +40,7 @@ fn ai_split_cache_key(req: &CompileRequest) -> u64 {
     // Cache entries are accepted split artifacts. Keep this tied to the
     // prompt/verifier contract, not just source text, so newly hardened
     // deterministic split verifiers do not reuse stale generated roles.
-    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str =
-        "gpu-strict-lifecycle-v16-compile-verified-cache";
+    const AI_SPLIT_CACHE_SCHEMA_VERSION: &str = "gpu-strict-lifecycle-v16-compile-verified-cache";
     calculate_hash(&(
         AI_SPLIT_CACHE_SCHEMA_VERSION,
         req.language.as_str(),
@@ -430,7 +429,10 @@ pub async fn update_ai_split_cache_role(
     };
 
     insert_split_role(obj, role, filename, content.clone());
-    if let Some(filename_entry) = obj.get_mut(filename).and_then(|value| value.as_object_mut()) {
+    if let Some(filename_entry) = obj
+        .get_mut(filename)
+        .and_then(|value| value.as_object_mut())
+    {
         filename_entry.insert(
             "filename".to_string(),
             serde_json::Value::String(filename.to_string()),

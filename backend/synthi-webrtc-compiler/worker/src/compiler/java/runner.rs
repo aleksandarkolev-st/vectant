@@ -97,8 +97,7 @@ pub async fn run_java(
         // the spawn-side xwininfo retry loop handle whatever lingers.
         if state.is_gui && can_reuse && pre_kill_clients > 0 {
             let display = state.wsl_display_str.clone();
-            let deadline =
-                tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
             loop {
                 let now = count_x_clients(&display).await;
                 if now < pre_kill_clients {
@@ -743,9 +742,7 @@ async fn count_x_clients(display: &str) -> usize {
         .output()
         .await
     {
-        Ok(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).lines().count()
-        }
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).lines().count(),
         _ => 0,
     }
 }

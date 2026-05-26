@@ -597,7 +597,7 @@ fn main() {
         let setup = conn.setup();
         let min_kc = setup.min_keycode;
         let max_kc = setup.max_keycode;
-        let count  = max_kc - min_kc + 1;
+        let count = max_kc - min_kc + 1;
         match conn.get_keyboard_mapping(min_kc, count) {
             Ok(cookie) => match cookie.reply() {
                 Ok(mapping) => {
@@ -625,7 +625,10 @@ fn main() {
                 }
             },
             Err(e) => {
-                eprintln!("[Runner] get_keyboard_mapping failed: {}. Keyboard XTest injection disabled.", e);
+                eprintln!(
+                    "[Runner] get_keyboard_mapping failed: {}. Keyboard XTest injection disabled.",
+                    e
+                );
                 std::collections::HashMap::new()
             }
         }
@@ -1410,14 +1413,20 @@ fn main() {
                                     // `js_key_to_x11_keysym`. Backward-compatible:
                                     // older callers omit the field, in which case
                                     // only SDL gets the event (today's behaviour).
-                                    if parts.len() >= 5 && xtest_ready && !keysym_to_keycode.is_empty() {
+                                    if parts.len() >= 5
+                                        && xtest_ready
+                                        && !keysym_to_keycode.is_empty()
+                                    {
                                         let keysym = parts[4].parse::<u32>().unwrap_or(0);
                                         if keysym != 0 {
                                             if let Some(&xkc) = keysym_to_keycode.get(&keysym) {
                                                 if let Some(ref conn) = x11_conn {
                                                     // XTest event types: 2 = KeyPress, 3 = KeyRelease.
-                                                    let event_type: u8 = if type_str == "down" { 2 } else { 3 };
-                                                    let _ = conn.xtest_fake_input(event_type, xkc, 0, x11_root, 0, 0, 0);
+                                                    let event_type: u8 =
+                                                        if type_str == "down" { 2 } else { 3 };
+                                                    let _ = conn.xtest_fake_input(
+                                                        event_type, xkc, 0, x11_root, 0, 0, 0,
+                                                    );
                                                     let _ = conn.flush();
                                                 }
                                             }
@@ -1516,10 +1525,7 @@ fn main() {
                     {
                         let partial_device_load = parts[0] == "load_device_partial";
                         if parts.len() < 3 {
-                            eprintln!(
-                                "[Runner] [GPU HMR] Invalid {} command format",
-                                parts[0]
-                            );
+                            eprintln!("[Runner] [GPU HMR] Invalid {} command format", parts[0]);
                             continue;
                         }
 
@@ -1605,23 +1611,19 @@ fn main() {
                             continue;
                         }
 
-                        let mut adapter =
-                            gpu_adapters
-                                .remove(language)
-                                .unwrap_or_else(|| {
-                                    let mut adapter =
-                                        GpuModuleAdapter::new(GpuModuleAdapterConfig {
-                                            vendor,
-                                            ..Default::default()
-                                        });
-                                    if let Err(e) = adapter.initialize() {
-                                        eprintln!(
-                                            "[Runner] [GPU HMR] Device adapter init failed vendor={}: {}",
-                                            language, e
-                                        );
-                                    }
-                                    adapter
-                                });
+                        let mut adapter = gpu_adapters.remove(language).unwrap_or_else(|| {
+                            let mut adapter = GpuModuleAdapter::new(GpuModuleAdapterConfig {
+                                vendor,
+                                ..Default::default()
+                            });
+                            if let Err(e) = adapter.initialize() {
+                                eprintln!(
+                                    "[Runner] [GPU HMR] Device adapter init failed vendor={}: {}",
+                                    language, e
+                                );
+                            }
+                            adapter
+                        });
 
                         let completion_tx = gpu_reload_tx.clone();
                         let language_owned = language.to_string();
@@ -1659,6 +1661,7 @@ fn main() {
                             gpu_adapters.insert(language, adapter);
                             continue;
                         }
+
                         thread::spawn(move || {
                             let result = adapter.reload(&req);
                             let _ = completion_tx.send(GpuReloadCompletion {
@@ -1774,114 +1777,116 @@ fn main() {
             for name in &keys {
                 if let Some(lib) = modules.get(name) {
                     unsafe {
-                    // Try new symbol names first, then legacy
-                    let update_func: Option<Symbol<unsafe extern "C" fn(*mut c_void, f64)>> =
-                        if name == "core" {
-                            lib.get(b"core_on_update")
-                                .ok()
-                                .or_else(|| lib.get(b"on_update").ok())
-                        } else if name == "gui" {
-                            // GUI doesn't have on_update in new ABI (only on_render)
-                            lib.get(b"gui_on_update")
-                                .ok()
-                                .or_else(|| lib.get(b"on_update").ok())
-                        } else {
-                            lib.get(b"on_update").ok()
-                        };
+                        // Try new symbol names first, then legacy
+                        let update_func: Option<Symbol<unsafe extern "C" fn(*mut c_void, f64)>> =
+                            if name == "core" {
+                                lib.get(b"core_on_update")
+                                    .ok()
+                                    .or_else(|| lib.get(b"on_update").ok())
+                            } else if name == "gui" {
+                                // GUI doesn't have on_update in new ABI (only on_render)
+                                lib.get(b"gui_on_update")
+                                    .ok()
+                                    .or_else(|| lib.get(b"on_update").ok())
+                            } else {
+                                lib.get(b"on_update").ok()
+                            };
 
-                    if let Some(f) = update_func {
-                        // INDEPENDENT SWAP: Use module-specific state for GUI
-                        let state_ptr = if name == "gui" {
-                            module_states
-                                .get(name)
-                                .map(|s| s.state_ptr)
-                                .unwrap_or(app_state.raw)
-                        } else {
-                            // For core/main, use shared app_state.raw
-                            app_state.raw
-                        };
+                        if let Some(f) = update_func {
+                            // INDEPENDENT SWAP: Use module-specific state for GUI
+                            let state_ptr = if name == "gui" {
+                                module_states
+                                    .get(name)
+                                    .map(|s| s.state_ptr)
+                                    .unwrap_or(app_state.raw)
+                            } else {
+                                // For core/main, use shared app_state.raw
+                                app_state.raw
+                            };
 
-                        // Execute with crash protection on Linux
-                        #[cfg(unix)]
-                        {
-                            let module_name = name.clone();
-                            // Set current library path for source map lookup on crash
-                            if let Some(lib_path) = loaded_paths.get(name) {
-                                set_current_lib_path(lib_path);
-                            }
-
-                            // Enter crash supervisor context for this module
-                            if supervisor_enabled {
-                                let slot = ModuleSlot::from_str(name).unwrap_or(ModuleSlot::Main);
-                                crash_supervisor.enter_context(slot);
-                            }
-
-                            let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);
-                            let func_ptr = *f;
-                            let result = execute_with_protection(&module_name, move || {
-                                let state_ptr = state_ptr_wrapper.0 as *mut std::ffi::c_void;
-                                func_ptr(state_ptr, dt);
-                            });
-
-                            // Exit crash supervisor context
-                            if supervisor_enabled {
-                                crash_supervisor.exit_context();
-                            }
-
-                            if let Err(crash_info) = result {
-                                // Crash recovered! Log and continue with old module
-                                eprintln!("{}", generate_crash_report(&crash_info));
-
-                                // Use CrashSupervisor to determine recovery action
-                                let recovery_action = if supervisor_enabled {
-                                    crash_supervisor.report_crash(&crash_info)
-                                } else {
-                                    RecoveryAction::HotReload
-                                };
-
-                                // Check if supervisor thinks we should restart
-                                // (too many consecutive crashes without recovery).
-                                // NOTE: We intentionally do NOT treat SIGSEGV as
-                                // unconditionally fatal because our thread-based
-                                // crash protection isolates the crash to the plugin
-                                // thread.  The runner's own heap and SDL state are
-                                // safe since the faulting thread is terminated via
-                                // pthread_exit and never touches shared state again.
-                                let force_restart = recovery_action == RecoveryAction::FullRestart
-                                    || recovery_action == RecoveryAction::Fatal
-                                    || (supervisor_enabled
-                                        && crash_supervisor.should_force_restart());
-
-                                let status =
-                                    HmrCrashStatus::from_crash(&crash_info, !force_restart);
-                                debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
-                                debug_log!("[Runner] Recovery action: {:?}", recovery_action);
-
-                                if force_restart {
-                                    eprintln!("[Runner] Too many consecutive crashes (action={:?}). Exiting for cold restart.", recovery_action);
-                                    std::process::exit(1);
+                            // Execute with crash protection on Linux
+                            #[cfg(unix)]
+                            {
+                                let module_name = name.clone();
+                                // Set current library path for source map lookup on crash
+                                if let Some(lib_path) = loaded_paths.get(name) {
+                                    set_current_lib_path(lib_path);
                                 }
 
-                                // On successful hot reload, reset crash count
-                                if recovery_action == RecoveryAction::HotReload
-                                    && supervisor_enabled
-                                {
-                                    // Don't reset here - reset after successful reload
+                                // Enter crash supervisor context for this module
+                                if supervisor_enabled {
+                                    let slot =
+                                        ModuleSlot::from_str(name).unwrap_or(ModuleSlot::Main);
+                                    crash_supervisor.enter_context(slot);
                                 }
 
-                                // Skip this module for now, continue with others
-                                continue;
+                                let state_ptr_wrapper = SendVoidPtr(state_ptr as usize);
+                                let func_ptr = *f;
+                                let result = execute_with_protection(&module_name, move || {
+                                    let state_ptr = state_ptr_wrapper.0 as *mut std::ffi::c_void;
+                                    func_ptr(state_ptr, dt);
+                                });
+
+                                // Exit crash supervisor context
+                                if supervisor_enabled {
+                                    crash_supervisor.exit_context();
+                                }
+
+                                if let Err(crash_info) = result {
+                                    // Crash recovered! Log and continue with old module
+                                    eprintln!("{}", generate_crash_report(&crash_info));
+
+                                    // Use CrashSupervisor to determine recovery action
+                                    let recovery_action = if supervisor_enabled {
+                                        crash_supervisor.report_crash(&crash_info)
+                                    } else {
+                                        RecoveryAction::HotReload
+                                    };
+
+                                    // Check if supervisor thinks we should restart
+                                    // (too many consecutive crashes without recovery).
+                                    // NOTE: We intentionally do NOT treat SIGSEGV as
+                                    // unconditionally fatal because our thread-based
+                                    // crash protection isolates the crash to the plugin
+                                    // thread.  The runner's own heap and SDL state are
+                                    // safe since the faulting thread is terminated via
+                                    // pthread_exit and never touches shared state again.
+                                    let force_restart = recovery_action
+                                        == RecoveryAction::FullRestart
+                                        || recovery_action == RecoveryAction::Fatal
+                                        || (supervisor_enabled
+                                            && crash_supervisor.should_force_restart());
+
+                                    let status =
+                                        HmrCrashStatus::from_crash(&crash_info, !force_restart);
+                                    debug_log!("[Runner] [HMR-STATUS] {}", status.to_json());
+                                    debug_log!("[Runner] Recovery action: {:?}", recovery_action);
+
+                                    if force_restart {
+                                        eprintln!("[Runner] Too many consecutive crashes (action={:?}). Exiting for cold restart.", recovery_action);
+                                        std::process::exit(1);
+                                    }
+
+                                    // On successful hot reload, reset crash count
+                                    if recovery_action == RecoveryAction::HotReload
+                                        && supervisor_enabled
+                                    {
+                                        // Don't reset here - reset after successful reload
+                                    }
+
+                                    // Skip this module for now, continue with others
+                                    continue;
+                                }
+
+                                // Successful execution - reset crash count if supervisor enabled
+                                // Note: We only reset on successful frame completion, not per-module
                             }
 
-                            // Successful execution - reset crash count if supervisor enabled
-                            // Note: We only reset on successful frame completion, not per-module
+                            #[cfg(not(unix))]
+                            {
+                                f(state_ptr, dt);
+                            }
                         }
-
-                        #[cfg(not(unix))]
-                        {
-                            f(state_ptr, dt);
-                        }
-                    }
                     }
                 }
             }

@@ -212,9 +212,7 @@ pub fn parse(stderr: &str) -> GpuToolchainDiagnostics {
 /// Read the integer that prefixes `s` (digits + optional unit).
 fn extract_leading_u32(s: &str) -> Option<u32> {
     let s = s.trim_start();
-    let end = s
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(s.len());
+    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
     if end == 0 {
         return None;
     }

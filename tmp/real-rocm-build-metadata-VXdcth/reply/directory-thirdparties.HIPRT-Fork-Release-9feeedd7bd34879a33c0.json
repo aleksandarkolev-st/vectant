@@ -1,0 +1,153 @@
+{
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"install"
+		],
+		"files" : 
+		[
+			"thirdparties/HIPRT-Fork/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 399,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 403,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 408,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 413,
+				"parent" : 0
+			}
+		]
+	},
+	"installers" : 
+	[
+		{
+			"backtrace" : 1,
+			"component" : "Unspecified",
+			"destination" : "bin",
+			"paths" : 
+			[
+				"/tmp/synthi-real-rocm/HIPRT-Path-Tracer/thirdparties/HIPRT-Fork/dist/bin/Release/libhiprt0200464.so"
+			],
+			"targetId" : "hiprt02004::@51e23d46452fcbb9a0e0",
+			"targetIndex" : 9,
+			"type" : "target"
+		},
+		{
+			"backtrace" : 1,
+			"component" : "Unspecified",
+			"cxxModuleBmiTarget" : 
+			{
+				"id" : "hiprt02004::@51e23d46452fcbb9a0e0",
+				"index" : 9
+			},
+			"destination" : "bin",
+			"type" : "cxxModuleBmi"
+		},
+		{
+			"backtrace" : 2,
+			"component" : "Unspecified",
+			"destination" : "include/hiprt",
+			"paths" : 
+			[
+				"thirdparties/HIPRT-Fork/hiprt/hiprt.h",
+				"thirdparties/HIPRT-Fork/hiprt/hiprt_common.h",
+				"thirdparties/HIPRT-Fork/hiprt/hiprt_device.h",
+				"thirdparties/HIPRT-Fork/hiprt/hiprt_libpath.h",
+				"thirdparties/HIPRT-Fork/hiprt/hiprt_types.h",
+				"thirdparties/HIPRT-Fork/hiprt/hiprt_vec.h",
+				"thirdparties/HIPRT-Fork/hiprt/hiprtew.h"
+			],
+			"type" : "file"
+		},
+		{
+			"backtrace" : 3,
+			"component" : "Unspecified",
+			"destination" : "include/hiprt/impl",
+			"paths" : 
+			[
+				"thirdparties/HIPRT-Fork/hiprt/impl/Aabb.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/AabbList.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/ApiNodeList.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/BatchBuilder.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/BatchBuilderKernels.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/BvhBuilderKernels.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/BvhBuilderUtil.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/BvhCommon.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/BvhConfig.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/BvhImporter.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/BvhImporterKernels.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/BvhNode.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Compiler.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Context.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Error.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Geometry.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Instance.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/InstanceList.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Kernel.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/LbvhBuilder.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/LbvhBuilderKernels.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Logger.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Math.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/MemoryArena.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/MortonCode.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/PlocBuilder.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/PlocBuilderKernels.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/QrDecomposition.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Quaternion.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/RadixSort.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/SbvhBuilder.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/SbvhBuilderKernels.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/SbvhCommon.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Scene.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Timer.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Transform.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Triangle.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/TriangleMesh.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/Utility.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/hiprt_device_impl.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/hiprt_kernels.h",
+				"thirdparties/HIPRT-Fork/hiprt/impl/hiprt_kernels_bitcode.h"
+			],
+			"type" : "file"
+		},
+		{
+			"backtrace" : 4,
+			"component" : "Unspecified",
+			"destination" : "include/contrib/Orochi/ParallelPrimitives",
+			"paths" : 
+			[
+				"thirdparties/HIPRT-Fork/contrib/Orochi/ParallelPrimitives/RadixSort.h",
+				"thirdparties/HIPRT-Fork/contrib/Orochi/ParallelPrimitives/RadixSortConfigs.h",
+				"thirdparties/HIPRT-Fork/contrib/Orochi/ParallelPrimitives/RadixSortKernels.h"
+			],
+			"type" : "file"
+		}
+	],
+	"paths" : 
+	{
+		"build" : "thirdparties/HIPRT-Fork",
+		"source" : "thirdparties/HIPRT-Fork"
+	}
+}

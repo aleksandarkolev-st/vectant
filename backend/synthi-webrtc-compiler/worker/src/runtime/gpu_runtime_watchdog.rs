@@ -241,12 +241,28 @@ mod tests {
     #[test]
     fn runtime_status_classifier_maps_vendor_faults() {
         let cases = [
-            ("cudaErrorIllegalAddress", GpuRuntimeErrorKind::IllegalAddress, true),
-            ("hipErrorMisalignedAddress", GpuRuntimeErrorKind::MisalignedAddress, true),
-            ("cudaErrorLaunchTimeout", GpuRuntimeErrorKind::LaunchTimeout, true),
+            (
+                "cudaErrorIllegalAddress",
+                GpuRuntimeErrorKind::IllegalAddress,
+                true,
+            ),
+            (
+                "hipErrorMisalignedAddress",
+                GpuRuntimeErrorKind::MisalignedAddress,
+                true,
+            ),
+            (
+                "cudaErrorLaunchTimeout",
+                GpuRuntimeErrorKind::LaunchTimeout,
+                true,
+            ),
             ("cudaErrorAssert", GpuRuntimeErrorKind::Assert, true),
             ("cudaErrorInvalidPc", GpuRuntimeErrorKind::InvalidPc, true),
-            ("cudaErrorLaunchFailure", GpuRuntimeErrorKind::LaunchFailure, true),
+            (
+                "cudaErrorLaunchFailure",
+                GpuRuntimeErrorKind::LaunchFailure,
+                true,
+            ),
             (
                 "cudaErrorInvalidConfiguration",
                 GpuRuntimeErrorKind::InvalidConfiguration,

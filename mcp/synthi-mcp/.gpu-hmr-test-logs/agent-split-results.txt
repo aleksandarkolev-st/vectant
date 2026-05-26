@@ -1,7 +1,8 @@
 PASS gpu vendor - rocm arch=gfx1201
 PASS fixture - flow
 PASS monolithic source has no Synthi ABI
-PASS create workspace - id=cmpbi82hn0005o80180amj9qo slug=gpu-live-demo-visible-20260518205505
+WARN validation workspace auth fallback - frontend workspace API requires auth; using collab-backed validation workspace slug=gpu-agent-split-1779638736581
+PASS create workspace - id=gpu-agent-split-1779638736581 slug=gpu-agent-split-1779638736581
 PASS seed monolithic user source - main.cpp
 PASS workspace commit seed
 PASS mcp tools/list - count=42
@@ -9,12 +10,12 @@ PASS mcp attach - attached
 PASS first compile via MCP - use_ai_split=true prefer_gpu_pipeline=true
 PASS worker used GPU split endpoint - GPU markers detected; calling GPU split endpoint
 PASS generated device compiled - compile-device] hipcc
-PASS read generated split from worker - worker=/tmp/.tmpyFNeZZ
-PASS generated split contains HMR ABI - shared.h, core.cpp, gui.cpp, host_runner.cpp, device.hip
+PASS read generated split from worker - worker=/tmp/.tmpRrHjmY
+PASS generated split contains HMR ABI - .synthi/generated/gpu/shared.h, .synthi/generated/gpu/core.cpp, .synthi/generated/gpu/gui.cpp, .synthi/generated/gpu/host_runner.cpp, .synthi/generated/gpu/device.hip
 PASS persist generated split to workspace - 7 files
 PASS workspace commit generated split
-PASS device edit compile via MCP - device.hip
-PASS generated device file used for HMR - FallbackDeterministic → split file edit (device.hip
+PASS device edit compile via MCP - .synthi/generated/gpu/device.hip
+PASS generated device file used for HMR - FallbackDeterministic → split file edit (.synthi/generated/gpu/device.hip
 PASS device-only GPU HMR observed - [gpu-reload] plan=device_only
-PASS mcp screenshot after hmr - 800x600 seq=65->80 visible=4725/6393 luma=9.0/9.3 bytes~35727/54234
+PASS mcp screenshot after hmr - 800x600 seq=99->114 visible=7788/7970 luma=9.6/9.6 bytes~111309/110733
 PASS runner stayed alive after GPU HMR - no runner crash marker

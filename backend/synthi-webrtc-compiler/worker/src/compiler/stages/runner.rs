@@ -1275,10 +1275,7 @@ pub async fn handle_runner_execution(
             if let Some(child) = state.process.as_mut() {
                 if let Ok(Some(status)) = child.try_wait() {
                     let repr = exit_status_repr(status);
-                    debug_log!(
-                        "[Main] Runner process has already exited ({})",
-                        repr
-                    );
+                    debug_log!("[Main] Runner process has already exited ({})", repr);
                     exit_status_text = Some(repr);
                     process_alive = false;
                 }
@@ -1408,8 +1405,7 @@ mod tests {
     #[test]
     fn gpu_device_load_command_preserves_legacy_shape_without_abi() {
         assert_eq!(
-            runner_load_command("__gpu_device:rocm:advance,init", "/tmp/device.hsaco")
-                .unwrap(),
+            runner_load_command("__gpu_device:rocm:advance,init", "/tmp/device.hsaco").unwrap(),
             "load_device rocm /tmp/device.hsaco advance,init\n"
         );
     }
@@ -1537,8 +1533,9 @@ mod tests {
     #[test]
     fn gpu_device_load_command_rejects_missing_or_unknown_vendor() {
         assert!(runner_load_command("__gpu_device::advance,init", "/tmp/device.hsaco").is_err());
-        assert!(runner_load_command("__gpu_device:vulkan:advance,init", "/tmp/device.hsaco")
-            .is_err());
+        assert!(
+            runner_load_command("__gpu_device:vulkan:advance,init", "/tmp/device.hsaco").is_err()
+        );
     }
 
     #[test]
@@ -1548,7 +1545,10 @@ mod tests {
 
     #[test]
     fn runner_session_match_rejects_cross_session_hmr() {
-        assert!(!runner_session_matches(Some("session-a"), Some("session-b")));
+        assert!(!runner_session_matches(
+            Some("session-a"),
+            Some("session-b")
+        ));
     }
 
     #[test]

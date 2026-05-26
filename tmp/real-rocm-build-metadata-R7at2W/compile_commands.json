@@ -1,0 +1,8 @@
+[
+{
+  "directory": "/tmp/synthi-real-rocm/rocm-examples/HIP-Basic/saxpy/build",
+  "command": "/opt/rocm/lib/llvm/bin/clang++  -D__HIP_ROCclr__=1 -I/tmp/synthi-real-rocm/rocm-examples/HIP-Basic/saxpy/../../Common -I/tmp/synthi-real-rocm/rocm-examples/HIP-Basic/saxpy/../../External -O3 -DNDEBUG -std=c++17 --offload-arch=gfx1201 -o CMakeFiles/hip_saxpy.dir/main.hip.o -x hip -c /tmp/synthi-real-rocm/rocm-examples/HIP-Basic/saxpy/main.hip",
+  "file": "/tmp/synthi-real-rocm/rocm-examples/HIP-Basic/saxpy/main.hip",
+  "output": "CMakeFiles/hip_saxpy.dir/main.hip.o"
+}
+]
