@@ -19,9 +19,11 @@ import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
+  classifyGpuHmrAbiProof,
   classifyGpuHmrFullRuntimeProof,
   classifyGpuHmrHostPreservationProof,
   classifyGpuHmrOutputProof,
+  summarizeGpuHmrAbiProof,
   summarizeGpuHmrFullRuntimeProof,
   summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
@@ -181,6 +183,8 @@ const report = {
   logs: {},
   docker: {},
   evidence: {},
+  proof_artifacts: [],
+  abi_proof: null,
   output_proof: null,
   host_preservation_proof: null,
   full_runtime_proof: null,
@@ -207,6 +211,139 @@ function execText(cmd, args, timeoutMs = 30000, rejectOnError = false, opts = {}
       }
       resolve(err ? undefined : text);
     });
+  });
+}
+
+function execTextAllowPartialOutput(cmd, args, timeoutMs = 30000, opts = {}) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, ...opts }, (_err, stdout, stderr) => {
+      resolve(`${stdout ?? ''}${stderr ?? ''}`.trim());
+    });
+  });
+}
+
+function proofArtifactFileName(proofArtifactPath) {
+  const normalized = String(proofArtifactPath ?? '').replaceAll('\\', '/');
+  const fileName = path.posix.basename(normalized);
+  return /^gpu-proof_[a-f0-9]{32,}\.json$/i.test(fileName) ? fileName : null;
+}
+
+async function readWorkerProofArtifact(proofArtifactPath) {
+  if (CFG.mcpTransport !== 'docker') {
+    return { proofArtifactPath, found: false, reason: 'docker_transport_required' };
+  }
+  const fileName = proofArtifactFileName(proofArtifactPath);
+  if (!fileName) {
+    return { proofArtifactPath, found: false, reason: 'invalid_proof_artifact_path' };
+  }
+  const found = await execTextAllowPartialOutput(
+    'docker',
+    [
+      'exec',
+      '-w',
+      '/',
+      CFG.workerContainer,
+      'sh',
+      '-c',
+      'find / -path "*/.synthi/gpu-hmr/proofs/$1" -type f -print -quit 2>/dev/null',
+      'sh',
+      fileName,
+    ],
+    120000,
+  );
+  const containerPath = String(found ?? '').split(/\r?\n/).find((line) => line.trim())?.trim() ?? '';
+  if (!containerPath) {
+    return { proofArtifactPath, fileName, found: false, reason: 'proof_artifact_not_found' };
+  }
+  const text = await execText(
+    'docker',
+    ['exec', '-w', '/', CFG.workerContainer, 'cat', containerPath],
+    120000,
+    false,
+  );
+  if (!text) {
+    return { proofArtifactPath, fileName, containerPath, found: false, reason: 'proof_artifact_unreadable' };
+  }
+  try {
+    return {
+      proofArtifactPath,
+      fileName,
+      containerPath,
+      found: true,
+      artifact: JSON.parse(text),
+    };
+  } catch (err) {
+    return {
+      proofArtifactPath,
+      fileName,
+      containerPath,
+      found: false,
+      reason: 'proof_artifact_invalid_json',
+      error: err?.message ?? String(err),
+    };
+  }
+}
+
+async function collectGpuProofArtifacts() {
+  const records = [];
+  const seen = new Set();
+  for (const phase of report.phases) {
+    const proofPath = phase?.gpu_proof?.proofArtifactPath;
+    if (typeof proofPath !== 'string' || !proofPath.trim() || seen.has(proofPath)) continue;
+    seen.add(proofPath);
+    const record = await readWorkerProofArtifact(proofPath);
+    records.push(record);
+    phase.gpu_proof_artifact = record.found
+      ? {
+          found: true,
+          proofId: record.artifact?.proofId ?? null,
+          containerPath: record.containerPath,
+          evidenceKinds: Array.isArray(record.artifact?.evidenceRefs)
+            ? record.artifact.evidenceRefs.map((evidence) => evidence?.kind).filter(Boolean)
+            : [],
+        }
+      : {
+          found: false,
+          reason: record.reason,
+        };
+  }
+  report.proof_artifacts = records;
+  return records;
+}
+
+function abiProofFromProofArtifacts(records) {
+  const evidenceRefs = [];
+  let layoutSizeAlignmentVerified = false;
+  let degradedReason = null;
+  for (const record of Array.isArray(records) ? records : []) {
+    const artifact = record?.artifact;
+    if (!artifact || typeof artifact !== 'object') continue;
+    const artifactEvidenceRefs = Array.isArray(artifact.evidenceRefs) ? artifact.evidenceRefs : [];
+    for (const evidence of artifactEvidenceRefs) {
+      if (evidence?.kind !== 'device-abi-metadata') continue;
+      if (evidence?.metadata?.schemaVersion !== 'synthi.gpu.hmr.abi_metadata.v1') continue;
+      const id = typeof evidence.evidenceId === 'string' && evidence.evidenceId.trim()
+        ? evidence.evidenceId
+        : `${artifact.proofId ?? record.proofArtifactPath}:device-abi-metadata`;
+      evidenceRefs.push(id);
+    }
+    const stages = Array.isArray(artifact.stageResults) ? artifact.stageResults : [];
+    const abiStage = stages.find((stage) => {
+      const stageId = String(stage?.stageId ?? '').toLowerCase();
+      return stageId === 'abi' || stageId.includes('abi-');
+    });
+    if (abiStage?.status === 'passed' && !abiStage?.degradedState) {
+      layoutSizeAlignmentVerified = true;
+    }
+    if (!degradedReason && typeof abiStage?.degradedReason === 'string' && abiStage.degradedReason.trim()) {
+      degradedReason = abiStage.degradedReason.trim();
+    }
+  }
+  return classifyGpuHmrAbiProof({
+    metadataObserved: evidenceRefs.length > 0,
+    layoutSizeAlignmentVerified,
+    degradedReason,
+    evidenceRefs: [...new Set(evidenceRefs)],
   });
 }
 
@@ -1226,8 +1363,13 @@ function selfCheckRuntimeDispatchEvidence() {
     hostRestartObserved: true,
   });
   const hostUnprovenProof = classifyGpuHmrHostPreservationProof({});
+  const abiMetadataOnlyProof = classifyGpuHmrAbiProof({
+    metadataObserved: true,
+    evidenceRefs: ['evidence:device-abi-metadata:test'],
+  });
   const fullRuntimeBlockedProof = classifyGpuHmrFullRuntimeProof({
     sourceProofs: [{ resultState: 'gpu-hmr-symbol-bound' }],
+    abiProof: abiMetadataOnlyProof,
     outputProof: visualOnlyProof,
     hostPreservationProof: classifyGpuHmrHostPreservationProof({ identityChecksPassed: true }),
   });
@@ -1235,6 +1377,7 @@ function selfCheckRuntimeDispatchEvidence() {
     hostReplacedProof.degradedState !== 'gpu-hmr-host-replaced'
     || hostUnprovenProof.degradedReason !== 'host_identity_checks_not_collected'
     || fullRuntimeBlockedProof.degradedState !== 'gpu-hmr-abi-unverified'
+    || fullRuntimeBlockedProof.degradedReason !== 'abi_layout_size_alignment_unverified'
   ) {
     throw new Error('host preservation proof classifier failed');
   }
@@ -1343,9 +1486,21 @@ async function collectRuntimeEvidence() {
   } else {
     record('runtime session provenance', 'warn', 'no runtime_session launch evidence captured');
   }
+  const proofArtifactRecords = await collectGpuProofArtifacts();
+  const foundProofArtifactCount = proofArtifactRecords.filter((entry) => entry?.found).length;
+  const abiMetadataEvidenceCount = proofArtifactRecords.reduce((count, entry) => {
+    const refs = Array.isArray(entry?.artifact?.evidenceRefs) ? entry.artifact.evidenceRefs : [];
+    return count + refs.filter((evidence) => evidence?.kind === 'device-abi-metadata').length;
+  }, 0);
+  record(
+    'proof artifact collection',
+    foundProofArtifactCount > 0 ? 'pass' : 'warn',
+    `found=${foundProofArtifactCount}/${proofArtifactRecords.length} abi_metadata=${abiMetadataEvidenceCount}`,
+  );
   const freshVisualFrames = report.screenshots.filter(
     (shot) => shot && shot.width >= 320 && shot.height >= 240 && shot.visible_pixels > 500,
   );
+  report.abi_proof = abiProofFromProofArtifacts(proofArtifactRecords);
   report.output_proof = classifyGpuHmrOutputProof({
     dispatchObserved: runtimeDispatch.success_count > 0 && scopedWorkerLogs.marker_found,
     visualFrameObserved: freshVisualFrames.length > 0,
@@ -1356,9 +1511,15 @@ async function collectRuntimeEvidence() {
   });
   report.full_runtime_proof = classifyGpuHmrFullRuntimeProof({
     sourceProofs: report.phases.map((phase) => phase.gpu_proof).filter(Boolean),
+    abiProof: report.abi_proof,
     outputProof: report.output_proof,
     hostPreservationProof: report.host_preservation_proof,
   });
+  record(
+    'runtime ABI proof',
+    report.abi_proof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrAbiProof(report.abi_proof),
+  );
   record(
     'runtime output proof',
     report.output_proof.degradedState ? 'warn' : 'pass',
@@ -1438,11 +1599,15 @@ async function writeResults() {
     '',
     ...report.screenshots.map((shot) => `SCREENSHOT ${shot.label} visible=${shot.visible_pixels} luma=${shot.mean_luma.toFixed(1)} path=${shot.path}`),
     '',
+    `ABI_PROOF ${summarizeGpuHmrAbiProof(report.abi_proof)}`,
+    '',
     `OUTPUT_PROOF ${summarizeGpuHmrOutputProof(report.output_proof)}`,
     '',
     `HOST_PRESERVATION_PROOF ${summarizeGpuHmrHostPreservationProof(report.host_preservation_proof)}`,
     '',
     `FULL_RUNTIME_PROOF ${summarizeGpuHmrFullRuntimeProof(report.full_runtime_proof)}`,
+    '',
+    `PROOF_ARTIFACTS ${JSON.stringify(report.proof_artifacts)}`,
     '',
     `EVIDENCE ${JSON.stringify(report.evidence)}`,
   ];

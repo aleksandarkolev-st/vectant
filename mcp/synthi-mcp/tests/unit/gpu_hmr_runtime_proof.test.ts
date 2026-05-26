@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyGpuHmrAbiProof,
   classifyGpuHmrFullRuntimeProof,
   classifyGpuHmrHostPreservationProof,
   classifyGpuHmrOutputProof,
+  summarizeGpuHmrAbiProof,
   summarizeGpuHmrFullRuntimeProof,
   summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
@@ -86,6 +88,40 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.identityEvidenceRefs).toEqual(["identity-proof:1"]);
   });
 
+  it("does not prove ABI without collected metadata evidence", () => {
+    const proof = classifyGpuHmrAbiProof({});
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_evidence_not_collected");
+    expect(summarizeGpuHmrAbiProof(proof)).toContain("metadata=missing");
+  });
+
+  it("treats metadata-only ABI evidence as symbol-bound but unverified", () => {
+    const proof = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      evidenceRefs: ["evidence:device-abi-metadata:abc"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_layout_size_alignment_unverified");
+    expect(proof.evidenceRefs).toEqual(["evidence:device-abi-metadata:abc"]);
+    expect(summarizeGpuHmrAbiProof(proof)).toContain("layout=unverified");
+  });
+
+  it("reports ABI-proven only when layout, size, and alignment were verified", () => {
+    const proof = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      evidenceRefs: ["evidence:device-abi-layout:abc"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.layoutSizeAlignmentVerified).toBe(true);
+  });
+
   it("blocks full runtime proof at ABI when source proof has not reached ABI", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: [{ resultState: "gpu-hmr-symbol-bound" }],
@@ -104,9 +140,37 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summarizeGpuHmrFullRuntimeProof(proof)).toContain("blocked=abi,output");
   });
 
+  it("blocks full runtime proof when ABI evidence is metadata-only", () => {
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-symbol-bound" }],
+      abiProof: classifyGpuHmrAbiProof({
+        metadataObserved: true,
+        evidenceRefs: ["evidence:device-abi-metadata:abc"],
+      }),
+      outputProof: classifyGpuHmrOutputProof({
+        dispatchObserved: true,
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+      }),
+      hostPreservationProof: classifyGpuHmrHostPreservationProof({
+        identityChecksPassed: true,
+      }),
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_layout_size_alignment_unverified");
+    expect(proof.fullRuntimeProven).toBe(false);
+  });
+
   it("reports full-runtime-proven only when every required component passes", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      abiProof: classifyGpuHmrAbiProof({
+        metadataObserved: true,
+        layoutSizeAlignmentVerified: true,
+      }),
       outputProof: classifyGpuHmrOutputProof({
         dispatchObserved: true,
         deterministicOutputObserved: true,
@@ -126,6 +190,10 @@ describe("GPU HMR runtime output proof classification", () => {
   it("keeps host replacement as a full-runtime blocker after output proof", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      abiProof: classifyGpuHmrAbiProof({
+        metadataObserved: true,
+        layoutSizeAlignmentVerified: true,
+      }),
       outputProof: classifyGpuHmrOutputProof({
         dispatchObserved: true,
         deterministicOutputObserved: true,

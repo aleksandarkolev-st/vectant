@@ -147,6 +147,50 @@ export function summarizeGpuHmrOutputProof(proof) {
   return `gpu_output_proof=${result}${degraded}${reason}${oracle}${visual}`;
 }
 
+export function classifyGpuHmrAbiProof(observation = {}) {
+  const evidenceRefs = Array.isArray(observation.evidenceRefs)
+    ? observation.evidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
+    : [];
+  const metadataObserved = observation.metadataObserved === true || evidenceRefs.length > 0;
+  const layoutSizeAlignmentVerified = observation.layoutSizeAlignmentVerified === true;
+
+  if (layoutSizeAlignmentVerified) {
+    return {
+      schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+      resultState: 'gpu-hmr-abi-proven',
+      degradedState: null,
+      degradedReason: null,
+      layoutSizeAlignmentVerified: true,
+      metadataObserved,
+      evidenceRefs,
+    };
+  }
+
+  return {
+    schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
+    resultState: metadataObserved ? 'gpu-hmr-symbol-bound' : null,
+    degradedState: 'gpu-hmr-abi-unverified',
+    degradedReason: metadataObserved
+      ? (typeof observation.degradedReason === 'string' && observation.degradedReason.trim()
+        ? observation.degradedReason.trim()
+        : 'abi_layout_size_alignment_unverified')
+      : 'abi_evidence_not_collected',
+    layoutSizeAlignmentVerified: false,
+    metadataObserved,
+    evidenceRefs,
+  };
+}
+
+export function summarizeGpuHmrAbiProof(proof) {
+  if (!proof || typeof proof !== 'object') return 'gpu_abi_proof=missing';
+  const result = proof.resultState ? proof.resultState : 'missing';
+  const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
+  const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
+  const metadata = proof.metadataObserved ? ' metadata=observed' : ' metadata=missing';
+  const layout = proof.layoutSizeAlignmentVerified ? ' layout=verified' : ' layout=unverified';
+  return `gpu_abi_proof=${result}${degraded}${reason}${metadata}${layout}`;
+}
+
 export function classifyGpuHmrHostPreservationProof(observation = {}) {
   const hostReplacementObserved =
     observation.hostReplacementObserved === true || observation.hostRestartObserved === true;
@@ -210,8 +254,12 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
     observation.hostPreservationProof && typeof observation.hostPreservationProof === 'object'
       ? observation.hostPreservationProof
       : null;
+  const abiProof = observation.abiProof && typeof observation.abiProof === 'object'
+    ? observation.abiProof
+    : classifyGpuHmrAbiProof({});
   const outputRank = effectiveProofRank(outputProof);
   const hostRank = effectiveProofRank(hostPreservationProof);
+  const abiRank = effectiveProofRank(abiProof);
   const stages = [
     stageResult(
       'compile',
@@ -232,10 +280,10 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
     stageResult(
       'abi',
       'gpu-hmr-abi-proven',
-      source.effectiveRank,
-      source.proof,
-      'gpu-hmr-abi-unverified',
-      'abi_evidence_not_collected',
+      abiRank,
+      abiProof,
+      abiProof?.degradedState ?? 'gpu-hmr-abi-unverified',
+      abiProof?.degradedReason ?? 'abi_evidence_not_collected',
     ),
     stageResult(
       'dispatch',
@@ -280,6 +328,8 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
     componentStates: {
       sourceEffectiveRank: source.effectiveRank,
       sourceResultState: source.proof?.resultState ?? null,
+      abiEffectiveRank: abiRank,
+      abiResultState: abiProof?.resultState ?? null,
       outputEffectiveRank: outputRank,
       outputResultState: outputProof?.resultState ?? null,
       hostEffectiveRank: hostRank,
