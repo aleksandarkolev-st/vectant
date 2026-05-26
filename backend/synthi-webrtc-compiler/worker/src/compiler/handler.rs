@@ -2431,6 +2431,82 @@ fn device_hmr_proof_telemetry(outcome: &DeviceCompileOutcome) -> GpuHmrProofTele
     )
 }
 
+fn device_hmr_proof_stage_results(
+    created_at: &str,
+    source_edit_id: &str,
+    selected_artifact_id: &str,
+    artifact_evidence_id: &str,
+    compiler_evidence_id: &str,
+    symbol_evidence_id: &str,
+    symbol_bound: bool,
+    proof: &GpuHmrProofTelemetry,
+) -> Vec<GpuHmrProofStageResult> {
+    let symbol_stage_status = if symbol_bound { "passed" } else { "blocked" };
+    let symbol_degraded_reason = if symbol_bound {
+        None
+    } else {
+        Some("expected_device_symbols_not_bound".to_string())
+    };
+
+    vec![
+        GpuHmrProofStageResult {
+            stage_id: "device-compile".to_string(),
+            stage_name: "Device artifact compile".to_string(),
+            status: "passed".to_string(),
+            started_at: created_at.to_string(),
+            completed_at: created_at.to_string(),
+            input_artifact_ids: vec![source_edit_id.to_string()],
+            output_artifact_ids: vec![selected_artifact_id.to_string()],
+            evidence_refs: vec![
+                artifact_evidence_id.to_string(),
+                compiler_evidence_id.to_string(),
+            ],
+            degraded_state: None,
+            degraded_reason: None,
+        },
+        GpuHmrProofStageResult {
+            stage_id: "symbol-binding".to_string(),
+            stage_name: "Expected device symbol binding".to_string(),
+            status: symbol_stage_status.to_string(),
+            started_at: created_at.to_string(),
+            completed_at: created_at.to_string(),
+            input_artifact_ids: vec![selected_artifact_id.to_string()],
+            output_artifact_ids: vec![selected_artifact_id.to_string()],
+            evidence_refs: vec![symbol_evidence_id.to_string()],
+            degraded_state: if symbol_bound {
+                None
+            } else {
+                proof.degraded_state.clone()
+            },
+            degraded_reason: symbol_degraded_reason,
+        },
+        GpuHmrProofStageResult {
+            stage_id: "abi-compatibility".to_string(),
+            stage_name: "Device ABI compatibility".to_string(),
+            status: "blocked".to_string(),
+            started_at: created_at.to_string(),
+            completed_at: created_at.to_string(),
+            input_artifact_ids: vec![selected_artifact_id.to_string()],
+            output_artifact_ids: Vec::new(),
+            evidence_refs: Vec::new(),
+            degraded_state: Some(GpuHmrDegradedState::AbiUnverified.as_str().to_string()),
+            degraded_reason: Some("abi_evidence_not_collected".to_string()),
+        },
+        GpuHmrProofStageResult {
+            stage_id: "runtime-dispatch-observation".to_string(),
+            stage_name: "Runtime dispatch observation".to_string(),
+            status: "blocked".to_string(),
+            started_at: created_at.to_string(),
+            completed_at: created_at.to_string(),
+            input_artifact_ids: vec![selected_artifact_id.to_string()],
+            output_artifact_ids: Vec::new(),
+            evidence_refs: Vec::new(),
+            degraded_state: proof.degraded_state.clone(),
+            degraded_reason: proof.degraded_reason.clone(),
+        },
+    ]
+}
+
 async fn write_device_hmr_proof_artifact(
     workspace: &Path,
     workspace_slug: Option<&str>,
@@ -2544,55 +2620,16 @@ async fn write_device_hmr_proof_artifact(
     }
 
     let symbol_bound = artifact_exports_expected_device_symbols(outcome);
-    let symbol_stage_status = if symbol_bound { "passed" } else { "blocked" };
-    let symbol_degraded_reason = if symbol_bound {
-        None
-    } else {
-        Some("expected_device_symbols_not_bound".to_string())
-    };
-
-    let stage_results = vec![
-        GpuHmrProofStageResult {
-            stage_id: "device-compile".to_string(),
-            stage_name: "Device artifact compile".to_string(),
-            status: "passed".to_string(),
-            started_at: created_at.clone(),
-            completed_at: created_at.clone(),
-            input_artifact_ids: vec![source_edit_id.clone()],
-            output_artifact_ids: vec![selected_artifact_id.clone()],
-            evidence_refs: vec![artifact_evidence_id, compiler_evidence_id],
-            degraded_state: None,
-            degraded_reason: None,
-        },
-        GpuHmrProofStageResult {
-            stage_id: "symbol-binding".to_string(),
-            stage_name: "Expected device symbol binding".to_string(),
-            status: symbol_stage_status.to_string(),
-            started_at: created_at.clone(),
-            completed_at: created_at.clone(),
-            input_artifact_ids: vec![selected_artifact_id.clone()],
-            output_artifact_ids: vec![selected_artifact_id.clone()],
-            evidence_refs: vec![symbol_evidence_id],
-            degraded_state: if symbol_bound {
-                None
-            } else {
-                proof.degraded_state.clone()
-            },
-            degraded_reason: symbol_degraded_reason,
-        },
-        GpuHmrProofStageResult {
-            stage_id: "runtime-dispatch-observation".to_string(),
-            stage_name: "Runtime dispatch observation".to_string(),
-            status: "blocked".to_string(),
-            started_at: created_at.clone(),
-            completed_at: created_at.clone(),
-            input_artifact_ids: vec![selected_artifact_id.clone()],
-            output_artifact_ids: Vec::new(),
-            evidence_refs: Vec::new(),
-            degraded_state: proof.degraded_state.clone(),
-            degraded_reason: proof.degraded_reason.clone(),
-        },
-    ];
+    let stage_results = device_hmr_proof_stage_results(
+        &created_at,
+        &source_edit_id,
+        &selected_artifact_id,
+        &artifact_evidence_id,
+        &compiler_evidence_id,
+        &symbol_evidence_id,
+        symbol_bound,
+        proof,
+    );
 
     let artifact = GpuHmrProofArtifact::new(GpuHmrProofArtifactInput {
         workspace_slug,
@@ -8844,6 +8881,42 @@ mod gpu_host_contract_tests {
         assert_eq!(proof.result_state, "gpu-hmr-compile-proven");
         assert_eq!(
             proof.degraded_state.as_deref(),
+            Some("gpu-hmr-dispatch-unobserved")
+        );
+    }
+
+    #[test]
+    fn device_hmr_proof_artifact_records_blocked_abi_stage() {
+        let outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["_Z5shadePi"]));
+        let proof = device_hmr_proof_telemetry(&outcome);
+
+        let stages = device_hmr_proof_stage_results(
+            "2026-05-26T00:00:00Z",
+            "source-edit:abc",
+            "artifact:sha256:def",
+            "evidence:artifact",
+            "evidence:compiler",
+            "evidence:symbols",
+            artifact_exports_expected_device_symbols(&outcome),
+            &proof,
+        );
+
+        assert_eq!(stages[0].stage_id, "device-compile");
+        assert_eq!(stages[1].stage_id, "symbol-binding");
+        assert_eq!(stages[1].status, "passed");
+        assert_eq!(stages[2].stage_id, "abi-compatibility");
+        assert_eq!(stages[2].status, "blocked");
+        assert_eq!(
+            stages[2].degraded_state.as_deref(),
+            Some("gpu-hmr-abi-unverified")
+        );
+        assert_eq!(
+            stages[2].degraded_reason.as_deref(),
+            Some("abi_evidence_not_collected")
+        );
+        assert_eq!(stages[3].stage_id, "runtime-dispatch-observation");
+        assert_eq!(
+            stages[3].degraded_state.as_deref(),
             Some("gpu-hmr-dispatch-unobserved")
         );
     }
