@@ -1048,6 +1048,79 @@ def test_split_allows_source_device_launch_without_pointer_init_requirement():
     assert not any(v.rule == "device_buffers_not_initialized" for v in r.violations)
 
 
+def test_split_rejects_synthetic_source_launch_pointer_aggregate():
+    source_files = {
+        "src/Device/kernels/CameraRays.h": (
+            "struct RenderData { float* pixels; int width; };\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) CameraRays(RenderData render_data) "
+            "{ render_data.pixels[0] = 1.0f; }\n"
+        ),
+        "src/render.cpp": "void render(RenderData render_data) { CameraRays<<<1, 64>>>(render_data); }\n",
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { float* d_pixels; int width; };',
+        "core.cpp": (
+            '#include <hip/hip_runtime.h>\n'
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            'auto* s = static_cast<AppState*>(state); '
+            'RenderData render_data{}; '
+            'render_data.pixels = nullptr; '
+            'render_data.width = s->width; '
+            'synthi_gpu_launch(nullptr, "CameraRays", 1, 64, 0, nullptr, { &render_data }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": '#include "src/Device/kernels/CameraRays.h"\n',
+    }
+
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+
+    assert any(v.rule == "source_launch_args_synthetic_aggregate" for v in r.violations)
+
+
+def test_split_allows_source_launch_aggregate_copied_from_state():
+    source_files = {
+        "src/Device/kernels/CameraRays.h": (
+            "struct RenderData { float* pixels; int width; };\n"
+            "GLOBAL_KERNEL_SIGNATURE(void) CameraRays(RenderData render_data) "
+            "{ render_data.pixels[0] = 1.0f; }\n"
+        ),
+        "src/render.cpp": "void render(RenderData render_data) { CameraRays<<<1, 64>>>(render_data); }\n",
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct RenderData { float* pixels; int width; };',
+        "core.cpp": (
+            '#include <hip/hip_runtime.h>\n'
+            'extern "C" void* core_on_load(void*, void*) { static RenderData render_data; return &render_data; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            'RenderData render_data = *static_cast<RenderData*>(state); '
+            'synthi_gpu_launch(nullptr, "CameraRays", 1, 64, 0, nullptr, { &render_data }); }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": 'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\nextern "C" void gui_on_render(void*) {}',
+        "host_runner.cpp": "int main() { void* libgui = 0; auto gui_on_render = libgui; return 0; }",
+        "device.hip": '#include "src/Device/kernels/CameraRays.h"\n',
+    }
+
+    r = verify_split_output(
+        files=files,
+        manifest_arch=["gfx1201"],
+        source_files=source_files,
+    )
+
+    assert not any(v.rule == "source_launch_args_synthetic_aggregate" for v in r.violations)
+
+
 def test_split_allows_output_only_pointer_kernel_without_init():
     files = {
         "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { size_t* d_size; };',

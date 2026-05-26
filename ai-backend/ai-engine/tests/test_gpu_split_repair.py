@@ -1171,6 +1171,54 @@ def test_repair_removes_source_launch_when_owner_missing():
     assert not any(v.rule == "source_launch_args_not_preserved" for v in after.violations)
 
 
+def test_repair_removes_synthetic_source_launch_aggregate():
+    source_files = {
+        "src/kernels.cu": (
+            "struct RenderData { float* pixels; int width; };\n"
+            'extern "C" __global__ void Shade(RenderData render_data) { '
+            "render_data.pixels[0] = 1.0f; }\n"
+        ),
+        "src/render.cpp": "void render(RenderData render_data){ Shade<<<1, 64>>>(render_data); }\n",
+    }
+    files = {
+        "shared.h": '#include "synthi_gpu_runtime.h"\nstruct AppState { int width; };',
+        "core.cpp": (
+            'extern "C" void* core_on_load(void*, void*) { static AppState s; return &s; }\n'
+            'extern "C" void core_on_update(void* state, double) { '
+            'auto* s = static_cast<AppState*>(state); '
+            'RenderData render_data{}; render_data.pixels = nullptr; render_data.width = s->width; '
+            'bool launched = synthi_gpu_launch(nullptr, "Shade", 1, 64, 0, 0, { &render_data }); '
+            'if (launched) { s->width += 1; } }\n'
+            'extern "C" const DeviceDescriptor* device_descriptor() { return 0; }\n'
+            'extern "C" void device_on_load(const unsigned char*, size_t) {}\n'
+            'extern "C" unsigned long long device_kernel_sig_hash(const char*) { return 1; }'
+        ),
+        "gui.cpp": (
+            'extern "C" void* gui_on_load(void*, void*, void*) { return 0; }\n'
+            'extern "C" void gui_on_render(void*) {}'
+        ),
+        "host_runner.cpp": "int main() { return 0; }",
+        "device.cu": 'extern "C" __global__ void Shade(RenderData render_data) {}\n',
+    }
+    verification = verify_split_output(
+        files=files,
+        manifest_arch=["unit-test-arch"],
+        source_files=source_files,
+    )
+    assert any(v.rule == "source_launch_args_synthetic_aggregate" for v in verification.violations)
+
+    repaired, report = repair_split_artifacts(
+        files=files,
+        manifest=None,
+        source_files=source_files,
+        verification=verification,
+    )
+
+    assert "repair.source_launch_args" in report["repairRules"]
+    assert "synthi_gpu_launch" not in repaired["core.cpp"]
+    assert "if (launched)" not in repaired["core.cpp"]
+
+
 def test_repair_removes_guard_block_for_unresolved_launch_assignment():
     source_files = {
         "src/Device/includes/FixIntellisense.h": (

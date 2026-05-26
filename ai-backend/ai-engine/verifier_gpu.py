@@ -770,6 +770,67 @@ def _declared_record_type_basenames(source: str) -> Set[str]:
     }
 
 
+def _record_fields_for_type(type_text: str, type_sources: Iterable[str]) -> List[tuple[str, str]]:
+    type_name = _normalize_cpp_type_name(type_text).rsplit("::", 1)[-1]
+    if not type_name:
+        return []
+    record_re = re.compile(
+        rf"\b(?:struct|class)\s+{re.escape(type_name)}\s*\{{(?P<body>.*?)\}}\s*;",
+        re.DOTALL,
+    )
+    fields: List[tuple[str, str]] = []
+    for source in type_sources:
+        match = record_re.search(source)
+        if not match:
+            continue
+        for raw_declaration in match.group("body").split(";"):
+            declaration = raw_declaration.strip()
+            if not declaration or "(" in declaration:
+                continue
+            field_match = re.search(
+                r"^(?P<type>[A-Za-z_][A-Za-z0-9_:<>]*(?:\s+[A-Za-z_][A-Za-z0-9_:<>]*)*(?:\s*[*&])*)\s+"
+                r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]+\])?\s*(?:=[^;]*)?$",
+                declaration,
+            )
+            if not field_match:
+                continue
+            fields.append(
+                (
+                    re.sub(r"\s+", " ", field_match.group("type")).strip(),
+                    field_match.group("name"),
+                )
+            )
+        if fields:
+            return fields
+    return []
+
+
+def _record_type_has_pointer_members(
+    type_text: str,
+    type_sources: Iterable[str],
+    *,
+    seen: Optional[Set[str]] = None,
+    depth: int = 0,
+) -> bool:
+    if depth > 4:
+        return False
+    normalized = _normalize_cpp_type_name(type_text)
+    if not normalized:
+        return False
+    if seen is None:
+        seen = set()
+    if normalized in seen:
+        return False
+    seen.add(normalized)
+    sources = tuple(type_sources)
+    for field_type, _field_name in _record_fields_for_type(normalized, sources):
+        if "*" in field_type or "&" in field_type:
+            return True
+        if _record_type_has_pointer_members(field_type, sources, seen=seen, depth=depth + 1):
+            return True
+    return False
+
+
 def _iter_namespace_bodies(source: str) -> Iterable[tuple[str, str]]:
     namespace_re = re.compile(r"\bnamespace\s+(?P<namespace>[A-Za-z_][A-Za-z0-9_]*)\s*\{")
     for match in namespace_re.finditer(source):
@@ -1276,6 +1337,63 @@ def _normalize_launch_buffer_arg(arg: str) -> str:
     arg = arg.strip()
     arg = re.sub(r"^\s*&\s*", "", arg)
     return re.sub(r"\s+", "", arg)
+
+
+def _simple_launch_arg_owner(arg: str) -> Optional[str]:
+    owner = _normalize_launch_buffer_arg(arg)
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", owner):
+        return owner
+    return None
+
+
+def _local_launch_arg_declaration(
+    function_body: str,
+    owner: str,
+) -> Optional[tuple[str, str]]:
+    owner_re = re.escape(owner)
+    declaration_re = re.compile(
+        rf"(?:^|[;{{]\s*)"
+        rf"(?P<type>(?:static\s+|const\s+|volatile\s+)*"
+        rf"[A-Za-z_][A-Za-z0-9_:<>]*(?:\s+[A-Za-z_][A-Za-z0-9_:<>]*)*(?:\s*[*&])?)\s+"
+        rf"{owner_re}\b\s*(?P<init>\{{\s*\}}|=\s*\{{\s*\}}|=\s*[^;]+|;)",
+        re.DOTALL,
+    )
+    matches = list(declaration_re.finditer(mask_comments_for_parsing(function_body)))
+    if not matches:
+        return None
+    match = matches[-1]
+    return (
+        re.sub(r"\s+", " ", match.group("type")).strip(),
+        match.group("init").strip(),
+    )
+
+
+def _source_launch_arg_synthetic_reason(
+    core_source: str,
+    type_sources: Iterable[str],
+    launch_arg: str,
+) -> Optional[str]:
+    owner = _simple_launch_arg_owner(launch_arg)
+    if not owner:
+        return None
+    body = _function_body(core_source, "core_on_update")
+    if not body:
+        return None
+    masked_body = mask_comments_for_parsing(body)
+    if re.search(
+        rf"\b{re.escape(owner)}(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)+\s*=\s*(?:nullptr|NULL)\b",
+        masked_body,
+    ):
+        return "launch argument aggregate assigns member pointers to null"
+
+    declaration = _local_launch_arg_declaration(masked_body, owner)
+    if declaration is None:
+        return None
+    type_text, initializer = declaration
+    value_initialized = initializer in {"{}", "= {}"}
+    if value_initialized and _record_type_has_pointer_members(type_text, tuple(type_sources)):
+        return "launch argument aggregate is value-initialized and contains pointer members"
+    return None
 
 
 def _strip_cpp_comments(source: str) -> str:
@@ -1912,6 +2030,12 @@ def verify_split_output(
         )
 
     core_source = files.get(core_path) or ""
+    launch_type_sources = (
+        shared_source,
+        core_source,
+        device_semantic_source,
+        source_blob,
+    )
     for symbol in ("core_on_load", "core_on_update"):
         if not re.search(rf'extern\s+"C"[^;{{\n]*\b{symbol}\s*\(', core_source):
             violations.append(
@@ -2268,6 +2392,31 @@ def verify_split_output(
                                 offending_symbol=kernel_name,
                             )
                         )
+                    for entry in entries:
+                        synthetic_reason = _source_launch_arg_synthetic_reason(
+                            core_source,
+                            launch_type_sources,
+                            entry,
+                        )
+                        if synthetic_reason:
+                            violations.append(
+                                Violation(
+                                    rule="source_launch_args_synthetic_aggregate",
+                                    message=(
+                                        "Generated core launches a source-reachable "
+                                        f"kernel {kernel_name!r} with an argument owner "
+                                        "that has the same name as the source launch "
+                                        "graph but is locally synthesized in "
+                                        f"core_on_update: {synthetic_reason}. Preserve "
+                                        "the real source-owned argument object or remove "
+                                        "the runtime launch instead of dispatching a "
+                                        "zero/null placeholder aggregate."
+                                    ),
+                                    offending_module=core_path,
+                                    offending_symbol=kernel_name,
+                                )
+                            )
+                            break
             for entry in entries:
                 stripped = entry.strip()
                 if stripped and not stripped.startswith("&"):

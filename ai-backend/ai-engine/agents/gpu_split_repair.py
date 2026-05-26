@@ -37,6 +37,7 @@ from verifier_gpu import (
     _render_backends_in_sources,
     _resolve_split_role_paths,
     _source_device_files as _verifier_source_device_files,
+    _source_launch_arg_synthetic_reason,
     _split_top_level_args,
     _static_integer_bindings,
     _strip_cpp_comments,
@@ -361,11 +362,17 @@ def repair_split_artifacts(
         if any(path in changed_files for path in (core_path, gui_path, host_runner_path) if path):
             repair_rules.append("repair.launch_bounds")
 
-    if "source_launch_args_not_preserved" in input_reason_codes:
+    if (
+        "source_launch_args_not_preserved" in input_reason_codes
+        or "source_launch_args_synthetic_aggregate" in input_reason_codes
+    ):
         symbols = {
             str(violation.offending_symbol)
             for violation in (verification.violations if verification is not None else [])
-            if violation.rule == "source_launch_args_not_preserved"
+            if violation.rule in {
+                "source_launch_args_not_preserved",
+                "source_launch_args_synthetic_aggregate",
+            }
             and violation.offending_symbol
         }
         for host_path in (core_path, gui_path, host_runner_path):
@@ -1784,11 +1791,12 @@ def _repair_missing_source_launch_sites(
 def _source_launch_site_to_synthi_call(
     core_source: str,
     site: LaunchSite,
+    source_files: Optional[Mapping[str, str]] = None,
 ) -> Optional[str]:
     line, _availability = _source_launch_site_to_synthi_call_with_evidence(
         core_source,
         site,
-        source_files=None,
+        source_files=source_files,
     )
     return line
 
@@ -1805,7 +1813,7 @@ def _source_launch_site_to_synthi_call_with_evidence(
     if lookup_source is None:
         return None, _source_launch_site_availability(core_source, site, source_files)
     availability = _source_launch_site_availability(core_source, site, source_files)
-    if availability.get("missingExpressions"):
+    if availability.get("missingExpressions") or availability.get("unsafeExpressions"):
         return None, availability
 
     launch_args: List[str] = []
@@ -1852,6 +1860,14 @@ def _source_launch_site_availability(
         if kind.startswith("arg:"):
             if not _is_safe_launch_lvalue(expr):
                 unsafe.append(expr)
+                continue
+            synthetic_reason = _source_launch_arg_synthetic_reason(
+                core_source,
+                ("\n".join((source_files or {}).values()), core_source),
+                expr,
+            )
+            if synthetic_reason:
+                unsafe.append(f"{expr}: {synthetic_reason}")
                 continue
             required_owners.append(expr)
         if not _launch_expr_available_in_core(lookup_source, expr, core_source):
@@ -1936,7 +1952,11 @@ def _repair_source_launch_arg_ownership(
 
         replacement_expr: Optional[str] = None
         for site in sites_by_kernel[kernel]:
-            replacement = _source_launch_site_to_synthi_call(host_source, site)
+            replacement = _source_launch_site_to_synthi_call(
+                host_source,
+                site,
+                source_files,
+            )
             if replacement is not None:
                 replacement_expr = replacement.rstrip()
                 if replacement_expr.endswith(";"):
