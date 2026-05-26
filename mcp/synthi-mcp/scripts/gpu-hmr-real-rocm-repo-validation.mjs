@@ -18,6 +18,10 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
+import {
+  classifyGpuHmrOutputProof,
+  summarizeGpuHmrOutputProof,
+} from './lib/gpu-hmr-runtime-proof.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -173,6 +177,7 @@ const report = {
   logs: {},
   docker: {},
   evidence: {},
+  output_proof: null,
   compile_projection: {},
   started_at: new Date().toISOString(),
   finished_at: null,
@@ -1083,6 +1088,20 @@ function selfCheckRuntimeDispatchEvidence() {
   if (provenance.total_count !== 2 || provenance.incomplete_count !== 1 || provenance.unknown_arg_count !== 2) {
     throw new Error('runtime arg provenance evidence parser failed');
   }
+  const visualOnlyProof = classifyGpuHmrOutputProof({
+    dispatchObserved: true,
+    visualFrameObserved: true,
+  });
+  const outputMissingProof = classifyGpuHmrOutputProof({
+    dispatchObserved: true,
+    visualFrameObserved: false,
+  });
+  if (
+    visualOnlyProof.degradedState !== 'gpu-hmr-visual-only'
+    || outputMissingProof.degradedState !== 'gpu-hmr-output-unobserved'
+  ) {
+    throw new Error('runtime output proof classifier failed');
+  }
   console.log('runtime dispatch evidence self-check passed');
 }
 
@@ -1173,6 +1192,19 @@ async function collectRuntimeEvidence() {
   } else {
     record('runtime argument provenance', 'warn', 'no launch_arg_provenance lines captured');
   }
+  const freshVisualFrames = report.screenshots.filter(
+    (shot) => shot && shot.width >= 320 && shot.height >= 240 && shot.visible_pixels > 500,
+  );
+  report.output_proof = classifyGpuHmrOutputProof({
+    dispatchObserved: runtimeDispatch.success_count > 0 && scopedWorkerLogs.marker_found,
+    visualFrameObserved: freshVisualFrames.length > 0,
+    visualEvidenceRefs: freshVisualFrames.map((shot) => shot.path),
+  });
+  record(
+    'runtime output proof',
+    report.output_proof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrOutputProof(report.output_proof),
+  );
   record(
     'runtime evidence collected',
     'pass',
@@ -1234,6 +1266,8 @@ async function writeResults() {
     ...report.phases.map((phase) => `GPU_PROOF ${phase.name} ${summarizeGpuProof(phase.gpu_proof)}`),
     '',
     ...report.screenshots.map((shot) => `SCREENSHOT ${shot.label} visible=${shot.visible_pixels} luma=${shot.mean_luma.toFixed(1)} path=${shot.path}`),
+    '',
+    `OUTPUT_PROOF ${summarizeGpuHmrOutputProof(report.output_proof)}`,
     '',
     `EVIDENCE ${JSON.stringify(report.evidence)}`,
   ];

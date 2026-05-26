@@ -48,6 +48,10 @@ import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
+import {
+  classifyGpuHmrOutputProof,
+  summarizeGpuHmrOutputProof,
+} from './lib/gpu-hmr-runtime-proof.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -112,10 +116,29 @@ function log(kind, msg) {
 }
 
 const results = [];
+const runtimeOutputProofs = [];
 function record(phase, name, status, detail = '') {
   results.push({ phase, name, status, detail, ts: new Date().toISOString() });
   const l = status === 'pass' ? 'ok' : status === 'fail' ? 'fail' : status === 'skip' ? 'skip' : 'warn';
   log(l, `[${phase}] ${name}${detail ? ' — ' + detail : ''}`);
+}
+function recordRuntimeOutputProof(phase, name, observation) {
+  const proof = classifyGpuHmrOutputProof(observation);
+  runtimeOutputProofs.push({
+    phase,
+    name,
+    proof,
+    observation: {
+      dispatchObserved: observation?.dispatchObserved === true,
+      deterministicOutputObserved: observation?.deterministicOutputObserved === true,
+      deterministicOracleProvided: observation?.deterministicOracleProvided === true,
+      deterministicOraclePassed: observation?.deterministicOraclePassed === true,
+      visualFrameObserved: observation?.visualFrameObserved === true,
+    },
+    ts: new Date().toISOString(),
+  });
+  record(phase, name, proof.degradedState ? 'warn' : 'pass', summarizeGpuHmrOutputProof(proof));
+  return proof;
 }
 function shouldRun(phase) {
   if (CFG.onlyPhases.size > 0 && !CFG.onlyPhases.has(phase)) return false;
@@ -1865,14 +1888,19 @@ async function phaseFlow(ctx) {
   record('FLOW', 'inward GPU launch observed',
     baselineLaunch.matched ? 'pass' : 'warn',
     baselineLaunch.snippet || 'no particle_flow launch marker');
-  await awaitGpuDispatchOk(
+  const inwardDispatchObserved = await awaitGpuDispatchOk(
     'FLOW',
     'inward GPU dispatch ok',
     baselineStart,
     kernelNamesFromSource(FLOW_DEVICE_INWARD),
   );
 
-  await captureMcpScreenshot('flow-inward');
+  const inwardScreenshot = await captureMcpScreenshot('flow-inward');
+  recordRuntimeOutputProof('FLOW', 'inward output proof', {
+    dispatchObserved: inwardDispatchObserved,
+    visualFrameObserved: Boolean(inwardScreenshot),
+    visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
+  });
 
   const flipStart = await workerLogCheckpoint(8 * 1024 * 1024);
   const flip = await postCompile({
@@ -1900,7 +1928,7 @@ async function phaseFlow(ctx) {
     'outward HMR has no full-device fallback',
     flipStart,
   );
-  await awaitGpuDispatchOk(
+  const outwardDispatchObserved = await awaitGpuDispatchOk(
     'FLOW',
     'outward GPU dispatch ok',
     flipStart,
@@ -1916,7 +1944,12 @@ async function phaseFlow(ctx) {
     trend.matched ? 'pass' : 'warn',
     trend.snippet || 'outward trend not observed before timeout');
 
-  await captureMcpScreenshot('flow-outward');
+  const outwardScreenshot = await captureMcpScreenshot('flow-outward');
+  recordRuntimeOutputProof('FLOW', 'outward output proof', {
+    dispatchObserved: outwardDispatchObserved,
+    visualFrameObserved: Boolean(outwardScreenshot),
+    visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
+  });
 }
 
 async function phaseP0(ctx) {
@@ -2424,6 +2457,7 @@ async function writeSummary() {
       drainTimeoutMs: CFG.drainTimeoutMs,
     },
     summary: { total: results.length, passed, warned, failed, skipped },
+    runtime_output_proofs: runtimeOutputProofs,
     results,
   };
   await writeFile(path.join(LOG_DIR, 'results.json'), JSON.stringify(summary, null, 2));
@@ -2514,6 +2548,18 @@ async function selfCheck() {
     || flowKernels.join(',') !== 'particle_flow'
   ) {
     console.error('gpu-hmr-test self-check failed: dispatch telemetry parser did not classify launch status');
+    process.exitCode = 1;
+    return;
+  }
+  const outputProof = classifyGpuHmrOutputProof({
+    dispatchObserved: true,
+    visualFrameObserved: true,
+  });
+  if (
+    outputProof.resultState !== 'gpu-hmr-dispatch-proven'
+    || outputProof.degradedState !== 'gpu-hmr-visual-only'
+  ) {
+    console.error('gpu-hmr-test self-check failed: visual-only output proof classifier failed');
     process.exitCode = 1;
     return;
   }
