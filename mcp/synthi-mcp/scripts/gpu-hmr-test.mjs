@@ -1995,10 +1995,21 @@ async function phaseFlow(ctx) {
     kernelNamesFromSource(FLOW_DEVICE_INWARD),
     inwardDispatchObserved,
   );
+  const inwardTrend = await awaitWorkerLogRegex(
+    /\[gpu-flow-demo\].*trend=inward/,
+    12000,
+    { after: baselineStart, maxBytes: 8 * 1024 * 1024 },
+  );
+  record('FLOW', 'render loop reports inward flow',
+    inwardTrend.matched ? 'pass' : 'warn',
+    inwardTrend.snippet || 'inward trend not observed before timeout');
 
   const inwardScreenshot = await captureMcpScreenshot('flow-inward');
   recordRuntimeOutputProof('FLOW', 'inward output proof', {
     dispatchProof: inwardDispatchProof,
+    deterministicOutputObserved: inwardTrend.matched,
+    deterministicOracleProvided: true,
+    deterministicOraclePassed: inwardTrend.matched,
     visualFrameObserved: Boolean(inwardScreenshot),
     visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
   });
@@ -2055,6 +2066,9 @@ async function phaseFlow(ctx) {
   const outwardScreenshot = await captureMcpScreenshot('flow-outward');
   recordRuntimeOutputProof('FLOW', 'outward output proof', {
     dispatchProof: outwardDispatchProof,
+    deterministicOutputObserved: trend.matched,
+    deterministicOracleProvided: true,
+    deterministicOraclePassed: trend.matched,
     visualFrameObserved: Boolean(outwardScreenshot),
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
   });
