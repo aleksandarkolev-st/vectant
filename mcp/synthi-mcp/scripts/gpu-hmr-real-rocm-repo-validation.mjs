@@ -1272,6 +1272,16 @@ function runtimeSessionEvidence(workerEvidence) {
   };
 }
 
+function runtimeOwnershipEvidence(workerEvidence) {
+  const lines = workerEvidence.filter((line) => /\bruntime_ownership\b/i.test(line));
+  return {
+    total_count: lines.length,
+    primary_replacement_count: lines.filter((line) => /\breplaced_primary=true\b/i.test(line)).length,
+    primary_retained_count: lines.filter((line) => /\breplaced_primary=false\b/i.test(line)).length,
+    lines: lines.slice(-20),
+  };
+}
+
 function summarizeGpuProof(proof) {
   if (!proof?.resultState) return 'gpu_proof=missing';
   const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
@@ -1347,6 +1357,13 @@ function selfCheckRuntimeDispatchEvidence() {
   ]);
   if (!runtimeSession.consistent || runtimeSession.unique_ids[0] !== 'pid1-100') {
     throw new Error('runtime session evidence parser failed');
+  }
+  const ownership = runtimeOwnershipEvidence([
+    '[gpu-reload] runtime_ownership label=gpu-hmr-partial partial=true artifact=/x expected_symbols=a touched_symbols=a retired_modules=0 replaced_primary=false',
+    '[gpu-reload] runtime_ownership label=gpu-hmr-full-device partial=false artifact=/x expected_symbols=a touched_symbols=a retired_modules=0 replaced_primary=true',
+  ]);
+  if (ownership.primary_retained_count !== 1 || ownership.primary_replacement_count !== 1) {
+    throw new Error('runtime ownership evidence parser failed');
   }
   const visualOnlyProof = classifyGpuHmrOutputProof({
     dispatchObserved: true,
@@ -1437,6 +1454,7 @@ async function collectRuntimeEvidence() {
   const runtimeDispatch = runtimeDispatchEvidence(workerEvidence);
   const runtimeArgProvenance = runtimeArgProvenanceEvidence(workerEvidence);
   const runtimeSession = runtimeSessionEvidence(workerEvidence);
+  const runtimeOwnership = runtimeOwnershipEvidence(workerEvidence);
   report.evidence = {
     worker_log_lines: workerEvidence,
     worker_log_lines_unscoped_tail: unscopedWorkerEvidence.slice(-50),
@@ -1463,10 +1481,12 @@ async function collectRuntimeEvidence() {
       existing_reload_blocked: countMatches(workerEvidence, /reload_policy_allow_existing=false/i),
       runner_restarts: countMatches(workerEvidence, /Restarting runner/i),
       runner_exit_errors: countMatches(workerEvidence, /Runner process exited|Rust cannot catch|fatal runtime/i),
+      primary_replacements: runtimeOwnership.primary_replacement_count,
     },
     runtime_dispatch: runtimeDispatch,
     runtime_arg_provenance: runtimeArgProvenance,
     runtime_session: runtimeSession,
+    runtime_ownership: runtimeOwnership,
   };
   if (runtimeDispatch.failure_count > 0) {
     record(
@@ -1531,6 +1551,7 @@ async function collectRuntimeEvidence() {
   });
   report.host_preservation_proof = classifyGpuHmrHostPreservationProof({
     hostRestartObserved: report.evidence.runner_policy_counts.runner_restarts > 0,
+    hostReplacementObserved: runtimeOwnership.primary_replacement_count > 0,
   });
   report.full_runtime_proof = classifyGpuHmrFullRuntimeProof({
     sourceProofs: report.phases.map((phase) => phase.gpu_proof).filter(Boolean),
