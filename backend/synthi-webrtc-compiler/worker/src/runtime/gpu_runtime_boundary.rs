@@ -50,7 +50,15 @@ pub struct LaunchArgProvenance {
 pub struct SynthiGpuLaunchArg {
     pub value_ptr: *const c_void,
     pub value_size: usize,
+    pub value_kind: u32,
 }
+
+const SYNTHI_GPU_ARG_KIND_UNKNOWN: u32 = 0;
+const SYNTHI_GPU_ARG_KIND_POINTER: u32 = 1;
+const SYNTHI_GPU_ARG_KIND_INTEGER: u32 = 2;
+const SYNTHI_GPU_ARG_KIND_FLOATING: u32 = 3;
+const SYNTHI_GPU_ARG_KIND_ENUM: u32 = 4;
+const SYNTHI_GPU_ARG_KIND_AGGREGATE: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchRecord {
@@ -232,6 +240,7 @@ fn classify_arg_value(
     index: usize,
     value_ptr: *const c_void,
     value_size: usize,
+    value_kind: u32,
 ) -> LaunchArgProvenance {
     let value_ptr_usize = value_ptr as usize;
     if value_ptr.is_null() {
@@ -255,6 +264,37 @@ fn classify_arg_value(
             value_size,
             observed_value: None,
             kind: "legacy-unknown-size".to_string(),
+            allocation_name: None,
+            allocation_ptr: None,
+            allocation_bytes: None,
+            allocation_offset: None,
+        };
+    }
+
+    if matches!(
+        value_kind,
+        SYNTHI_GPU_ARG_KIND_INTEGER | SYNTHI_GPU_ARG_KIND_FLOATING | SYNTHI_GPU_ARG_KIND_ENUM
+    ) {
+        return LaunchArgProvenance {
+            index,
+            value_ptr: value_ptr_usize,
+            value_size,
+            observed_value: None,
+            kind: "scalar-value".to_string(),
+            allocation_name: None,
+            allocation_ptr: None,
+            allocation_bytes: None,
+            allocation_offset: None,
+        };
+    }
+
+    if value_kind == SYNTHI_GPU_ARG_KIND_AGGREGATE {
+        return LaunchArgProvenance {
+            index,
+            value_ptr: value_ptr_usize,
+            value_size,
+            observed_value: None,
+            kind: "aggregate-value".to_string(),
             allocation_name: None,
             allocation_ptr: None,
             allocation_bytes: None,
@@ -319,12 +359,18 @@ fn classify_arg_value(
         };
     }
 
+    let unknown_kind = if value_kind == SYNTHI_GPU_ARG_KIND_POINTER {
+        "unknown-pointer"
+    } else {
+        "unknown-pointer-or-scalar"
+    };
+
     LaunchArgProvenance {
         index,
         value_ptr: value_ptr_usize,
         value_size,
         observed_value: Some(observed_value),
-        kind: "unknown-pointer-or-scalar".to_string(),
+        kind: unknown_kind.to_string(),
         allocation_name: None,
         allocation_ptr: None,
         allocation_bytes: None,
@@ -349,19 +395,39 @@ fn classify_launch_args(
         return (0..arg_count)
             .map(|index| {
                 let info = unsafe { std::ptr::read_unaligned(arg_info.add(index)) };
-                classify_arg_value(guard, index, info.value_ptr, info.value_size)
+                classify_arg_value(
+                    guard,
+                    index,
+                    info.value_ptr,
+                    info.value_size,
+                    info.value_kind,
+                )
             })
             .collect();
     }
     if args.is_null() {
         return (0..arg_count)
-            .map(|index| classify_arg_value(guard, index, std::ptr::null(), 0))
+            .map(|index| {
+                classify_arg_value(
+                    guard,
+                    index,
+                    std::ptr::null(),
+                    0,
+                    SYNTHI_GPU_ARG_KIND_UNKNOWN,
+                )
+            })
             .collect();
     }
     (0..arg_count)
         .map(|index| {
             let value_ptr = unsafe { std::ptr::read_unaligned(args.add(index)) };
-            classify_arg_value(guard, index, value_ptr, 0)
+            classify_arg_value(
+                guard,
+                index,
+                value_ptr,
+                0,
+                SYNTHI_GPU_ARG_KIND_UNKNOWN,
+            )
         })
         .collect()
 }
@@ -999,10 +1065,12 @@ mod tests {
             SynthiGpuLaunchArg {
                 value_ptr: (&device_ptr as *const *mut c_void).cast(),
                 value_size: std::mem::size_of_val(&device_ptr),
+                value_kind: SYNTHI_GPU_ARG_KIND_POINTER,
             },
             SynthiGpuLaunchArg {
                 value_ptr: (&scalar as *const u32).cast(),
                 value_size: std::mem::size_of_val(&scalar),
+                value_kind: SYNTHI_GPU_ARG_KIND_INTEGER,
             },
         ];
         let kernel = CString::new("with_provenance").unwrap();
@@ -1042,6 +1110,7 @@ mod tests {
         let args = [SynthiGpuLaunchArg {
             value_ptr: (&unknown_ptr as *const *mut c_void).cast(),
             value_size: std::mem::size_of_val(&unknown_ptr),
+            value_kind: SYNTHI_GPU_ARG_KIND_POINTER,
         }];
         let kernel = CString::new("unknown_ptr").unwrap();
         let dim = 1_u32;
@@ -1064,8 +1133,41 @@ mod tests {
         assert!(!launches[0].arg_provenance_complete);
         assert_eq!(
             launches[0].arg_provenance[0].kind,
-            "unknown-pointer-or-scalar"
+            "unknown-pointer"
         );
+    }
+
+    #[test]
+    fn launch_arg_info_treats_pointer_sized_declared_scalar_as_proven() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let frame = 123_u64;
+        let args = [SynthiGpuLaunchArg {
+            value_ptr: (&frame as *const u64).cast(),
+            value_size: std::mem::size_of_val(&frame),
+            value_kind: SYNTHI_GPU_ARG_KIND_INTEGER,
+        }];
+        let kernel = CString::new("pointer_sized_scalar").unwrap();
+        let dim = 1_u32;
+
+        let ok = synthi_gpu_launch_raw_arg_info(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            (&dim as *const u32).cast(),
+            std::mem::size_of_val(&dim),
+            0,
+            0,
+            args.as_ptr(),
+            args.len(),
+        );
+
+        assert!(!ok);
+        let launches = launch_records_snapshot();
+        assert!(launches[0].arg_provenance_complete);
+        assert_eq!(launches[0].arg_provenance[0].kind, "scalar-value");
     }
 
     #[test]

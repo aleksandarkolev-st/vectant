@@ -81,19 +81,52 @@ struct Dim3 {{
 }};
 #endif
 
+enum SynthiGpuLaunchArgKind : std::uint32_t {{
+    SYNTHI_GPU_ARG_KIND_UNKNOWN = 0,
+    SYNTHI_GPU_ARG_KIND_POINTER = 1,
+    SYNTHI_GPU_ARG_KIND_INTEGER = 2,
+    SYNTHI_GPU_ARG_KIND_FLOATING = 3,
+    SYNTHI_GPU_ARG_KIND_ENUM = 4,
+    SYNTHI_GPU_ARG_KIND_AGGREGATE = 5,
+}};
+
+template <typename T>
+struct SynthiGpuLaunchArgKindFor {{
+    typedef typename std::remove_cv<T>::type BareT;
+    static constexpr std::uint32_t value =
+        std::is_pointer<BareT>::value ? SYNTHI_GPU_ARG_KIND_POINTER :
+        std::is_integral<BareT>::value ? SYNTHI_GPU_ARG_KIND_INTEGER :
+        std::is_floating_point<BareT>::value ? SYNTHI_GPU_ARG_KIND_FLOATING :
+        std::is_enum<BareT>::value ? SYNTHI_GPU_ARG_KIND_ENUM :
+        SYNTHI_GPU_ARG_KIND_AGGREGATE;
+}};
+
 struct SynthiGpuLaunchArg {{
     const void* value_ptr;
     std::size_t value_size;
+    std::uint32_t value_kind;
 
-    constexpr SynthiGpuLaunchArg() : value_ptr(nullptr), value_size(0) {{}}
-    constexpr SynthiGpuLaunchArg(const void* ptr) : value_ptr(ptr), value_size(0) {{}}
-    constexpr SynthiGpuLaunchArg(void* ptr) : value_ptr(ptr), value_size(0) {{}}
+    constexpr SynthiGpuLaunchArg()
+        : value_ptr(nullptr), value_size(0), value_kind(SYNTHI_GPU_ARG_KIND_UNKNOWN) {{}}
+    constexpr SynthiGpuLaunchArg(const void* ptr)
+        : value_ptr(ptr), value_size(0), value_kind(SYNTHI_GPU_ARG_KIND_UNKNOWN) {{}}
+    constexpr SynthiGpuLaunchArg(void* ptr)
+        : value_ptr(ptr), value_size(0), value_kind(SYNTHI_GPU_ARG_KIND_UNKNOWN) {{}}
+
+    template <typename T>
+    constexpr SynthiGpuLaunchArg(T* ptr)
+        : value_ptr(static_cast<const void*>(ptr)),
+          value_size(sizeof(T)),
+          value_kind(SynthiGpuLaunchArgKindFor<T>::value) {{}}
 
     template <typename T>
     constexpr SynthiGpuLaunchArg(const T* ptr)
-        : value_ptr(static_cast<const void*>(ptr)), value_size(sizeof(T)) {{}}
+        : value_ptr(static_cast<const void*>(ptr)),
+          value_size(sizeof(T)),
+          value_kind(SynthiGpuLaunchArgKindFor<T>::value) {{}}
 
-    constexpr SynthiGpuLaunchArg(std::nullptr_t) : value_ptr(nullptr), value_size(0) {{}}
+    constexpr SynthiGpuLaunchArg(std::nullptr_t)
+        : value_ptr(nullptr), value_size(0), value_kind(SYNTHI_GPU_ARG_KIND_UNKNOWN) {{}}
 }};
 
 extern "C" {{
@@ -321,6 +354,8 @@ mod tests {
         assert!(h.contains("synthi_gpu_launch_raw_checked"));
         assert!(h.contains("synthi_gpu_launch_raw_arg_info_checked"));
         assert!(h.contains("struct SynthiGpuLaunchArg"));
+        assert!(h.contains("value_kind"));
+        assert!(h.contains("SYNTHI_GPU_ARG_KIND_POINTER"));
         assert!(h.contains("SynthiGpuLaunchTable"));
         assert!(h.contains("inline bool synthi_gpu_launch"));
         assert!(h.contains("synthi_gpu_stream_token(std::nullptr_t)"));
