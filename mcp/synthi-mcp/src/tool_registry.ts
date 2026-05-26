@@ -27,6 +27,7 @@ export const ADVERTISED_TOOLS = [
   "synthi_keyboard",
   "synthi_click",
   "synthi_type",
+  "synthi_dispatch_input",
   // Semantic addressing
   "synthi_locate",
   // Verification
@@ -44,7 +45,9 @@ export const ADVERTISED_TOOLS = [
   "synthi_reset_guest",
   // Arbitration wire (phase-1 record-only; enforcement is phase 2c)
   "synthi_acquire_input",
+  "synthi_renew_input",
   "synthi_release_input",
+  "synthi_force_release_input",
   // Escape hatch wire (phase-1 stubs returning escape_hatch_backend_not_implemented)
   "synthi_request_human",
   "synthi_annotate_and_ask",

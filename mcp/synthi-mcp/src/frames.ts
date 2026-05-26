@@ -12,16 +12,25 @@ export interface FrameSnapshot {
   width: number;
   /** Frame height in pixels. */
   height: number;
+  /** Producer device-pixel ratio for the frame, when emitted by the worker. */
+  dpr?: number;
   /** Monotonic timestamp (ms) at which the latest frame was received. */
   ts: number;
   /** Monotonic counter of frames received since attach. */
   seq: number;
 }
 
+interface ProducerViewport {
+  width: number;
+  height: number;
+  dpr: number;
+}
+
 interface LatestPng {
   png: Buffer;
   width: number;
   height: number;
+  dpr?: number;
   seq: number;
   ts: number;
 }
@@ -122,6 +131,7 @@ export class FrameSink {
   private readonly ffmpeg: ChildProcessByStdio<Writable, Readable, Readable>;
   private readonly trackSub: { unSubscribe: () => void } | null;
   private latest: LatestPng | null = null;
+  private producerViewport: ProducerViewport | null = null;
   private seq = 0;
   private firstFrameAt: number | null = null;
   private stopped = false;
@@ -242,6 +252,31 @@ export class FrameSink {
     if (this.diagTimer.unref) this.diagTimer.unref();
   }
 
+  setProducerViewport(viewport: ProducerViewport): void {
+    if (
+      !Number.isFinite(viewport.width) ||
+      !Number.isFinite(viewport.height) ||
+      !Number.isFinite(viewport.dpr) ||
+      viewport.width <= 0 ||
+      viewport.height <= 0 ||
+      viewport.dpr <= 0
+    ) {
+      return;
+    }
+    this.producerViewport = viewport;
+    if (this.latest && this.latest.width === viewport.width && this.latest.height === viewport.height) {
+      this.latest = { ...this.latest, dpr: viewport.dpr };
+    }
+  }
+
+  private producerDprFor(width: number, height: number): number | undefined {
+    if (!this.producerViewport) return undefined;
+    if (this.producerViewport.width !== width || this.producerViewport.height !== height) {
+      return undefined;
+    }
+    return this.producerViewport.dpr;
+  }
+
   private flushFrame(pts: number): void {
     if (this.frameBuf.length === 0) return;
     const frame = Buffer.concat(this.frameBuf);
@@ -306,6 +341,7 @@ export class FrameSink {
         png: Buffer.from(png),
         width,
         height,
+        dpr: this.producerDprFor(width, height),
         seq: this.seq,
         ts: now,
       };
@@ -330,9 +366,20 @@ export class FrameSink {
     return this.latest !== null;
   }
 
-  dimensions(): { width: number; height: number } | null {
+  dimensions(): { width: number; height: number; dpr?: number } | null {
     if (!this.latest) return null;
-    return { width: this.latest.width, height: this.latest.height };
+    return { width: this.latest.width, height: this.latest.height, dpr: this.latest.dpr };
+  }
+
+  latestInfo(): { width: number; height: number; dpr?: number; seq: number; ts: number } | null {
+    if (!this.latest) return null;
+    return {
+      width: this.latest.width,
+      height: this.latest.height,
+      dpr: this.latest.dpr,
+      seq: this.latest.seq,
+      ts: this.latest.ts,
+    };
   }
 
   /** Return the most recent frame as PNG. Throws if no frame has arrived yet. */
@@ -343,6 +390,7 @@ export class FrameSink {
       data: latest.png,
       width: latest.width,
       height: latest.height,
+      dpr: latest.dpr,
       ts: latest.ts,
       seq: latest.seq,
     };

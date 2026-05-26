@@ -29,6 +29,8 @@ export interface DispatchAckResult {
 export interface PendingDispatch {
   id: string;
   promise: Promise<DispatchAckResult>;
+  /** Start the timeout window once the corresponding frame is actually sent. */
+  startTimer: () => void;
   /** Manually resolve (test-only; production uses the worker echo). */
   _resolve: (res: DispatchAckResult) => void;
   /** Clean up without resolving (caller lost interest). */
@@ -38,11 +40,15 @@ export interface PendingDispatch {
 interface Entry {
   resolve: (res: DispatchAckResult) => void;
   reject: (err: Error) => void;
-  startedAt: number;
+  startedAt: number | null;
   timer?: NodeJS.Timeout;
 }
 
 const DEFAULT_TIMEOUT_MS = 4_000;
+
+interface RegisterOptions {
+  deferTimeout?: boolean;
+}
 
 export class DispatchAckRegistry {
   private readonly pending = new Map<string, Entry>();
@@ -52,7 +58,7 @@ export class DispatchAckRegistry {
    * the worker's input-ack arrives, OR rejects with `input_ack_timeout`
    * after `timeoutMs`.
    */
-  register(timeoutMs: number = DEFAULT_TIMEOUT_MS, id?: string): PendingDispatch {
+  register(timeoutMs: number = DEFAULT_TIMEOUT_MS, id?: string, opts: RegisterOptions = {}): PendingDispatch {
     const dispatchId = id ?? `dsp_${randomUUID()}`;
     let resolveRef!: (res: DispatchAckResult) => void;
     let rejectRef!: (err: Error) => void;
@@ -60,13 +66,15 @@ export class DispatchAckRegistry {
       resolveRef = resolve;
       rejectRef = reject;
     });
-    const startedAt = Date.now();
     const entry: Entry = {
       resolve: resolveRef,
       reject: rejectRef,
-      startedAt,
+      startedAt: null,
     };
-    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    const startTimer = (): void => {
+      if (entry.startedAt !== null || !this.pending.has(dispatchId)) return;
+      entry.startedAt = Date.now();
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return;
       entry.timer = setTimeout(() => {
         if (this.pending.delete(dispatchId)) {
           rejectRef(new Error(`input_ack_timeout: ${dispatchId} after ${timeoutMs}ms`));
@@ -74,8 +82,9 @@ export class DispatchAckRegistry {
       }, timeoutMs);
       // Don't keep the process alive waiting for ack timers.
       entry.timer.unref?.();
-    }
+    };
     this.pending.set(dispatchId, entry);
+    if (opts.deferTimeout !== true) startTimer();
 
     const manualResolve = (res: DispatchAckResult): void => {
       if (this.pending.delete(dispatchId)) {
@@ -89,7 +98,7 @@ export class DispatchAckRegistry {
         rejectRef(new Error(`input_ack_cancelled: ${dispatchId}`));
       }
     };
-    return { id: dispatchId, promise, _resolve: manualResolve, cancel };
+    return { id: dispatchId, promise, startTimer, _resolve: manualResolve, cancel };
   }
 
   /**
@@ -105,7 +114,7 @@ export class DispatchAckRegistry {
     if (entry.timer) clearTimeout(entry.timer);
     const res: DispatchAckResult = {
       accepted: payload.accepted,
-      elapsedMs: Date.now() - entry.startedAt,
+      elapsedMs: entry.startedAt === null ? 0 : Date.now() - entry.startedAt,
     };
     if (payload.reason !== undefined) res.reason = payload.reason;
     entry.resolve(res);

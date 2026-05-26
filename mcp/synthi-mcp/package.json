@@ -41,7 +41,8 @@
     "spike:E4": "tsx tests/spike/E4_cost_budget.ts",
     "soak": "node tests/soak/soak_loop.mjs",
     "live:phase3": "node scripts/live-test-phase3.mjs",
-    "smoke:operator-agents": "node scripts/operator-multi-agent-smoke.mjs"
+    "smoke:operator-agents": "node scripts/operator-multi-agent-smoke.mjs",
+    "live:lease-contention": "node scripts/live-lease-contention.mjs"
   },
   "engines": {
     "node": ">=18.0.0"

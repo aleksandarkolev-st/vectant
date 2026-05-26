@@ -48,6 +48,9 @@ pub async fn run_java(
     }
     let req_width = req.width.or(source_w).unwrap_or(800);
     let req_height = req.height.or(source_h).unwrap_or(600);
+    // Xvfb/GStreamer emits physical Xvfb pixels, and input events target
+    // that same pixel space.
+    let producer_dpr = 1.0_f64;
 
     let mut guard = ctx.runner_store.lock().await;
 
@@ -685,6 +688,12 @@ pub async fn run_java(
                 "sessionId": session_id,
                 "width": state.width,
                 "height": state.height,
+                "dpr": producer_dpr,
+                "viewport": {
+                    "w": state.width,
+                    "h": state.height,
+                    "dpr": producer_dpr,
+                },
             });
             let _ = ctx.log_dc.send_text(gui_start.to_string()).await;
         }

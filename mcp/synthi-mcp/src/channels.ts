@@ -1,6 +1,7 @@
 import type { RTCDataChannel } from "werift";
 import { HmrNormalizer } from "./hmr.js";
 import { sendFrames, type SendOptions } from "./wire/input.js";
+import { randomUUID } from "node:crypto";
 
 const DEFAULT_COMPILE_CHUNK_BYTES = 48_000;
 
@@ -92,6 +93,33 @@ export class SessionChannels {
 
   async sendInput(frames: string[], opts?: SendOptions): Promise<void> {
     return sendFrames(this.terminalDC, frames, opts);
+  }
+
+  async requestInputLease(payload: Record<string, unknown>, timeoutMs: number = 4_000): Promise<Record<string, unknown>> {
+    if (this.terminalDC.readyState !== "open") {
+      throw new Error(`terminal_dc_not_open (state=${this.terminalDC.readyState})`);
+    }
+    const requestId = typeof payload["request_id"] === "string" && payload["request_id"].length > 0
+      ? payload["request_id"]
+      : `lease_req_${randomUUID()}`;
+    const request = { ...payload, type: "input-lease", request_id: requestId };
+    const waiter = new Promise<Record<string, unknown>>((resolve, reject) => {
+      let unsub = (): void => {};
+      const timer = setTimeout(() => {
+        unsub();
+        reject(new Error("input_lease_response_timeout"));
+      }, timeoutMs);
+      if (timer.unref) timer.unref();
+      unsub = this.hmr.onMessage((msg) => {
+        if (msg["type"] !== "input-lease-result") return;
+        if (msg["request_id"] !== requestId) return;
+        clearTimeout(timer);
+        unsub();
+        resolve(msg);
+      });
+    });
+    this.terminalDC.send(JSON.stringify(request));
+    return waiter;
   }
 
   /**

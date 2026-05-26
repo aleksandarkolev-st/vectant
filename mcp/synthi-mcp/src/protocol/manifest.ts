@@ -1,5 +1,17 @@
 import { currentEnrichedProvider, enrichedAvailable } from "../enriched/provider.js";
 import { MAX_PENDING } from "../escape_hatch/queue.js";
+import { resolveBrokerInputMode } from "../broker/input_gate.js";
+import { brokerSloDefinitions, type BrokerSloDefinition } from "../broker/slo.js";
+import {
+  DEFAULT_SHARED_FRAME_CACHE_MAX_ENTRIES,
+  DEFAULT_SHARED_FRAME_CACHE_TTL_MS,
+} from "../broker/frame_cache.js";
+import {
+  resolveBrokerWorkerPoolSize,
+  resolveBrokerWorkerQueueSize,
+} from "../broker/worker_pool.js";
+import { resolveBrokerReplayRetentionPolicy } from "../broker/replay.js";
+import { resolveBrokerProviderPolicy } from "../broker/security.js";
 
 /**
  * Protocol version + capability manifest. Returned from `synthi_attach` so
@@ -51,10 +63,16 @@ export interface CapabilityManifest {
     injection_heuristic_prescreen: boolean;
     sensitive_action_interstitial: boolean;
     keystroke_rate_cap_per_sec: number;
+    broker_redaction_pipeline: boolean;
+    append_only_audit_log: boolean;
+    third_party_inference_policy: {
+      allow_third_party_inference: boolean;
+      denied_providers: string[];
+    };
   };
   arbitration: {
     input_lease_supported: boolean;
-    enforcement: "none" | "server" | "wire-only" | "mcp-local";
+    enforcement: "none" | "server" | "wire-only" | "mcp-local" | "session-shared-worker";
   };
   limits: {
     event_log_capacity: number;
@@ -79,6 +97,62 @@ export interface CapabilityManifest {
     available: boolean;
     endpoint?: string;
     reason?: string;
+  };
+  broker?: {
+    read_only_observation: boolean;
+    normalized_errors: boolean;
+    replay_cursor: boolean;
+    failed_action_timeline: boolean;
+    stream_semantics: {
+      control_stream_ordered: boolean;
+      control_delivery: "at_least_once";
+      frame_delivery: "drop_old_best_effort";
+      dedupe_keys: string[];
+      gap_detection: boolean;
+    };
+    replay_retention: {
+      short_horizon_ms: number;
+      long_horizon_ms: number;
+      persisted: boolean;
+      max_replay_limit: number;
+    };
+    input_mode: "shadow" | "enforce";
+    dispatch_input: boolean;
+    postcondition_types: string[];
+    slo_definitions: BrokerSloDefinition[];
+    shared_frame_cache: {
+      available: boolean;
+      ttl_ms: number;
+      max_entries: number;
+      deterministic_dedupe: boolean;
+      shared_inference_cache: boolean;
+      worker_pool: {
+        max_concurrency: number;
+        max_queue: number;
+      };
+    };
+    rollout_controls: {
+      per_session_feature_flag: boolean;
+      shadow_mode: boolean;
+      dual_read_screenshot_comparison: boolean;
+      canary_stages: string[];
+      kill_switch: boolean;
+      compatibility_matrix: boolean;
+    };
+    lease_d0: {
+      default_lease_ms: number;
+      max_lease_ms: number;
+      max_continuous_ownership_ms: number;
+    };
+    lease_d1: {
+      priority_classes: string[];
+      fairness_queue: boolean;
+      starvation_bound_ms: number;
+      reentrant_per_owner: boolean;
+      force_release_tool: string;
+      lease_loss_events: boolean;
+      action_batching: boolean;
+    };
   };
 }
 
@@ -132,6 +206,12 @@ export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate
     injection_heuristic_prescreen: true,
     sensitive_action_interstitial: false,
     keystroke_rate_cap_per_sec: 500,
+    broker_redaction_pipeline: true,
+    append_only_audit_log: true,
+    third_party_inference_policy: {
+      allow_third_party_inference: false,
+      denied_providers: ["claude_api", "gemini_api"],
+    },
   },
   limits: {
     event_log_capacity: 1024,
@@ -140,6 +220,9 @@ export const STATIC_MANIFEST: Omit<CapabilityManifest, "tools" | "frame_seq_gate
 };
 
 function resolveArbitrationManifest(): CapabilityManifest["arbitration"] {
+  if (resolveBrokerInputMode() === "enforce") {
+    return { input_lease_supported: true, enforcement: "session-shared-worker" };
+  }
   const mode = process.env["SYNTHI_LEASE_MODE"] === "single-holder" ? "mcp-local" : "wire-only";
   return { input_lease_supported: true, enforcement: mode };
 }
@@ -164,6 +247,8 @@ export function buildManifest(
     runtime.frame_seq_gate_reason ??
     (enabled ? "frame_advance_observed" : "no_frame_advance_seen_yet");
   const localUrl = process.env["SYNTHI_LOCAL_VISION_URL"];
+  const replayRetention = resolveBrokerReplayRetentionPolicy();
+  const providerPolicy = resolveBrokerProviderPolicy();
   const manifest: CapabilityManifest = {
     tools: [...advertisedTools],
     ...STATIC_MANIFEST,
@@ -187,6 +272,68 @@ export function buildManifest(
     local_vision: localUrl
       ? { available: true, endpoint: localUrl }
       : { available: false, reason: "SYNTHI_LOCAL_VISION_URL_not_set" },
+    broker: {
+      read_only_observation: true,
+      normalized_errors: true,
+      replay_cursor: true,
+      failed_action_timeline: true,
+      stream_semantics: {
+        control_stream_ordered: true,
+        control_delivery: "at_least_once",
+        frame_delivery: "drop_old_best_effort",
+        dedupe_keys: ["session_id+event_id", "session_id+frame_seq"],
+        gap_detection: true,
+      },
+      replay_retention: {
+        short_horizon_ms: replayRetention.short_horizon_ms,
+        long_horizon_ms: replayRetention.long_horizon_ms,
+        persisted: replayRetention.persisted,
+        max_replay_limit: replayRetention.max_replay_limit,
+      },
+      input_mode: resolveBrokerInputMode(),
+      dispatch_input: true,
+      postcondition_types: ["pixel_match", "lifecycle_event", "custom_app_signal", "event_log"],
+      slo_definitions: brokerSloDefinitions(),
+      shared_frame_cache: {
+        available: true,
+        ttl_ms: DEFAULT_SHARED_FRAME_CACHE_TTL_MS,
+        max_entries: DEFAULT_SHARED_FRAME_CACHE_MAX_ENTRIES,
+        deterministic_dedupe: true,
+        shared_inference_cache: true,
+        worker_pool: {
+          max_concurrency: resolveBrokerWorkerPoolSize(),
+          max_queue: resolveBrokerWorkerQueueSize(),
+        },
+      },
+      rollout_controls: {
+        per_session_feature_flag: true,
+        shadow_mode: true,
+        dual_read_screenshot_comparison: true,
+        canary_stages: ["internal", "selected_external", "general"],
+        kill_switch: true,
+        compatibility_matrix: true,
+      },
+      lease_d0: {
+        default_lease_ms: 15_000,
+        max_lease_ms: 15_000,
+        max_continuous_ownership_ms: 60_000,
+      },
+      lease_d1: {
+        priority_classes: ["normal", "urgent_human_override"],
+        fairness_queue: true,
+        starvation_bound_ms: 30_000,
+        reentrant_per_owner: true,
+        force_release_tool: "synthi_force_release_input",
+        lease_loss_events: true,
+        action_batching: true,
+      },
+    },
+  };
+  manifest.security = {
+    ...manifest.security,
+    broker_redaction_pipeline: true,
+    append_only_audit_log: true,
+    third_party_inference_policy: providerPolicy,
   };
   return manifest;
 }
