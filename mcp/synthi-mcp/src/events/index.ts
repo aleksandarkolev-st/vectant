@@ -6,6 +6,8 @@ export type {
   LifecycleEvent,
   HmrEvent,
   InputEvent,
+  LeaseEvent,
+  FrameEvent,
   LocatorResolutionEvent,
   ConsoleEvent,
   ErrorEvent,

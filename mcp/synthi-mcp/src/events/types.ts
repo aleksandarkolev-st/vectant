@@ -34,6 +34,36 @@ export interface InputEvent extends BaseEventFields {
   payload: Record<string, unknown>;
 }
 
+export interface LeaseEvent extends BaseEventFields {
+  kind: "lease";
+  action:
+    | "acquired"
+    | "renewed"
+    | "released"
+    | "released_all"
+    | "queued"
+    | "preempted"
+    | "force_released"
+    | "batch_created";
+  lease_id?: string;
+  owner?: string;
+  payload: Record<string, unknown>;
+}
+
+export interface FrameEvent extends BaseEventFields {
+  kind: "frame";
+  session_id: string;
+  frame_seq: number;
+  frame_ts_ms: number;
+  ingest_ts_ms: number;
+  viewport: {
+    w: number;
+    h: number;
+    dpr: number;
+  };
+  is_keyframe: boolean;
+}
+
 export interface LocatorResolutionEvent extends BaseEventFields {
   kind: "locator_resolution";
   handle_id: string;
@@ -92,6 +122,8 @@ export type EventLogEntry =
   | LifecycleEvent
   | HmrEvent
   | InputEvent
+  | LeaseEvent
+  | FrameEvent
   | LocatorResolutionEvent
   | ConsoleEvent
   | ErrorEvent

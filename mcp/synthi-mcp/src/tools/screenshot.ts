@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import { session } from "../session.js";
 import { eventLog } from "../events/index.js";
+import { brokerSloRecorder, recordBrokerFrameObservation } from "../broker/index.js";
 import {
   errorFromException,
   errorResponse,
@@ -137,12 +138,21 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
     }
 
     const base64 = png.toString("base64");
+    const brokerFrame = recordBrokerFrameObservation({
+      session_id: attached.sessionId,
+      frame,
+    });
+    const responseTs = Date.now();
+    brokerSloRecorder.recordDuration("screenshot_age_p95", responseTs - frame.ts, responseTs);
     eventLog.push({
       kind: "usage",
       metric: "screenshot",
       value: 1,
       detail: {
         bytes: png.length,
+        frame_ts: frame.ts,
+        response_ts: responseTs,
+        screenshot_age_ms: responseTs - frame.ts,
         ...(resultMeta.crop !== undefined ? { cropped: true } : {}),
         ...(resultMeta.scaled === true ? { scaled: true } : {}),
       },
@@ -155,6 +165,9 @@ export async function screenshotTool(args: unknown): Promise<ToolResponse> {
       seq: frame.seq,
       original_w: frame.width,
       original_h: frame.height,
+      dpr: frame.dpr,
+      viewport: { w: frame.width, h: frame.height, dpr: frame.dpr },
+      broker_frame: brokerFrame,
       ...(resultMeta.crop !== undefined ? { region: resultMeta.crop } : {}),
       ...(resultMeta.scaled === true ? { scaled: true } : {}),
       mimeType: "image/png",

@@ -198,6 +198,29 @@ fn link_to_so_includes_link_flags() {
 }
 
 #[test]
+fn link_to_so_preserves_bare_library_files_resolved_by_search_dirs() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib_dir = dir.path().join("lib");
+    std::fs::create_dir_all(&lib_dir).unwrap();
+    std::fs::write(lib_dir.join("libhelper.so"), "").unwrap();
+
+    let cmd = link_object_to_so_command(
+        "g++",
+        &dir.path().join("gui.o"),
+        &dir.path().join("libgui.so"),
+        &vec![
+            "-L".to_string(),
+            lib_dir.to_string_lossy().to_string(),
+            "libhelper.so".to_string(),
+        ],
+        dir.path(),
+    );
+    let args = args_of(&cmd);
+
+    assert!(args.contains(&"libhelper.so".to_string()), "{:?}", args);
+}
+
+#[test]
 fn link_to_so_includes_object_and_output_paths() {
     let obj = PathBuf::from("/tmp/build/core_1.o");
     let so = PathBuf::from("/tmp/build/libcore_1.so");

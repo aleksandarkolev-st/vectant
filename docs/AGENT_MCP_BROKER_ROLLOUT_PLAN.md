@@ -338,6 +338,43 @@ Each test must assert error taxonomy consistency and correlation IDs in logs.
 
 ---
 
+## 12.1) Additional existing tools useful for autonomous testing
+
+These tools already exist in the current Synthi MCP surface and are worth incorporating into the broker rollout and autonomous-test harness, because they reduce blind spots during multi-step agent runs:
+
+### Recovery, arbitration, and disruption control
+
+- `synthi_acquire_input` / `synthi_release_input`: useful immediately for validating lease semantics before broker-native lease enforcement is fully cut over. The MCP already exposes a real input-lease surface today.
+- `synthi_acknowledge_disruption`: useful for restart/crash-recovery scenarios so autonomous suites can explicitly clear `ackRequired` gates instead of silently retrying input into a blocked session.
+- `synthi_get_crash_info`: useful for post-failure branching and for asserting that restart/recovery paths preserve enough structured context for autonomous retries.
+- `synthi_reconnect`: useful for transient signaling/WebRTC drop tests so the suite can distinguish "recover in-place" from "must re-attach fresh session".
+- `synthi_recent_human_actions`: useful for human-takeover and mixed-control tests so an agent can detect recent operator interference before resuming input.
+
+### Traceability, replay, and rollback helpers
+
+- `synthi_get_event_log`: should be treated as a first-class oracle in the broker test harness for validating ack chains, lease transitions, security events, and failed-action reconstruction.
+- `synthi_checkpoint`: useful for bracketing long autonomous episodes with named markers so replay and canary diffing stay queryable.
+- `synthi_snapshot`, `synthi_restore`, `synthi_list_snapshots`: useful for deterministic autonomous regression loops, rollback drills, and "replay this bad state, then retry" workflows without relying only on fresh session boot.
+- `synthi_report_source_state` and `synthi_get_source_state`: useful for edit-without-compile flows and for asserting that the agent's intended source checkpoint matches the broker/session view before input resumes.
+
+### Budget, health, and operator-escalation helpers
+
+- `synthi_get_usage`: useful for autonomous soak/canary runs so the agent can self-monitor screenshot churn, vision inference volume, and hot-session duration while broker fanout changes roll out.
+- `synthi_request_human`, `synthi_annotate_and_ask`, `synthi_answer_escape_hatch`: useful as an explicit bounded fallback path when the autonomous suite hits ambiguity, repeated verification failure, or unsafe UI drift.
+
+### Capability-gated tools worth keeping optional
+
+- Enriched-tier tools (`synthi_query`, `synthi_act`, `synthi_click_text`, `synthi_fill_form`, `synthi_get_labels`, `synthi_get_process_state`, `synthi_get_metrics`) are useful for higher-confidence semantic testing, but must remain optional because the current MCP returns `enriched_tier_not_available` until a provider is registered.
+- Audio tools (`synthi_get_audio_level`, `synthi_wait_audio_event`) should not be part of required broker acceptance yet; they exist, but currently return `audio_backend_not_implemented`.
+- Local-vision-backed `synthi_locate({preferred_vision_backend:"local"})` is real and useful for autonomous deployments that cannot rely on host-side vision, but it is deployment-gated by `SYNTHI_LOCAL_VISION_URL`.
+
+### Validation note
+
+Checked against the current MCP server surface, not just design docs: these tools are registered in `mcp/synthi-mcp/src/server.ts` / `src/tool_registry.ts`, with supporting rollout notes in `docs/AGENT_MCP_STATUS.md` and `mcp/synthi-mcp/README.md`.
+Intentionally excluded from the recommendations: helper files or partial implementations that exist in the tree but are not part of the currently registered tool surface.
+
+---
+
 ## 13) Event replay and traceability
 
 Minimum traceability/replay is required in **Phase B0.5** (before B1 input cutover):

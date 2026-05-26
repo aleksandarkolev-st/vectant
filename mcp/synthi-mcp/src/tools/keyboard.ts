@@ -8,6 +8,7 @@ import type { LogArgs, WaitArgs } from "../wait/index.js";
 import { dispatchAckRegistry, type PendingDispatch } from "../util/dispatch_ack_registry.js";
 import { leaseRegistry } from "../arbitration/lease.js";
 import { inputQueueDepth } from "../correctness/input_queue_depth.js";
+import { checkBrokerInputGate } from "../broker/index.js";
 import {
   errorFromException,
   errorResponse,
@@ -46,6 +47,8 @@ interface RawArgs {
   await_ack?: unknown;
   ack_timeout_ms?: unknown;
   lease_id?: unknown;
+  based_on_frame_seq?: unknown;
+  based_on_viewport?: unknown;
 }
 
 const VALID_ACTIONS = ["type", "key", "chord"] as const;
@@ -81,8 +84,6 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
       caller_lease_id: callerLeaseId ?? null,
     });
   }
-
-  inputQueueDepth.recordDispatch(`keyboard:${action}`);
 
   if (a.waitFor !== undefined) {
     const waitArgs = a.waitFor as WaitArgs & { timeoutMs?: number };
@@ -122,6 +123,17 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
   let recordedKeys: string[] = [];
   let ackResults: Array<{ dispatch_id: string; accepted: boolean; reason?: string; elapsedMs: number }> | null = null;
   try {
+    const brokerGate = await checkBrokerInputGate({
+      attached,
+      action: `keyboard:${action}`,
+      scope: "keyboard",
+      lease_id: a.lease_id,
+      based_on_frame_seq: a.based_on_frame_seq,
+      based_on_viewport: a.based_on_viewport,
+    });
+    if (brokerGate) return errorResponse(brokerGate.error, brokerGate);
+    inputQueueDepth.recordDispatch(`keyboard:${action}`);
+
     switch (action) {
       case "type": {
         if (typeof a.text !== "string") {
@@ -129,7 +141,7 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
         }
         if (a.text.length > 0) {
           const supplier = awaitAck ? (): string => allocate().id : undefined;
-          const frames = encodeTypeSequence(attached.sessionId, a.text, supplier);
+          const frames = encodeTypeSequence(attached.sessionId, a.text, supplier, callerLeaseId);
           await attached.channels.sendInput(frames);
         }
         charsSent = a.text.length;
@@ -140,8 +152,8 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
         if (typeof a.key !== "string" || a.key.length === 0) {
           return errorResponse("invalid_args", { field: "key", expected: "non-empty string" });
         }
-        const down = encodeKey(attached.sessionId, a.key, "down", nextId());
-        const up = encodeKey(attached.sessionId, a.key, "up", nextId());
+        const down = encodeKey(attached.sessionId, a.key, "down", nextId(), callerLeaseId);
+        const up = encodeKey(attached.sessionId, a.key, "up", nextId(), callerLeaseId);
         await attached.channels.sendInput([down, up]);
         charsSent = 1;
         recordedKeys = [a.key];
@@ -153,8 +165,8 @@ export async function keyboardTool(args: unknown): Promise<ToolResponse> {
         }
         const keys = a.keys as string[];
         const frames: string[] = [];
-        for (const k of keys) frames.push(encodeKey(attached.sessionId, k, "down", nextId()));
-        for (let i = keys.length - 1; i >= 0; i--) frames.push(encodeKey(attached.sessionId, keys[i]!, "up", nextId()));
+        for (const k of keys) frames.push(encodeKey(attached.sessionId, k, "down", nextId(), callerLeaseId));
+        for (let i = keys.length - 1; i >= 0; i--) frames.push(encodeKey(attached.sessionId, keys[i]!, "up", nextId(), callerLeaseId));
         await attached.channels.sendInput(frames);
         charsSent = keys.length;
         recordedKeys = keys;

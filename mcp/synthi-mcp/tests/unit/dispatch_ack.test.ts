@@ -66,6 +66,18 @@ describe("DispatchAckRegistry", () => {
     expect(reg.size()).toBe(0);
   });
 
+  it("can defer the timeout window until dispatch is sent", async () => {
+    const reg = new DispatchAckRegistry();
+    const h = reg.register(15, "dsp_deferred", { deferTimeout: true });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(reg.size()).toBe(1);
+
+    const rejection = expect(h.promise).rejects.toThrow(/input_ack_timeout/);
+    h.startTimer();
+    await rejection;
+    expect(reg.size()).toBe(0);
+  });
+
   it("resolve before timeout clears the timer (no late rejection)", async () => {
     const reg = new DispatchAckRegistry();
     const h = reg.register(50);

@@ -161,6 +161,12 @@
       "Bash(node -e \"const fs=require\\('fs'\\);const esbuild=require\\('esbuild'\\);const files=['src/app/workspace/[slug]/Editor/Editor.jsx','src/app/workspace/[slug]/page.jsx'];\\(async\\(\\)=>{for\\(const f of files\\){try{await esbuild.transform\\(fs.readFileSync\\(f,'utf8'\\),{loader:'jsx'}\\);console.log\\('PARSE_OK',f\\)}catch\\(e\\){console.error\\('PARSE_FAIL',f,e.message\\);process.exit\\(1\\)}}}\\)\\(\\);\")",
       "Bash(node -e \"const fs=require\\('fs'\\);const esbuild=require\\('esbuild'\\);const files=['src/app/workspace/[slug]/page.jsx','src/app/workspace/[slug]/Editor/Editor.jsx'];\\(async\\(\\)=>{for\\(const f of files\\){try{await esbuild.transform\\(fs.readFileSync\\(f,'utf8'\\),{loader:'jsx'}\\);console.log\\('PARSE_OK',f\\)}catch\\(e\\){console.error\\('PARSE_FAIL',f,e.message\\);process.exit\\(1\\)}}}\\)\\(\\);\")",
       "Bash(node -e \"const fs=require\\('fs'\\);const esbuild=require\\('esbuild'\\);const files=['src/app/workspace/[slug]/Editor/Editor.jsx','src/app/workspace/[slug]/page.jsx','src/components/EditorTabStrip.jsx','src/components/EditorPaneHeader.jsx','src/components/docking-wm/panels/panel-wrappers.jsx','src/app/workspace/TopNav.jsx','src/redux/workspaceSlice.js','src/redux/paneActiveFile.js','src/components/docking-wm/state/layout-slice.js','src/components/docking-wm/utils/editor-panes.js'];\\(async\\(\\)=>{let ok=0;for\\(const f of files\\){const loader=f.endsWith\\('.jsx'\\)?'jsx':'js';try{await esbuild.transform\\(fs.readFileSync\\(f,'utf8'\\),{loader}\\);ok++}catch\\(e\\){console.error\\('PARSE_FAIL',f,e.message\\);process.exit\\(1\\)}}console.log\\('ALL_PARSE_OK',ok,'files'\\)}\\)\\(\\);\")"
+      "PowerShell(Resolve-DnsName *)",
+      "PowerShell(Get-NetIPConfiguration *)",
+      "PowerShell(Out-Null *)",
+      "PowerShell(Get-Service *)",
+      "Bash(git *)",
+      "Bash(node *)"
     ]
   }
 }

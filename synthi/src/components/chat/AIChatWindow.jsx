@@ -344,6 +344,45 @@ const AIChatWindow = ({
         scrollLockRef.current = false;
     }, [activeSessionId]);
 
+    // ── External "Ask AI" entry point ─────────────────────────────────
+    // The editor's selection context menu (SelectionContextMenu) and any
+    // other surface can ask the chat to consider a code snippet by
+    // dispatching `synthi:ask-ai` with { text, language, filePath,
+    // startLine, endLine }. We prepend a fenced-code prompt template so
+    // the user just types their question and hits Enter.
+    useEffect(() => {
+        const handler = (e) => {
+            const d = e?.detail || {};
+            const text = typeof d.text === 'string' ? d.text : '';
+            if (!text) return;
+            const lang = (typeof d.language === 'string' && d.language) ? d.language : '';
+            const file = (typeof d.filePath === 'string' && d.filePath) ? d.filePath : '';
+            const startLine = Number.isFinite(d.startLine) ? d.startLine : null;
+            const endLine = Number.isFinite(d.endLine) ? d.endLine : null;
+            const range = startLine && endLine && endLine !== startLine
+                ? `${startLine}-${endLine}`
+                : (startLine ? String(startLine) : '');
+            const header = file
+                ? `About \`${file}\`${range ? ` (lines ${range})` : ''}:`
+                : 'About this snippet:';
+            const snippet = `${header}\n\n\`\`\`${lang}\n${text}\n\`\`\`\n\n`;
+            setInputValue((prev) => (prev ? `${prev}\n\n${snippet}` : snippet));
+            // Focus the input and place the caret at the start so the
+            // user can type their question above the pasted snippet.
+            requestAnimationFrame(() => {
+                const el = chatInputRef.current;
+                if (!el) return;
+                try {
+                    el.focus();
+                    el.setSelectionRange(0, 0);
+                    el.scrollTop = 0;
+                } catch {}
+            });
+        };
+        window.addEventListener('synthi:ask-ai', handler);
+        return () => window.removeEventListener('synthi:ask-ai', handler);
+    }, [setInputValue]);
+
     // ── AI Jumpstart: auto-send initial prompt when it changes ──
     // Tracks the last prompt actually consumed (not just "consumed at all")
     // so a second `initialPrompt` — e.g. from the in-workspace

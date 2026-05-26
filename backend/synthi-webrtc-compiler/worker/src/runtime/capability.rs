@@ -819,6 +819,12 @@ pub enum HmrStatus {
         module: String,
         reason: String,
         fallback: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(rename = "fallbackUsed", skip_serializing_if = "Option::is_none")]
+        fallback_used: Option<bool>,
+        #[serde(rename = "fallbackReason", skip_serializing_if = "Option::is_none")]
+        fallback_reason: Option<String>,
     },
     /// Compilation failed
     CompileError { module: String, errors: Vec<String> },
@@ -890,6 +896,9 @@ impl HmrStatus {
             module: module.to_string(),
             reason: reason.to_string(),
             fallback: "Full restart".to_string(),
+            label: None,
+            fallback_used: None,
+            fallback_reason: None,
         }
     }
 
@@ -899,6 +908,26 @@ impl HmrStatus {
             module: module.to_string(),
             reason: reason.to_string(),
             fallback: fallback.to_string(),
+            label: None,
+            fallback_used: None,
+            fallback_reason: None,
+        }
+    }
+
+    /// Create a GPU HMR rejected status with custom fallback action and machine-readable reason.
+    pub fn gpu_rejected_with_fallback_reason(
+        module: &str,
+        reason: &str,
+        fallback: &str,
+        fallback_reason: &str,
+    ) -> Self {
+        HmrStatus::Rejected {
+            module: module.to_string(),
+            reason: reason.to_string(),
+            fallback: fallback.to_string(),
+            label: Some("gpu-hmr-rejected".to_string()),
+            fallback_used: Some(false),
+            fallback_reason: Some(fallback_reason.to_string()),
         }
     }
 
@@ -1040,5 +1069,20 @@ mod tests {
 
         assert!(!HmrCapability::Blocking.supports_hmr());
         assert!(!HmrCapability::Blocking.preserves_state());
+    }
+
+    #[test]
+    fn rejected_status_carries_gpu_hmr_rejection_telemetry() {
+        let status = HmrStatus::gpu_rejected_with_fallback_reason(
+            "device",
+            "launch failed",
+            "Keep runtime running",
+            "runtime_launch_failed",
+        );
+        let json = status.to_json();
+        assert!(json.contains(r#""status":"rejected""#));
+        assert!(json.contains(r#""label":"gpu-hmr-rejected""#));
+        assert!(json.contains(r#""fallbackUsed":false"#));
+        assert!(json.contains(r#""fallbackReason":"runtime_launch_failed""#));
     }
 }

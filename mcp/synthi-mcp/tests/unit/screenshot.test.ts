@@ -25,18 +25,20 @@ function installFakeSession(frame: {
   data: Buffer;
   width: number;
   height: number;
+  dpr?: number;
   ts: number;
   seq: number;
 }): void {
+  const dpr = frame.dpr ?? 1;
   (session as unknown as { state: string }).state = "attached";
   (session as unknown as { attached: unknown }).attached = {
     sessionId: "fake-session",
     signalingUrl: "ws://localhost:9000",
-    resolution: { width: frame.width, height: frame.height },
+    resolution: { width: frame.width, height: frame.height, dpr },
     frames: {
-      getFrame: async () => frame,
+      getFrame: async () => ({ ...frame, dpr }),
       hasFrame: () => true,
-      dimensions: () => ({ width: frame.width, height: frame.height }),
+      dimensions: () => ({ width: frame.width, height: frame.height, dpr }),
     },
     // Other fields are not touched by screenshotTool.
   };
@@ -53,10 +55,11 @@ describe("synthi_screenshot", () => {
     installFakeSession({ data: png, width: 400, height: 300, ts: Date.now(), seq: 42 });
     const res = await screenshotTool({});
     expect(res.isError).toBeUndefined();
-    const meta = res.structuredContent as { w: number; h: number; seq: number };
+    const meta = res.structuredContent as { w: number; h: number; seq: number; viewport: { w: number; h: number; dpr: number } };
     expect(meta.w).toBe(400);
     expect(meta.h).toBe(300);
     expect(meta.seq).toBe(42);
+    expect(meta.viewport).toEqual({ w: 400, h: 300, dpr: 1 });
   });
 
   it("crops when region is provided", async () => {

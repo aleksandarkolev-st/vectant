@@ -29,3 +29,25 @@ def test_constant_layout_hash_includes_device_globals():
     before = constant_layout_hash("__device__ int counter;\n__global__ void k() {}")
     after = constant_layout_hash("__device__ long counter;\n__global__ void k() {}")
     assert before != after
+
+
+def test_stamp_recognizes_macro_wrapped_runtime_kernel_headers():
+    stamps = stamp_device_source(
+        """
+        GLOBAL_KERNEL_SIGNATURE(void) __launch_bounds__(64)
+        CameraRays(HIPRTRenderData render_data) {}
+        """
+    )
+
+    assert "CameraRays" in stamps
+
+
+def test_stamp_ignores_commented_kernel_examples():
+    stamps = stamp_device_source(
+        """
+        // extern "C" void __global__ my_function(...)
+        /* __global__ void another_fake_kernel(int* value) {} */
+        """
+    )
+
+    assert stamps == {}

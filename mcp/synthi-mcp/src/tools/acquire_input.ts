@@ -1,5 +1,14 @@
 import { session } from "../session.js";
-import { leaseRegistry, resolveLeaseMode } from "../arbitration/lease.js";
+import {
+  DEFAULT_LEASE_MS,
+  MAX_LEASE_MS,
+  leaseRegistry,
+  resolveLeaseMode,
+  resolveLeaseOwner,
+  type LeaseScope,
+} from "../arbitration/lease.js";
+import { brokerError } from "../broker/errors.js";
+import { requestSharedLease } from "./shared_lease.js";
 import {
   errorResponse,
   jsonResponse,
@@ -20,17 +29,30 @@ import {
  * session from bypassing the MCP-local registry) is a follow-up — see
  * the worker's PeerRegistry scaffold.
  *
- * Input: {lease_ms:number, owner?:string, takeover?:boolean}.
- * Output: {ok, lease_id, acquired_at, expires_at, lease_ms, enforcement, evicted_lease_id?}.
+ * Input: {lease_ms:number, scope?:("mouse"|"keyboard")[], takeover?:boolean, reason?:string}.
+ * Output: {ok, lease_id, acquired_at, expires_at, lease_ms, owner, scope, enforcement, evicted_lease_id?}.
  */
 
 interface RawArgs {
   lease_ms?: unknown;
   owner?: unknown;
   takeover?: unknown;
+  scope?: unknown;
+  preemptible?: unknown;
+  priority?: unknown;
+  reason?: unknown;
 }
 
-const DEFAULT_LEASE_MS = 30_000;
+function parseScope(raw: unknown): LeaseScope[] | "invalid" | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) return "invalid";
+  const out: LeaseScope[] = [];
+  for (const item of raw) {
+    if (item !== "mouse" && item !== "keyboard") return "invalid";
+    if (!out.includes(item)) out.push(item);
+  }
+  return out;
+}
 
 export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
   const a = (args ?? {}) as RawArgs;
@@ -44,18 +66,82 @@ export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
     }
     leaseMs = a.lease_ms;
   }
-  const owner = typeof a.owner === "string" && a.owner.length > 0 ? a.owner : "mcp_agent";
+  if (leaseMs > MAX_LEASE_MS) leaseMs = MAX_LEASE_MS;
+  const scope = parseScope(a.scope);
+  if (scope === "invalid") {
+    return errorResponse("invalid_args", { field: "scope", expected: "array of 'mouse'|'keyboard'" });
+  }
+  const owner = typeof a.owner === "string" && a.owner.trim().length > 0
+    ? a.owner.trim()
+    : resolveLeaseOwner();
   const takeover = a.takeover === true;
+  const preemptible = typeof a.preemptible === "boolean" ? a.preemptible : true;
+  if (a.priority !== undefined && a.priority !== "normal" && a.priority !== "urgent_human_override") {
+    return errorResponse("invalid_args", { field: "priority", expected: "normal|urgent_human_override" });
+  }
+  const priority = a.priority === "urgent_human_override" ? "urgent_human_override" : "normal";
+  const reason = typeof a.reason === "string" && a.reason.length > 0 ? a.reason : null;
 
   const mode = resolveLeaseMode();
-  const enforcement = mode === "single-holder" ? "mcp-local" : "wire-only";
+  const enforcement = process.env["SYNTHI_BROKER_INPUT_MODE"] === "enforce"
+    ? "server"
+    : mode === "single-holder" ? "mcp-local" : "wire-only";
 
-  const result = leaseRegistry.acquireWithPolicy(leaseMs, owner, { takeover });
+  const shared = await requestSharedLease(attached, {
+    op: "acquire",
+    lease_ms: leaseMs,
+    owner,
+    takeover,
+    ...(scope !== undefined ? { scope } : {}),
+    preemptible,
+    priority,
+    reason,
+  });
+  if (shared?.ok === false) {
+    return errorResponse(shared.error, shared.detail);
+  }
+  if (shared?.ok === true && shared.lease) {
+    leaseRegistry.adoptSharedLease(shared.lease);
+    session.touch();
+    return jsonResponse({
+      ok: true,
+      lease_id: shared.lease.lease_id,
+      acquired_at: shared.lease.acquired_at,
+      expires_at: shared.lease.expires_at,
+      lease_ms: shared.lease.lease_ms,
+      owner: shared.lease.owner,
+      scope: shared.lease.scope,
+      preemptible: shared.lease.preemptible,
+      priority: shared.lease.priority,
+      reason: shared.lease.reason,
+      continuous_owner_since: shared.lease.continuous_owner_since,
+      enforcement: "session-shared-worker",
+      reentrant: shared.reentrant === true,
+      ...(shared.evicted_lease_id ? { evicted_lease_id: shared.evicted_lease_id } : {}),
+    });
+  }
+  if (process.env["SYNTHI_BROKER_INPUT_MODE"] === "enforce") {
+    return errorResponse("LEASE_DENIED", brokerError("LEASE_DENIED", {
+      reason: "shared_session_lease_authority_unavailable",
+      required_authority: "worker",
+      session_id: attached.sessionId,
+    }) as unknown as Record<string, unknown>);
+  }
+
+  const result = leaseRegistry.acquireWithPolicy(leaseMs, owner, {
+    takeover,
+    ...(scope !== undefined ? { scope } : {}),
+    preemptible,
+    priority,
+    reason,
+    session_id: attached.sessionId,
+  });
   if (!result.ok) {
     return errorResponse(result.error, {
       current_lease_id: result.current.lease_id,
       current_lease_owner: result.current.owner,
       current_lease_expires_at: result.current.expires_at,
+      ...(result.queued ? { queued_request_id: result.queued.request_id } : {}),
     });
   }
   session.touch();
@@ -66,7 +152,13 @@ export async function acquireInputTool(args: unknown): Promise<ToolResponse> {
     expires_at: result.lease.expires_at,
     lease_ms: result.lease.lease_ms,
     owner: result.lease.owner,
+    scope: result.lease.scope,
+    preemptible: result.lease.preemptible,
+    priority: result.lease.priority,
+    reason: result.lease.reason,
+    continuous_owner_since: result.lease.continuous_owner_since,
     enforcement,
+    reentrant: result.reentrant === true,
     ...(result.evicted ? { evicted_lease_id: result.evicted.lease_id } : {}),
   });
 }

@@ -48,6 +48,9 @@ pub async fn run_java(
     }
     let req_width = req.width.or(source_w).unwrap_or(800);
     let req_height = req.height.or(source_h).unwrap_or(600);
+    // Xvfb/GStreamer emits physical Xvfb pixels, and input events target
+    // that same pixel space.
+    let producer_dpr = 1.0_f64;
 
     let mut guard = ctx.runner_store.lock().await;
 
@@ -97,8 +100,7 @@ pub async fn run_java(
         // the spawn-side xwininfo retry loop handle whatever lingers.
         if state.is_gui && can_reuse && pre_kill_clients > 0 {
             let display = state.wsl_display_str.clone();
-            let deadline =
-                tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(1500);
             loop {
                 let now = count_x_clients(&display).await;
                 if now < pre_kill_clients {
@@ -644,6 +646,7 @@ pub async fn run_java(
         module_hashes: ModuleHashes::new(),
         loaded_core_path: None,
         loaded_gui_path: None,
+        loaded_device_abi: None,
         loaded_widget_paths: HashMap::new(),
         widget_hashes: HashMap::new(),
     });
@@ -685,6 +688,12 @@ pub async fn run_java(
                 "sessionId": session_id,
                 "width": state.width,
                 "height": state.height,
+                "dpr": producer_dpr,
+                "viewport": {
+                    "w": state.width,
+                    "h": state.height,
+                    "dpr": producer_dpr,
+                },
             });
             let _ = ctx.log_dc.send_text(gui_start.to_string()).await;
         }
@@ -742,9 +751,7 @@ async fn count_x_clients(display: &str) -> usize {
         .output()
         .await
     {
-        Ok(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).lines().count()
-        }
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).lines().count(),
         _ => 0,
     }
 }

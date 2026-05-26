@@ -88,6 +88,11 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
   const currentSessionIdRef = useRef(null);
   const inputBufferRef = useRef('');
   const initializedRef = useRef(false);
+  // ─── Ctrl+Z undo stack ───────────────────────────────────────────────
+  // Each entry is one undoable input segment: a single typed character or
+  // the full content of a paste. Cleared on Enter (command submitted) and
+  // on Ctrl+C (line cancelled). Backspace pops one char off the top.
+  const undoStackRef = useRef([]);
   const { canTerminal, role } = useSessionPermissions();
   const { data: authSession } = useSession();
   const authSessionRef = useRef(authSession);
@@ -355,10 +360,14 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
             },
           },
           {
-            id: 'so',
-            label: 'Search on Stack Overflow',
+            id: 'ask-ai',
+            label: 'Ask AI',
             action: () => {
-              try { window.open(`https://stackoverflow.com/search?q=${encodeURIComponent(selectedText)}`, '_blank', 'noopener,noreferrer'); } catch {}
+              try {
+                window.dispatchEvent(new CustomEvent('synthi:ask-ai', {
+                  detail: { text: selectedText, language: 'shell', filePath: '', startLine: null, endLine: null },
+                }));
+              } catch {}
             },
           },
         ]);
@@ -427,6 +436,58 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
     };
 
     // ── WebSocket connection logic (also used for reconnect) ──────────
+    // Push a single input segment onto the undo stack, or mutate it in
+    // response to line-editing keys (Enter, Backspace, Ctrl+C). Called
+    // from term.onData before the data is forwarded to the PTY.
+    function trackForUndo(data) {
+      const stack = undoStackRef.current;
+
+      // Enter — command submitted; the prior input is gone for good.
+      if (data === '\r' || data === '\n' || data === '\r\n') {
+        stack.length = 0;
+        return;
+      }
+
+      // Backspace / Delete — drop one char from the top segment so our
+      // stack stays in sync with what's actually on the line.
+      if (data === '\x7f' || data === '\b') {
+        if (stack.length === 0) return;
+        const top = stack[stack.length - 1];
+        if ([...top].length <= 1) {
+          stack.pop();
+        } else {
+          const cps = [...top];
+          cps.pop();
+          stack[stack.length - 1] = cps.join('');
+        }
+        return;
+      }
+
+      // Bracketed paste: \x1b[200~...\x1b[201~ — store the inner text
+      // so the segment length matches the number of cells rendered.
+      if (data.length > 12 && data.startsWith('\x1b[200~') && data.endsWith('\x1b[201~')) {
+        const content = data.slice(6, -6);
+        if (content) stack.push(content);
+        return;
+      }
+
+      // Other escape sequences (arrows, function keys, etc.) — ignore.
+      if (data.charCodeAt(0) === 0x1b) return;
+
+      // Single C0 control char other than tab — ignore, but reset the
+      // stack on Ctrl+C since the shell discards the current line.
+      if (data.length === 1) {
+        const code = data.charCodeAt(0);
+        if (code < 0x20 && code !== 0x09) {
+          if (code === 0x03) stack.length = 0;
+          return;
+        }
+      }
+
+      // Printable text (typed char or unbracketed paste) → one segment.
+      stack.push(data);
+    }
+
     function connectWS(term, fitAddon) {
       if (disposed) return;
 
@@ -484,6 +545,28 @@ const TerminalPane = memo(function TerminalPane({ terminalId = 'default', paneSi
           // canTerminalRef will be true for solo users (idle role)
           return;
         }
+
+        // ── Ctrl+Z → local undo (does NOT send SIGTSTP) ──────────────
+        // Pop the last input segment off the undo stack and erase it
+        // from the shell's line buffer by emitting an equivalent number
+        // of backspaces. A typed char pops one segment of length 1 (one
+        // backspace); a paste pops the entire paste as one segment.
+        if (data === '\x1a') {
+          const stack = undoStackRef.current;
+          const segment = stack.pop();
+          if (!segment) return;
+          // Code-point count tracks rendered cells more closely than
+          // UTF-16 code units (matters for emoji / surrogate pairs).
+          const eraseCount = [...segment].length;
+          const wsLocal = wsRef.current;
+          if (wsLocal && wsLocal.readyState === WebSocket.OPEN && eraseCount > 0) {
+            wsLocal.send(new TextEncoder().encode('\x7f'.repeat(eraseCount)));
+          }
+          return;
+        }
+
+        // ── Track input for undo ─────────────────────────────────────
+        trackForUndo(data);
 
         const wsLocal = wsRef.current;
         if (wsLocal && wsLocal.readyState === WebSocket.OPEN) {

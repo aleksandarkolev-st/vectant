@@ -4,6 +4,8 @@
 import synthiDark from './builtin/synthi-dark.json';
 import synthiClassic from './builtin/synthi-classic.json';
 import synthiLight from './builtin/synthi-light.json';
+import vectantSand from './builtin/vectant-sand.json';
+import vectantSky from './builtin/vectant-sky.json';
 import midnight from './builtin/midnight.json';
 import highContrastDark from './builtin/high-contrast-dark.json';
 import highContrastLight from './builtin/high-contrast-light.json';
@@ -18,6 +20,8 @@ export const BUILTIN_THEMES = {
   [synthiDark.id]:          synthiDark,
   [synthiClassic.id]:       synthiClassic,
   [synthiLight.id]:         synthiLight,
+  [vectantSand.id]:         vectantSand,
+  [vectantSky.id]:          vectantSky,
   [midnight.id]:            midnight,
   [highContrastDark.id]:    highContrastDark,
   [highContrastLight.id]:   highContrastLight,
@@ -35,6 +39,8 @@ export const BUILTIN_THEME_LIST = [
   midnight,
   solarizedDark,
   synthiLight,
+  vectantSand,
+  vectantSky,
   solarizedLight,
   highContrastDark,
   highContrastLight,
