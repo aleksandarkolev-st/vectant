@@ -2524,16 +2524,11 @@ If image attachments are present, read/ocr the images and extract any text or co
                 const errMsg = error?.message || 'unknown error';
                 onLog?.(`Generation failed: ${errMsg}`);
                 appendProgressLog(`Generation failed: ${errMsg}`);
-                // Surface the actual cause so users can act on it (missing
-                // API key, rate limit, 5xx, etc) instead of a generic
-                // "Try again" that gives them nothing to debug.
-                const errorMessage = {
-                    id: Date.now() + 1,
-                    role: 'assistant',
-                    content: `Generation failed: ${errMsg}. Try again.`,
-                    timestamp: new Date(),
-                };
-                if (activeSession) appendMessagesToSession(activeSession.id, [errorMessage]);
+                // The reasoning card (this 'progress' message) is now the single
+                // failure surface: its 'failed' status renders the cause + the
+                // Try again / Copy error actions. We intentionally no longer
+                // append a separate assistant "Try again" message — it duplicated
+                // the card and gave users two error blocks for one failure.
                 pushProgress((m) => ({ ...m, status: 'failed' }));
             }
         } finally {

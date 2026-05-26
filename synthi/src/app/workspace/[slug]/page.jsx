@@ -3150,12 +3150,34 @@ export default function EditorPage({ params }) {
         // Friendly project name surfaced to the terminal panel for the
         // prompt label (~/<workspaceName> $).
         workspaceName,
+        // Extension system API for the docked Extensions panel. The
+        // ExtensionSidebar rendered by ExtensionsPanelWrapper reads this
+        // off context so it can drive install/enable/disable without the
+        // wrapper re-calling useExtensions (which would double-init the
+        // extension host).
+        extensionApi: {
+            extensions: installedExtensions,
+            errors: extensionErrors,
+            ready: extensionsReady,
+            hostStatus: extensionHostStatus,
+            vscodeServerState,
+            onInstall: installExtension,
+            onEnable: enableExtension,
+            onDisable: disableExtension,
+            onUninstall: uninstallExtension,
+            onRestart: restartExtension,
+            onDismissError: dismissExtensionError,
+            onExecuteCommand: executeExtensionCommand,
+        },
     }), [
         editor, activeFile, mergedDiagnostics, diagnosticSummary,
         showAnalyzingSpinner, isWorkspaceAnalyzing, onSuggestCb, onBusyCb,
         getLatestCurrentContent, completionClearSignal, jumpstartPrompt, jumpstartAttachments,
         onCloseProblemsCb, toggleTreeOrientation, onOpenScmCb, memoEditorProps,
         aiHealing, workspaceName,
+        installedExtensions, extensionErrors, extensionsReady, extensionHostStatus,
+        vscodeServerState, installExtension, enableExtension, disableExtension,
+        uninstallExtension, restartExtension, dismissExtensionError, executeExtensionCommand,
     ]);
 
     if (workspaceMissing) {

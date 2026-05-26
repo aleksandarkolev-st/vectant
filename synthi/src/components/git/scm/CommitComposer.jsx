@@ -113,6 +113,17 @@ function CommitComposerImpl({
   const autoGrow = useCallback(() => {
     const ta = textareaRef.current;
     if (!ta) return;
+    // The composer mounts inside a docked panel that is initially hidden
+    // (offsetParent === null) or still revealing.  Measuring scrollHeight
+    // then yields a bogus value (a collapsed/transient box reports the full
+    // panel height) which clamps to the 160px max and freezes there until
+    // the next keystroke re-runs this.  Skip while hidden and let the CSS
+    // min-height govern the 1-row resting size; the IntersectionObserver
+    // below re-measures once the composer is actually on screen.
+    if (ta.offsetParent === null) {
+      ta.style.height = '';
+      return;
+    }
     ta.style.height = 'auto';
     // 6px safety margin so we don't get a stale scrollbar on the
     // exact-fit edge.
@@ -120,6 +131,19 @@ function CommitComposerImpl({
   }, []);
 
   useLayoutEffect(() => { autoGrow(); }, [autoGrow, message]);
+
+  // Re-measure when the composer first becomes visible.  Docked panels mount
+  // hidden, so the mount-time measurement above is a no-op; this fires after
+  // layout settles on reveal and sizes the textarea to its real content.
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) autoGrow();
+    });
+    io.observe(ta);
+    return () => io.disconnect();
+  }, [autoGrow]);
 
   // Detect submit → settled transition and play the flash once.
   useEffect(() => {

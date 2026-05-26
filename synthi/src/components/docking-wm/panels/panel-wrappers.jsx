@@ -268,13 +268,20 @@ export const GitPanelWrapper = memo(function GitPanelWrapper({ data }) {
 // ────────────────────────────────────────────────────────
 
 export const ExtensionsPanelWrapper = memo(function ExtensionsPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+  // The extension API (install/enable/disable/… handlers + live state) is
+  // provided once by the workspace page via panelProps → context. Spreading
+  // it here is what makes the marketplace Install button work; without it
+  // onInstall is undefined and clicks silently no-op.
+  const extensionApi = ctx?.extensionApi || {};
+
   return (
     <div
       data-panel-type="extensions"
       className="h-full w-full overflow-hidden"
       style={{ background: 'var(--bg-sidebar)' }}
     >
-      <ExtensionSidebar />
+      <ExtensionSidebar {...extensionApi} />
     </div>
   );
 });

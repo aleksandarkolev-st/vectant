@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { Send, X, Plus, ChevronDown, ChevronRight, Sparkles, FileCode, Paperclip, Link, Unlink } from 'lucide-react';
+import { Send, X, Plus, ChevronDown, ChevronRight, FileCode, Paperclip, Link, Unlink } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -23,8 +23,11 @@ import MessageContent from './utils/MessageContent';
 import { ThinkingDots } from './ThinkingDots';
 import CommandApprovalCard from './CommandApprovalCard';
 import MultiverseCard from './MultiverseCard';
-import ShadowCostPanel from './ShadowCostPanel';
-import RegressionFindingsCard from './RegressionFindingsCard';
+import VectantOrb from './VectantOrb';
+import ChatEmptyState from './ChatEmptyState';
+import DiagnosticsDrawer from './DiagnosticsDrawer';
+import ReasoningCard from './ReasoningCard';
+import './chat.css';
 
 const formatTimestamp = (timestamp) => {
     if (!timestamp) return '';
@@ -161,7 +164,6 @@ const AIChatWindow = ({
     const [pendingCommands, setPendingCommands] = useState([]); // {id, command, status: 'pending'|'approved'|'rejected'}
     const [contextFileAttached, setContextFileAttached] = useState(false); // active file NOT auto-attached as context
     const chatInputRef = useRef(null);
-    const [shadowPanelOpen, setShadowPanelOpen] = useState(false);
 
     useEffect(() => {
         try {
@@ -763,6 +765,29 @@ const AIChatWindow = ({
         overflowY: 'auto',
     };
 
+    // Retry the last user prompt (used by the reasoning card's error state).
+    // Re-arms the composer with the last user message so the user re-sends —
+    // simple and safe vs. re-driving the whole send pipeline from here.
+    const handleRetry = useCallback(() => {
+        const msgs = activeSession?.messages || [];
+        for (let i = msgs.length - 1; i >= 0; i--) {
+            if (msgs[i]?.role === 'user' && msgs[i]?.content) {
+                setInputValue(msgs[i].content);
+                chatInputRef.current?.focus();
+                break;
+            }
+        }
+    }, [activeSession, setInputValue]);
+
+    // Orb identity state — derived from existing chat signals.
+    const orbState = progressStatus === 'Failed'
+        ? 'error'
+        : streamingMessage
+            ? 'answering'
+            : (showThinking || isThinking)
+                ? 'thinking'
+                : 'idle';
+
     return (
         <div
             className={`${containerClass} ${isDragging ? 'ring-2 ring-inset' : ''}`}
@@ -791,9 +816,7 @@ const AIChatWindow = ({
             <div className="flex flex-col" style={{ borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-app)' }}>
                 <div className="flex items-center justify-between px-3.5 py-2.5 relative">
                     <div className="flex items-center gap-2.5">
-                        <div className="w-6 h-6 rounded-lg flex items-center justify-center" style={{ background: 'linear-gradient(to bottom right, var(--accent-primary), var(--accent-secondary))', boxShadow: '0 0 12px color-mix(in srgb, var(--accent-primary) 30%, transparent)' }}>
-                            <Sparkles className="w-3 h-3 text-white" strokeWidth={2.5} />
-                        </div>
+                        <VectantOrb state={orbState} size={24} paused={!isVisible} />
                         <span className="text-[12px] font-semibold tracking-wide" style={{ color: 'var(--text-primary)' }}>Vectant AI</span>
                         {(suggestedCode || fileSuggestions.length > 0) && (
                             <div className="text-[9px] font-semibold px-2 py-0.5 rounded-full" style={{ color: 'var(--accent-secondary)', background: 'color-mix(in srgb, var(--accent-primary) 15%, transparent)', border: '1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent)' }}>
@@ -831,132 +854,54 @@ const AIChatWindow = ({
                     </div>
                 </div>
 
-                {/* Code Intel */}
+                {/* Workspace diagnostics — Code Intel, shadow verify spend, and
+                    regression findings consolidated behind one discreet drawer
+                    so the chat reads clean (and a failing metrics fetch never
+                    leaks into the empty state). */}
                 {isVisible && (
-                    <div className="mx-3 mb-1.5 rounded-lg px-2.5 py-1.5 text-[10px]" style={{ border: '1px solid var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-panel) 80%, transparent)', color: 'var(--text-secondary)' }}>
-                        <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2">
-                                <span className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--accent-primary)', boxShadow: '0 0 6px color-mix(in srgb, var(--accent-primary) 40%, transparent)' }}></span>
-                                <span className="font-semibold uppercase tracking-[0.12em] text-[9px]" style={{ color: 'var(--text-muted)' }}>Code Intel</span>
-                            </div>
-                            <button
-                                onClick={refreshMetrics}
-                                className="text-[9px] uppercase tracking-[0.12em] transition-colors"
-                                style={{ color: 'var(--text-dim)' }}
-                                title="Refresh metrics"
-                            >
-                                Refresh
-                            </button>
-                        </div>
-                        {metricsError && (
-                            <div className="mt-1 text-[10px] text-rose-400/80">{metricsError}</div>
-                        )}
-                        {!metricsError && (
-                            <div className="mt-1 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[9px]">
-                                <span style={{ color: 'var(--text-muted)' }}>p95:</span>
-                                {Object.entries(codeIntelMetrics?.latency || {}).map(([stage, vals]) => (
-                                    <span key={stage} style={{ color: 'var(--text-secondary)' }}>
-                                        {stage} {Math.round(vals?.p95 || 0)}ms
-                                    </span>
-                                ))}
-                                <span style={{ color: 'var(--text-muted)' }}>counters:</span>
-                                {Object.entries(codeIntelMetrics?.counters || {}).map(([k, v]) => (
-                                    <span key={k} style={{ color: 'var(--text-secondary)' }}>
-                                        {k}:{v}
-                                    </span>
-                                ))}
-                                <span style={{ color: 'var(--text-muted)' }}>budgets:</span>
-                                {Object.entries(codeIntelMetrics?.budgets || {}).map(([k, v]) => (
-                                    <span key={k} style={{ color: 'var(--text-secondary)' }}>
-                                        {k}:{v}
-                                    </span>
-                                ))}
-                                {codeIntelMetrics?.index_generation && (
-                                    <span style={{ color: 'var(--text-muted)' }}>gen:{codeIntelMetrics.index_generation}</span>
-                                )}
-                                {isMetricsLoading && (
-                                    <span style={{ color: 'var(--text-dim)' }}>syncing…</span>
-                                )}
-                            </div>
-                        )}
-                    </div>
+                    <DiagnosticsDrawer
+                        metrics={codeIntelMetrics}
+                        metricsError={metricsError}
+                        isMetricsLoading={isMetricsLoading}
+                        onRefresh={refreshMetrics}
+                        workspaceSlug={workspaceSlug}
+                        onPrefill={setInputValue}
+                    />
                 )}
 
-                {/* Synthi Genome — shadow verify cost dashboard (master plan §17 + §22) */}
-                {workspaceSlug ? (
-                    <div className="mx-3 mb-1.5">
-                        <button
-                            type="button"
-                            onClick={() => setShadowPanelOpen((v) => !v)}
-                            className="w-full flex items-center justify-between text-[11px] px-2 py-1 rounded-md"
-                            style={{ color: 'var(--text-dim)', border: '1px solid var(--border-subtle)' }}
-                        >
-                            <span>Shadow verify spend</span>
-                            <span aria-hidden="true">{shadowPanelOpen ? '▾' : '▸'}</span>
-                        </button>
-                        {shadowPanelOpen ? (
-                            <div className="mt-1.5">
-                                <ShadowCostPanel workspacePath={workspaceSlug} />
-                            </div>
-                        ) : null}
-                    </div>
-                ) : null}
-
-                {/* Synthi Genome — continuous-shadow regression findings (master plan §14) */}
-                {workspaceSlug ? (
-                    <div className="mx-3 mb-1.5">
-                        <RegressionFindingsCard
-                            workspacePath={workspaceSlug}
-                            onLookAt={(finding) => {
-                                const prompt =
-                                    `Continuous shadow flagged a regression in \`${finding.file}\` ` +
-                                    `(${finding.test || 'tests now failing'}). ` +
-                                    `Investigate the change since the last accepted patch and propose a fix.`;
-                                setInputValue(prompt);
-                            }}
-                        />
-                    </div>
-                ) : null}
-
-                <div className="px-2.5 pb-2 flex items-center gap-1 overflow-x-auto">
+                <div className="vx-tabs px-2.5 pb-2 overflow-x-auto">
                     {chatSessions.map((session) => {
                         const isActive = session.id === activeSession?.id;
                         return (
                             <button
                                 key={session.id}
                                 onClick={() => setActiveSessionId(session.id)}
-                                className={`relative flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] transition-all duration-200 ${isActive
-                                        ? 'font-semibold'
-                                        : 'opacity-60 hover:opacity-100'
-                                    }`}
-                                style={isActive
-                                    ? { background: 'color-mix(in srgb, var(--accent-primary) 12%, transparent)', color: 'var(--accent-secondary)', border: '1px solid color-mix(in srgb, var(--accent-primary) 20%, transparent)' }
-                                    : { color: 'var(--text-muted)' }
-                                }
+                                className={`vx-tab ${isActive ? 'vx-tab--active' : ''}`}
+                                title={session.title}
                             >
-                                {isActive && <span className="absolute left-0 top-1/2 -translate-y-1/2 w-[2px] h-3 rounded-full" style={{ background: 'linear-gradient(to bottom, var(--accent-primary), var(--accent-secondary))' }}></span>}
-                                <span className="truncate max-w-[80px]">{session.title}</span>
+                                {isActive && <span className="vx-tab-dot" aria-hidden="true" />}
+                                <span className="vx-tab-title">{session.title}</span>
                                 {chatSessions.length > 1 && (
-                                    <X
-                                        className="w-2.5 h-2.5 ml-0.5"
-                                        style={{ color: 'var(--text-muted)' }}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleCloseSession(session.id);
-                                        }}
-                                        strokeWidth={1.5}
-                                    />
+                                    <span
+                                        role="button"
+                                        tabIndex={0}
+                                        className="vx-tab-close inline-flex"
+                                        title="Close chat"
+                                        onClick={(e) => { e.stopPropagation(); handleCloseSession(session.id); }}
+                                    >
+                                        <X className="w-2.5 h-2.5" strokeWidth={2} />
+                                    </span>
                                 )}
                             </button>
                         );
                     })}
                     <button
                         onClick={handleNewSession}
-                        className="flex items-center gap-0.5 text-[10px] px-2 py-1 rounded-md transition-all duration-200"
-                        style={{ color: 'var(--text-muted)' }}
+                        className="vx-tab-new"
                         title="Start a new chat"
+                        aria-label="New chat"
                     >
-                        <Plus className="w-2.5 h-2.5" strokeWidth={2} />
+                        <Plus className="w-3 h-3" strokeWidth={2} />
                     </button>
                 </div>
             </div>
@@ -967,32 +912,10 @@ const AIChatWindow = ({
                 <div className="pointer-events-none absolute top-0 left-1/2 -translate-x-1/2 w-[200px] h-[120px] rounded-full blur-[60px] z-0" style={{ background: 'color-mix(in srgb, var(--accent-primary) 4%, transparent)' }}></div>
                 <div className="space-y-3 min-w-0 relative z-10">
                     {timeline.length === 0 ? (
-                        <div className="relative flex flex-col items-center justify-center h-56 px-4 pt-8">
-                            {/* Ambient brand-gradient glow — AI is a signature moment */}
-                            <div className="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[300px] h-[220px] rounded-full blur-[80px]" style={{ background: 'radial-gradient(circle, color-mix(in srgb, var(--brand-stop-3) 22%, transparent) 0%, color-mix(in srgb, var(--brand-stop-1) 12%, transparent) 50%, transparent 75%)' }}></div>
-                            <div className="pointer-events-none absolute top-[35%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-[200px] h-[120px] rounded-full blur-[60px]" style={{ background: 'color-mix(in srgb, var(--brand-stop-4) 14%, transparent)' }}></div>
-                            {/* Icon — full brand-gradient fill, the AI's identity moment */}
-                            <div className="relative z-10">
-                                <div
-                                    className="relative w-14 h-14 rounded-2xl flex items-center justify-center mb-4"
-                                    style={{
-                                        background: 'var(--brand-gradient)',
-                                        boxShadow:
-                                            '0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 35%, transparent), ' +
-                                            '0 8px 28px -4px color-mix(in srgb, var(--brand-stop-3) 42%, transparent), ' +
-                                            '0 0 40px color-mix(in srgb, var(--brand-stop-1) 26%, transparent)',
-                                    }}
-                                >
-                                    <Sparkles className="w-6 h-6 text-white" strokeWidth={1.75} />
-                                </div>
-                            </div>
-                            <h3 className="relative z-10 text-[14px] font-semibold mb-1.5" style={{ color: 'var(--text-primary)' }}>
-                                What can <span className="vt-brand-text font-bold">Vectant</span> help with?
-                            </h3>
-                            <p className="relative z-10 text-[11px] leading-relaxed text-center max-w-[240px]" style={{ color: 'var(--text-muted)' }}>
-                                Explain code, fix bugs, add features, or refactor your project.
-                            </p>
-                        </div>
+                        <ChatEmptyState
+                            paused={!isVisible}
+                            onPick={(s) => { setInputValue(s); chatInputRef.current?.focus(); }}
+                        />
                     ) : (
                         timeline.map((msg) => {
                             // ── Command Approval Card ────────────────────────
@@ -1015,84 +938,15 @@ const AIChatWindow = ({
                             }
 
                             if (msg.role === 'progress') {
-                                const expanded = msg.expanded === true;
-                                const isFinished = msg.status === 'finished';
-                                const isFailed = msg.status === 'failed';
-                                const isWorking = !isFinished && !isFailed;
-                                const statusLabel = isFinished ? 'Completed' : isFailed ? 'Failed' : 'Working…';
-                                const statusColor = isFinished ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400';
-                                const iconColor = isFinished ? 'text-emerald-400' : isFailed ? 'text-rose-400' : 'text-amber-400';
                                 return (
-                                    <div key={msg.id} className={`relative text-xs rounded-xl overflow-hidden`}
-                                        style={{
-                                            background: isFinished
-                                                ? 'linear-gradient(to bottom, color-mix(in srgb, var(--accent-primary) 8%, var(--bg-panel)), var(--bg-panel))'
-                                                : isFailed
-                                                ? 'linear-gradient(to bottom, color-mix(in srgb, #ef4444 6%, var(--bg-panel)), var(--bg-panel))'
-                                                : 'linear-gradient(to bottom, var(--bg-surface), var(--bg-panel))',
-                                            border: isFinished
-                                                ? '1px solid color-mix(in srgb, var(--accent-primary) 25%, transparent)'
-                                                : isFailed
-                                                ? '1px solid color-mix(in srgb, #ef4444 25%, transparent)'
-                                                : '1px solid var(--border-subtle)',
-                                        }}
-                                    >
-                                        {/* Accent bar on left */}
-                                        <div className={`absolute left-0 top-0 bottom-0 w-[2px]`}
-                                            style={{
-                                                background: isFinished
-                                                    ? 'linear-gradient(to bottom, var(--accent-primary), var(--accent-secondary))'
-                                                    : isFailed
-                                                    ? 'linear-gradient(to bottom, #b91c1c, #ef4444)'
-                                                    : 'linear-gradient(to bottom, var(--text-dim), var(--border-subtle))'
-                                            }}
-                                        ></div>
-                                        <button
-                                            className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left transition-all duration-200"
-                                            onClick={() => toggleProgressMessage(msg.id)}
-                                        >
-                                            <div className={`flex items-center justify-center w-5 h-5 rounded-md`}
-                                                style={{ background: isFinished ? 'color-mix(in srgb, var(--accent-primary) 20%, transparent)' : isFailed ? 'rgba(239,68,68,0.15)' : 'rgba(245,158,11,0.15)' }}
-                                            >
-                                                {expanded ? 
-                                                    <ChevronDown className={`w-3 h-3 ${isFailed ? 'text-rose-400' : isFinished ? '' : 'text-amber-400'}`} style={isFinished ? { color: 'var(--accent-secondary)' } : undefined} strokeWidth={2.5} /> : 
-                                                    <ChevronRight className={`w-3 h-3 ${isFailed ? 'text-rose-400' : isFinished ? '' : 'text-amber-400'}`} style={isFinished ? { color: 'var(--accent-secondary)' } : undefined} strokeWidth={2.5} />
-                                                }
-                                            </div>
-                                            <div className="flex items-center gap-2 flex-1 min-w-0">
-                                                <span className={`inline-flex items-center gap-1.5 text-[10px] font-semibold tracking-wide ${
-                                                    isFailed ? 'text-rose-400' : isFinished ? '' : 'text-amber-400'
-                                                }`} style={isFinished ? { color: 'var(--accent-secondary)' } : undefined}>
-                                                    {isFinished && <span className="w-2 h-2 rounded-full" style={{ background: 'var(--accent-secondary)', boxShadow: '0 0 10px color-mix(in srgb, var(--accent-secondary) 60%, transparent)' }}></span>}
-                                                    {isFailed && <span className="w-2 h-2 rounded-full bg-rose-400 shadow-[0_0_10px_rgba(251,113,133,0.5)]"></span>}
-                                                    {!isFinished && !isFailed && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shadow-[0_0_10px_rgba(245,158,11,0.5)]"></span>}
-                                                    {statusLabel}
-                                                </span>
-                                                <span className="text-[10px] truncate" style={{ color: 'var(--text-muted)' }}>{summarizeLog(msg.logs)}</span>
-                                            </div>
-                                        </button>
-                                        {expanded && (
-                                            <div className={`px-3.5 pb-3 pt-2 space-y-1.5`}
-                                                style={{
-                                                    borderTop: isFinished
-                                                        ? '1px solid color-mix(in srgb, var(--accent-primary) 15%, transparent)'
-                                                        : isFailed
-                                                        ? '1px solid color-mix(in srgb, #ef4444 15%, transparent)'
-                                                        : '1px solid color-mix(in srgb, var(--border-subtle) 80%, transparent)',
-                                                    background: 'color-mix(in srgb, var(--bg-panel) 50%, transparent)',
-                                                }}
-                                            >
-                                                {(msg.logs || []).map((entry, idx) => {
-                                                    return (
-                                                        <div key={`${msg.id}-log-${idx}`} className="flex items-start gap-2 text-[10px] font-mono leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-                                                            <span className="select-none mt-0.5 text-[9px]" style={{ color: 'var(--text-dim)' }}>›</span>
-                                                            <span className="whitespace-normal break-words">{entry}</span>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        )}
-                                    </div>
+                                    <ReasoningCard
+                                        key={msg.id}
+                                        logs={msg.logs}
+                                        status={msg.status}
+                                        expanded={msg.expanded === true}
+                                        onToggle={() => toggleProgressMessage(msg.id)}
+                                        onRetry={handleRetry}
+                                    />
                                 );
                             }
 
@@ -1274,7 +1128,8 @@ const AIChatWindow = ({
                                                                                     handleRejectFileSuggestion(activeSession?.id || activeSessionId, suggestion.path);
                                                                                     setTimeout(() => { scrollLockRef.current = false; }, 300);
                                                                                 }}
-                                                                                className="text-[11px] font-semibold text-red-500 opacity-75 py-1 rounded-md bg-transparent hover:-translate-y-1 cursor-pointer hover:underline duration-300 hover:opacity-100 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                                className="vx-btn vx-btn--ghost disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                                style={{ color: 'var(--accent-danger)', borderColor: 'color-mix(in srgb, var(--accent-danger) 35%, transparent)' }}
                                                                             >
                                                                                 Reject
                                                                             </button>
@@ -1286,7 +1141,7 @@ const AIChatWindow = ({
                                                                                     handleApplyFileSuggestion(activeSession?.id || activeSessionId, suggestion.path);
                                                                                     setTimeout(() => { scrollLockRef.current = false; }, 300);
                                                                                 }}
-                                                                                className="text-xs font-semibold text-emerald-400 hover:-translate-y-1 cursor-pointer duration-300 opacity-75 hover:opacity-100 py-1 rounded-md shadow-sm hover:underline transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
+                                                                                className="vx-btn vx-btn--primary disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
                                                                             >
                                                                                 Apply
                                                                             </button>
@@ -1329,16 +1184,15 @@ const AIChatWindow = ({
                                                                 {/* Reject - neutral */}
                                                                 <button
                                                                     onClick={() => { scrollLockRef.current = true; setSuggestionExpanded(false); rejectSuggestion(); setTimeout(() => { scrollLockRef.current = false; }, 300); }}
-                                                                    className="text-[11px] font-semibold text-red-500 px-2.5 py-1.25 rounded-md bg-transparent transition-all"
-                                                                    style={{ border: '1px solid var(--border-medium)' }}
+                                                                    className="vx-btn vx-btn--ghost"
+                                                                    style={{ color: 'var(--accent-danger)', borderColor: 'color-mix(in srgb, var(--accent-danger) 35%, transparent)' }}
                                                                 >
                                                                     Reject
                                                                 </button>
                                                                 {/* Apply - primary */}
                                                                 <button
                                                                     onClick={() => { scrollLockRef.current = true; setSuggestionExpanded(false); applySuggestion(); setTimeout(() => { scrollLockRef.current = false; }, 300); }}
-                                                                    className="text-xs font-semibold px-4 text-emerald-400 py-1.5 rounded-md shadow-sm transition-all"
-                                                                    style={{ background: 'var(--accent-secondary)', borderColor: 'var(--accent-secondary)', border: '1px solid var(--accent-secondary)' }}
+                                                                    className="vx-btn vx-btn--primary"
                                                                 >
                                                                     Apply
                                                                 </button>
@@ -1418,21 +1272,22 @@ const AIChatWindow = ({
                                 );
                             }
 
+                            if (msg.role === 'user') {
+                                return (
+                                    <div key={msg.id} className="vx-msg vx-msg-user">
+                                        <div className="vx-user-bubble ai-chat-message text-sm min-w-0 overflow-hidden">
+                                            {baseContent}
+                                        </div>
+                                    </div>
+                                );
+                            }
                             return (
-                                <div
-                                    key={msg.id}
-                                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                                >
-                                    <div
-                                        className={`max-w-[88%] px-3.5 py-2.5 rounded-2xl text-sm ai-chat-message min-w-0 overflow-hidden transition-all duration-200 ${msg.role === 'user'
-                                                ? 'rounded-br-md'
-                                                : 'rounded-bl-md'
-                                            }`}
-                                        style={msg.role === 'user'
-                                            ? { background: 'linear-gradient(to bottom right, color-mix(in srgb, var(--accent-primary) 15%, var(--bg-panel)), color-mix(in srgb, var(--accent-primary) 8%, var(--bg-panel)))', color: 'var(--text-primary)', border: '1px solid color-mix(in srgb, var(--accent-primary) 20%, transparent)' }
-                                            : { background: 'var(--bg-panel)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)' }
-                                        }
-                                    >
+                                <div key={msg.id} className="vx-msg vx-msg-ai">
+                                    <div className="vx-msg-head">
+                                        <span className="vx-msg-mark" aria-hidden="true" />
+                                        <span className="vx-msg-role">Vectant</span>
+                                    </div>
+                                    <div className="vx-msg-body ai-chat-message text-sm min-w-0 overflow-hidden" style={{ color: 'var(--text-primary)' }}>
                                         {baseContent}
                                     </div>
                                 </div>
@@ -1440,21 +1295,28 @@ const AIChatWindow = ({
                         })
                     )}
                     {streamingMessage ? (
-                        <div className="flex justify-start">
-                            <div className="max-w-[88%] px-3.5 py-2.5 rounded-2xl rounded-bl-md min-w-0 overflow-hidden" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)' }}>
-                                <div 
-                                    className="text-[11px] leading-normal ai-chat-content min-w-0 w-full overflow-hidden"
-                                    style={{ color: 'var(--text-primary)' }}
-                                    onClick={handleContentNavClick}
-                                >
-                                    <MessageContent content={streamingMessage} enableNavigation={true} />
-                                </div>
+                        <div className="vx-msg vx-msg-ai">
+                            <div className="vx-msg-head">
+                                <span className="vx-msg-mark vx-msg-mark--live" aria-hidden="true" />
+                                <span className="vx-msg-role">Vectant</span>
+                            </div>
+                            <div
+                                className="vx-msg-body text-[11px] leading-normal ai-chat-content min-w-0 w-full overflow-hidden"
+                                style={{ color: 'var(--text-primary)' }}
+                                onClick={handleContentNavClick}
+                            >
+                                <MessageContent content={streamingMessage} enableNavigation={true} />
+                                <span className="vx-caret" aria-hidden="true" />
                             </div>
                         </div>
                     ) : null}
                     {showThinking && (
-                        <div className="flex justify-start">
-                            <div className={`px-4 py-3 rounded-2xl rounded-bl-md transition-opacity duration-200 ${isThinking ? 'opacity-100' : 'opacity-0'}`} style={{ background: 'var(--bg-panel)', border: '1px solid var(--border-subtle)' }}>
+                        <div className={`vx-msg vx-msg-ai transition-opacity duration-200 ${isThinking ? 'opacity-100' : 'opacity-0'}`}>
+                            <div className="vx-msg-head">
+                                <span className="vx-msg-mark vx-msg-mark--live" aria-hidden="true" />
+                                <span className="vx-msg-role">Vectant</span>
+                            </div>
+                            <div className="vx-msg-body">
                                 <ThinkingDots />
                             </div>
                         </div>
@@ -1556,10 +1418,8 @@ const AIChatWindow = ({
                 })()}
                 <div className="flex gap-2">
                     <div
-                        className="vt-ambient-top flex-1 flex flex-col gap-0 rounded-xl overflow-hidden transition-all duration-200"
+                        className="vx-composer-shell vt-ambient-top flex-1 flex flex-col gap-0 overflow-hidden transition-all duration-200"
                         style={{
-                            border: '1px solid var(--border-subtle)',
-                            background: 'var(--bg-editor)',
                             boxShadow: isLoading
                                 ? '0 0 0 1px color-mix(in srgb, var(--brand-stop-3) 22%, transparent), 0 0 18px -4px color-mix(in srgb, var(--brand-stop-3) 28%, transparent)'
                                 : undefined,

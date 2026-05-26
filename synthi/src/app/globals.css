@@ -1992,23 +1992,19 @@ a:focus-visible:not(.th-focus-ring):not(.synthi-focus-ring),
 }
 
 .vectant-logo-halo {
-  /* Quiet ambient halo around the V. Stronger in error/healing states. */
+  /* Ambient (normal-state) glow removed: it was invisible to the user and
+     its blurred GPU sub-layer re-rasterized on each phase flip, causing the
+     ~1-2px vertical twitch of the collapsed island. The element is kept so
+     the error/healing status variants below can still paint a meaningful
+     halo; in the normal state it renders nothing. */
   position: absolute;
   inset: -6px -10px;
   border-radius: 999px;
-  background: radial-gradient(
-    closest-side,
-    color-mix(in srgb, var(--brand-stop-3) 22%, transparent) 0%,
-    transparent 70%
-  );
+  background: none;
   filter: blur(4px);
-  opacity: 0.45;
+  opacity: 0;
   pointer-events: none;
   transition: opacity 200ms ease-out, background 200ms ease-out;
-}
-
-.vectant-logo-button:hover .vectant-logo-halo {
-  opacity: 0.8;
 }
 
 .vectant-logo-v {
