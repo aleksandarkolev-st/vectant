@@ -1928,15 +1928,37 @@ async function latestWorkerProofArtifactForWorkspace(workspaceSlug) {
   return records[0] ?? null;
 }
 
+async function waitForLatestWorkerProofArtifactForWorkspace(workspaceSlug, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  do {
+    last = await latestWorkerProofArtifactForWorkspace(workspaceSlug);
+    if (last) return last;
+    await sleep(250);
+  } while (Date.now() < deadline);
+  return last;
+}
+
+async function readWorkerProofArtifactWithRetry(proofPath, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let record = null;
+  do {
+    record = await readWorkerProofArtifact(proofPath);
+    if (record?.found || record?.reason !== 'proof_artifact_not_found') return record;
+    await sleep(250);
+  } while (Date.now() < deadline);
+  return record;
+}
+
 async function proofArtifactsFromGpuProof(proof, workspaceSlug = CFG.slug) {
   const proofPath = proof?.proofArtifactPath;
   if (typeof proofPath !== 'string' || !proofPath.trim()) {
-    const fallback = await latestWorkerProofArtifactForWorkspace(workspaceSlug);
+    const fallback = await waitForLatestWorkerProofArtifactForWorkspace(workspaceSlug);
     return fallback
       ? [fallback]
       : [{ proofArtifactPath: proofPath ?? null, found: false, reason: 'missing_proof_artifact_path' }];
   }
-  return [await readWorkerProofArtifact(proofPath)];
+  return [await readWorkerProofArtifactWithRetry(proofPath)];
 }
 
 function proofStateFromArtifactRecord(record) {
