@@ -480,7 +480,9 @@ async function collectBuildMetadataFromHost(metadataDir) {
     throw new Error(`cached CMake metadata missing reply directory: ${replyHostPath}`);
   }
 
-  const compileCommandsJson = normalizeCompileCommands(await readFile(compileHostPath, 'utf8'));
+  const compileCommandsRaw = await readFile(compileHostPath, 'utf8');
+  const compileCommandsJson = normalizeCompileCommands(compileCommandsRaw);
+  const compileCommandSourcePaths = compileCommandSourcePathsFromRaw(compileCommandsRaw);
   const replyFiles = [];
   const projectionHints = {
     target_source_paths: new Set(),
@@ -496,6 +498,10 @@ async function collectBuildMetadataFromHost(metadataDir) {
   if (!replyFiles.length) {
     throw new Error(`cached CMake metadata reply directory did not contain JSON metadata: ${replyHostPath}`);
   }
+  ensureEntryCoveredByBuildMetadata({
+    compileCommandSourcePaths,
+    targetSourcePaths: projectionHints.target_source_paths,
+  });
   return {
     compileCommandsJson,
     cmakeReplyFiles: replyFiles,
@@ -522,7 +528,9 @@ async function collectBuildMetadataFromWorker(buildPath) {
     true,
   );
 
-  const compileCommandsJson = normalizeCompileCommands(await readFile(compileHostPath, 'utf8'));
+  const compileCommandsRaw = await readFile(compileHostPath, 'utf8');
+  const compileCommandsJson = normalizeCompileCommands(compileCommandsRaw);
+  const compileCommandSourcePaths = compileCommandSourcePathsFromRaw(compileCommandsRaw);
   const replyFiles = [];
   const projectionHints = {
     target_source_paths: new Set(),
@@ -538,6 +546,10 @@ async function collectBuildMetadataFromWorker(buildPath) {
   if (!replyFiles.length) {
     throw new Error('CMake File API reply directory did not contain JSON metadata');
   }
+  ensureEntryCoveredByBuildMetadata({
+    compileCommandSourcePaths,
+    targetSourcePaths: projectionHints.target_source_paths,
+  });
   return {
     compileCommandsJson,
     cmakeReplyFiles: replyFiles,
@@ -594,11 +606,29 @@ function normalizeBuildMetadataText(raw) {
   return String(raw).replaceAll(workerRoot, workspaceRoot);
 }
 
+function buildMetadataCoversSource(sourcePath, { compileCommandSourcePaths = [], targetSourcePaths = [] } = {}) {
+  const normalizedSource = String(sourcePath ?? '').replace(/\\/g, '/');
+  if (!normalizedSource) return false;
+  const compileSources = new Set([...compileCommandSourcePaths].map((candidate) => String(candidate).replace(/\\/g, '/')));
+  const targetSources = new Set([...targetSourcePaths].map((candidate) => String(candidate).replace(/\\/g, '/')));
+  return compileSources.has(normalizedSource) || targetSources.has(normalizedSource);
+}
+
+function ensureEntryCoveredByBuildMetadata({ compileCommandSourcePaths, targetSourcePaths }) {
+  const entryFile = CFG.entryFile.replace(/\\/g, '/');
+  if (buildMetadataCoversSource(entryFile, { compileCommandSourcePaths, targetSourcePaths })) return;
+  throw new Error(`CMake metadata did not include ${CFG.entryFile}`);
+}
+
+function compileCommandSourcePathsFromRaw(raw) {
+  return JSON.parse(raw)
+    .map((entry) => repoRelativePath(entry?.file))
+    .filter(Boolean)
+    .sort();
+}
+
 function normalizeCompileCommands(raw) {
   const entries = JSON.parse(raw);
-  const sourceSuffix = `/${CFG.entryFile.replace(/\\/g, '/')}`;
-  const selected = entries.find((entry) => String(entry.file || '').replace(/\\/g, '/').endsWith(sourceSuffix));
-  if (!selected) throw new Error(`compile_commands.json did not include ${CFG.entryFile}`);
   const workerRoot = CFG.workerRepoPath.replace(/\\/g, '/');
   const workspaceRoot = CFG.workspaceRoot.replace(/\\/g, '/');
   const normalized = entries.map((entry) => {
@@ -1456,6 +1486,18 @@ function selfCheckRuntimeDispatchEvidence() {
   }
   if (shouldFetchRequestedCommit({ requestedCommit: '', localCommitAvailable: false })) {
     throw new Error('fetch decision self-check should not fetch without a requested commit');
+  }
+  if (!buildMetadataCoversSource('src/kernel.h', {
+    compileCommandSourcePaths: ['src/main.cpp'],
+    targetSourcePaths: ['src/kernel.h'],
+  })) {
+    throw new Error('CMake metadata coverage self-check should accept target header sources');
+  }
+  if (buildMetadataCoversSource('src/missing.h', {
+    compileCommandSourcePaths: ['src/main.cpp'],
+    targetSourcePaths: ['src/kernel.h'],
+  })) {
+    throw new Error('CMake metadata coverage self-check should reject unrelated sources');
   }
   console.log('runtime dispatch evidence self-check passed');
 }
