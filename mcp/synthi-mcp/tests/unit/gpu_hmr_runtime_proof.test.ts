@@ -52,6 +52,7 @@ function retiredEpochProof() {
     dispatchTableHashObserved: true,
     dispatchTableHashBeforeObserved: true,
     dispatchTableHashAfterObserved: true,
+    dispatchTableHashChanged: true,
     changedEntriesObserved: true,
     streamOrderingProven: true,
     streamScope: "affected",
@@ -646,6 +647,7 @@ describe("GPU HMR runtime output proof classification", () => {
       dispatchTableHashObserved: true,
       dispatchTableHashBeforeObserved: true,
       dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
       changedEntriesObserved: true,
       streamOrderingProven: true,
       streamScope: "affected",
@@ -666,6 +668,7 @@ describe("GPU HMR runtime output proof classification", () => {
       dispatchTableHashObserved: true,
       dispatchTableHashBeforeObserved: true,
       dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
       changedEntriesObserved: true,
       streamOrderingProven: true,
       streamScope: "affected",
@@ -688,6 +691,7 @@ describe("GPU HMR runtime output proof classification", () => {
       dispatchTableHashObserved: true,
       dispatchTableHashBeforeObserved: true,
       dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
       changedEntriesObserved: true,
       retirementTracked: true,
       oldGenerationRetired: true,
@@ -739,6 +743,32 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-abi-proven");
     expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
     expect(proof.degradedReason).toBe("epoch_dispatch_table_hash_not_collected");
+  });
+
+  it("does not prove runtime epoch swap when before and after dispatch table hashes are identical", () => {
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xabc dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
+    ]);
+
+    expect(evidence.dispatch_table_hash_before_observed).toBe(true);
+    expect(evidence.dispatch_table_hash_after_observed).toBe(true);
+    expect(evidence.dispatch_table_hash_changed).toBe(false);
+    expect(evidence.dispatch_table_hash_observed).toBe(false);
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_dispatch_table_hash_unchanged");
+  });
+
+  it("does not prove runtime epoch swap when no dispatch entries changed", () => {
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=0 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
+    ]);
+
+    expect(evidence.dispatch_table_hash_changed).toBe(true);
+    expect(evidence.changed_entries_observed).toBe(false);
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_changed_entries_not_collected");
   });
 
   it("keeps publication-only retirement pending without explicit zero retired modules", () => {
@@ -794,6 +824,7 @@ describe("GPU HMR runtime output proof classification", () => {
       dispatchTableHashObserved: true,
       dispatchTableHashBeforeObserved: true,
       dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
       changedEntriesObserved: true,
       streamOrderingProven: true,
       streamScope: "affected",

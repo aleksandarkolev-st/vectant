@@ -493,10 +493,12 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
   const generationLineageObserved = observation.generationLineageObserved === true;
   const dispatchTableHashBeforeObserved = observation.dispatchTableHashBeforeObserved === true;
   const dispatchTableHashAfterObserved = observation.dispatchTableHashAfterObserved === true;
+  const dispatchTableHashChanged = observation.dispatchTableHashChanged === true;
   const dispatchTableHashObserved =
     observation.dispatchTableHashObserved === true
     && dispatchTableHashBeforeObserved
-    && dispatchTableHashAfterObserved;
+    && dispatchTableHashAfterObserved
+    && dispatchTableHashChanged;
   const changedEntriesObserved = observation.changedEntriesObserved === true;
   const streamScope = typeof observation.streamScope === 'string' && observation.streamScope.trim()
     ? observation.streamScope.trim()
@@ -537,6 +539,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       dispatchTableHashObserved: true,
       dispatchTableHashBeforeObserved: true,
       dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
       changedEntriesObserved: true,
       streamOrderingProven: true,
       streamScope,
@@ -571,6 +574,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       dispatchTableHashObserved: true,
       dispatchTableHashBeforeObserved: true,
       dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
       changedEntriesObserved: true,
       streamOrderingProven: true,
       streamScope,
@@ -594,7 +598,9 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
           : !generationLineageObserved
         ? 'epoch_generation_lineage_not_collected'
         : !dispatchTableHashObserved
-            ? 'epoch_dispatch_table_hash_not_collected'
+            ? !dispatchTableHashBeforeObserved || !dispatchTableHashAfterObserved
+              ? 'epoch_dispatch_table_hash_not_collected'
+              : 'epoch_dispatch_table_hash_unchanged'
             : !changedEntriesObserved
               ? 'epoch_changed_entries_not_collected'
               : !streamOrderingRequested
@@ -612,6 +618,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     dispatchTableHashObserved,
     dispatchTableHashBeforeObserved,
     dispatchTableHashAfterObserved,
+    dispatchTableHashChanged,
     changedEntriesObserved,
     streamOrderingProven,
     streamScope,

@@ -97,9 +97,14 @@ export function runtimeEpochSwapEvidence(lines) {
     && /^0x[0-9a-f]+$/i.test(latestPublication.dispatchTableHashBefore);
   const dispatchTableHashAfterObserved = typeof latestPublication?.dispatchTableHashAfter === 'string'
     && /^0x[0-9a-f]+$/i.test(latestPublication.dispatchTableHashAfter);
-  const dispatchTableHashObserved = dispatchTableHashBeforeObserved && dispatchTableHashAfterObserved;
+  const dispatchTableHashChanged =
+    dispatchTableHashBeforeObserved
+    && dispatchTableHashAfterObserved
+    && latestPublication.dispatchTableHashBefore !== latestPublication.dispatchTableHashAfter;
+  const dispatchTableHashObserved =
+    dispatchTableHashBeforeObserved && dispatchTableHashAfterObserved && dispatchTableHashChanged;
   const changedEntriesObserved = Number.isFinite(latestPublication?.changedEntries)
-    && latestPublication.changedEntries >= 0;
+    && latestPublication.changedEntries > 0;
   const retirementTracked = latestPublication?.retirementTracked === true;
   const publicationRetirementComplete =
     latestPublication?.oldGenerationRetired === true
@@ -127,6 +132,7 @@ export function runtimeEpochSwapEvidence(lines) {
     dispatch_table_hash_observed: dispatchTableHashObserved,
     dispatch_table_hash_before_observed: dispatchTableHashBeforeObserved,
     dispatch_table_hash_after_observed: dispatchTableHashAfterObserved,
+    dispatch_table_hash_changed: dispatchTableHashChanged,
     changed_entries_observed: changedEntriesObserved,
     retirement_tracked: retirementTracked,
     retirement_not_required: publicationRetirementComplete,
@@ -151,6 +157,7 @@ export function epochSwapProofFromRuntimeEvidence(lines) {
     dispatchTableHashObserved: evidence.dispatch_table_hash_observed,
     dispatchTableHashBeforeObserved: evidence.dispatch_table_hash_before_observed,
     dispatchTableHashAfterObserved: evidence.dispatch_table_hash_after_observed,
+    dispatchTableHashChanged: evidence.dispatch_table_hash_changed,
     changedEntriesObserved: evidence.changed_entries_observed,
     runtimeSessionObserved: evidence.runtime_session_observed,
     runtimeSessionIds: evidence.runtime_session_ids,
