@@ -31,9 +31,11 @@ function acceptedAbiProof() {
 function retiredEpochProof() {
   return classifyGpuHmrEpochSwapProof({
     published: true,
+    runtimeSessionIds: ["runtime-session:test"],
     generationLineageObserved: true,
     dispatchTableHashObserved: true,
     changedEntriesObserved: true,
+    streamOrderingProven: true,
     retirementTracked: true,
     oldGenerationRetired: true,
     evidenceRefs: ["evidence:epoch:abc"],
@@ -341,26 +343,62 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.acceptedExtractorEvidenceRefs).toEqual(["evidence:clang-record-layout:def"]);
   });
 
-  it("reports epoch-swap-proven only for generation lineage, table hash, changed entries, and retired old generation", () => {
+  it("reports epoch-swap-proven only for session, stream ordering, generation lineage, table hash, changed entries, and retired old generation", () => {
     const proof = retiredEpochProof();
 
     expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
     expect(proof.degradedState).toBeNull();
+    expect(proof.runtimeSessionObserved).toBe(true);
+    expect(proof.streamOrderingProven).toBe(true);
     expect(summarizeGpuHmrEpochSwapProof(proof)).toContain("retired=yes");
   });
 
   it("keeps pending epoch retirement as a blocker for higher proof", () => {
     const proof = classifyGpuHmrEpochSwapProof({
       published: true,
+      runtimeSessionIds: ["runtime-session:test"],
       generationLineageObserved: true,
       dispatchTableHashObserved: true,
       changedEntriesObserved: true,
+      streamOrderingProven: true,
       retirementTracked: true,
       oldGenerationRetired: false,
     });
 
     expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
     expect(proof.degradedState).toBe("gpu-hmr-epoch-retirement-pending");
+  });
+
+  it("does not prove epoch swap without runtime session evidence", () => {
+    const proof = classifyGpuHmrEpochSwapProof({
+      published: true,
+      generationLineageObserved: true,
+      dispatchTableHashObserved: true,
+      changedEntriesObserved: true,
+      streamOrderingProven: true,
+      retirementTracked: true,
+      oldGenerationRetired: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_runtime_session_not_collected");
+  });
+
+  it("does not prove epoch swap without stream ordering evidence", () => {
+    const proof = classifyGpuHmrEpochSwapProof({
+      published: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      generationLineageObserved: true,
+      dispatchTableHashObserved: true,
+      changedEntriesObserved: true,
+      retirementTracked: true,
+      oldGenerationRetired: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_stream_ordering_not_collected");
   });
 
   it("proves epoch swap from runtime publish and retire evidence", () => {
@@ -370,6 +408,7 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
 
     expect(evidence.stream_ordering_proven).toBe(true);
+    expect(evidence.runtime_session_ids).toEqual(["pid1"]);
     expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.evidenceRefs).toEqual([
@@ -386,6 +425,17 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.old_generation_retired).toBe(false);
     expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
     expect(proof.degradedState).toBe("gpu-hmr-epoch-retirement-pending");
+  });
+
+  it("downgrades runtime epoch evidence when stream ordering is missing from the publication", () => {
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=true stream_scope=context",
+    ]);
+
+    expect(evidence.stream_ordering_proven).toBe(false);
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_stream_ordering_not_collected");
   });
 
   it("proves host preservation from matching runtime identity snapshots across generations", () => {

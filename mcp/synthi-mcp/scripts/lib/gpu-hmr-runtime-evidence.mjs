@@ -28,6 +28,12 @@ function integerValue(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function compactStringList(values) {
+  return Array.isArray(values)
+    ? [...new Set(values.filter((value) => typeof value === 'string' && value.trim()).map((value) => value.trim()))]
+    : [];
+}
+
 function epochRecord(line) {
   const fields = parseRuntimeKeyValues(line);
   return {
@@ -71,6 +77,9 @@ export function runtimeEpochSwapEvidence(lines) {
   const retirements = records.filter((record) => record.event === 'retired');
   const latestPublication = publications.at(-1) ?? null;
   const retirement = latestPublication ? matchingRetirement(latestPublication, retirements) : null;
+  const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
+  const runtimeSessionObserved = runtimeSessionIds.length > 0;
+  const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const generationLineageObserved = latestPublication
     ? Number.isFinite(latestPublication.previousGeneration)
       && Number.isFinite(latestPublication.activeGeneration)
@@ -90,12 +99,17 @@ export function runtimeEpochSwapEvidence(lines) {
     published_count: publications.length,
     retired_count: retirements.length,
     published: latestPublication !== null,
+    runtime_session_observed: runtimeSessionObserved,
+    runtime_session_ids: runtimeSessionIds,
+    runtime_session_consistent: runtimeSessionConsistent,
     generation_lineage_observed: generationLineageObserved,
     dispatch_table_hash_observed: dispatchTableHashObserved,
     changed_entries_observed: changedEntriesObserved,
     retirement_tracked: retirementTracked,
     old_generation_retired: oldGenerationRetired,
     stream_ordering_proven: streamOrderingProven,
+    stream_scope: latestPublication?.streamScope ?? null,
+    drain_result: latestPublication?.drainResult ?? null,
     latest_publication: latestPublication,
     matching_retirement: retirement,
     evidence_refs: epochEvidenceRefs(latestPublication, retirement),
@@ -110,6 +124,10 @@ export function epochSwapProofFromRuntimeEvidence(lines) {
     generationLineageObserved: evidence.generation_lineage_observed,
     dispatchTableHashObserved: evidence.dispatch_table_hash_observed,
     changedEntriesObserved: evidence.changed_entries_observed,
+    runtimeSessionObserved: evidence.runtime_session_observed,
+    runtimeSessionIds: evidence.runtime_session_ids,
+    runtimeSessionConsistent: evidence.runtime_session_consistent,
+    streamOrderingProven: evidence.stream_ordering_proven,
     retirementTracked: evidence.retirement_tracked,
     oldGenerationRetired: evidence.old_generation_retired,
     evidenceRefs: evidence.evidence_refs,

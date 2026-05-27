@@ -472,18 +472,26 @@ export function summarizeGpuHmrAbiProof(proof) {
 
 export function classifyGpuHmrEpochSwapProof(observation = {}) {
   const published = observation.published === true || observation.epochPublished === true;
+  const runtimeSessionIds = runtimeSessionIdsFromObservation(observation);
+  const runtimeSessionObserved = observation.runtimeSessionObserved === true || runtimeSessionIds.length > 0;
+  const runtimeSessionConsistent =
+    observation.runtimeSessionConsistent !== false && runtimeSessionIds.length <= 1;
   const generationLineageObserved = observation.generationLineageObserved === true;
   const dispatchTableHashObserved = observation.dispatchTableHashObserved === true;
   const changedEntriesObserved = observation.changedEntriesObserved === true;
+  const streamOrderingProven = observation.streamOrderingProven === true;
   const retirementTracked = observation.retirementTracked === true;
   const oldGenerationRetired = observation.oldGenerationRetired === true;
   const evidenceRefs = compactStringList(observation.evidenceRefs);
 
   if (
     published
+    && runtimeSessionObserved
+    && runtimeSessionConsistent
     && generationLineageObserved
     && dispatchTableHashObserved
     && changedEntriesObserved
+    && streamOrderingProven
     && retirementTracked
     && oldGenerationRetired
   ) {
@@ -493,9 +501,13 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       degradedState: null,
       degradedReason: null,
       published: true,
+      runtimeSessionObserved: true,
+      runtimeSessionIds,
+      runtimeSessionConsistent: true,
       generationLineageObserved: true,
       dispatchTableHashObserved: true,
       changedEntriesObserved: true,
+      streamOrderingProven: true,
       retirementTracked: true,
       oldGenerationRetired: true,
       evidenceRefs,
@@ -503,7 +515,14 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
   }
 
   const partialEpochObserved =
-    published && generationLineageObserved && dispatchTableHashObserved && changedEntriesObserved && retirementTracked;
+    published
+    && runtimeSessionObserved
+    && runtimeSessionConsistent
+    && generationLineageObserved
+    && dispatchTableHashObserved
+    && changedEntriesObserved
+    && streamOrderingProven
+    && retirementTracked;
   if (partialEpochObserved && !oldGenerationRetired) {
     return {
       schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
@@ -511,9 +530,13 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       degradedState: 'gpu-hmr-epoch-retirement-pending',
       degradedReason: 'old_generation_retirement_not_completed',
       published: true,
+      runtimeSessionObserved: true,
+      runtimeSessionIds,
+      runtimeSessionConsistent: true,
       generationLineageObserved: true,
       dispatchTableHashObserved: true,
       changedEntriesObserved: true,
+      streamOrderingProven: true,
       retirementTracked: true,
       oldGenerationRetired: false,
       evidenceRefs,
@@ -526,17 +549,27 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     degradedState: 'gpu-hmr-epoch-swap-unverified',
     degradedReason: !published
       ? 'epoch_publication_not_observed'
-      : !generationLineageObserved
+      : !runtimeSessionObserved
+        ? 'epoch_runtime_session_not_collected'
+        : !runtimeSessionConsistent
+          ? 'epoch_runtime_session_inconsistent'
+          : !generationLineageObserved
         ? 'epoch_generation_lineage_not_collected'
         : !dispatchTableHashObserved
           ? 'epoch_dispatch_table_hash_not_collected'
           : !changedEntriesObserved
             ? 'epoch_changed_entries_not_collected'
-            : 'epoch_retirement_tracking_not_collected',
+            : !streamOrderingProven
+              ? 'epoch_stream_ordering_not_collected'
+              : 'epoch_retirement_tracking_not_collected',
     published,
+    runtimeSessionObserved,
+    runtimeSessionIds,
+    runtimeSessionConsistent,
     generationLineageObserved,
     dispatchTableHashObserved,
     changedEntriesObserved,
+    streamOrderingProven,
     retirementTracked,
     oldGenerationRetired,
     evidenceRefs,
@@ -549,8 +582,10 @@ export function summarizeGpuHmrEpochSwapProof(proof) {
   const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
   const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
   const publication = proof.published ? ' published=yes' : ' published=no';
+  const session = proof.runtimeSessionObserved ? ' session=observed' : ' session=missing';
+  const stream = proof.streamOrderingProven ? ' stream_ordering=proven' : ' stream_ordering=unproven';
   const retired = proof.oldGenerationRetired ? ' retired=yes' : ' retired=no';
-  return `gpu_epoch_swap_proof=${result}${degraded}${reason}${publication}${retired}`;
+  return `gpu_epoch_swap_proof=${result}${degraded}${reason}${publication}${session}${stream}${retired}`;
 }
 
 export function classifyGpuHmrHostPreservationProof(observation = {}) {
