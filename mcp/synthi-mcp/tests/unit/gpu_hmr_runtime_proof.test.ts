@@ -169,6 +169,23 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summarizeGpuHmrAbiProof(proof)).toContain("extractor=unverified");
   });
 
+  it("rejects extractor provenance explicitly rejected by the runtime correctness plan", () => {
+    const proof = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      extractorProvenance: [{
+        extractorKind: "clang_ast",
+        evidenceId: "evidence:clang-ast:abc",
+        acceptedByRuntimeCorrectnessPlan: false,
+      }],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_extractor_provenance_unverified");
+    expect(proof.acceptedExtractorEvidenceRefs).toEqual([]);
+  });
+
   it("reports epoch-swap-proven only for generation lineage, table hash, changed entries, and retired old generation", () => {
     const proof = retiredEpochProof();
 

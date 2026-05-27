@@ -89,7 +89,8 @@ function acceptedAbiExtractorEvidence(observation = {}) {
   const acceptedRecords = extractorRecords.filter((record) => {
     const kind = String(record.kind ?? record.extractorKind ?? '').trim();
     const evidenceId = String(record.evidenceId ?? '').trim();
-    return ACCEPTED_ABI_EXTRACTOR_KINDS.has(kind) && evidenceId;
+    const explicitlyRejected = record.acceptedByRuntimeCorrectnessPlan === false;
+    return ACCEPTED_ABI_EXTRACTOR_KINDS.has(kind) && evidenceId && !explicitlyRejected;
   });
 
   return {
