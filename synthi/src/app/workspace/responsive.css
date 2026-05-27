@@ -208,6 +208,19 @@
     min-width: 460px !important;
 }
 
+/* The tablet resting width must not pin the shell open while it is
+ * collapsing back to the 28px logo seed, otherwise the brackets keep
+ * tracking the tablet min-width instead of closing around the V. */
+.vp-tablet .status-island-phase--collapsing .status-island,
+.vp-tablet .status-island-phase--logo .status-island {
+    width: auto !important;
+    min-width: 0 !important;
+}
+
+.vp-tablet .status-island-phase--logo .status-island {
+    max-width: 28px !important;
+}
+
 /* DockingContainer scroll guard for mobile so very narrow viewports don't
  * stretch panels into unusable widths. */
 .vp-mobile .dock-container {

@@ -25,11 +25,18 @@ import { useAppDispatch, useAppSelector } from '@/redux/hooks';
 import { selectActiveFile, selectOpenFiles, selectFileThunk } from '@/redux/workspaceSlice';
 import { closeFile } from '@/redux/workspaceSlice';
 import { getFileIcon } from '@/utils/fileIcons';
+import { selectLayout, selectFocusedEditorPaneId } from '@/components/docking-wm/state/layout-slice';
+import { getPanesForFile, getEditorPaneIds } from '@/components/docking-wm/utils/editor-panes';
 
 function EditorTabStripImpl() {
   const dispatch = useAppDispatch();
   const openFiles = useAppSelector(selectOpenFiles);
   const activeFile = useAppSelector(selectActiveFile);
+  const layout = useAppSelector(selectLayout);
+  const focusedPaneId = useAppSelector(selectFocusedEditorPaneId);
+  // Only show per-pane color/number attribution once the editor is actually
+  // split; with a single pane the strip looks exactly as before.
+  const showPaneAttribution = getEditorPaneIds(layout).length >= 2;
   const tabsContainerRef = useRef(null);
   const scrollbarThumbRef = useRef(null);
   const activeTabRef = useRef(null);
@@ -326,6 +333,8 @@ function EditorTabStripImpl() {
             const isHovered = hoveredTabPath === file.path;
             const fileName = file.name || file.path?.split('/').pop() || 'untitled';
             const icon = getFileIcon(fileName);
+            // Panes currently displaying this file (ordered): [{paneId, number, color}]
+            const attrib = showPaneAttribution ? getPanesForFile(layout, file.path) : [];
 
             return (
               <button
@@ -367,6 +376,24 @@ function EditorTabStripImpl() {
 
                 <span className="whitespace-nowrap">{fileName}</span>
 
+                {attrib.length > 0 && (
+                  <span className="flex items-center gap-0.5 flex-shrink-0" aria-hidden="true">
+                    {attrib.map((p) => (
+                      <span
+                        key={p.paneId}
+                        className="inline-flex items-center justify-center text-[9px] leading-none rounded-[3px] px-[3px] h-3.5 min-w-[14px]"
+                        style={{
+                          color: p.color,
+                          border: `1px solid ${p.color}`,
+                          opacity: p.paneId === focusedPaneId ? 1 : 0.7,
+                        }}
+                      >
+                        {p.number}
+                      </span>
+                    ))}
+                  </span>
+                )}
+
                 {file.isUnsaved && (
                   <span
                     aria-hidden="true"
@@ -387,6 +414,21 @@ function EditorTabStripImpl() {
                 >
                   <X className="w-3 h-3" strokeWidth={2} />
                 </button>
+
+                {attrib.length > 0 && (
+                  <span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute bottom-0 left-2.5 right-2.5 h-[2px] flex rounded-t-full overflow-hidden"
+                  >
+                    {attrib.map((p) => (
+                      <span
+                        key={p.paneId}
+                        className="flex-1"
+                        style={{ background: p.color, opacity: p.paneId === focusedPaneId ? 1 : 0.75 }}
+                      />
+                    ))}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -397,7 +439,7 @@ function EditorTabStripImpl() {
             style={{
               left: tabIndicator.left,
               width: tabIndicator.width,
-              opacity: tabIndicator.visible ? 1 : 0,
+              opacity: (tabIndicator.visible && (!showPaneAttribution || tabIndicator.isHovered)) ? 1 : 0,
               backgroundImage: [
                 'var(--brand-gradient-horizontal)',
                 'linear-gradient(90deg, color-mix(in srgb, var(--text-muted) 72%, transparent), color-mix(in srgb, var(--text-muted) 72%, transparent))',

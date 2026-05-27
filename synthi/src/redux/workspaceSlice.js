@@ -19,7 +19,9 @@ import SynthiException from '@/components/SynthiException';
 import { fileCache } from '@/services/fileCache';
 import { loadScheduler } from '@/services/loadScheduler';
 import { perfMeasureToConsole, perfOnce } from '@/services/perfMarkers';
-import { openTab, selectNodes, selectTabs } from '@/components/docking-wm/state/layout-slice';
+import { openTab, selectNodes, selectTabs, setPaneFile } from '@/components/docking-wm/state/layout-slice';
+import { getEditorPanes } from '@/components/docking-wm/utils/editor-panes';
+import { resolveOpenTarget } from '@/redux/paneActiveFile';
 import { IDE_PANEL } from '@/components/docking-wm/panels/panel-types';
 import { getWorkspaceDependencyInstallPlan } from '@/lib/workspaceInstallPlan';
 
@@ -317,6 +319,14 @@ export const selectFileThunk = createAsyncThunk(
     async (file, { dispatch, getState }) => {
         // Ensure the editor panel exists in the docking layout
         ensureEditorPanel(dispatch, getState);
+        // Route this open into the focused editor pane (multi-pane split).
+        try {
+            const layoutAfterEnsure = getState().layout;
+            const paneId = resolveOpenTarget(layoutAfterEnsure);
+            if (paneId && file?.path) {
+                dispatch(setPaneFile({ paneId, filePath: file.path }));
+            }
+        } catch (_) { /* layout not ready — single-pane fallback */ }
         const state = getState().workspace;
         const gitState = getState().git;
         const slug = state.slug;
@@ -1373,6 +1383,22 @@ export const refreshWorkspaceThunk = createAsyncThunk(
         }
     }
 );
+
+export const closeFileEverywhere = (path) => (dispatch, getState) => {
+    const layout = getState().layout;
+    const ws = getState().workspace;
+    const remaining = (ws.openFiles || []).filter((f) => f.path !== path);
+    const fallback = remaining[0]?.path ?? null;
+    // Re-point any pane that showed the closed file to a fallback (or null).
+    try {
+        for (const pane of getEditorPanes(layout)) {
+            if (pane.filePath === path) {
+                dispatch(setPaneFile({ paneId: pane.paneId, filePath: fallback }));
+            }
+        }
+    } catch (_) { /* ignore */ }
+    dispatch(closeFile(path));
+};
 
 // --- MEMOIZED SELECTORS ---
 

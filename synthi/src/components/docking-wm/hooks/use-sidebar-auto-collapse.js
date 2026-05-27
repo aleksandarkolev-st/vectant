@@ -191,13 +191,23 @@ export function useSidebarAutoCollapse({ tabs, isFocused, activeTabId, sidebarEd
     revealViaCursor();
   }, [enabled, isSidebar, revealViaCursor]);
 
-  const onMouseLeave = useCallback(() => {
+  const onMouseLeave = useCallback((event) => {
     if (!enabled || !isSidebar) return;
     if (isPinned) return;
     if (isLeftSidebar && activityBarHoveredRef.current) return;
+    // Don't collapse out from under an active interaction: if focus is
+    // still inside the group (e.g. the user is typing in the commit
+    // composer), a stray mouseleave shouldn't tuck the panel away.
+    const groupEl = event?.currentTarget;
+    const focusStillInside = () =>
+      groupEl && typeof groupEl.contains === 'function'
+        ? groupEl.contains(document.activeElement)
+        : false;
+    if (focusStillInside()) return;
     clearTimer();
     timerRef.current = setTimeout(() => {
       if (isLeftSidebar && activityBarHoveredRef.current) return;
+      if (focusStillInside()) return;
       setCollapsed(true);
     }, delay);
   }, [enabled, isSidebar, clearTimer, delay, isLeftSidebar, isPinned]);

@@ -13,6 +13,9 @@ k8s/secrets.yaml
 Thumbs.db
 .vscode/
 *.swp
+
+# ── Superpowers brainstorm scratch (local mockups, not source) ───────────────
+.superpowers/
 *.swo
 
 # ── Python ──────────────────────────────────────────────────────────────────

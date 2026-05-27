@@ -15,7 +15,10 @@
 import { memo } from 'react';
 import dynamic from 'next/dynamic';
 import { useWorkspacePanelContext } from '../context/workspace-panel-context';
+import { useAppSelector } from '@/redux/hooks';
+import { selectFocusedEditorPaneId } from '../state/layout-slice';
 import { SettingsPanelContent } from '@/components/SettingsPanelContent';
+import EditorPaneHeader from '@/components/EditorPaneHeader';
 
 // ────────────────────────────────────────────────────────
 //  Lazy component imports (code-split, no SSR)
@@ -116,20 +119,30 @@ export const ExplorerPanelWrapper = memo(function ExplorerPanelWrapper({ data })
 //  Editor Panel Wrapper
 // ────────────────────────────────────────────────────────
 
-export const EditorPanelWrapper = memo(function EditorPanelWrapper({ data }) {
+export const EditorPanelWrapper = memo(function EditorPanelWrapper({ data, tabGroupId }) {
   const ctx = useWorkspacePanelContext();
+  const focusedPaneId = useAppSelector(selectFocusedEditorPaneId);
+  // Mark unfocused editor panes by paneId (not file path) so that two panes
+  // showing the SAME file still dim the non-focused one's collaborator cursors.
+  const unfocused = !!tabGroupId && focusedPaneId != null && tabGroupId !== focusedPaneId;
 
   return (
     <div
       data-panel-type="editor"
-      className="h-full w-full min-w-0 overflow-hidden"
+      data-pane-id={tabGroupId}
+      data-pane-unfocused={unfocused ? 'true' : undefined}
+      className="h-full w-full min-w-0 overflow-hidden flex flex-col"
       style={{ background: 'var(--bg-editor)' }}
     >
-      <EditorPanel
-        {...(ctx?.editorProps || {})}
-        filePath={data?.filePath}
-        dockingMode={true}
-      />
+      <EditorPaneHeader paneId={tabGroupId} filePath={data?.filePath} />
+      <div className="flex-1 min-h-0 min-w-0">
+        <EditorPanel
+          {...(ctx?.editorProps || {})}
+          filePath={data?.filePath}
+          paneId={tabGroupId}
+          dockingMode={true}
+        />
+      </div>
     </div>
   );
 });
@@ -255,13 +268,20 @@ export const GitPanelWrapper = memo(function GitPanelWrapper({ data }) {
 // ────────────────────────────────────────────────────────
 
 export const ExtensionsPanelWrapper = memo(function ExtensionsPanelWrapper({ data }) {
+  const ctx = useWorkspacePanelContext();
+  // The extension API (install/enable/disable/… handlers + live state) is
+  // provided once by the workspace page via panelProps → context. Spreading
+  // it here is what makes the marketplace Install button work; without it
+  // onInstall is undefined and clicks silently no-op.
+  const extensionApi = ctx?.extensionApi || {};
+
   return (
     <div
       data-panel-type="extensions"
       className="h-full w-full overflow-hidden"
       style={{ background: 'var(--bg-sidebar)' }}
     >
-      <ExtensionSidebar />
+      <ExtensionSidebar {...extensionApi} />
     </div>
   );
 });

@@ -331,6 +331,7 @@ function KnockBadge({ knocks, onAdmit, onDeny }) {
                 <button
                   onClick={() => onAdmit(knock.guestId)}
                   className="p-1 rounded bg-[#4ade8020] hover:bg-[#4ade8030] transition-colors"
+                  aria-label={`Admit ${knock.displayName}`}
                   title="Accept"
                 >
                   <Check className="w-3.5 h-3.5 text-[#4ade80]" />
@@ -338,6 +339,7 @@ function KnockBadge({ knocks, onAdmit, onDeny }) {
                 <button
                   onClick={() => onDeny(knock.guestId)}
                   className="p-1 rounded bg-[#ff575720] hover:bg-[#ff575730] transition-colors"
+                  aria-label={`Deny ${knock.displayName}`}
                   title="Deny"
                 >
                   <X className="w-3.5 h-3.5 text-[#ff5757]" />
@@ -361,6 +363,7 @@ function KnockingIndicator({ onCancel }) {
       <button
         onClick={onCancel}
         className="p-0.5 rounded hover:bg-[#fbbf2420] transition-colors"
+        aria-label="Cancel knock"
         title="Cancel"
       >
         <X className="w-3 h-3 text-[#fbbf24]" />

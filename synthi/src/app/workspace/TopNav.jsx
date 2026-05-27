@@ -51,6 +51,7 @@ function TopNav({
   const filesTree = useAppSelector(selectFilesTree);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchText, setSearchText] = useState('');
+  const [splitMenuOpen, setSplitMenuOpen] = useState(false);
 
   // Flatten files tree for search
   const allFiles = useMemo(() => {
@@ -85,8 +86,9 @@ function TopNav({
     setSearchOpen(false);
   };
 
-  const handleSplitEditor = () => {
-    dispatch(splitEditorPanel());
+  const handleSplit = (zone) => {
+    dispatch(splitEditorPanel({ zone }));
+    setSplitMenuOpen(false);
   };
 
   // Compact placeholder for the search field. When idle, prefer the
@@ -170,19 +172,53 @@ function TopNav({
         )}
 
         <div className="flex items-center gap-2 flex-shrink-0">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="hidden sm:inline-flex h-7 w-7 p-0 th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 transition-all rounded-md"
-          onClick={handleSplitEditor}
-          title="Split editor in two"
-          aria-label="Split editor in two"
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <rect x="1.25" y="2" width="11.5" height="10" rx="1.25" stroke="currentColor" strokeWidth="1.2" />
-            <path d="M7 2.6V11.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-          </svg>
-        </Button>
+        <Popover open={splitMenuOpen} onOpenChange={setSplitMenuOpen}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="hidden sm:inline-flex h-7 w-7 p-0 th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 transition-all rounded-md"
+              title="Split editor"
+              aria-label="Split editor"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <rect x="1.25" y="2" width="11.5" height="10" rx="1.25" stroke="currentColor" strokeWidth="1.2" />
+                <path d="M7 2.6V11.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              </svg>
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            sideOffset={6}
+            className="w-40 p-1"
+            style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}
+          >
+            <button
+              type="button"
+              onClick={() => handleSplit('right')}
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-[12px] rounded-md cursor-pointer hover:bg-white/5 transition-colors"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <rect x="1.25" y="2" width="11.5" height="10" rx="1.25" stroke="currentColor" strokeWidth="1.2" />
+                <path d="M7 2.6V11.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              </svg>
+              Split right
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSplit('bottom')}
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-[12px] rounded-md cursor-pointer hover:bg-white/5 transition-colors"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <rect x="1.25" y="2" width="11.5" height="10" rx="1.25" stroke="currentColor" strokeWidth="1.2" />
+                <path d="M2.6 7H11.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              </svg>
+              Split down
+            </button>
+          </PopoverContent>
+        </Popover>
 
         {/* Terminal Toggle - Icon Only */}
         <Button
@@ -190,6 +226,7 @@ function TopNav({
           size="sm"
           className="hidden sm:inline-flex h-7 w-7 p-0 th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 transition-all rounded-md"
           onClick={onToggleTerminal}
+          aria-label="Toggle terminal"
           title="Toggle Terminal"
         >
           <TerminalSquare className="w-4 h-4" strokeWidth={2} />
@@ -214,15 +251,30 @@ function TopNav({
             live in the build-controls island next to the status bar.
             Mobile (< sm): Stop + Restart replace the run button here. */}
             
-        {/* GPU Pipeline Toggle - desktop only */}
+        {/* GPU Pipeline Toggle - desktop only.
+            Persistent "GPU" label + on/off dot. Earlier we flipped the
+            label between "GPU" and "No GPU" — readable enough, but you
+            had to scan the text to know the state. A coloured dot is
+            parseable at a glance and matches how status is signalled
+            elsewhere in the chrome (status island, collab pill). */}
         <Button
           variant="ghost"
           size="sm"
-          className={`hidden xl:inline-flex h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${gpuModeEnabled ? 'th-btn-active' : ''}`}
+          aria-label={gpuModeEnabled ? "Disable GPU pipeline" : "Enable GPU pipeline"}
+          aria-pressed={gpuModeEnabled}
+          className={`hidden xl:inline-flex items-center gap-1.5 h-8 px-2 text-xs font-medium transition-colors rounded-lg cursor-pointer duration-300 hover:-translate-y-0.5 transition-all th-btn-ghost ${gpuModeEnabled ? 'th-btn-active' : ''}`}
           onClick={() => setGpuModeEnabled(!gpuModeEnabled)}
           title={gpuModeEnabled ? `GPU pipeline enabled (${gpuTarget.toUpperCase()})` : "GPU pipeline disabled"}
         >
-          {gpuModeEnabled ? `GPU ${gpuTarget.toUpperCase()}` : "No GPU"}
+          <span
+            aria-hidden="true"
+            className="inline-block w-1.5 h-1.5 rounded-full transition-colors"
+            style={{
+              background: gpuModeEnabled ? 'var(--accent-success)' : 'var(--text-muted)',
+              boxShadow: gpuModeEnabled ? '0 0 6px color-mix(in srgb, var(--accent-success) 60%, transparent)' : 'none',
+            }}
+          />
+          <span>GPU</span>
         </Button>
         {isRunning ? (
             <>
@@ -231,6 +283,7 @@ function TopNav({
                     size="sm"
                     className="sm:hidden h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5 text-red-500 hover:text-red-400"
                     onClick={onStop}
+                    aria-label="Stop running app"
                     title="Stop"
                 >
                     <Square className="w-3.5 h-3.5 fill-current" strokeWidth={2} />
@@ -240,6 +293,7 @@ function TopNav({
                     className="sm:hidden h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5"
                     onClick={onReload}
                     style={{ color: '#3d6dff' }}
+                    aria-label="Restart running app"
                     title="Restart"
                 >
                     <RotateCw className="w-3.5 h-3.5" strokeWidth={2} />
@@ -249,6 +303,7 @@ function TopNav({
                     size="sm"
                     disabled
                     aria-disabled="true"
+                    aria-label="App is running"
                     className="hidden sm:inline-flex h-7 w-7 p-0 rounded-md th-bg-app cursor-not-allowed opacity-40"
                     title="Running — use the stop/restart controls"
                 >
@@ -260,6 +315,7 @@ function TopNav({
                 size="sm"
                 className="h-7 w-7 p-0 transition-all rounded-md th-bg-app th-btn-ghost cursor-pointer duration-200 hover:-translate-y-0.5"
                 onClick={onRun}
+                aria-label="Run code"
                 title="Run Code"
             >
                 <Play className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
@@ -270,6 +326,8 @@ function TopNav({
             <Button
               variant="ghost"
               size="sm"
+              aria-label="Open settings"
+              title="Settings"
               className="h-7 w-7 p-0 th-btn-ghost duration-200 hover:-translate-y-0.5 transition-all cursor-pointer rounded-md"
             >
               <Settings className="w-3.5 h-3.5" strokeWidth={2} />

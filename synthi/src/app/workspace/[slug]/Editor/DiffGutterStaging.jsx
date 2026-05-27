@@ -300,11 +300,11 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
 
             const result = await dispatch(stageLines({ slug, filePath, patch }));
             if (stageLines.fulfilled.match(result)) {
-                const lineCount = endLine - startLine + 1;
                 // Mark this hunk as staged
                 stagedHunksRef.current.add(hunkKey(startLine, endLine));
-                toast.success(`Staged ${lineCount} line${lineCount > 1 ? 's' : ''}`);
-                // Re-apply decorations to reflect new checked state
+                // Silent on success — the gutter decoration flips to
+                // staged immediately, so a toast is redundant noise
+                // during high-frequency review work.
                 applyDecorationsRef.current?.();
             } else {
                 toast.error(result.error?.message || 'Failed to stage lines');
@@ -334,11 +334,9 @@ export default function DiffGutterStaging({ diffEditorRef, isCommitDiff, filePat
             // Use unstageLines to reverse-apply the patch from the index
             const result = await dispatch(unstageLines({ slug, filePath, patch }));
             if (unstageLines.fulfilled.match(result)) {
-                const lineCount = endLine - startLine + 1;
                 // Mark this hunk as unstaged
                 stagedHunksRef.current.delete(hunkKey(startLine, endLine));
-                toast.success(`Unstaged ${lineCount} line${lineCount > 1 ? 's' : ''}`);
-                // Re-apply decorations to reflect new unchecked state
+                // Silent on success — gutter decoration flips back.
                 applyDecorationsRef.current?.();
             } else {
                 toast.error(result.error?.message || 'Failed to unstage lines');

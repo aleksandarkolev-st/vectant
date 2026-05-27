@@ -133,7 +133,7 @@ function scheduleLazyFetch(path) {
     // Defer the import so we don't pull api.js into the critical init path.
     const p = (async () => {
         try {
-            const { default: api } = await import('@/services/api');
+            const { api } = await import('@/services/api');
             const content = await api.fetchFileContent(currentSlug, path);
             if (typeof content === 'string') {
                 await updateFile(path, content);

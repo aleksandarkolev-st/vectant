@@ -2,6 +2,7 @@
 
 import { memo, useCallback, useDeferredValue, useEffect, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
+import { toast } from 'sonner';
 import { BranchSelector } from '@/components/git/BranchSelector';
 import { selectCursorPosition } from '@/redux/uiSlice';
 import { selectActiveFile } from '@/redux/workspaceSlice';
@@ -11,21 +12,32 @@ import { useCollabStatus } from '@/hooks/useCollabStatus';
 import { useCollabSession } from '@/hooks/useCollabSession';
 import { useWorkspacePresence } from '@/hooks/useWorkspacePresence';
 import { getCurrentUser } from '@/services/userIdentity';
-import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw, GripVertical, X, Minimize2, Maximize2 } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Cpu, Zap, Loader2, Wifi, WifiOff, Radio, Users, Square, RotateCw, GripVertical, X, Minimize2, Maximize2, Boxes } from 'lucide-react';
 import { HealingIndicator } from '@/components/healing/HealingIndicator';
+import StatusIslandPresetDialog from '@/components/StatusIslandPresetDialog';
 import PresenceList from '@/components/collaboration/PresenceList';
 import OperatorStatusBarButton from './OperatorStatusBarButton';
 import VectantLogoCollapsed from './VectantLogoCollapsed';
 import { ContextMenu, useContextMenu } from '@/components/docking-wm/components/ContextMenu';
-import { toast } from 'sonner';
 import {
   selectHealingStatus,
   selectAppliedFixCount,
   selectPendingFixCount,
 } from '@/redux/healingSelectors';
+import {
+  STATUS_ISLAND_OFFSET_KEY,
+  STATUS_ISLAND_DOCK_PRESETS,
+  STATUS_ISLAND_MENU_PRESETS,
+  deleteStatusIslandSavedPreset,
+  doesPresetMatchState,
+  persistStatusIslandCompact,
+  persistStatusIslandDockPreset,
+  persistStatusIslandPositionLocked,
+  readStatusIslandPreferences,
+  subscribeStatusIslandPreferences,
+  upsertStatusIslandSavedPreset,
+} from '@/lib/statusIslandPreferences';
 
-const STATUS_ISLAND_OFFSET_KEY = 'synthi:status-island-offset';
-const STATUS_ISLAND_COMPACT_KEY = 'synthi:status-island-compact';
 // Mouse must travel ≥5px from the mousedown point before we promote a
 // press-and-hold into a drag — small enough that intentional drags feel
 // responsive, large enough that a sloppy click never moves the island.
@@ -43,6 +55,19 @@ const EXPAND_ANIM_MS = 760;
 //   160-460ms: shell scales down to seed
 //   340-540ms: logo fades in from opacity 0
 const COLLAPSE_ANIM_MS = 560;
+const STATUS_ISLAND_VIEWPORT_MARGIN_PX = 16;
+const STATUS_ISLAND_DEFAULT_BOTTOM_PX = 12;
+const STATUS_ISLAND_PILL_HEIGHT_PX = 28;
+const STATUS_ISLAND_COLLAPSED_WIDTH_PX = 90;
+const STATUS_ISLAND_COLLAPSED_HEIGHT_PX = 44;
+const STATUS_ISLAND_BRACKET_OVERHANG_PX = (STATUS_ISLAND_COLLAPSED_WIDTH_PX - STATUS_ISLAND_PILL_HEIGHT_PX) / 2;
+const STATUS_ISLAND_BUILD_CONTROLS_GAP_PX = 8;
+
+function clampWithinBounds(value, min, max) {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return value;
+  if (min > max) return (min + max) / 2;
+  return Math.min(Math.max(value, min), max);
+}
 
 /**
  * StatusBar Component - Synthi styled bottom status bar
@@ -122,6 +147,7 @@ function StatusBarInner({
   onProblemsClick,
   extensionStatusBarItems = [],
   vscodeServerState = 'disconnected',
+  onOpenFullSettings,
   // Build-controls island (desktop): renders Stop + Restart while a build
   // is running. Hidden when isRunning is falsy. On mobile these controls
   // live in the TopNav instead (sm:hidden vs hidden sm:flex).
@@ -135,17 +161,86 @@ function StatusBarInner({
   // isEntering as a derived value from the phase machine below so the
   // CSS classes stay coordinated with the phase transitions.
   const [isEntering, setIsEntering] = useState(true);
+  const rootRef = useRef(null);
+  const statusIslandShellRef = useRef(null);
+  const statusIslandRowRef = useRef(null);
+  const buildControlsRef = useRef(null);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const [expandedShellWidth, setExpandedShellWidth] = useState(640);
+  const [buildControlsWidth, setBuildControlsWidth] = useState(0);
 
   // ── Draggable island position ────────────────────────────────────
   // The pill sits centred at the bottom of the workspace by default,
-  // but the user can drag it via the grip handle to reposition. The
-  // offset is persisted to localStorage so the position survives
-  // reloads. A 5-px drag threshold (DRAG_THRESHOLD_PX) prevents a
-  // missed click on the handle from accidentally moving the island.
+  // but the user can drag it to reposition. The offset is persisted to
+  // localStorage so the position survives reloads. A 5-px drag threshold
+  // (DRAG_THRESHOLD_PX) prevents a missed click or right-press from
+  // accidentally moving the island.
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const offsetRef = useRef(offset);
   offsetRef.current = offset;
   const [isDragging, setIsDragging] = useState(false);
+  const [isCompact, setIsCompact] = useState(false);
+  const [isPositionLocked, setIsPositionLocked] = useState(false);
+  const [dockPreset, setDockPreset] = useState('center');
+  const [savedPresets, setSavedPresets] = useState([]);
+  const [isPresetDialogOpen, setIsPresetDialogOpen] = useState(false);
+  const [presetDialogInitialName, setPresetDialogInitialName] = useState('');
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !rootRef.current) return;
+
+    const updateViewportSize = () => {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setViewportSize({
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      });
+    };
+
+    updateViewportSize();
+
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(updateViewportSize)
+      : null;
+    resizeObserver?.observe(rootRef.current);
+    window.addEventListener('resize', updateViewportSize);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', updateViewportSize);
+    };
+  }, []);
+
+  useEffect(() => {
+    const measureFootprint = () => {
+      const rowWidth = Math.ceil(statusIslandRowRef.current?.scrollWidth || 0);
+      const shellWidth = Math.ceil(statusIslandShellRef.current?.scrollWidth || 0);
+      const nextShellWidth = Math.max(28, rowWidth || shellWidth || 640);
+      const nextBuildControlsWidth = buildControlsRef.current
+        ? Math.ceil(buildControlsRef.current.getBoundingClientRect().width) + STATUS_ISLAND_BUILD_CONTROLS_GAP_PX
+        : 0;
+
+      setExpandedShellWidth((prev) => (prev === nextShellWidth ? prev : nextShellWidth));
+      setBuildControlsWidth((prev) => (prev === nextBuildControlsWidth ? prev : nextBuildControlsWidth));
+    };
+
+    measureFootprint();
+
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(measureFootprint)
+      : null;
+
+    if (statusIslandRowRef.current) resizeObserver?.observe(statusIslandRowRef.current);
+    if (statusIslandShellRef.current) resizeObserver?.observe(statusIslandShellRef.current);
+    if (buildControlsRef.current) resizeObserver?.observe(buildControlsRef.current);
+    window.addEventListener('resize', measureFootprint);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', measureFootprint);
+    };
+  }, [isRunning]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -170,16 +265,139 @@ function StatusBarInner({
     }
   }, []);
 
-  const handleDragMouseDown = useCallback((event) => {
-    if (event.button !== 0) return; // left button only
+  const defaultCenterX = viewportSize.width / 2;
+  const defaultCenterY = viewportSize.height - STATUS_ISLAND_DEFAULT_BOTTOM_PX - (STATUS_ISLAND_PILL_HEIGHT_PX / 2);
+
+  const clampOffsetToViewport = useCallback((nextOffset) => {
+    if (!viewportSize.width || !viewportSize.height) return nextOffset;
+
+    const clampedCenterX = clampWithinBounds(
+      defaultCenterX + nextOffset.x,
+      STATUS_ISLAND_VIEWPORT_MARGIN_PX + (STATUS_ISLAND_COLLAPSED_WIDTH_PX / 2),
+      viewportSize.width - STATUS_ISLAND_VIEWPORT_MARGIN_PX - (STATUS_ISLAND_COLLAPSED_WIDTH_PX / 2),
+    );
+    const clampedCenterY = clampWithinBounds(
+      defaultCenterY + nextOffset.y,
+      STATUS_ISLAND_VIEWPORT_MARGIN_PX + (STATUS_ISLAND_COLLAPSED_HEIGHT_PX / 2),
+      viewportSize.height - STATUS_ISLAND_VIEWPORT_MARGIN_PX - (STATUS_ISLAND_COLLAPSED_HEIGHT_PX / 2),
+    );
+
+    return {
+      x: Math.round(clampedCenterX - defaultCenterX),
+      y: Math.round(clampedCenterY - defaultCenterY),
+    };
+  }, [defaultCenterX, defaultCenterY, viewportSize.height, viewportSize.width]);
+
+  useEffect(() => {
+    if (!viewportSize.width || !viewportSize.height) return;
+    const clampedOffset = clampOffsetToViewport(offsetRef.current);
+    if (clampedOffset.x === offsetRef.current.x && clampedOffset.y === offsetRef.current.y) return;
+    setOffset(clampedOffset);
+    persistOffset(clampedOffset);
+  }, [clampOffsetToViewport, persistOffset, viewportSize.height, viewportSize.width]);
+
+  const setPositionLocked = useCallback((valueOrUpdater) => {
+    setIsPositionLocked((prev) => {
+      const next = typeof valueOrUpdater === 'function'
+        ? Boolean(valueOrUpdater(prev))
+        : Boolean(valueOrUpdater);
+      persistStatusIslandPositionLocked(next);
+      return next;
+    });
+  }, []);
+
+  const setDockPresetAndPersist = useCallback((valueOrUpdater) => {
+    setDockPreset((prev) => {
+      const next = typeof valueOrUpdater === 'function'
+        ? valueOrUpdater(prev)
+        : valueOrUpdater;
+      const resolved = persistStatusIslandDockPreset(next);
+      return resolved;
+    });
+  }, []);
+
+  const computeDockedOffset = useCallback((preset) => {
+    const targetCenterX = (() => {
+      switch (preset) {
+        case 'left':
+          return STATUS_ISLAND_VIEWPORT_MARGIN_PX + (STATUS_ISLAND_COLLAPSED_WIDTH_PX / 2);
+        case 'right':
+          return viewportSize.width - STATUS_ISLAND_VIEWPORT_MARGIN_PX - (STATUS_ISLAND_COLLAPSED_WIDTH_PX / 2);
+        case 'center':
+        default:
+          return defaultCenterX;
+      }
+    })();
+
+    return clampOffsetToViewport({
+      x: targetCenterX - defaultCenterX,
+      y: 0,
+    });
+  }, [clampOffsetToViewport, defaultCenterX, viewportSize.width]);
+
+  const applyDockPreset = useCallback((preset, { persist = true } = {}) => {
+    const resolvedPreset = STATUS_ISLAND_DOCK_PRESETS.includes(preset) ? preset : 'free';
+    if (resolvedPreset === 'free') {
+      if (persist) {
+        setDockPresetAndPersist('free');
+      } else {
+        setDockPreset('free');
+      }
+      return;
+    }
+
+    const nextOffset = computeDockedOffset(resolvedPreset);
+    setOffset(nextOffset);
+    persistOffset(nextOffset);
+    if (persist) {
+      setDockPresetAndPersist(resolvedPreset);
+    } else {
+      setDockPreset(resolvedPreset);
+    }
+  }, [computeDockedOffset, persistOffset, setDockPresetAndPersist]);
+
+  const openFullSettings = useCallback(() => {
+    onOpenFullSettings?.();
+  }, [onOpenFullSettings]);
+
+  useEffect(() => {
+    if (!viewportSize.width || !viewportSize.height) return;
+    if (dockPreset === 'free') return;
+    applyDockPreset(dockPreset, { persist: false });
+  }, [applyDockPreset, dockPreset, viewportSize.height, viewportSize.width]);
+
+  const resetOffset = useCallback(() => {
+    setOffset({ x: 0, y: 0 });
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage?.removeItem(STATUS_ISLAND_OFFSET_KEY);
+      } catch {
+        // Ignore — the in-memory reset already happened.
+      }
+    }
+    setDockPresetAndPersist('center');
+  }, [setDockPresetAndPersist]);
+
+  const startIslandDrag = useCallback((event, button) => {
+    if (isPositionLocked) return;
+    if (event.button !== button) return;
     event.preventDefault();
     event.stopPropagation();
 
     const startX = event.clientX;
     const startY = event.clientY;
-    const startOffset = offsetRef.current;
+    const startOffset = clampOffsetToViewport(offsetRef.current);
     let promoted = false;
     let pendingOffset = startOffset;
+    let contextMenuBlocked = false;
+
+    const suppressContextMenu = (contextEvent) => {
+      contextEvent.preventDefault();
+      contextEvent.stopPropagation();
+      if (typeof contextEvent.stopImmediatePropagation === 'function') {
+        contextEvent.stopImmediatePropagation();
+      }
+    };
 
     const handleMouseMove = (moveEvent) => {
       const dx = moveEvent.clientX - startX;
@@ -191,15 +409,25 @@ function StatusBarInner({
         promoted = true;
         setIsDragging(true);
         document.body.style.cursor = 'grabbing';
+        document.body.style.userSelect = 'none';
+        document.addEventListener('contextmenu', suppressContextMenu, true);
+        contextMenuBlocked = true;
+        setDockPresetAndPersist('free');
       }
-      pendingOffset = { x: startOffset.x + dx, y: startOffset.y + dy };
+      pendingOffset = clampOffsetToViewport({ x: startOffset.x + dx, y: startOffset.y + dy });
       setOffset(pendingOffset);
     };
 
     const handleMouseUp = () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
+      if (contextMenuBlocked) {
+        window.setTimeout(() => {
+          document.removeEventListener('contextmenu', suppressContextMenu, true);
+        }, 0);
+      }
       document.body.style.cursor = '';
+      document.body.style.userSelect = '';
       if (promoted) {
         setIsDragging(false);
         persistOffset(pendingOffset);
@@ -208,22 +436,40 @@ function StatusBarInner({
 
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
-  }, [persistOffset]);
+  }, [clampOffsetToViewport, isPositionLocked, persistOffset, setDockPresetAndPersist]);
+
+  const handleDragMouseDown = useCallback((event) => {
+    startIslandDrag(event, 0);
+  }, [startIslandDrag]);
+
+  const handleLogoRightMouseDown = useCallback((event) => {
+    startIslandDrag(event, 2);
+  }, [startIslandDrag]);
 
   const handleDragDoubleClick = useCallback((event) => {
     event.preventDefault();
     event.stopPropagation();
-    setOffset({ x: 0, y: 0 });
-    if (typeof window !== 'undefined') {
-      try {
-        window.localStorage?.removeItem(STATUS_ISLAND_OFFSET_KEY);
-      } catch {
-        // Ignore — the in-memory reset already happened.
-      }
-    }
-  }, []);
+    resetOffset();
+  }, [resetOffset]);
 
-  const hasOffset = offset.x !== 0 || offset.y !== 0;
+  const clampedOffset = viewportSize.width && viewportSize.height
+    ? clampOffsetToViewport(offset)
+    : offset;
+  const hasOffset = clampedOffset.x !== 0 || clampedOffset.y !== 0;
+  const collapsedCenter = {
+    x: viewportSize.width ? defaultCenterX + clampedOffset.x : 0,
+    y: viewportSize.height ? defaultCenterY + clampedOffset.y : 0,
+  };
+  const expandedCenter = {
+    x: viewportSize.width
+      ? clampWithinBounds(
+          collapsedCenter.x,
+          STATUS_ISLAND_VIEWPORT_MARGIN_PX + STATUS_ISLAND_BRACKET_OVERHANG_PX + (expandedShellWidth / 2),
+          viewportSize.width - STATUS_ISLAND_VIEWPORT_MARGIN_PX - STATUS_ISLAND_BRACKET_OVERHANG_PX - buildControlsWidth - (expandedShellWidth / 2),
+        )
+      : 0,
+    y: collapsedCenter.y,
+  };
 
   // ── Logo / expanded phase machine ───────────────────────────────────
   // phase: 'logo'       → Vectant logo visible, pill hidden
@@ -309,27 +555,103 @@ function StatusBarInner({
   // ── Compact mode (persisted) ────────────────────────────────────────
   // Hides all text labels in the expanded island. Icons / dots /
   // counts / branch name / cursor info stay visible.
-  const [isCompact, setIsCompact] = useState(false);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const saved = window.localStorage?.getItem(STATUS_ISLAND_COMPACT_KEY);
-      if (saved === '1') setIsCompact(true);
-    } catch {
-      // Ignore
-    }
-  }, []);
-  const toggleCompact = useCallback(() => {
+  const setCompactMode = useCallback((valueOrUpdater) => {
     setIsCompact((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage?.setItem(STATUS_ISLAND_COMPACT_KEY, next ? '1' : '0');
-      } catch {
-        // Ignore
-      }
+      const next = typeof valueOrUpdater === 'function'
+        ? Boolean(valueOrUpdater(prev))
+        : Boolean(valueOrUpdater);
+      persistStatusIslandCompact(next);
       return next;
     });
   }, []);
+  const toggleCompact = useCallback(() => {
+    setCompactMode((prev) => !prev);
+  }, [setCompactMode]);
+
+  useEffect(() => {
+    const applyStoredPreferences = (preferences) => {
+      setIsCompact(Boolean(preferences?.isCompact));
+      setIsPositionLocked(Boolean(preferences?.isPositionLocked));
+      setDockPreset(preferences?.dockPreset || 'center');
+      setSavedPresets(Array.isArray(preferences?.savedPresets) ? preferences.savedPresets : []);
+    };
+
+    applyStoredPreferences(readStatusIslandPreferences());
+    return subscribeStatusIslandPreferences(applyStoredPreferences);
+  }, []);
+
+  const currentPresetState = {
+    isCompact,
+    isPositionLocked,
+    dockPreset,
+  };
+
+  const currentMenuPresetId = (() => {
+    for (const [presetId, preset] of Object.entries(STATUS_ISLAND_MENU_PRESETS)) {
+      if (doesPresetMatchState(preset, currentPresetState)) {
+        return presetId;
+      }
+    }
+    return 'custom';
+  })();
+
+  const activeSavedPreset = savedPresets.find((preset) => doesPresetMatchState(preset, currentPresetState)) || null;
+
+  const openSavePresetDialog = useCallback(() => {
+    const nextDefaultLabel = activeSavedPreset?.label || `Preset ${savedPresets.length + 1}`;
+    setPresetDialogInitialName(nextDefaultLabel);
+
+    if (typeof window !== 'undefined') {
+      window.setTimeout(() => setIsPresetDialogOpen(true), 0);
+      return;
+    }
+
+    setIsPresetDialogOpen(true);
+  }, [activeSavedPreset, savedPresets.length]);
+
+  const applyMenuPreset = useCallback((presetId) => {
+    const preset = STATUS_ISLAND_MENU_PRESETS[presetId];
+    if (!preset) return;
+    setCompactMode(preset.isCompact);
+    applyDockPreset(preset.dockPreset);
+    setPositionLocked(preset.isPositionLocked);
+  }, [applyDockPreset, setCompactMode, setPositionLocked]);
+
+  const applySavedPreset = useCallback((presetId) => {
+    const preset = savedPresets.find((entry) => entry.id === presetId);
+    if (!preset) return;
+    setCompactMode(preset.isCompact);
+    applyDockPreset(preset.dockPreset);
+    setPositionLocked(preset.isPositionLocked);
+  }, [applyDockPreset, savedPresets, setCompactMode, setPositionLocked]);
+
+  const saveCurrentAsPreset = useCallback((rawLabel) => {
+    const result = upsertStatusIslandSavedPreset({
+      label: rawLabel,
+      state: currentPresetState,
+      activePresetId: activeSavedPreset?.id || '',
+    });
+    if (result.error) {
+      toast('Preset name cannot be empty', { duration: 1800 });
+      return false;
+    }
+
+    setSavedPresets(result.presets);
+
+    toast(result.updated ? 'Status island preset updated' : 'Status island preset saved', {
+      duration: 1800,
+    });
+    return true;
+  }, [activeSavedPreset, currentPresetState]);
+
+  const deleteActiveSavedPreset = useCallback(() => {
+    if (!activeSavedPreset) return;
+
+    const result = deleteStatusIslandSavedPreset(activeSavedPreset.id);
+    setSavedPresets(result.presets);
+
+    toast(`Deleted preset "${activeSavedPreset.label}"`, { duration: 1800 });
+  }, [activeSavedPreset]);
 
   // PERF: Defer all Redux reads so StatusBar never blocks the editor
   const currentBranchRaw = useSelector(state => state.git?.currentBranch);
@@ -445,9 +767,11 @@ function StatusBarInner({
   // floating surface.
   // The stage sizes to its content (the pill) so the halo's inset-[-1px]
   // hugs the actual gradient ring instead of stretching across the
-  // wrapper's reserved min-w. The wrapper still reserves layout width
-  // via min-w-[640px] outside the stage.
-  const stageClassName = 'relative inline-block';
+  // wrapper's reserved min-w. We center the stage explicitly inside the
+  // wrapper so the brackets and collapsed V always share one reference
+  // frame, even while the wrapper flips between the 28px logo seed and
+  // the expanded min-width shell.
+  const stageClassName = 'status-island-stage relative inline-block';
 
   const dragHandle = (
     <button
@@ -469,84 +793,147 @@ function StatusBarInner({
   // CSS-friendly phase class so the wrapper can drive visibility of the
   // logo vs the pill without prop drilling.
   const phaseClass = `status-island-phase status-island-phase--${phase}`;
+  const visualCenter = phase === 'expanded' || phase === 'expanding'
+    ? expandedCenter
+    : collapsedCenter;
+  const positionerTransition = isDragging
+    ? 'none'
+    : phase === 'expanding'
+      ? 'left 720ms cubic-bezier(0.32, 0.72, 0, 1), top 720ms cubic-bezier(0.32, 0.72, 0, 1)'
+      : phase === 'collapsing'
+        ? 'left 560ms cubic-bezier(0.32, 0.72, 0, 1), top 560ms cubic-bezier(0.32, 0.72, 0, 1)'
+        : 'none';
 
   return (
-    <div className="status-bar-root pointer-events-none absolute inset-x-0 bottom-3 z-30 px-3 flex items-end justify-center" style={{ background: 'transparent' }}>
+    <div ref={rootRef} className="status-bar-root pointer-events-none absolute inset-0 z-30" style={{ background: 'transparent' }}>
       <div
-        className={`status-island-positioner pointer-events-auto ${phaseClass}`}
-        style={{ transform: `translate(${offset.x}px, ${offset.y}px)` }}
+        className={`status-island-positioner pointer-events-none ${phaseClass} ${isDragging ? 'is-dragging' : ''}`}
+        style={{
+          left: viewportSize.width ? `${visualCenter.x}px` : '50%',
+          top: viewportSize.height ? `${visualCenter.y}px` : `calc(100% - ${STATUS_ISLAND_DEFAULT_BOTTOM_PX + (STATUS_ISLAND_PILL_HEIGHT_PX / 2)}px)`,
+          // translateZ(0) + will-change pins the whole island onto its own
+          // persistent compositor layer. The pill, brackets, and the V's
+          // glow each blur onto their own sub-layers; without a stable
+          // parent layer, creating/destroying the V glow (as the logo
+          // wrapper mounts/unmounts at each phase flip) re-rasterizes the
+          // island's stacking context and re-snaps it ~1-2px to the device
+          // pixel grid — the vertical jump. Promoting the positioner keeps
+          // its screen position fixed through that churn. Position is
+          // unaffected (it's absolutely placed via left/top), so the island
+          // stays centered.
+          transform: 'translate(-50%, -50%) translateZ(0)',
+          willChange: 'transform',
+          transition: positionerTransition,
+        }}
       >
-        {/* Logo — rendered for all transition phases so the V fade-out
-            and bracket-slide animations are visible. Unmounted only
-            during the steady 'expanded' state. The wrapper is absolute-
-            centered over the pill so the morph happens in-place. */}
-        {hasCollapsedOnce && phase !== 'expanded' && (
-          <div className="vectant-logo-wrapper" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 25 }}>
-            <VectantLogoCollapsed
-              state={logoState}
-              phase={phase}
-              pendingCount={healingPending}
-              onActivate={triggerExpand}
-            />
-          </div>
-        )}
-        <div className="status-island-pill-wrapper relative w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))] flex justify-center">
-          {/* Build-controls island — hugs the right edge of the status island
-              wrapper, vertically centered. Floats just outside the status pill
-              so the status pill remains exactly centered on the page. Hidden
-              on mobile (the inline TopNav stop/restart handles that case). */}
-          {isRunning && (
-            <div className="absolute left-full ml-2 top-1/2 -translate-y-1/2 hidden sm:block z-20">
-              <div
-                className="flex items-center gap-1 h-7 px-1.5 rounded-full"
-                style={{
-                  /* Match the main status island: gradient-border via the
-                     padding-box/border-box trick. One ring, no double seam. */
-                  background:
-                    'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, ' +
-                    'linear-gradient(135deg, color-mix(in srgb, var(--attention-purple) 60%, transparent), color-mix(in srgb, var(--brand-stop-4) 50%, transparent)) border-box',
-                  border: '1px solid transparent',
-                  boxShadow:
-                    '0 16px 40px -8px rgba(0,0,0,0.85), ' +
-                    '0 0 18px -4px color-mix(in srgb, var(--attention-purple) 30%, transparent), ' +
-                    'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent)',
-                  backdropFilter: 'blur(14px) saturate(160%)',
-                  WebkitBackdropFilter: 'blur(14px) saturate(160%)',
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={onStop}
-                  title="Stop"
-                  className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer"
-                  style={{ color: 'var(--accent-danger)', '--hover-bg': 'color-mix(in srgb, var(--accent-danger) 14%, transparent)' }}
-                >
-                  <Square className="w-3 h-3 fill-current" strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  onClick={onReload}
-                  title="Restart"
-                  className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer"
-                  style={{ color: 'var(--brand-stop-4)', '--hover-bg': 'color-mix(in srgb, var(--brand-stop-4) 14%, transparent)' }}
-                >
-                  <RotateCw className="w-3 h-3" strokeWidth={2.25} />
-                </button>
-              </div>
-            </div>
-          )}
-          {/* Stage — owns the entrance scaleX. Wraps halo + pill so they
-              morph together and the gradient on the pill scales with its
-              silhouette (so the rounded ends carry brand colour at every
-              frame, instead of being cut off by a clip-path). */}
+        <div className="status-island-pill-wrapper relative mx-auto w-auto min-w-[640px] max-w-[min(1100px,_calc(100vw-32px))]">
+          {/* Stage — owns the entrance scaleX. Wraps halo + pill + the
+              two brackets so they morph together. The stage is inline-
+              block (sizes to the pill's outer box), so positioning the
+              brackets at right:100%+2px / left:100%+2px keeps a constant
+              2px gap that auto-tracks the pill's animating max-width
+              without per-bracket keyframes. */}
           <div className={stageClassName}>
+            {/* Build-controls island — anchored to the visible pill edge so
+                viewport clamping can account for the true rendered footprint. */}
+            {isRunning && (
+              <div ref={buildControlsRef} className="absolute left-full ml-2 top-1/2 -translate-y-1/2 hidden sm:block z-20 pointer-events-auto">
+                <div
+                  className="flex items-center gap-1 h-7 px-1.5 rounded-full"
+                  style={{
+                    background:
+                      'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, ' +
+                      'linear-gradient(135deg, color-mix(in srgb, var(--attention-purple) 60%, transparent), color-mix(in srgb, var(--brand-stop-4) 50%, transparent)) border-box',
+                    border: '1px solid transparent',
+                    boxShadow:
+                      '0 16px 40px -8px rgba(0,0,0,0.85), ' +
+                      '0 0 18px -4px color-mix(in srgb, var(--attention-purple) 30%, transparent), ' +
+                      'inset 0 1px 0 0 color-mix(in srgb, white 8%, transparent)',
+                    backdropFilter: 'blur(14px) saturate(160%)',
+                    WebkitBackdropFilter: 'blur(14px) saturate(160%)',
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={onStop}
+                    aria-label="Stop running app"
+                    title="Stop"
+                    className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer"
+                    style={{ color: 'var(--accent-danger)', '--hover-bg': 'color-mix(in srgb, var(--accent-danger) 14%, transparent)' }}
+                  >
+                    <Square className="w-3 h-3 fill-current" strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onReload}
+                    aria-label="Restart running app"
+                    title="Restart"
+                    className="status-island-action h-5 w-5 rounded-md flex items-center justify-center cursor-pointer"
+                    style={{ color: 'var(--brand-stop-4)', '--hover-bg': 'color-mix(in srgb, var(--brand-stop-4) 14%, transparent)' }}
+                  >
+                    <RotateCw className="w-3 h-3" strokeWidth={2.25} />
+                  </button>
+                </div>
+              </div>
+            )}
+            {/* Logo — rendered for all transition phases so the V fade-out
+                and bracket-slide animations are visible. Unmounted only
+                during the steady 'expanded' state. Keeping it inside the
+                stage makes the V and bracket pair share one centerline. */}
+            {hasCollapsedOnce && phase !== 'expanded' && (
+              <div className="vectant-logo-wrapper" style={{ position: 'absolute', left: '50%', top: '50%', transform: 'translate(-50%, -50%)', zIndex: 25 }}>
+                <VectantLogoCollapsed
+                  state={logoState}
+                  phase={phase}
+                  pendingCount={healingPending}
+                  onActivate={triggerExpand}
+                  onSecondaryDragStart={handleLogoRightMouseDown}
+                  isCompact={isCompact}
+                  onSetCompact={setCompactMode}
+                  isPositionLocked={isPositionLocked}
+                  onSetPositionLocked={setPositionLocked}
+                  dockPreset={dockPreset}
+                  onDockPresetChange={applyDockPreset}
+                  activePresetId={currentMenuPresetId}
+                  onPresetChange={applyMenuPreset}
+                  savedPresets={savedPresets}
+                  activeSavedPresetId={activeSavedPreset?.id || ''}
+                  activeSavedPresetLabel={activeSavedPreset?.label || ''}
+                  onApplySavedPreset={applySavedPreset}
+                  onSaveCurrentPreset={openSavePresetDialog}
+                  onDeleteSavedPreset={deleteActiveSavedPreset}
+                  canResetPosition={hasOffset}
+                  onResetPosition={resetOffset}
+                  onOpenFullSettings={openFullSettings}
+                  isDragging={isDragging}
+                />
+              </div>
+            )}
+            {hasCollapsedOnce && (
+              <>
+                <img
+                  src="/vectant/left_bracket_full.png"
+                  alt=""
+                  aria-hidden="true"
+                  className="island-bracket island-bracket--left"
+                  draggable={false}
+                />
+                <img
+                  src="/vectant/right_bracket_full.png"
+                  alt=""
+                  aria-hidden="true"
+                  className="island-bracket island-bracket--right"
+                  draggable={false}
+                />
+              </>
+            )}
             {/* Combined glow ring — opacity-only animated via
                 .status-island-entrance-halo. We let CSS own the entrance
                 opacity here; the post-entrance steady-state value also
                 lives in the keyframes' 100% (fill-mode: both). */}
             <div
               aria-hidden="true"
-              className={`status-island-halo-bg pointer-events-none absolute inset-[-1px] rounded-full ${isEntering ? 'status-island-entrance-halo' : ''}`}
+              className={`status-island-halo-bg pointer-events-none absolute inset-[-1px] rounded-[8px] ${isEntering ? 'status-island-entrance-halo' : ''}`}
               style={{
                 background: 'var(--brand-gradient-horizontal)',
                 filter: 'blur(5px)',
@@ -555,7 +942,8 @@ function StatusBarInner({
               }}
             />
             <div
-              className={`status-island relative z-10 h-7 rounded-full text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap ${isEntering ? 'status-island-entrance-shell status-island-entering' : ''} ${phase === 'collapsing' ? 'status-island-collapsing-shell' : ''} ${isCompact ? 'is-compact' : ''}`}
+              ref={statusIslandShellRef}
+              className={`status-island pointer-events-auto relative z-10 h-7 rounded-[6px] text-[11px] select-none font-[var(--font-ui)] whitespace-nowrap ${isEntering ? 'status-island-entrance-shell status-island-entering' : ''} ${phase === 'collapsing' ? 'status-island-collapsing-shell' : ''} ${isCompact ? 'is-compact' : ''}`}
               style={{
                 background:
                   'linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box, var(--brand-gradient-horizontal) border-box',
@@ -577,7 +965,7 @@ function StatusBarInner({
                   '-webkit-backdrop-filter 240ms ease-out',
               }}
             >
-              <div className={`status-island-row flex h-full items-center px-4 ${isEntering ? 'status-island-entrance-content' : ''} ${phase === 'collapsing' ? 'status-island-collapse-content' : ''}`}>
+              <div ref={statusIslandRowRef} className={`status-island-row flex h-full items-center px-4 ${isEntering ? 'status-island-entrance-content' : ''} ${phase === 'collapsing' ? 'status-island-collapse-content' : ''}`}>
               {/* ── LEFT ZONE — file/build state. flex-shrink-0 so a long
             language name in the right zone can't squeeze branch / problems
             into truncation. */}
@@ -754,13 +1142,15 @@ function StatusBarInner({
           <span className="status-island-label font-medium capitalize" style={{ color: 'var(--text-secondary)' }}>{language}</span>
         </div>
 
-        {/* AI-detected framework pill — also at the tail; full readout */}
+        {/* AI-detected framework pill — also at the tail; full readout.
+            Uses `Boxes` (not `Cpu`) to disambiguate from the Compiler
+            pill in the left zone, which already owns the Cpu glyph. */}
         {languageAndFramework && (
           <div
             className="flex shrink-0 items-center gap-1.5 px-2 py-0.5 rounded-md cursor-default transition-all"
             title={`Framework: ${languageAndFramework}`}
           >
-            <Cpu className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
+            <Boxes className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} />
             <span className="status-island-label font-medium" style={{ color: 'var(--text-secondary)' }}>{languageAndFramework}</span>
           </div>
         )}
@@ -784,6 +1174,13 @@ function StatusBarInner({
           </div>
         </div>
       </div>
+
+      <StatusIslandPresetDialog
+        open={isPresetDialogOpen}
+        initialValue={presetDialogInitialName}
+        onOpenChange={setIsPresetDialogOpen}
+        onSubmit={saveCurrentAsPreset}
+      />
     </div>
   );
 }

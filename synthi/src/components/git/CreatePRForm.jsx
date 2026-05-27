@@ -142,8 +142,11 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
           </div>
         </div>
         {head && base && head === base && (
-          <div className="flex items-center gap-1.5 text-[10px] text-amber-400 -mt-1">
-            <AlertCircle className="w-3 h-3 flex-shrink-0" />
+          <div
+            className="flex items-center gap-1.5 text-[10px] -mt-1"
+            style={{ color: 'var(--accent-warning)' }}
+          >
+            <AlertCircle className="w-3 h-3 flex-shrink-0" strokeWidth={2} />
             Head and base branches must be different
           </div>
         )}
@@ -250,8 +253,14 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
 
         {/* Error */}
         {createPRError && (
-          <div className="flex items-center gap-2 text-xs text-red-400 p-2 rounded-lg" style={{ background: 'rgba(239,68,68,0.08)' }}>
-            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+          <div
+            className="flex items-center gap-2 text-xs p-2 rounded-lg"
+            style={{
+              background: 'color-mix(in srgb, var(--accent-danger) 8%, transparent)',
+              color: 'var(--accent-danger)',
+            }}
+          >
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" strokeWidth={2} />
             {createPRError}
           </div>
         )}
@@ -261,7 +270,7 @@ export function CreatePRForm({ slug, onBack, onCreated }) {
           type="submit"
           disabled={createPRLoading || !title.trim() || !head || !base || head === base}
           className="w-full py-2 rounded-lg text-sm font-semibold transition disabled:opacity-50"
-          style={{ background: 'var(--accent-primary)', color: '#fff' }}
+          style={{ background: 'var(--accent-primary)', color: '#ffffff' }}
         >
           {createPRLoading ? 'Creating…' : 'Create Pull Request'}
         </button>

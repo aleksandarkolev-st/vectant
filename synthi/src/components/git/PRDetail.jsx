@@ -20,20 +20,38 @@ import { MarkdownRenderer, MarkdownEditor, MarkdownToolbar, handleMarkdownKeyDow
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// Returns a CSS color value (var or hex), not a className.  Callsites
+// spread it into `style={{ color: ... }}` so we stay on brand tokens.
 function prStateColor(pr) {
-  if (!pr) return 'text-gray-400';
-  if (pr.merged) return 'text-purple-400';
-  if (pr.state === 'closed') return 'text-red-400';
-  if (pr.draft) return 'text-gray-400';
-  return 'text-emerald-400';
+  if (!pr) return 'var(--text-muted)';
+  if (pr.merged) return 'var(--brand-stop-3)';
+  if (pr.state === 'closed') return 'var(--accent-danger)';
+  if (pr.draft) return 'var(--text-muted)';
+  return 'var(--accent-success)';
 }
 
 function prStateBg(pr) {
   if (!pr) return '';
-  if (pr.merged) return { background: 'rgba(139,92,246,0.15)', color: '#a78bfa', border: '1px solid rgba(139,92,246,0.3)' };
-  if (pr.state === 'closed') return { background: 'rgba(239,68,68,0.12)', color: '#f87171', border: '1px solid rgba(239,68,68,0.25)' };
-  if (pr.draft) return { background: 'rgba(161,161,170,0.12)', color: '#a1a1aa', border: '1px solid rgba(161,161,170,0.25)' };
-  return { background: 'rgba(52,211,153,0.12)', color: '#34d399', border: '1px solid rgba(52,211,153,0.25)' };
+  if (pr.merged) return {
+    background: 'color-mix(in srgb, var(--brand-stop-3) 15%, transparent)',
+    color: 'var(--brand-stop-3)',
+    border: '1px solid color-mix(in srgb, var(--brand-stop-3) 30%, transparent)',
+  };
+  if (pr.state === 'closed') return {
+    background: 'color-mix(in srgb, var(--accent-danger) 12%, transparent)',
+    color: 'var(--accent-danger)',
+    border: '1px solid color-mix(in srgb, var(--accent-danger) 25%, transparent)',
+  };
+  if (pr.draft) return {
+    background: 'color-mix(in srgb, var(--text-muted) 12%, transparent)',
+    color: 'var(--text-muted)',
+    border: '1px solid color-mix(in srgb, var(--text-muted) 25%, transparent)',
+  };
+  return {
+    background: 'color-mix(in srgb, var(--accent-success) 12%, transparent)',
+    color: 'var(--accent-success)',
+    border: '1px solid color-mix(in srgb, var(--accent-success) 25%, transparent)',
+  };
 }
 
 function prStateIcon(pr) {
@@ -67,22 +85,24 @@ function relativeTime(dateStr) {
 }
 
 function checkIcon(status, conclusion) {
-  if (status !== 'completed') return <Clock className="w-3.5 h-3.5 text-yellow-400" />;
-  if (conclusion === 'success') return <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />;
-  if (conclusion === 'failure' || conclusion === 'timed_out') return <XCircle className="w-3.5 h-3.5 text-red-400" />;
-  return <AlertCircle className="w-3.5 h-3.5 text-yellow-400" />;
+  if (status !== 'completed') return <Clock className="w-3.5 h-3.5" style={{ color: 'var(--accent-warning)' }} strokeWidth={2} />;
+  if (conclusion === 'success') return <CheckCircle2 className="w-3.5 h-3.5" style={{ color: 'var(--accent-success)' }} strokeWidth={2} />;
+  if (conclusion === 'failure' || conclusion === 'timed_out') return <XCircle className="w-3.5 h-3.5" style={{ color: 'var(--accent-danger)' }} strokeWidth={2} />;
+  return <AlertCircle className="w-3.5 h-3.5" style={{ color: 'var(--accent-warning)' }} strokeWidth={2} />;
 }
 
+// Returns a CSS color value (not a className) so the callsite uses
+// `style={{ color: fileDiffColor(s) }}` instead of a tailwind class.
 function fileDiffColor(status) {
   const map = {
-    added: 'text-emerald-400',
-    removed: 'text-red-400',
-    modified: 'text-amber-400',
-    renamed: 'text-sky-400',
-    copied: 'text-sky-400',
-    changed: 'text-amber-400',
+    added: 'var(--accent-success)',
+    removed: 'var(--accent-danger)',
+    modified: 'var(--accent-warning)',
+    renamed: 'var(--accent-secondary)',
+    copied: 'var(--accent-secondary)',
+    changed: 'var(--accent-warning)',
   };
-  return map[status] || 'text-gray-400';
+  return map[status] || 'var(--text-muted)';
 }
 
 function fileDiffLabel(status) {
@@ -183,7 +203,7 @@ function CommentBox({ onSubmit, placeholder = 'Leave a comment…', submitLabel 
           onClick={handleSubmit}
           disabled={!text.trim() || loading}
           className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition disabled:opacity-50"
-          style={{ background: 'var(--accent-primary)', color: '#fff' }}
+          style={{ background: 'var(--accent-primary)', color: '#ffffff' }}
         >
           <Send className="w-3 h-3" />
           {loading ? 'Posting…' : submitLabel}
@@ -215,9 +235,9 @@ function ReviewPanel({ slug, owner, repo, prNumber }) {
   };
 
   const eventOptions = [
-    { value: 'APPROVE', label: 'Approve', icon: ThumbsUp, color: 'text-emerald-400' },
-    { value: 'REQUEST_CHANGES', label: 'Request Changes', icon: ThumbsDown, color: 'text-amber-400' },
-    { value: 'COMMENT', label: 'Comment Only', icon: MessageSquare, color: 'text-sky-400' },
+    { value: 'APPROVE', label: 'Approve', icon: ThumbsUp, color: 'var(--accent-success)' },
+    { value: 'REQUEST_CHANGES', label: 'Request Changes', icon: ThumbsDown, color: 'var(--accent-warning)' },
+    { value: 'COMMENT', label: 'Comment Only', icon: MessageSquare, color: 'var(--accent-secondary)' },
   ];
 
   return (
@@ -375,8 +395,8 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
           style={{ background: 'rgba(245,158,66,0.06)', borderColor: 'rgba(245,158,66,0.25)' }}
         >
           <div className="flex items-center gap-2 mb-1.5">
-            <AlertCircle className="w-4 h-4 text-amber-400" />
-            <span className="text-xs font-semibold text-amber-400">Merge Conflicts</span>
+            <AlertCircle className="w-4 h-4" style={{ color: 'var(--accent-warning)' }} strokeWidth={2} />
+            <span className="text-xs font-semibold" style={{ color: 'var(--accent-warning)' }}>Merge Conflicts</span>
           </div>
           <p className="text-[11px] leading-relaxed mb-2" style={{ color: 'var(--text-secondary)' }}>
             This branch has conflicts that must be resolved before merging.
@@ -387,10 +407,12 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
               {conflictedFiles.map((f, i) => (
                 <li
                   key={i}
-                  className="flex items-center gap-1.5 px-2 py-1 rounded text-[11px] cursor-pointer hover:bg-amber-500/10 transition-colors"
+                  className="flex items-center gap-1.5 px-2 py-1 rounded text-[11px] cursor-pointer transition-colors"
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--accent-warning) 10%, transparent)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                   onClick={() => onFileClick?.(f.filename)}
                 >
-                  <AlertCircle className="w-3 h-3 text-amber-400 flex-shrink-0" />
+                  <AlertCircle className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent-warning)' }} strokeWidth={2} />
                   <span className="truncate" style={{ color: 'var(--text-primary)' }}>{f.filename}</span>
                 </li>
               ))}
@@ -423,7 +445,7 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
                 }
               }}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border transition-colors hover:opacity-90"
-              style={{ background: 'rgba(59,130,246,0.10)', borderColor: 'rgba(59,130,246,0.30)', color: '#60a5fa' }}
+              style={{ background: 'color-mix(in srgb, var(--accent-secondary) 10%, transparent)', borderColor: 'color-mix(in srgb, var(--accent-secondary) 30%, transparent)', color: 'var(--accent-secondary)' }}
             >
               <ArrowRightLeft className="w-3 h-3" />
               Resolve in Synthi
@@ -445,7 +467,7 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
       {/* ── Checking mergeability spinner ──── */}
       {isChecking && (
         <div className="rounded-lg p-3 border flex items-center gap-2" style={{ background: 'var(--bg-panel)', borderColor: 'var(--border-subtle)' }}>
-          <RefreshCw className="w-3.5 h-3.5 animate-spin text-yellow-400" />
+          <RefreshCw className="w-3.5 h-3.5 animate-spin" style={{ color: 'var(--accent-warning)' }} strokeWidth={2} />
           <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>Checking merge status…</span>
         </div>
       )}
@@ -454,8 +476,8 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
       {isBlocked && !hasConflicts && (
         <div className="rounded-lg p-3 border" style={{ background: 'rgba(239,68,68,0.06)', borderColor: 'rgba(239,68,68,0.25)' }}>
           <div className="flex items-center gap-2">
-            <Lock className="w-4 h-4 text-red-400" />
-            <span className="text-xs font-semibold text-red-400">Merge blocked</span>
+            <Lock className="w-4 h-4" style={{ color: 'var(--accent-danger)' }} strokeWidth={2} />
+            <span className="text-xs font-semibold" style={{ color: 'var(--accent-danger)' }}>Merge blocked</span>
           </div>
           <p className="text-[11px] mt-1" style={{ color: 'var(--text-secondary)' }}>
             Branch protection rules prevent merging. Required status checks or reviews may be missing.
@@ -472,8 +494,15 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
         }}
       >
         <div className="flex items-center gap-2 mb-2">
-          <GitMerge className={`w-4 h-4 ${canMerge ? 'text-emerald-400' : 'text-[#71717a]'}`} />
-          <span className={`text-xs font-semibold ${canMerge ? 'text-emerald-400' : 'text-[#71717a]'}`}>
+          <GitMerge
+            className="w-4 h-4"
+            style={{ color: canMerge ? 'var(--accent-success)' : 'var(--text-muted)' }}
+            strokeWidth={2}
+          />
+          <span
+            className="text-xs font-semibold"
+            style={{ color: canMerge ? 'var(--accent-success)' : 'var(--text-muted)' }}
+          >
             {isChecking ? 'Checking mergeability…' : hasConflicts ? 'Resolve conflicts to merge' : canMerge ? 'Ready to merge' : 'Cannot merge'}
           </span>
         </div>
@@ -483,14 +512,20 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
             onClick={handleMerge}
             disabled={mergePRLoading || !canMerge}
             className="flex-1 py-2 rounded-lg text-xs font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: canMerge ? '#238636' : '#3f3f46', color: '#fff' }}
+            style={{
+              background: canMerge ? 'var(--accent-success)' : 'var(--bg-elevated)',
+              color: canMerge ? '#ffffff' : 'var(--text-muted)',
+            }}
           >
             {mergePRLoading ? 'Merging…' : isChecking ? 'Checking…' : methodLabels[method]}
           </button>
           <button
             onClick={() => setShowOptions(v => !v)}
             className="px-2 py-2 rounded-lg text-xs border transition"
-            style={{ borderColor: 'rgba(52,211,153,0.3)', color: 'text-emerald-400' }}
+            style={{
+              borderColor: 'color-mix(in srgb, var(--accent-success) 30%, transparent)',
+              color: 'var(--accent-success)',
+            }}
           >
             <ChevronDown className="w-3.5 h-3.5" />
           </button>
@@ -512,7 +547,7 @@ function MergePanel({ slug, owner, repo, pr, files, onFileClick, refreshKey }) {
                   color: 'var(--text-primary)',
                 }}
               >
-                {m === method && <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0" />}
+                {m === method && <CheckCircle2 className="w-3 h-3 flex-shrink-0" style={{ color: 'var(--accent-success)' }} strokeWidth={2} />}
                 {m !== method && <div className="w-3 h-3 flex-shrink-0" />}
                 {methodLabels[m]}
               </button>
@@ -591,8 +626,10 @@ export function PRDetail({ slug, onBack }) {
       return;
     }
     const result = await dispatch(updatePR({ owner, repo, prNumber: pr.number, slug, updates: { title: newTitle.trim() } }));
-    if (updatePR.fulfilled.match(result)) {
-      toast.success('Title updated');
+    // Silent on success — the title in the header updates inline so the
+    // user can see it took. We only toast on failure.
+    if (!updatePR.fulfilled.match(result)) {
+      toast.error(result.payload?.error || 'Could not update title');
     }
     setEditingTitle(false);
   };
@@ -613,17 +650,21 @@ export function PRDetail({ slug, onBack }) {
 
   const handleComment = async (body) => {
     const result = await dispatch(postComment({ owner, repo, prNumber: pr.number, slug, body }));
-    if (postComment.fulfilled.match(result)) {
-      toast.success('Comment posted');
-    } else {
+    // Silent on success — the new comment appears in the list. Toast
+    // only on failure since the optimistic UI doesn't roll back.
+    if (!postComment.fulfilled.match(result)) {
       toast.error(result.payload?.error || 'Comment failed');
     }
   };
 
   const handleDeleteComment = async (commentId) => {
     if (!confirm('Delete this comment?')) return;
-    await dispatch(deleteComment({ owner, repo, commentId, slug }));
-    toast.success('Comment deleted');
+    const result = await dispatch(deleteComment({ owner, repo, commentId, slug }));
+    // Silent on success — the comment disappears from the list. Toast
+    // only on failure.
+    if (!deleteComment.fulfilled.match(result)) {
+      toast.error(result.payload?.error || 'Could not delete comment');
+    }
   };
 
   if (!pr && !prDetailLoading) return null;
@@ -711,7 +752,13 @@ export function PRDetail({ slug, onBack }) {
         )}
 
         {prDetailError && (
-          <div className="mx-3 mt-3 p-3 rounded-lg text-xs text-red-400" style={{ background: 'rgba(239,68,68,0.08)' }}>
+          <div
+            className="mx-3 mt-3 p-3 rounded-lg text-xs"
+            style={{
+              background: 'color-mix(in srgb, var(--accent-danger) 8%, transparent)',
+              color: 'var(--accent-danger)',
+            }}
+          >
             <AlertCircle className="w-3.5 h-3.5 inline mr-1" />{prDetailError}
           </div>
         )}
@@ -783,8 +830,9 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
       return;
     }
     const result = await dispatch(updatePR({ owner, repo, prNumber: pr.number, slug, updates: { body: newBody } }));
-    if (updatePR.fulfilled.match(result)) {
-      toast.success('Description updated');
+    // Silent on success — the rendered description swaps in inline.
+    if (!updatePR.fulfilled.match(result)) {
+      toast.error(result.payload?.error || 'Could not update description');
     }
     setEditingBody(false);
   };
@@ -821,7 +869,7 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
               className="flex-1 px-2 py-1 rounded-lg text-sm border outline-none"
               style={{ background: 'var(--bg-app)', borderColor: 'var(--accent-primary)', color: 'var(--text-primary)' }}
             />
-            <button onClick={onTitleSave} className="px-2 py-1 rounded-lg text-xs" style={{ background: 'var(--accent-primary)', color: '#fff' }}>Save</button>
+            <button onClick={onTitleSave} className="px-2 py-1 rounded-lg text-xs" style={{ background: 'var(--accent-primary)', color: '#ffffff' }}>Save</button>
             <button onClick={onTitleCancel} className="px-2 py-1 rounded-lg text-xs border" style={{ borderColor: 'var(--border-medium)', color: 'var(--text-muted)' }}>Cancel</button>
           </div>
         ) : (
@@ -850,8 +898,8 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
             <code className="font-mono">{pr.base?.ref}</code>
           </span>
           <span>{pr.commits} commit{pr.commits !== 1 ? 's' : ''}</span>
-          <span className="text-emerald-400">+{pr.additions}</span>
-          <span className="text-red-400">-{pr.deletions}</span>
+          <span style={{ color: 'var(--accent-success)' }}>+{pr.additions}</span>
+          <span style={{ color: 'var(--accent-danger)' }}>-{pr.deletions}</span>
         </div>
       </div>
 
@@ -937,7 +985,7 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
               rows={8}
             />
             <div className="flex gap-2">
-              <button onClick={handleBodySave} className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: 'var(--accent-primary)', color: '#fff' }}>Save</button>
+              <button onClick={handleBodySave} className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: 'var(--accent-primary)', color: '#ffffff' }}>Save</button>
               <button onClick={() => setEditingBody(false)} className="px-3 py-1.5 rounded-lg text-xs border" style={{ borderColor: 'var(--border-medium)', color: 'var(--text-muted)' }}>Cancel</button>
             </div>
           </div>
@@ -1031,7 +1079,7 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
           className="w-full py-2 rounded-lg text-xs font-medium border transition hover:opacity-80 disabled:opacity-50"
           style={{
             borderColor: pr.state === 'closed' ? 'rgba(52,211,153,0.3)' : 'rgba(239,68,68,0.3)',
-            color: pr.state === 'closed' ? '#34d399' : '#f87171',
+            color: pr.state === 'closed' ? 'var(--accent-success)' : 'var(--accent-danger)',
           }}
         >
           {closingPR ? 'Working…' : pr.state === 'closed' ? 'Reopen Pull Request' : 'Close Pull Request'}
@@ -1043,10 +1091,10 @@ function OverviewTab({ pr, slug, owner, repo, onEditTitle, editingTitle, newTitl
 
 function ReviewRow({ review }) {
   const icon = review.state === 'APPROVED'
-    ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+    ? <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--accent-success)' }} />
     : review.state === 'CHANGES_REQUESTED'
-    ? <XCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
-    : <MessageSquare className="w-3.5 h-3.5 text-sky-400 flex-shrink-0" />;
+    ? <XCircle className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--accent-danger)' }} />
+    : <MessageSquare className="w-3.5 h-3.5 flex-shrink-0" style={{ color: 'var(--accent-secondary)' }} />;
 
   return (
     <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-secondary)' }}>
@@ -1096,7 +1144,7 @@ function DiffHunkView({ hunk }) {
     <div className="border-t first:border-t-0" style={{ borderColor: 'var(--border-subtle)' }}>
       {/* Hunk header */}
       <div className="px-3 py-1 text-[10px] font-mono select-none flex items-center gap-2"
-        style={{ background: 'rgba(99,102,241,0.06)', color: '#818cf8' }}>
+        style={{ background: 'color-mix(in srgb, var(--accent-secondary) 8%, transparent)', color: 'var(--accent-secondary)' }}>
         <span>{hunk.header}</span>
         {hunk.context && <span className="opacity-60 truncate">{hunk.context}</span>}
       </div>
@@ -1107,8 +1155,8 @@ function DiffHunkView({ hunk }) {
             ? 'rgba(52,211,153,0.06)' : line.type === 'del'
             ? 'rgba(248,113,113,0.06)' : 'transparent';
           const textColor = line.type === 'add'
-            ? '#34d399' : line.type === 'del'
-            ? '#f87171' : 'var(--text-secondary, #a1a1aa)';
+            ? 'var(--accent-success)' : line.type === 'del'
+            ? 'var(--accent-danger)' : 'var(--text-secondary, #a1a1aa)';
           const prefix = line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' ';
           return (
             <div key={i} className="flex hover:brightness-110" style={{ background: bgColor }}>
@@ -1139,8 +1187,8 @@ function FilesTab({ files, pr }) {
       <div className="flex items-center justify-between mb-2">
         <p className="text-[10px] font-semibold" style={{ color: 'var(--text-muted)' }}>
           {files.length} file{files.length !== 1 ? 's' : ''} changed
-          {pr && <span className="ml-2 text-emerald-400">+{pr.additions}</span>}
-          {pr && <span className="ml-1 text-red-400">-{pr.deletions}</span>}
+          {pr && <span className="ml-2" style={{ color: 'var(--accent-success)' }}>+{pr.additions}</span>}
+          {pr && <span className="ml-1" style={{ color: 'var(--accent-danger)' }}>-{pr.deletions}</span>}
         </p>
         <div className="flex gap-0.5">
           <button onClick={() => setDiffViewMode('unified')} title="Unified diff"
@@ -1174,8 +1222,8 @@ function FilesTab({ files, pr }) {
               {file.previous_filename && (
                 <span className="text-[10px] opacity-50 truncate">(was {file.previous_filename})</span>
               )}
-              <span className="text-[10px] text-emerald-400 flex-shrink-0">+{file.additions}</span>
-              <span className="text-[10px] text-red-400 flex-shrink-0 ml-1">-{file.deletions}</span>
+              <span className="text-[10px] flex-shrink-0" style={{ color: 'var(--accent-success)' }}>+{file.additions}</span>
+              <span className="text-[10px] flex-shrink-0 ml-1" style={{ color: 'var(--accent-danger)' }}>-{file.deletions}</span>
               <ChevronDown
                 className="w-3 h-3 flex-shrink-0 ml-1 transition-transform"
                 style={{ transform: expandedFiles[file.filename] ? 'rotate(180deg)' : 'none', color: 'var(--text-muted)' }}
@@ -1193,7 +1241,7 @@ function FilesTab({ files, pr }) {
                   {file.patch.split('\n').map((line, i) => (
                     <div key={i}
                       style={{
-                        color: line.startsWith('+') ? '#34d399' : line.startsWith('-') ? '#f87171' : line.startsWith('@@') ? '#818cf8' : undefined,
+                        color: line.startsWith('+') ? 'var(--accent-success)' : line.startsWith('-') ? 'var(--accent-danger)' : line.startsWith('@@') ? 'var(--accent-secondary)' : undefined,
                         background: line.startsWith('+') ? 'rgba(52,211,153,0.06)' : line.startsWith('-') ? 'rgba(248,113,113,0.06)' : 'transparent',
                       }}>{line}</div>
                   ))}

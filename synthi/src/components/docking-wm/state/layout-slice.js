@@ -43,6 +43,7 @@ import {
   findFirstTabGroup,
   validateLayout,
 } from "../utils/layout-query";
+import { getEditorPanes, getEditorPaneIds } from "../utils/editor-panes";
 
 // ─── Initial State ──────────────────────────────────────
 
@@ -358,11 +359,14 @@ const layoutSlice = createSlice({
     },
 
     /**
-     * Split the editor into two side-by-side panes.
-     * If a second editor pane already exists, just focus it instead of
-     * creating a third one.
+     * Split the focused editor pane into a new side-by-side (or stacked) pane.
+     * The new pane opens the SAME file as the source pane (data.filePath copied);
+     * the new pane becomes focused. Supports N panes (no cap) and vertical splits.
+     * Payload: { zone?: 'right' | 'bottom' }  (default 'right')
      */
-    splitEditorPanel(state) {
+    splitEditorPanel(state, action) {
+      const zone = action?.payload?.zone === DROP_ZONE.BOTTOM ? DROP_ZONE.BOTTOM : DROP_ZONE.RIGHT;
+
       const editorGroups = [];
       for (const [nid, node] of Object.entries(state.nodes)) {
         if (node.type !== "tabgroup") continue;
@@ -371,39 +375,54 @@ const layoutSlice = createSlice({
         }
       }
 
-      if (editorGroups.length >= 2) {
-        const focusedEditor = editorGroups.find((group) => group.id === state.focusedTabGroupId);
-        const fallback = editorGroups.find((group) => group.id !== focusedEditor?.id) || editorGroups[1];
-        return {
-          ...state,
-          focusedTabGroupId: fallback?.id ?? state.focusedTabGroupId,
-        };
-      }
+      const sourceGroup =
+        editorGroups.find((g) => g.id === state.focusedTabGroupId) ||
+        editorGroups[0] ||
+        getAllTabGroups(state)[0];
+      const targetGroupId = sourceGroup?.id;
+      if (!targetGroupId) return state;
 
-      const targetGroupId =
-        editorGroups.find((group) => group.id === state.focusedTabGroupId)?.id ||
-        editorGroups[0]?.id ||
-        getAllTabGroups(state)[0]?.id;
-
-      if (!targetGroupId) {
-        return state;
-      }
+      // Copy the source pane's current file into the new pane.
+      const srcGroup = state.nodes[targetGroupId];
+      const srcEditorTabId =
+        (srcGroup.tabs || []).find((tid) => tid === srcGroup.activeTabId && state.tabs[tid]?.panelType === "editor") ||
+        (srcGroup.tabs || []).find((tid) => state.tabs[tid]?.panelType === "editor");
+      const srcFilePath = srcEditorTabId ? (state.tabs[srcEditorTabId]?.data?.filePath ?? null) : null;
 
       const tab = createTab({
         panelType: "editor",
         title: "",
         closable: false,
+        data: { filePath: srcFilePath },
       });
 
-      const next = {
+      let next = {
         ...state,
-        tabs: {
-          ...state.tabs,
-          [tab.id]: tab,
-        },
+        tabs: { ...state.tabs, [tab.id]: tab },
       };
 
-      return splitNode(next, targetGroupId, tab.id, DROP_ZONE.RIGHT, 0.5);
+      next = splitNode(next, targetGroupId, tab.id, zone, 0.5);
+
+      // Focus the new pane (the group that now contains the new tab).
+      const newGroup = findTabGroup(next, tab.id);
+      if (newGroup) next = { ...next, focusedTabGroupId: newGroup.id };
+      return next;
+    },
+
+    /**
+     * Set which file an editor pane displays (writes the pane's editor tab
+     * data.filePath). Payload: { paneId, filePath }.
+     */
+    setPaneFile(state, action) {
+      const { paneId, filePath } = action.payload || {};
+      const group = state.nodes[paneId];
+      if (!group || group.type !== "tabgroup") return state;
+      const editorTabId =
+        (group.tabs || []).find((tid) => tid === group.activeTabId && state.tabs[tid]?.panelType === "editor") ||
+        (group.tabs || []).find((tid) => state.tabs[tid]?.panelType === "editor");
+      if (!editorTabId) return state;
+      const tab = state.tabs[editorTabId];
+      state.tabs[editorTabId] = { ...tab, data: { ...(tab.data || {}), filePath } };
     },
 
     // ── Batch cleanup ──────────────────────────────────
@@ -441,6 +460,7 @@ export const {
   setFocusedTabGroup,
   restoreEditorPanel,
   splitEditorPanel,
+  setPaneFile,
   cleanupLayout,
 } = layoutSlice.actions;
 
@@ -517,6 +537,28 @@ export const makeSelectTabGroupTabs = (tabGroupId) =>
       return group.tabs.map((tid) => tabs[tid]).filter(Boolean);
     },
   );
+
+/** Ordered editor panes: { paneId, number, filePath, color } (memoized). */
+export const selectEditorPanes = createSelector([selectLayout], (layout) =>
+  getEditorPanes(layout),
+);
+
+/** The focused editor pane id, falling back to the first editor pane. */
+export const selectFocusedEditorPaneId = createSelector([selectLayout], (layout) => {
+  const ids = getEditorPaneIds(layout);
+  const focused = layout.focusedTabGroupId;
+  return focused && ids.includes(focused) ? focused : (ids[0] ?? null);
+});
+
+/**
+ * The focused editor pane's current file path (a string), so consumers can
+ * mirror it without subscribing to the whole pane array (which churns a new
+ * reference on every layout mutation, e.g. splitter drags).
+ */
+export const selectFocusedPaneFilePath = createSelector(
+  [selectEditorPanes, selectFocusedEditorPaneId],
+  (panes, paneId) => (paneId ? (panes.find((p) => p.paneId === paneId)?.filePath ?? null) : null),
+);
 
 // ─── Reducer ────────────────────────────────────────────
 
