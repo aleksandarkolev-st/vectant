@@ -1838,12 +1838,135 @@ async function readWorkerProofArtifact(proofArtifactPath) {
   }
 }
 
-async function proofArtifactsFromGpuProof(proof) {
+async function listWorkerProofArtifactPaths() {
+  if (CFG.mcpTransport !== 'docker') return [];
+  const found = await execTextAllowPartialOutput(
+    'docker',
+    [
+      'exec',
+      '-w',
+      '/',
+      CFG.workerContainer,
+      'sh',
+      '-c',
+      'find /tmp -path "*/.synthi/gpu-hmr/proofs/gpu-proof_*.json" -type f -print 2>/dev/null',
+    ],
+    120000,
+  );
+  return String(found ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+async function readWorkerProofArtifactAtContainerPath(containerPath) {
+  const fileName = proofArtifactFileName(containerPath);
+  if (!fileName) {
+    return { proofArtifactPath: containerPath, containerPath, found: false, reason: 'invalid_proof_artifact_path' };
+  }
+  let text = '';
+  try {
+    text = await execText('docker', ['exec', '-w', '/', CFG.workerContainer, 'cat', containerPath], 120000);
+  } catch (err) {
+    return {
+      proofArtifactPath: containerPath,
+      fileName,
+      containerPath,
+      found: false,
+      reason: 'proof_artifact_unreadable',
+      error: err?.message ?? String(err),
+    };
+  }
+  try {
+    return {
+      proofArtifactPath: proofArtifactRelativePath(containerPath),
+      fileName,
+      containerPath,
+      found: true,
+      artifact: JSON.parse(text),
+    };
+  } catch (err) {
+    return {
+      proofArtifactPath: containerPath,
+      fileName,
+      containerPath,
+      found: false,
+      reason: 'proof_artifact_invalid_json',
+      error: err?.message ?? String(err),
+    };
+  }
+}
+
+function proofArtifactRelativePath(containerPath) {
+  const normalized = String(containerPath ?? '').replaceAll('\\', '/');
+  const marker = '/.synthi/gpu-hmr/proofs/';
+  const index = normalized.indexOf(marker);
+  return index >= 0 ? normalized.slice(index + 1) : normalized;
+}
+
+function proofArtifactCreatedAt(record) {
+  const stageTimes = Array.isArray(record?.artifact?.stageResults)
+    ? record.artifact.stageResults
+        .flatMap((stage) => [stage?.startedAt, stage?.completedAt])
+        .filter((value) => typeof value === 'string')
+        .map((value) => Date.parse(value))
+        .filter(Number.isFinite)
+    : [];
+  return stageTimes.length ? Math.max(...stageTimes) : 0;
+}
+
+async function latestWorkerProofArtifactForWorkspace(workspaceSlug) {
+  const paths = await listWorkerProofArtifactPaths();
+  const records = [];
+  for (const containerPath of paths) {
+    const record = await readWorkerProofArtifactAtContainerPath(containerPath);
+    if (record?.found && record.artifact?.workspaceSlug === workspaceSlug) {
+      records.push(record);
+    }
+  }
+  records.sort((a, b) => proofArtifactCreatedAt(b) - proofArtifactCreatedAt(a));
+  return records[0] ?? null;
+}
+
+async function proofArtifactsFromGpuProof(proof, workspaceSlug = CFG.slug) {
   const proofPath = proof?.proofArtifactPath;
   if (typeof proofPath !== 'string' || !proofPath.trim()) {
-    return [{ proofArtifactPath: proofPath ?? null, found: false, reason: 'missing_proof_artifact_path' }];
+    const fallback = await latestWorkerProofArtifactForWorkspace(workspaceSlug);
+    return fallback
+      ? [fallback]
+      : [{ proofArtifactPath: proofPath ?? null, found: false, reason: 'missing_proof_artifact_path' }];
   }
   return [await readWorkerProofArtifact(proofPath)];
+}
+
+function proofStateFromArtifactRecord(record) {
+  const artifact = record?.artifact;
+  if (!record?.found || !artifact || typeof artifact !== 'object') return null;
+  return {
+    schemaVersion: artifact.schemaVersion ?? null,
+    resultState: artifact.resultState ?? null,
+    degradedState: artifact.degradedState ?? null,
+    degradedReason: artifact.degradedReason ?? null,
+    label: artifact.label ?? null,
+    proofId: artifact.proofId ?? null,
+    proofArtifactPath: record.proofArtifactPath ?? proofArtifactRelativePath(record.containerPath),
+  };
+}
+
+async function recordGpuProofWithArtifactFallback(phase, name, hmr) {
+  const proof = hmr?.gpu_proof ?? null;
+  if (typeof proof?.resultState === 'string' && proof.resultState.startsWith('gpu-hmr-')) {
+    record(phase, name, 'pass', summarizeGpuProof(proof));
+    return { proof, artifacts: null };
+  }
+  const artifacts = await proofArtifactsFromGpuProof(proof);
+  const artifactProof = proofStateFromArtifactRecord(artifacts.find((record) => record?.found));
+  if (artifactProof?.resultState) {
+    record(phase, name, 'pass', `${summarizeGpuProof(artifactProof)} source=proof-artifact`);
+    return { proof: artifactProof, artifacts };
+  }
+  record(phase, name, 'warn', summarizeGpuProof(proof));
+  return { proof, artifacts };
 }
 
 function summarizeProofArtifactRecords(records) {
@@ -2159,8 +2282,9 @@ async function phaseFlow(ctx) {
     return record('FLOW', 'inward compile dispatch', 'warn', baseline.reason);
   }
   record('FLOW', 'inward compile dispatch', 'pass');
-  const baselineGpuProof = recordGpuProof('FLOW', 'inward truthful proof state', baseline.hmr);
-  const baselineProofArtifacts = await proofArtifactsFromGpuProof(baselineGpuProof);
+  const baselineProofState = await recordGpuProofWithArtifactFallback('FLOW', 'inward truthful proof state', baseline.hmr);
+  const baselineGpuProof = baselineProofState.proof;
+  const baselineProofArtifacts = baselineProofState.artifacts ?? await proofArtifactsFromGpuProof(baselineGpuProof);
   record(
     'FLOW',
     'inward proof artifact collection',
@@ -2234,8 +2358,9 @@ async function phaseFlow(ctx) {
     return record('FLOW', 'outward edit dispatch', 'warn', flip.reason);
   }
   record('FLOW', 'outward edit dispatch', 'pass');
-  const flipGpuProof = recordGpuProof('FLOW', 'outward truthful proof state', flip.hmr);
-  const flipProofArtifacts = await proofArtifactsFromGpuProof(flipGpuProof);
+  const flipProofState = await recordGpuProofWithArtifactFallback('FLOW', 'outward truthful proof state', flip.hmr);
+  const flipGpuProof = flipProofState.proof;
+  const flipProofArtifacts = flipProofState.artifacts ?? await proofArtifactsFromGpuProof(flipGpuProof);
   record(
     'FLOW',
     'outward proof artifact collection',
@@ -2906,6 +3031,17 @@ async function selfCheck() {
     return;
   }
   const proofArtifactName = proofArtifactFileName('.synthi/gpu-hmr/proofs/gpu-proof_0123456789abcdef0123456789abcdef.json');
+  const artifactProof = proofStateFromArtifactRecord({
+    found: true,
+    containerPath: '/tmp/work/.synthi/gpu-hmr/proofs/gpu-proof_0123456789abcdef0123456789abcdef.json',
+    artifact: {
+      schemaVersion: 'synthi.gpu.hmr.proof.v1',
+      proofId: 'gpu-proof:test',
+      resultState: 'gpu-hmr-symbol-bound',
+      degradedState: 'gpu-hmr-dispatch-unobserved',
+      degradedReason: 'runtime_dispatch_not_observed',
+    },
+  });
   const ownership = runtimeOwnershipEvidence(
     '[gpu-reload] runtime_ownership label=gpu-hmr-partial partial=true artifact=x expected_symbols=kernel_a,kernel_b touched_symbols=kernel_a,kernel_b retired_modules=1 replaced_primary=false\n',
   );
@@ -2916,6 +3052,8 @@ async function selfCheck() {
   if (
     proofArtifactName !== 'gpu-proof_0123456789abcdef0123456789abcdef.json'
     || proofArtifactFileName('/tmp/not-a-proof.json') !== null
+    || artifactProof?.proofArtifactPath !== '.synthi/gpu-hmr/proofs/gpu-proof_0123456789abcdef0123456789abcdef.json'
+    || artifactProof?.resultState !== 'gpu-hmr-symbol-bound'
     || ownership.scopeProvenCount !== 1
     || ownership.primaryRetainedCount !== 1
     || !sessionEvidence.consistent
