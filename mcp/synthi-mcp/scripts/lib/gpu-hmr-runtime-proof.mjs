@@ -82,6 +82,14 @@ function runtimeSessionIdsFromObservation(observation = {}) {
   ]);
 }
 
+function streamScopeObserved(streamScope, streamIds) {
+  if (streamScope === 'none') {
+    return streamIds.length === 1 && streamIds[0] === 'none';
+  }
+  if (streamScope !== 'stream' && streamScope !== 'affected') return false;
+  return streamIds.length > 0 && !streamIds.includes('none');
+}
+
 function runtimeHostIdentityEvidenceRefs(refs) {
   return compactStringList(refs).filter((ref) => /^worker-log:host_identity:/i.test(ref));
 }
@@ -517,11 +525,10 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     ? observation.streamScope.trim()
     : null;
   const streamIds = compactStringList(observation.streamIds);
-  const streamScopeObserved =
-    streamScope === 'none'
-    || ((streamScope === 'stream' || streamScope === 'affected') && streamIds.length > 0);
-  const streamOrderingRequested = observation.streamOrderingProven === true;
-  const streamOrderingProven = streamOrderingRequested && streamScopeObserved;
+  const streamScopeEvidenceObserved = streamScopeObserved(streamScope, streamIds);
+  const streamOrderingRequested =
+    observation.streamOrderingRequested === true || observation.streamOrderingProven === true;
+  const streamOrderingProven = streamOrderingRequested && streamScopeEvidenceObserved;
   const retirementTracked = observation.retirementTracked === true;
   const oldGenerationRetired = observation.oldGenerationRetired === true;
   const evidenceRefs = compactStringList(observation.evidenceRefs);
@@ -618,7 +625,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
               ? 'epoch_changed_entries_not_collected'
               : !streamOrderingRequested
                 ? 'epoch_stream_ordering_not_collected'
-                : !streamScopeObserved
+                : !streamScopeEvidenceObserved
                   ? 'epoch_stream_scope_not_collected'
                   : !evidenceObserved
                     ? 'epoch_evidence_refs_not_collected'

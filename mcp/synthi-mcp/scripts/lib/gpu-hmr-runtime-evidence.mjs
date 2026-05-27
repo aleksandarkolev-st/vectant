@@ -39,6 +39,14 @@ function commaList(value) {
   return compactStringList(value.split(','));
 }
 
+function streamScopeSupported(streamScope, streamIds) {
+  if (streamScope === 'none') {
+    return streamIds.length === 1 && streamIds[0] === 'none';
+  }
+  if (streamScope !== 'stream' && streamScope !== 'affected') return false;
+  return streamIds.length > 0 && !streamIds.includes('none');
+}
+
 function epochRecord(line) {
   const fields = parseRuntimeKeyValues(line);
   return {
@@ -112,13 +120,13 @@ export function runtimeEpochSwapEvidence(lines) {
   const oldGenerationRetired = publicationRetirementComplete || retirement !== null;
   const streamScope = latestPublication?.streamScope ?? null;
   const streamIds = latestPublication?.streamIds ?? [];
-  const streamScopeSupported =
-    streamScope === 'none'
-    || ((streamScope === 'stream' || streamScope === 'affected') && streamIds.length > 0);
-  const streamOrderingProven =
+  const streamScopeEvidenceSupported = streamScopeSupported(streamScope, streamIds);
+  const streamOrderingRequested =
     latestPublication?.streamOrderingProven === true
-    && latestPublication?.drainResult === 'synced'
-    && streamScopeSupported;
+    && latestPublication?.drainResult === 'synced';
+  const streamOrderingProven =
+    streamOrderingRequested
+    && streamScopeEvidenceSupported;
 
   return {
     total_count: records.length,
@@ -137,9 +145,10 @@ export function runtimeEpochSwapEvidence(lines) {
     retirement_tracked: retirementTracked,
     retirement_not_required: publicationRetirementComplete,
     old_generation_retired: oldGenerationRetired,
+    stream_ordering_requested: streamOrderingRequested,
     stream_ordering_proven: streamOrderingProven,
     stream_scope: streamScope,
-    stream_scope_supported: streamScopeSupported,
+    stream_scope_supported: streamScopeEvidenceSupported,
     stream_ids: streamIds,
     drain_result: latestPublication?.drainResult ?? null,
     latest_publication: latestPublication,
@@ -162,6 +171,7 @@ export function epochSwapProofFromRuntimeEvidence(lines) {
     runtimeSessionObserved: evidence.runtime_session_observed,
     runtimeSessionIds: evidence.runtime_session_ids,
     runtimeSessionConsistent: evidence.runtime_session_consistent,
+    streamOrderingRequested: evidence.stream_ordering_requested,
     streamOrderingProven: evidence.stream_ordering_proven,
     streamScope: evidence.stream_scope,
     streamIds: evidence.stream_ids,

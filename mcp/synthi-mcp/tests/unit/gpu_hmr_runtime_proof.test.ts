@@ -832,6 +832,41 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBeNull();
   });
 
+  it("accepts no-stream epoch ordering only when no affected streams are explicitly recorded", () => {
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=none stream_ids=none stream_ordering_proven=true drain_result=synced drain_elapsed_ms=0 drain_budget_ms=2000",
+    ]);
+
+    expect(evidence.stream_scope_supported).toBe(true);
+    expect(evidence.stream_ids).toEqual(["none"]);
+    expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
+    expect(proof.degradedState).toBeNull();
+  });
+
+  it("does not prove no-stream epoch ordering when the no-stream assertion is omitted", () => {
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=none stream_ordering_proven=true drain_result=synced drain_elapsed_ms=0 drain_budget_ms=2000",
+    ]);
+
+    expect(evidence.stream_scope_supported).toBe(false);
+    expect(evidence.stream_ordering_proven).toBe(false);
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_stream_scope_not_collected");
+  });
+
+  it("does not prove no-stream epoch ordering when stream ids contradict the scope", () => {
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=none stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=0 drain_budget_ms=2000",
+    ]);
+
+    expect(evidence.stream_scope_supported).toBe(false);
+    expect(evidence.stream_ordering_proven).toBe(false);
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_stream_scope_not_collected");
+  });
+
   it("downgrades runtime epoch evidence when stream ordering is missing from the publication", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
       "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash_before=0xaaa dispatch_table_hash_after=0xabc dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=true stream_scope=context",
@@ -852,7 +887,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.stream_scope_supported).toBe(false);
     expect(proof.resultState).toBe("gpu-hmr-abi-proven");
     expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
-    expect(proof.degradedReason).toBe("epoch_stream_ordering_not_collected");
+    expect(proof.degradedReason).toBe("epoch_stream_scope_not_collected");
   });
 
   it("does not prove epoch swap from boolean stream ordering without evidence refs", () => {
