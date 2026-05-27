@@ -89,7 +89,12 @@ function deterministicOutputOracle() {
 function preservedHostProof() {
   return classifyGpuHmrHostPreservationProof({
     identityChecksPassed: true,
-    identityEvidenceRefs: ["identity-proof:test"],
+    identitySnapshotObserved: true,
+    requiredIdentityRolesObserved: true,
+    identityEvidenceRefs: [
+      "worker-log:host_identity:core_state",
+      "worker-log:host_identity:stream",
+    ],
   });
 }
 
@@ -356,22 +361,56 @@ describe("GPU HMR runtime output proof classification", () => {
   it("reports host-preservation-proven only when identity checks pass", () => {
     const proof = classifyGpuHmrHostPreservationProof({
       identityChecksPassed: true,
-      identityEvidenceRefs: ["identity-proof:1"],
+      identitySnapshotObserved: true,
+      requiredIdentityRolesObserved: true,
+      identityEvidenceRefs: [
+        "worker-log:host_identity:core_state",
+        "worker-log:host_identity:stream",
+      ],
     });
 
     expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
     expect(proof.degradedState).toBeNull();
-    expect(proof.identityEvidenceRefs).toEqual(["identity-proof:1"]);
+    expect(proof.runtimeIdentityEvidenceRefs).toEqual([
+      "worker-log:host_identity:core_state",
+      "worker-log:host_identity:stream",
+    ]);
   });
 
   it("does not prove host preservation from identity booleans without evidence refs", () => {
     const proof = classifyGpuHmrHostPreservationProof({
       identityChecksPassed: true,
+      identitySnapshotObserved: true,
+      requiredIdentityRolesObserved: true,
     });
 
     expect(proof.resultState).toBeNull();
     expect(proof.degradedReason).toBe("host_identity_evidence_refs_not_collected");
     expect(proof.identityEvidenceObserved).toBe(false);
+  });
+
+  it("does not prove host preservation from asserted checks without runtime snapshots", () => {
+    const proof = classifyGpuHmrHostPreservationProof({
+      identityChecksPassed: true,
+      identityEvidenceRefs: ["worker-log:host_identity:core_state"],
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("host_identity_snapshots_not_collected");
+    expect(proof.identitySnapshotObserved).toBe(false);
+  });
+
+  it("does not prove host preservation from non-runtime identity evidence refs", () => {
+    const proof = classifyGpuHmrHostPreservationProof({
+      identityChecksPassed: true,
+      identitySnapshotObserved: true,
+      requiredIdentityRolesObserved: true,
+      identityEvidenceRefs: ["identity-proof:1"],
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("host_identity_evidence_refs_not_collected");
+    expect(proof.runtimeIdentityEvidenceRefs).toEqual([]);
   });
 
   it("does not prove ABI without collected metadata evidence", () => {
@@ -849,10 +888,16 @@ describe("GPU HMR runtime output proof classification", () => {
     ]);
 
     expect(evidence.identity_checks_passed).toBe(true);
+    expect(evidence.identity_snapshot_observed).toBe(true);
     expect(evidence.preserved_roles).toEqual(["core_state", "renderer", "stream"]);
     expect(evidence.preserved_role_categories).toEqual(["host_state", "runtime_resource"]);
     expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
     expect(proof.degradedState).toBeNull();
+    expect(proof.runtimeIdentityEvidenceRefs).toEqual([
+      "worker-log:host_identity:core_state",
+      "worker-log:host_identity:renderer",
+      "worker-log:host_identity:stream",
+    ]);
   });
 
   it("scopes host preservation identity snapshots to the expected runtime session", () => {
@@ -1151,6 +1196,27 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(proof.resultState).toBe("gpu-hmr-full-runtime-proven");
     expect(proof.fullRuntimeProven).toBe(true);
+  });
+
+  it("does not accept claimed host preservation without runtime identity snapshot provenance", () => {
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof: safeDispatchProof(),
+      outputProof: classifyGpuHmrOutputProof({
+        dispatchProof: safeDispatchProof(),
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      }),
+      hostPreservationProof: { resultState: "gpu-hmr-host-preservation-proven" },
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
+    expect(proof.degradedReason).toBe("host_identity_snapshot_provenance_unverified");
+    expect(proof.fullRuntimeProven).toBe(false);
   });
 
   it("keeps host replacement as a full-runtime blocker after output proof", () => {

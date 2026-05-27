@@ -280,6 +280,7 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     changed_roles: changedRoles,
     preserved_role_categories: preservedRoleCategories,
     required_roles_observed: requiredRolesObserved,
+    identity_snapshot_observed: preservedRoles.length > 0,
     identity_checks_passed:
       records.length > 0
       && runtimeSessionConsistent
@@ -300,6 +301,8 @@ export function hostPreservationProofFromRuntimeEvidence(lines, observation = {}
     hostRestartObserved: observation.hostRestartObserved === true,
     hostReplacementObserved: observation.hostReplacementObserved === true,
     identityChecksPassed: evidence.identity_checks_passed,
+    identitySnapshotObserved: evidence.identity_snapshot_observed,
+    requiredIdentityRolesObserved: evidence.required_roles_observed,
     identityEvidenceRefs: [...evidence.evidence_refs, ...externalIdentityEvidenceRefs],
   });
   return { evidence, proof };

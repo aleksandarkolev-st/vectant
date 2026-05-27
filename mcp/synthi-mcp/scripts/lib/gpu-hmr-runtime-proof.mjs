@@ -82,6 +82,19 @@ function runtimeSessionIdsFromObservation(observation = {}) {
   ]);
 }
 
+function runtimeHostIdentityEvidenceRefs(refs) {
+  return compactStringList(refs).filter((ref) => /^worker-log:host_identity:/i.test(ref));
+}
+
+function hostPreservationProofUsable(proof) {
+  if (!proof || typeof proof !== 'object') return false;
+  return proof.resultState === 'gpu-hmr-host-preservation-proven'
+    && proof.identityChecksPassed === true
+    && proof.identitySnapshotObserved === true
+    && proof.requiredIdentityRolesObserved === true
+    && runtimeHostIdentityEvidenceRefs(proof.identityEvidenceRefs).length > 0;
+}
+
 function acceptedAbiExtractorEvidence(observation = {}) {
   const explicitRefs = compactStringList(observation.acceptedExtractorEvidenceRefs);
   const explicitSources = compactStringList(observation.acceptedExtractorSources);
@@ -645,10 +658,14 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
   const hostReplacementObserved =
     observation.hostReplacementObserved === true || observation.hostRestartObserved === true;
   const identityChecksPassed = observation.identityChecksPassed === true;
+  const identitySnapshotObserved = observation.identitySnapshotObserved === true;
+  const requiredIdentityRolesObserved = observation.requiredIdentityRolesObserved === true;
   const identityEvidenceRefs = Array.isArray(observation.identityEvidenceRefs)
     ? observation.identityEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
   const identityEvidenceObserved = identityEvidenceRefs.length > 0;
+  const runtimeIdentityEvidenceRefs = runtimeHostIdentityEvidenceRefs(identityEvidenceRefs);
+  const runtimeIdentityEvidenceObserved = runtimeIdentityEvidenceRefs.length > 0;
 
   if (hostReplacementObserved) {
     return {
@@ -657,20 +674,31 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
       degradedState: 'gpu-hmr-host-replaced',
       degradedReason: 'host_runtime_replaced_or_restarted',
       identityChecksPassed: false,
+      identitySnapshotObserved,
+      requiredIdentityRolesObserved,
       identityEvidenceObserved,
       identityEvidenceRefs,
+      runtimeIdentityEvidenceRefs,
     };
   }
 
-  if (identityChecksPassed && identityEvidenceObserved) {
+  if (
+    identityChecksPassed
+    && identitySnapshotObserved
+    && requiredIdentityRolesObserved
+    && runtimeIdentityEvidenceObserved
+  ) {
     return {
       schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
       resultState: 'gpu-hmr-host-preservation-proven',
       degradedState: null,
       degradedReason: null,
       identityChecksPassed: true,
+      identitySnapshotObserved: true,
+      requiredIdentityRolesObserved: true,
       identityEvidenceObserved: true,
       identityEvidenceRefs,
+      runtimeIdentityEvidenceRefs,
     };
   }
 
@@ -679,11 +707,20 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
     resultState: null,
     degradedState: null,
     degradedReason: identityChecksPassed
-      ? 'host_identity_evidence_refs_not_collected'
+      ? !identitySnapshotObserved
+        ? 'host_identity_snapshots_not_collected'
+        : !requiredIdentityRolesObserved
+          ? 'host_identity_required_roles_not_collected'
+          : !runtimeIdentityEvidenceObserved
+            ? 'host_identity_evidence_refs_not_collected'
+            : 'host_identity_checks_not_collected'
       : 'host_identity_checks_not_collected',
     identityChecksPassed: false,
+    identitySnapshotObserved,
+    requiredIdentityRolesObserved,
     identityEvidenceObserved,
     identityEvidenceRefs,
+    runtimeIdentityEvidenceRefs,
   };
 }
 
@@ -717,7 +754,12 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
     ? observation.epochProof
     : classifyGpuHmrEpochSwapProof({});
   const outputRank = effectiveProofRank(outputProof);
-  const hostRank = effectiveProofRank(hostPreservationProof);
+  const hostProofAccepted = hostPreservationProofUsable(hostPreservationProof);
+  const hostRank = hostProofAccepted ? effectiveProofRank(hostPreservationProof) : 0;
+  const hostProofDegradedReason =
+    hostPreservationProof?.resultState === 'gpu-hmr-host-preservation-proven' && !hostProofAccepted
+      ? 'host_identity_snapshot_provenance_unverified'
+      : hostPreservationProof?.degradedReason ?? 'host_identity_checks_not_collected';
   const abiRank = effectiveProofRank(abiProof);
   const epochRank = effectiveProofRank(epochProof);
   const embeddedDispatchProof =
@@ -791,7 +833,7 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       hostRank,
       hostPreservationProof,
       hostPreservationProof?.degradedState ?? null,
-      'host_identity_checks_not_collected',
+      hostProofDegradedReason,
     ),
   ];
 
