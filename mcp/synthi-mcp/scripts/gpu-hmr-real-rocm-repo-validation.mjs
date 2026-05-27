@@ -196,6 +196,9 @@ const report = {
   logs: {},
   docker: {},
   evidence: {},
+  runtime_identity: {
+    phases: [],
+  },
   proof_artifacts: [],
   abi_proof: null,
   epoch_swap_proof: null,
@@ -930,25 +933,141 @@ async function ensureMcpAttached() {
   return mcpState;
 }
 
+async function beginPhaseRuntimeIdentityMonitor(phaseName) {
+  const monitor = {
+    phase: phaseName,
+    container: CFG.workerContainer,
+    enabled: CFG.mcpTransport === 'docker',
+    changed: false,
+    reason: null,
+    changes: [],
+    snapshots: [],
+  };
+  report.runtime_identity.phases.push(monitor);
+  await capturePhaseRuntimeIdentity(monitor, 'before_compile');
+  return monitor;
+}
+
+function runtimeIdentityFieldValue(snapshot, field) {
+  if (!snapshot || snapshot.available === false) return null;
+  return snapshot[field] ?? null;
+}
+
+function runtimeIdentityDiff(before, after) {
+  if (!before || !after) return { changed: false, changes: [] };
+  const changes = [];
+  if (before.available !== after.available) {
+    changes.push({ field: 'available', before: Boolean(before.available), after: Boolean(after.available) });
+  }
+  for (const field of ['id', 'image_id', 'status', 'pid', 'started_at', 'restart_count']) {
+    const beforeValue = runtimeIdentityFieldValue(before, field);
+    const afterValue = runtimeIdentityFieldValue(after, field);
+    if (beforeValue !== afterValue) {
+      changes.push({ field, before: beforeValue, after: afterValue });
+    }
+  }
+  return {
+    changed: changes.length > 0,
+    changes,
+    reason: changes.map((change) => `${change.field}:${change.before ?? 'null'}->${change.after ?? 'null'}`).join(','),
+  };
+}
+
+async function capturePhaseRuntimeIdentity(monitor, label) {
+  if (!monitor?.enabled) return null;
+  const snapshot = await dockerContainerSnapshot(monitor.container);
+  const base = monitor.snapshots[0]?.snapshot ?? snapshot;
+  const diff = runtimeIdentityDiff(base, snapshot);
+  const entry = {
+    label,
+    at: new Date().toISOString(),
+    snapshot,
+    diff,
+  };
+  monitor.snapshots.push(entry);
+  if (diff.changed && !monitor.changed) {
+    monitor.changed = true;
+    monitor.reason = diff.reason;
+    monitor.changes = diff.changes;
+    record(`${monitor.phase} runtime identity`, 'fail', diff.reason);
+    process.exitCode = 1;
+  }
+  return diff;
+}
+
+function phaseRuntimeIdentitySummary(monitor) {
+  if (!monitor) return null;
+  return {
+    container: monitor.container,
+    enabled: monitor.enabled,
+    changed: monitor.changed,
+    reason: monitor.reason,
+    changes: monitor.changes,
+    snapshot_count: monitor.snapshots.length,
+    first: monitor.snapshots[0]?.snapshot ?? null,
+    latest: monitor.snapshots.at(-1)?.snapshot ?? null,
+  };
+}
+
+function runtimeIdentityLostWaitResult(monitor, startedAt) {
+  if (!monitor?.changed) return null;
+  return {
+    status: 'runtime-session-lost',
+    elapsedMs: Date.now() - startedAt,
+    hmrElapsedMs: null,
+    source: 'docker_runtime_identity',
+    detail: {
+      reason: monitor.reason,
+      changes: monitor.changes,
+      container: monitor.container,
+    },
+    frame_gate: {
+      status: 'runtime_session_lost',
+      note: 'worker runtime identity changed while waiting for the current HMR phase',
+    },
+  };
+}
+
 async function compileViaMcp(args, timeoutMs, phaseName) {
   const state = await ensureMcpAttached();
+  const identityMonitor = await beginPhaseRuntimeIdentityMonitor(phaseName);
   const start = Date.now();
-  const compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
-  if (!compile?.ok) throw new Error(`${phaseName} synthi_compile failed: ${JSON.stringify(compile).slice(0, 1000)}`);
+  let compile;
+  try {
+    compile = await state.client.toolCall('synthi_compile', args, timeoutMs);
+  } catch (err) {
+    await capturePhaseRuntimeIdentity(identityMonitor, 'compile_error');
+    const sessionLost = runtimeIdentityLostWaitResult(identityMonitor, start);
+    if (sessionLost) {
+      throw new Error(`${phaseName} runtime identity changed during synthi_compile: ${sessionLost.detail.reason}`);
+    }
+    throw err;
+  }
+  if (!compile?.ok) {
+    await capturePhaseRuntimeIdentity(identityMonitor, 'compile_rejected');
+    const sessionLost = runtimeIdentityLostWaitResult(identityMonitor, start);
+    if (sessionLost) {
+      throw new Error(`${phaseName} runtime identity changed during synthi_compile: ${sessionLost.detail.reason}`);
+    }
+    throw new Error(`${phaseName} synthi_compile failed: ${JSON.stringify(compile).slice(0, 1000)}`);
+  }
+  const compileIdentityChange = await capturePhaseRuntimeIdentity(identityMonitor, 'after_compile');
+  if (compileIdentityChange?.changed) {
+    const waitStart = Date.now();
+    const wait = runtimeIdentityLostWaitResult(identityMonitor, start);
+    const phase = phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor);
+    report.phases.push(phase);
+    record(
+      phaseName,
+      'fail',
+      `${summarizeGpuProof(phase.gpu_proof)} ${JSON.stringify(phase).slice(0, 1000)}`,
+    );
+    throw new Error(`${phaseName} runtime identity changed after synthi_compile: ${wait.detail.reason}`);
+  }
   const waitStart = Date.now();
-  const wait = await waitHmrForCurrentWorkspace(state, timeoutMs, phaseName);
-  const phase = {
-    name: phaseName,
-    compile_wall_ms: Date.now() - start,
-    wait_hmr_elapsed_ms: wait?.elapsedMs ?? null,
-    wait_hmr_terminal_elapsed_ms: wait?.hmrElapsedMs ?? null,
-    wait_hmr_status: wait?.status ?? null,
-    wait_hmr_source: wait?.source ?? null,
-    wait_hmr_detail: wait?.detail ?? null,
-    gpu_proof: wait?.gpu_proof ?? null,
-    gpu_proof_validation: wait?.gpu_proof_validation ?? null,
-    wait_call_wall_ms: Date.now() - waitStart,
-  };
+  const wait = await waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityMonitor);
+  await capturePhaseRuntimeIdentity(identityMonitor, 'after_wait');
+  const phase = phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor);
   report.phases.push(phase);
   record(
     phaseName,
@@ -959,11 +1078,30 @@ async function compileViaMcp(args, timeoutMs, phaseName) {
   return { compile, wait, phase };
 }
 
-async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName) {
+function phaseResultFromCompileWait(phaseName, start, waitStart, wait, identityMonitor) {
+  return {
+    name: phaseName,
+    compile_wall_ms: Date.now() - start,
+    wait_hmr_elapsed_ms: wait?.elapsedMs ?? null,
+    wait_hmr_terminal_elapsed_ms: wait?.hmrElapsedMs ?? null,
+    wait_hmr_status: wait?.status ?? null,
+    wait_hmr_source: wait?.source ?? null,
+    wait_hmr_detail: wait?.detail ?? null,
+    gpu_proof: wait?.gpu_proof ?? null,
+    gpu_proof_validation: wait?.gpu_proof_validation ?? null,
+    runtime_identity: phaseRuntimeIdentitySummary(identityMonitor),
+    wait_call_wall_ms: Date.now() - waitStart,
+  };
+}
+
+async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName, identityMonitor = null) {
   const startedAt = Date.now();
   const eventLogSinceTs = startedAt - 2000;
   let last = null;
   while (Date.now() - startedAt < timeoutMs) {
+    await capturePhaseRuntimeIdentity(identityMonitor, 'before_wait_poll');
+    const earlyIdentityLoss = runtimeIdentityLostWaitResult(identityMonitor, startedAt);
+    if (earlyIdentityLoss) return earlyIdentityLoss;
     const remaining = Math.max(1000, timeoutMs - (Date.now() - startedAt));
     const sliceTimeoutMs = Math.min(remaining, 30000);
     let wait;
@@ -976,10 +1114,16 @@ async function waitHmrForCurrentWorkspace(state, timeoutMs, phaseName) {
         sliceTimeoutMs + 7000,
       );
     } catch (err) {
+      await capturePhaseRuntimeIdentity(identityMonitor, 'wait_poll_error');
+      const identityLoss = runtimeIdentityLostWaitResult(identityMonitor, startedAt);
+      if (identityLoss) return identityLoss;
       const recovered = await currentHmrFromEventLog(state, eventLogSinceTs, startedAt);
       if (recovered) return recovered;
       throw err;
     }
+    await capturePhaseRuntimeIdentity(identityMonitor, 'after_wait_poll');
+    const identityLoss = runtimeIdentityLostWaitResult(identityMonitor, startedAt);
+    if (identityLoss) return identityLoss;
     last = wait;
     const previewId = hmrPreviewId(wait?.detail);
     if (previewId && previewId !== CFG.slug) {
@@ -1429,6 +1573,42 @@ function selfCheckRuntimeDispatchEvidence() {
   if (!runtimeSession.consistent || runtimeSession.unique_ids[0] !== 'pid1-100') {
     throw new Error('runtime session evidence parser failed');
   }
+  const stableIdentityBefore = {
+    available: true,
+    id: 'container-a',
+    image_id: 'image-a',
+    status: 'running',
+    pid: 101,
+    started_at: '2026-05-27T00:00:00Z',
+    restart_count: 0,
+  };
+  const stableIdentityAfter = { ...stableIdentityBefore };
+  if (runtimeIdentityDiff(stableIdentityBefore, stableIdentityAfter).changed) {
+    throw new Error('runtime identity diff marked stable container identity as changed');
+  }
+  const restartedIdentity = {
+    ...stableIdentityBefore,
+    pid: 202,
+    started_at: '2026-05-27T00:00:30Z',
+    restart_count: 1,
+  };
+  const identityDiff = runtimeIdentityDiff(stableIdentityBefore, restartedIdentity);
+  if (
+    !identityDiff.changed
+    || !identityDiff.changes.some((change) => change.field === 'restart_count')
+    || !identityDiff.changes.some((change) => change.field === 'started_at')
+  ) {
+    throw new Error('runtime identity diff failed to detect container restart evidence');
+  }
+  const lostResult = runtimeIdentityLostWaitResult({
+    container: 'runtime-under-test',
+    changed: true,
+    reason: identityDiff.reason,
+    changes: identityDiff.changes,
+  }, Date.now() - 10);
+  if (lostResult?.status !== 'runtime-session-lost' || lostResult.source !== 'docker_runtime_identity') {
+    throw new Error('runtime identity loss did not produce a degraded wait result');
+  }
   const ownership = runtimeOwnershipEvidence([
     '[gpu-reload] runtime_ownership label=gpu-hmr-partial partial=true artifact=/x expected_symbols=a touched_symbols=a retired_modules=0 replaced_primary=false',
     '[gpu-reload] runtime_ownership label=gpu-hmr-full-device partial=false artifact=/x expected_symbols=a touched_symbols=a retired_modules=0 replaced_primary=true',
@@ -1777,23 +1957,39 @@ async function collectRuntimeEvidence() {
 async function dockerContainerSnapshot(containerName) {
   const raw = await execText(
     'docker',
-    [
-      'inspect',
-      containerName,
-      '--format',
-      '{{.Name}}|{{.Config.Image}}|{{.Image}}|{{.State.Status}}',
-    ],
+    ['inspect', containerName],
     30000,
     false,
   );
   if (!raw) return { container: containerName, available: false };
-  const [name, config_image, image_id, status] = raw.split('|');
+  let info;
+  try {
+    const parsed = JSON.parse(raw);
+    info = Array.isArray(parsed) ? parsed[0] : parsed;
+  } catch (err) {
+    return {
+      container: containerName,
+      available: false,
+      reason: 'docker_inspect_parse_failed',
+      error: err.message,
+    };
+  }
+  const state = info?.State ?? {};
+  const name = info?.Name;
   return {
     container: containerName,
     name: name?.replace(/^\//, '') ?? containerName,
-    config_image,
-    image_id,
-    status,
+    id: info?.Id ?? null,
+    config_image: info?.Config?.Image ?? null,
+    image_id: info?.Image ?? null,
+    status: state.Status ?? null,
+    pid: state.Pid ?? null,
+    started_at: state.StartedAt ?? null,
+    finished_at: state.FinishedAt ?? null,
+    restart_count: info?.RestartCount ?? null,
+    oom_killed: state.OOMKilled ?? null,
+    exit_code: state.ExitCode ?? null,
+    available: true,
   };
 }
 
@@ -1815,6 +2011,7 @@ async function writeResults() {
     `gpu_arch: ${report.gpu_arch}`,
     `containers: ${JSON.stringify(report.containers)}`,
     `docker: ${JSON.stringify(report.docker)}`,
+    `runtime_identity: ${JSON.stringify(report.runtime_identity)}`,
     `command: ${JSON.stringify(report.command)}`,
     `file_count: ${report.file_count}`,
     `seeded_file_count: ${report.seeded_file_count}`,
