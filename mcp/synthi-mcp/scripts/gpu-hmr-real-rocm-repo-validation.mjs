@@ -235,6 +235,21 @@ function execTextAllowPartialOutput(cmd, args, timeoutMs = 30000, opts = {}) {
   });
 }
 
+function shouldFetchRequestedCommit({ requestedCommit, localCommitAvailable }) {
+  return Boolean(String(requestedCommit ?? '').trim()) && !localCommitAvailable;
+}
+
+async function gitCommitExists(repoPath, commit) {
+  if (!String(commit ?? '').trim()) return false;
+  const found = await execText(
+    'git',
+    ['-C', repoPath, 'cat-file', '-e', `${commit}^{commit}`],
+    30000,
+    false,
+  );
+  return found !== undefined;
+}
+
 function proofArtifactFileName(proofArtifactPath) {
   const normalized = String(proofArtifactPath ?? '').replaceAll('\\', '/');
   const fileName = path.posix.basename(normalized);
@@ -346,16 +361,19 @@ async function ensureRepo() {
     await execText('git', cloneArgs, 300000, true);
   }
   if (CFG.repoCommit) {
-    const fetched = await execText(
-      'git',
-      ['-C', CFG.repoPath, 'fetch', '--depth', '1', 'origin', CFG.repoCommit],
-      300000,
-      false,
-    );
-    if (fetched === undefined) {
-      await execText('git', ['-C', CFG.repoPath, 'fetch', 'origin'], 300000, true);
+    const localCommitAvailable = await gitCommitExists(CFG.repoPath, CFG.repoCommit);
+    if (shouldFetchRequestedCommit({ requestedCommit: CFG.repoCommit, localCommitAvailable })) {
+      const fetched = await execText(
+        'git',
+        ['-C', CFG.repoPath, 'fetch', '--depth', '1', 'origin', CFG.repoCommit],
+        300000,
+        false,
+      );
+      if (fetched === undefined) {
+        await execText('git', ['-C', CFG.repoPath, 'fetch', 'origin'], 300000, true);
+      }
     }
-    await execText('git', ['-C', CFG.repoPath, 'checkout', '--force', CFG.repoCommit], 120000, true);
+    await execText('git', ['-C', CFG.repoPath, 'checkout', '--detach', CFG.repoCommit], 120000, true);
   }
   if (CFG.initSubmodules) {
     const gitmodules = path.join(CFG.repoPath, '.gitmodules');
@@ -1429,6 +1447,15 @@ function selfCheckRuntimeDispatchEvidence() {
     || fullRuntimeBlockedProof.degradedReason !== 'abi_layout_size_alignment_unverified'
   ) {
     throw new Error('host preservation proof classifier failed');
+  }
+  if (shouldFetchRequestedCommit({ requestedCommit: 'abc123', localCommitAvailable: true })) {
+    throw new Error('fetch decision self-check should reuse a locally available requested commit');
+  }
+  if (!shouldFetchRequestedCommit({ requestedCommit: 'abc123', localCommitAvailable: false })) {
+    throw new Error('fetch decision self-check should fetch an unavailable requested commit');
+  }
+  if (shouldFetchRequestedCommit({ requestedCommit: '', localCommitAvailable: false })) {
+    throw new Error('fetch decision self-check should not fetch without a requested commit');
   }
   console.log('runtime dispatch evidence self-check passed');
 }
