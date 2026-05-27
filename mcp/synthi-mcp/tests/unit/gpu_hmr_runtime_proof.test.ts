@@ -759,7 +759,10 @@ describe("GPU HMR runtime output proof classification", () => {
       runtimeSessionIds: ["current-session"],
     });
 
+    expect(evidence.raw_count).toBe(6);
     expect(evidence.total_count).toBe(4);
+    expect(evidence.rejected_count).toBe(2);
+    expect(evidence.rejected_reasons).toEqual(["runtime_session_unexpected"]);
     expect(evidence.runtime_session_ids).toEqual(["current-session"]);
     expect(evidence.identity_checks_passed).toBe(true);
     expect(evidence.preserved_roles).toEqual(["core_state", "stream"]);
@@ -786,9 +789,34 @@ describe("GPU HMR runtime output proof classification", () => {
       "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=3",
     ]);
 
+    expect(evidence.raw_count).toBe(2);
     expect(evidence.total_count).toBe(0);
+    expect(evidence.rejected_count).toBe(2);
+    expect(evidence.rejected_reasons).toEqual(["runtime_session_missing"]);
     expect(proof.resultState).toBeNull();
     expect(proof.degradedReason).toBe("host_identity_checks_not_collected");
+  });
+
+  it("reports rejected host identity evidence reasons without using it as proof", () => {
+    const evidence = runtimeHostIdentityEvidence([
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x0 aux=42 generation=2 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=not-a-ptr aux=42 generation=2 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=stream ptr=0x3000 aux=0 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=stream ptr=0x3000 aux=0 generation=2 runtime_session=other",
+    ], {
+      runtimeSessionIds: ["pid1"],
+    });
+
+    expect(evidence.raw_count).toBe(4);
+    expect(evidence.total_count).toBe(0);
+    expect(evidence.rejected_count).toBe(4);
+    expect(evidence.rejected_reasons).toEqual([
+      "ptr_null",
+      "ptr_invalid",
+      "generation_missing",
+      "runtime_session_unexpected",
+    ]);
+    expect(evidence.identity_checks_passed).toBe(false);
   });
 
   it("does not prove host preservation when a runtime identity changes", () => {

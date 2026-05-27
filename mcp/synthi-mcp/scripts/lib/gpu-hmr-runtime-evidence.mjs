@@ -164,6 +164,20 @@ function hostIdentityRecord(line) {
   };
 }
 
+function hostIdentityRejectionReason(record, expectedSessions = []) {
+  if (typeof record.role !== 'string' || !record.role.trim()) return 'role_missing';
+  if (typeof record.ptr !== 'string' || !/^0x[0-9a-f]+$/i.test(record.ptr)) return 'ptr_invalid';
+  if (record.ptr === '0x0') return 'ptr_null';
+  if (!Number.isFinite(record.generation)) return 'generation_missing';
+  if (typeof record.runtimeSession !== 'string' || !record.runtimeSession.trim()) {
+    return 'runtime_session_missing';
+  }
+  if (expectedSessions.length > 0 && !expectedSessions.includes(record.runtimeSession)) {
+    return 'runtime_session_unexpected';
+  }
+  return null;
+}
+
 function hostIdentityRoleCategory(role) {
   const normalized = String(role ?? '').trim().toLowerCase();
   if (!normalized) return null;
@@ -191,20 +205,19 @@ function hostIdentityRoleCategory(role) {
 
 export function runtimeHostIdentityEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
-  const records = (Array.isArray(lines) ? lines : [])
+  const rawRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) => /\bhost_identity\b/i.test(String(line ?? '')))
-    .map(hostIdentityRecord)
-    .filter((record) =>
-      typeof record.role === 'string'
-      && record.role.trim()
-      && typeof record.ptr === 'string'
-      && /^0x[0-9a-f]+$/i.test(record.ptr)
-      && record.ptr !== '0x0'
-      && Number.isFinite(record.generation)
-      && typeof record.runtimeSession === 'string'
-      && record.runtimeSession.trim()
-      && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
-    );
+    .map(hostIdentityRecord);
+  const rejectedReasons = [];
+  const records = [];
+  for (const record of rawRecords) {
+    const reason = hostIdentityRejectionReason(record, expectedSessions);
+    if (reason) {
+      rejectedReasons.push(reason);
+    } else {
+      records.push(record);
+    }
+  }
   const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const byRole = new Map();
@@ -234,7 +247,10 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     && preservedRoleCategories.includes('runtime_resource');
 
   return {
+    raw_count: rawRecords.length,
     total_count: records.length,
+    rejected_count: rawRecords.length - records.length,
+    rejected_reasons: compactStringList(rejectedReasons),
     role_count: byRole.size,
     expected_runtime_session_ids: expectedSessions,
     runtime_session_ids: runtimeSessionIds,
