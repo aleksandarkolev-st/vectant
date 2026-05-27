@@ -265,6 +265,17 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.deterministic_oracle_passed).toBe(false);
   });
 
+  it("does not accept exact runtime oracle records whose expected and actual values differ", () => {
+    const evidence = runtimeOutputOracleEvidence([
+      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum expected=sha256:def actual=sha256:bad passed=true generation=3 runtime_session=pid1",
+    ]);
+
+    expect(evidence.expected_actual_match).toBe(false);
+    expect(evidence.deterministic_output_observed).toBe(true);
+    expect(evidence.deterministic_oracle_provided).toBe(true);
+    expect(evidence.deterministic_oracle_passed).toBe(false);
+  });
+
   it("does not accept runtime oracle records without session provenance", () => {
     const evidence = runtimeOutputOracleEvidence([
       "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum expected=sha256:def actual=sha256:def passed=true generation=3",
@@ -334,6 +345,27 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.outputOracle.provided).toBe(true);
     expect(proof.outputOracle.observed).toBe(true);
     expect(proof.outputOracle.evidenceObserved).toBe(false);
+    expect(proof.outputOracle.passed).toBe(false);
+  });
+
+  it("does not prove exact output when expected and actual oracle values differ", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: {
+        kind: "runtime_readback",
+        expected: "expected-sentinel",
+        actual: "other-sentinel",
+        evidenceRefs: ["worker-log:output_oracle:probe.expected"],
+      },
+      visualFrameObserved: false,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-output-unobserved");
+    expect(proof.outputOracle.valuesCompatible).toBe(false);
     expect(proof.outputOracle.passed).toBe(false);
   });
 

@@ -474,6 +474,7 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
   const runtimeSessionIds = compactStringList(matchingRecords.map((record) => record.runtimeSession));
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const evidenceRefs = latest ? [`worker-log:output_oracle:${latest.oracleId}`] : [];
+  const expectedActualMatch = latest !== null && Object.is(latest.expected, latest.actual);
 
   return {
     total_count: records.length,
@@ -488,7 +489,8 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
     runtime_session_consistent: runtimeSessionConsistent,
     deterministic_output_observed: latest !== null && latest.actual !== null && runtimeSessionConsistent,
     deterministic_oracle_provided: latest !== null && latest.expected !== null && typeof latest.kind === 'string',
-    deterministic_oracle_passed: latest?.passed === true && runtimeSessionConsistent,
+    deterministic_oracle_passed: latest?.passed === true && runtimeSessionConsistent && expectedActualMatch,
+    expected_actual_match: expectedActualMatch,
     output_oracle: latest
       ? {
           kind: latest.kind,
