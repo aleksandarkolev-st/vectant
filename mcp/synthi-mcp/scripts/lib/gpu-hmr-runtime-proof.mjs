@@ -84,28 +84,37 @@ function runtimeSessionIdsFromObservation(observation = {}) {
 
 function acceptedAbiExtractorEvidence(observation = {}) {
   const explicitRefs = compactStringList(observation.acceptedExtractorEvidenceRefs);
-  if (explicitRefs.length > 0) {
-    return {
-      accepted: true,
-      refs: explicitRefs,
-      sources: compactStringList(observation.acceptedExtractorSources),
-    };
-  }
-
+  const explicitSources = compactStringList(observation.acceptedExtractorSources);
   const extractorRecords = Array.isArray(observation.extractorProvenance)
     ? observation.extractorProvenance.filter((record) => record && typeof record === 'object')
     : [];
   const acceptedRecords = extractorRecords.filter((record) => {
     const kind = String(record.kind ?? record.extractorKind ?? '').trim();
     const evidenceId = String(record.evidenceId ?? '').trim();
+    const extractorName = String(record.extractorName ?? '').trim();
+    const extractorVersion = String(record.extractorVersion ?? '').trim();
+    const inputHash = String(record.inputHash ?? '').trim();
     const explicitlyRejected = record.acceptedByRuntimeCorrectnessPlan === false;
-    return ACCEPTED_ABI_EXTRACTOR_KINDS.has(kind) && evidenceId && !explicitlyRejected;
+    return ACCEPTED_ABI_EXTRACTOR_KINDS.has(kind)
+      && evidenceId
+      && extractorName
+      && extractorVersion
+      && inputHash
+      && !explicitlyRejected;
   });
+  const refs = compactStringList(acceptedRecords.map((record) => String(record.evidenceId).trim()));
+  const sources = compactStringList(
+    acceptedRecords.map((record) => String(record.kind ?? record.extractorKind).trim()),
+  );
+  const explicitRefsMatched = explicitRefs.length === 0
+    || explicitRefs.every((ref) => refs.includes(ref));
+  const explicitSourcesMatched = explicitSources.length === 0
+    || explicitSources.every((source) => sources.includes(source));
 
   return {
-    accepted: acceptedRecords.length > 0,
-    refs: acceptedRecords.map((record) => String(record.evidenceId).trim()),
-    sources: acceptedRecords.map((record) => String(record.kind ?? record.extractorKind).trim()),
+    accepted: refs.length > 0 && explicitRefsMatched && explicitSourcesMatched,
+    refs,
+    sources,
   };
 }
 

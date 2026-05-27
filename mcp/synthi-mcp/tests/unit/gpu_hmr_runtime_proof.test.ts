@@ -34,7 +34,13 @@ function acceptedAbiProof() {
   return classifyGpuHmrAbiProof({
     metadataObserved: true,
     layoutSizeAlignmentVerified: true,
-    extractorProvenance: [{ kind: "clang_ast", evidenceId: "evidence:clang-ast:abc" }],
+    extractorProvenance: [{
+      kind: "clang_ast",
+      evidenceId: "evidence:clang-ast:abc",
+      extractorName: "test_clang_ast",
+      extractorVersion: "v1",
+      inputHash: "sha256:abc",
+    }],
   });
 }
 
@@ -409,6 +415,20 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summarizeGpuHmrAbiProof(proof)).toContain("extractor=unverified");
   });
 
+  it("does not prove ABI from accepted extractor refs without concrete provenance", () => {
+    const proof = classifyGpuHmrAbiProof({
+      metadataObserved: true,
+      layoutSizeAlignmentVerified: true,
+      acceptedExtractorEvidenceRefs: ["evidence:clang-ast:abc"],
+      acceptedExtractorSources: ["clang_ast"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.degradedReason).toBe("abi_extractor_provenance_unverified");
+    expect(proof.acceptedExtractorProvenanceObserved).toBe(false);
+  });
+
   it("rejects extractor provenance explicitly rejected by the runtime correctness plan", () => {
     const proof = classifyGpuHmrAbiProof({
       metadataObserved: true,
@@ -416,6 +436,9 @@ describe("GPU HMR runtime output proof classification", () => {
       extractorProvenance: [{
         extractorKind: "clang_ast",
         evidenceId: "evidence:clang-ast:abc",
+        extractorName: "test_clang_ast",
+        extractorVersion: "v1",
+        inputHash: "sha256:abc",
         acceptedByRuntimeCorrectnessPlan: false,
       }],
     });
@@ -472,6 +495,13 @@ describe("GPU HMR runtime output proof classification", () => {
             layoutSizeAlignmentVerified: true,
             acceptedExtractorEvidenceRefs: ["evidence:clang-record-layout:def"],
             acceptedExtractorSources: ["clang_record_layout"],
+            extractorProvenance: [{
+              extractorKind: "clang_record_layout",
+              evidenceId: "evidence:clang-record-layout:def",
+              extractorName: "test_clang_record_layout",
+              extractorVersion: "v1",
+              inputHash: "sha256:def",
+            }],
           },
         }],
         stageResults: [{
