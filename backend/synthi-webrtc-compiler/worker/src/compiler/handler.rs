@@ -609,6 +609,330 @@ fn source_scan_abi_extractor_provenance(source: &str) -> serde_json::Value {
     }])
 }
 
+#[derive(Debug, Clone)]
+struct ClangAstAbiExtraction {
+    layout_size_alignment_verified: bool,
+    accepted_extractor_evidence_refs: Vec<String>,
+    accepted_extractor_sources: Vec<String>,
+    extractor_provenance: Vec<serde_json::Value>,
+    kernel_signatures: Vec<String>,
+    parameter_abi_records: Vec<serde_json::Value>,
+    degraded_reason: Option<String>,
+}
+
+fn canonical_clang_type(ty: &str) -> String {
+    ty.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(" *", "*")
+        .replace("* ", "*")
+        .replace(" &", "&")
+        .replace("& ", "&")
+}
+
+fn layout_type_without_cv(ty: &str) -> String {
+    canonical_clang_type(ty)
+        .split_whitespace()
+        .filter(|token| !matches!(*token, "const" | "volatile"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn scalar_type_layout(ty: &str) -> Option<(usize, usize)> {
+    match layout_type_without_cv(ty).as_str() {
+        "bool" | "char" | "signed char" | "unsigned char" => Some((1, 1)),
+        "short" | "short int" | "signed short" | "signed short int" | "unsigned short"
+        | "unsigned short int" => Some((2, 2)),
+        "int" | "signed int" | "unsigned int" | "float" => Some((4, 4)),
+        "long" | "long int" | "signed long" | "signed long int" | "unsigned long"
+        | "unsigned long int" | "long long" | "long long int" | "signed long long"
+        | "signed long long int" | "unsigned long long" | "unsigned long long int"
+        | "double" | "size_t" | "std::size_t" => Some((8, 8)),
+        _ => None,
+    }
+}
+
+fn is_builtin_or_void_type(ty: &str) -> bool {
+    scalar_type_layout(ty).is_some() || matches!(layout_type_without_cv(ty).as_str(), "void")
+}
+
+fn abi_record_from_clang_param(kernel: &str, arg_index: usize, ty: &str) -> Option<serde_json::Value> {
+    let canonical = canonical_clang_type(ty);
+    if canonical.contains('&') || canonical.contains('[') || canonical.contains(']') {
+        return None;
+    }
+    if canonical.contains('*') {
+        let base = canonical.trim_end_matches('*').trim();
+        if !is_builtin_or_void_type(base) {
+            return None;
+        }
+        return Some(serde_json::json!({
+            "kernel": kernel,
+            "argIndex": arg_index,
+            "typeIdentity": canonical,
+            "size": 8,
+            "alignment": 8,
+            "addressSpace": "generic_pointer"
+        }));
+    }
+    let (size, alignment) = scalar_type_layout(&canonical)?;
+    Some(serde_json::json!({
+        "kernel": kernel,
+        "argIndex": arg_index,
+        "typeIdentity": canonical,
+        "size": size,
+        "alignment": alignment,
+        "addressSpace": "by_value"
+    }))
+}
+
+fn split_clang_function_params(params: &str) -> Vec<String> {
+    split_top_level_params(params)
+        .into_iter()
+        .map(|param| canonical_clang_type(&param))
+        .filter(|param| !param.is_empty() && param != "void")
+        .collect()
+}
+
+fn clang_ast_kernel_signatures(ast_text: &str, target_symbols: &[String]) -> BTreeMap<String, Vec<String>> {
+    let target_symbols = target_symbols.iter().cloned().collect::<BTreeSet<_>>();
+    let re = match regex::Regex::new(
+        r#"FunctionDecl[^\n]*\b([A-Za-z_][A-Za-z0-9_]*)\s+'void \(([^']*)\)'"#,
+    ) {
+        Ok(re) => re,
+        Err(_) => return BTreeMap::new(),
+    };
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for caps in re.captures_iter(ast_text) {
+        let Some(name) = caps.get(1).map(|m| m.as_str().to_string()) else {
+            continue;
+        };
+        if !target_symbols.is_empty() && !target_symbols.contains(&name) {
+            continue;
+        }
+        let params = split_clang_function_params(caps.get(2).map(|m| m.as_str()).unwrap_or_default());
+        out.entry(name.clone())
+            .or_default()
+            .insert(format!("{}({})", name, params.join(",")));
+    }
+    out.into_iter()
+        .map(|(name, signatures)| (name, signatures.into_iter().collect()))
+        .collect()
+}
+
+fn has_device_constant_or_global_decl(source: &str) -> bool {
+    regex::Regex::new(r"\b(__constant__|__device__|__managed__)\s+([^;]+);")
+        .ok()
+        .is_some_and(|re| re.captures_iter(source).any(|caps| {
+            !caps
+                .get(2)
+                .map(|m| m.as_str())
+                .unwrap_or_default()
+                .contains('(')
+        }))
+}
+
+fn clang_ast_abi_extraction_from_dump(
+    source: &str,
+    ast_text: &str,
+    target_symbols: &[String],
+    extractor_command: &str,
+    evidence_id: String,
+) -> ClangAstAbiExtraction {
+    let target_symbols = if target_symbols.is_empty() {
+        extract_device_kernel_symbols(source)
+    } else {
+        target_symbols.to_vec()
+    };
+    let ast_signatures = clang_ast_kernel_signatures(ast_text, &target_symbols);
+    let mut kernel_signatures = Vec::new();
+    let mut parameter_abi_records = Vec::new();
+    let mut missing_symbols = Vec::new();
+    let mut unsupported_params = Vec::new();
+
+    for symbol in &target_symbols {
+        let Some(signatures) = ast_signatures.get(symbol) else {
+            missing_symbols.push(symbol.clone());
+            continue;
+        };
+        for signature in signatures {
+            kernel_signatures.push(signature.clone());
+            let params = signature
+                .split_once('(')
+                .and_then(|(_, tail)| tail.strip_suffix(')'))
+                .map(split_clang_function_params)
+                .unwrap_or_default();
+            for (index, param) in params.iter().enumerate() {
+                match abi_record_from_clang_param(symbol, index, param) {
+                    Some(record) => parameter_abi_records.push(record),
+                    None => unsupported_params.push(format!("{symbol}:{index}:{param}")),
+                }
+            }
+        }
+    }
+
+    kernel_signatures.sort();
+    kernel_signatures.dedup();
+    let globals_unverified = has_device_constant_or_global_decl(source);
+    let layout_size_alignment_verified =
+        !kernel_signatures.is_empty()
+            && missing_symbols.is_empty()
+            && unsupported_params.is_empty()
+            && !globals_unverified;
+    let degraded_reason = if layout_size_alignment_verified {
+        None
+    } else if !missing_symbols.is_empty() {
+        Some("clang_ast_missing_target_kernel_symbols".to_string())
+    } else if !unsupported_params.is_empty() {
+        Some("clang_ast_parameter_layout_requires_record_extractor".to_string())
+    } else if globals_unverified {
+        Some("device_constant_or_global_layout_unverified".to_string())
+    } else {
+        Some("clang_ast_abi_extractor_unverified".to_string())
+    };
+
+    let mut provenance = serde_json::json!({
+        "extractorName": "synthi_clang_ast_kernel_abi_extractor",
+        "extractorKind": "clang_ast",
+        "extractorVersion": "v1",
+        "evidenceId": evidence_id,
+        "command": extractor_command,
+        "inputHash": format!("sha256:{}", sha256_hex_str(source)),
+        "acceptedByRuntimeCorrectnessPlan": layout_size_alignment_verified,
+        "evidenceScope": [
+            "kernel_parameter_type_identities",
+            "kernel_parameter_size_alignment",
+            "device_constant_global_absence"
+        ],
+        "kernelSignatures": kernel_signatures,
+        "parameterAbiRecords": parameter_abi_records,
+    });
+    if let Some(reason) = degraded_reason.as_deref() {
+        provenance["rejectedReason"] = serde_json::Value::String(reason.to_string());
+    }
+    let kernel_signatures_out = provenance["kernelSignatures"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect();
+    let parameter_abi_records_out = provenance["parameterAbiRecords"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+
+    ClangAstAbiExtraction {
+        layout_size_alignment_verified,
+        accepted_extractor_evidence_refs: if layout_size_alignment_verified {
+            vec![provenance["evidenceId"].as_str().unwrap_or_default().to_string()]
+        } else {
+            Vec::new()
+        },
+        accepted_extractor_sources: if layout_size_alignment_verified {
+            vec!["clang_ast".to_string()]
+        } else {
+            Vec::new()
+        },
+        extractor_provenance: vec![provenance],
+        kernel_signatures: kernel_signatures_out,
+        parameter_abi_records: parameter_abi_records_out,
+        degraded_reason,
+    }
+}
+
+fn clang_ast_abi_extractor_compiler_candidates() -> Vec<String> {
+    let mut candidates = Vec::new();
+    for env_key in ["SYNTHI_GPU_HMR_ABI_EXTRACTOR_COMPILER", "CXX"] {
+        if let Ok(value) = std::env::var(env_key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() && !candidates.iter().any(|candidate| candidate == trimmed) {
+                candidates.push(trimmed.to_string());
+            }
+        }
+    }
+    if !candidates.iter().any(|candidate| candidate == "clang++") {
+        candidates.push("clang++".to_string());
+    }
+    candidates
+}
+
+fn clang_ast_language_candidates(source: &str) -> Vec<&'static str> {
+    let mut candidates = Vec::new();
+    if source.contains("__global__") || source.contains("__device__") {
+        candidates.push("hip");
+        candidates.push("cuda");
+    }
+    candidates.push("c++");
+    candidates
+}
+
+async fn clang_ast_abi_extraction(
+    workspace: &Path,
+    outcome: &DeviceCompileOutcome,
+) -> Option<ClangAstAbiExtraction> {
+    let compiler = clang_ast_abi_extractor_compiler_candidates()
+        .into_iter()
+        .find(|candidate| {
+            std::process::Command::new(candidate)
+                .arg("--version")
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        })?;
+    let source_hash = sha256_hex_str(&outcome.compiled_source);
+    let abi_dir = workspace.join(".synthi").join("gpu-hmr").join("abi");
+    if tokio::fs::create_dir_all(&abi_dir).await.is_err() {
+        return None;
+    }
+    let input_path = abi_dir.join(format!("clang-abi-input_{source_hash}.hip"));
+    if tokio::fs::write(&input_path, outcome.compiled_source.as_bytes())
+        .await
+        .is_err()
+    {
+        return None;
+    }
+    let mut successful_dump = None;
+    for language in clang_ast_language_candidates(&outcome.compiled_source) {
+        let command_display = format!("{compiler} -x {language} -fsyntax-only -Xclang -ast-dump <input>");
+        let mut command = tokio::process::Command::new(&compiler);
+        command
+            .current_dir(workspace)
+            .arg("-x")
+            .arg(language)
+            .arg("-fsyntax-only")
+            .arg("-Xclang")
+            .arg("-ast-dump")
+            .arg(&input_path);
+        let output = match tokio::time::timeout(std::time::Duration::from_secs(20), command.output()).await {
+            Ok(Ok(output)) if output.status.success() => output,
+            _ => continue,
+        };
+        successful_dump = Some((language.to_string(), command_display, output));
+        break;
+    }
+    let (language, command_display, output) = successful_dump?;
+    let ast_text = String::from_utf8_lossy(&output.stdout);
+    let evidence_material = serde_json::json!({
+        "compiler": compiler,
+        "language": language,
+        "command": command_display,
+        "inputHash": format!("sha256:{source_hash}"),
+        "astHash": format!("sha256:{}", sha256_hex_str(&ast_text)),
+    });
+    let evidence_id = format!(
+        "evidence:abi-extractor:{}",
+        sha256_hex_str(&evidence_material.to_string())
+    );
+    Some(clang_ast_abi_extraction_from_dump(
+        &outcome.compiled_source,
+        &ast_text,
+        &outcome.target_symbols,
+        &command_display,
+        evidence_id,
+    ))
+}
+
 fn device_filename_for_vendor(vendor: DeviceVendor) -> &'static str {
     match vendor {
         DeviceVendor::Cuda => "device.cu",
@@ -2570,15 +2894,49 @@ async fn write_device_hmr_proof_artifact(
     let kernel_abi_fingerprint = kernel_abi_fingerprint_source(&outcome.compiled_source);
     let constant_global_layout_hash =
         device_constant_global_layout_fingerprint(&outcome.compiled_source);
+    let clang_ast_abi = clang_ast_abi_extraction(workspace, outcome).await;
+    let mut extractor_provenance = source_scan_abi_extractor_provenance(&outcome.compiled_source)
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if let Some(clang_ast_abi) = clang_ast_abi.as_ref() {
+        extractor_provenance.extend(clang_ast_abi.extractor_provenance.clone());
+    }
+    let layout_size_alignment_verified = clang_ast_abi
+        .as_ref()
+        .is_some_and(|abi| abi.layout_size_alignment_verified);
+    let accepted_extractor_evidence_refs = clang_ast_abi
+        .as_ref()
+        .map(|abi| abi.accepted_extractor_evidence_refs.clone())
+        .unwrap_or_default();
+    let accepted_extractor_sources = clang_ast_abi
+        .as_ref()
+        .map(|abi| abi.accepted_extractor_sources.clone())
+        .unwrap_or_default();
+    let clang_ast_kernel_signatures = clang_ast_abi
+        .as_ref()
+        .map(|abi| abi.kernel_signatures.clone())
+        .unwrap_or_default();
+    let parameter_abi_records = clang_ast_abi
+        .as_ref()
+        .map(|abi| abi.parameter_abi_records.clone())
+        .unwrap_or_default();
+    let abi_degraded_reason = clang_ast_abi
+        .as_ref()
+        .and_then(|abi| abi.degraded_reason.clone());
     let abi_material = serde_json::json!({
         "schemaVersion": "synthi.gpu.hmr.abi_metadata.v1",
         "kernelSymbols": extract_device_kernel_symbols(&outcome.compiled_source),
         "kernelSignatures": extract_device_kernel_signatures(&outcome.compiled_source),
+        "clangAstKernelSignatures": clang_ast_kernel_signatures,
+        "parameterAbiRecords": parameter_abi_records,
         "kernelAbiFingerprintHash": sha256_hex_str(&kernel_abi_fingerprint),
         "constantGlobalLayoutHash": &constant_global_layout_hash,
-        "layoutSizeAlignmentVerified": false,
-        "acceptedExtractorEvidenceRefs": [],
-        "extractorProvenance": source_scan_abi_extractor_provenance(&outcome.compiled_source),
+        "layoutSizeAlignmentVerified": layout_size_alignment_verified,
+        "acceptedExtractorEvidenceRefs": accepted_extractor_evidence_refs,
+        "acceptedExtractorSources": accepted_extractor_sources,
+        "extractorProvenance": extractor_provenance,
+        "degradedReason": abi_degraded_reason,
         "partialModule": outcome.partial_module,
         "targetSymbols": &outcome.target_symbols,
         "artifactExportedSymbols": &outcome.artifact_exported_symbols,
@@ -9117,6 +9475,63 @@ __constant__ int scale;
             Some("abi_layout_size_alignment_unverified")
         );
         assert_eq!(abi_stage.evidence_refs, vec![abi_evidence.evidence_id.clone()]);
+    }
+
+    #[test]
+    fn clang_ast_abi_extractor_accepts_builtin_pointer_kernel_params() {
+        let source = r#"
+extern "C" __global__ void shade(const float* input, float* pixels, int count, unsigned long long frame) {}
+"#;
+        let ast = r#"
+`-FunctionDecl 0x1 <device.hip:2:1, col:108> col:28 shade 'void (const float *, float *, int, unsigned long long)'
+"#;
+
+        let extraction = clang_ast_abi_extraction_from_dump(
+            source,
+            ast,
+            &symbols(&["shade"]),
+            "clang++ -x hip -fsyntax-only -Xclang -ast-dump <input>",
+            "evidence:abi-extractor:test".to_string(),
+        );
+
+        assert!(extraction.layout_size_alignment_verified);
+        assert_eq!(
+            extraction.accepted_extractor_evidence_refs,
+            vec!["evidence:abi-extractor:test".to_string()]
+        );
+        assert_eq!(extraction.accepted_extractor_sources, vec!["clang_ast".to_string()]);
+        assert_eq!(
+            extraction.kernel_signatures,
+            vec!["shade(const float*,float*,int,unsigned long long)".to_string()]
+        );
+        assert_eq!(extraction.parameter_abi_records.len(), 4);
+        assert_eq!(extraction.degraded_reason, None);
+    }
+
+    #[test]
+    fn clang_ast_abi_extractor_rejects_record_pointer_without_layout_dump() {
+        let source = r#"
+struct RenderData { int count; };
+extern "C" __global__ void shade(RenderData* render_data) {}
+"#;
+        let ast = r#"
+`-FunctionDecl 0x1 <device.hip:3:1, col:64> col:28 shade 'void (RenderData *)'
+"#;
+
+        let extraction = clang_ast_abi_extraction_from_dump(
+            source,
+            ast,
+            &symbols(&["shade"]),
+            "clang++ -x hip -fsyntax-only -Xclang -ast-dump <input>",
+            "evidence:abi-extractor:test".to_string(),
+        );
+
+        assert!(!extraction.layout_size_alignment_verified);
+        assert!(extraction.accepted_extractor_evidence_refs.is_empty());
+        assert_eq!(
+            extraction.degraded_reason.as_deref(),
+            Some("clang_ast_parameter_layout_requires_record_extractor")
+        );
     }
 
     #[test]
