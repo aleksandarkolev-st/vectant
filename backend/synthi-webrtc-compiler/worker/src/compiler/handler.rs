@@ -593,6 +593,22 @@ fn device_constant_global_layout_fingerprint(source: &str) -> String {
     format!("{}", hash_content(&decls.join(";")))
 }
 
+fn source_scan_abi_extractor_provenance(source: &str) -> serde_json::Value {
+    serde_json::json!([{
+        "extractorName": "synthi_source_text_kernel_signature_scan",
+        "extractorKind": "source_text_scan",
+        "extractorVersion": "v1",
+        "inputHash": format!("sha256:{}", sha256_hex_str(source)),
+        "acceptedByRuntimeCorrectnessPlan": false,
+        "rejectedReason": "source_text_scan_is_not_an_accepted_abi_extractor",
+        "evidenceScope": [
+            "kernel_symbols",
+            "kernel_signatures",
+            "constant_global_text"
+        ]
+    }])
+}
+
 fn device_filename_for_vendor(vendor: DeviceVendor) -> &'static str {
     match vendor {
         DeviceVendor::Cuda => "device.cu",
@@ -2560,6 +2576,9 @@ async fn write_device_hmr_proof_artifact(
         "kernelSignatures": extract_device_kernel_signatures(&outcome.compiled_source),
         "kernelAbiFingerprintHash": sha256_hex_str(&kernel_abi_fingerprint),
         "constantGlobalLayoutHash": &constant_global_layout_hash,
+        "layoutSizeAlignmentVerified": false,
+        "acceptedExtractorEvidenceRefs": [],
+        "extractorProvenance": source_scan_abi_extractor_provenance(&outcome.compiled_source),
         "partialModule": outcome.partial_module,
         "targetSymbols": &outcome.target_symbols,
         "artifactExportedSymbols": &outcome.artifact_exported_symbols,
@@ -2642,7 +2661,7 @@ async fn write_device_hmr_proof_artifact(
             file_path: None,
             artifact_uri: Some(selected_artifact_id.clone()),
             summary: format!(
-                "kernel_signatures={} constant_global_layout_hash={} metadata_only=true",
+                "kernel_signatures={} constant_global_layout_hash={} metadata_only=true accepted_extractors=0",
                 abi_material
                     .get("kernelSignatures")
                     .and_then(serde_json::Value::as_array)
@@ -9053,6 +9072,36 @@ __constant__ int scale;
             .get("constantGlobalLayoutHash")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|hash| !hash.is_empty()));
+        assert_eq!(
+            metadata
+                .get("layoutSizeAlignmentVerified")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            metadata
+                .get("acceptedExtractorEvidenceRefs")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+        let extractor = metadata
+            .get("extractorProvenance")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|items| items.first())
+            .expect("ABI metadata should declare extractor provenance");
+        assert_eq!(
+            extractor
+                .get("extractorKind")
+                .and_then(serde_json::Value::as_str),
+            Some("source_text_scan")
+        );
+        assert_eq!(
+            extractor
+                .get("acceptedByRuntimeCorrectnessPlan")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
         let abi_stage = artifact
             .stage_results
             .iter()
