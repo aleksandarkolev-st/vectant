@@ -1,15 +1,18 @@
 "use client";
 
 /**
- * VectantLogoCollapsed — the closed silhouette of the status island.
+ * VectantLogoCollapsed — the V at the center of the collapsed silhouette.
  *
- * Renders the three logo parts (left bracket + V + right bracket) in
- * their tight logo formation. The parent StatusBar manages the phase
- * machine ('logo' | 'expanding' | 'expanded' | 'collapsing'); this
- * component applies the appropriate CSS classes to drive:
- *   logo       → V visible, brackets at center
- *   expanding  → V fading out, brackets sliding outward
- *   collapsing → brackets sliding inward, V fading back in
+ * The brackets are no longer rendered here — they live as siblings of
+ * the pill inside the StatusBar stage so they auto-track the pill's
+ * width during the expand/collapse morph (right:100%+2px / left:100%+2px
+ * relative to the inline-block stage). This component now only owns the
+ * V mark + its halo + pending-count badge.
+ *
+ * Phase machine ('logo' | 'expanding' | 'expanded' | 'collapsing'):
+ *   logo       → V visible
+ *   expanding  → V fading out
+ *   collapsing → V fading back in (with delay so brackets close first)
  *   expanded   → (component is unmounted by parent)
  *
  * State signals (from props.state):
@@ -19,31 +22,77 @@
  */
 
 import { useCallback } from 'react';
+import {
+  ContextMenu,
+  ContextMenuCheckboxItem,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuRadioGroup,
+  ContextMenuRadioItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu';
+
+const MENU_PRESET_OPTIONS = [
+  { id: 'default', label: 'Default' },
+  { id: 'minimal', label: 'Minimal' },
+  { id: 'left-rail', label: 'Left rail' },
+  { id: 'right-rail', label: 'Right rail' },
+];
 
 export default function VectantLogoCollapsed({
   state = 'normal',
   phase = 'logo',
   pendingCount = 0,
   onActivate,
+  onSecondaryDragStart,
+  isCompact = false,
+  onSetCompact,
+  isPositionLocked = false,
+  onSetPositionLocked,
+  dockPreset = 'center',
+  onDockPresetChange,
+  activePresetId = 'custom',
+  onPresetChange,
+  savedPresets = [],
+  activeSavedPresetId = '',
+  activeSavedPresetLabel = '',
+  onApplySavedPreset,
+  onSaveCurrentPreset,
+  onDeleteSavedPreset,
+  canResetPosition = false,
+  onResetPosition,
+  onOpenFullSettings,
+  isDragging = false,
 }) {
   const handleClick = useCallback(() => onActivate?.(), [onActivate]);
-
-  // is-spreading drives the bracket translate-outward in CSS. Active
-  // during expanding (forward) and reverses naturally in collapsing
-  // (when the class drops, the transition runs in reverse).
-  const isSpreading = phase === 'expanding';
+  const handleMouseDown = useCallback((event) => {
+    if (phase !== 'logo' || event.button !== 2) return;
+    onSecondaryDragStart?.(event);
+  }, [onSecondaryDragStart, phase]);
   // is-v-fading drives the V fade-out. Active during expanding only.
   const isVFading = phase === 'expanding';
 
-  return (
+  const button = (
     <button
       type="button"
       aria-label={phase === 'logo' ? 'Open status island' : 'Vectant'}
       onClick={phase === 'logo' ? handleClick : undefined}
+      onMouseDown={handleMouseDown}
       tabIndex={phase === 'logo' ? 0 : -1}
+      title={phase === 'logo'
+        ? (isPositionLocked
+            ? 'Left click to open. Right click for actions. Movement locked.'
+            : 'Left click to open. Right click for actions. Right-drag to move.')
+        : undefined}
       className={[
         'vectant-logo-button th-focus-ring',
-        isSpreading ? 'is-spreading' : '',
+        phase === 'logo' && !isPositionLocked ? 'vectant-logo-button--movable' : '',
+        isDragging ? 'is-dragging' : '',
         state === 'error' ? 'vectant-logo--error' : '',
         state === 'healing' ? 'vectant-logo--healing' : '',
       ].filter(Boolean).join(' ')}
@@ -54,24 +103,10 @@ export default function VectantLogoCollapsed({
       <span aria-hidden="true" className="vectant-logo-halo" />
 
       <img
-        src="/vectant/left_bracket_full.png"
-        alt=""
-        aria-hidden="true"
-        className="vectant-logo-bracket vectant-logo-bracket--left"
-        draggable={false}
-      />
-      <img
         src="/vectant/the_V.png"
         alt=""
         aria-hidden="true"
         className={`vectant-logo-v ${isVFading ? 'is-fading' : ''}`}
-        draggable={false}
-      />
-      <img
-        src="/vectant/right_bracket_full.png"
-        alt=""
-        aria-hidden="true"
-        className="vectant-logo-bracket vectant-logo-bracket--right"
         draggable={false}
       />
 
@@ -83,5 +118,124 @@ export default function VectantLogoCollapsed({
         </span>
       )}
     </button>
+  );
+
+  if (phase !== 'logo') return button;
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        {button}
+      </ContextMenuTrigger>
+      <ContextMenuContent
+        className="w-52"
+        style={{
+          background: 'var(--bg-elevated)',
+          borderColor: 'var(--border-medium)',
+          color: 'var(--text-primary)',
+        }}
+      >
+        <ContextMenuLabel inset>Status island</ContextMenuLabel>
+        <ContextMenuItem onSelect={() => onActivate?.()}>
+          Open island
+        </ContextMenuItem>
+        <ContextMenuCheckboxItem
+          checked={isCompact}
+          onCheckedChange={(checked) => onSetCompact?.(Boolean(checked))}
+        >
+          Compact labels
+        </ContextMenuCheckboxItem>
+        <ContextMenuCheckboxItem
+          checked={isPositionLocked}
+          onCheckedChange={(checked) => onSetPositionLocked?.(Boolean(checked))}
+        >
+          Lock movement
+        </ContextMenuCheckboxItem>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger inset>
+            Presets
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent
+            style={{
+              background: 'var(--bg-elevated)',
+              borderColor: 'var(--border-medium)',
+              color: 'var(--text-primary)',
+            }}
+          >
+            <ContextMenuRadioGroup value={activePresetId} onValueChange={(value) => onPresetChange?.(value)}>
+              {MENU_PRESET_OPTIONS.map((preset) => (
+                <ContextMenuRadioItem key={preset.id} value={preset.id}>
+                  {preset.label}
+                </ContextMenuRadioItem>
+              ))}
+            </ContextMenuRadioGroup>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuItem onSelect={() => onSaveCurrentPreset?.()}>
+          Save current as preset...
+        </ContextMenuItem>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger inset>
+            Saved presets
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent
+            style={{
+              background: 'var(--bg-elevated)',
+              borderColor: 'var(--border-medium)',
+              color: 'var(--text-primary)',
+            }}
+          >
+            {savedPresets.length > 0 ? (
+              <ContextMenuRadioGroup value={activeSavedPresetId} onValueChange={(value) => onApplySavedPreset?.(value)}>
+                {savedPresets.map((preset) => (
+                  <ContextMenuRadioItem key={preset.id} value={preset.id}>
+                    {preset.label}
+                  </ContextMenuRadioItem>
+                ))}
+              </ContextMenuRadioGroup>
+            ) : (
+              <ContextMenuItem disabled>
+                No saved presets yet
+              </ContextMenuItem>
+            )}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger inset>
+            Dock position
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent
+            style={{
+              background: 'var(--bg-elevated)',
+              borderColor: 'var(--border-medium)',
+              color: 'var(--text-primary)',
+            }}
+          >
+            <ContextMenuRadioGroup value={dockPreset} onValueChange={(value) => onDockPresetChange?.(value)}>
+              <ContextMenuRadioItem value="free">Free position</ContextMenuRadioItem>
+              <ContextMenuRadioItem value="left">Bottom left</ContextMenuRadioItem>
+              <ContextMenuRadioItem value="center">Bottom center</ContextMenuRadioItem>
+              <ContextMenuRadioItem value="right">Bottom right</ContextMenuRadioItem>
+            </ContextMenuRadioGroup>
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => onOpenFullSettings?.()}>
+          Open full settings
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!activeSavedPresetId}
+          onSelect={() => onDeleteSavedPreset?.()}
+        >
+          {activeSavedPresetId ? `Delete "${activeSavedPresetLabel}"` : 'Delete saved preset'}
+        </ContextMenuItem>
+        <ContextMenuItem
+          disabled={!canResetPosition}
+          onSelect={() => onResetPosition?.()}
+        >
+          Reset position
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }

@@ -3,6 +3,7 @@
 import React from 'react';
 import { useShadowVerify } from './hooks/useShadowVerify';
 import { ArbiterCard } from './ArbiterCard';
+import { ShieldCheck } from 'lucide-react';
 
 /**
  * Synthi Genome — MultiverseCard
@@ -89,7 +90,7 @@ export function MultiverseCard({ jobId }) {
     return (
         <div className="genome-card">
             <header className="genome-card__head">
-                <span>🛡 Verify panel</span>
+                <span className="inline-flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" style={{ color: 'var(--attention-purple)' }} strokeWidth={2} /> Verify panel</span>
                 {verify.tier ? <span className="genome-card__tier">tier: {verify.tier}</span> : null}
                 {!verify.finished && (
                     <button type="button" className="genome-card__cancel" onClick={() => verify.cancel()}>

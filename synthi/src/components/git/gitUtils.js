@@ -204,25 +204,6 @@ export function parseConventionalCommit(message) {
   };
 }
 
-/** Map CC type → tailwind colour classes for the badge. */
-const CC_COLORS = {
-  feat:     'bg-emerald-500/20 text-emerald-400',
-  fix:      'bg-red-500/20 text-red-400',
-  docs:     'bg-blue-500/20 text-blue-400',
-  style:    'bg-purple-500/20 text-purple-300',
-  refactor: 'bg-amber-500/20 text-amber-400',
-  perf:     'bg-cyan-500/20 text-cyan-400',
-  test:     'bg-teal-500/20 text-teal-300',
-  build:    'bg-orange-500/20 text-orange-400',
-  ci:       'bg-indigo-500/20 text-indigo-400',
-  chore:    'bg-zinc-500/20 text-zinc-400',
-  revert:   'bg-rose-500/20 text-rose-400',
-};
-
-export function ccColor(type) {
-  return CC_COLORS[type] || 'bg-zinc-500/20 text-zinc-400';
-}
-
 // ─── Date bucketing ─────────────────────────────────────────────
 
 /**

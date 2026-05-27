@@ -24,6 +24,7 @@ import {
 } from '@/redux/workspaceSlice';
 import { selectAutoCompletionEnabled, toggleAutoCompletion, selectPresenceGranularity, startCreate, setCursorPosition, selectAutoSaveEnabled } from '@/redux/uiSlice';
 import { fetchGitStatus, closeConflictResolver } from '@/redux/gitSlice';
+import { setFocusedTabGroup } from '@/components/docking-wm/state/layout-slice';
 import { Circle, Save, Sparkles, Loader2, X, Plus, TerminalSquare } from 'lucide-react';
 import { getFileIcon } from '@/utils/fileIcons';
 import {
@@ -171,6 +172,14 @@ function configureClassicWorkerFactory() {
     const { useWorkerFactory } = require('monaco-languageclient/workerFactory');
     useWorkerFactory({
         workerLoaders: {
+            TextEditorWorker: () => new Worker(
+                new URL('@codingame/monaco-vscode-editor-api/esm/vs/editor/editor.worker.js', import.meta.url),
+                { type: 'module' }
+            ),
+            TextMateWorker: () => new Worker(
+                new URL('@codingame/monaco-vscode-textmate-service-override/worker', import.meta.url),
+                { type: 'module' }
+            ),
             editorWorkerService: () => new Worker(new URL('monaco-editor/esm/vs/editor/editor.worker.js', import.meta.url)),
             json: () => new Worker(new URL('monaco-editor/esm/vs/language/json/json.worker.js', import.meta.url)),
             css: () => new Worker(new URL('monaco-editor/esm/vs/language/css/css.worker.js', import.meta.url)),
@@ -193,6 +202,45 @@ const DOCK_LAYOUT_RESIZE_EVENT = 'synthi:dock-layout-resize';
 
 let servicesInitialized = false;
 let servicesInitPromise = null; // serialize concurrent init attempts
+
+async function disposeLanguageClientSafely(client, label) {
+    if (!client) return;
+
+    const needsStop = typeof client.needsStop === 'function'
+        ? client.needsStop()
+        : typeof client.isRunning === 'function'
+            ? client.isRunning()
+            : false;
+
+    if (needsStop) {
+        try {
+            await client.stop();
+            return;
+        } catch (error) {
+            console.warn(`[LSP] stop() failed for ${label}:`, error?.message || error);
+        }
+    }
+
+    try {
+        client.cleanUp?.('stop');
+    } catch (error) {
+        console.warn(`[LSP] cleanUp() failed for ${label}:`, error?.message || error);
+    }
+
+    try { client.cleanUpChannel?.(); } catch (_) {}
+    try { client._diagnostics?.dispose?.(); } catch (_) {}
+    try { client._ignoredRegistrations?.clear?.(); } catch (_) {}
+
+    if (Object.prototype.hasOwnProperty.call(client, '_connection')) {
+        client._connection = undefined;
+    }
+    if (Object.prototype.hasOwnProperty.call(client, '_onStart')) {
+        client._onStart = undefined;
+    }
+    if (Object.prototype.hasOwnProperty.call(client, '_onStop')) {
+        client._onStop = undefined;
+    }
+}
 
 // ===== SYNTHI BRAND Design Tokens - Theme-aware via CSS vars =====
 const TAB_TOKENS = {
@@ -224,6 +272,8 @@ const EditorPanel = ({
     chatVisible = false,
     collabHostId = null,
     dockingMode = false,
+    filePath = null,
+    paneId = null,
     selfEditFlagRef = null,
 }) => {
     const dispatch = useAppDispatch();
@@ -254,7 +304,32 @@ const EditorPanel = ({
     const presenceGranularity = useAppSelector(selectPresenceGranularity);
     const diffMode = useAppSelector(state => state.workspace.diffMode);
     const originalContent = useAppSelector(state => state.workspace.originalContent);
-    
+
+    // In docking mode each pane renders its OWN file (props.filePath); fall back
+    // to the global activeFile only outside docking (single-editor mode).
+    const paneFile = useMemo(() => {
+        if (dockingMode && filePath) {
+            return openFiles.find((f) => f.path === filePath)
+                || { path: filePath, name: filePath.split('/').pop() };
+        }
+        return activeFile;
+    }, [dockingMode, filePath, openFiles, activeFile]);
+
+    // Focused pane drives the global content/save buffer; unfocused panes edit
+    // their own Monaco model only.
+    const isFocusedPane = !dockingMode || (!!paneFile?.path && activeFile?.path === paneFile.path);
+
+    // Initial content for THIS pane's file — its own cached content. Never the
+    // global `code` buffer unless this is the focused pane, so an unfocused pane
+    // can't seed the (shared) model with the wrong file or empty.
+    const paneInitialContent = useMemo(() => {
+        const cached = paneFile?.path
+            ? fileCacheEntries.find(([p]) => p === paneFile.path)?.[1]
+            : undefined;
+        if (typeof cached === 'string') return cached;
+        return isFocusedPane ? (code ?? '') : '';
+    }, [paneFile?.path, fileCacheEntries, isFocusedPane, code]);
+
     // Git status for conflict detection
     const gitStatus = useAppSelector(state => state.git?.status);
     const conflictedFiles = gitStatus?.conflictedFiles || [];
@@ -791,6 +866,7 @@ const EditorPanel = ({
             // Client exists but is no longer running (channel closed, crashed, etc.)
             // Remove the stale entry so we re-initialize below.
             console.warn(`[LSP] Stale client for ${clientKey} — removing and re-initializing`);
+            void disposeLanguageClientSafely(client, `${backendLang} stale client`);
             languageClientsRef.current.delete(clientKey);
         }
 
@@ -819,6 +895,7 @@ const EditorPanel = ({
             console.log(`[LSP] Created channel for ${backendLang}, readyState: ${lspChannel.readyState}`);
         } catch (e) {
             console.error("[LSP] Failed to create channel", e);
+            lspInitPendingRef.current.delete(clientKey);
             setLspStatus('Channel Error');
             return;
         }
@@ -1307,7 +1384,7 @@ const EditorPanel = ({
             } catch (e) {
                 console.error(`[LSP] Client start failed for ${backendLang}:`, e.message || e);
                 lspInitPendingRef.current.delete(clientKey);
-                try { languageClient.stop(); } catch (_) {}
+                await disposeLanguageClientSafely(languageClient, `${backendLang} failed start`);
                 try { lspChannel.close(); } catch (_) {}
                 setLspStatus(`${backendLang} server unavailable`);
                 return;
@@ -2350,7 +2427,7 @@ const EditorPanel = ({
                                     suppClient.sendNotification('exit');
                                 } catch (_) {}
                             }
-                            suppClient.stop();
+                            await disposeLanguageClientSafely(suppClient, `${suppConfig.backend} supplementary client`);
                             languageClientsRef.current.delete(suppConfig.clientKey);
                             lspInitPendingRef.current.delete(suppConfig.clientKey);
                         });
@@ -2400,7 +2477,7 @@ const EditorPanel = ({
                     }
                 }
 
-                languageClient.stop();
+                await disposeLanguageClientSafely(languageClient, `${backendLang} channel close`);
                 languageClientsRef.current.delete(clientKey);
                 lspInitPendingRef.current.delete(clientKey);
                 lspOpenedUrisRef.current.delete(clientKey);
@@ -2423,7 +2500,7 @@ const EditorPanel = ({
 
     // Hook up Yjs-based collaboration when an editor and activeFile are present.
     useEffect(() => {
-        if (!editorInstance || !monacoInstance || !activeFile || !slug || isPrivateMode) {
+        if (!editorInstance || !monacoInstance || !paneFile || !slug || isPrivateMode) {
             // Clear collab connected state if dependencies are missing
             setCollabConnected(false);
             boundFilePathRef.current = null;
@@ -2444,11 +2521,11 @@ const EditorPanel = ({
         // Skip Yjs collaboration for files with merge conflicts
         // This ensures the editor shows the actual filesystem content with conflict markers
         // rather than stale content from Yjs persistence
-        const isConflicted = conflictedFiles.includes(activeFile.path);
+        const isConflicted = conflictedFiles.includes(paneFile.path);
         if (isConflicted) {
-            console.log('[Collab] Skipping Yjs binding for conflicted file:', activeFile.path);
+            console.log('[Collab] Skipping Yjs binding for conflicted file:', paneFile.path);
             // Destroy any existing collab doc for this file to ensure fresh content
-            try { collabClient.destroyDocument(slug, activeFile.path); } catch (e) { /* ignore */ }
+            try { collabClient.destroyDocument(slug, paneFile.path); } catch (e) { /* ignore */ }
             setCollabConnected(false);
             boundFilePathRef.current = null;
             return;
@@ -2472,20 +2549,20 @@ const EditorPanel = ({
         try {
             const showLineDecorations = (presenceGranularity === 'line');
             // Get content specifically for this file from the cache
-            const cachedContent = fileCacheEntries.find(([path]) => path === activeFile.path)?.[1];
-            const initialContent = typeof cachedContent === 'string' ? cachedContent : (typeof code === 'string' ? code : '');
+            const cachedContent = fileCacheEntries.find(([path]) => path === paneFile.path)?.[1];
+            const initialContent = typeof cachedContent === 'string' ? cachedContent : (isFocusedPane && typeof code === 'string' ? code : '');
             
             const bindingHandle = collabClient.attachEditor({ 
                 editor: editorInstance, 
                 monaco: monacoInstance, 
                 slug, 
-                path: activeFile.path, 
+                path: paneFile.path,
                 user, 
                 initialContent,
                 options: { showLineDecorations } 
             });
             collabBindingRef.current = bindingHandle;
-            boundFilePathRef.current = activeFile.path; // Track which file we're bound to
+            boundFilePathRef.current = paneFile.path; // Track which file we're bound to
             setCollabConnected(true); // Mark collab as connected
             
             // CRITICAL: After the binding is established, the model content
@@ -2494,7 +2571,7 @@ const EditorPanel = ({
             // our isFlush guard intentionally skips).  Do a one-time sync
             // so Redux currentContent matches what the user sees.
             const modelContent = editorInstance.getModel()?.getValue() ?? '';
-            if (modelContent && modelContent !== code) {
+            if (isFocusedPane && modelContent && modelContent !== code) {
                 dispatch(updateContent(modelContent));
             }
             
@@ -2502,7 +2579,7 @@ const EditorPanel = ({
             bindingHandle.updateLocalUnsaved(isUnsaved);
 
             // Listen for remote unsaved changes
-            const awarenessUnsub = collabClient.addAwarenessListener(slug, activeFile.path, (states) => {
+            const awarenessUnsub = collabClient.addAwarenessListener(slug, paneFile.path, (states) => {
                 const anyRemoteUnsaved = states.some(s => s.state && s.state.isUnsaved && s.clientId !== collabClient.docs.get(bindingHandle.key)?.provider?.awareness?.clientID);
                 setRemoteUnsaved(anyRemoteUnsaved);
             });
@@ -2526,7 +2603,7 @@ const EditorPanel = ({
             setCollabConnected(false);
             setRemoteUnsaved(false);
         };
-    }, [editorInstance, monacoInstance, activeFile, slug, session, authUserId, presenceGranularity, isPrivateMode, conflictedFiles, collabHostId]);
+    }, [editorInstance, monacoInstance, paneFile, slug, session, authUserId, presenceGranularity, isPrivateMode, conflictedFiles, collabHostId]);
 
     // ── Ghost-revert fix ─────────────────────────────────────────────────
     // Listen for server-side 'file-reverted' events (emitted after discard,
@@ -2687,17 +2764,21 @@ const EditorPanel = ({
     useEffect(() => {
         return () => {
             // P2: Send shutdown→exit for clean server shutdown before stopping
-            languageClientsRef.current.forEach(async (client, lang) => {
+            languageClientsRef.current.forEach((client, lang) => {
                 if (client.isRunning()) {
-                    try {
-                        await Promise.race([
-                            client.sendRequest('shutdown'),
-                            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2000))
-                        ]);
-                        client.sendNotification('exit');
-                    } catch (_) { /* best-effort */ }
+                    void (async () => {
+                        try {
+                            await Promise.race([
+                                client.sendRequest('shutdown'),
+                                new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2000))
+                            ]);
+                            client.sendNotification('exit');
+                        } catch (_) { /* best-effort */ }
+                        await disposeLanguageClientSafely(client, `${lang} unmount cleanup`);
+                    })();
+                } else {
+                    void disposeLanguageClientSafely(client, `${lang} unmount cleanup`);
                 }
-                client.stop();
             });
             languageClientsRef.current.clear();
             lspOpenedUrisRef.current.clear();
@@ -2753,29 +2834,34 @@ const EditorPanel = ({
             }
         }
     }, [onClearCompletion]);
-    const activeLanguage = activeFile ? getMonacoLanguage(activeFile.name) : 'plaintext';
-    const activeFileIdentity = activeFile ? `${activeFile.path ?? ''}-${activeFile.name ?? ''}` : 'no-file';
-    const activeFileIcon = activeFile ? getFileIcon(activeFile.name || activeFile.path || '') : null;
+    // File-identity derivations follow the PANE'S file (paneFile), not the
+    // global activeFile — so each docked editor view tokenizes, re-keys its
+    // model, and renders the icon for the file IT is showing.
+    const activeLanguage = paneFile ? getMonacoLanguage(paneFile.name) : 'plaintext';
+    const activeFileIdentity = paneFile ? `${paneFile.path ?? ''}-${paneFile.name ?? ''}` : 'no-file';
+    const activeFileIcon = paneFile ? getFileIcon(paneFile.name || paneFile.path || '') : null;
 
     // Pre-create/switch Monaco models when activeFile changes.
     // This eliminates the 1-second blank flash by reusing cached models
     // instead of destroying and recreating the editor.
     useEffect(() => {
-        if (!editorInstance || !monacoInstance || !activeFile) return;
+        if (!editorInstance || !monacoInstance || !paneFile) return;
         // System headers (isSystem=true, e.g. /usr/include/c++/11/iostream)
         // live in the worker's filesystem, not under /synthi/. Use URI.file
         // so the model URI matches what SynthiFileSystemProvider registered
         // via registerSystemFile — otherwise Monaco's default file service
         // tries to read /synthi/usr/include/... from local disk and fails.
-        const uri = activeFile.isSystem
-            ? monacoInstance.Uri.file(activeFile.path)
-            : monacoInstance.Uri.parse(`file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}`);
+        const uri = paneFile.isSystem
+            ? monacoInstance.Uri.file(paneFile.path)
+            : monacoInstance.Uri.parse(`file:///synthi/${paneFile.path.startsWith('/') ? paneFile.path.slice(1) : paneFile.path}`);
         let model = monacoInstance.editor.getModel(uri);
         if (!model) {
-            // Pre-create the model with cached content so there's no blank
-            const cachedContent = fileCacheEntries.find(([p]) => p === activeFile.path)?.[1];
-            const initialContent = typeof cachedContent === 'string' ? cachedContent : (code ?? '');
-            const lang = getMonacoLanguage(activeFile.name);
+            // Pre-create the model with cached content so there's no blank.
+            // Only the focused pane may seed from the global `code` buffer; an
+            // unfocused pane showing a different file must NOT inherit it.
+            const cachedContent = fileCacheEntries.find(([p]) => p === paneFile.path)?.[1];
+            const initialContent = typeof cachedContent === 'string' ? cachedContent : (isFocusedPane ? (code ?? '') : '');
+            const lang = getMonacoLanguage(paneFile.name);
             model = monacoInstance.editor.createModel(initialContent, lang || 'plaintext', uri);
         }
         // Switch to the model atomically — no blank flash
@@ -3109,8 +3195,8 @@ const EditorPanel = ({
         // CRITICAL: Only process changes if we're bound to the correct file
         // This prevents stale onChange handlers from writing content to the wrong file
         // during file transitions.
-        if (activeFile && collabConnected && boundFilePathRef.current && boundFilePathRef.current !== activeFile.path) {
-            console.warn('[Editor] Skipping — boundFilePathRef mismatch:', boundFilePathRef.current, '!==', activeFile.path);
+        if (paneFile && collabConnected && boundFilePathRef.current && boundFilePathRef.current !== paneFile.path) {
+            console.warn('[Editor] Skipping — boundFilePathRef mismatch:', boundFilePathRef.current, '!==', paneFile.path);
             return;
         }
 
@@ -3135,7 +3221,9 @@ const EditorPanel = ({
             clearTimeout(reduxSyncTimerRef.current);
             reduxSyncTimerRef.current = null;
         }
-        dispatch(updateContent(newCode));
+        // Only the focused pane writes the global content/save buffer; an
+        // unfocused pane editing a different file must not clobber it.
+        if (isFocusedPane) dispatch(updateContent(newCode));
 
         // ── Background HMR classification ───────────────────────────
         // Stream the edit to the worker so it can classify what changed
@@ -3143,10 +3231,10 @@ const EditorPanel = ({
         // the user saves, the compile handler reads the cached classification
         // and dispatches instantly without re-analyzing.  300ms debounce
         // to avoid flooding the DataChannel on fast typing.
-        if (compilerClient && activeFile?.path) {
+        if (isFocusedPane && compilerClient && paneFile?.path) {
             if (editDeltaTimerRef.current) clearTimeout(editDeltaTimerRef.current);
             editDeltaTimerRef.current = setTimeout(() => {
-                compilerClient.sendEditDelta(activeFile.path, newCode);
+                compilerClient.sendEditDelta(paneFile.path, newCode);
             }, 300);
         }
 
@@ -3157,9 +3245,9 @@ const EditorPanel = ({
         // persisting to disk is the host's responsibility.
         // Debounced via requestAnimationFrame to coalesce rapid remote
         // character edits into a single Redux dispatch per frame.
-        if (remoteApplying && collabRole === 'guest' && activeFile?.path) {
+        if (remoteApplying && collabRole === 'guest' && paneFile?.path) {
             if (!remoteSaveRAFRef.current) {
-                const pathToSync = activeFile.path;
+                const pathToSync = paneFile.path;
                 remoteSaveRAFRef.current = requestAnimationFrame(() => {
                     remoteSaveRAFRef.current = null;
                     dispatch(markFileSavedRemotely(pathToSync));
@@ -3201,7 +3289,7 @@ const EditorPanel = ({
                 requestAiCompletion(true, latestCodeRef.current, { reason: 'pause', pauseTrigger: true, recentEditSnippet: takeLastChars(latestCodeRef.current, 512) });
             }
         }, 350);
-    }, [activeFile, aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion, collabConnected]);
+    }, [activeFile, paneFile, isFocusedPane, aiAutoEnabled, activeDiffCheck, cancelActiveCompletion, dispatch, requestAiCompletion, collabConnected]);
 
     // Keep a ref to the latest handleCodeChange to avoid stale closures in the editor onMount listener
     const handleCodeChangeRef = useRef(handleCodeChange);
@@ -4658,15 +4746,21 @@ const EditorPanel = ({
                                         <div className="h-full w-full" style={{ display: diffMode ? 'none' : undefined }}>
                                             <Editor
                                                 height="100%"
-                                                path={activeFile
-                                                    ? (activeFile.isSystem && monacoInstance
-                                                        ? monacoInstance.Uri.file(activeFile.path).toString()
-                                                        : `file:///synthi/${activeFile.path.startsWith('/') ? activeFile.path.slice(1) : activeFile.path}`)
+                                                path={paneFile
+                                                    ? (paneFile.isSystem && monacoInstance
+                                                        ? monacoInstance.Uri.file(paneFile.path).toString()
+                                                        : `file:///synthi/${paneFile.path.startsWith('/') ? paneFile.path.slice(1) : paneFile.path}`)
                                                     : undefined}
                                                 // Model caching: the editor instance stays alive across file switches.
                                                 // Models are pre-created and switched via editor.setModel() in the
                                                 // useEffect above, so there is no blank flash between tab switches.
-                                                defaultValue={code ?? ''}
+                                                // Only the focused pane may seed a new model from the global buffer.
+                                                defaultValue={paneInitialContent}
+                                                // Panes showing the SAME file share one Monaco model (same URI).
+                                                // Without keepCurrentModel, monaco-react disposes a pane's model when
+                                                // that pane navigates to another file or unmounts — which wipes every
+                                                // other pane still showing the original file. Keep models alive.
+                                                keepCurrentModel
                                                 language={activeLanguage}
                                                 theme="synthi-theme"
                                                 options={{
@@ -4703,7 +4797,13 @@ const EditorPanel = ({
 
                                                     setEditorInstance(editor);
                                                     setMonacoInstance(monaco);
-                                                    if (onEditorMount) onEditorMount(editor);
+                                                    if (onEditorMount) onEditorMount(editor, paneId);
+                                                    // In docking mode, focusing this editor view marks its pane
+                                                    // as the focused editor pane — this drives the shell editor,
+                                                    // healing/completions, and the global activeFile mirror.
+                                                    if (dockingMode && paneId) {
+                                                        editor.onDidFocusEditorWidget(() => dispatch(setFocusedTabGroup(paneId)));
+                                                    }
 
                                                     // Wire Monaco into ThemeProvider for live theme switching
                                                     if (themeMonacoRef) {

@@ -1,0 +1,716 @@
+/* ═══════════════════════════════════════════════════════════════════
+   SOURCE CONTROL — Component-scoped tokens
+   ───────────────────────────────────────────────────────────────────
+   Composition layer that builds on the global Vectant tokens
+   (--brand-*, --attention-purple, --bg-*, vt-* utilities) defined in
+   src/app/globals.css.  Anything in here is used ONLY by the SCM
+   panel and its sibling git surfaces.
+
+   Imported once from SourceControlPanel.jsx so the rules are scoped
+   to the feature and not paid for on routes that don't render SCM.
+
+   Design grammar:
+     • Brand gradient appears in five intentional places (the V glyph,
+       the staged-row left bar, fetch/pull pulse, commit button, push
+       success ripple).  Every other surface is calm slate-violet,
+       attention-purple, or danger red.
+     • All motion uses existing keyframes from globals.css — no new
+       keyframes are introduced here.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Root container ──────────────────────────────────────────────── */
+/* The SCM panel itself.  `data-git-panel` attribute is preserved
+   from the legacy GitStatus.jsx so the global keyboard shortcuts
+   (Ctrl+Enter, Ctrl+Shift+Enter, Ctrl+Shift+P) keep working. */
+.scm-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--bg-sidebar);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+}
+
+/* ── Branch Bridge (top header) ──────────────────────────────────── */
+.scm-bridge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  flex-shrink: 0;
+  position: relative;
+}
+
+/* Subtle bottom ambient hairline — same energy as the StatusBar
+   uses at its top edge.  The animated drift is inherited from the
+   global vt-ambient-bottom keyframes. */
+.scm-bridge::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--ambient-haze-bottom);
+  background-size: 200% 100%;
+  pointer-events: none;
+  opacity: 0.55;
+  animation: vt-ambient-drift 22s ease-in-out infinite;
+}
+
+/* When the most recent push just succeeded, sweep the brand gradient
+   across the hairline once.  Toggle the modifier class via JS for
+   ~700ms then remove. */
+.scm-bridge.is-push-success::after {
+  animation:
+    vt-ambient-drift 22s ease-in-out infinite,
+    vt-brand-sweep 700ms cubic-bezier(0.32, 0.72, 0, 1) 1;
+  opacity: 0.85;
+}
+
+/* The V glyph that opens the branch picker.  Uses the existing
+   .vt-brand-text utility for the gradient clip; this rule only
+   handles the click target sizing. */
+.scm-bridge-v {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 160ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.scm-bridge-v:hover {
+  transform: translateY(-1px);
+}
+
+/* Ahead/behind chips in the bridge.  Muted when zero, calm
+   slate-violet when nonzero.  Never brand gradient — push/pull are
+   actions, not signature moments themselves. */
+.scm-bridge-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  background: transparent;
+  transition: color 150ms ease, background 150ms ease;
+}
+.scm-bridge-chip.is-active {
+  color: var(--accent-secondary);
+  background: color-mix(in srgb, var(--accent-primary) 8%, transparent);
+}
+
+/* ── Focal State Card ────────────────────────────────────────────── */
+/* Single morphing card.  Its rim treatment changes per state — only
+   one focal card visible at a time.  All variants reuse the existing
+   --bg-panel surface and globals.css halo utilities. */
+.scm-focal {
+  position: relative;
+  margin: 10px 12px 6px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition:
+    border-color 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 220ms cubic-bezier(0.16, 1, 0.3, 1),
+    transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: heal-row-enter 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  flex-shrink: 0;
+}
+
+/* Rim variants — each reflects a focal state from the spec
+   precedence table (conflicts > syncing > diverged > behind >
+   ahead > clean). */
+.scm-focal--conflict {
+  border-color: color-mix(in srgb, var(--accent-danger) 50%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent-danger) 28%, transparent),
+    0 0 18px -4px color-mix(in srgb, var(--accent-danger) 32%, transparent);
+}
+.scm-focal--diverged {
+  border-color: color-mix(in srgb, var(--attention-purple) 38%, transparent);
+  box-shadow: var(--attention-rim);
+}
+.scm-focal--ahead,
+.scm-focal--behind {
+  border-color: color-mix(in srgb, var(--brand-stop-3) 22%, transparent);
+  box-shadow: var(--rim-glow);
+}
+/* Active sync (fetch/pull/clone) — slow brand pulse halo */
+.scm-focal--syncing {
+  border-color: color-mix(in srgb, var(--brand-stop-3) 32%, transparent);
+  animation:
+    heal-row-enter 220ms cubic-bezier(0.16, 1, 0.3, 1) both,
+    vt-brand-pulse 2.2s ease-in-out infinite;
+}
+/* The "no repo" empty state.  Centred V mark + initialize CTA. */
+.scm-focal--empty {
+  align-items: center;
+  text-align: center;
+  padding: 18px 14px 14px;
+  background: transparent;
+  border: none;
+}
+
+.scm-focal-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  letter-spacing: 0.005em;
+}
+.scm-focal-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.scm-focal-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+/* Action pill inside the focal card.  Reuses --brand-gradient for
+   the primary action (Push / Resolve / Pull); ghost variant uses
+   th-btn-ghost grammar. */
+.scm-focal-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  transition: background 150ms ease, transform 120ms ease, filter 150ms ease;
+}
+.scm-focal-action:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+}
+.scm-focal-action:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.scm-focal-action--primary {
+  background: var(--brand-gradient);
+  color: #ffffff;
+  border: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+.scm-focal-action--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 6px 18px -2px color-mix(in srgb, var(--brand-stop-3) 32%, transparent);
+}
+.scm-focal-action--danger {
+  background: color-mix(in srgb, var(--accent-danger) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent-danger) 32%, transparent);
+  color: var(--accent-danger);
+}
+.scm-focal-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── File sections ───────────────────────────────────────────────── */
+.scm-section {
+  display: flex;
+  flex-direction: column;
+  margin: 4px 0;
+}
+
+/* Header row: "STAGED (2)" label + count chip + overflow action */
+.scm-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  user-select: none;
+}
+.scm-section-header-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 9.5px;
+  padding: 0 5px;
+  border-radius: 9999px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+.scm-section-header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.scm-section:hover .scm-section-header-actions {
+  opacity: 1;
+}
+
+/* ── File rows ───────────────────────────────────────────────────── */
+/* The unified row anatomy used by Conflicts / Staged / Changes.
+   The left-edge bar is the *only* visual difference between the
+   sections — see the modifier classes below. */
+.scm-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px 0 18px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 4px;
+  margin: 0 6px;
+  transition: background 120ms ease, color 120ms ease;
+  animation: heal-row-enter 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.scm-row:hover {
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+
+/* Active selection — matches the file tree's selected-row treatment.
+   Overrides the section's left-bar variant. */
+.scm-row.is-active {
+  background: color-mix(in srgb, var(--attention-purple) 10%, transparent);
+}
+.scm-row.is-active::before {
+  background: var(--attention-purple) !important;
+  box-shadow:
+    0 0 10px -2px color-mix(in srgb, var(--attention-purple) 55%, transparent);
+  width: 2px;
+}
+
+/* Section variants — the left-edge bar.  We use a ::before pseudo so
+   the bar can grow into a gradient (staged) or stay a 1px hairline
+   (changes) without changing the row's padding math. */
+.scm-row::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 5px;
+  bottom: 5px;
+  width: 1px;
+  border-radius: 1px;
+  background: var(--accent-tertiary);
+  transition: background 180ms ease, width 180ms ease;
+}
+.scm-row--staged::before {
+  width: 2px;
+  background: linear-gradient(
+    180deg,
+    var(--brand-stop-1) 0%,
+    var(--brand-stop-2) 33%,
+    var(--brand-stop-3) 66%,
+    var(--brand-stop-4) 100%
+  );
+  box-shadow: 0 0 10px -2px color-mix(in srgb, var(--brand-stop-3) 42%, transparent);
+}
+.scm-row--conflict::before {
+  width: 2px;
+  background: var(--accent-danger);
+  box-shadow: 0 0 8px -2px color-mix(in srgb, var(--accent-danger) 48%, transparent);
+}
+
+/* Status dot — a small filled circle whose color reflects the
+   working-tree status.  Untracked keeps a faint green tint (the
+   single keep-color).  Everything else is muted. */
+.scm-row-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.scm-row-dot--untracked {
+  background: transparent;
+  border: 1.5px solid color-mix(in srgb, var(--accent-success) 70%, transparent);
+}
+.scm-row-dot--conflict {
+  background: var(--accent-danger);
+  animation: synthi-pulse 2.4s ease-in-out infinite;
+}
+.scm-row-dot--deleted {
+  background: transparent;
+  border: 1.5px solid var(--text-muted);
+  position: relative;
+}
+
+.scm-row-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.scm-row-path {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  max-width: 110px;
+}
+.scm-row-badge {
+  font-size: 9.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  min-width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.scm-row-badge--untracked {
+  color: color-mix(in srgb, var(--accent-success) 75%, var(--text-muted));
+}
+.scm-row-badge--conflict {
+  color: var(--accent-danger);
+}
+
+/* Hover-revealed icon row — appears on the right when the user
+   hovers the row.  Replaces the dim status text. */
+.scm-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  flex-shrink: 0;
+}
+.scm-row:hover .scm-row-actions {
+  opacity: 1;
+}
+.scm-row:hover .scm-row-badge {
+  opacity: 0;
+  width: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  pointer-events: none;
+}
+.scm-row-action {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.scm-row-action:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+.scm-row-action--danger:hover {
+  color: var(--accent-danger);
+  background: color-mix(in srgb, var(--accent-danger) 14%, transparent);
+}
+
+/* Row ripple — applied for ~2400ms after a stage/unstage transition
+   so the user sees the file moving between sections rather than
+   just popping in place.  Reuses the global heal-line-sweep keyframe. */
+.scm-row-ripple {
+  position: relative;
+  overflow: hidden;
+}
+.scm-row-ripple::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--brand-stop-3) 22%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 240% 100%;
+  background-position: -120% 50%;
+  animation: heal-line-sweep 2400ms cubic-bezier(0.32, 0.72, 0, 1) 1;
+}
+
+/* ── Sub-view pills (Files · History · Stashes) ──────────────────── */
+.scm-subviews {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-app);
+  flex-shrink: 0;
+}
+.scm-subview-pill {
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+.scm-subview-pill:hover {
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--accent-primary) 6%, transparent);
+}
+.scm-subview-pill[data-state="active"] {
+  color: var(--attention-purple);
+  background: color-mix(in srgb, var(--attention-purple) 12%, transparent);
+  border-color: color-mix(in srgb, var(--attention-purple) 30%, transparent);
+}
+
+/* ── Composer (sticky bottom) ────────────────────────────────────── */
+.scm-composer {
+  position: relative;
+  flex-shrink: 0;
+  padding: 10px 12px 12px;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Ambient top hairline above the composer.  Mirrors the bridge's
+   bottom hairline so the column reads as a stanza framed by two
+   subtle brand-tinted lines. */
+.scm-composer::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -1px;
+  height: 1px;
+  background: var(--ambient-haze-bottom);
+  background-size: 200% 100%;
+  pointer-events: none;
+  opacity: 0.55;
+  animation: vt-ambient-drift 22s ease-in-out infinite;
+}
+
+.scm-composer-shell {
+  position: relative;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+.scm-composer-shell:focus-within {
+  border-color: color-mix(in srgb, var(--attention-purple) 60%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--attention-purple) 22%, transparent),
+    0 4px 14px -4px color-mix(in srgb, var(--attention-purple) 18%, transparent);
+}
+
+/* AI-streaming border state — replace the calm focus ring with a
+   moving gradient sweep.  Toggle with .is-streaming on the shell. */
+.scm-composer-shell.is-streaming {
+  border-color: transparent;
+  background:
+    linear-gradient(var(--bg-elevated), var(--bg-elevated)) padding-box,
+    linear-gradient(
+      90deg,
+      var(--brand-stop-1),
+      var(--brand-stop-2),
+      var(--brand-stop-3),
+      var(--brand-stop-4),
+      var(--brand-stop-3),
+      var(--brand-stop-2),
+      var(--brand-stop-1)
+    ) border-box;
+  background-size: auto, 200% 100%;
+  animation: vt-brand-sweep 3.5s linear infinite;
+}
+
+.scm-composer-textarea {
+  width: 100%;
+  min-height: 28px;
+  max-height: 160px;
+  padding: 8px 10px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+}
+.scm-composer-textarea::placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.scm-composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 6px;
+}
+
+/* The primary commit action button.  Gradient-filled when valid,
+   ghost when not.  Tapping triggers heal-applied-flash so the user
+   feels the system register the action. */
+.scm-composer-submit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 11px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  cursor: not-allowed;
+  margin-left: auto;
+  transition: background 150ms ease, color 150ms ease, transform 120ms ease;
+}
+.scm-composer-submit.is-ready {
+  background: var(--brand-gradient);
+  color: #ffffff;
+  border-color: transparent;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+.scm-composer-submit.is-ready:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+.scm-composer-submit.is-ready:active {
+  transform: translateY(0);
+}
+.scm-composer-submit.is-flashing {
+  animation: heal-applied-flash 720ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+
+/* Sparkle (AI) button — quiet brand glyph that hints at the AI
+   moment without being loud.  On click it triggers the streaming
+   state above. */
+.scm-composer-sparkle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 150ms ease, background 150ms ease;
+}
+.scm-composer-sparkle:hover {
+  color: var(--attention-purple);
+  background: color-mix(in srgb, var(--attention-purple) 12%, transparent);
+}
+.scm-composer-sparkle.is-streaming {
+  color: var(--brand-stop-3);
+}
+
+/* Commit-type chip row (feat / fix / docs / refactor / chore).
+   Replaces the old emoji buttons.  Selected chip uses attention-
+   purple per the global data-state pattern. */
+.scm-type-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  cursor: pointer;
+  user-select: none;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+.scm-type-chip:hover {
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--accent-primary) 6%, transparent);
+}
+.scm-type-chip[data-state="active"] {
+  color: var(--attention-purple);
+  background: color-mix(in srgb, var(--attention-purple) 12%, transparent);
+  border-color: color-mix(in srgb, var(--attention-purple) 32%, transparent);
+}
+
+/* ── Error strip (above composer) ────────────────────────────────── */
+.scm-error-strip {
+  margin: 0 12px 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent-danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-danger) 32%, transparent);
+  color: var(--accent-danger);
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  animation: heal-row-enter 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.scm-error-strip-dismiss {
+  margin-left: auto;
+  opacity: 0.7;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+.scm-error-strip-dismiss:hover {
+  opacity: 1;
+}
+
+/* ── Skeleton loading rows ───────────────────────────────────────── */
+.scm-skeleton-row {
+  height: 28px;
+  margin: 0 6px;
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  opacity: 0.5;
+  animation: synthi-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .scm-bridge::after,
+  .scm-bridge.is-push-success::after,
+  .scm-focal,
+  .scm-focal--syncing,
+  .scm-row,
+  .scm-row-ripple::after,
+  .scm-composer::before,
+  .scm-composer-shell.is-streaming,
+  .scm-composer-submit.is-flashing,
+  .scm-error-strip,
+  .scm-skeleton-row {
+    animation: none !important;
+    transition: none !important;
+  }
+}

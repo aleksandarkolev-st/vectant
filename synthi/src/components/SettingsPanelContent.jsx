@@ -26,8 +26,21 @@ import {
   selectSidebarAutoCollapseDelay,
 } from '@/redux/uiSlice';
 import { useThemePicker } from '@/components/ThemePicker';
+import StatusIslandPresetDialog from '@/components/StatusIslandPresetDialog';
 import { toast } from 'sonner';
 import { Key, Eye, EyeOff, Check, Trash2, AlertCircle, FlaskConical, Loader2, X } from 'lucide-react';
+import {
+  STATUS_ISLAND_DOCK_PRESETS,
+  STATUS_ISLAND_MENU_PRESETS,
+  applyStatusIslandPreferenceState,
+  deleteStatusIslandSavedPreset,
+  doesPresetMatchState,
+  persistStatusIslandCompact,
+  persistStatusIslandPositionLocked,
+  readStatusIslandPreferences,
+  subscribeStatusIslandPreferences,
+  upsertStatusIslandSavedPreset,
+} from '@/lib/statusIslandPreferences';
 
 // ── Server-side per-user PAT API ───────────────────────────────────
 async function apiSaveToken(token) {
@@ -200,6 +213,9 @@ export function SettingsPanelContent() {
   const [tokenError, setTokenError] = useState('');
   const [testRunning, setTestRunning] = useState(false);
   const [testResults, setTestResults] = useState(null); // null | array of step results
+  const [statusIslandPreferences, setStatusIslandPreferences] = useState(() => readStatusIslandPreferences());
+  const [isStatusIslandPresetDialogOpen, setIsStatusIslandPresetDialogOpen] = useState(false);
+  const [statusIslandPresetInitialName, setStatusIslandPresetInitialName] = useState('');
 
   // Whether the user has a server-side PAT configured
   const hasStoredToken = session?.githubTokenSource === 'pat';
@@ -209,6 +225,107 @@ export function SettingsPanelContent() {
     ? { login: session.githubLogin, name: null }
     : null;
   const tokenSource = session?.githubTokenSource || null;
+
+  useEffect(() => {
+    setStatusIslandPreferences(readStatusIslandPreferences());
+    return subscribeStatusIslandPreferences(setStatusIslandPreferences);
+  }, []);
+
+  const currentStatusIslandState = {
+    isCompact: Boolean(statusIslandPreferences?.isCompact),
+    isPositionLocked: Boolean(statusIslandPreferences?.isPositionLocked),
+    dockPreset: statusIslandPreferences?.dockPreset || 'center',
+  };
+
+  const activeStatusIslandPresetId = (() => {
+    for (const [presetId, preset] of Object.entries(STATUS_ISLAND_MENU_PRESETS)) {
+      if (doesPresetMatchState(preset, currentStatusIslandState)) {
+        return presetId;
+      }
+    }
+    return 'custom';
+  })();
+
+  const activeSavedStatusIslandPreset = (statusIslandPreferences.savedPresets || []).find((preset) => (
+    doesPresetMatchState(preset, currentStatusIslandState)
+  )) || null;
+
+  const handleToggleStatusIslandCompact = useCallback(() => {
+    persistStatusIslandCompact(!currentStatusIslandState.isCompact);
+    toast(currentStatusIslandState.isCompact ? 'Status island compact labels disabled' : 'Status island compact labels enabled', {
+      duration: 1800,
+    });
+  }, [currentStatusIslandState.isCompact]);
+
+  const handleToggleStatusIslandLock = useCallback(() => {
+    persistStatusIslandPositionLocked(!currentStatusIslandState.isPositionLocked);
+    toast(currentStatusIslandState.isPositionLocked ? 'Status island movement unlocked' : 'Status island movement locked', {
+      duration: 1800,
+    });
+  }, [currentStatusIslandState.isPositionLocked]);
+
+  const handleStatusIslandDockChange = useCallback((dockPreset) => {
+    applyStatusIslandPreferenceState({
+      ...currentStatusIslandState,
+      dockPreset,
+    });
+  }, [currentStatusIslandState]);
+
+  const handleApplyStatusIslandPreset = useCallback((presetId) => {
+    const preset = STATUS_ISLAND_MENU_PRESETS[presetId];
+    if (!preset) return;
+    applyStatusIslandPreferenceState(preset);
+    toast(`Applied status island preset: ${preset.label}`, { duration: 1800 });
+  }, []);
+
+  const handleApplySavedStatusIslandPreset = useCallback((presetId) => {
+    const preset = (statusIslandPreferences.savedPresets || []).find((entry) => entry.id === presetId);
+    if (!preset) return;
+    applyStatusIslandPreferenceState(preset);
+    toast(`Applied status island preset: ${preset.label}`, { duration: 1800 });
+  }, [statusIslandPreferences.savedPresets]);
+
+  const openStatusIslandPresetDialog = useCallback(() => {
+    const nextDefaultLabel = activeSavedStatusIslandPreset?.label || `Preset ${(statusIslandPreferences.savedPresets || []).length + 1}`;
+    setStatusIslandPresetInitialName(nextDefaultLabel);
+    setIsStatusIslandPresetDialogOpen(true);
+  }, [activeSavedStatusIslandPreset, statusIslandPreferences.savedPresets]);
+
+  const handleSaveStatusIslandPreset = useCallback((rawLabel) => {
+    const result = upsertStatusIslandSavedPreset({
+      label: rawLabel,
+      state: currentStatusIslandState,
+      activePresetId: activeSavedStatusIslandPreset?.id || '',
+    });
+    if (result.error) {
+      toast('Preset name cannot be empty', { duration: 1800 });
+      return false;
+    }
+
+    setStatusIslandPreferences((prev) => ({
+      ...prev,
+      savedPresets: result.presets,
+    }));
+    toast(result.updated ? 'Status island preset updated' : 'Status island preset saved', {
+      duration: 1800,
+    });
+    return true;
+  }, [activeSavedStatusIslandPreset, currentStatusIslandState]);
+
+  const handleDeleteStatusIslandPreset = useCallback((presetId) => {
+    const preset = (statusIslandPreferences.savedPresets || []).find((entry) => entry.id === presetId);
+    if (!preset) return;
+
+    const result = deleteStatusIslandSavedPreset(presetId);
+    setStatusIslandPreferences((prev) => ({
+      ...prev,
+      savedPresets: result.presets,
+    }));
+
+    if (result.deleted) {
+      toast(`Deleted preset "${preset.label}"`, { duration: 1800 });
+    }
+  }, [statusIslandPreferences.savedPresets]);
 
   const handleSaveToken = useCallback(async () => {
     const trimmed = tokenInput.trim();
@@ -266,6 +383,165 @@ export function SettingsPanelContent() {
       <div className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
         Settings
       </div>
+
+      <div className="text-xs font-semibold uppercase tracking-wider mt-1" style={{ color: 'var(--text-muted)' }}>
+        Status Island
+      </div>
+      <p className="text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+        Compact mode, movement lock, dock position, and saved presets stay in sync with the collapsed-logo context menu.
+      </p>
+
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col">
+          <span className="text-sm">Compact labels</span>
+          <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+            Hide text labels in the expanded island and keep the condensed icon-and-count layout.
+          </span>
+        </div>
+        <button
+          onClick={handleToggleStatusIslandCompact}
+          className={`shrink-0 relative inline-flex h-5 w-9 items-center rounded-full transition-all ${currentStatusIslandState.isCompact ? 'th-toggle-on' : 'th-toggle-off'}`}
+          aria-label={currentStatusIslandState.isCompact ? 'Disable compact labels' : 'Enable compact labels'}
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm ${
+              currentStatusIslandState.isCompact ? 'translate-x-5' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
+
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col">
+          <span className="text-sm">Lock movement</span>
+          <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+            Prevent both the expanded drag handle and collapsed-logo right-drag from moving the island.
+          </span>
+        </div>
+        <button
+          onClick={handleToggleStatusIslandLock}
+          className={`shrink-0 relative inline-flex h-5 w-9 items-center rounded-full transition-all ${currentStatusIslandState.isPositionLocked ? 'th-toggle-on' : 'th-toggle-off'}`}
+          aria-label={currentStatusIslandState.isPositionLocked ? 'Unlock status island movement' : 'Lock status island movement'}
+        >
+          <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform shadow-sm ${
+              currentStatusIslandState.isPositionLocked ? 'translate-x-5' : 'translate-x-0.5'
+            }`}
+          />
+        </button>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <span className="text-sm">Dock position</span>
+        <div className="flex flex-wrap gap-1.5">
+          {STATUS_ISLAND_DOCK_PRESETS.map((preset) => {
+            const active = currentStatusIslandState.dockPreset === preset;
+            const label = preset.charAt(0).toUpperCase() + preset.slice(1);
+            return (
+              <button
+                key={preset}
+                onClick={() => handleStatusIslandDockChange(preset)}
+                className="text-[10px] font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors"
+                style={{
+                  background: active ? 'color-mix(in srgb, var(--attention-purple) 14%, transparent)' : 'transparent',
+                  color: active ? 'var(--attention-purple)' : 'var(--text-muted)',
+                  border: active ? '1px solid color-mix(in srgb, var(--attention-purple) 30%, transparent)' : '1px solid var(--border-subtle)',
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <span className="text-sm">Built-in presets</span>
+        <div className="flex flex-wrap gap-1.5">
+          {Object.entries(STATUS_ISLAND_MENU_PRESETS).map(([presetId, preset]) => {
+            const active = activeStatusIslandPresetId === presetId;
+            return (
+              <button
+                key={presetId}
+                onClick={() => handleApplyStatusIslandPreset(presetId)}
+                className="text-[10px] font-semibold uppercase tracking-wide px-2 py-1 rounded transition-colors"
+                style={{
+                  background: active ? 'color-mix(in srgb, var(--accent-primary) 12%, transparent)' : 'transparent',
+                  color: active ? 'var(--accent-primary)' : 'var(--text-muted)',
+                  border: active ? '1px solid color-mix(in srgb, var(--accent-primary) 28%, transparent)' : '1px solid var(--border-subtle)',
+                }}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-col">
+            <span className="text-sm">Saved presets</span>
+            <span className="text-[11px] leading-relaxed" style={{ color: 'var(--text-muted)' }}>
+              Save the current island layout, apply it later, or remove older variants.
+            </span>
+          </div>
+          <button
+            onClick={openStatusIslandPresetDialog}
+            className="px-2.5 py-1.5 text-xs rounded border transition-colors"
+            style={{ borderColor: 'var(--accent-primary)', color: 'var(--accent-primary)' }}
+          >
+            Save current...
+          </button>
+        </div>
+
+        {(statusIslandPreferences.savedPresets || []).length > 0 ? (
+          <div className="flex flex-col gap-1.5">
+            {(statusIslandPreferences.savedPresets || []).map((preset) => {
+              const active = activeSavedStatusIslandPreset?.id === preset.id;
+              const meta = [
+                preset.dockPreset,
+                preset.isCompact ? 'compact' : 'full',
+                preset.isPositionLocked ? 'locked' : 'movable',
+              ].join(' · ');
+
+              return (
+                <div key={preset.id} className="flex items-center gap-1.5">
+                  <button
+                    onClick={() => handleApplySavedStatusIslandPreset(preset.id)}
+                    className="flex-1 min-w-0 px-2 py-1.5 rounded border text-left transition-colors"
+                    style={{
+                      background: active ? 'color-mix(in srgb, var(--accent-primary) 8%, transparent)' : 'transparent',
+                      borderColor: active ? 'color-mix(in srgb, var(--accent-primary) 24%, transparent)' : 'var(--border-subtle)',
+                    }}
+                  >
+                    <div className="text-xs font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                      {preset.label}
+                    </div>
+                    <div className="text-[10px] uppercase tracking-wide truncate" style={{ color: active ? 'var(--accent-primary)' : 'var(--text-muted)' }}>
+                      {meta}
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => handleDeleteStatusIslandPreset(preset.id)}
+                    className="p-1.5 rounded border transition-colors hover:opacity-80"
+                    style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}
+                    title={`Delete ${preset.label}`}
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="px-2 py-1.5 rounded border text-[11px]" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-muted)' }}>
+            No saved presets yet.
+          </div>
+        )}
+      </div>
+
+      <div className="border-t my-1" style={{ borderColor: 'var(--border-subtle)' }} />
 
       {/* Auto-save toggle */}
       <div className="flex items-center justify-between">
@@ -569,6 +845,13 @@ export function SettingsPanelContent() {
           github.com/settings/tokens
         </button>.
       </p>
+
+      <StatusIslandPresetDialog
+        open={isStatusIslandPresetDialogOpen}
+        initialValue={statusIslandPresetInitialName}
+        onOpenChange={setIsStatusIslandPresetDialogOpen}
+        onSubmit={handleSaveStatusIslandPreset}
+      />
     </div>
   );
 }
