@@ -21,6 +21,7 @@ import {
 import {
   epochSwapProofFromRuntimeEvidence,
   hostPreservationProofFromRuntimeEvidence,
+  runtimeArtifactTransportEvidence,
   runtimeHostIdentityEvidence,
   runtimeOutputOracleEvidence,
 } from "../../scripts/lib/gpu-hmr-runtime-evidence.mjs";
@@ -453,6 +454,53 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.reloadRequestTransports).toEqual(["filesystem_path"]);
     expect(proof.evidenceRefs).toEqual(["evidence:device-artifact-transport:abc"]);
     expect(summarizeGpuHmrArtifactTransportProof(proof)).toContain("ram-unproven");
+  });
+
+  it("merges runtime loader provenance without proving RAM transport from path-only requests", () => {
+    const runtimeTransport = runtimeArtifactTransportEvidence([
+      "[gpu-runtime-boundary] artifact_transport runtime_session=pid1 generation=3 artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_bytes=10 reload_request_transport=filesystem_path selected_loader_transport=filesystem_path loader_api=module_load_path ram_reference=false ram_transport_proven=false degraded_state=gpu-hmr-ram-io-unavailable degraded_reason=reload_request_contains_filesystem_path_only load_result=ok",
+    ], { runtimeSessionIds: ["pid1"] });
+    const proof = artifactTransportProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "device-artifact-transport",
+          evidenceId: "evidence:device-artifact-transport:abc",
+          metadata: {
+            schemaVersion: "synthi.gpu.hmr.artifact_transport.v1",
+            selectedLoaderTransport: null,
+            reloadRequestTransports: ["filesystem_path"],
+            ramArtifactReferenceProvided: false,
+            degradedState: "gpu-hmr-ram-io-unavailable",
+            degradedReason: "reload_request_contains_filesystem_path_only",
+          },
+        }],
+      },
+    }], runtimeTransport);
+
+    expect(runtimeTransport.transport_evidence_observed).toBe(true);
+    expect(runtimeTransport.ram_transport_proven).toBe(false);
+    expect(runtimeTransport.loader_transports).toEqual(["filesystem_path"]);
+    expect(proof.transportEvidenceObserved).toBe(true);
+    expect(proof.ramArtifactReferenceProvided).toBe(false);
+    expect(proof.ramTransportProven).toBe(false);
+    expect(proof.loaderTransports).toEqual(["filesystem_path"]);
+    expect(proof.evidenceRefs).toEqual([
+      "evidence:device-artifact-transport:abc",
+      "worker-log:artifact_transport:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ]);
+  });
+
+  it("ignores artifact transport lines from unexpected runtime sessions", () => {
+    const runtimeTransport = runtimeArtifactTransportEvidence([
+      "[gpu-runtime-boundary] artifact_transport runtime_session=old generation=3 artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_bytes=10 reload_request_transport=filesystem_path selected_loader_transport=ram_bytes loader_api=module_load_data ram_reference=true ram_transport_proven=true load_result=ok",
+    ], { runtimeSessionIds: ["current"] });
+
+    expect(runtimeTransport.total_count).toBe(1);
+    expect(runtimeTransport.matched_count).toBe(0);
+    expect(runtimeTransport.transport_evidence_observed).toBe(false);
+    expect(runtimeTransport.ram_transport_proven).toBe(false);
   });
 
   it("does not infer RAM artifact transport without transport evidence", () => {

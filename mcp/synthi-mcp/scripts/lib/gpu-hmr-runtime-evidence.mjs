@@ -283,6 +283,84 @@ function expectedRuntimeSessionIds(observation = {}) {
   return compactStringList(explicit);
 }
 
+function artifactTransportRecord(line) {
+  const fields = parseRuntimeKeyValues(line);
+  return {
+    line,
+    runtimeSession: fields.runtime_session ?? null,
+    generation: integerValue(fields.generation),
+    artifactHash: fields.artifact_hash ?? null,
+    artifactBytes: integerValue(fields.artifact_bytes),
+    reloadRequestTransport: fields.reload_request_transport ?? fields.reloadRequestTransport ?? null,
+    selectedLoaderTransport: fields.selected_loader_transport ?? fields.selectedLoaderTransport ?? null,
+    loaderApi: fields.loader_api ?? fields.loaderApi ?? null,
+    ramReference: boolValue(fields.ram_reference ?? fields.ramArtifactReferenceProvided),
+    ramTransportProven: boolValue(fields.ram_transport_proven ?? fields.ramTransportProven),
+    degradedState: fields.degraded_state ?? fields.degradedState ?? null,
+    degradedReason: fields.degraded_reason ?? fields.degradedReason ?? null,
+    loadResult: fields.load_result ?? fields.loadResult ?? null,
+  };
+}
+
+export function runtimeArtifactTransportEvidence(lines, observation = {}) {
+  const expectedSessions = expectedRuntimeSessionIds(observation);
+  const rawRecords = (Array.isArray(lines) ? lines : [])
+    .filter((line) => /\bartifact_transport\b/i.test(String(line ?? '')))
+    .map(artifactTransportRecord)
+    .filter((record) =>
+      typeof record.runtimeSession === 'string'
+      && record.runtimeSession.trim()
+      && typeof record.selectedLoaderTransport === 'string'
+      && record.selectedLoaderTransport.trim()
+      && typeof record.reloadRequestTransport === 'string'
+      && record.reloadRequestTransport.trim()
+      && typeof record.artifactHash === 'string'
+      && /^sha256:[0-9a-f]{64}$/i.test(record.artifactHash)
+      && Number.isFinite(record.artifactBytes)
+      && record.artifactBytes >= 0
+    );
+  const records = rawRecords.filter((record) =>
+    expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession)
+  );
+  const latest = records.at(-1) ?? null;
+  const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
+  const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
+  const loaderTransports = compactStringList(records.map((record) => record.selectedLoaderTransport));
+  const reloadRequestTransports = compactStringList(records.map((record) => record.reloadRequestTransport));
+  const ramArtifactReferenceProvided = records.some((record) => record.ramReference === true);
+  const ramTransportProven = records.some((record) =>
+    record.ramTransportProven === true
+    || (
+      record.ramReference === true
+      && ['ram_bytes', 'ram_blob'].includes(String(record.selectedLoaderTransport ?? '').trim())
+      && record.loadResult === 'ok'
+    )
+  );
+  const effectiveRamTransportProven = ramTransportProven && runtimeSessionConsistent;
+  const evidenceRefs = records.map((record) =>
+    `worker-log:artifact_transport:${record.artifactHash ?? record.runtimeSession}`
+  );
+
+  return {
+    total_count: rawRecords.length,
+    matched_count: records.length,
+    latest,
+    expected_runtime_session_ids: expectedSessions,
+    runtime_session_ids: runtimeSessionIds,
+    runtime_session_observed: records.length > 0,
+    runtime_session_consistent: runtimeSessionConsistent,
+    transport_evidence_observed: records.length > 0,
+    ram_artifact_reference_provided: ramArtifactReferenceProvided,
+    ram_transport_proven: effectiveRamTransportProven,
+    loader_transports: loaderTransports,
+    reload_request_transports: reloadRequestTransports,
+    degraded_state: effectiveRamTransportProven ? null : latest?.degradedState ?? null,
+    degraded_reason: effectiveRamTransportProven ? null : latest?.degradedReason ?? null,
+    evidence_refs: compactStringList(evidenceRefs),
+    lines: records.map((record) => record.line).slice(-20),
+  };
+}
+
 export function runtimeOutputOracleEvidence(lines, observation = {}) {
   const records = (Array.isArray(lines) ? lines : [])
     .filter((line) => /\boutput_oracle\b/i.test(String(line ?? '')))

@@ -53,7 +53,10 @@ import {
   artifactTransportProofFromProofArtifacts,
   summarizeGpuHmrArtifactTransportProof,
 } from './lib/gpu-hmr-proof-artifacts.mjs';
-import { epochSwapProofFromRuntimeEvidence } from './lib/gpu-hmr-runtime-evidence.mjs';
+import {
+  epochSwapProofFromRuntimeEvidence,
+  runtimeArtifactTransportEvidence,
+} from './lib/gpu-hmr-runtime-evidence.mjs';
 import {
   classifyGpuHmrDispatchProof,
   classifyGpuHmrOutputProof,
@@ -133,12 +136,13 @@ function record(phase, name, status, detail = '') {
   const l = status === 'pass' ? 'ok' : status === 'fail' ? 'fail' : status === 'skip' ? 'skip' : 'warn';
   log(l, `[${phase}] ${name}${detail ? ' — ' + detail : ''}`);
 }
-function recordArtifactTransportProof(phase, name, proofArtifactRecords) {
-  const proof = artifactTransportProofFromProofArtifacts(proofArtifactRecords);
+function recordArtifactTransportProof(phase, name, proofArtifactRecords, runtimeEvidence = null) {
+  const proof = artifactTransportProofFromProofArtifacts(proofArtifactRecords, runtimeEvidence);
   artifactTransportProofs.push({
     phase,
     name,
     proof,
+    runtimeEvidence,
     ts: new Date().toISOString(),
   });
   record(phase, name, proof.degradedState ? 'warn' : 'pass', summarizeGpuHmrArtifactTransportProof(proof));
@@ -457,6 +461,17 @@ async function awaitWorkerLogRegex(regex, timeoutMs, opts = {}) {
 }
 
 // ───────────────────────── MCP JSON-RPC over stdio ─────────────────────────
+
+async function runtimeArtifactTransportEvidenceSince(checkpoint, timeoutMs = 5000) {
+  const match = await awaitWorkerLogRegex(
+    /\[gpu-runtime-boundary\]\s+artifact_transport\b/i,
+    timeoutMs,
+    { after: checkpoint, maxBytes: 8 * 1024 * 1024 },
+  );
+  return runtimeArtifactTransportEvidence(
+    logEvidenceLines(match.window ?? match.tail ?? '', /\[gpu-runtime-boundary\]\s+artifact_transport\b/i),
+  );
+}
 
 class McpClient {
   constructor(proc) {
@@ -2338,10 +2353,12 @@ async function phaseFlow(ctx) {
     baselineAbiProof.degradedState ? 'warn' : 'pass',
     summarizeGpuHmrAbiProof(baselineAbiProof),
   );
+  const baselineRuntimeArtifactTransport = await runtimeArtifactTransportEvidenceSince(baselineStart);
   recordArtifactTransportProof(
     'FLOW',
     'inward artifact transport proof',
     baselineProofArtifacts,
+    baselineRuntimeArtifactTransport,
   );
 
   const baselineLaunch = await awaitWorkerLogRegex(
@@ -2419,10 +2436,12 @@ async function phaseFlow(ctx) {
     flipAbiProof.degradedState ? 'warn' : 'pass',
     summarizeGpuHmrAbiProof(flipAbiProof),
   );
+  const flipRuntimeArtifactTransport = await runtimeArtifactTransportEvidenceSince(flipStart);
   recordArtifactTransportProof(
     'FLOW',
     'outward artifact transport proof',
     flipProofArtifacts,
+    flipRuntimeArtifactTransport,
   );
 
   const fastSwap = await awaitWorkerLogRegex(

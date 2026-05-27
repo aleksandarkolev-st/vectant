@@ -93,7 +93,12 @@ export function abiProofFromProofArtifacts(records) {
   });
 }
 
-export function artifactTransportProofFromProofArtifacts(records) {
+function runtimeTransportValues(runtimeEvidence, camelName, snakeName) {
+  const values = runtimeEvidence?.[camelName] ?? runtimeEvidence?.[snakeName];
+  return Array.isArray(values) ? values : [];
+}
+
+export function artifactTransportProofFromProofArtifacts(records, runtimeEvidence = null) {
   const evidenceRefs = [];
   const loaderTransports = [];
   const reloadRequestTransports = [];
@@ -140,6 +145,38 @@ export function artifactTransportProofFromProofArtifacts(records) {
     }
     if (!degradedReason && typeof transportStage?.degradedReason === 'string' && transportStage.degradedReason.trim()) {
       degradedReason = transportStage.degradedReason.trim();
+    }
+  }
+
+  if (runtimeEvidence && typeof runtimeEvidence === 'object') {
+    if (runtimeEvidence.transport_evidence_observed === true || runtimeEvidence.transportEvidenceObserved === true) {
+      transportEvidenceObserved = true;
+    }
+    evidenceRefs.push(...uniqueStrings(runtimeTransportValues(runtimeEvidence, 'evidenceRefs', 'evidence_refs')));
+    loaderTransports.push(...uniqueStrings(runtimeTransportValues(runtimeEvidence, 'loaderTransports', 'loader_transports')));
+    reloadRequestTransports.push(...uniqueStrings(
+      runtimeTransportValues(runtimeEvidence, 'reloadRequestTransports', 'reload_request_transports'),
+    ));
+    if (
+      runtimeEvidence.ram_artifact_reference_provided === true
+      || runtimeEvidence.ramArtifactReferenceProvided === true
+    ) {
+      ramArtifactReferenceProvided = true;
+    }
+    if (
+      (runtimeEvidence.ram_transport_proven === true || runtimeEvidence.ramTransportProven === true)
+      && (runtimeEvidence.ram_artifact_reference_provided === true
+        || runtimeEvidence.ramArtifactReferenceProvided === true)
+    ) {
+      ramTransportProven = true;
+    }
+    const runtimeDegradedState = runtimeEvidence.degraded_state ?? runtimeEvidence.degradedState;
+    const runtimeDegradedReason = runtimeEvidence.degraded_reason ?? runtimeEvidence.degradedReason;
+    if (!degradedState && typeof runtimeDegradedState === 'string' && runtimeDegradedState.trim()) {
+      degradedState = runtimeDegradedState.trim();
+    }
+    if (!degradedReason && typeof runtimeDegradedReason === 'string' && runtimeDegradedReason.trim()) {
+      degradedReason = runtimeDegradedReason.trim();
     }
   }
 

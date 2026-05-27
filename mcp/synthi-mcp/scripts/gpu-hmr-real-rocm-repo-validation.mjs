@@ -26,6 +26,7 @@ import {
 import {
   epochSwapProofFromRuntimeEvidence,
   hostPreservationProofFromRuntimeEvidence,
+  runtimeArtifactTransportEvidence,
   runtimeEpochSwapEvidence,
   runtimeHostIdentityEvidence,
   runtimeOutputOracleEvidence,
@@ -1718,6 +1719,17 @@ function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('runtime output oracle evidence parser failed');
   }
+  const runtimeTransportEvidence = runtimeArtifactTransportEvidence([
+    '[gpu-runtime-boundary] artifact_transport runtime_session=pid1 generation=3 artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_bytes=8 reload_request_transport=filesystem_path selected_loader_transport=filesystem_path loader_api=module_load_path ram_reference=false ram_transport_proven=false degraded_state=gpu-hmr-ram-io-unavailable degraded_reason=reload_request_contains_filesystem_path_only load_result=ok',
+  ], { runtimeSessionIds: ['pid1'] });
+  if (
+    runtimeTransportEvidence.matched_count !== 1
+    || runtimeTransportEvidence.loader_transports[0] !== 'filesystem_path'
+    || runtimeTransportEvidence.ram_transport_proven
+    || runtimeTransportEvidence.degraded_state !== 'gpu-hmr-ram-io-unavailable'
+  ) {
+    throw new Error('runtime artifact transport evidence parser failed');
+  }
   const outputOracleContract = parseOutputOracleContract('{"id":"probe.expected","kind":"buffer_checksum","expected":"sha256:def"}');
   const constrainedOutputOracleEvidence = runtimeOutputOracleEvidence([
     '[gpu-runtime-boundary] output_oracle id=probe.other kind=buffer_checksum expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1',
@@ -1847,6 +1859,9 @@ async function collectRuntimeEvidence() {
   const runtimeDispatch = runtimeDispatchEvidence(workerEvidence);
   const runtimeArgProvenance = runtimeArgProvenanceEvidence(workerEvidence);
   const runtimeSession = runtimeSessionEvidence(workerEvidence);
+  const runtimeArtifactTransport = runtimeArtifactTransportEvidence(workerEvidence, {
+    runtimeSessionIds: runtimeSession.unique_ids,
+  });
   const runtimeOwnership = runtimeOwnershipEvidence(workerEvidence);
   const runtimeEpochSwap = epochSwapProofFromRuntimeEvidence(workerEvidence);
   const runtimeOutputOracle = runtimeOutputOracleEvidence(workerEvidence, {
@@ -1892,6 +1907,7 @@ async function collectRuntimeEvidence() {
     runtime_dispatch: runtimeDispatch,
     runtime_arg_provenance: runtimeArgProvenance,
     runtime_session: runtimeSession,
+    runtime_artifact_transport: runtimeArtifactTransport,
     runtime_ownership: runtimeOwnership,
     runtime_epoch_swap: runtimeEpochSwap.evidence,
     runtime_output_oracle: runtimeOutputOracle,
@@ -1930,6 +1946,15 @@ async function collectRuntimeEvidence() {
     );
   } else {
     record('runtime session provenance', 'warn', 'no runtime_session launch evidence captured');
+  }
+  if (runtimeArtifactTransport.total_count > 0) {
+    record(
+      'runtime artifact transport evidence',
+      runtimeArtifactTransport.ram_transport_proven ? 'pass' : 'warn',
+      `records=${runtimeArtifactTransport.total_count} matched=${runtimeArtifactTransport.matched_count} loader=${runtimeArtifactTransport.loader_transports.join(',') || 'unknown'} ram_reference=${runtimeArtifactTransport.ram_artifact_reference_provided}`,
+    );
+  } else {
+    record('runtime artifact transport evidence', 'warn', 'no artifact_transport lines captured');
   }
   if (runtimeEpochSwap.evidence.total_count > 0) {
     record(
@@ -1973,7 +1998,10 @@ async function collectRuntimeEvidence() {
     (shot) => shot && shot.width >= 320 && shot.height >= 240 && shot.visible_pixels > 500,
   );
   report.abi_proof = abiProofFromProofArtifacts(proofArtifactRecords);
-  report.artifact_transport_proof = artifactTransportProofFromProofArtifacts(proofArtifactRecords);
+  report.artifact_transport_proof = artifactTransportProofFromProofArtifacts(
+    proofArtifactRecords,
+    runtimeArtifactTransport,
+  );
   report.epoch_swap_proof = runtimeEpochSwap.proof;
   report.dispatch_proof = classifyGpuHmrDispatchProof({
     dispatchObserved: runtimeDispatch.success_count > 0 && scopedWorkerLogs.marker_found,

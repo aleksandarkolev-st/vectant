@@ -68,6 +68,7 @@ use crate::hmr::gpu_driver_loader::{
     self, CuContext, CuFunction, CuStream, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable,
 };
 use crate::hmr::gpu_module_manager::{GpuModuleManager, KernelResolution, ModuleManagerError};
+use crate::hmr::gpu_proof::sha256_hex_bytes;
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
@@ -270,7 +271,36 @@ struct DeviceReloadOwnership {
     touched_symbols: Vec<String>,
     retired_module_count: usize,
     replaced_primary: bool,
-    epoch_log_lines: Vec<String>,
+    runtime_log_lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactLoaderTransport {
+    FilesystemPath,
+    RamBytes,
+}
+
+impl ArtifactLoaderTransport {
+    fn selected_for_vendor(vendor: GpuVendor) -> Self {
+        match vendor {
+            GpuVendor::Cuda => Self::RamBytes,
+            GpuVendor::Rocm => Self::FilesystemPath,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::FilesystemPath => "filesystem_path",
+            Self::RamBytes => "ram_bytes",
+        }
+    }
+
+    fn loader_api(self) -> &'static str {
+        match self {
+            Self::FilesystemPath => "module_load_path",
+            Self::RamBytes => "module_load_data",
+        }
+    }
 }
 
 fn sorted_unique_symbols(symbols: &[String]) -> Vec<String> {
@@ -909,6 +939,8 @@ impl Adapter for GpuModuleAdapter {
                 ),
             };
         }
+        let artifact_hash = sha256_hex_bytes(&blob);
+        let loader_transport = ArtifactLoaderTransport::selected_for_vendor(self.config.vendor);
 
         let plan = self.classify_plan(req);
         let (snapshot_bytes, dirty_buffers) = Self::managed_snapshot_stats();
@@ -1057,14 +1089,17 @@ impl Adapter for GpuModuleAdapter {
 
         let load_result = (|| -> Result<DeviceReloadOwnership, String> {
             let previous_table = self.module_manager.kernel_table().clone();
-            if self.config.vendor == GpuVendor::Rocm {
-                self.module_manager
-                    .load_standby_from_file(&symbols, artifact, blob.len())
-                    .map_err(Self::module_manager_error)?;
-            } else {
-                self.module_manager
-                    .load_standby(&symbols, &blob)
-                    .map_err(Self::module_manager_error)?;
+            match loader_transport {
+                ArtifactLoaderTransport::FilesystemPath => {
+                    self.module_manager
+                        .load_standby_from_file(&symbols, artifact, blob.len())
+                        .map_err(Self::module_manager_error)?;
+                }
+                ArtifactLoaderTransport::RamBytes => {
+                    self.module_manager
+                        .load_standby(&symbols, &blob)
+                        .map_err(Self::module_manager_error)?;
+                }
             }
             self.module_manager
                 .resolve_kernel_symbols(&symbols, &kernel_resolutions)
@@ -1104,7 +1139,18 @@ impl Adapter for GpuModuleAdapter {
                 kernels: dispatcher_kernels,
             }));
             let active_generation = current_launch_generation();
-            let mut epoch_log_lines = Vec::new();
+            let mut runtime_log_lines = Vec::new();
+            let artifact_transport_line = format!(
+                "[gpu-runtime-boundary] artifact_transport runtime_session={} generation={} artifact_hash=sha256:{} artifact_bytes={} reload_request_transport=filesystem_path selected_loader_transport={} loader_api={} ram_reference=false ram_transport_proven=false degraded_state=gpu-hmr-ram-io-unavailable degraded_reason=reload_request_contains_filesystem_path_only load_result=ok",
+                runtime_session_id(),
+                active_generation,
+                artifact_hash,
+                blob.len(),
+                loader_transport.as_str(),
+                loader_transport.loader_api(),
+            );
+            eprintln!("{artifact_transport_line}");
+            runtime_log_lines.push(artifact_transport_line);
             let publish_line = format!(
                 "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
                 runtime_session_id(),
@@ -1121,7 +1167,7 @@ impl Adapter for GpuModuleAdapter {
                 drain.outcome.budget_ms().unwrap_or(0)
             );
             eprintln!("{publish_line}");
-            epoch_log_lines.push(publish_line);
+            runtime_log_lines.push(publish_line);
             for retired in retired {
                 self.module_manager
                     .unload_retired(&symbols, retired)
@@ -1138,7 +1184,7 @@ impl Adapter for GpuModuleAdapter {
                     drain.stream_ids_for_log()
                 );
                 eprintln!("{retired_line}");
-                epoch_log_lines.push(retired_line);
+                runtime_log_lines.push(retired_line);
             }
             Ok(DeviceReloadOwnership {
                 partial_reload: partial_device_reload,
@@ -1146,7 +1192,7 @@ impl Adapter for GpuModuleAdapter {
                 touched_symbols,
                 retired_module_count,
                 replaced_primary,
-                epoch_log_lines,
+                runtime_log_lines,
             })
         })();
 
@@ -1175,7 +1221,7 @@ impl Adapter for GpuModuleAdapter {
                     matched_kernel_hashes: ownership.touched_symbols.len() as u32,
                 });
                 self.last_reload_log
-                    .extend(ownership.epoch_log_lines.iter().cloned());
+                    .extend(ownership.runtime_log_lines.iter().cloned());
                 self.emit_runtime_ownership_report(&ownership, artifact);
                 self.phase = GpuPhase::Ready;
                 self.health = AdapterHealth::Healthy;
@@ -1754,6 +1800,19 @@ mod tests {
             .last_reload_log()
             .iter()
             .any(|l| l.contains("gpu_snapshot_telemetry")));
+        let transport = a
+            .last_reload_log()
+            .iter()
+            .find(|l| l.contains("artifact_transport"))
+            .expect("runtime artifact transport report");
+        assert!(transport.contains("reload_request_transport=filesystem_path"));
+        assert!(transport.contains("selected_loader_transport=ram_bytes"));
+        assert!(transport.contains("ram_reference=false"));
+        assert!(transport.contains("ram_transport_proven=false"));
+        assert!(transport.contains(&format!(
+            "artifact_hash=sha256:{}",
+            sha256_hex_bytes(b"fake-cubin")
+        )));
     }
 
     #[test]
