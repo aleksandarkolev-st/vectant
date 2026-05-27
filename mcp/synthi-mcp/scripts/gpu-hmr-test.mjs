@@ -715,12 +715,22 @@ static void log_buffers(const char* prefix) {
         (unsigned long long) reinterpret_cast<std::uintptr_t>(g_state->d_c));
 }
 
+static void record_host_identities(const CoreState* s) {
+    if (!s) return;
+    synthi_host_identity("core_state", s, ((uint64_t) s->magic << 32) | (uint64_t) s->version);
+    synthi_host_identity("device_allocation_a", s->d_a, sizeof(float) * N_ELEMS);
+    synthi_host_identity("device_allocation_b", s->d_b, sizeof(float) * N_ELEMS);
+    synthi_host_identity("device_allocation_c", s->d_c, sizeof(float) * N_ELEMS);
+    synthi_host_identity("stream", reinterpret_cast<const void*>(s->stream), 0);
+}
+
 extern "C" void* core_on_load(void* prev, void* /*renderer*/) {
     if (prev) {
         CoreState* p = (CoreState*) prev;
         if (p->magic == CORE_STATE_MAGIC) {
             g_state = p;                  // reuse — buffers must survive HMR
             log_buffers("reused");
+            record_host_identities(g_state);
             return p;
         }
     }
@@ -746,12 +756,14 @@ extern "C" void* core_on_load(void* prev, void* /*renderer*/) {
     for (int i = 0; i < N_ELEMS; ++i) host[i] = (float)(2 * i);
     cudaMemcpy(g_state->d_b, host, sizeof(float) * N_ELEMS, cudaMemcpyHostToDevice);
     std::free(host);
+    record_host_identities(g_state);
     return g_state;
 }
 
 extern "C" void core_tick(void* /*ctx*/) {
     dim3 block(256);
     dim3 grid((g_state->n + block.x - 1) / block.x);
+    record_host_identities(g_state);
     synthi_gpu_launch(
         g_state->gpu,
         "vec_add",
@@ -788,6 +800,7 @@ extern "C" void device_on_load(const unsigned char* /*prev_blob*/, std::size_t /
     synthi_register(g_state->gpu, g_state->d_a, sizeof(float) * g_state->n, "a", "persistent");
     synthi_register(g_state->gpu, g_state->d_b, sizeof(float) * g_state->n, "b", "persistent");
     synthi_register(g_state->gpu, g_state->d_c, sizeof(float) * g_state->n, "c", "persistent");
+    record_host_identities(g_state);
 }
 
 extern "C" std::size_t device_save_size() { return 0; }
@@ -978,6 +991,15 @@ static void flow_register_buffers() {
     synthi_register(g_state->gpu, g_state->d_y, sizeof(float) * FLOW_BALLS, "flow.y", "persistent");
 }
 
+static void flow_record_host_identities(const CoreState* s) {
+    if (!s) return;
+    synthi_host_identity("core_state", s, ((uint64_t) s->magic << 32) | (uint64_t) s->version);
+    synthi_host_identity("renderer", s->renderer, (uint64_t) s->version);
+    synthi_host_identity("device_allocation_x", s->d_x, sizeof(float) * FLOW_BALLS);
+    synthi_host_identity("device_allocation_y", s->d_y, sizeof(float) * FLOW_BALLS);
+    synthi_host_identity("stream", reinterpret_cast<const void*>(s->stream), 0);
+}
+
 static void flow_seed_host() {
     for (int i = 0; i < FLOW_BALLS; ++i) {
         const float theta = 2.39996323f * (float)i;
@@ -994,6 +1016,7 @@ extern "C" void* core_on_load(void* prev, void* renderer) {
             g_state = p;
             g_state->renderer = (SDL_Renderer*) renderer;
             flow_register_buffers();
+            flow_record_host_identities(g_state);
             std::fprintf(stderr, "[gpu-flow-demo] reused state frame=%llu\\n",
                 (unsigned long long) g_state->frame);
             return p;
@@ -1025,6 +1048,7 @@ extern "C" void* core_on_load(void* prev, void* renderer) {
         FLOW_BALLS,
         (unsigned long long) reinterpret_cast<std::uintptr_t>(g_state->d_x),
         (unsigned long long) reinterpret_cast<std::uintptr_t>(g_state->d_y));
+    flow_record_host_identities(g_state);
     return g_state;
 }
 
@@ -1035,6 +1059,7 @@ extern "C" void core_on_update(void* ctx, double dt) {
     dim3 block(256);
     dim3 grid((s->n + block.x - 1) / block.x);
     unsigned long long frame = (unsigned long long) s->frame;
+    flow_record_host_identities(s);
     synthi_gpu_launch(
         s->gpu,
         "particle_flow",
@@ -1064,6 +1089,7 @@ extern "C" const DeviceDescriptor* device_descriptor() {
 
 extern "C" void device_on_load(const unsigned char* /*prev_blob*/, std::size_t /*len*/) {
     flow_register_buffers();
+    flow_record_host_identities(g_state);
     std::fprintf(stderr, "[gpu-flow-demo] device_on_load frame=%llu\\n",
         (unsigned long long) (g_state ? g_state->frame : 0));
 }
@@ -1306,6 +1332,9 @@ function verifySeedFixtureContract(files) {
   }
   if (!/\bsynthi_gpu_launch\s*\(/.test(hostText)) {
     findings.push('host_missing_synthi_gpu_launch_boundary');
+  }
+  if (!/\bsynthi_host_identity\s*\(/.test(hostText)) {
+    findings.push('host_missing_identity_snapshot_boundary');
   }
   if (/\w+\s*<<<[\s\S]*?>>>/.test(hostText)) {
     findings.push('host_contains_raw_triple_chevron_launch');
@@ -1918,7 +1947,7 @@ async function seedWorkspace(vendor, tc = null) {
   const contract = verifySeedFixtureContract(files);
   record('seed', 'fixture uses Synthi GPU runtime contract',
     contract.ok ? 'pass' : 'fail',
-    contract.ok ? 'synthi_gpu_launch + lifecycle exports' : contract.findings.join(', '));
+    contract.ok ? 'synthi_gpu_launch + host identity + lifecycle exports' : contract.findings.join(', '));
 
   try {
     await writeFilesBatch({ slug: CFG.slug, userId: CFG.hostId, files, syncToGcs: CFG.syncToGcs });
