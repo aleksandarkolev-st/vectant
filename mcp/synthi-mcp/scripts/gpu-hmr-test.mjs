@@ -48,9 +48,12 @@ import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
+import { abiProofFromProofArtifacts } from './lib/gpu-hmr-proof-artifacts.mjs';
+import { epochSwapProofFromRuntimeEvidence } from './lib/gpu-hmr-runtime-evidence.mjs';
 import {
   classifyGpuHmrDispatchProof,
   classifyGpuHmrOutputProof,
+  summarizeGpuHmrAbiProof,
   summarizeGpuHmrDispatchProof,
   summarizeGpuHmrOutputProof,
 } from './lib/gpu-hmr-runtime-proof.mjs';
@@ -162,6 +165,13 @@ function recordRuntimeDispatchProof(phase, name, observation) {
       unknownArgCount: Number.isFinite(observation?.unknownArgCount)
         ? Number(observation.unknownArgCount)
         : null,
+      abiResultState: observation?.abiProof?.resultState ?? null,
+      abiDegradedState: observation?.abiProof?.degradedState ?? null,
+      epochResultState: observation?.epochProof?.resultState ?? null,
+      epochDegradedState: observation?.epochProof?.degradedState ?? null,
+      streamOrderingProven: observation?.streamOrderingProven === true,
+      replacementScopeProven: observation?.replacementScopeProven === true,
+      runtimeSessionConsistent: observation?.runtimeSessionConsistent !== false,
     },
     ts: new Date().toISOString(),
   });
@@ -225,6 +235,14 @@ function execText(cmd, args, timeoutMs = 5000) {
         return;
       }
       resolve(String(stdout).trim());
+    });
+  });
+}
+
+function execTextAllowPartialOutput(cmd, args, timeoutMs = 30000, opts = {}) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 256 * 1024 * 1024, ...opts }, (_err, stdout, stderr) => {
+      resolve(`${stdout ?? ''}${stderr ?? ''}`.trim());
     });
   });
 }
@@ -1651,6 +1669,51 @@ function launchArgProvenanceEvidence(logText, expectedKernels = []) {
   };
 }
 
+function logEvidenceLines(logText, regex) {
+  return String(logText ?? '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => {
+      regex.lastIndex = 0;
+      return line && regex.test(line);
+    });
+}
+
+function runtimeSessionEvidence(logText) {
+  const ids = [];
+  const lines = [];
+  for (const line of logEvidenceLines(logText, /\bgpu-runtime-boundary\b/i)) {
+    const match = line.match(/\bruntime_session=([^\s]+)/i);
+    if (!match) continue;
+    ids.push(match[1]);
+    lines.push(line);
+  }
+  const uniqueIds = [...new Set(ids)].sort();
+  return {
+    recordCount: ids.length,
+    uniqueIds,
+    consistent: uniqueIds.length <= 1,
+    lines: lines.slice(-20),
+  };
+}
+
+function runtimeOwnershipEvidence(logText) {
+  const lines = logEvidenceLines(logText, /\bruntime_ownership\b/i);
+  const scopeLines = lines.filter((line) => {
+    const expected = line.match(/\bexpected_symbols=([^\s]+)/i)?.[1] ?? '';
+    const touched = line.match(/\btouched_symbols=([^\s]+)/i)?.[1] ?? '';
+    return expected && touched && expected !== '-' && expected === touched;
+  });
+  return {
+    totalCount: lines.length,
+    primaryReplacementCount: lines.filter((line) => /\breplaced_primary=true\b/i.test(line)).length,
+    primaryRetainedCount: lines.filter((line) => /\breplaced_primary=false\b/i.test(line)).length,
+    scopeProvenCount: scopeLines.length,
+    scopeLines: scopeLines.slice(-20),
+    lines: lines.slice(-20),
+  };
+}
+
 function summarizeLogLine(line) {
   return String(line ?? '').replace(/\s+/g, ' ').slice(0, 240);
 }
@@ -1707,6 +1770,88 @@ function recordGpuProof(phase, name, hmr) {
   const ok = typeof proof?.resultState === 'string' && proof.resultState.startsWith('gpu-hmr-');
   record(phase, name, ok ? 'pass' : 'fail', summarizeGpuProof(proof));
   return proof;
+}
+
+function proofArtifactFileName(proofArtifactPath) {
+  const normalized = String(proofArtifactPath ?? '').replaceAll('\\', '/');
+  const fileName = path.posix.basename(normalized);
+  return /^gpu-proof_[a-f0-9]{32,}\.json$/i.test(fileName) ? fileName : null;
+}
+
+async function readWorkerProofArtifact(proofArtifactPath) {
+  if (CFG.mcpTransport !== 'docker') {
+    return { proofArtifactPath, found: false, reason: 'docker_transport_required' };
+  }
+  const fileName = proofArtifactFileName(proofArtifactPath);
+  if (!fileName) {
+    return { proofArtifactPath, found: false, reason: 'invalid_proof_artifact_path' };
+  }
+  const found = await execTextAllowPartialOutput(
+    'docker',
+    [
+      'exec',
+      '-w',
+      '/',
+      CFG.workerContainer,
+      'sh',
+      '-c',
+      'find / -path "*/.synthi/gpu-hmr/proofs/$1" -type f -print -quit 2>/dev/null',
+      'sh',
+      fileName,
+    ],
+    120000,
+  );
+  const containerPath = String(found ?? '').split(/\r?\n/).find((line) => line.trim())?.trim() ?? '';
+  if (!containerPath) {
+    return { proofArtifactPath, fileName, found: false, reason: 'proof_artifact_not_found' };
+  }
+  let text = '';
+  try {
+    text = await execText('docker', ['exec', '-w', '/', CFG.workerContainer, 'cat', containerPath], 120000);
+  } catch (err) {
+    return {
+      proofArtifactPath,
+      fileName,
+      containerPath,
+      found: false,
+      reason: 'proof_artifact_unreadable',
+      error: err?.message ?? String(err),
+    };
+  }
+  try {
+    return {
+      proofArtifactPath,
+      fileName,
+      containerPath,
+      found: true,
+      artifact: JSON.parse(text),
+    };
+  } catch (err) {
+    return {
+      proofArtifactPath,
+      fileName,
+      containerPath,
+      found: false,
+      reason: 'proof_artifact_invalid_json',
+      error: err?.message ?? String(err),
+    };
+  }
+}
+
+async function proofArtifactsFromGpuProof(proof) {
+  const proofPath = proof?.proofArtifactPath;
+  if (typeof proofPath !== 'string' || !proofPath.trim()) {
+    return [{ proofArtifactPath: proofPath ?? null, found: false, reason: 'missing_proof_artifact_path' }];
+  }
+  return [await readWorkerProofArtifact(proofPath)];
+}
+
+function summarizeProofArtifactRecords(records) {
+  const found = records.filter((record) => record?.found).length;
+  const details = records.map((record) => record?.found
+    ? `${record.fileName}:${record.containerPath}`
+    : `${record?.proofArtifactPath ?? 'missing'}:${record?.reason ?? 'unknown'}`);
+  return `found=${found}/${records.length} ${details.join(' ')}`.slice(0, 900);
 }
 
 async function assertNoGpuHmrFallback(phase, name, checkpoint, maxBytes = 8 * 1024 * 1024) {
@@ -1784,6 +1929,7 @@ async function awaitRuntimeDispatchProof(
   expectedKernels = [],
   dispatchObserved = false,
   timeoutMs = 12000,
+  proofContext = {},
 ) {
   const maxBytes = 8 * 1024 * 1024;
   if (dispatchObserved) {
@@ -1804,12 +1950,20 @@ async function awaitRuntimeDispatchProof(
   const tail = await readWorkerLogTail(maxBytes, logOpts);
   const window = workerLogSearchWindow(tail, { after: checkpoint });
   const provenance = launchArgProvenanceEvidence(window, expectedKernels);
+  const runtimeSession = runtimeSessionEvidence(window);
+  const runtimeOwnership = runtimeOwnershipEvidence(window);
+  const epochSwap = epochSwapProofFromRuntimeEvidence(String(window ?? '').split(/\r?\n/));
   return recordRuntimeDispatchProof(phase, name, {
     dispatchObserved,
     sessionScoped: true,
+    runtimeSessionConsistent: runtimeSession.consistent,
     argProvenanceObserved: provenance.totalCount > 0,
     argProvenanceComplete: provenance.complete,
     unknownArgCount: provenance.unknownArgCount,
+    abiProof: proofContext.abiProof,
+    epochProof: epochSwap.proof,
+    streamOrderingProven: epochSwap.evidence.stream_ordering_proven,
+    replacementScopeProven: runtimeOwnership.scopeProvenCount > 0,
   });
 }
 
@@ -2005,7 +2159,21 @@ async function phaseFlow(ctx) {
     return record('FLOW', 'inward compile dispatch', 'warn', baseline.reason);
   }
   record('FLOW', 'inward compile dispatch', 'pass');
-  recordGpuProof('FLOW', 'inward truthful proof state', baseline.hmr);
+  const baselineGpuProof = recordGpuProof('FLOW', 'inward truthful proof state', baseline.hmr);
+  const baselineProofArtifacts = await proofArtifactsFromGpuProof(baselineGpuProof);
+  record(
+    'FLOW',
+    'inward proof artifact collection',
+    baselineProofArtifacts.some((artifact) => artifact?.found) ? 'pass' : 'warn',
+    summarizeProofArtifactRecords(baselineProofArtifacts),
+  );
+  const baselineAbiProof = abiProofFromProofArtifacts(baselineProofArtifacts);
+  record(
+    'FLOW',
+    'inward ABI proof from artifact',
+    baselineAbiProof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrAbiProof(baselineAbiProof),
+  );
 
   const baselineLaunch = await awaitWorkerLogRegex(
     /synthi_gpu_launch kernel=particle_flow|Device sidecar reload vendor=.*result=Success/,
@@ -2027,6 +2195,8 @@ async function phaseFlow(ctx) {
     baselineStart,
     kernelNamesFromSource(FLOW_DEVICE_INWARD),
     inwardDispatchObserved,
+    12000,
+    { abiProof: baselineAbiProof },
   );
   const inwardTrend = await awaitWorkerLogRegex(
     /\[gpu-flow-demo\].*trend=inward/,
@@ -2064,7 +2234,21 @@ async function phaseFlow(ctx) {
     return record('FLOW', 'outward edit dispatch', 'warn', flip.reason);
   }
   record('FLOW', 'outward edit dispatch', 'pass');
-  recordGpuProof('FLOW', 'outward truthful proof state', flip.hmr);
+  const flipGpuProof = recordGpuProof('FLOW', 'outward truthful proof state', flip.hmr);
+  const flipProofArtifacts = await proofArtifactsFromGpuProof(flipGpuProof);
+  record(
+    'FLOW',
+    'outward proof artifact collection',
+    flipProofArtifacts.some((artifact) => artifact?.found) ? 'pass' : 'warn',
+    summarizeProofArtifactRecords(flipProofArtifacts),
+  );
+  const flipAbiProof = abiProofFromProofArtifacts(flipProofArtifacts);
+  record(
+    'FLOW',
+    'outward ABI proof from artifact',
+    flipAbiProof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrAbiProof(flipAbiProof),
+  );
 
   const fastSwap = await awaitWorkerLogRegex(
     /\[gpu-reload\].*plan=device_only|state_preserved:\s*true|Device sidecar reload vendor=.*result=Success/,
@@ -2091,6 +2275,8 @@ async function phaseFlow(ctx) {
     flipStart,
     kernelNamesFromSource(FLOW_DEVICE_OUTWARD),
     outwardDispatchObserved,
+    12000,
+    { abiProof: flipAbiProof },
   );
 
   const trend = await awaitWorkerLogRegex(
@@ -2716,6 +2902,26 @@ async function selfCheck() {
     || flowKernels.join(',') !== 'particle_flow'
   ) {
     console.error('gpu-hmr-test self-check failed: dispatch telemetry parser did not classify launch status');
+    process.exitCode = 1;
+    return;
+  }
+  const proofArtifactName = proofArtifactFileName('.synthi/gpu-hmr/proofs/gpu-proof_0123456789abcdef0123456789abcdef.json');
+  const ownership = runtimeOwnershipEvidence(
+    '[gpu-reload] runtime_ownership label=gpu-hmr-partial partial=true artifact=x expected_symbols=kernel_a,kernel_b touched_symbols=kernel_a,kernel_b retired_modules=1 replaced_primary=false\n',
+  );
+  const sessionEvidence = runtimeSessionEvidence(
+    '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-1\n'
+    + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 complete=true known_args=1 unknown_args=0\n',
+  );
+  if (
+    proofArtifactName !== 'gpu-proof_0123456789abcdef0123456789abcdef.json'
+    || proofArtifactFileName('/tmp/not-a-proof.json') !== null
+    || ownership.scopeProvenCount !== 1
+    || ownership.primaryRetainedCount !== 1
+    || !sessionEvidence.consistent
+    || sessionEvidence.uniqueIds[0] !== 'session-1'
+  ) {
+    console.error('gpu-hmr-test self-check failed: proof artifact or runtime ownership parser failed');
     process.exitCode = 1;
     return;
   }
