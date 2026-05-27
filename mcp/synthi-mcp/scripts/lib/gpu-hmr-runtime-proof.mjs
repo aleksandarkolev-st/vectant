@@ -537,7 +537,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
   if (hostReplacementObserved) {
     return {
       schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
-      resultState: 'gpu-hmr-output-oracle-proven',
+      resultState: null,
       degradedState: 'gpu-hmr-host-replaced',
       degradedReason: 'host_runtime_replaced_or_restarted',
       identityChecksPassed: false,
@@ -676,7 +676,7 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       'gpu-hmr-host-preservation-proven',
       hostRank,
       hostPreservationProof,
-      null,
+      hostPreservationProof?.degradedState ?? null,
       'host_identity_checks_not_collected',
     ),
   ];

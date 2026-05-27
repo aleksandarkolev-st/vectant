@@ -129,7 +129,7 @@ describe("GPU HMR runtime output proof classification", () => {
       hostRestartObserved: true,
     });
 
-    expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
+    expect(proof.resultState).toBeNull();
     expect(proof.degradedState).toBe("gpu-hmr-host-replaced");
     expect(summarizeGpuHmrHostPreservationProof(proof)).toContain("gpu-hmr-host-replaced");
   });
