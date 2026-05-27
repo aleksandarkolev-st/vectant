@@ -81,6 +81,15 @@ pub struct LaunchRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostIdentityRecord {
+    pub role: String,
+    pub ptr: usize,
+    pub aux: u64,
+    pub generation: u64,
+    pub runtime_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuLaunchRequest {
     pub kernel_name: String,
     pub grid: (u32, u32, u32),
@@ -103,6 +112,7 @@ struct BoundaryState {
     buffers_by_ptr: HashMap<usize, ManagedBufferRecord>,
     ptr_by_name: HashMap<String, usize>,
     launches: Vec<LaunchRecord>,
+    host_identities: Vec<HostIdentityRecord>,
     reported_failure_keys: HashSet<String>,
 }
 
@@ -484,6 +494,65 @@ fn arg_provenance_details(args: &[LaunchArgProvenance]) -> String {
         .join(",")
 }
 
+fn stable_hash64(value: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn record_host_identity_event(role: String, identity_ptr: *const c_void, aux_identity: u64) {
+    let generation = current_launch_generation();
+    let runtime_session = runtime_session_id().to_string();
+    let ptr = identity_ptr as usize;
+    {
+        let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+        guard.host_identities.push(HostIdentityRecord {
+            role: role.clone(),
+            ptr,
+            aux: aux_identity,
+            generation,
+            runtime_session_id: runtime_session.clone(),
+        });
+    }
+    eprintln!(
+        "[gpu-runtime-boundary] host_identity role={} ptr=0x{:x} aux={} generation={} runtime_session={}",
+        log_safe(&role),
+        ptr,
+        aux_identity,
+        generation,
+        runtime_session
+    );
+}
+
+fn record_launch_host_identities(
+    kernel_name: &str,
+    kernel_name_ptr: *const c_void,
+    gpu: *const c_void,
+    stream_token: usize,
+) {
+    if !kernel_name_ptr.is_null() {
+        let kernel_hash = stable_hash64(kernel_name);
+        record_host_identity_event(
+            format!("launch_kernel_{kernel_hash:016x}"),
+            kernel_name_ptr,
+            kernel_hash,
+        );
+    }
+    if !gpu.is_null() {
+        record_host_identity_event("runtime_context".to_string(), gpu, 0);
+    }
+    if stream_token != 0 {
+        record_host_identity_event(
+            "launch_stream".to_string(),
+            stream_token as *const c_void,
+            0,
+        );
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn synthi_gpu_register_buffer(
     _gpu: *mut c_void,
@@ -533,14 +602,7 @@ pub extern "C" fn synthi_gpu_record_host_identity(
     aux_identity: u64,
 ) {
     let role = cstr(role).unwrap_or_else(|| "<unknown>".to_string());
-    eprintln!(
-        "[gpu-runtime-boundary] host_identity role={} ptr=0x{:x} aux={} generation={} runtime_session={}",
-        log_safe(&role),
-        identity_ptr as usize,
-        aux_identity,
-        current_launch_generation(),
-        runtime_session_id()
-    );
+    record_host_identity_event(role, identity_ptr, aux_identity);
 }
 
 #[no_mangle]
@@ -680,6 +742,7 @@ fn synthi_gpu_launch_raw_impl(
     arg_count: usize,
     expected_generation: u64,
 ) -> bool {
+    let kernel_name_ptr = kernel_name.cast::<c_void>();
     let kernel_name = cstr(kernel_name).unwrap_or_else(|| "<unknown>".to_string());
     let grid_decoded = decode_launch_dims("grid", _grid, grid_size);
     let block_decoded = decode_launch_dims("block", _block, block_size);
@@ -687,6 +750,7 @@ fn synthi_gpu_launch_raw_impl(
     let block = block_decoded.dims;
     let active_generation = current_launch_generation();
     let runtime_session_id = runtime_session_id().to_string();
+    record_launch_host_identities(&kernel_name, kernel_name_ptr, _gpu.cast_const(), stream_token);
     let stale_generation = expected_generation != 0 && expected_generation != active_generation;
     let request = GpuLaunchRequest {
         kernel_name: kernel_name.clone(),
@@ -910,6 +974,11 @@ pub fn launch_records_snapshot() -> Vec<LaunchRecord> {
     guard.launches.clone()
 }
 
+pub fn host_identity_records_snapshot() -> Vec<HostIdentityRecord> {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard.host_identities.clone()
+}
+
 pub fn launch_record_count() -> usize {
     let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     guard.launches.len()
@@ -1045,6 +1114,67 @@ mod tests {
             role.as_ptr(),
             (&value as *const u64).cast(),
             value,
+        );
+
+        let identities = host_identity_records_snapshot();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].role, "core_state");
+        assert_eq!(identities[0].ptr, (&value as *const u64) as usize);
+        assert_eq!(identities[0].aux, value);
+        assert_eq!(identities[0].generation, current_launch_generation());
+    }
+
+    #[test]
+    fn launch_boundary_records_generic_host_path_identity() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let kernel = CString::new("vec_add").unwrap();
+        let grid = 8_u32;
+        let block = 256_u32;
+        assert!(!synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&grid as *const u32).cast(),
+            std::mem::size_of_val(&grid),
+            (&block as *const u32).cast(),
+            std::mem::size_of_val(&block),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        ));
+        clear_launch_dispatcher();
+        assert!(!synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&grid as *const u32).cast(),
+            std::mem::size_of_val(&grid),
+            (&block as *const u32).cast(),
+            std::mem::size_of_val(&block),
+            0,
+            0,
+            std::ptr::null(),
+            0,
+        ));
+
+        let identities = host_identity_records_snapshot();
+        let launch_identities = identities
+            .iter()
+            .filter(|record| record.role.starts_with("launch_kernel_"))
+            .collect::<Vec<_>>();
+        assert_eq!(launch_identities.len(), 2);
+        assert_eq!(launch_identities[0].role, launch_identities[1].role);
+        assert_eq!(launch_identities[0].ptr, kernel.as_ptr() as usize);
+        assert_eq!(launch_identities[0].ptr, launch_identities[1].ptr);
+        assert_eq!(launch_identities[0].aux, launch_identities[1].aux);
+        assert_ne!(
+            launch_identities[0].generation,
+            launch_identities[1].generation
+        );
+        assert_eq!(
+            launch_identities[0].runtime_session_id,
+            launch_identities[1].runtime_session_id
         );
     }
 
