@@ -1028,6 +1028,22 @@ function runtimeIdentityLostWaitResult(monitor, startedAt) {
   };
 }
 
+function runtimeIdentityChangeEvidence(runtimeIdentity = report.runtime_identity) {
+  const phases = Array.isArray(runtimeIdentity?.phases) ? runtimeIdentity.phases : [];
+  const changedPhases = phases.filter((phase) => phase?.changed === true);
+  return {
+    total_phases: phases.length,
+    changed_count: changedPhases.length,
+    changed_phases: changedPhases.map((phase) => ({
+      phase: phase.phase ?? null,
+      container: phase.container ?? null,
+      reason: phase.reason ?? null,
+      changes: Array.isArray(phase.changes) ? phase.changes : [],
+    })),
+    evidence_refs: changedPhases.map((phase) => `validation:runtime_identity:${phase.phase ?? 'unknown'}`),
+  };
+}
+
 async function compileViaMcp(args, timeoutMs, phaseName) {
   const state = await ensureMcpAttached();
   const identityMonitor = await beginPhaseRuntimeIdentityMonitor(phaseName);
@@ -1609,6 +1625,18 @@ function selfCheckRuntimeDispatchEvidence() {
   if (lostResult?.status !== 'runtime-session-lost' || lostResult.source !== 'docker_runtime_identity') {
     throw new Error('runtime identity loss did not produce a degraded wait result');
   }
+  const identityChangeEvidence = runtimeIdentityChangeEvidence({
+    phases: [
+      { phase: 'stable_phase', changed: false, container: 'runtime-under-test' },
+      { phase: 'changed_phase', changed: true, container: 'runtime-under-test', reason: identityDiff.reason },
+    ],
+  });
+  if (
+    identityChangeEvidence.changed_count !== 1
+    || identityChangeEvidence.evidence_refs[0] !== 'validation:runtime_identity:changed_phase'
+  ) {
+    throw new Error('runtime identity change evidence summarizer failed');
+  }
   const ownership = runtimeOwnershipEvidence([
     '[gpu-reload] runtime_ownership label=gpu-hmr-partial partial=true artifact=/x expected_symbols=a touched_symbols=a retired_modules=0 replaced_primary=false',
     '[gpu-reload] runtime_ownership label=gpu-hmr-full-device partial=false artifact=/x expected_symbols=a touched_symbols=a retired_modules=0 replaced_primary=true',
@@ -1766,9 +1794,11 @@ async function collectRuntimeEvidence() {
   const runtimeEpochSwap = epochSwapProofFromRuntimeEvidence(workerEvidence);
   const runtimeOutputOracle = runtimeOutputOracleEvidence(workerEvidence);
   const hostRestartCount = countMatches(workerEvidence, /Restarting runner/i);
+  const runtimeIdentityChanges = runtimeIdentityChangeEvidence();
   const runtimeHostPreservation = hostPreservationProofFromRuntimeEvidence(workerEvidence, {
-    hostRestartObserved: hostRestartCount > 0,
+    hostRestartObserved: hostRestartCount > 0 || runtimeIdentityChanges.changed_count > 0,
     hostReplacementObserved: runtimeOwnership.primary_replacement_count > 0,
+    identityEvidenceRefs: runtimeIdentityChanges.evidence_refs,
   });
   report.evidence = {
     worker_log_lines: workerEvidence,
@@ -1805,6 +1835,7 @@ async function collectRuntimeEvidence() {
     runtime_epoch_swap: runtimeEpochSwap.evidence,
     runtime_output_oracle: runtimeOutputOracle,
     runtime_host_identity: runtimeHostPreservation.evidence,
+    runtime_identity_changes: runtimeIdentityChanges,
   };
   if (runtimeDispatch.failure_count > 0) {
     record(

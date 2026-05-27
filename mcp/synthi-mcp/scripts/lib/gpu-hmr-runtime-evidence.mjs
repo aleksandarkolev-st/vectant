@@ -174,11 +174,14 @@ export function runtimeHostIdentityEvidence(lines) {
 
 export function hostPreservationProofFromRuntimeEvidence(lines, observation = {}) {
   const evidence = runtimeHostIdentityEvidence(lines);
+  const externalIdentityEvidenceRefs = Array.isArray(observation.identityEvidenceRefs)
+    ? observation.identityEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
+    : [];
   const proof = classifyGpuHmrHostPreservationProof({
     hostRestartObserved: observation.hostRestartObserved === true,
     hostReplacementObserved: observation.hostReplacementObserved === true,
     identityChecksPassed: evidence.identity_checks_passed,
-    identityEvidenceRefs: evidence.evidence_refs,
+    identityEvidenceRefs: [...evidence.evidence_refs, ...externalIdentityEvidenceRefs],
   });
   return { evidence, proof };
 }

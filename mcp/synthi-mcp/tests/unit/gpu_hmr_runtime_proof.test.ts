@@ -380,6 +380,17 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("host_identity_checks_not_collected");
   });
 
+  it("treats validation runtime identity changes as host replacement evidence", () => {
+    const { proof } = hostPreservationProofFromRuntimeEvidence([], {
+      hostRestartObserved: true,
+      identityEvidenceRefs: ["validation:runtime_identity:first_compile"],
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedState).toBe("gpu-hmr-host-replaced");
+    expect(proof.identityEvidenceRefs).toEqual(["validation:runtime_identity:first_compile"]);
+  });
+
   it("requires session dispatch before dispatch proof can be considered", () => {
     const proof = classifyGpuHmrDispatchProof({});
 
