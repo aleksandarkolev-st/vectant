@@ -2373,13 +2373,14 @@ async fn compile_device_sources_phase0(
     sources: &DeviceCompileSources,
     manifest: &CompileManifest,
     allow_direct_translation_unit_partial: bool,
+    allow_partial_device_reload: bool,
 ) -> Result<Option<DeviceCompileOutcome>> {
     let mut fallback_reason: Option<String> = None;
-    if let (Some(partial_source), Some(partial_filename)) = (
-        sources.partial_source.as_deref(),
-        sources.partial_filename.as_deref(),
-    ) {
-        if !sources.partial_symbols.is_empty() {
+    if should_compile_partial_device_source(sources, allow_partial_device_reload) {
+        if let (Some(partial_source), Some(partial_filename)) = (
+            sources.partial_source.as_deref(),
+            sources.partial_filename.as_deref(),
+        ) {
             eprintln!(
                 "[compile-device] partial source candidate file={} bytes={} full_bytes={} symbols={}",
                 partial_filename,
@@ -2470,6 +2471,16 @@ async fn compile_device_sources_phase0(
                 }
             }
         }
+    } else if sources.partial_source.is_some() && !allow_partial_device_reload {
+        eprintln!(
+            "[compile-device] partial source skipped; no live full device module was paused for this session"
+        );
+        fallback_reason = Some(
+            sources
+                .partial_fallback_reason
+                .clone()
+                .unwrap_or_else(|| "partial_reload_without_live_full_device_module".to_string()),
+        );
     }
 
     let mut outcome = compile_device_phase0(
@@ -2486,10 +2497,20 @@ async fn compile_device_sources_phase0(
             outcome,
             sources,
             fallback_reason,
-            allow_direct_translation_unit_partial,
+            allow_direct_translation_unit_partial && allow_partial_device_reload,
         )?;
     }
     Ok(outcome)
+}
+
+fn should_compile_partial_device_source(
+    sources: &DeviceCompileSources,
+    allow_partial_device_reload: bool,
+) -> bool {
+    allow_partial_device_reload
+        && sources.partial_source.is_some()
+        && sources.partial_filename.is_some()
+        && !sources.partial_symbols.is_empty()
 }
 
 fn finalize_full_device_outcome(
@@ -3399,6 +3420,7 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
         sources,
         manifest,
         allow_direct_translation_unit_partial,
+        runtime_paused,
     )
     .await;
     let device = match device_result {
@@ -9168,6 +9190,26 @@ mod gpu_host_contract_tests {
             partial.fallback_reason.as_deref(),
             Some("selection.source_path_mismatch")
         );
+    }
+
+    #[test]
+    fn partial_device_source_requires_live_runtime_anchor() {
+        let sources = DeviceCompileSources {
+            full_source: "extern \"C\" __global__ void shade() {}".to_string(),
+            full_filename: Some(".synthi/generated/gpu/device.hip".to_string()),
+            full_symbols: vec!["shade".to_string()],
+            direct_workspace_source: false,
+            partial_source: Some("extern \"C\" __global__ void shade() {}".to_string()),
+            partial_filename: Some(".synthi/generated/gpu/device.partial.hip".to_string()),
+            partial_symbols: vec!["shade".to_string()],
+            partial_source_paths: vec!["src/gpu/shade.h".to_string()],
+            partial_required: true,
+            partial_artifact_kind: Some("source_include_bridge".to_string()),
+            partial_fallback_reason: None,
+        };
+
+        assert!(should_compile_partial_device_source(&sources, true));
+        assert!(!should_compile_partial_device_source(&sources, false));
     }
 
     #[test]
