@@ -172,11 +172,13 @@ export function artifactTransportProofFromProofArtifacts(records, runtimeEvidenc
     }
     const runtimeDegradedState = runtimeEvidence.degraded_state ?? runtimeEvidence.degradedState;
     const runtimeDegradedReason = runtimeEvidence.degraded_reason ?? runtimeEvidence.degradedReason;
-    if (!degradedState && typeof runtimeDegradedState === 'string' && runtimeDegradedState.trim()) {
-      degradedState = runtimeDegradedState.trim();
-    }
-    if (!degradedReason && typeof runtimeDegradedReason === 'string' && runtimeDegradedReason.trim()) {
-      degradedReason = runtimeDegradedReason.trim();
+    if (!ramTransportProven) {
+      if (typeof runtimeDegradedState === 'string' && runtimeDegradedState.trim() && runtimeDegradedState !== 'none') {
+        degradedState = runtimeDegradedState.trim();
+      }
+      if (typeof runtimeDegradedReason === 'string' && runtimeDegradedReason.trim() && runtimeDegradedReason !== 'none') {
+        degradedReason = runtimeDegradedReason.trim();
+      }
     }
   }
 

@@ -456,9 +456,9 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summarizeGpuHmrArtifactTransportProof(proof)).toContain("ram-unproven");
   });
 
-  it("merges runtime loader provenance without proving RAM transport from path-only requests", () => {
+  it("merges runtime RAM references without proving RAM transport through filesystem loaders", () => {
     const runtimeTransport = runtimeArtifactTransportEvidence([
-      "[gpu-runtime-boundary] artifact_transport runtime_session=pid1 generation=3 artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_bytes=10 reload_request_transport=filesystem_path selected_loader_transport=filesystem_path loader_api=module_load_path ram_reference=false ram_transport_proven=false degraded_state=gpu-hmr-ram-io-unavailable degraded_reason=reload_request_contains_filesystem_path_only load_result=ok",
+      "[gpu-runtime-boundary] artifact_transport runtime_session=pid1 generation=3 artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_bytes=10 reload_request_transport=filesystem_path,ram_blob selected_loader_transport=filesystem_path loader_api=module_load_path ram_reference=true ram_blob_id=artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ram_transport_proven=false degraded_state=gpu-hmr-ram-io-unavailable degraded_reason=selected_loader_uses_filesystem_path load_result=ok",
     ], { runtimeSessionIds: ["pid1"] });
     const proof = artifactTransportProofFromProofArtifacts([{
       proofArtifactPath: "/tmp/gpu-hmr-proof.json",
@@ -470,10 +470,10 @@ describe("GPU HMR runtime output proof classification", () => {
           metadata: {
             schemaVersion: "synthi.gpu.hmr.artifact_transport.v1",
             selectedLoaderTransport: null,
-            reloadRequestTransports: ["filesystem_path"],
-            ramArtifactReferenceProvided: false,
+            reloadRequestTransports: ["filesystem_path", "ram_blob"],
+            ramArtifactReferenceProvided: true,
             degradedState: "gpu-hmr-ram-io-unavailable",
-            degradedReason: "reload_request_contains_filesystem_path_only",
+            degradedReason: "selected_loader_transport_not_observed",
           },
         }],
       },
@@ -482,10 +482,13 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(runtimeTransport.transport_evidence_observed).toBe(true);
     expect(runtimeTransport.ram_transport_proven).toBe(false);
     expect(runtimeTransport.loader_transports).toEqual(["filesystem_path"]);
+    expect(runtimeTransport.reload_request_transports).toEqual(["filesystem_path", "ram_blob"]);
     expect(proof.transportEvidenceObserved).toBe(true);
-    expect(proof.ramArtifactReferenceProvided).toBe(false);
+    expect(proof.ramArtifactReferenceProvided).toBe(true);
     expect(proof.ramTransportProven).toBe(false);
     expect(proof.loaderTransports).toEqual(["filesystem_path"]);
+    expect(proof.reloadRequestTransports).toEqual(["filesystem_path", "ram_blob"]);
+    expect(proof.degradedReason).toBe("selected_loader_uses_filesystem_path");
     expect(proof.evidenceRefs).toEqual([
       "evidence:device-artifact-transport:abc",
       "worker-log:artifact_transport:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -494,13 +497,26 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("ignores artifact transport lines from unexpected runtime sessions", () => {
     const runtimeTransport = runtimeArtifactTransportEvidence([
-      "[gpu-runtime-boundary] artifact_transport runtime_session=old generation=3 artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_bytes=10 reload_request_transport=filesystem_path selected_loader_transport=ram_bytes loader_api=module_load_data ram_reference=true ram_transport_proven=true load_result=ok",
+      "[gpu-runtime-boundary] artifact_transport runtime_session=old generation=3 artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_bytes=10 reload_request_transport=ram_blob selected_loader_transport=ram_bytes loader_api=module_load_data ram_reference=true ram_transport_proven=true load_result=ok",
     ], { runtimeSessionIds: ["current"] });
 
     expect(runtimeTransport.total_count).toBe(1);
     expect(runtimeTransport.matched_count).toBe(0);
     expect(runtimeTransport.transport_evidence_observed).toBe(false);
     expect(runtimeTransport.ram_transport_proven).toBe(false);
+  });
+
+  it("proves RAM artifact transport only when a RAM reference reaches a RAM loader", () => {
+    const runtimeTransport = runtimeArtifactTransportEvidence([
+      "[gpu-runtime-boundary] artifact_transport runtime_session=pid1 generation=3 artifact_hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb artifact_bytes=10 reload_request_transport=ram_blob selected_loader_transport=ram_bytes loader_api=module_load_data ram_reference=true ram_blob_id=artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ram_transport_proven=true degraded_state=none degraded_reason=none load_result=ok",
+    ], { runtimeSessionIds: ["pid1"] });
+    const proof = artifactTransportProofFromProofArtifacts([], runtimeTransport);
+
+    expect(runtimeTransport.ram_transport_proven).toBe(true);
+    expect(proof.ramArtifactReferenceProvided).toBe(true);
+    expect(proof.ramTransportProven).toBe(true);
+    expect(proof.degradedState).toBeNull();
+    expect(proof.loaderTransports).toEqual(["ram_bytes"]);
   });
 
   it("does not infer RAM artifact transport without transport evidence", () => {

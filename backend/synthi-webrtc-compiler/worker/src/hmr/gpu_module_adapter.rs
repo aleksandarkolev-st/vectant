@@ -68,7 +68,7 @@ use crate::hmr::gpu_driver_loader::{
     self, CuContext, CuFunction, CuStream, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable,
 };
 use crate::hmr::gpu_module_manager::{GpuModuleManager, KernelResolution, ModuleManagerError};
-use crate::hmr::gpu_proof::sha256_hex_bytes;
+use crate::hmr::gpu_proof::{sha256_hex_bytes, GpuHmrDegradedState};
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
@@ -300,6 +300,16 @@ impl ArtifactLoaderTransport {
             Self::FilesystemPath => "module_load_path",
             Self::RamBytes => "module_load_data",
         }
+    }
+}
+
+fn normalized_sha256_hex(raw: &str) -> Option<String> {
+    let value = raw.trim();
+    let value = value.strip_prefix("sha256:").unwrap_or(value);
+    if value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(value.to_ascii_lowercase())
+    } else {
+        None
     }
 }
 
@@ -913,22 +923,86 @@ impl Adapter for GpuModuleAdapter {
         }
 
         let artifact = req.build_manifest.artifact_path.trim();
-        if artifact.is_empty() {
+        let loader_transport = ArtifactLoaderTransport::selected_for_vendor(self.config.vendor);
+        let ram_artifact = req
+            .artifact_blob
+            .as_ref()
+            .filter(|artifact| !artifact.bytes.is_empty());
+        if artifact.is_empty() && ram_artifact.is_none() {
             return AdapterReloadResult::Unsupported {
-                reason: "gpu_module_adapter missing device artifact path; cold reload required"
+                reason: "gpu_module_adapter missing device artifact path or RAM artifact; cold reload required"
                     .into(),
             };
         }
+        if artifact.is_empty() && loader_transport == ArtifactLoaderTransport::FilesystemPath {
+            return AdapterReloadResult::Unsupported {
+                reason:
+                    "gpu_module_adapter selected loader requires a device artifact path; cold reload required"
+                        .into(),
+            };
+        }
 
-        let blob = match fs::read(artifact) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                self.health = AdapterHealth::Degraded;
-                return AdapterReloadResult::Failed {
-                    error: format!("failed to read GPU sidecar artifact {artifact:?}: {e}"),
-                    recoverable: true,
-                };
+        let path_blob = if artifact.is_empty() {
+            None
+        } else {
+            match fs::read(artifact) {
+                Ok(bytes) => Some(bytes),
+                Err(e) if ram_artifact.is_some() && loader_transport == ArtifactLoaderTransport::RamBytes => {
+                    eprintln!(
+                        "[gpu-runtime-boundary] artifact_transport_path_validation artifact={} result=unavailable error={}",
+                        artifact,
+                        e
+                    );
+                    None
+                }
+                Err(e) => {
+                    self.health = AdapterHealth::Degraded;
+                    return AdapterReloadResult::Failed {
+                        error: format!("failed to read GPU sidecar artifact {artifact:?}: {e}"),
+                        recoverable: true,
+                    };
+                }
             }
+        };
+        let blob = if let Some(ram_artifact) = ram_artifact {
+            let ram_hash = sha256_hex_bytes(&ram_artifact.bytes);
+            match normalized_sha256_hex(&ram_artifact.content_hash) {
+                Some(expected_hash) if expected_hash == ram_hash => {}
+                Some(expected_hash) => {
+                    self.health = AdapterHealth::Degraded;
+                    return AdapterReloadResult::Failed {
+                        error: format!(
+                            "GPU RAM artifact hash mismatch: expected sha256:{expected_hash} got sha256:{ram_hash}"
+                        ),
+                        recoverable: true,
+                    };
+                }
+                None => {
+                    self.health = AdapterHealth::Degraded;
+                    return AdapterReloadResult::Failed {
+                        error: format!(
+                            "GPU RAM artifact has invalid content hash {:?}",
+                            ram_artifact.content_hash
+                        ),
+                        recoverable: true,
+                    };
+                }
+            }
+            if let Some(path_blob) = path_blob.as_ref() {
+                let path_hash = sha256_hex_bytes(path_blob);
+                if path_hash != ram_hash {
+                    self.health = AdapterHealth::Degraded;
+                    return AdapterReloadResult::Failed {
+                        error: format!(
+                            "GPU RAM artifact does not match filesystem artifact: ram=sha256:{ram_hash} path=sha256:{path_hash}"
+                        ),
+                        recoverable: true,
+                    };
+                }
+            }
+            ram_artifact.bytes.clone()
+        } else {
+            path_blob.expect("path artifact is present when no RAM artifact exists")
         };
         if blob.len() as u64 > self.config.max_module_bytes {
             return AdapterReloadResult::Unsupported {
@@ -940,7 +1014,17 @@ impl Adapter for GpuModuleAdapter {
             };
         }
         let artifact_hash = sha256_hex_bytes(&blob);
-        let loader_transport = ArtifactLoaderTransport::selected_for_vendor(self.config.vendor);
+        let ram_artifact_reference_provided = ram_artifact.is_some();
+        let ram_blob_id = ram_artifact
+            .map(|artifact| artifact.blob_id.as_str())
+            .unwrap_or("-");
+        let reload_request_transport = if ram_artifact_reference_provided && !artifact.is_empty() {
+            "filesystem_path,ram_blob"
+        } else if ram_artifact_reference_provided {
+            "ram_blob"
+        } else {
+            "filesystem_path"
+        };
 
         let plan = self.classify_plan(req);
         let (snapshot_bytes, dirty_buffers) = Self::managed_snapshot_stats();
@@ -1140,14 +1224,35 @@ impl Adapter for GpuModuleAdapter {
             }));
             let active_generation = current_launch_generation();
             let mut runtime_log_lines = Vec::new();
+            let ram_transport_proven = ram_artifact_reference_provided
+                && loader_transport == ArtifactLoaderTransport::RamBytes;
+            let (degraded_state, degraded_reason) = if ram_transport_proven {
+                ("none", "none")
+            } else if ram_artifact_reference_provided {
+                (
+                    GpuHmrDegradedState::RamIoUnavailable.as_str(),
+                    "selected_loader_uses_filesystem_path",
+                )
+            } else {
+                (
+                    GpuHmrDegradedState::RamIoUnavailable.as_str(),
+                    "reload_request_contains_filesystem_path_only",
+                )
+            };
             let artifact_transport_line = format!(
-                "[gpu-runtime-boundary] artifact_transport runtime_session={} generation={} artifact_hash=sha256:{} artifact_bytes={} reload_request_transport=filesystem_path selected_loader_transport={} loader_api={} ram_reference=false ram_transport_proven=false degraded_state=gpu-hmr-ram-io-unavailable degraded_reason=reload_request_contains_filesystem_path_only load_result=ok",
+                "[gpu-runtime-boundary] artifact_transport runtime_session={} generation={} artifact_hash=sha256:{} artifact_bytes={} reload_request_transport={} selected_loader_transport={} loader_api={} ram_reference={} ram_blob_id={} ram_transport_proven={} degraded_state={} degraded_reason={} load_result=ok",
                 runtime_session_id(),
                 active_generation,
                 artifact_hash,
                 blob.len(),
+                reload_request_transport,
                 loader_transport.as_str(),
                 loader_transport.loader_api(),
+                ram_artifact_reference_provided,
+                ram_blob_id,
+                ram_transport_proven,
+                degraded_state,
+                degraded_reason,
             );
             eprintln!("{artifact_transport_line}");
             runtime_log_lines.push(artifact_transport_line);
@@ -1279,7 +1384,7 @@ impl Adapter for GpuModuleAdapter {
 mod tests {
     use super::*;
     use crate::hmr::adapter_matrix::AdapterFamily;
-    use crate::hmr::adapter_trait::AdapterReloadRequest;
+    use crate::hmr::adapter_trait::{AdapterReloadRequest, ReloadArtifactBlob};
     use crate::hmr::build_manifest::BuildManifest;
     use crate::hmr::gpu_driver_loader::{
         CuContext, CuDevicePtr, CuFunction, CuModule, CuResult, CuStream,
@@ -1298,6 +1403,7 @@ mod tests {
             module_id: "device".into(),
             changed_files: vec!["device.cu".into()],
             build_manifest: BuildManifest::for_language("test-preview", "cuda"),
+            artifact_blob: None,
             preserve_state: true,
             timeout_ms: 5_000,
         }
@@ -1500,6 +1606,7 @@ mod tests {
             module_id: "device".into(),
             changed_files,
             build_manifest: manifest,
+            artifact_blob: None,
             preserve_state: true,
             timeout_ms: 5_000,
         }
@@ -1813,6 +1920,35 @@ mod tests {
             "artifact_hash=sha256:{}",
             sha256_hex_bytes(b"fake-cubin")
         )));
+    }
+
+    #[test]
+    fn phase3_reload_reports_ram_artifact_when_byte_loader_is_selected() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let artifact_hash = sha256_hex_bytes(b"fake-cubin");
+        let mut req = request_with_artifact(&path, vec!["device.cu".into()]);
+        req.artifact_blob = Some(ReloadArtifactBlob {
+            blob_id: format!("artifact:sha256:{artifact_hash}"),
+            content_hash: format!("sha256:{artifact_hash}"),
+            bytes: b"fake-cubin".to_vec(),
+        });
+        let mut a = adapter_with_symbols(stub_symbols());
+        let r = a.reload(&req);
+        assert!(matches!(r, AdapterReloadResult::Success { .. }));
+
+        let transport = a
+            .last_reload_log()
+            .iter()
+            .find(|l| l.contains("artifact_transport"))
+            .expect("runtime artifact transport report");
+        assert!(transport.contains("reload_request_transport=filesystem_path,ram_blob"));
+        assert!(transport.contains("selected_loader_transport=ram_bytes"));
+        assert!(transport.contains("ram_reference=true"));
+        assert!(transport.contains(&format!("ram_blob_id=artifact:sha256:{artifact_hash}")));
+        assert!(transport.contains("ram_transport_proven=true"));
+        assert!(transport.contains("degraded_state=none"));
     }
 
     #[test]

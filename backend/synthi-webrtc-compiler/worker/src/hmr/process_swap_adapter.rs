@@ -487,6 +487,7 @@ mod tests {
             module_id: "app".into(),
             changed_files: vec!["main.go".into()],
             build_manifest: test_manifest(&executable),
+            artifact_blob: None,
             preserve_state: false,
             timeout_ms: 5000,
         };
@@ -509,6 +510,7 @@ mod tests {
                 module_id: "app".into(),
                 changed_files: vec![],
                 build_manifest: test_manifest(&executable),
+                artifact_blob: None,
                 preserve_state: false,
                 timeout_ms: 5000,
             };

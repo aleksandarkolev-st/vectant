@@ -24,7 +24,9 @@ use std::time::Instant;
 use crate::hmr::adapter_lifecycle_fsm::{AdapterLifecycleFsm, LifecycleEvent};
 use crate::hmr::adapter_matrix::{AdapterFamily, AdapterMatrix};
 use crate::hmr::adapter_registry::{create_adapter_for_language, AdapterRegistry};
-use crate::hmr::adapter_trait::{AdapterHealth, AdapterReloadRequest, AdapterReloadResult};
+use crate::hmr::adapter_trait::{
+    AdapterHealth, AdapterReloadRequest, AdapterReloadResult, ReloadArtifactBlob,
+};
 use crate::hmr::ai_gate::{AiGate, AiGateDecision};
 use crate::hmr::build_manifest::BuildManifest;
 use crate::hmr::candidate::CandidateState;
@@ -457,6 +459,7 @@ impl HmrPipeline {
             module_id: manifest.slot_name(),
             changed_files: manifest.dirty_units.clone().unwrap_or_default(),
             build_manifest: manifest.clone(),
+            artifact_blob: None,
             preserve_state: matches!(
                 planner_output.reason.state_strategy,
                 StateStrategy::Preserve | StateStrategy::Migrate
@@ -632,6 +635,7 @@ impl HmrPipeline {
         &mut self,
         language: &str,
         manifest: &BuildManifest,
+        artifact_blob: Option<ReloadArtifactBlob>,
         reload_id: &str,
     ) -> (AdapterReloadResult, PipelineNotifications) {
         let start = Instant::now();
@@ -649,6 +653,7 @@ impl HmrPipeline {
             module_id: manifest.slot_name(),
             changed_files: manifest.dirty_units.clone().unwrap_or_default(),
             build_manifest: manifest.clone(),
+            artifact_blob,
             preserve_state: true,
             timeout_ms: 5000,
         };

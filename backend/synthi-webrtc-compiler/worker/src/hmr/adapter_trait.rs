@@ -14,6 +14,22 @@ use crate::hmr::build_manifest::BuildManifest;
 
 // ── Adapter lifecycle events ────────────────────────────────
 
+/// Optional in-memory artifact payload carried alongside a reload request.
+///
+/// The byte payload is intentionally skipped during serde so status messages
+/// and diagnostics can expose the blob id/hash without serializing large
+/// compiled artifacts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReloadArtifactBlob {
+    /// Content-addressed id for the artifact bytes.
+    pub blob_id: String,
+    /// SHA-256 content hash, formatted as `sha256:<hex>`.
+    pub content_hash: String,
+    /// Artifact bytes available to adapters that support RAM loaders.
+    #[serde(skip_serializing, skip_deserializing, default)]
+    pub bytes: Vec<u8>,
+}
+
 /// High-level reload request that the planner feeds to an adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdapterReloadRequest {
@@ -25,6 +41,9 @@ pub struct AdapterReloadRequest {
     pub changed_files: Vec<String>,
     /// Build manifest from the latest compilation.
     pub build_manifest: BuildManifest,
+    /// Optional RAM artifact payload for adapters with byte/blob loaders.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub artifact_blob: Option<ReloadArtifactBlob>,
     /// Whether state preservation is requested.
     pub preserve_state: bool,
     /// Timeout for this reload (millis).

@@ -446,7 +446,7 @@ fn apply_edit_list(
 }
 
 use crate::hmr::adapted_project::{detect_adapted_project, AdaptedProjectStatus};
-use crate::hmr::adapter_trait::AdapterReloadResult;
+use crate::hmr::adapter_trait::{AdapterReloadResult, ReloadArtifactBlob};
 use crate::hmr::ai_bypass::{check_ai_bypass, AiBypassResult, SplitCache};
 use crate::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
 use crate::hmr::compile_enrichment::CompileEnrichment;
@@ -2943,7 +2943,7 @@ fn device_hmr_proof_stage_results(
             output_artifact_ids: vec![selected_artifact_id.to_string()],
             evidence_refs: vec![transport_evidence_id.to_string()],
             degraded_state: Some(GpuHmrDegradedState::RamIoUnavailable.as_str().to_string()),
-            degraded_reason: Some("reload_request_contains_filesystem_path_only".to_string()),
+            degraded_reason: Some("selected_loader_transport_not_observed".to_string()),
         },
         GpuHmrProofStageResult {
             stage_id: "symbol-binding".to_string(),
@@ -3020,15 +3020,16 @@ fn device_artifact_transport_metadata(
         "selectedArtifactId": selected_artifact_id,
         "artifactContentHash": format!("sha256:{artifact_hash}"),
         "artifactBytes": artifact_bytes,
-        "compileOutputTransport": "filesystem_path",
-        "reloadRequestTransports": ["filesystem_path"],
+        "compileOutputTransport": "filesystem_path+ram_blob",
+        "compileOutputTransports": ["filesystem_path", "ram_blob"],
+        "reloadRequestTransports": ["filesystem_path", "ram_blob"],
         "selectedLoaderTransport": serde_json::Value::Null,
-        "ramArtifactReferenceProvided": false,
-        "ramBlobId": serde_json::Value::Null,
-        "ramBytesHash": serde_json::Value::Null,
-        "fallbackRecorded": true,
+        "ramArtifactReferenceProvided": true,
+        "ramBlobId": selected_artifact_id,
+        "ramBytesHash": format!("sha256:{artifact_hash}"),
+        "fallbackRecorded": false,
         "degradedState": GpuHmrDegradedState::RamIoUnavailable.as_str(),
-        "degradedReason": "reload_request_contains_filesystem_path_only",
+        "degradedReason": "selected_loader_transport_not_observed",
         "partialModule": outcome.partial_module,
         "selectedArtifactKind": outcome.selected_artifact_kind.as_deref(),
         "requestedArtifactKind": outcome.requested_artifact_kind.as_deref(),
@@ -3067,6 +3068,25 @@ fn device_artifact_transport_summary(transport_material: &serde_json::Value) -> 
             .and_then(serde_json::Value::as_str)
             .unwrap_or("none")
     )
+}
+
+async fn reload_artifact_blob_from_outcome(
+    outcome: &DeviceCompileOutcome,
+) -> Result<ReloadArtifactBlob> {
+    let bytes = tokio::fs::read(&outcome.artifact_path)
+        .await
+        .with_context(|| {
+            format!(
+                "reading selected GPU HMR artifact for RAM reload transport {}",
+                outcome.artifact_path.display()
+            )
+        })?;
+    let artifact_hash = sha256_hex_bytes(&bytes);
+    Ok(ReloadArtifactBlob {
+        blob_id: format!("artifact:sha256:{artifact_hash}"),
+        content_hash: format!("sha256:{artifact_hash}"),
+        bytes,
+    })
 }
 
 async fn write_device_hmr_proof_artifact(
@@ -8336,7 +8356,9 @@ pub async fn handle_compile_request(
         eprintln!("[HMR] host_runner binary: {}", p);
     }
     let mut device_hmr_proof: Option<GpuHmrProofTelemetry> = None;
+    let mut device_reload_artifact_blob: Option<ReloadArtifactBlob> = None;
     if let Some(ref out) = device_compile_outcome {
+        device_reload_artifact_blob = Some(reload_artifact_blob_from_outcome(out).await?);
         let proof = device_hmr_proof_telemetry(out);
         let proof_artifact = write_device_hmr_proof_artifact(
             &ctx.workspace_path,
@@ -8696,6 +8718,7 @@ pub async fn handle_compile_request(
                     .execute_gpu_device_reload(
                         gpu_language,
                         &device_manifest,
+                        device_reload_artifact_blob.clone(),
                         &format!("{}-device", reload_id),
                     )
             };
@@ -9742,7 +9765,27 @@ __constant__ int scale;
             transport_metadata
                 .get("ramArtifactReferenceProvided")
                 .and_then(serde_json::Value::as_bool),
-            Some(false)
+            Some(true)
+        );
+        let expected_ram_blob_id =
+            format!("artifact:sha256:{}", sha256_hex_bytes(b"device-artifact"));
+        assert_eq!(
+            transport_metadata
+                .get("ramBlobId")
+                .and_then(serde_json::Value::as_str),
+            Some(expected_ram_blob_id.as_str())
+        );
+        assert_eq!(
+            transport_metadata
+                .get("reloadRequestTransports")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                }),
+            Some(vec!["filesystem_path", "ram_blob"])
         );
         assert_eq!(
             transport_metadata

@@ -285,6 +285,8 @@ function expectedRuntimeSessionIds(observation = {}) {
 
 function artifactTransportRecord(line) {
   const fields = parseRuntimeKeyValues(line);
+  const degradedState = fields.degraded_state ?? fields.degradedState ?? null;
+  const degradedReason = fields.degraded_reason ?? fields.degradedReason ?? null;
   return {
     line,
     runtimeSession: fields.runtime_session ?? null,
@@ -296,8 +298,8 @@ function artifactTransportRecord(line) {
     loaderApi: fields.loader_api ?? fields.loaderApi ?? null,
     ramReference: boolValue(fields.ram_reference ?? fields.ramArtifactReferenceProvided),
     ramTransportProven: boolValue(fields.ram_transport_proven ?? fields.ramTransportProven),
-    degradedState: fields.degraded_state ?? fields.degradedState ?? null,
-    degradedReason: fields.degraded_reason ?? fields.degradedReason ?? null,
+    degradedState: degradedState === 'none' ? null : degradedState,
+    degradedReason: degradedReason === 'none' ? null : degradedReason,
     loadResult: fields.load_result ?? fields.loadResult ?? null,
   };
 }
@@ -326,7 +328,9 @@ export function runtimeArtifactTransportEvidence(lines, observation = {}) {
   const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const loaderTransports = compactStringList(records.map((record) => record.selectedLoaderTransport));
-  const reloadRequestTransports = compactStringList(records.map((record) => record.reloadRequestTransport));
+  const reloadRequestTransports = compactStringList(records.flatMap((record) =>
+    String(record.reloadRequestTransport ?? '').split(','),
+  ));
   const ramArtifactReferenceProvided = records.some((record) => record.ramReference === true);
   const ramTransportProven = records.some((record) =>
     record.ramTransportProven === true

@@ -1720,11 +1720,12 @@ function selfCheckRuntimeDispatchEvidence() {
     throw new Error('runtime output oracle evidence parser failed');
   }
   const runtimeTransportEvidence = runtimeArtifactTransportEvidence([
-    '[gpu-runtime-boundary] artifact_transport runtime_session=pid1 generation=3 artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_bytes=8 reload_request_transport=filesystem_path selected_loader_transport=filesystem_path loader_api=module_load_path ram_reference=false ram_transport_proven=false degraded_state=gpu-hmr-ram-io-unavailable degraded_reason=reload_request_contains_filesystem_path_only load_result=ok',
+    '[gpu-runtime-boundary] artifact_transport runtime_session=pid1 generation=3 artifact_hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa artifact_bytes=8 reload_request_transport=filesystem_path,ram_blob selected_loader_transport=filesystem_path loader_api=module_load_path ram_reference=true ram_blob_id=artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ram_transport_proven=false degraded_state=gpu-hmr-ram-io-unavailable degraded_reason=selected_loader_uses_filesystem_path load_result=ok',
   ], { runtimeSessionIds: ['pid1'] });
   if (
     runtimeTransportEvidence.matched_count !== 1
     || runtimeTransportEvidence.loader_transports[0] !== 'filesystem_path'
+    || runtimeTransportEvidence.reload_request_transports.length !== 2
     || runtimeTransportEvidence.ram_transport_proven
     || runtimeTransportEvidence.degraded_state !== 'gpu-hmr-ram-io-unavailable'
   ) {

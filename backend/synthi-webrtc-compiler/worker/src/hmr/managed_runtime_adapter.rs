@@ -232,6 +232,7 @@ mod tests {
             module_id: "app".into(),
             changed_files: vec!["Main.java".into()],
             build_manifest: jvm_manifest("app.jar"),
+            artifact_blob: None,
             preserve_state: false,
             timeout_ms: 5000,
         };
@@ -251,6 +252,7 @@ mod tests {
             module_id: "app".into(),
             changed_files: vec![],
             build_manifest: jvm_manifest("app.so"),
+            artifact_blob: None,
             preserve_state: false,
             timeout_ms: 5000,
         };

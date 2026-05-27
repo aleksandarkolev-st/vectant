@@ -189,11 +189,15 @@ use state_manager::StateManager;
 use supervisor::{CrashSupervisor, RecoveryAction, SupervisorConfig};
 
 #[cfg(feature = "gpu-hmr")]
-use worker::hmr::adapter_trait::{Adapter, AdapterReloadRequest, AdapterReloadResult};
+use worker::hmr::adapter_trait::{
+    Adapter, AdapterReloadRequest, AdapterReloadResult, ReloadArtifactBlob,
+};
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::gpu_module_adapter::{GpuModuleAdapter, GpuModuleAdapterConfig, GpuVendor};
+#[cfg(feature = "gpu-hmr")]
+use worker::hmr::gpu_proof::sha256_hex_bytes;
 
 // use enhanced_fingerprint::{extract_fingerprint_from_module}; // Removed AbiFingerprint
 
@@ -239,6 +243,27 @@ fn emit_gpu_reload_completion(completion: &GpuReloadCompletion) {
         ),
     };
     eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn gpu_reload_artifact_blob_from_path(artifact_path: &str) -> Option<ReloadArtifactBlob> {
+    match std::fs::read(artifact_path) {
+        Ok(bytes) => {
+            let artifact_hash = sha256_hex_bytes(&bytes);
+            Some(ReloadArtifactBlob {
+                blob_id: format!("artifact:sha256:{artifact_hash}"),
+                content_hash: format!("sha256:{artifact_hash}"),
+                bytes,
+            })
+        }
+        Err(error) => {
+            eprintln!(
+                "[Runner] [GPU HMR] RAM artifact capsule unavailable artifact={} error={}",
+                artifact_path, error
+            );
+            None
+        }
+    }
 }
 
 // ============================================================
@@ -1557,9 +1582,16 @@ fn main() {
                             }
                         };
 
-                        let artifact_hash = std::fs::metadata(artifact_path)
-                            .map(|m| m.len().to_string())
-                            .unwrap_or_else(|_| "unknown".to_string());
+                        let artifact_blob = gpu_reload_artifact_blob_from_path(artifact_path);
+                        let artifact_hash = artifact_blob
+                            .as_ref()
+                            .map(|blob| blob.content_hash.clone())
+                            .or_else(|| {
+                                std::fs::metadata(artifact_path)
+                                    .map(|m| m.len().to_string())
+                                    .ok()
+                            })
+                            .unwrap_or_else(|| "unknown".to_string());
                         let mut capabilities = vec![
                             "gpu_sidecar_module".to_string(),
                             "synthi_gpu_launch".to_string(),
@@ -1591,6 +1623,7 @@ fn main() {
                             module_id: "device".into(),
                             changed_files: manifest.dirty_units.clone().unwrap_or_default(),
                             build_manifest: manifest,
+                            artifact_blob,
                             preserve_state: true,
                             timeout_ms: 5000,
                         };
@@ -2090,6 +2123,10 @@ mod tests {
         decode_gpu_kernel_command_token, device_load_abi_version, is_runtime_execution_paused,
         runtime_control_status_payload, should_process_runner_command,
     };
+    #[cfg(feature = "gpu-hmr")]
+    use super::gpu_reload_artifact_blob_from_path;
+    #[cfg(feature = "gpu-hmr")]
+    use std::io::Write as _;
 
     #[test]
     fn device_load_abi_version_prefers_protocol_fingerprint() {
@@ -2191,5 +2228,20 @@ mod tests {
         }
 
         assert_eq!(processed, vec!["load_device"]);
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn gpu_reload_artifact_blob_from_path_hashes_runtime_bytes() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"runtime-artifact").unwrap();
+        let artifact_hash = worker::hmr::gpu_proof::sha256_hex_bytes(b"runtime-artifact");
+
+        let blob = gpu_reload_artifact_blob_from_path(&file.path().to_string_lossy())
+            .expect("runtime RAM artifact capsule");
+
+        assert_eq!(blob.blob_id, format!("artifact:sha256:{artifact_hash}"));
+        assert_eq!(blob.content_hash, format!("sha256:{artifact_hash}"));
+        assert_eq!(blob.bytes, b"runtime-artifact");
     }
 }
