@@ -1,10 +1,15 @@
 import asyncio
 import os
+import re
 import time
 from typing import Any, Mapping, Optional, Sequence, Dict
 from .base import AiProvider
 
 import google.generativeai as genai
+try:
+    from google.api_core import exceptions as google_api_exceptions
+except Exception:  # pragma: no cover - optional SDK surface varies by install
+    google_api_exceptions = None
 from dotenv import load_dotenv
 
 # PERF: Use tiktoken for accurate token counting instead of rough len(split())
@@ -64,6 +69,77 @@ def _get_metrics_collector():
 _gemini_semaphore = asyncio.Semaphore(1)
 
 
+def _normalize_model_name(name: str) -> str:
+    value = (name or "").strip()
+    return value.removeprefix("models/")
+
+
+def _model_version_tuple(name: str) -> tuple[int, int, int]:
+    parts = [int(part) for part in re.findall(r"\d+", name)[:3]]
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def _model_family_tokens(name: str) -> set[str]:
+    tokens = {
+        token
+        for token in re.split(r"[^a-z0-9]+", _normalize_model_name(name).lower())
+        if token and not token.isdigit()
+    }
+    return tokens - {"gemini", "models", "preview", "latest"}
+
+
+def _model_metadata_name(model: Any) -> str:
+    if isinstance(model, str):
+        return model
+    return str(getattr(model, "name", "") or getattr(model, "model_name", "") or "")
+
+
+def _model_supports_generate_content(model: Any) -> bool:
+    methods = getattr(model, "supported_generation_methods", None)
+    if methods is None and isinstance(model, Mapping):
+        methods = model.get("supported_generation_methods")
+    if not methods:
+        return True
+    return "generateContent" in set(methods)
+
+
+def _select_fallback_model_name(requested: str, models: Sequence[Any]) -> Optional[str]:
+    requested_name = _normalize_model_name(requested)
+    requested_lower = requested_name.lower()
+    requested_tokens = _model_family_tokens(requested_name)
+    candidates: list[str] = []
+    for model in models:
+        if not _model_supports_generate_content(model):
+            continue
+        name = _normalize_model_name(_model_metadata_name(model))
+        if not name:
+            continue
+        lower = name.lower()
+        if not lower.startswith("gemini-"):
+            continue
+        if lower == requested_lower:
+            continue
+        candidates.append(name)
+    if not candidates:
+        return None
+
+    def rank(name: str) -> tuple[int, int, tuple[int, int, int], str]:
+        lower = name.lower()
+        tokens = _model_family_tokens(name)
+        family_score = len(tokens & requested_tokens)
+        stable_score = 0 if "preview" in lower else 1
+        return (family_score, stable_score, _model_version_tuple(lower), lower)
+
+    return max(candidates, key=rank)
+
+
+def _is_model_not_found_error(err: BaseException) -> bool:
+    not_found_type = getattr(google_api_exceptions, "NotFound", None) if google_api_exceptions else None
+    return bool(not_found_type and isinstance(err, not_found_type))
+
+
 class GeminiProvider(AiProvider):
     _clients: Dict[str, genai.GenerativeModel] = {}
 
@@ -106,6 +182,21 @@ class GeminiProvider(AiProvider):
                 generation_config=self.generation_config,
             )
         return self._clients[cache_key]
+
+    def _fallback_model_name(self, api_key: Optional[str], requested_model: str) -> Optional[str]:
+        env_model = (
+            os.getenv("SYNTHI_GEMINI_FALLBACK_MODEL")
+            or os.getenv("GEMINI_FALLBACK_MODEL")
+            or ""
+        ).strip()
+        if env_model and _normalize_model_name(env_model).lower() != _normalize_model_name(requested_model).lower():
+            return _normalize_model_name(env_model)
+
+        key = api_key or os.getenv("GEMINI_API_KEY")
+        if not key:
+            return None
+        genai.configure(api_key=key)
+        return _select_fallback_model_name(requested_model, list(genai.list_models()))
 
     def _timeout_seconds(self, mode: str, prompt_len: int) -> float:
         default_timeout = _env_float("SYNTHI_GEMINI_TIMEOUT_SEC", 120.0)
@@ -170,7 +261,6 @@ class GeminiProvider(AiProvider):
 
         try:
             model_name = model or self.model_name
-            client = self._get_client(api_key, model_name)
 
             # Metrics tracking
             start_time = time.time()
@@ -183,7 +273,9 @@ class GeminiProvider(AiProvider):
                 f"[Gemini] Calling API for mode={mode_lower}, "
                 f"prompt_len={len(full_prompt)} chars, timeout={timeout_seconds:.1f}s"
             )
-            try:
+
+            async def generate_once(selected_model: str) -> str:
+                client = self._get_client(api_key, selected_model)
                 resp = await asyncio.wait_for(
                     client.generate_content_async(
                         full_prompt,
@@ -192,12 +284,33 @@ class GeminiProvider(AiProvider):
                     ),
                     timeout=timeout_seconds,
                 )
-                combined = resp.text.strip()
+                return resp.text.strip()
+
+            try:
+                combined = await generate_once(model_name)
                 total_tokens = _count_tokens(combined)
                 print(f"[Gemini] Succeeded: {total_tokens} tokens, {time.time() - start_time:.2f}s")
             except Exception as err:
-                print(f"[Gemini] Failed: {type(err).__name__}: {err}")
-                raise
+                if _is_model_not_found_error(err):
+                    fallback_model = self._fallback_model_name(api_key, model_name)
+                    if fallback_model:
+                        print(
+                            "[Gemini] Requested model was not found; "
+                            f"retrying with discovered fallback model={fallback_model}"
+                        )
+                        model_name = fallback_model
+                        combined = await generate_once(model_name)
+                        total_tokens = _count_tokens(combined)
+                        print(
+                            f"[Gemini] Succeeded with fallback: {total_tokens} tokens, "
+                            f"{time.time() - start_time:.2f}s"
+                        )
+                    else:
+                        print(f"[Gemini] Failed: {type(err).__name__}: {err}")
+                        raise
+                else:
+                    print(f"[Gemini] Failed: {type(err).__name__}: {err}")
+                    raise
             
             # Record metrics
             end_time = time.time()
