@@ -18,6 +18,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
+import { abiProofFromProofArtifacts } from './lib/gpu-hmr-proof-artifacts.mjs';
 import {
   classifyGpuHmrAbiProof,
   classifyGpuHmrDispatchProof,
@@ -312,42 +313,6 @@ async function collectGpuProofArtifacts() {
   }
   report.proof_artifacts = records;
   return records;
-}
-
-function abiProofFromProofArtifacts(records) {
-  const evidenceRefs = [];
-  let layoutSizeAlignmentVerified = false;
-  let degradedReason = null;
-  for (const record of Array.isArray(records) ? records : []) {
-    const artifact = record?.artifact;
-    if (!artifact || typeof artifact !== 'object') continue;
-    const artifactEvidenceRefs = Array.isArray(artifact.evidenceRefs) ? artifact.evidenceRefs : [];
-    for (const evidence of artifactEvidenceRefs) {
-      if (evidence?.kind !== 'device-abi-metadata') continue;
-      if (evidence?.metadata?.schemaVersion !== 'synthi.gpu.hmr.abi_metadata.v1') continue;
-      const id = typeof evidence.evidenceId === 'string' && evidence.evidenceId.trim()
-        ? evidence.evidenceId
-        : `${artifact.proofId ?? record.proofArtifactPath}:device-abi-metadata`;
-      evidenceRefs.push(id);
-    }
-    const stages = Array.isArray(artifact.stageResults) ? artifact.stageResults : [];
-    const abiStage = stages.find((stage) => {
-      const stageId = String(stage?.stageId ?? '').toLowerCase();
-      return stageId === 'abi' || stageId.includes('abi-');
-    });
-    if (abiStage?.status === 'passed' && !abiStage?.degradedState) {
-      layoutSizeAlignmentVerified = true;
-    }
-    if (!degradedReason && typeof abiStage?.degradedReason === 'string' && abiStage.degradedReason.trim()) {
-      degradedReason = abiStage.degradedReason.trim();
-    }
-  }
-  return classifyGpuHmrAbiProof({
-    metadataObserved: evidenceRefs.length > 0,
-    layoutSizeAlignmentVerified,
-    degradedReason,
-    evidenceRefs: [...new Set(evidenceRefs)],
-  });
 }
 
 async function httpJson(method, url, body, headers = {}) {

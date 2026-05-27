@@ -13,6 +13,7 @@ import {
   summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
 } from "../../scripts/lib/gpu-hmr-runtime-proof.mjs";
+import { abiProofFromProofArtifacts } from "../../scripts/lib/gpu-hmr-proof-artifacts.mjs";
 
 function acceptedAbiProof() {
   return classifyGpuHmrAbiProof({
@@ -184,6 +185,66 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
     expect(proof.degradedReason).toBe("abi_extractor_provenance_unverified");
     expect(proof.acceptedExtractorEvidenceRefs).toEqual([]);
+  });
+
+  it("keeps ABI proof unverified when artifact metadata only has rejected source-scan provenance", () => {
+    const proof = abiProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "device-abi-metadata",
+          evidenceId: "evidence:device-abi-metadata:abc",
+          metadata: {
+            schemaVersion: "synthi.gpu.hmr.abi_metadata.v1",
+            layoutSizeAlignmentVerified: false,
+            acceptedExtractorEvidenceRefs: [],
+            extractorProvenance: [{
+              extractorKind: "source_text_scan",
+              acceptedByRuntimeCorrectnessPlan: false,
+            }],
+          },
+        }],
+        stageResults: [{
+          stageId: "abi-compatibility",
+          status: "blocked",
+          degradedReason: "abi_layout_size_alignment_unverified",
+        }],
+      },
+    }]);
+
+    expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
+    expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
+    expect(proof.layoutSizeAlignmentVerified).toBe(false);
+    expect(proof.acceptedExtractorProvenanceObserved).toBe(false);
+    expect(proof.evidenceRefs).toEqual(["evidence:device-abi-metadata:abc"]);
+  });
+
+  it("proves ABI from artifact metadata only with layout proof and accepted extractor evidence", () => {
+    const proof = abiProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "device-abi-metadata",
+          evidenceId: "evidence:device-abi-metadata:def",
+          metadata: {
+            schemaVersion: "synthi.gpu.hmr.abi_metadata.v1",
+            layoutSizeAlignmentVerified: true,
+            acceptedExtractorEvidenceRefs: ["evidence:clang-record-layout:def"],
+            acceptedExtractorSources: ["clang_record_layout"],
+          },
+        }],
+        stageResults: [{
+          stageId: "abi-compatibility",
+          status: "passed",
+        }],
+      },
+    }]);
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.acceptedExtractorEvidenceRefs).toEqual(["evidence:clang-record-layout:def"]);
   });
 
   it("reports epoch-swap-proven only for generation lineage, table hash, changed entries, and retired old generation", () => {
