@@ -369,6 +369,7 @@ _DEVICE_DESCRIPTOR_INIT_RE = re.compile(
     r"\bDeviceDescriptor\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*\{(?P<body>.*?)\}\s*;",
     re.DOTALL,
 )
+_DEVICE_DESCRIPTOR_ARRAY_ARG_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SOURCE_DEVICE_IDENTIFIER_RE = re.compile(r"\bk[A-Z][A-Za-z0-9_]*\b")
 _SOURCE_DEVICE_CONST_DECL_RE = re.compile(
     r"\b(?:constexpr\s+|const\s+)?"
@@ -671,6 +672,22 @@ def _split_top_level_args(body: str) -> List[str]:
     if tail:
         args.append(tail)
     return args
+
+
+def _declares_static_cstr_array(source: str, name: str) -> bool:
+    if not _DEVICE_DESCRIPTOR_ARRAY_ARG_RE.match(name):
+        return False
+    masked = mask_comments_for_parsing(source)
+    name_re = re.escape(name)
+    return bool(
+        re.search(
+            rf"(?:^|[;\n{{}}])\s*"
+            rf"(?:(?:static|inline|constexpr|const)\s+)*"
+            rf"(?:const\s+char|char\s+const)\s*\*\s*"
+            rf"(?:const\s*)?{name_re}\s*\[",
+            masked,
+        )
+    )
 
 
 def _function_body(source: str, name: str) -> str:
@@ -2078,6 +2095,25 @@ def verify_split_output(
                     offending_symbol="DeviceDescriptor",
                 )
             )
+        else:
+            for field_index, field_name in ((1, "arches"), (2, "kernels")):
+                pointer_arg = args[field_index].strip()
+                if not _declares_static_cstr_array(core_source, pointer_arg):
+                    violations.append(
+                        Violation(
+                            rule="invalid_device_descriptor_array_reference",
+                            message=(
+                                "DeviceDescriptor arch/kernel pointer fields must "
+                                "reference static const char* arrays declared in "
+                                "the core role. Dangling identifiers, string "
+                                "literals, or malformed descriptor fragments can "
+                                "compile only after accidental name capture and "
+                                "do not prove the runtime GPU lifecycle ABI."
+                            ),
+                            offending_module=core_path,
+                            offending_symbol=f"{field_name}:{pointer_arg}",
+                        )
+                    )
     if re.search(
         r"\bnew\s+AppState\b|\b(?:std::)?make_unique\s*<\s*AppState\s*>|\b(?:std::)?make_shared\s*<\s*AppState\s*>|\b(?:malloc|calloc)\s*\([^;]*\bAppState\b",
         core_source,
