@@ -3130,14 +3130,26 @@ async fn write_device_hmr_proof_artifact(
             file_path: None,
             artifact_uri: None,
             summary: format!(
-                "Device compiler completed in {} ms with stderr_bytes={}",
+                "Device compiler completed in {} ms with stderr_bytes={} compile_command_hash={} dependency_hash={} cache_hit={}",
                 outcome.compiler_elapsed_ms,
-                outcome.stderr.len()
+                outcome.stderr.len(),
+                outcome
+                    .proof_metadata
+                    .compile_command_hash
+                    .as_deref()
+                    .unwrap_or("unavailable"),
+                outcome
+                    .proof_metadata
+                    .dependency_hash
+                    .as_deref()
+                    .unwrap_or("unavailable"),
+                outcome.proof_metadata.cache_hit
             ),
             metadata: Some(serde_json::json!({
                 "compilerElapsedMs": outcome.compiler_elapsed_ms,
                 "stderrBytes": outcome.stderr.len(),
                 "diagnostics": &outcome.diagnostics,
+                "compileProvenance": &outcome.proof_metadata,
             })),
         },
         GpuHmrProofEvidenceRef {
@@ -9169,6 +9181,7 @@ pub(crate) fn build_simple_diff(old: &str, new: &str) -> String {
 #[cfg(test)]
 mod gpu_host_contract_tests {
     use super::*;
+    use crate::compiler::stages::compile_device::DeviceCompileProofMetadata;
 
     const FIXTURE_GENERATED_DEVICE_PATH: &str = ".synthi/generated/gpu/device.hip";
     const FIXTURE_SOURCE_PATH: &str = "fixtures/device/source.hip";
@@ -9245,6 +9258,7 @@ mod gpu_host_contract_tests {
             diagnostics:
                 crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
             stderr: String::new(),
+            proof_metadata: DeviceCompileProofMetadata::default(),
         }
     }
 
@@ -9439,6 +9453,7 @@ mod gpu_host_contract_tests {
             diagnostics:
                 crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
             stderr: String::new(),
+            proof_metadata: DeviceCompileProofMetadata::default(),
         };
 
         assert_eq!(
@@ -9535,6 +9550,22 @@ extern "C" __global__ void shade(float* pixels, int count) {}
 __constant__ int scale;
 "#
         .to_string();
+        outcome.proof_metadata = DeviceCompileProofMetadata {
+            compiler_executable: Some("/opt/toolchain/bin/hipcc".to_string()),
+            compiler_identity: Some("compiler-identity-hash".to_string()),
+            device_compiler: Some("hipcc".to_string()),
+            gpu_vendor: Some("rocm".to_string()),
+            gpu_arch: vec!["gfx0000".to_string()],
+            target_triple: Some("rocm:gfx0000".to_string()),
+            sdk_version: Some("rocm:test".to_string()),
+            source_filename: Some("device.hip".to_string()),
+            effective_device_flags: vec!["-O3".to_string()],
+            compile_command_hash: Some("compile-command-hash".to_string()),
+            dependency_hash: Some("dependency-hash".to_string()),
+            dependency_method: Some("depfile".to_string()),
+            artifact_cache_key: Some("artifact-cache-key".to_string()),
+            cache_hit: false,
+        };
         outcome.requested_artifact_kind = Some("source_include_bridge".to_string());
         outcome.selected_artifact_kind = Some("source_include_bridge".to_string());
         let proof = device_hmr_proof_telemetry(&outcome);
@@ -9561,10 +9592,51 @@ __constant__ int scale;
             .metadata
             .as_ref()
             .expect("ABI metadata evidence should include structured metadata");
+        let compiler_evidence = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| evidence.kind == "device-compiler-output")
+            .expect("compiler output evidence should be recorded");
+        let compiler_metadata = compiler_evidence
+            .metadata
+            .as_ref()
+            .expect("compiler evidence should include structured metadata");
+        let compile_provenance = compiler_metadata
+            .get("compileProvenance")
+            .expect("compiler evidence should include compile provenance");
 
         assert!(abi_evidence
             .evidence_id
             .starts_with("evidence:device-abi-metadata:"));
+        assert!(compiler_evidence
+            .summary
+            .contains("compile_command_hash=compile-command-hash"));
+        assert_eq!(
+            compile_provenance
+                .get("compilerExecutable")
+                .and_then(serde_json::Value::as_str),
+            Some("/opt/toolchain/bin/hipcc")
+        );
+        assert_eq!(
+            compile_provenance
+                .get("compileCommandHash")
+                .and_then(serde_json::Value::as_str),
+            Some("compile-command-hash")
+        );
+        assert_eq!(
+            compile_provenance
+                .get("dependencyHash")
+                .and_then(serde_json::Value::as_str),
+            Some("dependency-hash")
+        );
+        assert_eq!(
+            compile_provenance
+                .get("gpuArch")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(serde_json::Value::as_str),
+            Some("gfx0000")
+        );
         assert_eq!(
             metadata
                 .get("schemaVersion")
@@ -9879,6 +9951,7 @@ DECLARE_KERNEL(opaque_kernel)
             diagnostics:
                 crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
             stderr: String::new(),
+            proof_metadata: DeviceCompileProofMetadata::default(),
         };
 
         let err = validate_partial_device_artifact_exports(&outcome).unwrap_err();
@@ -9903,6 +9976,7 @@ DECLARE_KERNEL(opaque_kernel)
             diagnostics:
                 crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
             stderr: String::new(),
+            proof_metadata: DeviceCompileProofMetadata::default(),
         };
 
         let err = validate_partial_device_artifact_exports(&outcome).unwrap_err();
@@ -9929,6 +10003,7 @@ DECLARE_KERNEL(opaque_kernel)
             diagnostics:
                 crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
             stderr: String::new(),
+            proof_metadata: DeviceCompileProofMetadata::default(),
         };
 
         validate_partial_device_artifact_exports(&outcome).unwrap();
@@ -9952,6 +10027,7 @@ DECLARE_KERNEL(opaque_kernel)
             diagnostics:
                 crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
             stderr: String::new(),
+            proof_metadata: DeviceCompileProofMetadata::default(),
         };
 
         let err = validate_partial_device_artifact_exports(&outcome).unwrap_err();
@@ -9976,6 +10052,7 @@ DECLARE_KERNEL(opaque_kernel)
             diagnostics:
                 crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
             stderr: String::new(),
+            proof_metadata: DeviceCompileProofMetadata::default(),
         };
 
         validate_partial_device_artifact_exports(&outcome).unwrap();
@@ -10000,6 +10077,7 @@ DECLARE_KERNEL(opaque_kernel)
             diagnostics:
                 crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
             stderr: String::new(),
+            proof_metadata: DeviceCompileProofMetadata::default(),
         };
 
         let err = validate_partial_device_artifact_exports(&outcome).unwrap_err();
@@ -10026,6 +10104,7 @@ DECLARE_KERNEL(opaque_kernel)
             diagnostics:
                 crate::compiler::stages::ptxas_info_parser::GpuToolchainDiagnostics::default(),
             stderr: String::new(),
+            proof_metadata: DeviceCompileProofMetadata::default(),
         };
 
         validate_partial_device_artifact_exports(&outcome).unwrap();
