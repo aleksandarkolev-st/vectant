@@ -34,6 +34,11 @@ function compactStringList(values) {
     : [];
 }
 
+function commaList(value) {
+  if (typeof value !== 'string') return [];
+  return compactStringList(value.split(','));
+}
+
 function epochRecord(line) {
   const fields = parseRuntimeKeyValues(line);
   return {
@@ -48,6 +53,7 @@ function epochRecord(line) {
     retirementTracked: boolValue(fields.retirement_tracked),
     oldGenerationRetired: boolValue(fields.old_generation_retired),
     streamScope: fields.stream_scope ?? null,
+    streamIds: commaList(fields.stream_ids),
     streamOrderingProven: boolValue(fields.stream_ordering_proven),
     drainResult: fields.drain_result ?? null,
   };
@@ -91,8 +97,15 @@ export function runtimeEpochSwapEvidence(lines) {
     && latestPublication.changedEntries >= 0;
   const retirementTracked = latestPublication?.retirementTracked === true;
   const oldGenerationRetired = latestPublication?.oldGenerationRetired === true || retirement !== null;
+  const streamScope = latestPublication?.streamScope ?? null;
+  const streamIds = latestPublication?.streamIds ?? [];
+  const streamScopeSupported =
+    streamScope === 'none'
+    || ((streamScope === 'stream' || streamScope === 'affected') && streamIds.length > 0);
   const streamOrderingProven =
-    latestPublication?.streamOrderingProven === true && latestPublication?.drainResult === 'synced';
+    latestPublication?.streamOrderingProven === true
+    && latestPublication?.drainResult === 'synced'
+    && streamScopeSupported;
 
   return {
     total_count: records.length,
@@ -108,7 +121,9 @@ export function runtimeEpochSwapEvidence(lines) {
     retirement_tracked: retirementTracked,
     old_generation_retired: oldGenerationRetired,
     stream_ordering_proven: streamOrderingProven,
-    stream_scope: latestPublication?.streamScope ?? null,
+    stream_scope: streamScope,
+    stream_scope_supported: streamScopeSupported,
+    stream_ids: streamIds,
     drain_result: latestPublication?.drainResult ?? null,
     latest_publication: latestPublication,
     matching_retirement: retirement,
@@ -128,6 +143,8 @@ export function epochSwapProofFromRuntimeEvidence(lines) {
     runtimeSessionIds: evidence.runtime_session_ids,
     runtimeSessionConsistent: evidence.runtime_session_consistent,
     streamOrderingProven: evidence.stream_ordering_proven,
+    streamScope: evidence.stream_scope,
+    streamIds: evidence.stream_ids,
     retirementTracked: evidence.retirement_tracked,
     oldGenerationRetired: evidence.old_generation_retired,
     evidenceRefs: evidence.evidence_refs,

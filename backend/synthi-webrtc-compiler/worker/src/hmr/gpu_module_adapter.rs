@@ -65,16 +65,17 @@ use crate::hmr::adapter_trait::{
 use crate::hmr::compile_manifest::{DeviceVendor, SnapshotMode};
 use crate::hmr::device_snapshot::BufferRegistry;
 use crate::hmr::gpu_driver_loader::{
-    self, CuContext, CuFunction, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable,
+    self, CuContext, CuFunction, CuStream, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable,
 };
 use crate::hmr::gpu_module_manager::{GpuModuleManager, KernelResolution, ModuleManagerError};
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
 };
-use crate::hmr::gpu_stream_drain::{drain_context, DrainOutcome, DrainScope};
+use crate::hmr::gpu_stream_drain::{drain_stream, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
     clear_launch_dispatcher, current_launch_generation, install_launch_dispatcher,
-    managed_buffers_snapshot, runtime_session_id, GpuLaunchDispatcher, GpuLaunchRequest,
+    launch_records_snapshot, managed_buffers_snapshot, runtime_session_id, GpuLaunchDispatcher,
+    GpuLaunchRequest,
 };
 
 // ── Vendor + symbol table ───────────────────────────────────
@@ -341,11 +342,106 @@ fn active_dispatch_table(manager: &GpuModuleManager) -> (HashMap<String, u64>, u
     (entries.into_iter().collect(), table_hash)
 }
 
-fn drain_scope_label(drain: &DrainOutcome) -> &'static str {
-    match drain {
-        DrainOutcome::Synced { scope, .. }
-        | DrainOutcome::TimedOut { scope, .. }
-        | DrainOutcome::DriverError { scope, .. } => scope.as_str(),
+#[derive(Debug, Clone)]
+struct StreamOrderingDrain {
+    outcome: DrainOutcome,
+    scope_label: &'static str,
+    stream_tokens: Vec<usize>,
+}
+
+impl StreamOrderingDrain {
+    fn no_old_generation(budget_ms: u64) -> Self {
+        Self {
+            outcome: DrainOutcome::Synced {
+                scope: DrainScope::Stream,
+                elapsed_ms: 0,
+                budget_ms,
+            },
+            scope_label: "none",
+            stream_tokens: Vec::new(),
+        }
+    }
+
+    fn is_synced(&self) -> bool {
+        self.outcome.is_synced()
+    }
+
+    fn stream_count(&self) -> u32 {
+        self.stream_tokens.len().min(u32::MAX as usize) as u32
+    }
+
+    fn stream_ids_for_log(&self) -> String {
+        if self.stream_tokens.is_empty() {
+            return "none".to_string();
+        }
+        self.stream_tokens
+            .iter()
+            .map(|token| {
+                if *token == 0 {
+                    "default".to_string()
+                } else {
+                    format!("0x{token:x}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+fn affected_stream_tokens_for_symbols(expected_symbols: &[String]) -> Vec<usize> {
+    let active_generation = current_launch_generation();
+    let mut tokens = launch_records_snapshot()
+        .into_iter()
+        .filter(|record| {
+            record.dispatched
+                && record.dispatch_error.is_none()
+                && record.active_generation == active_generation
+                && expected_symbols
+                    .iter()
+                    .any(|symbol| symbol == &record.kernel_name)
+        })
+        .map(|record| record.stream_token)
+        .collect::<Vec<_>>();
+    tokens.sort_unstable();
+    tokens.dedup();
+    tokens
+}
+
+fn drain_affected_streams(
+    symbols: &GpuDriverSymbolTable,
+    expected_symbols: &[String],
+    first_device_load: bool,
+    budget_ms: u64,
+) -> StreamOrderingDrain {
+    if first_device_load {
+        return StreamOrderingDrain::no_old_generation(budget_ms);
+    }
+
+    let stream_tokens = affected_stream_tokens_for_symbols(expected_symbols);
+    if stream_tokens.is_empty() {
+        return StreamOrderingDrain::no_old_generation(budget_ms);
+    }
+
+    let started = Instant::now();
+    for token in &stream_tokens {
+        let outcome = drain_stream(symbols, *token as CuStream, budget_ms);
+        if !outcome.is_synced() {
+            return StreamOrderingDrain {
+                outcome,
+                scope_label: "affected",
+                stream_tokens,
+            };
+        }
+    }
+
+    StreamOrderingDrain {
+        outcome: DrainOutcome::Synced {
+            scope: DrainScope::Stream,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            budget_ms,
+        },
+        scope_label: "affected",
+        stream_tokens,
     }
 }
 
@@ -882,6 +978,45 @@ impl Adapter for GpuModuleAdapter {
             .any(|capability| capability == "gpu_sidecar_partial_module");
         let first_device_load =
             self.active_module_handle.is_none() && self.module_manager.primary().is_none();
+        if partial_device_reload && first_device_load {
+            self.health = AdapterHealth::Degraded;
+            self.phase = GpuPhase::Ready;
+            return AdapterReloadResult::Failed {
+                error: "partial GPU sidecar reload requires an existing full device module".into(),
+                recoverable: true,
+            };
+        }
+        if partial_device_reload && req.build_manifest.exported_symbols.is_empty() {
+            self.health = AdapterHealth::Degraded;
+            self.phase = GpuPhase::Ready;
+            return AdapterReloadResult::Failed {
+                error: "partial GPU sidecar reload has no target symbols".into(),
+                recoverable: true,
+            };
+        }
+        let kernel_resolutions = match kernel_resolution_specs(&req.build_manifest.exported_symbols)
+        {
+            Ok(resolutions) => resolutions,
+            Err(error) => {
+                self.health = AdapterHealth::Degraded;
+                self.phase = GpuPhase::Ready;
+                return AdapterReloadResult::Failed {
+                    error,
+                    recoverable: true,
+                };
+            }
+        };
+        let expected_symbols = match logical_kernel_symbols(&req.build_manifest.exported_symbols) {
+            Ok(symbols) => symbols,
+            Err(error) => {
+                self.health = AdapterHealth::Degraded;
+                self.phase = GpuPhase::Ready;
+                return AdapterReloadResult::Failed {
+                    error,
+                    recoverable: true,
+                };
+            }
+        };
         if first_device_load {
             let init_code = unsafe { (symbols.cu_init)(0) };
             if init_code != 0 {
@@ -893,24 +1028,21 @@ impl Adapter for GpuModuleAdapter {
                 };
             }
         }
-        let drain = if first_device_load {
-            DrainOutcome::Synced {
-                scope: DrainScope::Context,
-                elapsed_ms: 0,
-                budget_ms: self.config.drain_timeout_ms,
-            }
-        } else {
-            drain_context(&symbols, self.config.drain_timeout_ms)
-        };
+        let drain = drain_affected_streams(
+            &symbols,
+            &expected_symbols,
+            first_device_load,
+            self.config.drain_timeout_ms,
+        );
         if !drain.is_synced() {
-            let timed_out = matches!(drain, DrainOutcome::TimedOut { .. });
+            let timed_out = matches!(drain.outcome, DrainOutcome::TimedOut { .. });
             self.emit_report(GpuSwapInputs {
                 plan,
-                reason: drain.short_label().into(),
-                streams_synced: 0,
+                reason: drain.outcome.short_label().into(),
+                streams_synced: drain.stream_count(),
                 force_drain_timeout: timed_out,
                 snapshot_bytes,
-                snapshot_ms: drain.elapsed_ms(),
+                snapshot_ms: drain.outcome.elapsed_ms(),
                 dirty_buffers,
                 expected_kernel_hashes: req.build_manifest.exported_symbols.len() as u32,
                 matched_kernel_hashes: 0,
@@ -918,22 +1050,12 @@ impl Adapter for GpuModuleAdapter {
             self.health = AdapterHealth::Faulted;
             self.phase = GpuPhase::Faulted;
             return AdapterReloadResult::Failed {
-                error: format!("GPU drain failed: {:?}", drain),
+                error: format!("GPU drain failed: {:?}", drain.outcome),
                 recoverable: !timed_out,
             };
         }
 
         let load_result = (|| -> Result<DeviceReloadOwnership, String> {
-            if partial_device_reload && first_device_load {
-                return Err(
-                    "partial GPU sidecar reload requires an existing full device module".into(),
-                );
-            }
-            if partial_device_reload && req.build_manifest.exported_symbols.is_empty() {
-                return Err("partial GPU sidecar reload has no target symbols".into());
-            }
-            let kernel_resolutions = kernel_resolution_specs(&req.build_manifest.exported_symbols)?;
-            let expected_symbols = logical_kernel_symbols(&req.build_manifest.exported_symbols)?;
             let previous_table = self.module_manager.kernel_table().clone();
             if self.config.vendor == GpuVendor::Rocm {
                 self.module_manager
@@ -984,18 +1106,19 @@ impl Adapter for GpuModuleAdapter {
             let active_generation = current_launch_generation();
             let mut epoch_log_lines = Vec::new();
             let publish_line = format!(
-                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true old_generation_retired={} stream_scope={} stream_ordering_proven={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
+                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
                 runtime_session_id(),
                 previous_generation,
                 active_generation,
                 dispatch_table_hash,
                 touched_symbols.len(),
                 retired_module_count == 0,
-                drain_scope_label(&drain),
+                drain.scope_label,
+                drain.stream_ids_for_log(),
                 drain.is_synced(),
-                drain.short_label(),
-                drain.elapsed_ms(),
-                drain.budget_ms().unwrap_or(0)
+                drain.outcome.short_label(),
+                drain.outcome.elapsed_ms(),
+                drain.outcome.budget_ms().unwrap_or(0)
             );
             eprintln!("{publish_line}");
             epoch_log_lines.push(publish_line);
@@ -1006,12 +1129,13 @@ impl Adapter for GpuModuleAdapter {
             }
             if retired_module_count > 0 {
                 let retired_line = format!(
-                    "[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session={} previous_generation={} active_generation={} retired_modules={} old_generation_retired=true stream_scope={} stream_ordering_proven=true",
+                    "[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session={} previous_generation={} active_generation={} retired_modules={} old_generation_retired=true stream_scope={} stream_ids={} stream_ordering_proven=true",
                     runtime_session_id(),
                     previous_generation,
                     active_generation,
                     retired_module_count,
-                    drain_scope_label(&drain)
+                    drain.scope_label,
+                    drain.stream_ids_for_log()
                 );
                 eprintln!("{retired_line}");
                 epoch_log_lines.push(retired_line);
@@ -1042,7 +1166,7 @@ impl Adapter for GpuModuleAdapter {
                     } else {
                         "device-file-only-edit".into()
                     },
-                    streams_synced: 1,
+                    streams_synced: drain.stream_count(),
                     force_drain_timeout: false,
                     snapshot_bytes,
                     snapshot_ms: started.elapsed().as_millis() as u64,
@@ -1160,6 +1284,8 @@ mod tests {
     static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x1000);
     static CTX_SET_CALLS: AtomicUsize = AtomicUsize::new(0);
     static CTX_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static STREAM_SYNC_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static LAST_STREAM_SYNC_TOKEN: AtomicUsize = AtomicUsize::new(0);
     static LAUNCH_CALLS: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_GRID_X: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_BLOCK_X: AtomicUsize = AtomicUsize::new(0);
@@ -1245,12 +1371,16 @@ mod tests {
         0
     }
 
-    unsafe extern "C" fn err_ctx_synchronize() -> CuResult {
-        700
+    unsafe extern "C" fn ok_stream_synchronize(stream: CuStream) -> CuResult {
+        STREAM_SYNC_CALLS.fetch_add(1, Ordering::SeqCst);
+        LAST_STREAM_SYNC_TOKEN.store(stream as usize, Ordering::SeqCst);
+        0
     }
 
-    unsafe extern "C" fn ok_stream_synchronize(_stream: CuStream) -> CuResult {
-        0
+    unsafe extern "C" fn err_stream_synchronize(stream: CuStream) -> CuResult {
+        STREAM_SYNC_CALLS.fetch_add(1, Ordering::SeqCst);
+        LAST_STREAM_SYNC_TOKEN.store(stream as usize, Ordering::SeqCst);
+        700
     }
 
     unsafe extern "C" fn ok_mem_alloc(dptr: *mut CuDevicePtr, _bytes: usize) -> CuResult {
@@ -1293,7 +1423,7 @@ mod tests {
 
     fn drain_error_symbols() -> GpuDriverSymbolTable {
         GpuDriverSymbolTable {
-            cu_ctx_synchronize: err_ctx_synchronize,
+            cu_stream_synchronize: err_stream_synchronize,
             ..stub_symbols()
         }
     }
@@ -1327,6 +1457,24 @@ mod tests {
             preserve_state: true,
             timeout_ms: 5_000,
         }
+    }
+
+    fn launch_vec_add_on_stream(stream_token: usize) {
+        let kernel = CString::new("vec_add").unwrap();
+        let grid = 8_u32;
+        let block = 256_u32;
+        assert!(synthi_gpu_launch_raw(
+            std::ptr::null_mut(),
+            kernel.as_ptr(),
+            (&grid as *const u32).cast(),
+            std::mem::size_of_val(&grid),
+            (&block as *const u32).cast(),
+            std::mem::size_of_val(&block),
+            0,
+            stream_token,
+            std::ptr::null(),
+            4,
+        ));
     }
 
     #[test]
@@ -1816,7 +1964,9 @@ mod tests {
     }
 
     #[test]
-    fn partial_reload_drains_context_before_module_load() {
+    fn partial_reload_drains_only_streams_that_used_touched_symbols() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut first = tempfile::NamedTempFile::new().unwrap();
         let mut second = tempfile::NamedTempFile::new().unwrap();
         let mut partial_file = tempfile::NamedTempFile::new().unwrap();
@@ -1828,6 +1978,8 @@ mod tests {
         let partial_path = partial_file.path().to_string_lossy().to_string();
 
         CTX_SYNC_CALLS.store(0, Ordering::SeqCst);
+        STREAM_SYNC_CALLS.store(0, Ordering::SeqCst);
+        LAST_STREAM_SYNC_TOKEN.store(0, Ordering::SeqCst);
         let mut a = adapter_with_symbols(stub_symbols());
         assert!(matches!(
             a.reload(&request_with_artifact_and_abi(
@@ -1838,6 +1990,8 @@ mod tests {
             AdapterReloadResult::Success { .. }
         ));
         assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        launch_vec_add_on_stream(0x77);
 
         assert!(matches!(
             a.reload(&request_with_artifact_and_abi(
@@ -1847,8 +2001,16 @@ mod tests {
             )),
             AdapterReloadResult::Success { .. }
         ));
-        let full_reload_syncs = CTX_SYNC_CALLS.load(Ordering::SeqCst);
-        assert!(full_reload_syncs > 0);
+        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x77);
+        let publish = a
+            .last_reload_log()
+            .iter()
+            .find(|line| line.contains("dispatcher_epoch event=published"))
+            .expect("dispatcher epoch publication");
+        assert!(publish.contains("stream_scope=affected"));
+        assert!(publish.contains("stream_ids=0x77"));
 
         let mut partial =
             request_with_artifact_and_abi(&partial_path, vec!["device.cu".into()], "sig-v2");
@@ -1856,11 +2018,15 @@ mod tests {
             .build_manifest
             .capabilities
             .push("gpu_sidecar_partial_module".into());
+        launch_vec_add_on_stream(0x88);
         assert!(matches!(
             a.reload(&partial),
             AdapterReloadResult::Success { .. }
         ));
-        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), full_reload_syncs + 1);
+        assert_eq!(CTX_SYNC_CALLS.load(Ordering::SeqCst), 0);
+        assert_eq!(STREAM_SYNC_CALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x88);
+        reset_for_test();
     }
 
     #[test]
@@ -1958,6 +2124,8 @@ mod tests {
 
     #[test]
     fn phase3_drain_error_faults_adapter_without_swapping() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
         let mut first = tempfile::NamedTempFile::new().unwrap();
         let mut second = tempfile::NamedTempFile::new().unwrap();
         first.write_all(b"fake-cubin-a").unwrap();
@@ -1970,6 +2138,7 @@ mod tests {
             vec!["device.cu".into()],
         ));
         assert!(matches!(initial, AdapterReloadResult::Success { .. }));
+        launch_vec_add_on_stream(0x99);
 
         let r = a.reload(&request_with_artifact(
             &second_path,
@@ -1987,6 +2156,8 @@ mod tests {
         }
         assert_eq!(a.module_manager.swap_count(), 1);
         assert_eq!(a.healthcheck(), AdapterHealth::Faulted);
+        assert_eq!(LAST_STREAM_SYNC_TOKEN.load(Ordering::SeqCst), 0x99);
+        reset_for_test();
     }
 
     #[test]

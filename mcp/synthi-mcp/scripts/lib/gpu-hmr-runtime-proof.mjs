@@ -484,10 +484,19 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
   const generationLineageObserved = observation.generationLineageObserved === true;
   const dispatchTableHashObserved = observation.dispatchTableHashObserved === true;
   const changedEntriesObserved = observation.changedEntriesObserved === true;
-  const streamOrderingProven = observation.streamOrderingProven === true;
+  const streamScope = typeof observation.streamScope === 'string' && observation.streamScope.trim()
+    ? observation.streamScope.trim()
+    : null;
+  const streamIds = compactStringList(observation.streamIds);
+  const streamScopeObserved =
+    streamScope === 'none'
+    || ((streamScope === 'stream' || streamScope === 'affected') && streamIds.length > 0);
+  const streamOrderingRequested = observation.streamOrderingProven === true;
+  const streamOrderingProven = streamOrderingRequested && streamScopeObserved;
   const retirementTracked = observation.retirementTracked === true;
   const oldGenerationRetired = observation.oldGenerationRetired === true;
   const evidenceRefs = compactStringList(observation.evidenceRefs);
+  const evidenceObserved = evidenceRefs.length > 0;
 
   if (
     published
@@ -499,6 +508,7 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     && streamOrderingProven
     && retirementTracked
     && oldGenerationRetired
+    && evidenceObserved
   ) {
     return {
       schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
@@ -513,6 +523,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       dispatchTableHashObserved: true,
       changedEntriesObserved: true,
       streamOrderingProven: true,
+      streamScope,
+      streamIds,
       retirementTracked: true,
       oldGenerationRetired: true,
       evidenceRefs,
@@ -527,7 +539,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     && dispatchTableHashObserved
     && changedEntriesObserved
     && streamOrderingProven
-    && retirementTracked;
+    && retirementTracked
+    && evidenceObserved;
   if (partialEpochObserved && !oldGenerationRetired) {
     return {
       schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
@@ -542,6 +555,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       dispatchTableHashObserved: true,
       changedEntriesObserved: true,
       streamOrderingProven: true,
+      streamScope,
+      streamIds,
       retirementTracked: true,
       oldGenerationRetired: false,
       evidenceRefs,
@@ -561,12 +576,16 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
           : !generationLineageObserved
         ? 'epoch_generation_lineage_not_collected'
         : !dispatchTableHashObserved
-          ? 'epoch_dispatch_table_hash_not_collected'
-          : !changedEntriesObserved
-            ? 'epoch_changed_entries_not_collected'
-            : !streamOrderingProven
-              ? 'epoch_stream_ordering_not_collected'
-              : 'epoch_retirement_tracking_not_collected',
+            ? 'epoch_dispatch_table_hash_not_collected'
+            : !changedEntriesObserved
+              ? 'epoch_changed_entries_not_collected'
+              : !streamOrderingRequested
+                ? 'epoch_stream_ordering_not_collected'
+                : !streamScopeObserved
+                  ? 'epoch_stream_scope_not_collected'
+                  : !evidenceObserved
+                    ? 'epoch_evidence_refs_not_collected'
+                    : 'epoch_retirement_tracking_not_collected',
     published,
     runtimeSessionObserved,
     runtimeSessionIds,
@@ -575,6 +594,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     dispatchTableHashObserved,
     changedEntriesObserved,
     streamOrderingProven,
+    streamScope,
+    streamIds,
     retirementTracked,
     oldGenerationRetired,
     evidenceRefs,
