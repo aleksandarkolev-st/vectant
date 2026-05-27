@@ -17,6 +17,7 @@ import { abiProofFromProofArtifacts } from "../../scripts/lib/gpu-hmr-proof-arti
 import {
   epochSwapProofFromRuntimeEvidence,
   hostPreservationProofFromRuntimeEvidence,
+  runtimeOutputOracleEvidence,
 } from "../../scripts/lib/gpu-hmr-runtime-evidence.mjs";
 
 function acceptedAbiProof() {
@@ -107,6 +108,35 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBeNull();
     expect(proof.outputOracle.passed).toBe(true);
     expect(proof.outputOracle.kind).toBe("runtime_readback");
+  });
+
+  it("can prove output from a structured runtime oracle line", () => {
+    const evidence = runtimeOutputOracleEvidence([
+      "[gpu-runtime-boundary] output_oracle id=probe.checksum kind=buffer_checksum expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1",
+    ]);
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: evidence.deterministic_output_observed,
+      deterministicOracleProvided: evidence.deterministic_oracle_provided,
+      deterministicOraclePassed: evidence.deterministic_oracle_passed,
+      outputOracle: evidence.output_oracle,
+      evidenceRefs: evidence.evidence_refs,
+    });
+
+    expect(evidence.total_count).toBe(1);
+    expect(evidence.output_oracle?.actual).toBe("sha256:abc");
+    expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
+    expect(proof.outputOracle.evidenceRefs).toEqual(["worker-log:output_oracle:probe.checksum"]);
+  });
+
+  it("does not mark missing runtime oracle evidence as observed", () => {
+    const evidence = runtimeOutputOracleEvidence([]);
+
+    expect(evidence.total_count).toBe(0);
+    expect(evidence.deterministic_output_observed).toBe(false);
+    expect(evidence.deterministic_oracle_provided).toBe(false);
+    expect(evidence.deterministic_oracle_passed).toBe(false);
+    expect(evidence.output_oracle).toBeNull();
   });
 
   it("does not prove output from oracle booleans without a concrete oracle record", () => {

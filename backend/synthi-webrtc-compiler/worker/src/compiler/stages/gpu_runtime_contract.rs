@@ -212,6 +212,13 @@ void synthi_gpu_record_host_identity(
     const void* identity_ptr,
     std::uint64_t aux_identity);
 
+void synthi_gpu_record_output_oracle(
+    const char* oracle_id,
+    const char* kind,
+    const char* expected_value,
+    const char* actual_value,
+    bool passed);
+
 bool synthi_gpu_pack_buffer(const char* semantic_name, const void* ptr, std::size_t bytes);
 bool synthi_gpu_restore_buffer(const unsigned char* blob, const char* semantic_name, void** out_ptr);
 
@@ -303,6 +310,15 @@ inline void synthi_host_identity(
     synthi_gpu_record_host_identity(role, identity_ptr, aux_identity);
 }}
 
+inline void synthi_output_oracle(
+    const char* oracle_id,
+    const char* kind,
+    const char* expected_value,
+    const char* actual_value,
+    bool passed) {{
+    synthi_gpu_record_output_oracle(oracle_id, kind, expected_value, actual_value, passed);
+}}
+
 #endif // SYNTHI_GPU_RUNTIME_H
 "#
     )
@@ -378,6 +394,8 @@ mod tests {
         assert!(h.contains("unsigned long long device_kernel_sig_hash"));
         assert!(h.contains("synthi_gpu_record_host_identity"));
         assert!(h.contains("inline void synthi_host_identity"));
+        assert!(h.contains("synthi_gpu_record_output_oracle"));
+        assert!(h.contains("inline void synthi_output_oracle"));
     }
 
     #[test]
@@ -423,6 +441,8 @@ void smoke(SynthiGpuRuntime* gpu) {
     (void)synthi_gpu_stream_token(static_cast<void*>(nullptr));
     (void)synthi_gpu_stream_token(0);
     (void)synthi_gpu_launch(gpu, "noop", grid, block, 0, nullptr, {arg});
+    synthi_host_identity("smoke", gpu, 0);
+    synthi_output_oracle("smoke", "sentinel", "1", "1", true);
 }
 "#,
         )

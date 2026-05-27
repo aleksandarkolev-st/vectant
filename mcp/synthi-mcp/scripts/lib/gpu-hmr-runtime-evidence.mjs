@@ -182,3 +182,55 @@ export function hostPreservationProofFromRuntimeEvidence(lines, observation = {}
   });
   return { evidence, proof };
 }
+
+function outputOracleRecord(line) {
+  const fields = parseRuntimeKeyValues(line);
+  return {
+    line,
+    oracleId: fields.id ?? fields.oracle_id ?? null,
+    kind: fields.kind ?? null,
+    expected: Object.prototype.hasOwnProperty.call(fields, 'expected') ? fields.expected : null,
+    actual: Object.prototype.hasOwnProperty.call(fields, 'actual') ? fields.actual : null,
+    passed: boolValue(fields.passed),
+    generation: integerValue(fields.generation),
+    runtimeSession: fields.runtime_session ?? null,
+  };
+}
+
+export function runtimeOutputOracleEvidence(lines) {
+  const records = (Array.isArray(lines) ? lines : [])
+    .filter((line) => /\boutput_oracle\b/i.test(String(line ?? '')))
+    .map(outputOracleRecord)
+    .filter((record) =>
+      typeof record.oracleId === 'string'
+      && record.oracleId.trim()
+      && typeof record.kind === 'string'
+      && record.kind.trim()
+      && record.expected !== null
+      && record.actual !== null
+      && record.passed !== null
+    );
+  const latest = records.at(-1) ?? null;
+  const passedRecords = records.filter((record) => record.passed === true);
+  const evidenceRefs = latest ? [`worker-log:output_oracle:${latest.oracleId}`] : [];
+
+  return {
+    total_count: records.length,
+    passed_count: passedRecords.length,
+    failed_count: records.length - passedRecords.length,
+    latest,
+    deterministic_output_observed: latest !== null && latest.actual !== null,
+    deterministic_oracle_provided: latest !== null && latest.expected !== null && typeof latest.kind === 'string',
+    deterministic_oracle_passed: latest?.passed === true,
+    output_oracle: latest
+      ? {
+          kind: latest.kind,
+          expected: latest.expected,
+          actual: latest.actual,
+          evidenceRefs,
+        }
+      : null,
+    evidence_refs: evidenceRefs,
+    lines: records.map((record) => record.line).slice(-20),
+  };
+}

@@ -90,6 +90,17 @@ pub struct HostIdentityRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputOracleRecord {
+    pub oracle_id: String,
+    pub kind: String,
+    pub expected: String,
+    pub actual: String,
+    pub passed: bool,
+    pub generation: u64,
+    pub runtime_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuLaunchRequest {
     pub kernel_name: String,
     pub grid: (u32, u32, u32),
@@ -113,6 +124,7 @@ struct BoundaryState {
     ptr_by_name: HashMap<String, usize>,
     launches: Vec<LaunchRecord>,
     host_identities: Vec<HostIdentityRecord>,
+    output_oracles: Vec<OutputOracleRecord>,
     reported_failure_keys: HashSet<String>,
 }
 
@@ -606,6 +618,44 @@ pub extern "C" fn synthi_gpu_record_host_identity(
 }
 
 #[no_mangle]
+pub extern "C" fn synthi_gpu_record_output_oracle(
+    oracle_id: *const c_char,
+    kind: *const c_char,
+    expected_value: *const c_char,
+    actual_value: *const c_char,
+    passed: bool,
+) {
+    let oracle_id = cstr(oracle_id).unwrap_or_else(|| "<unknown>".to_string());
+    let kind = cstr(kind).unwrap_or_else(|| "<unknown>".to_string());
+    let expected = cstr(expected_value).unwrap_or_default();
+    let actual = cstr(actual_value).unwrap_or_default();
+    let generation = current_launch_generation();
+    let runtime_session = runtime_session_id().to_string();
+    {
+        let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+        guard.output_oracles.push(OutputOracleRecord {
+            oracle_id: oracle_id.clone(),
+            kind: kind.clone(),
+            expected: expected.clone(),
+            actual: actual.clone(),
+            passed,
+            generation,
+            runtime_session_id: runtime_session.clone(),
+        });
+    }
+    eprintln!(
+        "[gpu-runtime-boundary] output_oracle id={} kind={} expected={} actual={} passed={} generation={} runtime_session={}",
+        log_token(&oracle_id),
+        log_token(&kind),
+        log_token(&expected),
+        log_token(&actual),
+        passed,
+        generation,
+        runtime_session
+    );
+}
+
+#[no_mangle]
 pub extern "C" fn synthi_gpu_launch_generation() -> u64 {
     current_launch_generation()
 }
@@ -979,6 +1029,11 @@ pub fn host_identity_records_snapshot() -> Vec<HostIdentityRecord> {
     guard.host_identities.clone()
 }
 
+pub fn output_oracle_records_snapshot() -> Vec<OutputOracleRecord> {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard.output_oracles.clone()
+}
+
 pub fn launch_record_count() -> usize {
     let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     guard.launches.len()
@@ -1003,6 +1058,26 @@ fn log_safe(value: &str) -> String {
             other => other,
         })
         .collect()
+}
+
+fn log_token(value: &str) -> String {
+    let token = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric()
+                || matches!(ch, '_' | '-' | '.' | ':' | '/' | '+' | '@')
+            {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if token.is_empty() {
+        "-".to_string()
+    } else {
+        token
+    }
 }
 
 fn maybe_emit_launch_failure_status(
@@ -1176,6 +1251,35 @@ mod tests {
             launch_identities[0].runtime_session_id,
             launch_identities[1].runtime_session_id
         );
+    }
+
+    #[test]
+    fn output_oracle_boundary_records_deterministic_payload() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let oracle_id = CString::new("probe.checksum").unwrap();
+        let kind = CString::new("buffer_checksum").unwrap();
+        let expected = CString::new("sha256:abc").unwrap();
+        let actual = CString::new("sha256:abc").unwrap();
+
+        synthi_gpu_record_output_oracle(
+            oracle_id.as_ptr(),
+            kind.as_ptr(),
+            expected.as_ptr(),
+            actual.as_ptr(),
+            true,
+        );
+
+        let records = output_oracle_records_snapshot();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].oracle_id, "probe.checksum");
+        assert_eq!(records[0].kind, "buffer_checksum");
+        assert_eq!(records[0].expected, "sha256:abc");
+        assert_eq!(records[0].actual, "sha256:abc");
+        assert!(records[0].passed);
+        assert_eq!(records[0].generation, current_launch_generation());
+        assert_eq!(records[0].runtime_session_id, runtime_session_id());
     }
 
     #[test]

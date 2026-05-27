@@ -24,6 +24,7 @@ import {
   hostPreservationProofFromRuntimeEvidence,
   runtimeEpochSwapEvidence,
   runtimeHostIdentityEvidence,
+  runtimeOutputOracleEvidence,
 } from './lib/gpu-hmr-runtime-evidence.mjs';
 import {
   classifyGpuHmrAbiProof,
@@ -1367,6 +1368,18 @@ function selfCheckRuntimeDispatchEvidence() {
   if (!hostIdentityEvidence.identity_checks_passed || hostIdentityEvidence.preserved_roles[0] !== 'core_state') {
     throw new Error('runtime host identity evidence parser failed');
   }
+  const outputOracleEvidence = runtimeOutputOracleEvidence([
+    '[gpu-runtime-boundary] output_oracle id=probe.checksum kind=buffer_checksum expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1',
+  ]);
+  if (
+    outputOracleEvidence.total_count !== 1
+    || !outputOracleEvidence.deterministic_output_observed
+    || !outputOracleEvidence.deterministic_oracle_provided
+    || !outputOracleEvidence.deterministic_oracle_passed
+    || outputOracleEvidence.output_oracle?.actual !== 'sha256:abc'
+  ) {
+    throw new Error('runtime output oracle evidence parser failed');
+  }
   const visualOnlyProof = classifyGpuHmrOutputProof({
     dispatchSafeProven: true,
     visualFrameObserved: true,
@@ -1460,6 +1473,7 @@ async function collectRuntimeEvidence() {
   const runtimeSession = runtimeSessionEvidence(workerEvidence);
   const runtimeOwnership = runtimeOwnershipEvidence(workerEvidence);
   const runtimeEpochSwap = epochSwapProofFromRuntimeEvidence(workerEvidence);
+  const runtimeOutputOracle = runtimeOutputOracleEvidence(workerEvidence);
   const hostRestartCount = countMatches(workerEvidence, /Restarting runner/i);
   const runtimeHostPreservation = hostPreservationProofFromRuntimeEvidence(workerEvidence, {
     hostRestartObserved: hostRestartCount > 0,
@@ -1498,6 +1512,7 @@ async function collectRuntimeEvidence() {
     runtime_session: runtimeSession,
     runtime_ownership: runtimeOwnership,
     runtime_epoch_swap: runtimeEpochSwap.evidence,
+    runtime_output_oracle: runtimeOutputOracle,
     runtime_host_identity: runtimeHostPreservation.evidence,
   };
   if (runtimeDispatch.failure_count > 0) {
@@ -1542,6 +1557,15 @@ async function collectRuntimeEvidence() {
   } else {
     record('runtime epoch swap evidence', 'warn', 'no dispatcher_epoch lines captured');
   }
+  if (runtimeOutputOracle.total_count > 0) {
+    record(
+      'runtime output oracle evidence',
+      runtimeOutputOracle.deterministic_oracle_passed ? 'pass' : 'warn',
+      `records=${runtimeOutputOracle.total_count} passed=${runtimeOutputOracle.passed_count} failed=${runtimeOutputOracle.failed_count} latest=${runtimeOutputOracle.latest?.oracleId ?? 'none'}`,
+    );
+  } else {
+    record('runtime output oracle evidence', 'warn', 'no output_oracle lines captured');
+  }
   if (runtimeHostPreservation.evidence.total_count > 0) {
     record(
       'runtime host identity evidence',
@@ -1583,6 +1607,11 @@ async function collectRuntimeEvidence() {
   });
   report.output_proof = classifyGpuHmrOutputProof({
     dispatchProof: report.dispatch_proof,
+    deterministicOutputObserved: runtimeOutputOracle.deterministic_output_observed,
+    deterministicOracleProvided: runtimeOutputOracle.deterministic_oracle_provided,
+    deterministicOraclePassed: runtimeOutputOracle.deterministic_oracle_passed,
+    outputOracle: runtimeOutputOracle.output_oracle ?? undefined,
+    evidenceRefs: runtimeOutputOracle.evidence_refs,
     visualFrameObserved: freshVisualFrames.length > 0,
     visualEvidenceRefs: freshVisualFrames.map((shot) => shot.path),
   });
