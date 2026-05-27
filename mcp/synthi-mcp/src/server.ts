@@ -199,6 +199,19 @@ const TOOLS = [
           },
           description: "Additional source files keyed by relative path.",
         },
+        file_refs: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              sha256: { type: "string" },
+              bytes: { type: "number" },
+            },
+            required: ["name"],
+          },
+          description: "Additional source files already present in the workspace. The worker reads each relative path and verifies optional sha256/bytes before using it as compile input.",
+        },
         is_gui: {
           type: "boolean",
           description: "Whether this compile emits a GUI (Xvfb + media pipeline). Default true.",

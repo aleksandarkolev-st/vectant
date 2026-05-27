@@ -8,7 +8,8 @@ use crate::compiler::builder::{
 };
 use crate::compiler::context::CompileContext;
 use crate::infra::crash_recovery::PLUGIN_TIMEOUT_SECS;
-use crate::infra::messages::CompileRequest;
+use crate::infra::messages::{CompileRequest, FileEntry};
+use sha2::{Digest, Sha256};
 
 // ULTRAPLAN Lightning Phase 11 — per-process Tier 0 bypass counters.
 // Atomic so they're safe across concurrent compile requests (unlikely
@@ -92,6 +93,111 @@ async fn write_compile_request_file(workspace: &Path, name: &str, content: &str)
         .await
         .with_context(|| format!("writing compile request file {}", path.display()))?;
     Ok(())
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct WorkspaceFileRefSummary {
+    count: usize,
+    bytes: usize,
+}
+
+fn normalize_optional_sha256(raw: &str) -> String {
+    raw.trim()
+        .strip_prefix("sha256:")
+        .unwrap_or_else(|| raw.trim())
+        .to_ascii_lowercase()
+}
+
+async fn hydrate_workspace_file_refs(
+    workspace: &Path,
+    req: &mut CompileRequest,
+) -> Result<WorkspaceFileRefSummary> {
+    if req.file_refs.is_empty() {
+        return Ok(WorkspaceFileRefSummary::default());
+    }
+
+    let canonical_workspace = tokio::fs::canonicalize(workspace)
+        .await
+        .with_context(|| format!("canonicalizing workspace {}", workspace.display()))?;
+    let primary_name = normalized_request_filename(&req.filename);
+    let mut known_contents: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(name) = primary_name.as_ref() {
+        known_contents.insert(name.clone(), req.source.clone());
+    }
+    for file in &req.files {
+        let normalized = normalized_request_filename(&file.name)
+            .with_context(|| format!("normalizing inline compile file {}", file.name))?;
+        if let Some(existing) = known_contents.get(&normalized) {
+            if existing != &file.content {
+                anyhow::bail!(
+                    "inline compile files disagree for workspace path {}",
+                    normalized
+                );
+            }
+            continue;
+        }
+        known_contents.insert(normalized, file.content.clone());
+    }
+
+    let mut summary = WorkspaceFileRefSummary::default();
+    for file_ref in &req.file_refs {
+        let rel = compile_request_relpath(&file_ref.name)?;
+        let normalized = rel.to_string_lossy().replace('\\', "/");
+        let path = workspace.join(&rel);
+        let canonical_path = tokio::fs::canonicalize(&path)
+            .await
+            .with_context(|| format!("resolving workspace file ref {}", normalized))?;
+        if !canonical_path.starts_with(&canonical_workspace) {
+            anyhow::bail!(
+                "workspace file ref escaped workspace: {}",
+                normalized
+            );
+        }
+
+        let bytes = tokio::fs::read(&canonical_path)
+            .await
+            .with_context(|| format!("reading workspace file ref {}", normalized))?;
+        if let Some(expected) = file_ref.bytes {
+            if bytes.len() as u64 != expected {
+                anyhow::bail!(
+                    "workspace file ref byte mismatch for {}: expected {} got {}",
+                    normalized,
+                    expected,
+                    bytes.len()
+                );
+            }
+        }
+        if let Some(expected) = file_ref.sha256.as_deref() {
+            let actual = format!("{:x}", Sha256::digest(&bytes));
+            if actual != normalize_optional_sha256(expected) {
+                anyhow::bail!(
+                    "workspace file ref sha256 mismatch for {}: expected {} got {}",
+                    normalized,
+                    expected,
+                    actual
+                );
+            }
+        }
+        let content = String::from_utf8(bytes)
+            .with_context(|| format!("workspace file ref is not UTF-8 text: {}", normalized))?;
+        if let Some(existing) = known_contents.get(&normalized) {
+            if existing != &content {
+                anyhow::bail!(
+                    "workspace file ref conflicts with inline compile input: {}",
+                    normalized
+                );
+            }
+            continue;
+        }
+        summary.count += 1;
+        summary.bytes += content.len();
+        req.files.push(FileEntry {
+            name: normalized.clone(),
+            content: content.clone(),
+        });
+        known_contents.insert(normalized, content);
+    }
+    Ok(summary)
 }
 
 fn workspace_relative_string(workspace: &Path, path: &Path) -> String {
@@ -4882,7 +4988,7 @@ fn has_gpu_state_serialization_symbols(exported_symbols: &[String]) -> bool {
 
 pub async fn handle_compile_request(
     ctx: &CompileContext,
-    req: CompileRequest,
+    mut req: CompileRequest,
     session_id: String,
 ) -> Result<serde_json::Value> {
     // ── Language dispatch: route non-C++ languages to dedicated pipelines ──
@@ -4903,6 +5009,13 @@ pub async fn handle_compile_request(
     // Manual logging instead of record_step for now
     debug_log!("[Compile] Step: Handler started");
 
+    let file_ref_summary = hydrate_workspace_file_refs(&ctx.workspace_path, &mut req).await?;
+    if file_ref_summary.count > 0 {
+        eprintln!(
+            "[Compile] hydrated workspace file refs: count={} bytes={}",
+            file_ref_summary.count, file_ref_summary.bytes
+        );
+    }
     sync_compile_request_workspace(ctx, &req).await?;
 
     // ============================================================
@@ -10842,6 +10955,94 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         assert!(normalized_request_filename("/workspace/src/device/kernel.hip").is_none());
         assert!(normalized_request_filename(r"\\server\share\kernel.hip").is_none());
         assert!(normalized_request_filename("../src/device/kernel.hip").is_none());
+    }
+
+    fn compile_request_with_file_refs(
+        file_refs: Vec<crate::infra::messages::FileRef>,
+    ) -> CompileRequest {
+        CompileRequest {
+            language: "cpp".to_string(),
+            filename: "src/main.cpp".to_string(),
+            source: "int main(){return 0;}\n".to_string(),
+            session_id: Some("test-session".to_string()),
+            files: Vec::new(),
+            file_refs,
+            is_gui: false,
+            width: None,
+            height: None,
+            supports_h265: None,
+            use_ai_split: false,
+            user_requested_ai: false,
+            user_requested_deterministic: true,
+            force_gpu_ai_delta: false,
+            prefer_gpu_pipeline: true,
+            gpu_mode: None,
+            gpu_arch: None,
+            compile_manifest: None,
+            target: None,
+            project_root: None,
+            slug: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_file_refs_hydrate_verified_compile_inputs() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let include_dir = tmp.path().join("include");
+        tokio::fs::create_dir_all(&include_dir).await.unwrap();
+        let content = b"#pragma once\n#define VALUE 7\n";
+        tokio::fs::write(include_dir.join("kernel.h"), content)
+            .await
+            .unwrap();
+        let digest = format!("{:x}", Sha256::digest(content));
+        let mut req = compile_request_with_file_refs(vec![crate::infra::messages::FileRef {
+            name: "include/kernel.h".to_string(),
+            sha256: Some(format!("sha256:{digest}")),
+            bytes: Some(content.len() as u64),
+        }]);
+
+        let summary = hydrate_workspace_file_refs(tmp.path(), &mut req)
+            .await
+            .expect("file refs hydrate");
+
+        assert_eq!(summary.count, 1);
+        assert_eq!(summary.bytes, content.len());
+        assert_eq!(req.files.len(), 1);
+        assert_eq!(req.files[0].name, "include/kernel.h");
+        assert_eq!(req.files[0].content, String::from_utf8_lossy(content).to_string());
+    }
+
+    #[tokio::test]
+    async fn workspace_file_refs_reject_hash_mismatch() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        tokio::fs::write(tmp.path().join("kernel.h"), "content")
+            .await
+            .unwrap();
+        let mut req = compile_request_with_file_refs(vec![crate::infra::messages::FileRef {
+            name: "kernel.h".to_string(),
+            sha256: Some("0".repeat(64)),
+            bytes: None,
+        }]);
+
+        let err = hydrate_workspace_file_refs(tmp.path(), &mut req)
+            .await
+            .expect_err("hash mismatch should fail");
+        assert!(err.to_string().contains("sha256 mismatch"));
+    }
+
+    #[tokio::test]
+    async fn workspace_file_refs_reject_non_relative_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut req = compile_request_with_file_refs(vec![crate::infra::messages::FileRef {
+            name: "../kernel.h".to_string(),
+            sha256: None,
+            bytes: None,
+        }]);
+
+        let err = hydrate_workspace_file_refs(tmp.path(), &mut req)
+            .await
+            .expect_err("escaped path should fail");
+        assert!(err.to_string().contains("workspace-relative"));
     }
 
     #[test]

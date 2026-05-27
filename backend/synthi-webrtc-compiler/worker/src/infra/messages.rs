@@ -39,6 +39,15 @@ pub struct FileEntry {
     pub content: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct FileRef {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CompileRequest {
     pub language: String,
@@ -48,6 +57,11 @@ pub struct CompileRequest {
     pub session_id: Option<String>,
     #[serde(default)]
     pub files: Vec<FileEntry>,
+    /// Additional compile inputs already materialized in the worker workspace.
+    /// The handler resolves these into `files` only after verifying the
+    /// workspace-relative path and optional integrity metadata.
+    #[serde(default)]
+    pub file_refs: Vec<FileRef>,
     #[serde(default)]
     pub is_gui: bool,
     #[serde(default)]

@@ -109,6 +109,7 @@ const CFG = {
   extraDeltasJson: process.env.SYNTHI_REAL_ROCM_EXTRA_DELTAS_JSON ?? '',
   maxFileBytes: Number(process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? 512 * 1024),
   compileContextMaxBytes: Number(process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? 48 * 1024 * 1024),
+  compileTransport: (process.env.SYNTHI_REAL_ROCM_COMPILE_TRANSPORT ?? 'inline').toLowerCase(),
   writeBatchSize: Number(process.env.SYNTHI_REAL_ROCM_WRITE_BATCH_SIZE ?? 200),
   slug: process.env.SLUG ?? `gpu-real-rocm-${configuredRepoName}-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}`,
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:3000',
@@ -175,6 +176,7 @@ const report = {
       SYNTHI_REAL_ROCM_RUN_UPSTREAM: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM ?? '',
       SYNTHI_REAL_ROCM_MAX_FILE_BYTES: process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? '',
       SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES: process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? '',
+      SYNTHI_REAL_ROCM_COMPILE_TRANSPORT: process.env.SYNTHI_REAL_ROCM_COMPILE_TRANSPORT ?? '',
       SYNTHI_REAL_ROCM_BUILD_METADATA_DIR: process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR ?? '',
       SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE ?? '',
       SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER ?? '',
@@ -202,6 +204,7 @@ const report = {
   host_preservation_proof: null,
   full_runtime_proof: null,
   compile_projection: {},
+  compile_transport: CFG.compileTransport,
   started_at: new Date().toISOString(),
   finished_at: null,
 };
@@ -694,6 +697,44 @@ function byteLength(text) {
   return Buffer.byteLength(String(text ?? ''), 'utf8');
 }
 
+function canUseWorkspaceFileRef(fileName) {
+  const normalized = String(fileName ?? '').replace(/\\/g, '/').trim();
+  if (!normalized || normalized.startsWith('/') || normalized.startsWith('//')) return false;
+  return normalized
+    .split('/')
+    .filter(Boolean)
+    .every((part) => part !== '..' && !part.startsWith('.'));
+}
+
+function compileProjectionRequestArgs(selectedFiles, phaseName) {
+  if (CFG.compileTransport === 'inline') {
+    return { files: selectedFiles };
+  }
+  if (CFG.compileTransport !== 'workspace-ref') {
+    throw new Error(`unsupported compile transport: ${CFG.compileTransport}`);
+  }
+  const inlineFiles = selectedFiles.filter((file) => !canUseWorkspaceFileRef(file.name));
+  const refFiles = selectedFiles.filter((file) => canUseWorkspaceFileRef(file.name));
+  const fileRefs = refFiles.map((file) => ({
+    name: file.name,
+    sha256: createHash('sha256').update(file.content).digest('hex'),
+    bytes: byteLength(file.content),
+  }));
+  if (report.compile_projection[phaseName]) {
+    report.compile_projection[phaseName].request_file_refs = fileRefs.length;
+    report.compile_projection[phaseName].request_inline_files = inlineFiles.length;
+    report.compile_projection[phaseName].request_inline_bytes = inlineFiles.reduce(
+      (sum, file) => sum + byteLength(file.content),
+      0,
+    );
+    report.compile_projection[phaseName].request_file_ref_bytes = refFiles.reduce(
+      (sum, file) => sum + byteLength(file.content),
+      0,
+    );
+  }
+  return { files: inlineFiles, file_refs: fileRefs };
+}
+
 function buildCompileProjection(files, focusPath, buildMetadata, phaseName) {
   const normalizedFocus = String(focusPath ?? '').replace(/\\/g, '/');
   const targetSources = new Set(buildMetadata.targetSourcePaths ?? []);
@@ -741,6 +782,7 @@ function buildCompileProjection(files, focusPath, buildMetadata, phaseName) {
     target_include_dirs: includeDirs.length,
     matched_target_files: buildMetadata.matchedTargetFiles ?? [],
     max_bytes: CFG.compileContextMaxBytes,
+    compile_transport: CFG.compileTransport,
   };
   report.compile_projection[phaseName] = summary;
   record(
@@ -1777,6 +1819,7 @@ async function writeResults() {
     `file_count: ${report.file_count}`,
     `seeded_file_count: ${report.seeded_file_count}`,
     `skipped_file_count: ${report.skipped_file_count}`,
+    `compile_transport: ${CFG.compileTransport}`,
     `compile_projection: ${JSON.stringify(report.compile_projection)}`,
     '',
     ...report.checks.map((check) => `${check.status.toUpperCase()} ${check.name}${check.detail ? ` - ${check.detail}` : ''}`),
@@ -1852,7 +1895,7 @@ async function run() {
     language: 'cpp',
     filename: CFG.entryFile,
     source: primary.content,
-    files: firstAdditionalFiles,
+    ...compileProjectionRequestArgs(firstAdditionalFiles, 'first_real_repo_ai_split_compile'),
     is_gui: CFG.expectScreenshot,
     use_ai_split: true,
     user_requested_ai: true,
@@ -1883,7 +1926,7 @@ async function run() {
     language: 'cpp',
     filename: CFG.deltaFile,
     source: edited,
-    files: hmrAdditionalFiles,
+    ...compileProjectionRequestArgs(hmrAdditionalFiles, 'real_repo_user_source_delta_hmr'),
     is_gui: CFG.expectScreenshot,
     use_ai_split: true,
     user_requested_ai: true,
@@ -1924,7 +1967,7 @@ async function run() {
       language: 'cpp',
       filename: delta.file,
       source: editedSource,
-      files: additionalFiles,
+      ...compileProjectionRequestArgs(additionalFiles, phaseName),
       is_gui: CFG.expectScreenshot,
       use_ai_split: true,
       user_requested_ai: true,

@@ -100,6 +100,40 @@ describe("synthi_compile", () => {
     expect(payload["use_ai_split"]).toBe(true);
   });
 
+  it("forwards workspace file refs without requiring inline contents", async () => {
+    const fake = installFakeAttached();
+    session.setWireState("running");
+    const res = await compileTool({
+      language: "cpp",
+      filename: "src/main.cpp",
+      source: "int main(){return 0;}",
+      file_refs: [{ name: "include/kernel.h", sha256: "abc123", bytes: 42 }],
+    });
+
+    expect(res.isError).toBeUndefined();
+    const payload = fake.sent[0]!.parsed;
+    expect(payload["files"]).toEqual([]);
+    expect(payload["file_refs"]).toEqual([{ name: "include/kernel.h", sha256: "abc123", bytes: 42 }]);
+    const sourceState = eventLog.query({ kind: "source_state" })[0] as unknown as {
+      last_changed_files: string[];
+    };
+    expect(sourceState.last_changed_files).toContain("include/kernel.h");
+  });
+
+  it("rejects malformed file refs", async () => {
+    installFakeAttached();
+    session.setWireState("running");
+    const res = await compileTool({
+      language: "cpp",
+      source: "int main(){}",
+      file_refs: [{ name: "include/kernel.h", bytes: -1 }],
+    });
+
+    expect(res.isError).toBe(true);
+    const field = (res.structuredContent as { field?: string }).field;
+    expect(field).toBe("file_refs[0].bytes");
+  });
+
   it("honors explicit filename", async () => {
     const fake = installFakeAttached();
     session.setWireState("running");
