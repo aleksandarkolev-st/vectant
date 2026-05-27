@@ -14,6 +14,7 @@ import {
   summarizeGpuHmrOutputProof,
 } from "../../scripts/lib/gpu-hmr-runtime-proof.mjs";
 import { abiProofFromProofArtifacts } from "../../scripts/lib/gpu-hmr-proof-artifacts.mjs";
+import { epochSwapProofFromRuntimeEvidence } from "../../scripts/lib/gpu-hmr-runtime-evidence.mjs";
 
 function acceptedAbiProof() {
   return classifyGpuHmrAbiProof({
@@ -265,6 +266,31 @@ describe("GPU HMR runtime output proof classification", () => {
       oldGenerationRetired: false,
     });
 
+    expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-retirement-pending");
+  });
+
+  it("proves epoch swap from runtime publish and retire evidence", () => {
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=false stream_scope=context stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
+      "[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session=pid1 previous_generation=2 active_generation=3 retired_modules=1 old_generation_retired=true stream_scope=context stream_ordering_proven=true",
+    ]);
+
+    expect(evidence.stream_ordering_proven).toBe(true);
+    expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
+    expect(proof.degradedState).toBeNull();
+    expect(proof.evidenceRefs).toEqual([
+      "worker-log:dispatcher_epoch:published:2->3",
+      "worker-log:dispatcher_epoch:retired:2->3",
+    ]);
+  });
+
+  it("keeps runtime epoch evidence pending until matching retirement is observed", () => {
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=false stream_scope=context stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
+    ]);
+
+    expect(evidence.old_generation_retired).toBe(false);
     expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
     expect(proof.degradedState).toBe("gpu-hmr-epoch-retirement-pending");
   });

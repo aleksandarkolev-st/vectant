@@ -1,0 +1,115 @@
+import { classifyGpuHmrEpochSwapProof } from './gpu-hmr-runtime-proof.mjs';
+
+function parseRuntimeKeyValues(line) {
+  const out = {};
+  const re = /\b([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|[^\s]+)/g;
+  let match;
+  while ((match = re.exec(String(line ?? ''))) !== null) {
+    const raw = match[2];
+    out[match[1]] = raw.startsWith('"') && raw.endsWith('"')
+      ? raw.slice(1, -1)
+      : raw;
+  }
+  return out;
+}
+
+function boolValue(value) {
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  return null;
+}
+
+function integerValue(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const parsed = Number.parseInt(String(value), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function epochRecord(line) {
+  const fields = parseRuntimeKeyValues(line);
+  return {
+    line,
+    event: fields.event ?? null,
+    runtimeSession: fields.runtime_session ?? null,
+    previousGeneration: integerValue(fields.previous_generation),
+    activeGeneration: integerValue(fields.active_generation),
+    dispatchTableHash: fields.dispatch_table_hash ?? null,
+    changedEntries: integerValue(fields.changed_entries),
+    retiredModules: integerValue(fields.retired_modules),
+    retirementTracked: boolValue(fields.retirement_tracked),
+    oldGenerationRetired: boolValue(fields.old_generation_retired),
+    streamScope: fields.stream_scope ?? null,
+    streamOrderingProven: boolValue(fields.stream_ordering_proven),
+    drainResult: fields.drain_result ?? null,
+  };
+}
+
+function matchingRetirement(publication, retirements) {
+  return retirements.find((record) =>
+    record.previousGeneration === publication.previousGeneration
+    && record.activeGeneration === publication.activeGeneration
+    && record.oldGenerationRetired === true
+  ) ?? null;
+}
+
+function epochEvidenceRefs(publication, retirement) {
+  if (!publication) return [];
+  const lineage = `${publication.previousGeneration}->${publication.activeGeneration}`;
+  const refs = [`worker-log:dispatcher_epoch:published:${lineage}`];
+  if (retirement) refs.push(`worker-log:dispatcher_epoch:retired:${lineage}`);
+  return refs;
+}
+
+export function runtimeEpochSwapEvidence(lines) {
+  const records = (Array.isArray(lines) ? lines : [])
+    .filter((line) => /\bdispatcher_epoch\b/i.test(String(line ?? '')))
+    .map(epochRecord);
+  const publications = records.filter((record) => record.event === 'published');
+  const retirements = records.filter((record) => record.event === 'retired');
+  const latestPublication = publications.at(-1) ?? null;
+  const retirement = latestPublication ? matchingRetirement(latestPublication, retirements) : null;
+  const generationLineageObserved = latestPublication
+    ? Number.isFinite(latestPublication.previousGeneration)
+      && Number.isFinite(latestPublication.activeGeneration)
+      && latestPublication.activeGeneration > latestPublication.previousGeneration
+    : false;
+  const dispatchTableHashObserved = typeof latestPublication?.dispatchTableHash === 'string'
+    && /^0x[0-9a-f]+$/i.test(latestPublication.dispatchTableHash);
+  const changedEntriesObserved = Number.isFinite(latestPublication?.changedEntries)
+    && latestPublication.changedEntries >= 0;
+  const retirementTracked = latestPublication?.retirementTracked === true;
+  const oldGenerationRetired = latestPublication?.oldGenerationRetired === true || retirement !== null;
+  const streamOrderingProven =
+    latestPublication?.streamOrderingProven === true && latestPublication?.drainResult === 'synced';
+
+  return {
+    total_count: records.length,
+    published_count: publications.length,
+    retired_count: retirements.length,
+    published: latestPublication !== null,
+    generation_lineage_observed: generationLineageObserved,
+    dispatch_table_hash_observed: dispatchTableHashObserved,
+    changed_entries_observed: changedEntriesObserved,
+    retirement_tracked: retirementTracked,
+    old_generation_retired: oldGenerationRetired,
+    stream_ordering_proven: streamOrderingProven,
+    latest_publication: latestPublication,
+    matching_retirement: retirement,
+    evidence_refs: epochEvidenceRefs(latestPublication, retirement),
+    lines: records.map((record) => record.line).slice(-20),
+  };
+}
+
+export function epochSwapProofFromRuntimeEvidence(lines) {
+  const evidence = runtimeEpochSwapEvidence(lines);
+  const proof = classifyGpuHmrEpochSwapProof({
+    published: evidence.published,
+    generationLineageObserved: evidence.generation_lineage_observed,
+    dispatchTableHashObserved: evidence.dispatch_table_hash_observed,
+    changedEntriesObserved: evidence.changed_entries_observed,
+    retirementTracked: evidence.retirement_tracked,
+    oldGenerationRetired: evidence.old_generation_retired,
+    evidenceRefs: evidence.evidence_refs,
+  });
+  return { evidence, proof };
+}

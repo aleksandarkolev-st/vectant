@@ -20,6 +20,10 @@ import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import { abiProofFromProofArtifacts } from './lib/gpu-hmr-proof-artifacts.mjs';
 import {
+  epochSwapProofFromRuntimeEvidence,
+  runtimeEpochSwapEvidence,
+} from './lib/gpu-hmr-runtime-evidence.mjs';
+import {
   classifyGpuHmrAbiProof,
   classifyGpuHmrDispatchProof,
   classifyGpuHmrFullRuntimeProof,
@@ -27,6 +31,7 @@ import {
   classifyGpuHmrOutputProof,
   summarizeGpuHmrAbiProof,
   summarizeGpuHmrDispatchProof,
+  summarizeGpuHmrEpochSwapProof,
   summarizeGpuHmrFullRuntimeProof,
   summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
@@ -188,6 +193,7 @@ const report = {
   evidence: {},
   proof_artifacts: [],
   abi_proof: null,
+  epoch_swap_proof: null,
   dispatch_proof: null,
   output_proof: null,
   host_preservation_proof: null,
@@ -1239,10 +1245,17 @@ function runtimeSessionEvidence(workerEvidence) {
 
 function runtimeOwnershipEvidence(workerEvidence) {
   const lines = workerEvidence.filter((line) => /\bruntime_ownership\b/i.test(line));
+  const scopeProvenLines = lines.filter((line) => {
+    const expected = line.match(/\bexpected_symbols=([^\s]+)/i)?.[1] ?? '';
+    const touched = line.match(/\btouched_symbols=([^\s]+)/i)?.[1] ?? '';
+    return expected && touched && expected !== '-' && expected === touched;
+  });
   return {
     total_count: lines.length,
     primary_replacement_count: lines.filter((line) => /\breplaced_primary=true\b/i.test(line)).length,
     primary_retained_count: lines.filter((line) => /\breplaced_primary=false\b/i.test(line)).length,
+    scope_proven_count: scopeProvenLines.length,
+    scope_lines: scopeProvenLines.slice(-20),
     lines: lines.slice(-20),
   };
 }
@@ -1327,8 +1340,23 @@ function selfCheckRuntimeDispatchEvidence() {
     '[gpu-reload] runtime_ownership label=gpu-hmr-partial partial=true artifact=/x expected_symbols=a touched_symbols=a retired_modules=0 replaced_primary=false',
     '[gpu-reload] runtime_ownership label=gpu-hmr-full-device partial=false artifact=/x expected_symbols=a touched_symbols=a retired_modules=0 replaced_primary=true',
   ]);
-  if (ownership.primary_retained_count !== 1 || ownership.primary_replacement_count !== 1) {
+  if (
+    ownership.primary_retained_count !== 1
+    || ownership.primary_replacement_count !== 1
+    || ownership.scope_proven_count !== 2
+  ) {
     throw new Error('runtime ownership evidence parser failed');
+  }
+  const epochEvidence = runtimeEpochSwapEvidence([
+    '[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=false stream_scope=context stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000',
+    '[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session=pid1 previous_generation=2 active_generation=3 retired_modules=1 old_generation_retired=true stream_scope=context stream_ordering_proven=true',
+  ]);
+  if (
+    !epochEvidence.published
+    || !epochEvidence.old_generation_retired
+    || !epochEvidence.stream_ordering_proven
+  ) {
+    throw new Error('runtime epoch evidence parser failed');
   }
   const visualOnlyProof = classifyGpuHmrOutputProof({
     dispatchSafeProven: true,
@@ -1422,6 +1450,7 @@ async function collectRuntimeEvidence() {
   const runtimeArgProvenance = runtimeArgProvenanceEvidence(workerEvidence);
   const runtimeSession = runtimeSessionEvidence(workerEvidence);
   const runtimeOwnership = runtimeOwnershipEvidence(workerEvidence);
+  const runtimeEpochSwap = epochSwapProofFromRuntimeEvidence(workerEvidence);
   report.evidence = {
     worker_log_lines: workerEvidence,
     worker_log_lines_unscoped_tail: unscopedWorkerEvidence.slice(-50),
@@ -1454,6 +1483,7 @@ async function collectRuntimeEvidence() {
     runtime_arg_provenance: runtimeArgProvenance,
     runtime_session: runtimeSession,
     runtime_ownership: runtimeOwnership,
+    runtime_epoch_swap: runtimeEpochSwap.evidence,
   };
   if (runtimeDispatch.failure_count > 0) {
     record(
@@ -1488,6 +1518,15 @@ async function collectRuntimeEvidence() {
   } else {
     record('runtime session provenance', 'warn', 'no runtime_session launch evidence captured');
   }
+  if (runtimeEpochSwap.evidence.total_count > 0) {
+    record(
+      'runtime epoch swap evidence',
+      runtimeEpochSwap.proof.degradedState ? 'warn' : 'pass',
+      `published=${runtimeEpochSwap.evidence.published_count} retired=${runtimeEpochSwap.evidence.retired_count} stream_ordering=${runtimeEpochSwap.evidence.stream_ordering_proven}`,
+    );
+  } else {
+    record('runtime epoch swap evidence', 'warn', 'no dispatcher_epoch lines captured');
+  }
   const proofArtifactRecords = await collectGpuProofArtifacts();
   const foundProofArtifactCount = proofArtifactRecords.filter((entry) => entry?.found).length;
   const abiMetadataEvidenceCount = proofArtifactRecords.reduce((count, entry) => {
@@ -1503,6 +1542,7 @@ async function collectRuntimeEvidence() {
     (shot) => shot && shot.width >= 320 && shot.height >= 240 && shot.visible_pixels > 500,
   );
   report.abi_proof = abiProofFromProofArtifacts(proofArtifactRecords);
+  report.epoch_swap_proof = runtimeEpochSwap.proof;
   report.dispatch_proof = classifyGpuHmrDispatchProof({
     dispatchObserved: runtimeDispatch.success_count > 0 && scopedWorkerLogs.marker_found,
     sessionScoped: scopedWorkerLogs.marker_found,
@@ -1512,6 +1552,10 @@ async function collectRuntimeEvidence() {
       && runtimeArgProvenance.incomplete_count === 0
       && runtimeArgProvenance.unknown_arg_count === 0,
     unknownArgCount: runtimeArgProvenance.unknown_arg_count,
+    abiProof: report.abi_proof,
+    epochProof: report.epoch_swap_proof,
+    streamOrderingProven: runtimeEpochSwap.evidence.stream_ordering_proven,
+    replacementScopeProven: runtimeOwnership.scope_proven_count > 0,
   });
   report.output_proof = classifyGpuHmrOutputProof({
     dispatchProof: report.dispatch_proof,
@@ -1525,6 +1569,7 @@ async function collectRuntimeEvidence() {
   report.full_runtime_proof = classifyGpuHmrFullRuntimeProof({
     sourceProofs: report.phases.map((phase) => phase.gpu_proof).filter(Boolean),
     abiProof: report.abi_proof,
+    epochProof: report.epoch_swap_proof,
     dispatchProof: report.dispatch_proof,
     outputProof: report.output_proof,
     hostPreservationProof: report.host_preservation_proof,
@@ -1533,6 +1578,11 @@ async function collectRuntimeEvidence() {
     'runtime ABI proof',
     report.abi_proof.degradedState ? 'warn' : 'pass',
     summarizeGpuHmrAbiProof(report.abi_proof),
+  );
+  record(
+    'runtime epoch swap proof',
+    report.epoch_swap_proof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrEpochSwapProof(report.epoch_swap_proof),
   );
   record(
     'runtime dispatch proof',
@@ -1619,6 +1669,8 @@ async function writeResults() {
     ...report.screenshots.map((shot) => `SCREENSHOT ${shot.label} visible=${shot.visible_pixels} luma=${shot.mean_luma.toFixed(1)} path=${shot.path}`),
     '',
     `ABI_PROOF ${summarizeGpuHmrAbiProof(report.abi_proof)}`,
+    '',
+    `EPOCH_SWAP_PROOF ${summarizeGpuHmrEpochSwapProof(report.epoch_swap_proof)}`,
     '',
     `DISPATCH_PROOF ${summarizeGpuHmrDispatchProof(report.dispatch_proof)}`,
     '',
