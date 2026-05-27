@@ -1853,6 +1853,7 @@ async function collectRuntimeEvidence() {
   const runtimeHostPreservation = hostPreservationProofFromRuntimeEvidence(workerEvidence, {
     hostRestartObserved: hostRestartCount > 0 || runtimeIdentityChanges.changed_count > 0,
     hostReplacementObserved: runtimeOwnership.primary_replacement_count > 0,
+    runtimeSessionIds: runtimeSession.unique_ids,
     identityEvidenceRefs: runtimeIdentityChanges.evidence_refs,
   });
   report.evidence = {

@@ -600,6 +600,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
   const identityEvidenceRefs = Array.isArray(observation.identityEvidenceRefs)
     ? observation.identityEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
+  const identityEvidenceObserved = identityEvidenceRefs.length > 0;
 
   if (hostReplacementObserved) {
     return {
@@ -608,17 +609,19 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
       degradedState: 'gpu-hmr-host-replaced',
       degradedReason: 'host_runtime_replaced_or_restarted',
       identityChecksPassed: false,
+      identityEvidenceObserved,
       identityEvidenceRefs,
     };
   }
 
-  if (identityChecksPassed) {
+  if (identityChecksPassed && identityEvidenceObserved) {
     return {
       schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
       resultState: 'gpu-hmr-host-preservation-proven',
       degradedState: null,
       degradedReason: null,
       identityChecksPassed: true,
+      identityEvidenceObserved: true,
       identityEvidenceRefs,
     };
   }
@@ -627,8 +630,11 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
     resultState: null,
     degradedState: null,
-    degradedReason: 'host_identity_checks_not_collected',
+    degradedReason: identityChecksPassed
+      ? 'host_identity_evidence_refs_not_collected'
+      : 'host_identity_checks_not_collected',
     identityChecksPassed: false,
+    identityEvidenceObserved,
     identityEvidenceRefs,
   };
 }

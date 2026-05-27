@@ -147,7 +147,8 @@ function hostIdentityRecord(line) {
   };
 }
 
-export function runtimeHostIdentityEvidence(lines) {
+export function runtimeHostIdentityEvidence(lines, observation = {}) {
+  const expectedSessions = expectedRuntimeSessionIds(observation);
   const records = (Array.isArray(lines) ? lines : [])
     .filter((line) => /\bhost_identity\b/i.test(String(line ?? '')))
     .map(hostIdentityRecord)
@@ -158,7 +159,12 @@ export function runtimeHostIdentityEvidence(lines) {
       && /^0x[0-9a-f]+$/i.test(record.ptr)
       && record.ptr !== '0x0'
       && Number.isFinite(record.generation)
+      && typeof record.runtimeSession === 'string'
+      && record.runtimeSession.trim()
+      && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
     );
+  const runtimeSessionIds = compactStringList(records.map((record) => record.runtimeSession));
+  const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const byRole = new Map();
   for (const record of records) {
     if (!byRole.has(record.role)) byRole.set(record.role, []);
@@ -182,16 +188,24 @@ export function runtimeHostIdentityEvidence(lines) {
   return {
     total_count: records.length,
     role_count: byRole.size,
+    expected_runtime_session_ids: expectedSessions,
+    runtime_session_ids: runtimeSessionIds,
+    runtime_session_observed: records.length > 0,
+    runtime_session_consistent: runtimeSessionConsistent,
     preserved_roles: preservedRoles,
     changed_roles: changedRoles,
-    identity_checks_passed: records.length > 0 && changedRoles.length === 0 && preservedRoles.length > 0,
+    identity_checks_passed:
+      records.length > 0
+      && runtimeSessionConsistent
+      && changedRoles.length === 0
+      && preservedRoles.length > 0,
     evidence_refs: preservedRoles.map((role) => `worker-log:host_identity:${role}`),
     lines: records.map((record) => record.line).slice(-20),
   };
 }
 
 export function hostPreservationProofFromRuntimeEvidence(lines, observation = {}) {
-  const evidence = runtimeHostIdentityEvidence(lines);
+  const evidence = runtimeHostIdentityEvidence(lines, observation);
   const externalIdentityEvidenceRefs = Array.isArray(observation.identityEvidenceRefs)
     ? observation.identityEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];

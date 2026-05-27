@@ -17,6 +17,7 @@ import { abiProofFromProofArtifacts } from "../../scripts/lib/gpu-hmr-proof-arti
 import {
   epochSwapProofFromRuntimeEvidence,
   hostPreservationProofFromRuntimeEvidence,
+  runtimeHostIdentityEvidence,
   runtimeOutputOracleEvidence,
 } from "../../scripts/lib/gpu-hmr-runtime-evidence.mjs";
 
@@ -63,6 +64,13 @@ function deterministicOutputOracle() {
     actual: "expected-sentinel",
     evidenceRefs: ["evidence:readback:abc"],
   };
+}
+
+function preservedHostProof() {
+  return classifyGpuHmrHostPreservationProof({
+    identityChecksPassed: true,
+    identityEvidenceRefs: ["identity-proof:test"],
+  });
 }
 
 describe("GPU HMR runtime output proof classification", () => {
@@ -273,6 +281,16 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.identityEvidenceRefs).toEqual(["identity-proof:1"]);
+  });
+
+  it("does not prove host preservation from identity booleans without evidence refs", () => {
+    const proof = classifyGpuHmrHostPreservationProof({
+      identityChecksPassed: true,
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("host_identity_evidence_refs_not_collected");
+    expect(proof.identityEvidenceObserved).toBe(false);
   });
 
   it("does not prove ABI without collected metadata evidence", () => {
@@ -505,6 +523,33 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBeNull();
   });
 
+  it("scopes host preservation identity snapshots to the expected runtime session", () => {
+    const evidence = runtimeHostIdentityEvidence([
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=2 runtime_session=old-session",
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=3 runtime_session=old-session",
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x2000 aux=42 generation=2 runtime_session=current-session",
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x2000 aux=42 generation=3 runtime_session=current-session",
+    ], {
+      runtimeSessionIds: ["current-session"],
+    });
+
+    expect(evidence.total_count).toBe(2);
+    expect(evidence.runtime_session_ids).toEqual(["current-session"]);
+    expect(evidence.identity_checks_passed).toBe(true);
+    expect(evidence.preserved_roles).toEqual(["core_state"]);
+  });
+
+  it("does not accept host identity snapshots without session provenance", () => {
+    const { evidence, proof } = hostPreservationProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=2",
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=3",
+    ]);
+
+    expect(evidence.total_count).toBe(0);
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("host_identity_checks_not_collected");
+  });
+
   it("does not prove host preservation when a runtime identity changes", () => {
     const { evidence, proof } = hostPreservationProofFromRuntimeEvidence([
       "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=2 runtime_session=pid1",
@@ -616,9 +661,7 @@ describe("GPU HMR runtime output proof classification", () => {
         dispatchObserved: true,
         visualFrameObserved: true,
       }),
-      hostPreservationProof: classifyGpuHmrHostPreservationProof({
-        identityChecksPassed: true,
-      }),
+      hostPreservationProof: preservedHostProof(),
     });
 
     expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
@@ -641,9 +684,7 @@ describe("GPU HMR runtime output proof classification", () => {
         deterministicOraclePassed: true,
         outputOracle: deterministicOutputOracle(),
       }),
-      hostPreservationProof: classifyGpuHmrHostPreservationProof({
-        identityChecksPassed: true,
-      }),
+      hostPreservationProof: preservedHostProof(),
     });
 
     expect(proof.resultState).toBe("gpu-hmr-symbol-bound");
@@ -672,9 +713,7 @@ describe("GPU HMR runtime output proof classification", () => {
         deterministicOraclePassed: true,
         outputOracle: deterministicOutputOracle(),
       }),
-      hostPreservationProof: classifyGpuHmrHostPreservationProof({
-        identityChecksPassed: true,
-      }),
+      hostPreservationProof: preservedHostProof(),
     });
 
     expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
@@ -696,9 +735,7 @@ describe("GPU HMR runtime output proof classification", () => {
         deterministicOraclePassed: true,
         outputOracle: deterministicOutputOracle(),
       }),
-      hostPreservationProof: classifyGpuHmrHostPreservationProof({
-        identityChecksPassed: true,
-      }),
+      hostPreservationProof: preservedHostProof(),
     });
 
     expect(proof.resultState).toBe("gpu-hmr-full-runtime-proven");
@@ -712,9 +749,7 @@ describe("GPU HMR runtime output proof classification", () => {
       abiProof: acceptedAbiProof(),
       epochProof: retiredEpochProof(),
       outputProof: { resultState: "gpu-hmr-output-oracle-proven" },
-      hostPreservationProof: classifyGpuHmrHostPreservationProof({
-        identityChecksPassed: true,
-      }),
+      hostPreservationProof: preservedHostProof(),
     });
 
     expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
@@ -734,9 +769,7 @@ describe("GPU HMR runtime output proof classification", () => {
         deterministicOraclePassed: true,
         outputOracle: deterministicOutputOracle(),
       }),
-      hostPreservationProof: classifyGpuHmrHostPreservationProof({
-        identityChecksPassed: true,
-      }),
+      hostPreservationProof: preservedHostProof(),
     });
 
     expect(proof.resultState).toBe("gpu-hmr-full-runtime-proven");
