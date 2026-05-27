@@ -491,7 +491,12 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
   const runtimeSessionConsistent =
     observation.runtimeSessionConsistent !== false && runtimeSessionIds.length <= 1;
   const generationLineageObserved = observation.generationLineageObserved === true;
-  const dispatchTableHashObserved = observation.dispatchTableHashObserved === true;
+  const dispatchTableHashBeforeObserved = observation.dispatchTableHashBeforeObserved === true;
+  const dispatchTableHashAfterObserved = observation.dispatchTableHashAfterObserved === true;
+  const dispatchTableHashObserved =
+    observation.dispatchTableHashObserved === true
+    && dispatchTableHashBeforeObserved
+    && dispatchTableHashAfterObserved;
   const changedEntriesObserved = observation.changedEntriesObserved === true;
   const streamScope = typeof observation.streamScope === 'string' && observation.streamScope.trim()
     ? observation.streamScope.trim()
@@ -530,6 +535,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       runtimeSessionConsistent: true,
       generationLineageObserved: true,
       dispatchTableHashObserved: true,
+      dispatchTableHashBeforeObserved: true,
+      dispatchTableHashAfterObserved: true,
       changedEntriesObserved: true,
       streamOrderingProven: true,
       streamScope,
@@ -562,6 +569,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
       runtimeSessionConsistent: true,
       generationLineageObserved: true,
       dispatchTableHashObserved: true,
+      dispatchTableHashBeforeObserved: true,
+      dispatchTableHashAfterObserved: true,
       changedEntriesObserved: true,
       streamOrderingProven: true,
       streamScope,
@@ -601,6 +610,8 @@ export function classifyGpuHmrEpochSwapProof(observation = {}) {
     runtimeSessionConsistent,
     generationLineageObserved,
     dispatchTableHashObserved,
+    dispatchTableHashBeforeObserved,
+    dispatchTableHashAfterObserved,
     changedEntriesObserved,
     streamOrderingProven,
     streamScope,

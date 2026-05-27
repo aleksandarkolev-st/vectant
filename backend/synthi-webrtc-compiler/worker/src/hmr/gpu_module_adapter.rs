@@ -67,7 +67,9 @@ use crate::hmr::device_snapshot::BufferRegistry;
 use crate::hmr::gpu_driver_loader::{
     self, CuContext, CuFunction, CuStream, DriverLoadError, GpuDriverHandle, GpuDriverSymbolTable,
 };
-use crate::hmr::gpu_module_manager::{GpuModuleManager, KernelResolution, ModuleManagerError};
+use crate::hmr::gpu_module_manager::{
+    GpuModuleManager, KernelResolution, KernelTable, ModuleManagerError,
+};
 use crate::hmr::gpu_proof::{sha256_hex_bytes, GpuHmrDegradedState};
 use crate::hmr::gpu_reload_orchestrator::{
     plan_gpu_reload, GpuReloadConfig, GpuReloadPlan, GpuSwapInputs,
@@ -368,14 +370,25 @@ fn resolved_kernel_symbols(manager: &GpuModuleManager) -> Vec<String> {
     out
 }
 
-fn active_dispatch_table(manager: &GpuModuleManager) -> (HashMap<String, u64>, u64) {
-    let mut entries = manager
-        .kernel_table()
+fn dispatch_table_entries(table: &KernelTable) -> Vec<(String, u64)> {
+    let mut entries = table
         .names()
-        .filter_map(|name| manager.kernel_table().get(name).map(|handle| (name.clone(), handle)))
+        .filter_map(|name| table.get(name).map(|handle| (name.clone(), handle)))
         .collect::<Vec<_>>();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+}
 
+fn dispatch_table_hash(table: &KernelTable) -> u64 {
+    let entries = dispatch_table_entries(table);
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    entries.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn active_dispatch_table(manager: &GpuModuleManager) -> (HashMap<String, u64>, u64) {
+    let entries = dispatch_table_entries(manager.kernel_table());
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     entries.hash(&mut hasher);
     let table_hash = hasher.finish();
@@ -1173,6 +1186,7 @@ impl Adapter for GpuModuleAdapter {
 
         let load_result = (|| -> Result<DeviceReloadOwnership, String> {
             let previous_table = self.module_manager.kernel_table().clone();
+            let previous_dispatch_table_hash = dispatch_table_hash(&previous_table);
             match loader_transport {
                 ArtifactLoaderTransport::FilesystemPath => {
                     self.module_manager
@@ -1257,10 +1271,12 @@ impl Adapter for GpuModuleAdapter {
             eprintln!("{artifact_transport_line}");
             runtime_log_lines.push(artifact_transport_line);
             let publish_line = format!(
-                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
+                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} dispatch_table_hash_before=0x{:016x} dispatch_table_hash_after=0x{:016x} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
                 runtime_session_id(),
                 previous_generation,
                 active_generation,
+                previous_dispatch_table_hash,
+                dispatch_table_hash,
                 dispatch_table_hash,
                 touched_symbols.len(),
                 retired_module_count,
@@ -2055,6 +2071,8 @@ mod tests {
             .last_reload_log()
             .iter()
             .any(|line| line.contains("dispatcher_epoch event=published")
+                && line.contains("dispatch_table_hash_before=0x")
+                && line.contains("dispatch_table_hash_after=0x")
                 && line.contains("retired_modules=1")
                 && line.contains("stream_ordering_proven=true")));
         assert!(a

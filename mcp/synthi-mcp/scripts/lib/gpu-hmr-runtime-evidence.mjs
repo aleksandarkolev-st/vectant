@@ -47,6 +47,8 @@ function epochRecord(line) {
     runtimeSession: fields.runtime_session ?? null,
     previousGeneration: integerValue(fields.previous_generation),
     activeGeneration: integerValue(fields.active_generation),
+    dispatchTableHashBefore: fields.dispatch_table_hash_before ?? null,
+    dispatchTableHashAfter: fields.dispatch_table_hash_after ?? null,
     dispatchTableHash: fields.dispatch_table_hash ?? null,
     changedEntries: integerValue(fields.changed_entries),
     retiredModules: integerValue(fields.retired_modules),
@@ -91,8 +93,11 @@ export function runtimeEpochSwapEvidence(lines) {
       && Number.isFinite(latestPublication.activeGeneration)
       && latestPublication.activeGeneration > latestPublication.previousGeneration
     : false;
-  const dispatchTableHashObserved = typeof latestPublication?.dispatchTableHash === 'string'
-    && /^0x[0-9a-f]+$/i.test(latestPublication.dispatchTableHash);
+  const dispatchTableHashBeforeObserved = typeof latestPublication?.dispatchTableHashBefore === 'string'
+    && /^0x[0-9a-f]+$/i.test(latestPublication.dispatchTableHashBefore);
+  const dispatchTableHashAfterObserved = typeof latestPublication?.dispatchTableHashAfter === 'string'
+    && /^0x[0-9a-f]+$/i.test(latestPublication.dispatchTableHashAfter);
+  const dispatchTableHashObserved = dispatchTableHashBeforeObserved && dispatchTableHashAfterObserved;
   const changedEntriesObserved = Number.isFinite(latestPublication?.changedEntries)
     && latestPublication.changedEntries >= 0;
   const retirementTracked = latestPublication?.retirementTracked === true;
@@ -120,6 +125,8 @@ export function runtimeEpochSwapEvidence(lines) {
     runtime_session_consistent: runtimeSessionConsistent,
     generation_lineage_observed: generationLineageObserved,
     dispatch_table_hash_observed: dispatchTableHashObserved,
+    dispatch_table_hash_before_observed: dispatchTableHashBeforeObserved,
+    dispatch_table_hash_after_observed: dispatchTableHashAfterObserved,
     changed_entries_observed: changedEntriesObserved,
     retirement_tracked: retirementTracked,
     retirement_not_required: publicationRetirementComplete,
@@ -142,6 +149,8 @@ export function epochSwapProofFromRuntimeEvidence(lines) {
     published: evidence.published,
     generationLineageObserved: evidence.generation_lineage_observed,
     dispatchTableHashObserved: evidence.dispatch_table_hash_observed,
+    dispatchTableHashBeforeObserved: evidence.dispatch_table_hash_before_observed,
+    dispatchTableHashAfterObserved: evidence.dispatch_table_hash_after_observed,
     changedEntriesObserved: evidence.changed_entries_observed,
     runtimeSessionObserved: evidence.runtime_session_observed,
     runtimeSessionIds: evidence.runtime_session_ids,
