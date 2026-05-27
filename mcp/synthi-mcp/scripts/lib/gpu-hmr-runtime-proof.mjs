@@ -141,14 +141,19 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const oracleEvidenceRefs = Array.isArray(rawOracle.evidenceRefs)
     ? rawOracle.evidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
+  const oracleEvidenceObserved = oracleEvidenceRefs.length > 0;
   const deterministicOutputObserved = observation.deterministicOutputObserved === true && hasActual;
   const deterministicOracleProvided = observation.deterministicOracleProvided === true && oracleKind !== null && hasExpected;
   const deterministicOraclePassed =
-    deterministicOutputObserved && deterministicOracleProvided && observation.deterministicOraclePassed === true;
+    deterministicOutputObserved
+    && deterministicOracleProvided
+    && oracleEvidenceObserved
+    && observation.deterministicOraclePassed === true;
   const outputOracle = {
     provided: deterministicOracleProvided,
     observed: deterministicOutputObserved,
     passed: deterministicOraclePassed,
+    evidenceObserved: oracleEvidenceObserved,
     kind: oracleKind,
     expected: hasExpected ? rawOracle.expected : null,
     actual: hasActual ? rawOracle.actual : null,

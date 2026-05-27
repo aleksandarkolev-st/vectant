@@ -190,6 +190,28 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.outputOracle.observed).toBe(false);
   });
 
+  it("does not prove output from an oracle payload without concrete evidence refs", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: {
+        kind: "runtime_readback",
+        expected: "expected-sentinel",
+        actual: "expected-sentinel",
+      },
+      visualFrameObserved: false,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-output-unobserved");
+    expect(proof.outputOracle.provided).toBe(true);
+    expect(proof.outputOracle.observed).toBe(true);
+    expect(proof.outputOracle.evidenceObserved).toBe(false);
+    expect(proof.outputOracle.passed).toBe(false);
+  });
+
   it("reports host replacement only from explicit restart or replacement evidence", () => {
     const proof = classifyGpuHmrHostPreservationProof({
       hostRestartObserved: true,
