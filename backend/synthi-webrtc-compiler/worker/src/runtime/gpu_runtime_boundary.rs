@@ -527,6 +527,23 @@ pub extern "C" fn synthi_gpu_register_buffer(
 }
 
 #[no_mangle]
+pub extern "C" fn synthi_gpu_record_host_identity(
+    role: *const c_char,
+    identity_ptr: *const c_void,
+    aux_identity: u64,
+) {
+    let role = cstr(role).unwrap_or_else(|| "<unknown>".to_string());
+    eprintln!(
+        "[gpu-runtime-boundary] host_identity role={} ptr=0x{:x} aux={} generation={} runtime_session={}",
+        log_safe(&role),
+        identity_ptr as usize,
+        aux_identity,
+        current_launch_generation(),
+        runtime_session_id()
+    );
+}
+
+#[no_mangle]
 pub extern "C" fn synthi_gpu_launch_generation() -> u64 {
     current_launch_generation()
 }
@@ -1015,6 +1032,20 @@ mod tests {
             &mut restored,
         ));
         assert_eq!(restored, (&mut value as *mut u32).cast());
+    }
+
+    #[test]
+    fn host_identity_snapshot_boundary_accepts_runtime_roles() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+        let role = CString::new("core_state").unwrap();
+        let value = 42_u64;
+
+        synthi_gpu_record_host_identity(
+            role.as_ptr(),
+            (&value as *const u64).cast(),
+            value,
+        );
     }
 
     #[test]

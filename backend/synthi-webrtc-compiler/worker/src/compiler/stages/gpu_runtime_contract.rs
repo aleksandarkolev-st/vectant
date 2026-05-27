@@ -207,6 +207,11 @@ void synthi_gpu_register_buffer(
     const char* semantic_name,
     const char* lifetime_hint);
 
+void synthi_gpu_record_host_identity(
+    const char* role,
+    const void* identity_ptr,
+    std::uint64_t aux_identity);
+
 bool synthi_gpu_pack_buffer(const char* semantic_name, const void* ptr, std::size_t bytes);
 bool synthi_gpu_restore_buffer(const unsigned char* blob, const char* semantic_name, void** out_ptr);
 
@@ -291,6 +296,13 @@ inline void synthi_register(void* ptr, std::size_t bytes, const char* lifetime_h
     synthi_gpu_register_buffer(nullptr, ptr, bytes, nullptr, lifetime_hint);
 }}
 
+inline void synthi_host_identity(
+    const char* role,
+    const void* identity_ptr,
+    std::uint64_t aux_identity = 0) {{
+    synthi_gpu_record_host_identity(role, identity_ptr, aux_identity);
+}}
+
 #endif // SYNTHI_GPU_RUNTIME_H
 "#
     )
@@ -364,6 +376,8 @@ mod tests {
         assert!(h.contains("std::size_t device_save_size()"));
         assert!(h.contains("void device_save_write"));
         assert!(h.contains("unsigned long long device_kernel_sig_hash"));
+        assert!(h.contains("synthi_gpu_record_host_identity"));
+        assert!(h.contains("inline void synthi_host_identity"));
     }
 
     #[test]
