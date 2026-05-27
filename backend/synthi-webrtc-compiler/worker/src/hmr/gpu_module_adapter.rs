@@ -194,6 +194,9 @@ pub struct GpuModuleAdapterConfig {
     /// Whether the adapter is allowed to fall back from Tier A
     /// driver checkpoint to Tier B userspace snapshot at runtime.
     pub allow_snapshot_downgrade: bool,
+    /// Loader transport selected by runtime capability policy. This is
+    /// intentionally not inferred from project names or renderer paths.
+    pub artifact_loader_transport: ArtifactLoaderTransport,
 }
 
 impl Default for GpuModuleAdapterConfig {
@@ -203,6 +206,7 @@ impl Default for GpuModuleAdapterConfig {
             max_module_bytes: 128 * 1024 * 1024, // 128 MB
             drain_timeout_ms: 2_000,
             allow_snapshot_downgrade: true,
+            artifact_loader_transport: ArtifactLoaderTransport::RamBytes,
         }
     }
 }
@@ -277,27 +281,20 @@ struct DeviceReloadOwnership {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ArtifactLoaderTransport {
+pub enum ArtifactLoaderTransport {
     FilesystemPath,
     RamBytes,
 }
 
 impl ArtifactLoaderTransport {
-    fn selected_for_vendor(vendor: GpuVendor) -> Self {
-        match vendor {
-            GpuVendor::Cuda => Self::RamBytes,
-            GpuVendor::Rocm => Self::FilesystemPath,
-        }
-    }
-
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::FilesystemPath => "filesystem_path",
             Self::RamBytes => "ram_bytes",
         }
     }
 
-    fn loader_api(self) -> &'static str {
+    pub fn loader_api(self) -> &'static str {
         match self {
             Self::FilesystemPath => "module_load_path",
             Self::RamBytes => "module_load_data",
@@ -635,7 +632,9 @@ impl GpuModuleAdapter {
         let mut context: CuContext = std::ptr::null_mut();
         let code = unsafe { (symbols.cu_ctx_get_current)(&mut context as *mut CuContext) };
         if code != 0 {
-            return Err(format!("GPU context query failed before sidecar reload: {code}"));
+            return Err(format!(
+                "GPU context query failed before sidecar reload: {code}"
+            ));
         }
         if context.is_null() {
             self.reload_context = None;
@@ -696,7 +695,9 @@ impl GpuModuleAdapter {
         };
         let code = unsafe { (symbols.cu_ctx_set_current)(context as CuContext) };
         if code != 0 {
-            return Err(format!("GPU context bind failed before sidecar reload: {code}"));
+            return Err(format!(
+                "GPU context bind failed before sidecar reload: {code}"
+            ));
         }
         Ok(())
     }
@@ -786,11 +787,7 @@ impl GpuModuleAdapter {
         }
     }
 
-    fn emit_runtime_ownership_report(
-        &mut self,
-        ownership: &DeviceReloadOwnership,
-        artifact: &str,
-    ) {
+    fn emit_runtime_ownership_report(&mut self, ownership: &DeviceReloadOwnership, artifact: &str) {
         let label = if ownership.partial_reload {
             "gpu-hmr-partial"
         } else {
@@ -836,6 +833,10 @@ impl Adapter for GpuModuleAdapter {
         extra.insert("phase".into(), format!("{:?}", self.phase));
         extra.insert("reload_count".into(), self.reload_count.to_string());
         extra.insert("driver_state".into(), self.driver_state_label().into());
+        extra.insert(
+            "artifact_loader_transport".into(),
+            self.config.artifact_loader_transport.as_str().into(),
+        );
         extra.insert(
             "swap_count".into(),
             self.module_manager.swap_count().to_string(),
@@ -936,7 +937,7 @@ impl Adapter for GpuModuleAdapter {
         }
 
         let artifact = req.build_manifest.artifact_path.trim();
-        let loader_transport = ArtifactLoaderTransport::selected_for_vendor(self.config.vendor);
+        let loader_transport = self.config.artifact_loader_transport;
         let ram_artifact = req
             .artifact_blob
             .as_ref()
@@ -960,7 +961,10 @@ impl Adapter for GpuModuleAdapter {
         } else {
             match fs::read(artifact) {
                 Ok(bytes) => Some(bytes),
-                Err(e) if ram_artifact.is_some() && loader_transport == ArtifactLoaderTransport::RamBytes => {
+                Err(e)
+                    if ram_artifact.is_some()
+                        && loader_transport == ArtifactLoaderTransport::RamBytes =>
+                {
                     eprintln!(
                         "[gpu-runtime-boundary] artifact_transport_path_validation artifact={} result=unavailable error={}",
                         artifact,
@@ -1407,8 +1411,8 @@ mod tests {
         CuContext, CuDevicePtr, CuFunction, CuModule, CuResult, CuStream,
     };
     use crate::runtime::gpu_runtime_boundary::{
-        current_launch_generation, reset_for_test, synthi_gpu_launch_raw, synthi_gpu_register_buffer,
-        test_guard_for_test as runtime_boundary_test_guard,
+        current_launch_generation, reset_for_test, synthi_gpu_launch_raw,
+        synthi_gpu_register_buffer, test_guard_for_test as runtime_boundary_test_guard,
     };
     use std::ffi::{c_void, CString};
     use std::io::Write;
@@ -1598,7 +1602,14 @@ mod tests {
     }
 
     fn adapter_with_symbols(symbols: GpuDriverSymbolTable) -> GpuModuleAdapter {
-        let mut a = GpuModuleAdapter::new(GpuModuleAdapterConfig::default());
+        adapter_with_config_and_symbols(GpuModuleAdapterConfig::default(), symbols)
+    }
+
+    fn adapter_with_config_and_symbols(
+        config: GpuModuleAdapterConfig,
+        symbols: GpuDriverSymbolTable,
+    ) -> GpuModuleAdapter {
+        let mut a = GpuModuleAdapter::new(config);
         a.phase = GpuPhase::Ready;
         a.health = AdapterHealth::Healthy;
         a.test_symbols = Some(symbols);
@@ -1653,6 +1664,10 @@ mod tests {
         assert_eq!(cfg.vendor, GpuVendor::Cuda);
         assert_eq!(cfg.drain_timeout_ms, 2_000);
         assert!(cfg.allow_snapshot_downgrade);
+        assert_eq!(
+            cfg.artifact_loader_transport,
+            ArtifactLoaderTransport::RamBytes
+        );
     }
 
     #[test]
@@ -1668,6 +1683,12 @@ mod tests {
         assert_eq!(
             info.extra.get("driver_library").map(|s| s.as_str()),
             Some("libcuda.so.1")
+        );
+        assert_eq!(
+            info.extra
+                .get("artifact_loader_transport")
+                .map(|s| s.as_str()),
+            Some("ram_bytes")
         );
     }
 
@@ -1969,6 +1990,41 @@ mod tests {
     }
 
     #[test]
+    fn phase3_reload_reports_filesystem_fallback_when_path_loader_is_selected() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"fake-cubin").unwrap();
+        let path = file.path().to_string_lossy().to_string();
+        let artifact_hash = sha256_hex_bytes(b"fake-cubin");
+        let mut req = request_with_artifact(&path, vec!["device.cu".into()]);
+        req.artifact_blob = Some(ReloadArtifactBlob {
+            blob_id: format!("artifact:sha256:{artifact_hash}"),
+            content_hash: format!("sha256:{artifact_hash}"),
+            bytes: b"fake-cubin".to_vec(),
+        });
+        let mut a = adapter_with_config_and_symbols(
+            GpuModuleAdapterConfig {
+                artifact_loader_transport: ArtifactLoaderTransport::FilesystemPath,
+                ..Default::default()
+            },
+            stub_symbols(),
+        );
+        let r = a.reload(&req);
+        assert!(matches!(r, AdapterReloadResult::Success { .. }));
+
+        let transport = a
+            .last_reload_log()
+            .iter()
+            .find(|l| l.contains("artifact_transport"))
+            .expect("runtime artifact transport report");
+        assert!(transport.contains("reload_request_transport=filesystem_path,ram_blob"));
+        assert!(transport.contains("selected_loader_transport=filesystem_path"));
+        assert!(transport.contains("ram_reference=true"));
+        assert!(transport.contains("ram_transport_proven=false"));
+        assert!(transport.contains("degraded_state=gpu-hmr-ram-io-unavailable"));
+        assert!(transport.contains("degraded_reason=selected_loader_uses_filesystem_path"));
+    }
+
+    #[test]
     fn phase3_reload_installs_runtime_launch_dispatcher() {
         let _guard = runtime_boundary_test_guard();
         reset_for_test();
@@ -2067,14 +2123,12 @@ mod tests {
 
         assert!(unload_generation > first_generation);
         assert_eq!(unload_generation, current_launch_generation());
-        assert!(a
-            .last_reload_log()
-            .iter()
-            .any(|line| line.contains("dispatcher_epoch event=published")
-                && line.contains("dispatch_table_hash_before=0x")
-                && line.contains("dispatch_table_hash_after=0x")
-                && line.contains("retired_modules=1")
-                && line.contains("stream_ordering_proven=true")));
+        assert!(a.last_reload_log().iter().any(|line| line
+            .contains("dispatcher_epoch event=published")
+            && line.contains("dispatch_table_hash_before=0x")
+            && line.contains("dispatch_table_hash_after=0x")
+            && line.contains("retired_modules=1")
+            && line.contains("stream_ordering_proven=true")));
         assert!(a
             .last_reload_log()
             .iter()
@@ -2255,10 +2309,7 @@ mod tests {
         assert_eq!(a.capture_current_context_for_reload().unwrap(), Some(0x44));
 
         assert!(matches!(
-            a.reload(&request_with_artifact(
-                &path,
-                vec!["device.cu".into()]
-            )),
+            a.reload(&request_with_artifact(&path, vec!["device.cu".into()])),
             AdapterReloadResult::Success { .. }
         ));
         assert_eq!(CTX_SET_CALLS.load(Ordering::SeqCst), 1);
@@ -2277,7 +2328,10 @@ mod tests {
         ];
 
         let mut a = adapter_with_symbols(stub_symbols());
-        assert!(matches!(a.reload(&req), AdapterReloadResult::Success { .. }));
+        assert!(matches!(
+            a.reload(&req),
+            AdapterReloadResult::Success { .. }
+        ));
 
         let ownership = a
             .last_reload_log()

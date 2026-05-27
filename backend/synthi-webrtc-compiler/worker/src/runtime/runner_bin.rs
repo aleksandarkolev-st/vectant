@@ -195,7 +195,9 @@ use worker::hmr::adapter_trait::{
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::build_manifest::{BuildManifest, BuildSlot, SnapshotMode};
 #[cfg(feature = "gpu-hmr")]
-use worker::hmr::gpu_module_adapter::{GpuModuleAdapter, GpuModuleAdapterConfig, GpuVendor};
+use worker::hmr::gpu_module_adapter::{
+    ArtifactLoaderTransport, GpuModuleAdapter, GpuModuleAdapterConfig, GpuVendor,
+};
 #[cfg(feature = "gpu-hmr")]
 use worker::hmr::gpu_proof::sha256_hex_bytes;
 
@@ -231,16 +233,12 @@ fn emit_gpu_reload_completion(completion: &GpuReloadCompletion) {
             capability: "GPU sidecar HMR".into(),
             state_preserved: *state_preserved,
         },
-        AdapterReloadResult::Failed { error, .. } => HmrStatus::rejected_with_fallback(
-            "device",
-            error,
-            "Keep previous GPU sidecar loaded",
-        ),
-        AdapterReloadResult::Unsupported { reason } => HmrStatus::rejected_with_fallback(
-            "device",
-            reason,
-            "Full GPU sidecar reload required",
-        ),
+        AdapterReloadResult::Failed { error, .. } => {
+            HmrStatus::rejected_with_fallback("device", error, "Keep previous GPU sidecar loaded")
+        }
+        AdapterReloadResult::Unsupported { reason } => {
+            HmrStatus::rejected_with_fallback("device", reason, "Full GPU sidecar reload required")
+        }
     };
     eprintln!("[Runner] [HMR-STATUS] {}", status.to_json());
 }
@@ -264,6 +262,37 @@ fn gpu_reload_artifact_blob_from_path(artifact_path: &str) -> Option<ReloadArtif
             None
         }
     }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn parse_gpu_artifact_loader_transport(value: Option<&str>) -> ArtifactLoaderTransport {
+    match value
+        .unwrap_or("filesystem_path")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "ram" | "ram_blob" | "ram_bytes" | "module_load_data" => ArtifactLoaderTransport::RamBytes,
+        "filesystem" | "filesystem_path" | "path" | "module_load_path" => {
+            ArtifactLoaderTransport::FilesystemPath
+        }
+        other => {
+            eprintln!(
+                "[Runner] [GPU HMR] Invalid SYNTHI_GPU_HMR_ARTIFACT_LOADER_TRANSPORT={}; using filesystem_path",
+                other
+            );
+            ArtifactLoaderTransport::FilesystemPath
+        }
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn gpu_artifact_loader_transport_from_env() -> ArtifactLoaderTransport {
+    parse_gpu_artifact_loader_transport(
+        std::env::var("SYNTHI_GPU_HMR_ARTIFACT_LOADER_TRANSPORT")
+            .ok()
+            .as_deref(),
+    )
 }
 
 // ============================================================
@@ -319,11 +348,7 @@ fn runner_command_to_text(cmd_wrapper: RunnerCommand) -> String {
                         (c >> 16) as i16,
                         (c & 0xFFFF) as i16
                     ), // x, y packed
-                    2 => format!(
-                        "input key {} {}",
-                        if a == 1 { "down" } else { "up" },
-                        b
-                    ), // state, keycode
+                    2 => format!("input key {} {}", if a == 1 { "down" } else { "up" }, b), // state, keycode
                     _ => String::new(),
                 }
             }
@@ -1647,6 +1672,7 @@ fn main() {
                         let mut adapter = gpu_adapters.remove(language).unwrap_or_else(|| {
                             let mut adapter = GpuModuleAdapter::new(GpuModuleAdapterConfig {
                                 vendor,
+                                artifact_loader_transport: gpu_artifact_loader_transport_from_env(),
                                 ..Default::default()
                             });
                             if let Err(e) = adapter.initialize() {
@@ -2124,7 +2150,10 @@ mod tests {
         runtime_control_status_payload, should_process_runner_command,
     };
     #[cfg(feature = "gpu-hmr")]
-    use super::gpu_reload_artifact_blob_from_path;
+    use super::{
+        gpu_reload_artifact_blob_from_path, parse_gpu_artifact_loader_transport,
+        ArtifactLoaderTransport,
+    };
     #[cfg(feature = "gpu-hmr")]
     use std::io::Write as _;
 
@@ -2161,12 +2190,8 @@ mod tests {
 
     #[test]
     fn runtime_control_status_payload_carries_token_and_pause_state() {
-        let payload = runtime_control_status_payload(
-            "runtime-paused",
-            Some("runner-control-3"),
-            true,
-            2,
-        );
+        let payload =
+            runtime_control_status_payload("runtime-paused", Some("runner-control-3"), true, 2);
         let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
 
         assert_eq!(value["status"], "runtime-paused");
@@ -2243,5 +2268,26 @@ mod tests {
         assert_eq!(blob.blob_id, format!("artifact:sha256:{artifact_hash}"));
         assert_eq!(blob.content_hash, format!("sha256:{artifact_hash}"));
         assert_eq!(blob.bytes, b"runtime-artifact");
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn gpu_artifact_loader_transport_is_generic_and_safe_by_default() {
+        assert_eq!(
+            parse_gpu_artifact_loader_transport(None),
+            ArtifactLoaderTransport::FilesystemPath
+        );
+        assert_eq!(
+            parse_gpu_artifact_loader_transport(Some("ram_blob")),
+            ArtifactLoaderTransport::RamBytes
+        );
+        assert_eq!(
+            parse_gpu_artifact_loader_transport(Some("module_load_path")),
+            ArtifactLoaderTransport::FilesystemPath
+        );
+        assert_eq!(
+            parse_gpu_artifact_loader_transport(Some("unknown")),
+            ArtifactLoaderTransport::FilesystemPath
+        );
     }
 }
