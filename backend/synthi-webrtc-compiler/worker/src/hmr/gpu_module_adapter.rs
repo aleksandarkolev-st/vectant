@@ -52,6 +52,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -72,8 +73,8 @@ use crate::hmr::gpu_reload_orchestrator::{
 };
 use crate::hmr::gpu_stream_drain::{drain_context, DrainOutcome, DrainScope};
 use crate::runtime::gpu_runtime_boundary::{
-    clear_launch_dispatcher, install_launch_dispatcher, managed_buffers_snapshot,
-    GpuLaunchDispatcher, GpuLaunchRequest,
+    clear_launch_dispatcher, current_launch_generation, install_launch_dispatcher,
+    managed_buffers_snapshot, runtime_session_id, GpuLaunchDispatcher, GpuLaunchRequest,
 };
 
 // ── Vendor + symbol table ───────────────────────────────────
@@ -268,6 +269,7 @@ struct DeviceReloadOwnership {
     touched_symbols: Vec<String>,
     retired_module_count: usize,
     replaced_primary: bool,
+    epoch_log_lines: Vec<String>,
 }
 
 fn sorted_unique_symbols(symbols: &[String]) -> Vec<String> {
@@ -323,6 +325,28 @@ fn resolved_kernel_symbols(manager: &GpuModuleManager) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+fn active_dispatch_table(manager: &GpuModuleManager) -> (HashMap<String, u64>, u64) {
+    let mut entries = manager
+        .kernel_table()
+        .names()
+        .filter_map(|name| manager.kernel_table().get(name).map(|handle| (name.clone(), handle)))
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    entries.hash(&mut hasher);
+    let table_hash = hasher.finish();
+    (entries.into_iter().collect(), table_hash)
+}
+
+fn drain_scope_label(drain: &DrainOutcome) -> &'static str {
+    match drain {
+        DrainOutcome::Synced { scope, .. }
+        | DrainOutcome::TimedOut { scope, .. }
+        | DrainOutcome::DriverError { scope, .. } => scope.as_str(),
+    }
 }
 
 pub struct GpuModuleAdapter {
@@ -950,10 +974,47 @@ impl Adapter for GpuModuleAdapter {
                 retired
             };
             let retired_module_count = retired.len();
+            let (dispatcher_kernels, dispatch_table_hash) =
+                active_dispatch_table(&self.module_manager);
+            let previous_generation = current_launch_generation();
+            install_launch_dispatcher(Arc::new(DriverLaunchDispatcher {
+                symbols,
+                kernels: dispatcher_kernels,
+            }));
+            let active_generation = current_launch_generation();
+            let mut epoch_log_lines = Vec::new();
+            let publish_line = format!(
+                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true old_generation_retired={} stream_scope={} stream_ordering_proven={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
+                runtime_session_id(),
+                previous_generation,
+                active_generation,
+                dispatch_table_hash,
+                touched_symbols.len(),
+                retired_module_count == 0,
+                drain_scope_label(&drain),
+                drain.is_synced(),
+                drain.short_label(),
+                drain.elapsed_ms(),
+                drain.budget_ms().unwrap_or(0)
+            );
+            eprintln!("{publish_line}");
+            epoch_log_lines.push(publish_line);
             for retired in retired {
                 self.module_manager
                     .unload_retired(&symbols, retired)
                     .map_err(Self::module_manager_error)?;
+            }
+            if retired_module_count > 0 {
+                let retired_line = format!(
+                    "[gpu-runtime-boundary] dispatcher_epoch event=retired runtime_session={} previous_generation={} active_generation={} retired_modules={} old_generation_retired=true stream_scope={} stream_ordering_proven=true",
+                    runtime_session_id(),
+                    previous_generation,
+                    active_generation,
+                    retired_module_count,
+                    drain_scope_label(&drain)
+                );
+                eprintln!("{retired_line}");
+                epoch_log_lines.push(retired_line);
             }
             Ok(DeviceReloadOwnership {
                 partial_reload: partial_device_reload,
@@ -961,6 +1022,7 @@ impl Adapter for GpuModuleAdapter {
                 touched_symbols,
                 retired_module_count,
                 replaced_primary,
+                epoch_log_lines,
             })
         })();
 
@@ -973,10 +1035,6 @@ impl Adapter for GpuModuleAdapter {
                         self.kernel_table.insert(name.clone(), handle);
                     }
                 }
-                install_launch_dispatcher(Arc::new(DriverLaunchDispatcher {
-                    symbols,
-                    kernels: self.kernel_table.clone(),
-                }));
                 self.emit_report(GpuSwapInputs {
                     plan,
                     reason: if partial_device_reload {
@@ -992,6 +1050,8 @@ impl Adapter for GpuModuleAdapter {
                     expected_kernel_hashes: ownership.expected_symbols.len() as u32,
                     matched_kernel_hashes: ownership.touched_symbols.len() as u32,
                 });
+                self.last_reload_log
+                    .extend(ownership.epoch_log_lines.iter().cloned());
                 self.emit_runtime_ownership_report(&ownership, artifact);
                 self.phase = GpuPhase::Ready;
                 self.health = AdapterHealth::Healthy;
@@ -1055,12 +1115,12 @@ mod tests {
         CuContext, CuDevicePtr, CuFunction, CuModule, CuResult, CuStream,
     };
     use crate::runtime::gpu_runtime_boundary::{
-        reset_for_test, synthi_gpu_launch_raw, synthi_gpu_register_buffer,
+        current_launch_generation, reset_for_test, synthi_gpu_launch_raw, synthi_gpu_register_buffer,
         test_guard_for_test as runtime_boundary_test_guard,
     };
     use std::ffi::{c_void, CString};
     use std::io::Write;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     fn dummy_request() -> AdapterReloadRequest {
         AdapterReloadRequest {
@@ -1103,6 +1163,7 @@ mod tests {
     static LAUNCH_CALLS: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_GRID_X: AtomicUsize = AtomicUsize::new(0);
     static LAST_LAUNCH_BLOCK_X: AtomicUsize = AtomicUsize::new(0);
+    static UNLOAD_GENERATION_AT_CALL: AtomicU64 = AtomicU64::new(0);
     unsafe extern "C" fn ok_init(_flags: u32) -> CuResult {
         0
     }
@@ -1144,6 +1205,7 @@ mod tests {
     }
 
     unsafe extern "C" fn ok_module_unload(_module: CuModule) -> CuResult {
+        UNLOAD_GENERATION_AT_CALL.store(current_launch_generation(), Ordering::SeqCst);
         0
     }
 
@@ -1609,6 +1671,53 @@ mod tests {
         ));
         assert_eq!(a.module_manager.swap_count(), 2);
         assert_ne!(a.active_module_handle, first_handle);
+    }
+
+    #[test]
+    fn phase3_second_reload_publishes_dispatcher_before_retiring_old_module() {
+        let _guard = runtime_boundary_test_guard();
+        reset_for_test();
+        UNLOAD_GENERATION_AT_CALL.store(0, Ordering::SeqCst);
+
+        let mut first = tempfile::NamedTempFile::new().unwrap();
+        let mut second = tempfile::NamedTempFile::new().unwrap();
+        first.write_all(b"fake-cubin-1").unwrap();
+        second.write_all(b"fake-cubin-2").unwrap();
+        let first_path = first.path().to_string_lossy().to_string();
+        let second_path = second.path().to_string_lossy().to_string();
+        let mut a = adapter_with_symbols(stub_symbols());
+
+        assert!(matches!(
+            a.reload(&request_with_artifact(
+                &first_path,
+                vec!["device.cu".into()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        let first_generation = current_launch_generation();
+
+        assert!(matches!(
+            a.reload(&request_with_artifact(
+                &second_path,
+                vec!["device.cu".into()]
+            )),
+            AdapterReloadResult::Success { .. }
+        ));
+        let unload_generation = UNLOAD_GENERATION_AT_CALL.load(Ordering::SeqCst);
+
+        assert!(unload_generation > first_generation);
+        assert_eq!(unload_generation, current_launch_generation());
+        assert!(a
+            .last_reload_log()
+            .iter()
+            .any(|line| line.contains("dispatcher_epoch event=published")
+                && line.contains("stream_ordering_proven=true")));
+        assert!(a
+            .last_reload_log()
+            .iter()
+            .any(|line| line.contains("dispatcher_epoch event=retired")
+                && line.contains("old_generation_retired=true")));
+        reset_for_test();
     }
 
     #[test]
