@@ -55,13 +55,17 @@ import {
 } from './lib/gpu-hmr-proof-artifacts.mjs';
 import {
   epochSwapProofFromRuntimeEvidence,
+  hostPreservationProofFromRuntimeEvidence,
   runtimeArtifactTransportEvidence,
 } from './lib/gpu-hmr-runtime-evidence.mjs';
 import {
+  classifyGpuHmrFullRuntimeProof,
   classifyGpuHmrDispatchProof,
   classifyGpuHmrOutputProof,
   summarizeGpuHmrAbiProof,
   summarizeGpuHmrDispatchProof,
+  summarizeGpuHmrFullRuntimeProof,
+  summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
 } from './lib/gpu-hmr-runtime-proof.mjs';
 
@@ -131,6 +135,8 @@ const results = [];
 const runtimeDispatchProofs = [];
 const runtimeOutputProofs = [];
 const artifactTransportProofs = [];
+const runtimeHostPreservationProofs = [];
+const runtimeFullProofs = [];
 function record(phase, name, status, detail = '') {
   results.push({ phase, name, status, detail, ts: new Date().toISOString() });
   const l = status === 'pass' ? 'ok' : status === 'fail' ? 'fail' : status === 'skip' ? 'skip' : 'warn';
@@ -170,6 +176,32 @@ function recordRuntimeOutputProof(phase, name, observation) {
     ts: new Date().toISOString(),
   });
   record(phase, name, proof.degradedState ? 'warn' : 'pass', summarizeGpuHmrOutputProof(proof));
+  return proof;
+}
+
+function recordRuntimeHostPreservationProof(phase, name, proofWithEvidence) {
+  const evidence = proofWithEvidence?.evidence ?? null;
+  const proof = proofWithEvidence?.proof ?? null;
+  runtimeHostPreservationProofs.push({
+    phase,
+    name,
+    proof,
+    evidence,
+    ts: new Date().toISOString(),
+  });
+  record(phase, name, proof?.degradedState || !proof?.resultState ? 'warn' : 'pass', summarizeGpuHmrHostPreservationProof(proof));
+  return proof;
+}
+
+function recordRuntimeFullProof(phase, name, observation) {
+  const proof = classifyGpuHmrFullRuntimeProof(observation);
+  runtimeFullProofs.push({
+    phase,
+    name,
+    proof,
+    ts: new Date().toISOString(),
+  });
+  record(phase, name, proof.fullRuntimeProven ? 'pass' : 'warn', summarizeGpuHmrFullRuntimeProof(proof));
   return proof;
 }
 
@@ -470,6 +502,29 @@ async function runtimeArtifactTransportEvidenceSince(checkpoint, timeoutMs = 500
   );
   return runtimeArtifactTransportEvidence(
     logEvidenceLines(match.window ?? match.tail ?? '', /\[gpu-runtime-boundary\]\s+artifact_transport\b/i),
+  );
+}
+
+async function runtimeEpochSwapProofSince(checkpoint, timeoutMs = 5000) {
+  const match = await awaitWorkerLogRegex(
+    /\[gpu-runtime-boundary\]\s+dispatcher_epoch\b/i,
+    timeoutMs,
+    { after: checkpoint, maxBytes: 8 * 1024 * 1024 },
+  );
+  return epochSwapProofFromRuntimeEvidence(
+    logEvidenceLines(match.window ?? match.tail ?? '', /\[gpu-runtime-boundary\]\s+dispatcher_epoch\b/i),
+  );
+}
+
+async function runtimeHostPreservationProofSince(checkpoint, dispatchProof = null, timeoutMs = 5000) {
+  const match = await awaitWorkerLogRegex(
+    /\[gpu-runtime-boundary\]\s+host_identity\b/i,
+    timeoutMs,
+    { after: checkpoint, maxBytes: 8 * 1024 * 1024 },
+  );
+  return hostPreservationProofFromRuntimeEvidence(
+    logEvidenceLines(match.window ?? match.tail ?? '', /\[gpu-runtime-boundary\]\s+host_identity\b/i),
+    { runtimeSessionIds: dispatchProof?.runtimeSessionIds ?? [] },
   );
 }
 
@@ -2394,7 +2449,7 @@ async function phaseFlow(ctx) {
     inwardTrend.snippet || 'inward trend not observed before timeout');
 
   const inwardScreenshot = await captureMcpScreenshot('flow-inward');
-  recordRuntimeOutputProof('FLOW', 'inward output proof', {
+  const inwardOutputProof = recordRuntimeOutputProof('FLOW', 'inward output proof', {
     dispatchProof: inwardDispatchProof,
     deterministicOutputObserved: inwardTrend.matched,
     deterministicOracleProvided: true,
@@ -2407,6 +2462,20 @@ async function phaseFlow(ctx) {
     },
     visualFrameObserved: Boolean(inwardScreenshot),
     visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
+  });
+  const inwardHostProof = recordRuntimeHostPreservationProof(
+    'FLOW',
+    'inward host preservation proof',
+    await runtimeHostPreservationProofSince(baselineStart, inwardDispatchProof),
+  );
+  const inwardEpochProof = await runtimeEpochSwapProofSince(baselineStart);
+  recordRuntimeFullProof('FLOW', 'inward full runtime proof ladder', {
+    sourceProof: baselineGpuProof,
+    abiProof: baselineAbiProof,
+    epochProof: inwardEpochProof.proof,
+    dispatchProof: inwardDispatchProof,
+    outputProof: inwardOutputProof,
+    hostPreservationProof: inwardHostProof,
   });
 
   const flipStart = await workerLogCheckpoint(8 * 1024 * 1024);
@@ -2483,7 +2552,7 @@ async function phaseFlow(ctx) {
     trend.snippet || 'outward trend not observed before timeout');
 
   const outwardScreenshot = await captureMcpScreenshot('flow-outward');
-  recordRuntimeOutputProof('FLOW', 'outward output proof', {
+  const outwardOutputProof = recordRuntimeOutputProof('FLOW', 'outward output proof', {
     dispatchProof: outwardDispatchProof,
     deterministicOutputObserved: trend.matched,
     deterministicOracleProvided: true,
@@ -2496,6 +2565,20 @@ async function phaseFlow(ctx) {
     },
     visualFrameObserved: Boolean(outwardScreenshot),
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
+  });
+  const outwardHostProof = recordRuntimeHostPreservationProof(
+    'FLOW',
+    'outward host preservation proof',
+    await runtimeHostPreservationProofSince(flipStart, outwardDispatchProof),
+  );
+  const outwardEpochProof = await runtimeEpochSwapProofSince(flipStart);
+  recordRuntimeFullProof('FLOW', 'outward full runtime proof ladder', {
+    sourceProof: flipGpuProof,
+    abiProof: flipAbiProof,
+    epochProof: outwardEpochProof.proof,
+    dispatchProof: outwardDispatchProof,
+    outputProof: outwardOutputProof,
+    hostPreservationProof: outwardHostProof,
   });
 }
 
@@ -3007,6 +3090,8 @@ async function writeSummary() {
     runtime_dispatch_proofs: runtimeDispatchProofs,
     runtime_output_proofs: runtimeOutputProofs,
     artifact_transport_proofs: artifactTransportProofs,
+    runtime_host_preservation_proofs: runtimeHostPreservationProofs,
+    runtime_full_proofs: runtimeFullProofs,
     results,
   };
   await writeFile(path.join(LOG_DIR, 'results.json'), JSON.stringify(summary, null, 2));
@@ -3140,6 +3225,7 @@ async function selfCheck() {
   const dispatchProof = classifyGpuHmrDispatchProof({
     dispatchObserved: true,
     sessionScoped: true,
+    runtimeSessionIds: ['session-1'],
     argProvenanceObserved: true,
     argProvenanceComplete: true,
     abiProven: true,
@@ -3150,15 +3236,26 @@ async function selfCheck() {
   const unknownArgDispatchProof = classifyGpuHmrDispatchProof({
     dispatchObserved: true,
     sessionScoped: true,
+    runtimeSessionIds: ['session-1'],
     argProvenanceObserved: true,
     argProvenanceComplete: false,
     unknownArgCount: 1,
+  });
+  const fullProof = classifyGpuHmrFullRuntimeProof({
+    sourceProof: { resultState: 'gpu-hmr-symbol-bound' },
+    abiProof: { resultState: 'gpu-hmr-abi-proven' },
+    epochProof: { resultState: 'gpu-hmr-epoch-swap-proven' },
+    dispatchProof,
+    outputProof,
+    hostPreservationProof: { resultState: 'gpu-hmr-host-preservation-proven' },
   });
   if (
     outputProof.resultState !== 'gpu-hmr-dispatch-safe-proven'
     || outputProof.degradedState !== 'gpu-hmr-visual-only'
     || dispatchProof.degradedState !== null
     || unknownArgDispatchProof.degradedState !== 'gpu-hmr-unknown-arg-provenance'
+    || fullProof.fullRuntimeProven
+    || fullProof.degradedState !== 'gpu-hmr-output-unobserved'
   ) {
     console.error('gpu-hmr-test self-check failed: dispatch/output proof classifier failed');
     process.exitCode = 1;
