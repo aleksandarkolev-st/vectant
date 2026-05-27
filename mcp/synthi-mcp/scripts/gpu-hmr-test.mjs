@@ -223,6 +223,9 @@ function recordRuntimeDispatchProof(phase, name, observation) {
       dispatchObserved: observation?.dispatchObserved === true,
       argProvenanceObserved: observation?.argProvenanceObserved === true,
       argProvenanceComplete: observation?.argProvenanceComplete === true,
+      argProvenanceEvidenceRefs: Array.isArray(observation?.argProvenanceEvidenceRefs)
+        ? observation.argProvenanceEvidenceRefs
+        : [],
       unknownArgCount: Number.isFinite(observation?.unknownArgCount)
         ? Number(observation.unknownArgCount)
         : null,
@@ -1750,9 +1753,20 @@ function launchArgProvenanceEvidence(logText, expectedKernels = []) {
   );
   let incompleteCount = 0;
   let unknownArgCount = 0;
+  const evidenceRefs = [];
   for (const line of lines) {
     const complete = /\bcomplete=true\b/.test(line);
     const unknown = Number(line.match(/\bunknown_args=(\d+)/)?.[1] ?? 0);
+    const runtimeSession = logField(line, 'runtime_session');
+    if (runtimeSession) {
+      evidenceRefs.push([
+        'worker-log',
+        'launch_arg_provenance',
+        evidenceRefPart(logField(line, 'kernel'), 'kernel'),
+        evidenceRefPart(runtimeSession, 'runtime-session'),
+        evidenceRefPart(logField(line, 'generation'), 'generation'),
+      ].join(':'));
+    }
     unknownArgCount += Number.isFinite(unknown) ? unknown : 0;
     if (!complete || unknown > 0) incompleteCount += 1;
   }
@@ -1761,6 +1775,7 @@ function launchArgProvenanceEvidence(logText, expectedKernels = []) {
     incompleteCount,
     unknownArgCount,
     complete: lines.length > 0 && incompleteCount === 0 && unknownArgCount === 0,
+    evidenceRefs: [...new Set(evidenceRefs)],
     lines,
   };
 }
@@ -1812,6 +1827,15 @@ function runtimeOwnershipEvidence(logText) {
 
 function summarizeLogLine(line) {
   return String(line ?? '').replace(/\s+/g, ' ').slice(0, 240);
+}
+
+function logField(line, key) {
+  return String(line ?? '').match(new RegExp(String.raw`\b${escapeRegex(key)}=([^\s]+)`, 'i'))?.[1] ?? '';
+}
+
+function evidenceRefPart(value, fallback) {
+  const cleaned = String(value ?? '').trim().replace(/[^A-Za-z0-9_.-]+/g, '_').slice(0, 96);
+  return cleaned || fallback;
 }
 
 function escapeRegex(text) {
@@ -2220,6 +2244,7 @@ async function awaitRuntimeDispatchProof(
     runtimeSessionConsistent: runtimeSession.consistent,
     argProvenanceObserved: provenance.totalCount > 0,
     argProvenanceComplete: provenance.complete,
+    argProvenanceEvidenceRefs: provenance.evidenceRefs,
     unknownArgCount: provenance.unknownArgCount,
     abiProof: proofContext.abiProof,
     epochProof: epochSwap.proof,
@@ -3296,6 +3321,10 @@ async function selfCheck() {
     '[gpu-runtime-boundary] synthi_gpu_launch kernel=kernel_a dispatch=ok runtime_session=session-1\n'
     + '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 complete=true known_args=1 unknown_args=0\n',
   );
+  const argProvenanceEvidence = launchArgProvenanceEvidence(
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=kernel_a runtime_session=session-1 generation=2 complete=true known_args=1 unknown_args=0\n',
+    ['kernel_a'],
+  );
   if (
     proofArtifactName !== 'gpu-proof_0123456789abcdef0123456789abcdef.json'
     || proofArtifactFileName('/tmp/not-a-proof.json') !== null
@@ -3305,6 +3334,7 @@ async function selfCheck() {
     || ownership.primaryRetainedCount !== 1
     || !sessionEvidence.consistent
     || sessionEvidence.uniqueIds[0] !== 'session-1'
+    || argProvenanceEvidence.evidenceRefs[0] !== 'worker-log:launch_arg_provenance:kernel_a:session-1:2'
   ) {
     console.error('gpu-hmr-test self-check failed: proof artifact or runtime ownership parser failed');
     process.exitCode = 1;
@@ -3320,6 +3350,7 @@ async function selfCheck() {
     runtimeSessionIds: ['session-1'],
     argProvenanceObserved: true,
     argProvenanceComplete: true,
+    argProvenanceEvidenceRefs: ['worker-log:launch_arg_provenance:kernel_a:session-1:2'],
     abiProven: true,
     epochSwapProven: true,
     streamOrderingProven: true,

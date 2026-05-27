@@ -70,6 +70,9 @@ function safeDispatchProof() {
     runtimeSessionIds: ["runtime-session:test"],
     argProvenanceObserved: true,
     argProvenanceComplete: true,
+    argProvenanceEvidenceRefs: [
+      "worker-log:launch_arg_provenance:test:runtime-session.test:2",
+    ],
     abiProof: acceptedAbiProof(),
     epochProof: retiredEpochProof(),
     streamOrderingProven: true,
@@ -1099,6 +1102,46 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("launch_argument_provenance_not_collected");
   });
 
+  it("does not prove dispatch safety from argument provenance booleans without runtime evidence refs", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      dispatchObserved: true,
+      sessionScoped: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      argProvenanceObserved: true,
+      argProvenanceComplete: true,
+      unknownArgCount: 0,
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      streamOrderingProven: true,
+      replacementScopeProven: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedState).toBe("gpu-hmr-unknown-arg-provenance");
+    expect(proof.degradedReason).toBe("launch_argument_provenance_evidence_refs_not_collected");
+    expect(proof.argProvenanceEvidenceObserved).toBe(false);
+  });
+
+  it("does not accept non-runtime argument provenance evidence refs", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      dispatchObserved: true,
+      sessionScoped: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      argProvenanceObserved: true,
+      argProvenanceComplete: true,
+      unknownArgCount: 0,
+      argProvenanceEvidenceRefs: ["validation:launch_arg_provenance:test"],
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      streamOrderingProven: true,
+      replacementScopeProven: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
+    expect(proof.degradedReason).toBe("launch_argument_provenance_evidence_refs_not_collected");
+    expect(proof.argProvenanceEvidenceRefs).toEqual([]);
+  });
+
   it("reports dispatch-observed but not safe when ABI proof is missing", () => {
     const proof = classifyGpuHmrDispatchProof({
       dispatchObserved: true,
@@ -1106,6 +1149,9 @@ describe("GPU HMR runtime output proof classification", () => {
       runtimeSessionIds: ["runtime-session:test"],
       argProvenanceObserved: true,
       argProvenanceComplete: true,
+      argProvenanceEvidenceRefs: [
+        "worker-log:launch_arg_provenance:test:runtime-session.test:2",
+      ],
       unknownArgCount: 0,
     });
 

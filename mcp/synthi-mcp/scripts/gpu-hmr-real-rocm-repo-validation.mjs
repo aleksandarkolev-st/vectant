@@ -1396,6 +1396,15 @@ function runtimeSessionIdFromLine(line) {
   return match ? normalizeSessionMarker(match[1]) : null;
 }
 
+function logField(line, key) {
+  return String(line ?? '').match(new RegExp(String.raw`\b${key}=([^\s]+)`, 'i'))?.[1] ?? '';
+}
+
+function evidenceRefPart(value, fallback) {
+  const cleaned = String(value ?? '').trim().replace(/[^A-Za-z0-9_.-]+/g, '_').slice(0, 96);
+  return cleaned || fallback;
+}
+
 function sessionMarkerFromLine(line) {
   const text = String(line ?? '');
   const patterns = [
@@ -1508,11 +1517,25 @@ function runtimeArgProvenanceEvidence(workerEvidence) {
     const match = line.match(/\bunknown_args=(\d+)/i);
     return total + (match ? Number.parseInt(match[1], 10) || 0 : 0);
   }, 0);
+  const evidenceRefs = lines
+    .map((line) => {
+      const runtimeSession = runtimeSessionIdFromLine(line);
+      if (!runtimeSession) return null;
+      return [
+        'worker-log',
+        'launch_arg_provenance',
+        evidenceRefPart(logField(line, 'kernel'), 'kernel'),
+        evidenceRefPart(runtimeSession, 'runtime-session'),
+        evidenceRefPart(logField(line, 'generation'), 'generation'),
+      ].join(':');
+    })
+    .filter(Boolean);
   return {
     total_count: lines.length,
     complete_count: completeLines.length,
     incomplete_count: incompleteLines.length,
     unknown_arg_count: unknownCount,
+    evidence_refs: [...new Set(evidenceRefs)],
     complete_lines: completeLines.slice(-20),
     incomplete_lines: incompleteLines.slice(-20),
   };
@@ -1618,9 +1641,14 @@ function selfCheckRuntimeDispatchEvidence() {
   }
   const provenance = runtimeArgProvenanceEvidence([
     '[gpu-runtime-boundary] launch_arg_provenance kernel=current generation=2 complete=false known_args=1 unknown_args=2 degradedState=gpu-hmr-unknown-arg-provenance details=0:device-allocation:x:size=8',
-    '[gpu-runtime-boundary] launch_arg_provenance kernel=known generation=2 complete=true known_args=2 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8',
+    '[gpu-runtime-boundary] launch_arg_provenance kernel=known generation=2 runtime_session=pid1 complete=true known_args=2 unknown_args=0 degradedState=none details=0:device-allocation:x:size=8',
   ]);
-  if (provenance.total_count !== 2 || provenance.incomplete_count !== 1 || provenance.unknown_arg_count !== 2) {
+  if (
+    provenance.total_count !== 2
+    || provenance.incomplete_count !== 1
+    || provenance.unknown_arg_count !== 2
+    || provenance.evidence_refs[0] !== 'worker-log:launch_arg_provenance:known:pid1:2'
+  ) {
     throw new Error('runtime arg provenance evidence parser failed');
   }
   const runtimeSession = runtimeSessionEvidence([
@@ -2019,6 +2047,7 @@ async function collectRuntimeEvidence() {
     argProvenanceComplete: runtimeArgProvenance.total_count > 0
       && runtimeArgProvenance.incomplete_count === 0
       && runtimeArgProvenance.unknown_arg_count === 0,
+    argProvenanceEvidenceRefs: runtimeArgProvenance.evidence_refs,
     unknownArgCount: runtimeArgProvenance.unknown_arg_count,
     abiProof: report.abi_proof,
     epochProof: report.epoch_swap_proof,
