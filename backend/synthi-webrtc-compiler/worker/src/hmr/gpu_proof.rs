@@ -12,8 +12,10 @@ pub enum GpuHmrProofState {
     CompileProven,
     SymbolBound,
     AbiProven,
-    DispatchProven,
-    OutputProven,
+    EpochSwapProven,
+    DispatchObserved,
+    DispatchSafeProven,
+    OutputOracleProven,
     HostPreservationProven,
     FullRuntimeProven,
 }
@@ -24,8 +26,10 @@ impl GpuHmrProofState {
             Self::CompileProven => "gpu-hmr-compile-proven",
             Self::SymbolBound => "gpu-hmr-symbol-bound",
             Self::AbiProven => "gpu-hmr-abi-proven",
-            Self::DispatchProven => "gpu-hmr-dispatch-proven",
-            Self::OutputProven => "gpu-hmr-output-proven",
+            Self::EpochSwapProven => "gpu-hmr-epoch-swap-proven",
+            Self::DispatchObserved => "gpu-hmr-dispatch-observed",
+            Self::DispatchSafeProven => "gpu-hmr-dispatch-safe-proven",
+            Self::OutputOracleProven => "gpu-hmr-output-oracle-proven",
             Self::HostPreservationProven => "gpu-hmr-host-preservation-proven",
             Self::FullRuntimeProven => "gpu-hmr-full-runtime-proven",
         }
@@ -36,10 +40,12 @@ impl GpuHmrProofState {
             Self::CompileProven => 1,
             Self::SymbolBound => 2,
             Self::AbiProven => 3,
-            Self::DispatchProven => 4,
-            Self::OutputProven => 5,
-            Self::HostPreservationProven => 6,
-            Self::FullRuntimeProven => 7,
+            Self::EpochSwapProven => 4,
+            Self::DispatchObserved => 5,
+            Self::DispatchSafeProven => 6,
+            Self::OutputOracleProven => 7,
+            Self::HostPreservationProven => 8,
+            Self::FullRuntimeProven => 9,
         }
     }
 }
@@ -52,6 +58,9 @@ pub enum GpuHmrDegradedState {
     DispatchUnobserved,
     OutputUnobserved,
     HostReplaced,
+    EpochRetirementPending,
+    EpochSwapUnverified,
+    RamIoUnavailable,
     VisualOnly,
 }
 
@@ -64,6 +73,9 @@ impl GpuHmrDegradedState {
             Self::DispatchUnobserved => "gpu-hmr-dispatch-unobserved",
             Self::OutputUnobserved => "gpu-hmr-output-unobserved",
             Self::HostReplaced => "gpu-hmr-host-replaced",
+            Self::EpochRetirementPending => "gpu-hmr-epoch-retirement-pending",
+            Self::EpochSwapUnverified => "gpu-hmr-epoch-swap-unverified",
+            Self::RamIoUnavailable => "gpu-hmr-ram-io-unavailable",
             Self::VisualOnly => "gpu-hmr-visual-only",
         }
     }
@@ -448,8 +460,16 @@ mod tests {
             "gpu-hmr-compile-proven"
         );
         assert_eq!(
-            GpuHmrProofState::DispatchProven.as_str(),
-            "gpu-hmr-dispatch-proven"
+            GpuHmrProofState::DispatchObserved.as_str(),
+            "gpu-hmr-dispatch-observed"
+        );
+        assert_eq!(
+            GpuHmrProofState::DispatchSafeProven.as_str(),
+            "gpu-hmr-dispatch-safe-proven"
+        );
+        assert_eq!(
+            GpuHmrProofState::OutputOracleProven.as_str(),
+            "gpu-hmr-output-oracle-proven"
         );
         assert_eq!(
             GpuHmrProofState::FullRuntimeProven.as_str(),
@@ -467,6 +487,14 @@ mod tests {
         assert_eq!(
             GpuHmrDegradedState::UnknownArgProvenance.as_str(),
             "gpu-hmr-unknown-arg-provenance"
+        );
+        assert_eq!(
+            GpuHmrDegradedState::EpochSwapUnverified.as_str(),
+            "gpu-hmr-epoch-swap-unverified"
+        );
+        assert_eq!(
+            GpuHmrDegradedState::RamIoUnavailable.as_str(),
+            "gpu-hmr-ram-io-unavailable"
         );
         assert_eq!(
             GpuHmrDegradedState::VisualOnly.as_str(),
