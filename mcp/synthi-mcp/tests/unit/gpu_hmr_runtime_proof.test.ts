@@ -14,7 +14,10 @@ import {
   summarizeGpuHmrOutputProof,
 } from "../../scripts/lib/gpu-hmr-runtime-proof.mjs";
 import { abiProofFromProofArtifacts } from "../../scripts/lib/gpu-hmr-proof-artifacts.mjs";
-import { epochSwapProofFromRuntimeEvidence } from "../../scripts/lib/gpu-hmr-runtime-evidence.mjs";
+import {
+  epochSwapProofFromRuntimeEvidence,
+  hostPreservationProofFromRuntimeEvidence,
+} from "../../scripts/lib/gpu-hmr-runtime-evidence.mjs";
 
 function acceptedAbiProof() {
   return classifyGpuHmrAbiProof({
@@ -293,6 +296,32 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.old_generation_retired).toBe(false);
     expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
     expect(proof.degradedState).toBe("gpu-hmr-epoch-retirement-pending");
+  });
+
+  it("proves host preservation from matching runtime identity snapshots across generations", () => {
+    const { evidence, proof } = hostPreservationProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=2 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=3 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=renderer ptr=0x2000 aux=0 generation=2 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=renderer ptr=0x2000 aux=0 generation=3 runtime_session=pid1",
+    ]);
+
+    expect(evidence.identity_checks_passed).toBe(true);
+    expect(evidence.preserved_roles).toEqual(["core_state", "renderer"]);
+    expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
+    expect(proof.degradedState).toBeNull();
+  });
+
+  it("does not prove host preservation when a runtime identity changes", () => {
+    const { evidence, proof } = hostPreservationProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=2 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1010 aux=42 generation=3 runtime_session=pid1",
+    ]);
+
+    expect(evidence.identity_checks_passed).toBe(false);
+    expect(evidence.changed_roles).toEqual(["core_state"]);
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("host_identity_checks_not_collected");
   });
 
   it("requires session dispatch before dispatch proof can be considered", () => {

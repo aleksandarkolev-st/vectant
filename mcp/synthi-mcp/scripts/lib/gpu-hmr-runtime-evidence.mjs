@@ -1,4 +1,7 @@
-import { classifyGpuHmrEpochSwapProof } from './gpu-hmr-runtime-proof.mjs';
+import {
+  classifyGpuHmrEpochSwapProof,
+  classifyGpuHmrHostPreservationProof,
+} from './gpu-hmr-runtime-proof.mjs';
 
 function parseRuntimeKeyValues(line) {
   const out = {};
@@ -110,6 +113,72 @@ export function epochSwapProofFromRuntimeEvidence(lines) {
     retirementTracked: evidence.retirement_tracked,
     oldGenerationRetired: evidence.old_generation_retired,
     evidenceRefs: evidence.evidence_refs,
+  });
+  return { evidence, proof };
+}
+
+function hostIdentityRecord(line) {
+  const fields = parseRuntimeKeyValues(line);
+  return {
+    line,
+    role: fields.role ?? null,
+    ptr: fields.ptr ?? null,
+    aux: fields.aux ?? null,
+    generation: integerValue(fields.generation),
+    runtimeSession: fields.runtime_session ?? null,
+  };
+}
+
+export function runtimeHostIdentityEvidence(lines) {
+  const records = (Array.isArray(lines) ? lines : [])
+    .filter((line) => /\bhost_identity\b/i.test(String(line ?? '')))
+    .map(hostIdentityRecord)
+    .filter((record) =>
+      typeof record.role === 'string'
+      && record.role.trim()
+      && typeof record.ptr === 'string'
+      && /^0x[0-9a-f]+$/i.test(record.ptr)
+      && record.ptr !== '0x0'
+      && Number.isFinite(record.generation)
+    );
+  const byRole = new Map();
+  for (const record of records) {
+    if (!byRole.has(record.role)) byRole.set(record.role, []);
+    byRole.get(record.role).push(record);
+  }
+
+  const preservedRoles = [];
+  const changedRoles = [];
+  for (const [role, roleRecords] of byRole) {
+    const identities = new Set(roleRecords.map((record) => `${record.ptr}:${record.aux ?? ''}`));
+    const generations = new Set(roleRecords.map((record) => record.generation));
+    if (identities.size === 1 && generations.size >= 2) {
+      preservedRoles.push(role);
+    } else if (identities.size > 1) {
+      changedRoles.push(role);
+    }
+  }
+  preservedRoles.sort();
+  changedRoles.sort();
+
+  return {
+    total_count: records.length,
+    role_count: byRole.size,
+    preserved_roles: preservedRoles,
+    changed_roles: changedRoles,
+    identity_checks_passed: records.length > 0 && changedRoles.length === 0 && preservedRoles.length > 0,
+    evidence_refs: preservedRoles.map((role) => `worker-log:host_identity:${role}`),
+    lines: records.map((record) => record.line).slice(-20),
+  };
+}
+
+export function hostPreservationProofFromRuntimeEvidence(lines, observation = {}) {
+  const evidence = runtimeHostIdentityEvidence(lines);
+  const proof = classifyGpuHmrHostPreservationProof({
+    hostRestartObserved: observation.hostRestartObserved === true,
+    hostReplacementObserved: observation.hostReplacementObserved === true,
+    identityChecksPassed: evidence.identity_checks_passed,
+    identityEvidenceRefs: evidence.evidence_refs,
   });
   return { evidence, proof };
 }

@@ -21,7 +21,9 @@ import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import { abiProofFromProofArtifacts } from './lib/gpu-hmr-proof-artifacts.mjs';
 import {
   epochSwapProofFromRuntimeEvidence,
+  hostPreservationProofFromRuntimeEvidence,
   runtimeEpochSwapEvidence,
+  runtimeHostIdentityEvidence,
 } from './lib/gpu-hmr-runtime-evidence.mjs';
 import {
   classifyGpuHmrAbiProof,
@@ -1358,6 +1360,13 @@ function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('runtime epoch evidence parser failed');
   }
+  const hostIdentityEvidence = runtimeHostIdentityEvidence([
+    '[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=2 runtime_session=pid1',
+    '[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=3 runtime_session=pid1',
+  ]);
+  if (!hostIdentityEvidence.identity_checks_passed || hostIdentityEvidence.preserved_roles[0] !== 'core_state') {
+    throw new Error('runtime host identity evidence parser failed');
+  }
   const visualOnlyProof = classifyGpuHmrOutputProof({
     dispatchSafeProven: true,
     visualFrameObserved: true,
@@ -1451,6 +1460,11 @@ async function collectRuntimeEvidence() {
   const runtimeSession = runtimeSessionEvidence(workerEvidence);
   const runtimeOwnership = runtimeOwnershipEvidence(workerEvidence);
   const runtimeEpochSwap = epochSwapProofFromRuntimeEvidence(workerEvidence);
+  const hostRestartCount = countMatches(workerEvidence, /Restarting runner/i);
+  const runtimeHostPreservation = hostPreservationProofFromRuntimeEvidence(workerEvidence, {
+    hostRestartObserved: hostRestartCount > 0,
+    hostReplacementObserved: runtimeOwnership.primary_replacement_count > 0,
+  });
   report.evidence = {
     worker_log_lines: workerEvidence,
     worker_log_lines_unscoped_tail: unscopedWorkerEvidence.slice(-50),
@@ -1475,7 +1489,7 @@ async function collectRuntimeEvidence() {
     },
     runner_policy_counts: {
       existing_reload_blocked: countMatches(workerEvidence, /reload_policy_allow_existing=false/i),
-      runner_restarts: countMatches(workerEvidence, /Restarting runner/i),
+      runner_restarts: hostRestartCount,
       runner_exit_errors: countMatches(workerEvidence, /Runner process exited|Rust cannot catch|fatal runtime/i),
       primary_replacements: runtimeOwnership.primary_replacement_count,
     },
@@ -1484,6 +1498,7 @@ async function collectRuntimeEvidence() {
     runtime_session: runtimeSession,
     runtime_ownership: runtimeOwnership,
     runtime_epoch_swap: runtimeEpochSwap.evidence,
+    runtime_host_identity: runtimeHostPreservation.evidence,
   };
   if (runtimeDispatch.failure_count > 0) {
     record(
@@ -1527,6 +1542,15 @@ async function collectRuntimeEvidence() {
   } else {
     record('runtime epoch swap evidence', 'warn', 'no dispatcher_epoch lines captured');
   }
+  if (runtimeHostPreservation.evidence.total_count > 0) {
+    record(
+      'runtime host identity evidence',
+      runtimeHostPreservation.proof.degradedState || !runtimeHostPreservation.proof.resultState ? 'warn' : 'pass',
+      `records=${runtimeHostPreservation.evidence.total_count} preserved_roles=${runtimeHostPreservation.evidence.preserved_roles.join(',') || 'none'} changed_roles=${runtimeHostPreservation.evidence.changed_roles.join(',') || 'none'}`,
+    );
+  } else {
+    record('runtime host identity evidence', 'warn', 'no host_identity lines captured');
+  }
   const proofArtifactRecords = await collectGpuProofArtifacts();
   const foundProofArtifactCount = proofArtifactRecords.filter((entry) => entry?.found).length;
   const abiMetadataEvidenceCount = proofArtifactRecords.reduce((count, entry) => {
@@ -1562,10 +1586,7 @@ async function collectRuntimeEvidence() {
     visualFrameObserved: freshVisualFrames.length > 0,
     visualEvidenceRefs: freshVisualFrames.map((shot) => shot.path),
   });
-  report.host_preservation_proof = classifyGpuHmrHostPreservationProof({
-    hostRestartObserved: report.evidence.runner_policy_counts.runner_restarts > 0,
-    hostReplacementObserved: runtimeOwnership.primary_replacement_count > 0,
-  });
+  report.host_preservation_proof = runtimeHostPreservation.proof;
   report.full_runtime_proof = classifyGpuHmrFullRuntimeProof({
     sourceProofs: report.phases.map((phase) => phase.gpu_proof).filter(Boolean),
     abiProof: report.abi_proof,
