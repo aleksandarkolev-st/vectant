@@ -128,6 +128,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(evidence.total_count).toBe(1);
     expect(evidence.output_oracle?.actual).toBe("sha256:abc");
+    expect(evidence.output_oracle?.runtimeSession).toBe("pid1");
     expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
     expect(proof.outputOracle.evidenceRefs).toEqual(["worker-log:output_oracle:probe.checksum"]);
   });
@@ -147,7 +148,37 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.total_count).toBe(2);
     expect(evidence.matched_count).toBe(1);
     expect(evidence.output_oracle?.actual).toBe("sha256:def");
+    expect(evidence.output_oracle?.runtimeSession).toBe("pid1");
     expect(evidence.evidence_refs).toEqual(["worker-log:output_oracle:probe.expected"]);
+  });
+
+  it("only accepts runtime oracle records from the expected runtime session", () => {
+    const evidence = runtimeOutputOracleEvidence([
+      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=old-session",
+      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum expected=sha256:def actual=sha256:bad passed=false generation=3 runtime_session=current-session",
+    ], {
+      expectedOracle: {
+        id: "probe.expected",
+        kind: "buffer_checksum",
+        expected: "sha256:def",
+      },
+      runtimeSessionIds: ["current-session"],
+    });
+
+    expect(evidence.total_count).toBe(2);
+    expect(evidence.matched_count).toBe(1);
+    expect(evidence.output_oracle?.runtimeSession).toBe("current-session");
+    expect(evidence.deterministic_oracle_passed).toBe(false);
+  });
+
+  it("does not accept runtime oracle records without session provenance", () => {
+    const evidence = runtimeOutputOracleEvidence([
+      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum expected=sha256:def actual=sha256:def passed=true generation=3",
+    ]);
+
+    expect(evidence.total_count).toBe(0);
+    expect(evidence.deterministic_output_observed).toBe(false);
+    expect(evidence.output_oracle).toBeNull();
   });
 
   it("does not prove output when runtime oracle records miss the contract", () => {

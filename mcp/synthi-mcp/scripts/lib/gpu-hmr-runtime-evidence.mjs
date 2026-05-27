@@ -243,6 +243,15 @@ function oracleMatchesContract(record, contract) {
   return true;
 }
 
+function expectedRuntimeSessionIds(observation = {}) {
+  const explicit = Array.isArray(observation.expectedRuntimeSessionIds)
+    ? observation.expectedRuntimeSessionIds
+    : Array.isArray(observation.runtimeSessionIds)
+      ? observation.runtimeSessionIds
+      : [];
+  return compactStringList(explicit);
+}
+
 export function runtimeOutputOracleEvidence(lines, observation = {}) {
   const records = (Array.isArray(lines) ? lines : [])
     .filter((line) => /\boutput_oracle\b/i.test(String(line ?? '')))
@@ -255,11 +264,19 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
       && record.expected !== null
       && record.actual !== null
       && record.passed !== null
+      && typeof record.runtimeSession === 'string'
+      && record.runtimeSession.trim()
     );
   const expectedContract = normalizeOracleContract(observation.expectedOracle ?? observation.outputOracleContract);
-  const matchingRecords = records.filter((record) => oracleMatchesContract(record, expectedContract));
+  const expectedSessions = expectedRuntimeSessionIds(observation);
+  const matchingRecords = records.filter((record) =>
+    oracleMatchesContract(record, expectedContract)
+    && (expectedSessions.length === 0 || expectedSessions.includes(record.runtimeSession))
+  );
   const latest = matchingRecords.at(-1) ?? null;
   const passedRecords = matchingRecords.filter((record) => record.passed === true);
+  const runtimeSessionIds = compactStringList(matchingRecords.map((record) => record.runtimeSession));
+  const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const evidenceRefs = latest ? [`worker-log:output_oracle:${latest.oracleId}`] : [];
 
   return {
@@ -269,14 +286,19 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
     failed_count: matchingRecords.length - passedRecords.length,
     latest,
     expected_contract: expectedContract,
-    deterministic_output_observed: latest !== null && latest.actual !== null,
+    expected_runtime_session_ids: expectedSessions,
+    runtime_session_ids: runtimeSessionIds,
+    runtime_session_observed: latest !== null,
+    runtime_session_consistent: runtimeSessionConsistent,
+    deterministic_output_observed: latest !== null && latest.actual !== null && runtimeSessionConsistent,
     deterministic_oracle_provided: latest !== null && latest.expected !== null && typeof latest.kind === 'string',
-    deterministic_oracle_passed: latest?.passed === true,
+    deterministic_oracle_passed: latest?.passed === true && runtimeSessionConsistent,
     output_oracle: latest
       ? {
           kind: latest.kind,
           expected: latest.expected,
           actual: latest.actual,
+          runtimeSession: latest.runtimeSession,
           evidenceRefs,
         }
       : null,

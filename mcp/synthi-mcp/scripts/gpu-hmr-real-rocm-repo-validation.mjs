@@ -1846,6 +1846,7 @@ async function collectRuntimeEvidence() {
   const runtimeEpochSwap = epochSwapProofFromRuntimeEvidence(workerEvidence);
   const runtimeOutputOracle = runtimeOutputOracleEvidence(workerEvidence, {
     outputOracleContract: CFG.outputOracleContract,
+    runtimeSessionIds: runtimeSession.unique_ids,
   });
   const hostRestartCount = countMatches(workerEvidence, /Restarting runner/i);
   const runtimeIdentityChanges = runtimeIdentityChangeEvidence();
