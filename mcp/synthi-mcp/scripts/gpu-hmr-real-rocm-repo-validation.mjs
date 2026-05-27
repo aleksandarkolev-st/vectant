@@ -1739,6 +1739,7 @@ function selfCheckRuntimeDispatchEvidence() {
   const dispatchUnknownProof = classifyGpuHmrDispatchProof({
     dispatchObserved: true,
     sessionScoped: true,
+    runtimeSessionIds: ['runtime-session:self-check'],
     argProvenanceObserved: true,
     argProvenanceComplete: false,
     unknownArgCount: 2,
@@ -1764,6 +1765,7 @@ function selfCheckRuntimeDispatchEvidence() {
     dispatchProof: classifyGpuHmrDispatchProof({
       dispatchObserved: true,
       sessionScoped: true,
+      runtimeSessionIds: ['runtime-session:self-check'],
       argProvenanceObserved: true,
       argProvenanceComplete: true,
     }),
@@ -1967,7 +1969,8 @@ async function collectRuntimeEvidence() {
   report.epoch_swap_proof = runtimeEpochSwap.proof;
   report.dispatch_proof = classifyGpuHmrDispatchProof({
     dispatchObserved: runtimeDispatch.success_count > 0 && scopedWorkerLogs.marker_found,
-    sessionScoped: scopedWorkerLogs.marker_found,
+    sessionScoped: scopedWorkerLogs.marker_found && runtimeSession.record_count > 0,
+    runtimeSessionIds: runtimeSession.unique_ids,
     runtimeSessionConsistent: runtimeSession.record_count === 0 ? true : runtimeSession.consistent,
     argProvenanceObserved: runtimeArgProvenance.total_count > 0,
     argProvenanceComplete: runtimeArgProvenance.total_count > 0

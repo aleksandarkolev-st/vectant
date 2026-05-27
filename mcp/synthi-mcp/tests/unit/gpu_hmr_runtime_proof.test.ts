@@ -44,6 +44,7 @@ function safeDispatchProof() {
   return classifyGpuHmrDispatchProof({
     dispatchObserved: true,
     sessionScoped: true,
+    runtimeSessionIds: ["runtime-session:test"],
     argProvenanceObserved: true,
     argProvenanceComplete: true,
     abiProof: acceptedAbiProof(),
@@ -432,10 +433,28 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summarizeGpuHmrDispatchProof(proof)).toContain("dispatch=missing");
   });
 
+  it("requires concrete runtime session identity for dispatch proof", () => {
+    const proof = classifyGpuHmrDispatchProof({
+      dispatchObserved: true,
+      sessionScoped: true,
+      argProvenanceObserved: true,
+      argProvenanceComplete: true,
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      streamOrderingProven: true,
+      replacementScopeProven: true,
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedState).toBe("gpu-hmr-dispatch-unobserved");
+    expect(proof.degradedReason).toBe("runtime_session_identity_not_collected");
+  });
+
   it("downgrades observed dispatch without argument provenance", () => {
     const proof = classifyGpuHmrDispatchProof({
       dispatchObserved: true,
       sessionScoped: true,
+      runtimeSessionIds: ["runtime-session:test"],
     });
 
     expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
@@ -447,6 +466,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrDispatchProof({
       dispatchObserved: true,
       sessionScoped: true,
+      runtimeSessionIds: ["runtime-session:test"],
       argProvenanceObserved: true,
       argProvenanceComplete: true,
       unknownArgCount: 0,
@@ -470,6 +490,7 @@ describe("GPU HMR runtime output proof classification", () => {
       dispatchProof: classifyGpuHmrDispatchProof({
         dispatchObserved: true,
         sessionScoped: true,
+        runtimeSessionIds: ["runtime-session:test"],
         argProvenanceObserved: true,
         argProvenanceComplete: false,
         unknownArgCount: 1,
@@ -536,6 +557,7 @@ describe("GPU HMR runtime output proof classification", () => {
       dispatchProof: classifyGpuHmrDispatchProof({
         dispatchObserved: true,
         sessionScoped: true,
+        runtimeSessionIds: ["runtime-session:test"],
         argProvenanceObserved: true,
         argProvenanceComplete: false,
         unknownArgCount: 1,
@@ -578,6 +600,43 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(proof.resultState).toBe("gpu-hmr-full-runtime-proven");
     expect(proof.degradedState).toBeNull();
+    expect(proof.fullRuntimeProven).toBe(true);
+  });
+
+  it("does not reconstruct dispatch proof from output state alone", () => {
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      outputProof: { resultState: "gpu-hmr-output-oracle-proven" },
+      hostPreservationProof: classifyGpuHmrHostPreservationProof({
+        identityChecksPassed: true,
+      }),
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-dispatch-unobserved");
+    expect(proof.fullRuntimeProven).toBe(false);
+  });
+
+  it("uses dispatch proof embedded in output proof for the full ladder", () => {
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      outputProof: classifyGpuHmrOutputProof({
+        dispatchProof: safeDispatchProof(),
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      }),
+      hostPreservationProof: classifyGpuHmrHostPreservationProof({
+        identityChecksPassed: true,
+      }),
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-full-runtime-proven");
     expect(proof.fullRuntimeProven).toBe(true);
   });
 

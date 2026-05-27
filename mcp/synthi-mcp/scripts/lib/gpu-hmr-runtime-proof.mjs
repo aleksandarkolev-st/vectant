@@ -73,6 +73,15 @@ function compactStringList(values) {
     : [];
 }
 
+function runtimeSessionIdsFromObservation(observation = {}) {
+  return compactStringList([
+    observation.runtimeSessionId,
+    observation.currentRuntimeSessionId,
+    ...(Array.isArray(observation.runtimeSessionIds) ? observation.runtimeSessionIds : []),
+    ...(Array.isArray(observation.currentRuntimeSessionIds) ? observation.currentRuntimeSessionIds : []),
+  ]);
+}
+
 function acceptedAbiExtractorEvidence(observation = {}) {
   const explicitRefs = compactStringList(observation.acceptedExtractorEvidenceRefs);
   if (explicitRefs.length > 0) {
@@ -217,11 +226,15 @@ export function summarizeGpuHmrOutputProof(proof) {
 export function classifyGpuHmrDispatchProof(observation = {}) {
   const dispatchObserved = observation.dispatchObserved === true;
   const dispatchFailureObserved = observation.dispatchFailureObserved === true;
-  const sessionScoped =
+  const requestedSessionScoped =
     observation.sessionScoped === true
     || observation.currentSessionScoped === true
     || observation.runtimeSessionScoped === true;
-  const runtimeSessionConsistent = observation.runtimeSessionConsistent !== false;
+  const runtimeSessionIds = runtimeSessionIdsFromObservation(observation);
+  const runtimeSessionObserved = observation.runtimeSessionObserved === true || runtimeSessionIds.length > 0;
+  const sessionScoped = requestedSessionScoped && runtimeSessionObserved;
+  const runtimeSessionConsistent =
+    observation.runtimeSessionConsistent !== false && runtimeSessionIds.length <= 1;
   const argProvenanceObserved = observation.argProvenanceObserved === true;
   const argProvenanceComplete = observation.argProvenanceComplete === true;
   const unknownArgCount = Number.isFinite(observation.unknownArgCount)
@@ -249,12 +262,16 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       degradedReason: dispatchFailureObserved
         ? 'current_session_dispatch_failed'
         : !sessionScoped
-          ? 'current_session_dispatch_not_proven'
+          ? requestedSessionScoped && !runtimeSessionObserved
+            ? 'runtime_session_identity_not_collected'
+            : 'current_session_dispatch_not_proven'
           : !runtimeSessionConsistent
             ? 'runtime_session_identity_inconsistent'
             : 'runtime_dispatch_not_observed',
       dispatchObserved: false,
       sessionScoped,
+      runtimeSessionObserved,
+      runtimeSessionIds,
       runtimeSessionConsistent,
       argProvenanceObserved,
       argProvenanceComplete: false,
@@ -272,6 +289,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
         : 'launch_argument_provenance_not_collected',
       dispatchObserved: true,
       sessionScoped,
+      runtimeSessionObserved,
+      runtimeSessionIds,
       runtimeSessionConsistent,
       argProvenanceObserved,
       argProvenanceComplete: false,
@@ -287,6 +306,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
       degradedReason: abiProof?.degradedReason ?? 'dispatch_abi_proof_not_collected',
       dispatchObserved: true,
       sessionScoped,
+      runtimeSessionObserved,
+      runtimeSessionIds,
       runtimeSessionConsistent,
       argProvenanceObserved: true,
       argProvenanceComplete: true,
@@ -312,6 +333,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
           : 'dispatch_replacement_scope_proof_not_collected',
       dispatchObserved: true,
       sessionScoped,
+      runtimeSessionObserved,
+      runtimeSessionIds,
       runtimeSessionConsistent,
       argProvenanceObserved: true,
       argProvenanceComplete: true,
@@ -335,6 +358,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
         : 'runtime_artifact_does_not_match_selected_artifact',
       dispatchObserved: true,
       sessionScoped,
+      runtimeSessionObserved,
+      runtimeSessionIds,
       runtimeSessionConsistent,
       argProvenanceObserved: true,
       argProvenanceComplete: true,
@@ -355,6 +380,8 @@ export function classifyGpuHmrDispatchProof(observation = {}) {
     degradedReason: null,
     dispatchObserved: true,
     sessionScoped,
+    runtimeSessionObserved,
+    runtimeSessionIds,
     runtimeSessionConsistent,
     argProvenanceObserved: true,
     argProvenanceComplete: true,
@@ -599,20 +626,13 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
   const hostRank = effectiveProofRank(hostPreservationProof);
   const abiRank = effectiveProofRank(abiProof);
   const epochRank = effectiveProofRank(epochProof);
+  const embeddedDispatchProof =
+    outputProof?.dispatchProof && typeof outputProof.dispatchProof === 'object'
+      ? outputProof.dispatchProof
+      : null;
   const dispatchProof = observation.dispatchProof && typeof observation.dispatchProof === 'object'
     ? observation.dispatchProof
-    : outputRank >= proofStateRank('gpu-hmr-dispatch-safe-proven')
-      ? classifyGpuHmrDispatchProof({
-          dispatchObserved: true,
-          sessionScoped: true,
-          argProvenanceObserved: true,
-          argProvenanceComplete: true,
-          abiProven: true,
-          epochSwapProven: true,
-          streamOrderingProven: true,
-          replacementScopeProven: true,
-        })
-      : classifyGpuHmrDispatchProof({});
+    : embeddedDispatchProof ?? classifyGpuHmrDispatchProof({});
   const dispatchRank = effectiveProofRank(dispatchProof);
   const stages = [
     stageResult(

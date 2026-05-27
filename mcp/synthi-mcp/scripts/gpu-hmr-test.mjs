@@ -2100,7 +2100,8 @@ async function awaitRuntimeDispatchProof(
   const epochSwap = epochSwapProofFromRuntimeEvidence(String(window ?? '').split(/\r?\n/));
   return recordRuntimeDispatchProof(phase, name, {
     dispatchObserved,
-    sessionScoped: true,
+    sessionScoped: runtimeSession.recordCount > 0,
+    runtimeSessionIds: runtimeSession.uniqueIds,
     runtimeSessionConsistent: runtimeSession.consistent,
     argProvenanceObserved: provenance.totalCount > 0,
     argProvenanceComplete: provenance.complete,
