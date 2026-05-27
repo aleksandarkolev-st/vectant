@@ -1257,12 +1257,13 @@ impl Adapter for GpuModuleAdapter {
             eprintln!("{artifact_transport_line}");
             runtime_log_lines.push(artifact_transport_line);
             let publish_line = format!(
-                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
+                "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session={} previous_generation={} active_generation={} dispatch_table_hash=0x{:016x} changed_entries={} retirement_tracked=true retired_modules={} old_generation_retired={} stream_scope={} stream_ids={} stream_ordering_proven={} drain_result={} drain_elapsed_ms={} drain_budget_ms={}",
                 runtime_session_id(),
                 previous_generation,
                 active_generation,
                 dispatch_table_hash,
                 touched_symbols.len(),
+                retired_module_count,
                 retired_module_count == 0,
                 drain.scope_label,
                 drain.stream_ids_for_log(),
@@ -2054,6 +2055,7 @@ mod tests {
             .last_reload_log()
             .iter()
             .any(|line| line.contains("dispatcher_epoch event=published")
+                && line.contains("retired_modules=1")
                 && line.contains("stream_ordering_proven=true")));
         assert!(a
             .last_reload_log()

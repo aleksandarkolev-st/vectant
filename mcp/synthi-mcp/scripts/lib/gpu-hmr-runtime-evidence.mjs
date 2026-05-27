@@ -96,7 +96,10 @@ export function runtimeEpochSwapEvidence(lines) {
   const changedEntriesObserved = Number.isFinite(latestPublication?.changedEntries)
     && latestPublication.changedEntries >= 0;
   const retirementTracked = latestPublication?.retirementTracked === true;
-  const oldGenerationRetired = latestPublication?.oldGenerationRetired === true || retirement !== null;
+  const publicationRetirementComplete =
+    latestPublication?.oldGenerationRetired === true
+    && latestPublication?.retiredModules === 0;
+  const oldGenerationRetired = publicationRetirementComplete || retirement !== null;
   const streamScope = latestPublication?.streamScope ?? null;
   const streamIds = latestPublication?.streamIds ?? [];
   const streamScopeSupported =
@@ -119,6 +122,7 @@ export function runtimeEpochSwapEvidence(lines) {
     dispatch_table_hash_observed: dispatchTableHashObserved,
     changed_entries_observed: changedEntriesObserved,
     retirement_tracked: retirementTracked,
+    retirement_not_required: publicationRetirementComplete,
     old_generation_retired: oldGenerationRetired,
     stream_ordering_proven: streamOrderingProven,
     stream_scope: streamScope,

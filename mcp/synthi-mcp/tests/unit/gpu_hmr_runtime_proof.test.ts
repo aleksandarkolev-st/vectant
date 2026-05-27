@@ -718,6 +718,28 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBe("gpu-hmr-epoch-retirement-pending");
   });
 
+  it("keeps publication-only retirement pending without explicit zero retired modules", () => {
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
+    ]);
+
+    expect(evidence.retirement_not_required).toBe(false);
+    expect(evidence.old_generation_retired).toBe(false);
+    expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-retirement-pending");
+  });
+
+  it("accepts publication-only retirement when zero retired modules is explicit", () => {
+    const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true retired_modules=0 old_generation_retired=true stream_scope=affected stream_ids=default stream_ordering_proven=true drain_result=synced drain_elapsed_ms=1 drain_budget_ms=2000",
+    ]);
+
+    expect(evidence.retirement_not_required).toBe(true);
+    expect(evidence.old_generation_retired).toBe(true);
+    expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
+    expect(proof.degradedState).toBeNull();
+  });
+
   it("downgrades runtime epoch evidence when stream ordering is missing from the publication", () => {
     const { evidence, proof } = epochSwapProofFromRuntimeEvidence([
       "[gpu-runtime-boundary] dispatcher_epoch event=published runtime_session=pid1 previous_generation=2 active_generation=3 dispatch_table_hash=0xabc changed_entries=1 retirement_tracked=true old_generation_retired=true stream_scope=context",
