@@ -2975,6 +2975,27 @@ fn device_hmr_proof_stage_results(
     ]
 }
 
+fn abi_metadata_accepted_extractor_count(abi_material: &serde_json::Value) -> usize {
+    abi_material
+        .get("acceptedExtractorEvidenceRefs")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0)
+}
+
+fn device_abi_evidence_summary(abi_material: &serde_json::Value, constant_global_layout_hash: &str) -> String {
+    format!(
+        "kernel_signatures={} constant_global_layout_hash={} metadata_only=true accepted_extractors={}",
+        abi_material
+            .get("kernelSignatures")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0),
+        constant_global_layout_hash,
+        abi_metadata_accepted_extractor_count(abi_material)
+    )
+}
+
 async fn write_device_hmr_proof_artifact(
     workspace: &Path,
     workspace_slug: Option<&str>,
@@ -3145,15 +3166,7 @@ async fn write_device_hmr_proof_artifact(
             session_id: Some(runtime_session_id.clone()),
             file_path: None,
             artifact_uri: Some(selected_artifact_id.clone()),
-            summary: format!(
-                "kernel_signatures={} constant_global_layout_hash={} metadata_only=true accepted_extractors=0",
-                abi_material
-                    .get("kernelSignatures")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|items| items.len())
-                    .unwrap_or(0),
-                constant_global_layout_hash
-            ),
+            summary: device_abi_evidence_summary(&abi_material, &constant_global_layout_hash),
             metadata: Some(abi_material),
         },
     ];
@@ -9630,6 +9643,22 @@ __constant__ int scale;
             Some("abi_layout_size_alignment_unverified")
         );
         assert_eq!(abi_stage.evidence_refs, vec![abi_evidence.evidence_id.clone()]);
+    }
+
+    #[test]
+    fn device_abi_evidence_summary_reports_accepted_extractor_count() {
+        let abi_material = serde_json::json!({
+            "kernelSignatures": ["shade(float*)"],
+            "acceptedExtractorEvidenceRefs": [
+                "evidence:clang-ast:one",
+                "evidence:clang-record-layout:two"
+            ],
+        });
+
+        let summary = device_abi_evidence_summary(&abi_material, "sha256:layout");
+
+        assert!(summary.contains("kernel_signatures=1"));
+        assert!(summary.contains("accepted_extractors=2"));
     }
 
     #[test]
