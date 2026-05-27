@@ -1774,6 +1774,7 @@ async function awaitRuntimeDispatchProof(
   const provenance = launchArgProvenanceEvidence(window, expectedKernels);
   return recordRuntimeDispatchProof(phase, name, {
     dispatchObserved,
+    sessionScoped: true,
     argProvenanceObserved: provenance.totalCount > 0,
     argProvenanceComplete: provenance.complete,
     unknownArgCount: provenance.unknownArgCount,
@@ -2675,22 +2676,28 @@ async function selfCheck() {
     return;
   }
   const outputProof = classifyGpuHmrOutputProof({
-    dispatchObserved: true,
+    dispatchSafeProven: true,
     visualFrameObserved: true,
   });
   const dispatchProof = classifyGpuHmrDispatchProof({
     dispatchObserved: true,
+    sessionScoped: true,
     argProvenanceObserved: true,
     argProvenanceComplete: true,
+    abiProven: true,
+    epochSwapProven: true,
+    streamOrderingProven: true,
+    replacementScopeProven: true,
   });
   const unknownArgDispatchProof = classifyGpuHmrDispatchProof({
     dispatchObserved: true,
+    sessionScoped: true,
     argProvenanceObserved: true,
     argProvenanceComplete: false,
     unknownArgCount: 1,
   });
   if (
-    outputProof.resultState !== 'gpu-hmr-dispatch-proven'
+    outputProof.resultState !== 'gpu-hmr-dispatch-safe-proven'
     || outputProof.degradedState !== 'gpu-hmr-visual-only'
     || dispatchProof.degradedState !== null
     || unknownArgDispatchProof.degradedState !== 'gpu-hmr-unknown-arg-provenance'

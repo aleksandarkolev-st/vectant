@@ -1366,15 +1366,16 @@ function selfCheckRuntimeDispatchEvidence() {
     throw new Error('runtime ownership evidence parser failed');
   }
   const visualOnlyProof = classifyGpuHmrOutputProof({
-    dispatchObserved: true,
+    dispatchSafeProven: true,
     visualFrameObserved: true,
   });
   const outputMissingProof = classifyGpuHmrOutputProof({
-    dispatchObserved: true,
+    dispatchSafeProven: true,
     visualFrameObserved: false,
   });
   const dispatchUnknownProof = classifyGpuHmrDispatchProof({
     dispatchObserved: true,
+    sessionScoped: true,
     argProvenanceObserved: true,
     argProvenanceComplete: false,
     unknownArgCount: 2,
@@ -1399,6 +1400,7 @@ function selfCheckRuntimeDispatchEvidence() {
     abiProof: abiMetadataOnlyProof,
     dispatchProof: classifyGpuHmrDispatchProof({
       dispatchObserved: true,
+      sessionScoped: true,
       argProvenanceObserved: true,
       argProvenanceComplete: true,
     }),
@@ -1538,6 +1540,8 @@ async function collectRuntimeEvidence() {
   report.abi_proof = abiProofFromProofArtifacts(proofArtifactRecords);
   report.dispatch_proof = classifyGpuHmrDispatchProof({
     dispatchObserved: runtimeDispatch.success_count > 0 && scopedWorkerLogs.marker_found,
+    sessionScoped: scopedWorkerLogs.marker_found,
+    runtimeSessionConsistent: runtimeSession.record_count === 0 ? true : runtimeSession.consistent,
     argProvenanceObserved: runtimeArgProvenance.total_count > 0,
     argProvenanceComplete: runtimeArgProvenance.total_count > 0
       && runtimeArgProvenance.incomplete_count === 0

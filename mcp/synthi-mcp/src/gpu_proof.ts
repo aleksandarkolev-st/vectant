@@ -4,8 +4,10 @@ export const GPU_HMR_PROOF_STATES = [
   "gpu-hmr-compile-proven",
   "gpu-hmr-symbol-bound",
   "gpu-hmr-abi-proven",
-  "gpu-hmr-dispatch-proven",
-  "gpu-hmr-output-proven",
+  "gpu-hmr-epoch-swap-proven",
+  "gpu-hmr-dispatch-observed",
+  "gpu-hmr-dispatch-safe-proven",
+  "gpu-hmr-output-oracle-proven",
   "gpu-hmr-host-preservation-proven",
   "gpu-hmr-full-runtime-proven",
 ] as const;
@@ -19,6 +21,9 @@ export const GPU_HMR_DEGRADED_STATES = [
   "gpu-hmr-dispatch-unobserved",
   "gpu-hmr-output-unobserved",
   "gpu-hmr-host-replaced",
+  "gpu-hmr-epoch-retirement-pending",
+  "gpu-hmr-epoch-swap-unverified",
+  "gpu-hmr-ram-io-unavailable",
   "gpu-hmr-visual-only",
 ] as const;
 
@@ -53,12 +58,15 @@ const PROOF_STATE_RANKS = new Map<string, number>(
 
 const DEGRADED_STATE_RANK_CAPS = new Map<string, number>([
   ["gpu-hmr-fake-launch-path", gpuHmrProofStateRank("gpu-hmr-symbol-bound")],
-  ["gpu-hmr-unknown-arg-provenance", gpuHmrProofStateRank("gpu-hmr-abi-proven")],
+  ["gpu-hmr-unknown-arg-provenance", gpuHmrProofStateRank("gpu-hmr-dispatch-observed")],
   ["gpu-hmr-abi-unverified", gpuHmrProofStateRank("gpu-hmr-symbol-bound")],
-  ["gpu-hmr-dispatch-unobserved", gpuHmrProofStateRank("gpu-hmr-abi-proven")],
-  ["gpu-hmr-output-unobserved", gpuHmrProofStateRank("gpu-hmr-dispatch-proven")],
-  ["gpu-hmr-host-replaced", gpuHmrProofStateRank("gpu-hmr-output-proven")],
-  ["gpu-hmr-visual-only", gpuHmrProofStateRank("gpu-hmr-dispatch-proven")],
+  ["gpu-hmr-dispatch-unobserved", gpuHmrProofStateRank("gpu-hmr-epoch-swap-proven")],
+  ["gpu-hmr-output-unobserved", gpuHmrProofStateRank("gpu-hmr-dispatch-safe-proven")],
+  ["gpu-hmr-host-replaced", gpuHmrProofStateRank("gpu-hmr-output-oracle-proven")],
+  ["gpu-hmr-epoch-retirement-pending", gpuHmrProofStateRank("gpu-hmr-abi-proven")],
+  ["gpu-hmr-epoch-swap-unverified", gpuHmrProofStateRank("gpu-hmr-abi-proven")],
+  ["gpu-hmr-ram-io-unavailable", gpuHmrProofStateRank("gpu-hmr-epoch-swap-proven")],
+  ["gpu-hmr-visual-only", gpuHmrProofStateRank("gpu-hmr-dispatch-safe-proven")],
 ]);
 
 function stringOrNull(value: unknown): string | null {
