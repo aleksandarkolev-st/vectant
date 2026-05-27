@@ -164,6 +164,31 @@ function hostIdentityRecord(line) {
   };
 }
 
+function hostIdentityRoleCategory(role) {
+  const normalized = String(role ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (
+    normalized.includes('core')
+    || normalized.includes('gui')
+    || normalized.includes('renderer')
+    || normalized.includes('module')
+    || normalized.includes('host')
+    || normalized.includes('state')
+  ) {
+    return 'host_state';
+  }
+  if (
+    normalized.includes('allocation')
+    || normalized.includes('buffer')
+    || normalized.includes('stream')
+    || normalized.includes('context')
+    || normalized.includes('event')
+  ) {
+    return 'runtime_resource';
+  }
+  return null;
+}
+
 export function runtimeHostIdentityEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
   const records = (Array.isArray(lines) ? lines : [])
@@ -201,6 +226,12 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
   }
   preservedRoles.sort();
   changedRoles.sort();
+  const preservedRoleCategories = compactStringList(
+    preservedRoles.map((role) => hostIdentityRoleCategory(role)),
+  );
+  const requiredRolesObserved =
+    preservedRoleCategories.includes('host_state')
+    && preservedRoleCategories.includes('runtime_resource');
 
   return {
     total_count: records.length,
@@ -211,11 +242,14 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     runtime_session_consistent: runtimeSessionConsistent,
     preserved_roles: preservedRoles,
     changed_roles: changedRoles,
+    preserved_role_categories: preservedRoleCategories,
+    required_roles_observed: requiredRolesObserved,
     identity_checks_passed:
       records.length > 0
       && runtimeSessionConsistent
       && changedRoles.length === 0
-      && preservedRoles.length > 0,
+      && preservedRoles.length > 0
+      && requiredRolesObserved,
     evidence_refs: preservedRoles.map((role) => `worker-log:host_identity:${role}`),
     lines: records.map((record) => record.line).slice(-20),
   };
