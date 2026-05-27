@@ -121,10 +121,31 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const dispatchUsable = dispatchProof
     ? proofMeets(dispatchProof, 'gpu-hmr-dispatch-safe-proven')
     : observation.dispatchSafeProven === true;
-  const deterministicOutputObserved = observation.deterministicOutputObserved === true;
-  const deterministicOracleProvided = observation.deterministicOracleProvided === true;
+  const rawOracle = observation.outputOracle && typeof observation.outputOracle === 'object'
+    ? observation.outputOracle
+    : {};
+  const hasExpected = Object.prototype.hasOwnProperty.call(rawOracle, 'expected');
+  const hasActual = Object.prototype.hasOwnProperty.call(rawOracle, 'actual');
+  const oracleKind = typeof rawOracle.kind === 'string' && rawOracle.kind.trim()
+    ? rawOracle.kind.trim()
+    : null;
+  const oracleEvidenceRefs = Array.isArray(rawOracle.evidenceRefs)
+    ? rawOracle.evidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
+    : [];
+  const deterministicOutputObserved = observation.deterministicOutputObserved === true && hasActual;
+  const deterministicOracleProvided = observation.deterministicOracleProvided === true && oracleKind !== null && hasExpected;
   const deterministicOraclePassed =
     deterministicOutputObserved && deterministicOracleProvided && observation.deterministicOraclePassed === true;
+  const outputOracle = {
+    provided: deterministicOracleProvided,
+    observed: deterministicOutputObserved,
+    passed: deterministicOraclePassed,
+    kind: oracleKind,
+    expected: hasExpected ? rawOracle.expected : null,
+    actual: hasActual ? rawOracle.actual : null,
+    tolerance: Object.prototype.hasOwnProperty.call(rawOracle, 'tolerance') ? rawOracle.tolerance : null,
+    evidenceRefs: oracleEvidenceRefs,
+  };
   const visualFrameObserved = observation.visualFrameObserved === true;
   const evidenceRefs = Array.isArray(observation.evidenceRefs)
     ? observation.evidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
@@ -139,11 +160,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       resultState: dispatchProof?.resultState ?? null,
       degradedState: dispatchProof?.degradedState ?? 'gpu-hmr-dispatch-unobserved',
       degradedReason: dispatchProof?.degradedReason ?? 'runtime_dispatch_not_observed',
-      outputOracle: {
-        provided: deterministicOracleProvided,
-        observed: deterministicOutputObserved,
-        passed: false,
-      },
+      outputOracle: { ...outputOracle, passed: false },
       visualFrameObserved,
       evidenceRefs,
       visualEvidenceRefs,
@@ -157,11 +174,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
       resultState: 'gpu-hmr-output-oracle-proven',
       degradedState: null,
       degradedReason: null,
-      outputOracle: {
-        provided: true,
-        observed: true,
-        passed: true,
-      },
+      outputOracle,
       visualFrameObserved,
       evidenceRefs,
       visualEvidenceRefs,
@@ -181,11 +194,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     resultState: dispatchProof?.resultState ?? 'gpu-hmr-dispatch-safe-proven',
     degradedState,
     degradedReason,
-    outputOracle: {
-      provided: deterministicOracleProvided,
-      observed: deterministicOutputObserved,
-      passed: false,
-    },
+    outputOracle: { ...outputOracle, passed: false },
     visualFrameObserved,
     evidenceRefs,
     visualEvidenceRefs,

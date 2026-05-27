@@ -52,6 +52,15 @@ function safeDispatchProof() {
   });
 }
 
+function deterministicOutputOracle() {
+  return {
+    kind: "runtime_readback",
+    expected: "expected-sentinel",
+    actual: "expected-sentinel",
+    evidenceRefs: ["evidence:readback:abc"],
+  };
+}
+
 describe("GPU HMR runtime output proof classification", () => {
   it("requires dispatch before output proof can be considered", () => {
     const proof = classifyGpuHmrOutputProof({
@@ -90,12 +99,29 @@ describe("GPU HMR runtime output proof classification", () => {
       deterministicOutputObserved: true,
       deterministicOracleProvided: true,
       deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
       visualFrameObserved: true,
     });
 
     expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.outputOracle.passed).toBe(true);
+    expect(proof.outputOracle.kind).toBe("runtime_readback");
+  });
+
+  it("does not prove output from oracle booleans without a concrete oracle record", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      visualFrameObserved: true,
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-visual-only");
+    expect(proof.outputOracle.provided).toBe(false);
+    expect(proof.outputOracle.observed).toBe(false);
   });
 
   it("reports host replacement only from explicit restart or replacement evidence", () => {
@@ -377,6 +403,7 @@ describe("GPU HMR runtime output proof classification", () => {
       deterministicOutputObserved: true,
       deterministicOracleProvided: true,
       deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
     });
 
     expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
@@ -414,6 +441,7 @@ describe("GPU HMR runtime output proof classification", () => {
         deterministicOutputObserved: true,
         deterministicOracleProvided: true,
         deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
       }),
       hostPreservationProof: classifyGpuHmrHostPreservationProof({
         identityChecksPassed: true,
@@ -443,6 +471,7 @@ describe("GPU HMR runtime output proof classification", () => {
         deterministicOutputObserved: true,
         deterministicOracleProvided: true,
         deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
       }),
       hostPreservationProof: classifyGpuHmrHostPreservationProof({
         identityChecksPassed: true,
@@ -466,6 +495,7 @@ describe("GPU HMR runtime output proof classification", () => {
         deterministicOutputObserved: true,
         deterministicOracleProvided: true,
         deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
       }),
       hostPreservationProof: classifyGpuHmrHostPreservationProof({
         identityChecksPassed: true,
@@ -488,6 +518,7 @@ describe("GPU HMR runtime output proof classification", () => {
         deterministicOutputObserved: true,
         deterministicOracleProvided: true,
         deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
       }),
       hostPreservationProof: classifyGpuHmrHostPreservationProof({
         hostReplacementObserved: true,

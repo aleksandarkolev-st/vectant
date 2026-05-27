@@ -138,6 +138,9 @@ function recordRuntimeOutputProof(phase, name, observation) {
       deterministicOutputObserved: observation?.deterministicOutputObserved === true,
       deterministicOracleProvided: observation?.deterministicOracleProvided === true,
       deterministicOraclePassed: observation?.deterministicOraclePassed === true,
+      outputOracle: proof.outputOracle ?? null,
+      evidenceRefs: Array.isArray(proof.evidenceRefs) ? proof.evidenceRefs : [],
+      visualEvidenceRefs: Array.isArray(proof.visualEvidenceRefs) ? proof.visualEvidenceRefs : [],
       visualFrameObserved: observation?.visualFrameObserved === true,
     },
     ts: new Date().toISOString(),
@@ -2040,6 +2043,12 @@ async function phaseFlow(ctx) {
     deterministicOutputObserved: inwardTrend.matched,
     deterministicOracleProvided: true,
     deterministicOraclePassed: inwardTrend.matched,
+    outputOracle: {
+      kind: 'runtime_readback_trend',
+      expected: 'inward',
+      actual: inwardTrend.matched ? 'inward' : null,
+      evidenceRefs: inwardTrend.snippet ? [inwardTrend.snippet] : [],
+    },
     visualFrameObserved: Boolean(inwardScreenshot),
     visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
   });
@@ -2099,6 +2108,12 @@ async function phaseFlow(ctx) {
     deterministicOutputObserved: trend.matched,
     deterministicOracleProvided: true,
     deterministicOraclePassed: trend.matched,
+    outputOracle: {
+      kind: 'runtime_readback_trend',
+      expected: 'outward',
+      actual: trend.matched ? 'outward' : null,
+      evidenceRefs: trend.snippet ? [trend.snippet] : [],
+    },
     visualFrameObserved: Boolean(outwardScreenshot),
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
   });
