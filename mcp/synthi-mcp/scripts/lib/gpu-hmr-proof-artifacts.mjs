@@ -21,6 +21,21 @@ function abiStageFromArtifact(artifact) {
   });
 }
 
+function artifactTransportEvidenceId(evidence, artifact, record) {
+  if (typeof evidence?.evidenceId === 'string' && evidence.evidenceId.trim()) {
+    return evidence.evidenceId.trim();
+  }
+  return `${artifact?.proofId ?? record?.proofArtifactPath ?? 'gpu-hmr-proof-artifact'}:device-artifact-transport`;
+}
+
+function artifactTransportStageFromArtifact(artifact) {
+  const stages = Array.isArray(artifact?.stageResults) ? artifact.stageResults : [];
+  return stages.find((stage) => {
+    const stageId = String(stage?.stageId ?? '').toLowerCase();
+    return stageId === 'artifact-transport' || stageId.includes('artifact-transport');
+  });
+}
+
 export function abiProofFromProofArtifacts(records) {
   const evidenceRefs = [];
   const acceptedExtractorEvidenceRefs = [];
@@ -76,4 +91,83 @@ export function abiProofFromProofArtifacts(records) {
     extractorProvenance,
     extractorProvenanceComplete,
   });
+}
+
+export function artifactTransportProofFromProofArtifacts(records) {
+  const evidenceRefs = [];
+  const loaderTransports = [];
+  const reloadRequestTransports = [];
+  let transportEvidenceObserved = false;
+  let ramArtifactReferenceProvided = false;
+  let ramTransportProven = false;
+  let degradedState = null;
+  let degradedReason = null;
+
+  for (const record of Array.isArray(records) ? records : []) {
+    const artifact = record?.artifact;
+    if (!artifact || typeof artifact !== 'object') continue;
+
+    const artifactEvidenceRefs = Array.isArray(artifact.evidenceRefs) ? artifact.evidenceRefs : [];
+    for (const evidence of artifactEvidenceRefs) {
+      if (evidence?.kind !== 'device-artifact-transport') continue;
+      const metadata = evidence?.metadata;
+      if (metadata?.schemaVersion !== 'synthi.gpu.hmr.artifact_transport.v1') continue;
+
+      transportEvidenceObserved = true;
+      evidenceRefs.push(artifactTransportEvidenceId(evidence, artifact, record));
+      loaderTransports.push(...uniqueStrings([metadata.selectedLoaderTransport]));
+      reloadRequestTransports.push(...uniqueStrings(metadata.reloadRequestTransports));
+      if (metadata.ramArtifactReferenceProvided === true) {
+        ramArtifactReferenceProvided = true;
+      }
+      if (
+        metadata.ramArtifactReferenceProvided === true
+        && ['ram_bytes', 'ram_blob'].includes(String(metadata.selectedLoaderTransport ?? '').trim())
+      ) {
+        ramTransportProven = true;
+      }
+      if (!degradedState && typeof metadata.degradedState === 'string' && metadata.degradedState.trim()) {
+        degradedState = metadata.degradedState.trim();
+      }
+      if (!degradedReason && typeof metadata.degradedReason === 'string' && metadata.degradedReason.trim()) {
+        degradedReason = metadata.degradedReason.trim();
+      }
+    }
+
+    const transportStage = artifactTransportStageFromArtifact(artifact);
+    if (!degradedState && typeof transportStage?.degradedState === 'string' && transportStage.degradedState.trim()) {
+      degradedState = transportStage.degradedState.trim();
+    }
+    if (!degradedReason && typeof transportStage?.degradedReason === 'string' && transportStage.degradedReason.trim()) {
+      degradedReason = transportStage.degradedReason.trim();
+    }
+  }
+
+  return {
+    schemaVersion: 'synthi.gpu.hmr.artifact_transport_proof.v1',
+    transportEvidenceObserved,
+    ramTransportProven,
+    ramArtifactReferenceProvided,
+    loaderTransports: uniqueStrings(loaderTransports),
+    reloadRequestTransports: uniqueStrings(reloadRequestTransports),
+    evidenceRefs: uniqueStrings(evidenceRefs),
+    degradedState: ramTransportProven ? null : degradedState ?? 'gpu-hmr-ram-io-unavailable',
+    degradedReason: ramTransportProven
+      ? null
+      : degradedReason ?? (transportEvidenceObserved
+        ? 'ram_artifact_transport_not_proven'
+        : 'artifact_transport_evidence_not_collected'),
+  };
+}
+
+export function summarizeGpuHmrArtifactTransportProof(proof) {
+  if (!proof || typeof proof !== 'object') return 'gpu_artifact_transport=missing';
+  const state = proof.ramTransportProven ? 'ram-proven' : 'ram-unproven';
+  const degraded = proof.degradedState ? ` degraded=${proof.degradedState}` : '';
+  const reason = proof.degradedReason ? ` reason=${proof.degradedReason}` : '';
+  const loader = Array.isArray(proof.loaderTransports) && proof.loaderTransports.length
+    ? ` loader=${proof.loaderTransports.join(',')}`
+    : ' loader=unknown';
+  const refs = Array.isArray(proof.evidenceRefs) ? ` evidence_refs=${proof.evidenceRefs.length}` : '';
+  return `gpu_artifact_transport=${state}${degraded}${reason}${loader}${refs}`;
 }

@@ -48,7 +48,11 @@ import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
-import { abiProofFromProofArtifacts } from './lib/gpu-hmr-proof-artifacts.mjs';
+import {
+  abiProofFromProofArtifacts,
+  artifactTransportProofFromProofArtifacts,
+  summarizeGpuHmrArtifactTransportProof,
+} from './lib/gpu-hmr-proof-artifacts.mjs';
 import { epochSwapProofFromRuntimeEvidence } from './lib/gpu-hmr-runtime-evidence.mjs';
 import {
   classifyGpuHmrDispatchProof,
@@ -123,11 +127,24 @@ function log(kind, msg) {
 const results = [];
 const runtimeDispatchProofs = [];
 const runtimeOutputProofs = [];
+const artifactTransportProofs = [];
 function record(phase, name, status, detail = '') {
   results.push({ phase, name, status, detail, ts: new Date().toISOString() });
   const l = status === 'pass' ? 'ok' : status === 'fail' ? 'fail' : status === 'skip' ? 'skip' : 'warn';
   log(l, `[${phase}] ${name}${detail ? ' — ' + detail : ''}`);
 }
+function recordArtifactTransportProof(phase, name, proofArtifactRecords) {
+  const proof = artifactTransportProofFromProofArtifacts(proofArtifactRecords);
+  artifactTransportProofs.push({
+    phase,
+    name,
+    proof,
+    ts: new Date().toISOString(),
+  });
+  record(phase, name, proof.degradedState ? 'warn' : 'pass', summarizeGpuHmrArtifactTransportProof(proof));
+  return proof;
+}
+
 function recordRuntimeOutputProof(phase, name, observation) {
   const proof = classifyGpuHmrOutputProof(observation);
   runtimeOutputProofs.push({
@@ -2321,6 +2338,11 @@ async function phaseFlow(ctx) {
     baselineAbiProof.degradedState ? 'warn' : 'pass',
     summarizeGpuHmrAbiProof(baselineAbiProof),
   );
+  recordArtifactTransportProof(
+    'FLOW',
+    'inward artifact transport proof',
+    baselineProofArtifacts,
+  );
 
   const baselineLaunch = await awaitWorkerLogRegex(
     /synthi_gpu_launch kernel=particle_flow|Device sidecar reload vendor=.*result=Success/,
@@ -2396,6 +2418,11 @@ async function phaseFlow(ctx) {
     'outward ABI proof from artifact',
     flipAbiProof.degradedState ? 'warn' : 'pass',
     summarizeGpuHmrAbiProof(flipAbiProof),
+  );
+  recordArtifactTransportProof(
+    'FLOW',
+    'outward artifact transport proof',
+    flipProofArtifacts,
   );
 
   const fastSwap = await awaitWorkerLogRegex(
@@ -2960,6 +2987,7 @@ async function writeSummary() {
     summary: { total: results.length, passed, warned, failed, skipped },
     runtime_dispatch_proofs: runtimeDispatchProofs,
     runtime_output_proofs: runtimeOutputProofs,
+    artifact_transport_proofs: artifactTransportProofs,
     results,
   };
   await writeFile(path.join(LOG_DIR, 'results.json'), JSON.stringify(summary, null, 2));

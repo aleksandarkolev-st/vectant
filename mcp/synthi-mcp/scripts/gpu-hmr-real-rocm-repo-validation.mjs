@@ -18,7 +18,11 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
-import { abiProofFromProofArtifacts } from './lib/gpu-hmr-proof-artifacts.mjs';
+import {
+  abiProofFromProofArtifacts,
+  artifactTransportProofFromProofArtifacts,
+  summarizeGpuHmrArtifactTransportProof,
+} from './lib/gpu-hmr-proof-artifacts.mjs';
 import {
   epochSwapProofFromRuntimeEvidence,
   hostPreservationProofFromRuntimeEvidence,
@@ -235,6 +239,7 @@ const report = {
   },
   proof_artifacts: [],
   abi_proof: null,
+  artifact_transport_proof: null,
   epoch_swap_proof: null,
   dispatch_proof: null,
   output_proof: null,
@@ -1968,6 +1973,7 @@ async function collectRuntimeEvidence() {
     (shot) => shot && shot.width >= 320 && shot.height >= 240 && shot.visible_pixels > 500,
   );
   report.abi_proof = abiProofFromProofArtifacts(proofArtifactRecords);
+  report.artifact_transport_proof = artifactTransportProofFromProofArtifacts(proofArtifactRecords);
   report.epoch_swap_proof = runtimeEpochSwap.proof;
   report.dispatch_proof = classifyGpuHmrDispatchProof({
     dispatchObserved: runtimeDispatch.success_count > 0 && scopedWorkerLogs.marker_found,
@@ -2007,6 +2013,11 @@ async function collectRuntimeEvidence() {
     'runtime ABI proof',
     report.abi_proof.degradedState ? 'warn' : 'pass',
     summarizeGpuHmrAbiProof(report.abi_proof),
+  );
+  record(
+    'runtime artifact transport proof',
+    report.artifact_transport_proof.degradedState ? 'warn' : 'pass',
+    summarizeGpuHmrArtifactTransportProof(report.artifact_transport_proof),
   );
   record(
     'runtime epoch swap proof',
@@ -2117,6 +2128,8 @@ async function writeResults() {
     ...report.screenshots.map((shot) => `SCREENSHOT ${shot.label} visible=${shot.visible_pixels} luma=${shot.mean_luma.toFixed(1)} path=${shot.path}`),
     '',
     `ABI_PROOF ${summarizeGpuHmrAbiProof(report.abi_proof)}`,
+    '',
+    `ARTIFACT_TRANSPORT_PROOF ${summarizeGpuHmrArtifactTransportProof(report.artifact_transport_proof)}`,
     '',
     `EPOCH_SWAP_PROOF ${summarizeGpuHmrEpochSwapProof(report.epoch_swap_proof)}`,
     '',

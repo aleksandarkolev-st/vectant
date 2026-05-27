@@ -2903,6 +2903,7 @@ fn device_hmr_proof_stage_results(
     source_edit_id: &str,
     selected_artifact_id: &str,
     artifact_evidence_id: &str,
+    transport_evidence_id: &str,
     compiler_evidence_id: &str,
     symbol_evidence_id: &str,
     abi_evidence_id: &str,
@@ -2931,6 +2932,18 @@ fn device_hmr_proof_stage_results(
             ],
             degraded_state: None,
             degraded_reason: None,
+        },
+        GpuHmrProofStageResult {
+            stage_id: "artifact-transport".to_string(),
+            stage_name: "Device artifact transport".to_string(),
+            status: "blocked".to_string(),
+            started_at: created_at.to_string(),
+            completed_at: created_at.to_string(),
+            input_artifact_ids: vec![selected_artifact_id.to_string()],
+            output_artifact_ids: vec![selected_artifact_id.to_string()],
+            evidence_refs: vec![transport_evidence_id.to_string()],
+            degraded_state: Some(GpuHmrDegradedState::RamIoUnavailable.as_str().to_string()),
+            degraded_reason: Some("reload_request_contains_filesystem_path_only".to_string()),
         },
         GpuHmrProofStageResult {
             stage_id: "symbol-binding".to_string(),
@@ -2996,6 +3009,66 @@ fn device_abi_evidence_summary(abi_material: &serde_json::Value, constant_global
     )
 }
 
+fn device_artifact_transport_metadata(
+    selected_artifact_id: &str,
+    artifact_hash: &str,
+    artifact_bytes: usize,
+    outcome: &DeviceCompileOutcome,
+) -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": "synthi.gpu.hmr.artifact_transport.v1",
+        "selectedArtifactId": selected_artifact_id,
+        "artifactContentHash": format!("sha256:{artifact_hash}"),
+        "artifactBytes": artifact_bytes,
+        "compileOutputTransport": "filesystem_path",
+        "reloadRequestTransports": ["filesystem_path"],
+        "selectedLoaderTransport": serde_json::Value::Null,
+        "ramArtifactReferenceProvided": false,
+        "ramBlobId": serde_json::Value::Null,
+        "ramBytesHash": serde_json::Value::Null,
+        "fallbackRecorded": true,
+        "degradedState": GpuHmrDegradedState::RamIoUnavailable.as_str(),
+        "degradedReason": "reload_request_contains_filesystem_path_only",
+        "partialModule": outcome.partial_module,
+        "selectedArtifactKind": outcome.selected_artifact_kind.as_deref(),
+        "requestedArtifactKind": outcome.requested_artifact_kind.as_deref(),
+    })
+}
+
+fn device_artifact_transport_summary(transport_material: &serde_json::Value) -> String {
+    format!(
+        "compile_transport={} reload_transports={} selected_loader={} ram_reference={} degraded_state={}",
+        transport_material
+            .get("compileOutputTransport")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown"),
+        transport_material
+            .get("reloadRequestTransports")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "unknown".to_string()),
+        transport_material
+            .get("selectedLoaderTransport")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown"),
+        transport_material
+            .get("ramArtifactReferenceProvided")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        transport_material
+            .get("degradedState")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("none")
+    )
+}
+
 async fn write_device_hmr_proof_artifact(
     workspace: &Path,
     workspace_slug: Option<&str>,
@@ -3030,6 +3103,15 @@ async fn write_device_hmr_proof_artifact(
     let artifact_path = workspace_relative_string(workspace, &outcome.artifact_path);
 
     let artifact_evidence_id = format!("evidence:device-artifact:{artifact_hash}");
+    let transport_material = device_artifact_transport_metadata(
+        &selected_artifact_id,
+        &artifact_hash,
+        artifact_bytes.len(),
+        outcome,
+    );
+    let transport_evidence_hash = sha256_hex_str(&transport_material.to_string());
+    let transport_evidence_id =
+        format!("evidence:device-artifact-transport:{transport_evidence_hash}");
     let compiler_evidence_hash = sha256_hex_str(&outcome.stderr);
     let compiler_evidence_id = format!("evidence:device-compiler:{compiler_evidence_hash}");
     let symbol_material = serde_json::json!({
@@ -3121,6 +3203,18 @@ async fn write_device_hmr_proof_artifact(
             })),
         },
         GpuHmrProofEvidenceRef {
+            evidence_id: transport_evidence_id.clone(),
+            kind: "device-artifact-transport".to_string(),
+            content_hash: format!("sha256:{transport_evidence_hash}"),
+            producer_subsystem: "worker.compile_device".to_string(),
+            timestamp: created_at.clone(),
+            session_id: Some(runtime_session_id.clone()),
+            file_path: None,
+            artifact_uri: Some(selected_artifact_id.clone()),
+            summary: device_artifact_transport_summary(&transport_material),
+            metadata: Some(transport_material),
+        },
+        GpuHmrProofEvidenceRef {
             evidence_id: compiler_evidence_id.clone(),
             kind: "device-compiler-output".to_string(),
             content_hash: format!("sha256:{compiler_evidence_hash}"),
@@ -3205,6 +3299,7 @@ async fn write_device_hmr_proof_artifact(
         &source_edit_id,
         &selected_artifact_id,
         &artifact_evidence_id,
+        &transport_evidence_id,
         &compiler_evidence_id,
         &symbol_evidence_id,
         &abi_evidence_id,
@@ -9507,6 +9602,7 @@ mod gpu_host_contract_tests {
             "source-edit:abc",
             "artifact:sha256:def",
             "evidence:artifact",
+            "evidence:transport",
             "evidence:compiler",
             "evidence:symbols",
             "evidence:abi",
@@ -9515,22 +9611,29 @@ mod gpu_host_contract_tests {
         );
 
         assert_eq!(stages[0].stage_id, "device-compile");
-        assert_eq!(stages[1].stage_id, "symbol-binding");
-        assert_eq!(stages[1].status, "passed");
-        assert_eq!(stages[2].stage_id, "abi-compatibility");
-        assert_eq!(stages[2].status, "blocked");
+        assert_eq!(stages[1].stage_id, "artifact-transport");
+        assert_eq!(stages[1].status, "blocked");
         assert_eq!(
-            stages[2].degraded_state.as_deref(),
+            stages[1].degraded_state.as_deref(),
+            Some("gpu-hmr-ram-io-unavailable")
+        );
+        assert_eq!(stages[1].evidence_refs, vec!["evidence:transport".to_string()]);
+        assert_eq!(stages[2].stage_id, "symbol-binding");
+        assert_eq!(stages[2].status, "passed");
+        assert_eq!(stages[3].stage_id, "abi-compatibility");
+        assert_eq!(stages[3].status, "blocked");
+        assert_eq!(
+            stages[3].degraded_state.as_deref(),
             Some("gpu-hmr-abi-unverified")
         );
         assert_eq!(
-            stages[2].degraded_reason.as_deref(),
+            stages[3].degraded_reason.as_deref(),
             Some("abi_layout_size_alignment_unverified")
         );
-        assert_eq!(stages[2].evidence_refs, vec!["evidence:abi".to_string()]);
-        assert_eq!(stages[3].stage_id, "runtime-dispatch-observation");
+        assert_eq!(stages[3].evidence_refs, vec!["evidence:abi".to_string()]);
+        assert_eq!(stages[4].stage_id, "runtime-dispatch-observation");
         assert_eq!(
-            stages[3].degraded_state.as_deref(),
+            stages[4].degraded_state.as_deref(),
             Some("gpu-hmr-dispatch-unobserved")
         );
     }
@@ -9597,6 +9700,15 @@ __constant__ int scale;
             .iter()
             .find(|evidence| evidence.kind == "device-compiler-output")
             .expect("compiler output evidence should be recorded");
+        let transport_evidence = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| evidence.kind == "device-artifact-transport")
+            .expect("artifact transport evidence should be recorded");
+        let transport_metadata = transport_evidence
+            .metadata
+            .as_ref()
+            .expect("artifact transport evidence should include structured metadata");
         let compiler_metadata = compiler_evidence
             .metadata
             .as_ref()
@@ -9611,6 +9723,33 @@ __constant__ int scale;
         assert!(compiler_evidence
             .summary
             .contains("compile_command_hash=compile-command-hash"));
+        assert!(transport_evidence
+            .evidence_id
+            .starts_with("evidence:device-artifact-transport:"));
+        assert_eq!(
+            transport_metadata
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_str),
+            Some("synthi.gpu.hmr.artifact_transport.v1")
+        );
+        assert_eq!(
+            transport_metadata
+                .get("selectedLoaderTransport")
+                .and_then(serde_json::Value::as_str),
+            None
+        );
+        assert_eq!(
+            transport_metadata
+                .get("ramArtifactReferenceProvided")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            transport_metadata
+                .get("degradedState")
+                .and_then(serde_json::Value::as_str),
+            Some("gpu-hmr-ram-io-unavailable")
+        );
         assert_eq!(
             compile_provenance
                 .get("compilerExecutable")
@@ -9715,6 +9854,20 @@ __constant__ int scale;
             Some("abi_layout_size_alignment_unverified")
         );
         assert_eq!(abi_stage.evidence_refs, vec![abi_evidence.evidence_id.clone()]);
+        let transport_stage = artifact
+            .stage_results
+            .iter()
+            .find(|stage| stage.stage_id == "artifact-transport")
+            .expect("artifact transport proof stage should be recorded");
+        assert_eq!(transport_stage.status, "blocked");
+        assert_eq!(
+            transport_stage.degraded_state.as_deref(),
+            Some("gpu-hmr-ram-io-unavailable")
+        );
+        assert_eq!(
+            transport_stage.evidence_refs,
+            vec![transport_evidence.evidence_id.clone()]
+        );
     }
 
     #[test]

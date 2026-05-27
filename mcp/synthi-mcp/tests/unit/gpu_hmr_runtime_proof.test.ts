@@ -13,7 +13,11 @@ import {
   summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
 } from "../../scripts/lib/gpu-hmr-runtime-proof.mjs";
-import { abiProofFromProofArtifacts } from "../../scripts/lib/gpu-hmr-proof-artifacts.mjs";
+import {
+  abiProofFromProofArtifacts,
+  artifactTransportProofFromProofArtifacts,
+  summarizeGpuHmrArtifactTransportProof,
+} from "../../scripts/lib/gpu-hmr-proof-artifacts.mjs";
 import {
   epochSwapProofFromRuntimeEvidence,
   hostPreservationProofFromRuntimeEvidence,
@@ -414,6 +418,53 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-abi-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.acceptedExtractorEvidenceRefs).toEqual(["evidence:clang-record-layout:def"]);
+  });
+
+  it("reports path-only artifact transport as degraded RAM I/O evidence", () => {
+    const proof = artifactTransportProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "device-artifact-transport",
+          evidenceId: "evidence:device-artifact-transport:abc",
+          metadata: {
+            schemaVersion: "synthi.gpu.hmr.artifact_transport.v1",
+            selectedLoaderTransport: null,
+            reloadRequestTransports: ["filesystem_path"],
+            ramArtifactReferenceProvided: false,
+            degradedState: "gpu-hmr-ram-io-unavailable",
+            degradedReason: "reload_request_contains_filesystem_path_only",
+          },
+        }],
+        stageResults: [{
+          stageId: "artifact-transport",
+          status: "blocked",
+          degradedState: "gpu-hmr-ram-io-unavailable",
+        }],
+      },
+    }]);
+
+    expect(proof.transportEvidenceObserved).toBe(true);
+    expect(proof.ramTransportProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-ram-io-unavailable");
+    expect(proof.degradedReason).toBe("reload_request_contains_filesystem_path_only");
+    expect(proof.loaderTransports).toEqual([]);
+    expect(proof.reloadRequestTransports).toEqual(["filesystem_path"]);
+    expect(proof.evidenceRefs).toEqual(["evidence:device-artifact-transport:abc"]);
+    expect(summarizeGpuHmrArtifactTransportProof(proof)).toContain("ram-unproven");
+  });
+
+  it("does not infer RAM artifact transport without transport evidence", () => {
+    const proof = artifactTransportProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: { proofId: "proof:gpu-hmr:1", evidenceRefs: [], stageResults: [] },
+    }]);
+
+    expect(proof.transportEvidenceObserved).toBe(false);
+    expect(proof.ramTransportProven).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-ram-io-unavailable");
+    expect(proof.degradedReason).toBe("artifact_transport_evidence_not_collected");
   });
 
   it("reports epoch-swap-proven only for session, stream ordering, generation lineage, table hash, changed entries, and retired old generation", () => {
