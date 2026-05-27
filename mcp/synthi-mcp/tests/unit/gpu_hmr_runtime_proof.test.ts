@@ -129,6 +129,39 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.outputOracle.evidenceRefs).toEqual(["worker-log:output_oracle:probe.checksum"]);
   });
 
+  it("only accepts runtime oracle records matching an explicit contract", () => {
+    const evidence = runtimeOutputOracleEvidence([
+      "[gpu-runtime-boundary] output_oracle id=probe.other kind=buffer_checksum expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1",
+      "[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1",
+    ], {
+      expectedOracle: {
+        id: "probe.expected",
+        kind: "buffer_checksum",
+        expected: "sha256:def",
+      },
+    });
+
+    expect(evidence.total_count).toBe(2);
+    expect(evidence.matched_count).toBe(1);
+    expect(evidence.output_oracle?.actual).toBe("sha256:def");
+    expect(evidence.evidence_refs).toEqual(["worker-log:output_oracle:probe.expected"]);
+  });
+
+  it("does not prove output when runtime oracle records miss the contract", () => {
+    const evidence = runtimeOutputOracleEvidence([
+      "[gpu-runtime-boundary] output_oracle id=probe.other kind=buffer_checksum expected=sha256:abc actual=sha256:abc passed=true generation=3 runtime_session=pid1",
+    ], {
+      expectedOracle: {
+        id: "probe.expected",
+      },
+    });
+
+    expect(evidence.total_count).toBe(1);
+    expect(evidence.matched_count).toBe(0);
+    expect(evidence.deterministic_oracle_passed).toBe(false);
+    expect(evidence.output_oracle).toBeNull();
+  });
+
   it("does not mark missing runtime oracle evidence as observed", () => {
     const evidence = runtimeOutputOracleEvidence([]);
 

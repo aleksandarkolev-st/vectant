@@ -200,7 +200,32 @@ function outputOracleRecord(line) {
   };
 }
 
-export function runtimeOutputOracleEvidence(lines) {
+function normalizeOracleContract(contract) {
+  if (!contract || typeof contract !== 'object') return null;
+  const normalized = {};
+  for (const field of ['id', 'oracleId', 'kind', 'expected']) {
+    if (typeof contract[field] === 'string' && contract[field].trim()) {
+      normalized[field] = contract[field].trim();
+    }
+  }
+  const oracleId = normalized.id ?? normalized.oracleId ?? null;
+  if (oracleId === null && !normalized.kind && !normalized.expected) return null;
+  return {
+    oracleId,
+    kind: normalized.kind ?? null,
+    expected: normalized.expected ?? null,
+  };
+}
+
+function oracleMatchesContract(record, contract) {
+  if (!contract) return true;
+  if (contract.oracleId !== null && record.oracleId !== contract.oracleId) return false;
+  if (contract.kind !== null && record.kind !== contract.kind) return false;
+  if (contract.expected !== null && record.expected !== contract.expected) return false;
+  return true;
+}
+
+export function runtimeOutputOracleEvidence(lines, observation = {}) {
   const records = (Array.isArray(lines) ? lines : [])
     .filter((line) => /\boutput_oracle\b/i.test(String(line ?? '')))
     .map(outputOracleRecord)
@@ -213,15 +238,19 @@ export function runtimeOutputOracleEvidence(lines) {
       && record.actual !== null
       && record.passed !== null
     );
-  const latest = records.at(-1) ?? null;
-  const passedRecords = records.filter((record) => record.passed === true);
+  const expectedContract = normalizeOracleContract(observation.expectedOracle ?? observation.outputOracleContract);
+  const matchingRecords = records.filter((record) => oracleMatchesContract(record, expectedContract));
+  const latest = matchingRecords.at(-1) ?? null;
+  const passedRecords = matchingRecords.filter((record) => record.passed === true);
   const evidenceRefs = latest ? [`worker-log:output_oracle:${latest.oracleId}`] : [];
 
   return {
     total_count: records.length,
+    matched_count: matchingRecords.length,
     passed_count: passedRecords.length,
-    failed_count: records.length - passedRecords.length,
+    failed_count: matchingRecords.length - passedRecords.length,
     latest,
+    expected_contract: expectedContract,
     deterministic_output_observed: latest !== null && latest.actual !== null,
     deterministic_oracle_provided: latest !== null && latest.expected !== null && typeof latest.kind === 'string',
     deterministic_oracle_passed: latest?.passed === true,

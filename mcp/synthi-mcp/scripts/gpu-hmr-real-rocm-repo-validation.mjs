@@ -54,6 +54,33 @@ function repoNameFromUrl(repoUrl) {
   return cleanIdentifier(raw.replace(/\.git$/i, ''));
 }
 
+function parseOutputOracleContract(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`invalid output oracle contract JSON: ${err.message}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('invalid output oracle contract: expected object');
+  }
+  const contract = {};
+  for (const field of ['id', 'oracleId', 'kind', 'expected']) {
+    if (Object.prototype.hasOwnProperty.call(parsed, field)) {
+      if (typeof parsed[field] !== 'string' || !parsed[field].trim()) {
+        throw new Error(`invalid output oracle contract field ${field}: expected non-empty string`);
+      }
+      contract[field] = parsed[field].trim();
+    }
+  }
+  if (!contract.id && !contract.oracleId && !contract.kind && !contract.expected) {
+    throw new Error('invalid output oracle contract: at least one of id, oracleId, kind, or expected is required');
+  }
+  return contract;
+}
+
 const configuredRepoUrl = process.env.SYNTHI_REAL_ROCM_REPO_URL ?? DEFAULT_REAL_REPO_URL;
 const configuredRepoName = cleanIdentifier(
   process.env.SYNTHI_REAL_ROCM_REPO_NAME ?? repoNameFromUrl(configuredRepoUrl),
@@ -131,6 +158,11 @@ const CFG = {
   screenshotRetryDelayMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
   expectScreenshot: process.env.SYNTHI_REAL_ROCM_EXPECT_SCREENSHOT === '1',
+  outputOracleContract: parseOutputOracleContract(
+    process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON
+      ?? process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON
+      ?? '',
+  ),
   hmrWaitModule: process.env.SYNTHI_REAL_ROCM_HMR_WAIT_MODULE ?? 'device',
   gpuArch: process.env.SYNTHI_REAL_ROCM_GPU_ARCH ?? process.env.SYNTHI_GPU_ARCH ?? 'gfx1201',
   googleApiKey: process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API_KEY ?? '',
@@ -178,6 +210,8 @@ const report = {
       SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES: process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? '',
       SYNTHI_REAL_ROCM_COMPILE_TRANSPORT: process.env.SYNTHI_REAL_ROCM_COMPILE_TRANSPORT ?? '',
       SYNTHI_REAL_ROCM_BUILD_METADATA_DIR: process.env.SYNTHI_REAL_ROCM_BUILD_METADATA_DIR ?? '',
+      SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON: process.env.SYNTHI_REAL_ROCM_OUTPUT_ORACLE_JSON ?? '',
+      SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON: process.env.SYNTHI_GPU_HMR_OUTPUT_ORACLE_JSON ?? '',
       SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_BEFORE ?? '',
       SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER: process.env.SYNTHI_REAL_ROCM_SECOND_DELTA_AFTER ?? '',
       SYNTHI_GEMINI_MODEL: process.env.SYNTHI_GEMINI_MODEL ?? '',
@@ -208,6 +242,7 @@ const report = {
   full_runtime_proof: null,
   compile_projection: {},
   compile_transport: CFG.compileTransport,
+  output_oracle_contract: CFG.outputOracleContract,
   started_at: new Date().toISOString(),
   finished_at: null,
 };
@@ -1678,6 +1713,21 @@ function selfCheckRuntimeDispatchEvidence() {
   ) {
     throw new Error('runtime output oracle evidence parser failed');
   }
+  const outputOracleContract = parseOutputOracleContract('{"id":"probe.expected","kind":"buffer_checksum","expected":"sha256:def"}');
+  const constrainedOutputOracleEvidence = runtimeOutputOracleEvidence([
+    '[gpu-runtime-boundary] output_oracle id=probe.other kind=buffer_checksum expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1',
+    '[gpu-runtime-boundary] output_oracle id=probe.expected kind=buffer_checksum expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1',
+  ], { outputOracleContract });
+  const mismatchedOutputOracleEvidence = runtimeOutputOracleEvidence([
+    '[gpu-runtime-boundary] output_oracle id=probe.other kind=buffer_checksum expected=sha256:def actual=sha256:def passed=true generation=3 runtime_session=pid1',
+  ], { outputOracleContract });
+  if (
+    constrainedOutputOracleEvidence.matched_count !== 1
+    || constrainedOutputOracleEvidence.output_oracle?.actual !== 'sha256:def'
+    || mismatchedOutputOracleEvidence.deterministic_oracle_passed
+  ) {
+    throw new Error('runtime output oracle contract filter failed');
+  }
   const visualOnlyProof = classifyGpuHmrOutputProof({
     dispatchSafeProven: true,
     visualFrameObserved: true,
@@ -1792,7 +1842,9 @@ async function collectRuntimeEvidence() {
   const runtimeSession = runtimeSessionEvidence(workerEvidence);
   const runtimeOwnership = runtimeOwnershipEvidence(workerEvidence);
   const runtimeEpochSwap = epochSwapProofFromRuntimeEvidence(workerEvidence);
-  const runtimeOutputOracle = runtimeOutputOracleEvidence(workerEvidence);
+  const runtimeOutputOracle = runtimeOutputOracleEvidence(workerEvidence, {
+    outputOracleContract: CFG.outputOracleContract,
+  });
   const hostRestartCount = countMatches(workerEvidence, /Restarting runner/i);
   const runtimeIdentityChanges = runtimeIdentityChangeEvidence();
   const runtimeHostPreservation = hostPreservationProofFromRuntimeEvidence(workerEvidence, {
@@ -1883,7 +1935,7 @@ async function collectRuntimeEvidence() {
     record(
       'runtime output oracle evidence',
       runtimeOutputOracle.deterministic_oracle_passed ? 'pass' : 'warn',
-      `records=${runtimeOutputOracle.total_count} passed=${runtimeOutputOracle.passed_count} failed=${runtimeOutputOracle.failed_count} latest=${runtimeOutputOracle.latest?.oracleId ?? 'none'}`,
+      `records=${runtimeOutputOracle.total_count} matched=${runtimeOutputOracle.matched_count} passed=${runtimeOutputOracle.passed_count} failed=${runtimeOutputOracle.failed_count} latest=${runtimeOutputOracle.latest?.oracleId ?? 'none'}`,
     );
   } else {
     record('runtime output oracle evidence', 'warn', 'no output_oracle lines captured');
@@ -2049,6 +2101,7 @@ async function writeResults() {
     `skipped_file_count: ${report.skipped_file_count}`,
     `compile_transport: ${CFG.compileTransport}`,
     `compile_projection: ${JSON.stringify(report.compile_projection)}`,
+    `output_oracle_contract: ${JSON.stringify(report.output_oracle_contract)}`,
     '',
     ...report.checks.map((check) => `${check.status.toUpperCase()} ${check.name}${check.detail ? ` - ${check.detail}` : ''}`),
     '',
