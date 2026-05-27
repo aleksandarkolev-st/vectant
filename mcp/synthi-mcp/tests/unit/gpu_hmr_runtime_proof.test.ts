@@ -25,6 +25,10 @@ import {
   runtimeHostIdentityEvidence,
   runtimeOutputOracleEvidence,
 } from "../../scripts/lib/gpu-hmr-runtime-evidence.mjs";
+import {
+  dockerSnapshotFromInspect,
+  validationCommandMetadata,
+} from "../../scripts/lib/docker-validation-metadata.mjs";
 
 function acceptedAbiProof() {
   return classifyGpuHmrAbiProof({
@@ -79,6 +83,67 @@ function preservedHostProof() {
     identityEvidenceRefs: ["identity-proof:test"],
   });
 }
+
+describe("validation runtime metadata", () => {
+  it("normalizes docker inspect identity and compose state", () => {
+    const snapshot = dockerSnapshotFromInspect(
+      JSON.stringify([
+        {
+          Id: "container-id",
+          Name: "/project-worker-1",
+          Image: "sha256:image-id",
+          Config: {
+            Image: "project-worker:latest",
+            Labels: {
+              "com.docker.compose.project": "project",
+              "com.docker.compose.service": "worker",
+              "com.docker.compose.container-number": "1",
+            },
+          },
+          State: {
+            Status: "running",
+            Pid: 123,
+            StartedAt: "2026-05-27T10:00:00Z",
+            FinishedAt: "0001-01-01T00:00:00Z",
+            OOMKilled: false,
+            ExitCode: 0,
+          },
+          RestartCount: 2,
+        },
+      ]),
+      "worker-container"
+    );
+
+    expect(snapshot.available).toBe(true);
+    expect(snapshot.name).toBe("project-worker-1");
+    expect(snapshot.image_id).toBe("sha256:image-id");
+    expect(snapshot.config_image).toBe("project-worker:latest");
+    expect(snapshot.compose_project).toBe("project");
+    expect(snapshot.compose_service).toBe("worker");
+    expect(snapshot.status).toBe("running");
+    expect(snapshot.restart_count).toBe(2);
+  });
+
+  it("records only requested validation command env keys", () => {
+    const metadata = validationCommandMetadata({
+      cwd: "/repo",
+      argv: ["node", "script.mjs"],
+      env: {
+        SYNTHI_GPU_VENDOR: "rocm",
+        SECRET_TOKEN: "hidden",
+      },
+      envKeys: ["SYNTHI_GPU_VENDOR", "SYNTHI_GPU_ARCH"],
+    });
+
+    expect(metadata.cwd).toBe("/repo");
+    expect(metadata.argv).toEqual(["node", "script.mjs"]);
+    expect(metadata.env).toEqual({
+      SYNTHI_GPU_VENDOR: "rocm",
+      SYNTHI_GPU_ARCH: "",
+    });
+    expect(Object.prototype.hasOwnProperty.call(metadata.env, "SECRET_TOKEN")).toBe(false);
+  });
+});
 
 describe("GPU HMR runtime output proof classification", () => {
   it("requires dispatch before output proof can be considered", () => {

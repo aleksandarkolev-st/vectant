@@ -49,6 +49,10 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createValidationWorkspace } from './lib/validation-workspace.mjs';
 import {
+  dockerContainerSnapshot,
+  validationCommandMetadata,
+} from './lib/docker-validation-metadata.mjs';
+import {
   abiProofFromProofArtifacts,
   artifactTransportProofFromProofArtifacts,
   summarizeGpuHmrArtifactTransportProof,
@@ -71,6 +75,8 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const RUN_STARTED_AT = new Date();
+const RUN_STARTED_MS = Date.now();
 
 // ───────────────────────── config ─────────────────────────
 
@@ -102,6 +108,7 @@ const CFG = {
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   mcpPrometheusPort: process.env.MCP_PROMETHEUS_PORT,
   workerContainer: process.env.WORKER_CONTAINER ?? 'synthi-ide-worker-1',
+  aiEngineContainer: process.env.AI_ENGINE_CONTAINER ?? 'synthi-ide-ai-engine-1',
   googleApiKey: process.env.GOOGLE_API_KEY ?? '',
   geminiModel: process.env.SYNTHI_GEMINI_MODEL ?? 'gemini-3-flash-preview',
   mcpVisionBackend: process.env.SYNTHI_MCP_VISION_BACKEND
@@ -137,6 +144,7 @@ const runtimeOutputProofs = [];
 const artifactTransportProofs = [];
 const runtimeHostPreservationProofs = [];
 const runtimeFullProofs = [];
+const gpuProofs = [];
 function record(phase, name, status, detail = '') {
   results.push({ phase, name, status, detail, ts: new Date().toISOString() });
   const l = status === 'pass' ? 'ok' : status === 'fail' ? 'fail' : status === 'skip' ? 'skip' : 'warn';
@@ -347,6 +355,7 @@ async function resolveDockerContainers() {
   if (CFG.mcpTransport !== 'docker') return;
   CFG.mcpContainer = await resolveDockerContainer(CFG.mcpContainer, 'mcp');
   CFG.workerContainer = await resolveDockerContainer(CFG.workerContainer, 'worker');
+  CFG.aiEngineContainer = await resolveDockerContainer(CFG.aiEngineContainer, 'ai-engine');
 }
 
 // ───────────────────────── collab + frontend wire ─────────────────────────
@@ -1855,8 +1864,24 @@ function summarizeGpuProof(proof) {
 function recordGpuProof(phase, name, hmr) {
   const proof = hmr?.gpu_proof ?? null;
   const ok = typeof proof?.resultState === 'string' && proof.resultState.startsWith('gpu-hmr-');
+  recordGpuProofEvidence(phase, name, proof);
   record(phase, name, ok ? 'pass' : 'fail', summarizeGpuProof(proof));
   return proof;
+}
+
+function recordGpuProofEvidence(phase, name, proof) {
+  if (!proof || typeof proof !== 'object') return;
+  gpuProofs.push({
+    phase,
+    name,
+    resultState: proof.resultState ?? null,
+    degradedState: proof.degradedState ?? null,
+    degradedReason: proof.degradedReason ?? null,
+    label: proof.label ?? null,
+    proofId: proof.proofId ?? null,
+    proofArtifactPath: proof.proofArtifactPath ?? null,
+    ts: new Date().toISOString(),
+  });
 }
 
 function proofArtifactFileName(proofArtifactPath) {
@@ -2065,15 +2090,18 @@ function proofStateFromArtifactRecord(record) {
 async function recordGpuProofWithArtifactFallback(phase, name, hmr) {
   const proof = hmr?.gpu_proof ?? null;
   if (typeof proof?.resultState === 'string' && proof.resultState.startsWith('gpu-hmr-')) {
+    recordGpuProofEvidence(phase, name, proof);
     record(phase, name, 'pass', summarizeGpuProof(proof));
     return { proof, artifacts: null };
   }
   const artifacts = await proofArtifactsFromGpuProof(proof);
   const artifactProof = proofStateFromArtifactRecord(artifacts.find((record) => record?.found));
   if (artifactProof?.resultState) {
+    recordGpuProofEvidence(phase, name, artifactProof);
     record(phase, name, 'pass', `${summarizeGpuProof(artifactProof)} source=proof-artifact`);
     return { proof: artifactProof, artifacts };
   }
+  recordGpuProofEvidence(phase, name, proof);
   record(phase, name, 'warn', summarizeGpuProof(proof));
   return { proof, artifacts };
 }
@@ -3046,6 +3074,28 @@ async function main() {
   await stopMcp();
 }
 
+async function collectDockerValidationMetadata() {
+  if (CFG.mcpTransport !== 'docker') {
+    return {
+      enabled: false,
+      reason: 'docker_transport_not_used',
+      containers: {
+        mcp: CFG.mcpContainer,
+        worker: CFG.workerContainer,
+        ai_engine: CFG.aiEngineContainer,
+      },
+    };
+  }
+  return {
+    enabled: true,
+    containers: {
+      mcp: await dockerContainerSnapshot(CFG.mcpContainer, { execText }),
+      worker: await dockerContainerSnapshot(CFG.workerContainer, { execText }),
+      ai_engine: await dockerContainerSnapshot(CFG.aiEngineContainer, { execText }),
+    },
+  };
+}
+
 async function writeSummary() {
   console.log('');
   console.log(color.blue + '━━━ GPU HMR test summary ━━━' + color.reset);
@@ -3080,13 +3130,55 @@ async function writeSummary() {
     vendor: CFG.vendor,
     fixture: activeFixture(),
     gpu_hmr_flag: CFG.gpuHmr,
-    run_at: new Date().toISOString(),
+    run_at: RUN_STARTED_AT.toISOString(),
+    started_at: RUN_STARTED_AT.toISOString(),
+    finished_at: new Date().toISOString(),
+    duration_ms: Date.now() - RUN_STARTED_MS,
+    model: CFG.geminiModel,
+    gpu_vendor: CFG.vendor,
+    gpu_arch: CFG.gpuArch ?? null,
+    command: validationCommandMetadata({
+      envKeys: [
+        'SYNTHI_GPU_HMR',
+        'SYNTHI_GPU_HMR_FIXTURE',
+        'ONLY_PHASES',
+        'SYNTHI_GPU_VENDOR',
+        'SYNTHI_GPU_ARCH',
+        'SYNTHI_GEMINI_MODEL',
+        'MCP_TRANSPORT',
+        'MCP_CONTAINER',
+        'WORKER_CONTAINER',
+        'AI_ENGINE_CONTAINER',
+      ],
+    }),
+    urls: {
+      frontend: CFG.frontendUrl,
+      collab: CFG.collabUrl,
+      signaling: CFG.signalingUrl,
+      ai_engine: CFG.aiEngineUrl,
+    },
+    containers: {
+      mcp: CFG.mcpContainer,
+      worker: CFG.workerContainer,
+      ai_engine: CFG.aiEngineContainer,
+    },
+    docker: await collectDockerValidationMetadata(),
+    paths: {
+      logs: LOG_DIR,
+      artifacts: ARTIFACT_DIR,
+      results_json: path.join(LOG_DIR, 'results.json'),
+      results_txt: path.join(LOG_DIR, 'results.txt'),
+    },
     config: {
       fastSwapBudgetMs: CFG.fastSwapBudgetMs,
       watchdogMs: CFG.watchdogMs,
       drainTimeoutMs: CFG.drainTimeoutMs,
     },
     summary: { total: results.length, passed, warned, failed, skipped },
+    gpu_proofs: gpuProofs,
+    proof_artifact_paths: [...new Set(gpuProofs
+      .map((proof) => proof.proofArtifactPath)
+      .filter((proofPath) => typeof proofPath === 'string' && proofPath.trim()))],
     runtime_dispatch_proofs: runtimeDispatchProofs,
     runtime_output_proofs: runtimeOutputProofs,
     artifact_transport_proofs: artifactTransportProofs,
