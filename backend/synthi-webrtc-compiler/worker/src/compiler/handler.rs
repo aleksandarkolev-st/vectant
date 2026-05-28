@@ -605,6 +605,12 @@ fn sidecar_session_id(meta: &serde_json::Value) -> Option<&str> {
         .and_then(|v| v.as_str())
 }
 
+async fn read_normalized_split_sidecar_for_proof(path: &Path) -> Option<serde_json::Value> {
+    let raw = tokio::fs::read_to_string(path).await.ok()?;
+    let meta = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    Some(normalize_split_sidecar(&meta))
+}
+
 async fn purge_stale_split_state_for_session(
     workspace: &Path,
     sidecar_path: &Path,
@@ -3370,6 +3376,103 @@ fn device_artifact_transport_summary(transport_material: &serde_json::Value) -> 
     )
 }
 
+fn fission_verifier_report_from_sidecar(
+    sidecar_meta: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    sidecar_meta
+        .and_then(|meta| {
+            meta.get("fissionVerifierReport")
+                .or_else(|| meta.pointer("/runReport/fissionVerifierReport"))
+        })
+        .filter(|report| report.is_object())
+        .cloned()
+}
+
+fn fission_report_status(report: &serde_json::Value) -> &str {
+    report
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("missing")
+}
+
+fn fission_report_u64(report: &serde_json::Value, field: &str) -> u64 {
+    report
+        .get(field)
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn fission_report_selected_island(report: &serde_json::Value) -> &str {
+    report
+        .get("selectedIslandId")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("none")
+}
+
+fn fission_verifier_summary(report: &serde_json::Value) -> String {
+    format!(
+        "status={} candidates={} accepted={} rejected={} selected_island={}",
+        fission_report_status(report),
+        fission_report_u64(report, "candidateCount"),
+        fission_report_u64(report, "acceptedCount"),
+        fission_report_u64(report, "rejectedCount"),
+        fission_report_selected_island(report)
+    )
+}
+
+fn fission_verifier_rejection_reason(report: &serde_json::Value) -> Option<String> {
+    if fission_report_status(report) == "pass" {
+        return None;
+    }
+    report
+        .get("reasonCodes")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| items.iter().find_map(serde_json::Value::as_str))
+        .map(str::to_string)
+        .or_else(|| Some("fission_verifier_rejected".to_string()))
+}
+
+fn fission_verifier_evidence_and_stage(
+    report: &serde_json::Value,
+    created_at: &str,
+    runtime_session_id: &str,
+    source_edit_id: &str,
+    selected_artifact_id: &str,
+) -> (GpuHmrProofEvidenceRef, GpuHmrProofStageResult) {
+    let report_hash = sha256_hex_str(&report.to_string());
+    let evidence_id = format!("evidence:fission-verifier-report:{report_hash}");
+    let passed = fission_report_status(report) == "pass";
+    let evidence = GpuHmrProofEvidenceRef {
+        evidence_id: evidence_id.clone(),
+        kind: "fission-verifier-report".to_string(),
+        content_hash: format!("sha256:{report_hash}"),
+        producer_subsystem: "worker.gpu_fission_verifier".to_string(),
+        timestamp: created_at.to_string(),
+        session_id: Some(runtime_session_id.to_string()),
+        file_path: None,
+        artifact_uri: Some(selected_artifact_id.to_string()),
+        summary: fission_verifier_summary(report),
+        metadata: Some(report.clone()),
+    };
+    let stage = GpuHmrProofStageResult {
+        stage_id: "fission-candidate-verification".to_string(),
+        stage_name: "Grand fission candidate verification".to_string(),
+        status: if passed { "passed" } else { "blocked" }.to_string(),
+        started_at: created_at.to_string(),
+        completed_at: created_at.to_string(),
+        input_artifact_ids: vec![source_edit_id.to_string()],
+        output_artifact_ids: if passed {
+            vec![selected_artifact_id.to_string()]
+        } else {
+            Vec::new()
+        },
+        evidence_refs: vec![evidence_id],
+        degraded_state: None,
+        degraded_reason: fission_verifier_rejection_reason(report),
+    };
+    (evidence, stage)
+}
+
 async fn reload_artifact_blob_from_outcome(
     outcome: &DeviceCompileOutcome,
 ) -> Result<ReloadArtifactBlob> {
@@ -3396,6 +3499,7 @@ async fn write_device_hmr_proof_artifact(
     source_hash: &str,
     outcome: &DeviceCompileOutcome,
     proof: &GpuHmrProofTelemetry,
+    sidecar_meta: Option<&serde_json::Value>,
 ) -> Result<GpuHmrProofArtifactWrite> {
     let created_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let artifact_bytes = tokio::fs::read(&outcome.artifact_path)
@@ -3613,8 +3717,19 @@ async fn write_device_hmr_proof_artifact(
         });
     }
 
+    let fission_stage = fission_verifier_report_from_sidecar(sidecar_meta).map(|report| {
+        let (evidence, stage) = fission_verifier_evidence_and_stage(
+            &report,
+            &created_at,
+            &runtime_session_id,
+            &source_edit_id,
+            &selected_artifact_id,
+        );
+        evidence_refs.push(evidence);
+        stage
+    });
     let symbol_bound = artifact_exports_expected_device_symbols(outcome);
-    let stage_results = device_hmr_proof_stage_results(
+    let mut stage_results = device_hmr_proof_stage_results(
         &created_at,
         &source_edit_id,
         &selected_artifact_id,
@@ -3626,6 +3741,9 @@ async fn write_device_hmr_proof_artifact(
         symbol_bound,
         proof,
     );
+    if let Some(fission_stage) = fission_stage {
+        stage_results.insert(0, fission_stage);
+    }
 
     let artifact = GpuHmrProofArtifact::new(GpuHmrProofArtifactInput {
         workspace_slug,
@@ -8666,6 +8784,7 @@ pub async fn handle_compile_request(
     if let Some(ref out) = device_compile_outcome {
         device_reload_artifact_blob = Some(reload_artifact_blob_from_outcome(out).await?);
         let proof = device_hmr_proof_telemetry(out);
+        let proof_sidecar_meta = read_normalized_split_sidecar_for_proof(&sidecar_path).await;
         let proof_artifact = write_device_hmr_proof_artifact(
             &ctx.workspace_path,
             req.slug.as_deref(),
@@ -8673,6 +8792,7 @@ pub async fn handle_compile_request(
             &source_hash_str,
             out,
             &proof,
+            proof_sidecar_meta.as_ref(),
         )
         .await?;
         let proof = proof.with_artifact_ref(proof_artifact.proof_id, proof_artifact.relative_path);
@@ -10015,6 +10135,7 @@ __constant__ int scale;
             "source-edit:unit",
             &outcome,
             &proof,
+            None,
         )
         .await
         .unwrap();
@@ -10226,6 +10347,91 @@ __constant__ int scale;
             transport_stage.evidence_refs,
             vec![transport_evidence.evidence_id.clone()]
         );
+    }
+
+    #[tokio::test]
+    async fn device_hmr_proof_artifact_records_fission_verifier_report() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact_path = temp.path().join("device.hsaco");
+        tokio::fs::write(&artifact_path, b"device-artifact")
+            .await
+            .unwrap();
+        let mut outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        outcome.artifact_path = artifact_path;
+        outcome.compiled_source =
+            r#"extern "C" __global__ void shade(float* pixels, int count) {}"#.to_string();
+        outcome.requested_artifact_kind = Some("source_include_bridge".to_string());
+        outcome.selected_artifact_kind = Some("source_include_bridge".to_string());
+        let proof = device_hmr_proof_telemetry(&outcome);
+        let sidecar = serde_json::json!({
+            "fissionVerifierReport": {
+                "schemaVersion": "synthi.gpu.fission_verifier.v1",
+                "selectionPolicy": "narrowest_viable_generic_v1",
+                "status": "pass",
+                "candidateCount": 2,
+                "acceptedCount": 1,
+                "rejectedCount": 1,
+                "selectedIslandId": "island:sha256:abc",
+                "selectedCandidateIndex": 1,
+                "reasonCodes": ["fission.candidate_accepted"],
+                "candidates": [
+                    {
+                        "status": "reject",
+                        "islandId": "island:sha256:narrower",
+                        "reasonCodes": ["fission.abi_membrane_evidence_missing"]
+                    },
+                    {
+                        "status": "pass",
+                        "islandId": "island:sha256:abc",
+                        "reasonCodes": ["fission.candidate_verified"],
+                        "selected": true
+                    }
+                ]
+            }
+        });
+
+        let written = write_device_hmr_proof_artifact(
+            temp.path(),
+            Some("workspace"),
+            "runtime-session",
+            "source-edit:fission",
+            &outcome,
+            &proof,
+            Some(&sidecar),
+        )
+        .await
+        .unwrap();
+        let artifact = crate::hmr::gpu_proof::read_proof_artifact(&written.path)
+            .await
+            .unwrap();
+        let fission_evidence = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| evidence.kind == "fission-verifier-report")
+            .expect("fission verifier evidence should be recorded");
+        let metadata = fission_evidence
+            .metadata
+            .as_ref()
+            .expect("fission verifier evidence should preserve structured report");
+        let fission_stage = artifact
+            .stage_results
+            .iter()
+            .find(|stage| stage.stage_id == "fission-candidate-verification")
+            .expect("fission verifier stage should be recorded");
+
+        assert!(fission_evidence
+            .evidence_id
+            .starts_with("evidence:fission-verifier-report:"));
+        assert!(fission_evidence.summary.contains("accepted=1"));
+        assert_eq!(
+            metadata
+                .get("selectedIslandId")
+                .and_then(serde_json::Value::as_str),
+            Some("island:sha256:abc")
+        );
+        assert_eq!(fission_stage.status, "passed");
+        assert_eq!(fission_stage.evidence_refs, vec![fission_evidence.evidence_id.clone()]);
+        assert_eq!(artifact.stage_results[0].stage_id, "fission-candidate-verification");
     }
 
     #[test]
