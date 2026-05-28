@@ -545,6 +545,9 @@ fn record_launch_host_identities(
     gpu: *const c_void,
     stream_token: usize,
 ) {
+    let pid = std::process::id() as usize;
+    let session_hash = stable_hash64(runtime_session_id());
+    record_host_identity_event("runner_process".to_string(), pid as *const c_void, session_hash);
     if !kernel_name_ptr.is_null() {
         let kernel_hash = stable_hash64(kernel_name);
         record_host_identity_event(
@@ -1234,6 +1237,21 @@ mod tests {
         ));
 
         let identities = host_identity_records_snapshot();
+        let runner_identities = identities
+            .iter()
+            .filter(|record| record.role == "runner_process")
+            .collect::<Vec<_>>();
+        assert_eq!(runner_identities.len(), 2);
+        assert_eq!(
+            runner_identities[0].ptr,
+            std::process::id() as usize
+        );
+        assert_eq!(runner_identities[0].ptr, runner_identities[1].ptr);
+        assert_eq!(runner_identities[0].aux, runner_identities[1].aux);
+        assert_ne!(
+            runner_identities[0].generation,
+            runner_identities[1].generation
+        );
         let launch_identities = identities
             .iter()
             .filter(|record| record.role.starts_with("launch_kernel_"))

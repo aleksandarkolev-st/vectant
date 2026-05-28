@@ -212,6 +212,13 @@ function hostIdentityRoleCategory(role) {
   const normalized = String(role ?? '').trim().toLowerCase();
   if (!normalized) return null;
   if (
+    normalized.includes('runner')
+    || normalized.includes('process')
+    || normalized.includes('runtime_session')
+  ) {
+    return 'runner_process';
+  }
+  if (
     normalized.includes('core')
     || normalized.includes('gui')
     || normalized.includes('renderer')
@@ -273,7 +280,8 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     preservedRoles.map((role) => hostIdentityRoleCategory(role)),
   );
   const requiredRolesObserved =
-    preservedRoleCategories.includes('host_state')
+    preservedRoleCategories.includes('runner_process')
+    && preservedRoleCategories.includes('host_state')
     && preservedRoleCategories.includes('runtime_resource');
 
   return {

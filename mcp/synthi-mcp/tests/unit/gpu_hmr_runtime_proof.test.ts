@@ -95,6 +95,7 @@ function preservedHostProof() {
     identitySnapshotObserved: true,
     requiredIdentityRolesObserved: true,
     identityEvidenceRefs: [
+      "worker-log:host_identity:runner_process",
       "worker-log:host_identity:core_state",
       "worker-log:host_identity:stream",
     ],
@@ -399,6 +400,7 @@ describe("GPU HMR runtime output proof classification", () => {
       identitySnapshotObserved: true,
       requiredIdentityRolesObserved: true,
       identityEvidenceRefs: [
+        "worker-log:host_identity:runner_process",
         "worker-log:host_identity:core_state",
         "worker-log:host_identity:stream",
       ],
@@ -407,6 +409,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.runtimeIdentityEvidenceRefs).toEqual([
+      "worker-log:host_identity:runner_process",
       "worker-log:host_identity:core_state",
       "worker-log:host_identity:stream",
     ]);
@@ -949,6 +952,8 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("proves host preservation from matching runtime identity snapshots across generations", () => {
     const { evidence, proof } = hostPreservationProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=2 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=3 runtime_session=pid1",
       "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=2 runtime_session=pid1",
       "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=3 runtime_session=pid1",
       "[gpu-runtime-boundary] host_identity role=renderer ptr=0x2000 aux=0 generation=2 runtime_session=pid1",
@@ -959,13 +964,14 @@ describe("GPU HMR runtime output proof classification", () => {
 
     expect(evidence.identity_checks_passed).toBe(true);
     expect(evidence.identity_snapshot_observed).toBe(true);
-    expect(evidence.preserved_roles).toEqual(["core_state", "renderer", "stream"]);
-    expect(evidence.preserved_role_categories).toEqual(["host_state", "runtime_resource"]);
+    expect(evidence.preserved_roles).toEqual(["core_state", "renderer", "runner_process", "stream"]);
+    expect(evidence.preserved_role_categories).toEqual(["host_state", "runner_process", "runtime_resource"]);
     expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.runtimeIdentityEvidenceRefs).toEqual([
       "worker-log:host_identity:core_state",
       "worker-log:host_identity:renderer",
+      "worker-log:host_identity:runner_process",
       "worker-log:host_identity:stream",
     ]);
   });
@@ -974,6 +980,8 @@ describe("GPU HMR runtime output proof classification", () => {
     const evidence = runtimeHostIdentityEvidence([
       "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=2 runtime_session=old-session",
       "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=3 runtime_session=old-session",
+      "[gpu-runtime-boundary] host_identity role=runner_process ptr=0x800 aux=1 generation=2 runtime_session=current-session",
+      "[gpu-runtime-boundary] host_identity role=runner_process ptr=0x800 aux=1 generation=3 runtime_session=current-session",
       "[gpu-runtime-boundary] host_identity role=core_state ptr=0x2000 aux=42 generation=2 runtime_session=current-session",
       "[gpu-runtime-boundary] host_identity role=core_state ptr=0x2000 aux=42 generation=3 runtime_session=current-session",
       "[gpu-runtime-boundary] host_identity role=stream ptr=0x3000 aux=0 generation=2 runtime_session=current-session",
@@ -982,14 +990,29 @@ describe("GPU HMR runtime output proof classification", () => {
       runtimeSessionIds: ["current-session"],
     });
 
-    expect(evidence.raw_count).toBe(6);
-    expect(evidence.total_count).toBe(4);
+    expect(evidence.raw_count).toBe(8);
+    expect(evidence.total_count).toBe(6);
     expect(evidence.rejected_count).toBe(2);
     expect(evidence.rejected_reasons).toEqual(["runtime_session_unexpected"]);
     expect(evidence.runtime_session_ids).toEqual(["current-session"]);
     expect(evidence.identity_checks_passed).toBe(true);
-    expect(evidence.preserved_roles).toEqual(["core_state", "stream"]);
+    expect(evidence.preserved_roles).toEqual(["core_state", "runner_process", "stream"]);
     expect(evidence.required_roles_observed).toBe(true);
+  });
+
+  it("does not prove host preservation without runner process identity", () => {
+    const { evidence, proof } = hostPreservationProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=2 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=3 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=stream ptr=0x3000 aux=0 generation=2 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=stream ptr=0x3000 aux=0 generation=3 runtime_session=pid1",
+    ]);
+
+    expect(evidence.preserved_role_categories).toEqual(["host_state", "runtime_resource"]);
+    expect(evidence.required_roles_observed).toBe(false);
+    expect(evidence.identity_checks_passed).toBe(false);
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("host_identity_checks_not_collected");
   });
 
   it("does not prove host preservation from runtime-only identities", () => {

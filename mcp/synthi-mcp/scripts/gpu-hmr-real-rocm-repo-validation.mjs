@@ -1729,6 +1729,8 @@ function selfCheckRuntimeDispatchEvidence() {
     throw new Error('runtime epoch evidence parser failed');
   }
   const hostIdentityEvidence = runtimeHostIdentityEvidence([
+    '[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=2 runtime_session=pid1',
+    '[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=3 runtime_session=pid1',
     '[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=2 runtime_session=pid1',
     '[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=3 runtime_session=pid1',
     '[gpu-runtime-boundary] host_identity role=stream ptr=0x2000 aux=0 generation=2 runtime_session=pid1',
