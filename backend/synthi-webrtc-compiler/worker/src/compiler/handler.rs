@@ -3556,12 +3556,40 @@ fn fission_verifier_rejection_reason(report: &serde_json::Value) -> Option<Strin
     if fission_report_status(report) == "pass" {
         return None;
     }
-    report
-        .get("reasonCodes")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|items| items.iter().find_map(serde_json::Value::as_str))
+    fission_report_reason_codes(report)
+        .into_iter()
+        .find(|code| *code != "fission.no_accepted_candidate")
+        .or_else(|| {
+            fission_report_reason_codes(report)
+                .into_iter()
+                .find(|code| !code.trim().is_empty())
+        })
         .map(str::to_string)
         .or_else(|| Some("fission_verifier_rejected".to_string()))
+}
+
+fn fission_report_reason_codes(report: &serde_json::Value) -> Vec<&str> {
+    let mut codes = Vec::new();
+    if let Some(reason_codes) = report
+        .get("reasonCodes")
+        .and_then(serde_json::Value::as_array)
+    {
+        codes.extend(reason_codes.iter().filter_map(serde_json::Value::as_str));
+    }
+    if let Some(candidates) = report.get("candidates").and_then(serde_json::Value::as_array) {
+        for candidate in candidates {
+            if candidate.get("status").and_then(serde_json::Value::as_str) == Some("pass") {
+                continue;
+            }
+            if let Some(reason_codes) = candidate
+                .get("reasonCodes")
+                .and_then(serde_json::Value::as_array)
+            {
+                codes.extend(reason_codes.iter().filter_map(serde_json::Value::as_str));
+            }
+        }
+    }
+    codes
 }
 
 fn fission_verifier_evidence_and_stage(
@@ -10565,6 +10593,29 @@ __constant__ int scale;
         assert_eq!(fission_stage.status, "passed");
         assert_eq!(fission_stage.evidence_refs, vec![fission_evidence.evidence_id.clone()]);
         assert_eq!(artifact.stage_results[0].stage_id, "fission-candidate-verification");
+    }
+
+    #[test]
+    fn fission_stage_degraded_reason_uses_specific_candidate_reason() {
+        let report = serde_json::json!({
+            "schemaVersion": "synthi.gpu.fission_verifier.v1",
+            "status": "reject",
+            "reasonCodes": ["fission.no_accepted_candidate"],
+            "candidates": [
+                {
+                    "status": "reject",
+                    "reasonCodes": [
+                        "fission.output_oracle_missing",
+                        "fission.abi_membrane_evidence_missing"
+                    ]
+                }
+            ]
+        });
+
+        assert_eq!(
+            fission_verifier_rejection_reason(&report).as_deref(),
+            Some("fission.output_oracle_missing")
+        );
     }
 
     #[test]

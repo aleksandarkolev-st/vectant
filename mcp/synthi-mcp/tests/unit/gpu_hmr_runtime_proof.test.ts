@@ -862,6 +862,36 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("fission.abi_membrane_unverified");
   });
 
+  it("uses candidate-level fission rejection reasons over generic no-accepted summary", () => {
+    const proof = fissionProofFromProofArtifacts([{
+      proofArtifactPath: "/tmp/gpu-hmr-proof.json",
+      artifact: {
+        proofId: "proof:gpu-hmr:1",
+        evidenceRefs: [{
+          kind: "fission-verifier-report",
+          evidenceId: "evidence:fission-verifier-report:ghi",
+          metadata: {
+            status: "reject",
+            reasonCodes: ["fission.no_accepted_candidate"],
+            candidates: [{
+              status: "reject",
+              reasonCodes: ["fission.output_oracle_missing", "fission.abi_membrane_evidence_missing"],
+            }],
+          },
+        }],
+        stageResults: [{
+          stageId: "fission-candidate-verification",
+          status: "blocked",
+          evidenceRefs: ["evidence:fission-verifier-report:ghi"],
+        }],
+      },
+    }]);
+
+    expect(proof.fissionProven).toBe(false);
+    expect(proof.required).toBe(true);
+    expect(proof.degradedReason).toBe("fission.output_oracle_missing");
+  });
+
   it("reports path-only artifact transport as degraded RAM I/O evidence", () => {
     const proof = artifactTransportProofFromProofArtifacts([{
       proofArtifactPath: "/tmp/gpu-hmr-proof.json",

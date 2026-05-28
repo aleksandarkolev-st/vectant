@@ -162,7 +162,7 @@ pub fn verify_fission_candidates(value: &Value) -> Value {
     let reason_codes = if accepted_count > 0 {
         vec!["fission.candidate_accepted"]
     } else {
-        vec!["fission.no_accepted_candidate"]
+        rejected_fission_reason_codes(&reports)
     };
 
     json!({
@@ -446,6 +446,25 @@ fn normalized_project_path(path: &str) -> Option<String> {
 fn looks_like_drive_absolute_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
+}
+
+fn rejected_fission_reason_codes(reports: &[Value]) -> Vec<&str> {
+    let mut codes = BTreeSet::new();
+    codes.insert("fission.no_accepted_candidate");
+    for report in reports {
+        if report.get("status").and_then(Value::as_str) == Some("pass") {
+            continue;
+        }
+        if let Some(reason_codes) = report.get("reasonCodes").and_then(Value::as_array) {
+            for code in reason_codes.iter().filter_map(Value::as_str) {
+                let code = code.trim();
+                if !code.is_empty() {
+                    codes.insert(code);
+                }
+            }
+        }
+    }
+    codes.into_iter().collect()
 }
 
 fn generated_role_path(candidate: &Value) -> Option<String> {
@@ -1955,5 +1974,21 @@ mod tests {
         assert_eq!(report["selectedIslandId"], Value::Null);
         assert_eq!(report["selectedCandidateIndex"], Value::Null);
         assert_eq!(report["candidates"][0]["selected"], false);
+    }
+
+    #[test]
+    fn rejected_candidate_report_preserves_specific_reason_codes() {
+        let mut rejected = valid_candidate();
+        rejected.as_object_mut().unwrap().remove("requiredOracleId");
+
+        let report = verify_fission_candidates(&json!([rejected]));
+        let reason_codes = report["reasonCodes"].as_array().unwrap();
+
+        assert!(reason_codes
+            .iter()
+            .any(|code| code == "fission.no_accepted_candidate"));
+        assert!(reason_codes
+            .iter()
+            .any(|code| code == "fission.output_oracle_missing"));
     }
 }

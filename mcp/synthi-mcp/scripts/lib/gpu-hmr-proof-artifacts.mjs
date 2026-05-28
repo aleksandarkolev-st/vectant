@@ -54,6 +54,30 @@ function fissionStagesFromArtifact(artifact) {
   });
 }
 
+function fissionVerifierReasonCodes(metadata) {
+  const codes = [];
+  if (Array.isArray(metadata?.reasonCodes)) {
+    codes.push(...metadata.reasonCodes.filter((value) => typeof value === 'string' && value.trim()));
+  }
+  if (Array.isArray(metadata?.candidates)) {
+    for (const candidate of metadata.candidates) {
+      const status = String(candidate?.status ?? '').trim().toLowerCase();
+      if (status === 'pass' || status === 'passed' || status === 'accepted') continue;
+      if (Array.isArray(candidate?.reasonCodes)) {
+        codes.push(...candidate.reasonCodes.filter((value) => typeof value === 'string' && value.trim()));
+      }
+    }
+  }
+  return codes.map((value) => value.trim()).filter(Boolean);
+}
+
+function fissionVerifierDegradedReason(metadata) {
+  const codes = fissionVerifierReasonCodes(metadata);
+  return codes.find((code) => code !== 'fission.no_accepted_candidate')
+    ?? codes[0]
+    ?? null;
+}
+
 export function abiProofFromProofArtifacts(records) {
   const evidenceRefs = [];
   const acceptedExtractorEvidenceRefs = [];
@@ -136,11 +160,9 @@ export function fissionProofFromProofArtifacts(records) {
       } else if (status === 'reject' || status === 'rejected' || status === 'fail' || status === 'failed') {
         rejected = true;
       }
-      const reasonCodes = Array.isArray(metadata.reasonCodes)
-        ? metadata.reasonCodes.filter((value) => typeof value === 'string' && value.trim())
-        : [];
-      if (!degradedReason && reasonCodes.length > 0) {
-        degradedReason = reasonCodes[0].trim();
+      const reason = fissionVerifierDegradedReason(metadata);
+      if (!degradedReason && reason) {
+        degradedReason = reason;
       }
     }
 
