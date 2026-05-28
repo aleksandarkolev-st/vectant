@@ -39,6 +39,20 @@ const ACCEPTED_ABI_EXTRACTOR_KINDS = new Set([
   'runtime_wrapper_instrumentation',
 ]);
 
+const ACCEPTED_OUTPUT_ORACLE_KINDS = new Set([
+  'edit_contract',
+  'sentinel_buffer_value',
+  'kernel_checksum',
+  'kernel_side_checksum',
+  'render_target_hash',
+  'accumulation_buffer_hash',
+  'selected_pixels',
+  'selected_pixel_values',
+  'per_pass_checksum',
+  'dispatch_counter',
+  'buffer_checksum',
+]);
+
 function proofStateRank(state) {
   return typeof state === 'string' ? GPU_HMR_PROOF_STATE_RANKS.get(state) ?? 0 : 0;
 }
@@ -537,6 +551,9 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const oracleKind = typeof rawOracle.kind === 'string' && rawOracle.kind.trim()
     ? rawOracle.kind.trim()
     : null;
+  const normalizedOracleKind = oracleKind?.toLowerCase() ?? null;
+  const oracleKindAccepted = normalizedOracleKind !== null
+    && ACCEPTED_OUTPUT_ORACLE_KINDS.has(normalizedOracleKind);
   const oracleEvidenceRefs = Array.isArray(rawOracle.evidenceRefs)
     ? rawOracle.evidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
@@ -584,7 +601,11 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     && hasActual
     && valueCompatibility.compatible;
   const deterministicOutputObserved = observation.deterministicOutputObserved === true && hasActual;
-  const deterministicOracleProvided = observation.deterministicOracleProvided === true && oracleKind !== null && hasExpected;
+  const deterministicOracleProvided =
+    observation.deterministicOracleProvided === true
+    && oracleKind !== null
+    && oracleKindAccepted
+    && hasExpected;
   const deterministicOraclePassed =
     deterministicOutputObserved
     && deterministicOracleProvided
@@ -604,6 +625,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     artifactId: oracleArtifactId,
     valuesCompatible: oracleValuesCompatible,
     kind: oracleKind,
+    kindAccepted: oracleKindAccepted,
     expected: hasExpected ? rawOracle.expected : null,
     actual: hasActual ? rawOracle.actual : null,
     tolerance: Object.prototype.hasOwnProperty.call(rawOracle, 'tolerance') ? rawOracle.tolerance : null,
@@ -657,11 +679,13 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const degradedState = visualFrameObserved
     ? 'gpu-hmr-visual-only'
     : 'gpu-hmr-output-unobserved';
-  const degradedReason = oracleOtherwisePassed && !oracleProvenanceComplete
-    ? 'output_oracle_provenance_incomplete'
-    : visualFrameObserved
-      ? 'visual_frame_without_deterministic_output_oracle'
-      : 'output_oracle_not_collected';
+  const degradedReason = oracleKind !== null && !oracleKindAccepted
+    ? 'output_oracle_kind_unaccepted'
+    : oracleOtherwisePassed && !oracleProvenanceComplete
+      ? 'output_oracle_provenance_incomplete'
+      : visualFrameObserved
+        ? 'visual_frame_without_deterministic_output_oracle'
+        : 'output_oracle_not_collected';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,

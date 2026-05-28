@@ -2529,7 +2529,7 @@ async function phaseFlow(ctx) {
     deterministicOracleProvided: true,
     deterministicOraclePassed: inwardTrend.matched,
     outputOracle: {
-      kind: 'runtime_readback_trend',
+      kind: 'edit_contract',
       producer: 'runtime_readback',
       expected: 'inward',
       actual: inwardTrend.matched ? 'inward' : null,
@@ -2645,7 +2645,7 @@ async function phaseFlow(ctx) {
     deterministicOracleProvided: true,
     deterministicOraclePassed: trend.matched,
     outputOracle: {
-      kind: 'runtime_readback_trend',
+      kind: 'edit_contract',
       producer: 'runtime_readback',
       expected: 'outward',
       actual: trend.matched ? 'outward' : null,

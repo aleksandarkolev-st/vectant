@@ -141,7 +141,7 @@ function safeDispatchProof() {
 
 function deterministicOutputOracle() {
   return {
-    kind: "runtime_readback",
+    kind: "sentinel_buffer_value",
     producer: "deterministic_probe",
     expected: "expected-sentinel",
     actual: "expected-sentinel",
@@ -307,7 +307,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-output-oracle-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.outputOracle.passed).toBe(true);
-    expect(proof.outputOracle.kind).toBe("runtime_readback");
+    expect(proof.outputOracle.kind).toBe("sentinel_buffer_value");
   });
 
   it("can prove output from a structured runtime oracle line", () => {
@@ -401,7 +401,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("accepts tolerant numeric runtime oracle records only inside tolerance", () => {
     const evidence = runtimeOutputOracleEvidence([
-      "[gpu-runtime-boundary] output_oracle id=probe.scalar kind=numeric_scalar producer=runtime_probe expected=1.0 actual=1.005 tolerance=0.01 passed=true generation=3 runtime_session=pid1 output_target_id=target:scalar readback_timestamp=1779980000000 artifact_id=artifact:scalar",
+      "[gpu-runtime-boundary] output_oracle id=probe.scalar kind=sentinel_buffer_value producer=runtime_probe expected=1.0 actual=1.005 tolerance=0.01 passed=true generation=3 runtime_session=pid1 output_target_id=target:scalar readback_timestamp=1779980000000 artifact_id=artifact:scalar",
     ]);
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof(),
@@ -421,7 +421,7 @@ describe("GPU HMR runtime output proof classification", () => {
 
   it("rejects tolerant numeric runtime oracle records outside tolerance", () => {
     const evidence = runtimeOutputOracleEvidence([
-      "[gpu-runtime-boundary] output_oracle id=probe.scalar kind=numeric_scalar expected=1.0 actual=1.05 tolerance=0.01 passed=true generation=3 runtime_session=pid1",
+      "[gpu-runtime-boundary] output_oracle id=probe.scalar kind=sentinel_buffer_value expected=1.0 actual=1.05 tolerance=0.01 passed=true generation=3 runtime_session=pid1",
     ]);
     const proof = classifyGpuHmrOutputProof({
       dispatchProof: safeDispatchProof(),
@@ -445,7 +445,7 @@ describe("GPU HMR runtime output proof classification", () => {
       deterministicOracleProvided: true,
       deterministicOraclePassed: true,
       outputOracle: {
-        kind: "runtime_readback",
+        kind: "sentinel_buffer_value",
         expected: "expected-sentinel",
         actual: "other-sentinel",
         tolerance: "loose",
@@ -516,7 +516,7 @@ describe("GPU HMR runtime output proof classification", () => {
       deterministicOracleProvided: true,
       deterministicOraclePassed: true,
       outputOracle: {
-        kind: "runtime_readback",
+        kind: "sentinel_buffer_value",
         expected: "expected-sentinel",
         actual: "expected-sentinel",
       },
@@ -538,7 +538,7 @@ describe("GPU HMR runtime output proof classification", () => {
       deterministicOracleProvided: true,
       deterministicOraclePassed: true,
       outputOracle: {
-        kind: "runtime_readback",
+        kind: "sentinel_buffer_value",
         expected: "expected-sentinel",
         actual: "other-sentinel",
         evidenceRefs: ["worker-log:output_oracle:probe.expected"],
@@ -1665,6 +1665,24 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-dispatch-observed");
     expect(proof.degradedState).toBe("gpu-hmr-unknown-arg-provenance");
     expect(proof.degradedReason).toBe("launch_argument_provenance_incomplete");
+  });
+
+  it("rejects deterministic output oracles with unaccepted oracle kinds", () => {
+    const proof = classifyGpuHmrOutputProof({
+      dispatchProof: safeDispatchProof(),
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: {
+        ...deterministicOutputOracle(),
+        kind: "visual_change_only",
+      },
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.degradedState).toBe("gpu-hmr-output-unobserved");
+    expect(proof.degradedReason).toBe("output_oracle_kind_unaccepted");
+    expect(proof.outputOracle.kindAccepted).toBe(false);
   });
 
   it("blocks full runtime proof at ABI when source proof has not reached ABI", () => {
