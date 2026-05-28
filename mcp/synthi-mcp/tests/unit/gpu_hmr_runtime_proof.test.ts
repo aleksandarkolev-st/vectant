@@ -1505,6 +1505,8 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedState).toBe("gpu-hmr-abi-unverified");
     expect(proof.degradedReason).toBe("abi_layout_size_alignment_unverified");
     expect(proof.fullRuntimeProven).toBe(false);
+    expect(proof.postPublicationDecision.disposition).toBe("not-published-or-unverified");
+    expect(proof.postPublicationDecision.quarantineRequired).toBe(false);
   });
 
   it("blocks full runtime proof at dispatch when argument provenance is incomplete", () => {
@@ -1555,6 +1557,31 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-full-runtime-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.fullRuntimeProven).toBe(true);
+    expect(proof.postPublicationDecision.disposition).toBe("accepted");
+    expect(proof.postPublicationDecision.aiBlessingAllowed).toBe(true);
+  });
+
+  it("quarantines a published capsule when post-publication gates fail", () => {
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof: safeDispatchProof(),
+      outputProof: classifyGpuHmrOutputProof({
+        dispatchProof: safeDispatchProof(),
+        visualFrameObserved: true,
+      }),
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-dispatch-safe-proven");
+    expect(proof.fullRuntimeProven).toBe(false);
+    expect(proof.postPublicationDecision.disposition).toBe("quarantined");
+    expect(proof.postPublicationDecision.epochPublished).toBe(true);
+    expect(proof.postPublicationDecision.rollbackRequired).toBe(true);
+    expect(proof.postPublicationDecision.aiBlessingAllowed).toBe(false);
+    expect(proof.postPublicationDecision.blockedStageIds).toEqual(["output"]);
+    expect(summarizeGpuHmrFullRuntimeProof(proof)).toContain("capsule=quarantined");
   });
 
   it("blocks full runtime proof when original host path attachment is required but missing", () => {

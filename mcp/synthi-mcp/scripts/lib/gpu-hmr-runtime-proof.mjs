@@ -309,6 +309,56 @@ function stageResult(stageId, requiredState, evidenceRank, evidenceProof, degrad
   };
 }
 
+function stageIndex(stages, stageId) {
+  return stages.findIndex((stage) => stage.stageId === stageId);
+}
+
+function gpuHmrPostPublicationDecision(stages, fullRuntimeProven) {
+  const epochIndex = stageIndex(stages, 'epoch-swap');
+  const epochStage = epochIndex >= 0 ? stages[epochIndex] : null;
+  const epochPublished = epochStage?.status === 'passed';
+  const blockedStages = stages.filter((stage) => stage.status !== 'passed');
+
+  if (fullRuntimeProven) {
+    return {
+      disposition: 'accepted',
+      epochPublished,
+      quarantineRequired: false,
+      rollbackRequired: false,
+      aiBlessingAllowed: true,
+      reason: null,
+      blockedStageIds: [],
+    };
+  }
+
+  if (!epochPublished) {
+    return {
+      disposition: 'not-published-or-unverified',
+      epochPublished: false,
+      quarantineRequired: false,
+      rollbackRequired: false,
+      aiBlessingAllowed: false,
+      reason: epochStage?.degradedReason ?? blockedStages[0]?.degradedReason ?? 'epoch_publication_not_proven',
+      blockedStageIds: blockedStages.map((stage) => stage.stageId),
+    };
+  }
+
+  const postPublicationBlockedStages = blockedStages.filter((stage) => {
+    const index = stageIndex(stages, stage.stageId);
+    return index > epochIndex;
+  });
+  const firstPostPublicationBlock = postPublicationBlockedStages[0] ?? blockedStages[0] ?? null;
+  return {
+    disposition: postPublicationBlockedStages.length > 0 ? 'quarantined' : 'not-published-or-unverified',
+    epochPublished: true,
+    quarantineRequired: postPublicationBlockedStages.length > 0,
+    rollbackRequired: postPublicationBlockedStages.length > 0,
+    aiBlessingAllowed: false,
+    reason: firstPostPublicationBlock?.degradedReason ?? 'post_publication_runtime_proof_failed',
+    blockedStageIds: postPublicationBlockedStages.map((stage) => stage.stageId),
+  };
+}
+
 function finiteNumericValue(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value !== 'string') return null;
@@ -1244,6 +1294,7 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
   }
   const firstBlocked = stages.find((stage) => stage.status !== 'passed') ?? null;
   const fullRuntimeProven = firstBlocked === null;
+  const postPublicationDecision = gpuHmrPostPublicationDecision(stages, fullRuntimeProven);
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,
     resultState: fullRuntimeProven ? 'gpu-hmr-full-runtime-proven' : resultState,
@@ -1251,6 +1302,7 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
     degradedReason: firstBlocked?.degradedReason ?? null,
     fullRuntimeProven,
     stages,
+    postPublicationDecision,
     componentStates: {
       sourceEffectiveRank: source.effectiveRank,
       sourceResultState: source.proof?.resultState ?? null,
@@ -1279,5 +1331,8 @@ export function summarizeGpuHmrFullRuntimeProof(proof) {
     ? proof.stages.filter((stage) => stage.status !== 'passed').map((stage) => stage.stageId)
     : [];
   const blockedSummary = blocked.length ? ` blocked=${blocked.join(',')}` : '';
-  return `gpu_full_runtime_proof=${result}${degraded}${reason} full_runtime=${proof.fullRuntimeProven ? 'proven' : 'unproven'}${blockedSummary}`;
+  const capsule = proof.postPublicationDecision?.disposition
+    ? ` capsule=${proof.postPublicationDecision.disposition}`
+    : '';
+  return `gpu_full_runtime_proof=${result}${degraded}${reason} full_runtime=${proof.fullRuntimeProven ? 'proven' : 'unproven'}${blockedSummary}${capsule}`;
 }
