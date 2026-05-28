@@ -5517,6 +5517,7 @@ fn invalidate_derived_gpu_reports(root: &mut serde_json::Map<String, serde_json:
         "rankedReloadOptions",
         "consentRequired",
         "consentReason",
+        "fissionVerifierReport",
         "runReport",
     ] {
         root.remove(key);
@@ -12477,6 +12478,43 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         assert_eq!(
             report.rejection_reason.as_deref(),
             Some("selection.macro_controlled_abi_uncertain")
+        );
+    }
+
+    #[test]
+    fn derived_gpu_invalidation_clears_cached_fission_report() {
+        let mut meta = serde_json::json!({
+            "runReport": {
+                "fissionVerifierReport": {
+                    "status": "pass",
+                    "selectedIslandId": "island:stale"
+                }
+            },
+            "fissionVerifierReport": {
+                "status": "pass",
+                "selectedIslandId": "island:stale"
+            },
+            "fissionCandidate": {
+                "islandId": "island:fresh"
+            },
+            "rankedReloadOptions": [
+                {"plan": "device_only"}
+            ]
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+
+        invalidate_derived_gpu_reports(&mut meta);
+
+        assert!(!meta.contains_key("runReport"));
+        assert!(!meta.contains_key("rankedReloadOptions"));
+        assert!(!meta.contains_key("fissionVerifierReport"));
+        assert_eq!(
+            meta.get("fissionCandidate")
+                .and_then(|candidate| candidate.get("islandId"))
+                .and_then(serde_json::Value::as_str),
+            Some("island:fresh")
         );
     }
 
