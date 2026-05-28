@@ -101,6 +101,15 @@ pub struct OutputOracleRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginalHostPathRecord {
+    pub host_path_id: String,
+    pub dispatch_table_entry_id: String,
+    pub dispatch_boundary_observed: bool,
+    pub generation: u64,
+    pub runtime_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuLaunchRequest {
     pub kernel_name: String,
     pub grid: (u32, u32, u32),
@@ -125,6 +134,7 @@ struct BoundaryState {
     launches: Vec<LaunchRecord>,
     host_identities: Vec<HostIdentityRecord>,
     output_oracles: Vec<OutputOracleRecord>,
+    original_host_paths: Vec<OriginalHostPathRecord>,
     reported_failure_keys: HashSet<String>,
 }
 
@@ -659,6 +669,37 @@ pub extern "C" fn synthi_gpu_record_output_oracle(
 }
 
 #[no_mangle]
+pub extern "C" fn synthi_gpu_record_original_host_path(
+    host_path_id: *const c_char,
+    dispatch_table_entry_id: *const c_char,
+    dispatch_boundary_observed: bool,
+) {
+    let host_path_id = cstr(host_path_id).unwrap_or_else(|| "<unknown>".to_string());
+    let dispatch_table_entry_id =
+        cstr(dispatch_table_entry_id).unwrap_or_else(|| "<unknown>".to_string());
+    let generation = current_launch_generation();
+    let runtime_session = runtime_session_id().to_string();
+    {
+        let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+        guard.original_host_paths.push(OriginalHostPathRecord {
+            host_path_id: host_path_id.clone(),
+            dispatch_table_entry_id: dispatch_table_entry_id.clone(),
+            dispatch_boundary_observed,
+            generation,
+            runtime_session_id: runtime_session.clone(),
+        });
+    }
+    eprintln!(
+        "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed={} host_path_id={} dispatch_table_entry_id={} generation={} runtime_session={}",
+        dispatch_boundary_observed,
+        log_token(&host_path_id),
+        log_token(&dispatch_table_entry_id),
+        generation,
+        runtime_session
+    );
+}
+
+#[no_mangle]
 pub extern "C" fn synthi_gpu_launch_generation() -> u64 {
     current_launch_generation()
 }
@@ -1037,6 +1078,11 @@ pub fn output_oracle_records_snapshot() -> Vec<OutputOracleRecord> {
     guard.output_oracles.clone()
 }
 
+pub fn original_host_path_records_snapshot() -> Vec<OriginalHostPathRecord> {
+    let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+    guard.original_host_paths.clone()
+}
+
 pub fn launch_record_count() -> usize {
     let guard = state().lock().expect("gpu runtime boundary mutex poisoned");
     guard.launches.len()
@@ -1296,6 +1342,29 @@ mod tests {
         assert_eq!(records[0].expected, "sha256:abc");
         assert_eq!(records[0].actual, "sha256:abc");
         assert!(records[0].passed);
+        assert_eq!(records[0].generation, current_launch_generation());
+        assert_eq!(records[0].runtime_session_id, runtime_session_id());
+    }
+
+    #[test]
+    fn original_host_path_boundary_records_runtime_attachment() {
+        let _guard = test_guard_for_test();
+        reset_for_test();
+
+        let host_path_id = CString::new("host-main-loop").unwrap();
+        let dispatch_entry_id = CString::new("kernel-entry").unwrap();
+
+        synthi_gpu_record_original_host_path(
+            host_path_id.as_ptr(),
+            dispatch_entry_id.as_ptr(),
+            true,
+        );
+
+        let records = original_host_path_records_snapshot();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].host_path_id, "host-main-loop");
+        assert_eq!(records[0].dispatch_table_entry_id, "kernel-entry");
+        assert!(records[0].dispatch_boundary_observed);
         assert_eq!(records[0].generation, current_launch_generation());
         assert_eq!(records[0].runtime_session_id, runtime_session_id());
     }

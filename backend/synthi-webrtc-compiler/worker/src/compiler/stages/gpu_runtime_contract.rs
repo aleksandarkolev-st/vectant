@@ -219,6 +219,11 @@ void synthi_gpu_record_output_oracle(
     const char* actual_value,
     bool passed);
 
+void synthi_gpu_record_original_host_path(
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    bool dispatch_boundary_observed);
+
 bool synthi_gpu_pack_buffer(const char* semantic_name, const void* ptr, std::size_t bytes);
 bool synthi_gpu_restore_buffer(const unsigned char* blob, const char* semantic_name, void** out_ptr);
 
@@ -319,6 +324,16 @@ inline void synthi_output_oracle(
     synthi_gpu_record_output_oracle(oracle_id, kind, expected_value, actual_value, passed);
 }}
 
+inline void synthi_original_host_path(
+    const char* host_path_id,
+    const char* dispatch_table_entry_id,
+    bool dispatch_boundary_observed = true) {{
+    synthi_gpu_record_original_host_path(
+        host_path_id,
+        dispatch_table_entry_id,
+        dispatch_boundary_observed);
+}}
+
 #endif // SYNTHI_GPU_RUNTIME_H
 "#
     )
@@ -396,6 +411,8 @@ mod tests {
         assert!(h.contains("inline void synthi_host_identity"));
         assert!(h.contains("synthi_gpu_record_output_oracle"));
         assert!(h.contains("inline void synthi_output_oracle"));
+        assert!(h.contains("synthi_gpu_record_original_host_path"));
+        assert!(h.contains("inline void synthi_original_host_path"));
     }
 
     #[test]
@@ -443,6 +460,7 @@ void smoke(SynthiGpuRuntime* gpu) {
     (void)synthi_gpu_launch(gpu, "noop", grid, block, 0, nullptr, {arg});
     synthi_host_identity("smoke", gpu, 0);
     synthi_output_oracle("smoke", "sentinel", "1", "1", true);
+    synthi_original_host_path("host-loop", "entry-noop", true);
 }
 "#,
         )
