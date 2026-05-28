@@ -4610,6 +4610,12 @@ Return a JSON object:
     "requiredOracleId": "...",
     "outputOracleProposal": {},
     "originalHostLaunchMappingId": "...",
+    "sourceMappingEvidenceIds": ["..."],
+    "includeClosureEvidenceIds": ["..."],
+    "symbolOwnershipEvidenceIds": ["..."],
+    "dependencyClosureEvidenceIds": ["..."],
+    "abiMembraneEvidenceIds": ["..."],
+    "proofFailureReasonCodes": ["..."],
     "verifierEvidenceIds": ["..."],
     "aiProposalId": "..."
   }
@@ -4646,6 +4652,11 @@ Rules:
   provided evidence. Do not claim proof: the worker's deterministic verifier
   will accept or reject the proposal. Use null when any required field would be
   guessed.
+- Evidence id fields are provenance for the deterministic verifier to re-check,
+  not proof claims. Use ids already present in the mapping, compile, reload, or
+  failure reports. Do not invent ids. If phase evidence is missing for source
+  mapping, include closure, symbol ownership, dependency closure, or ABI
+  membrane, return null or include the missing phase in `proofFailureReasonCodes`.
 
 ARCHITECTURE CACHE:
 {ARCHITECTURE}

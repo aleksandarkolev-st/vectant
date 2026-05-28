@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from agents.gpu_mod_delta import (
     GpuDiffPatchRequest,
     build_gpu_diff_patch_retry_prompt,
@@ -74,6 +76,60 @@ def test_parse_gpu_diff_response_preserves_fission_candidate_as_proposal():
     assert parsed["fissionCandidate"]["targetSymbols"] == ["step"]
 
 
+def test_parse_gpu_diff_response_normalizes_fission_candidate_plan_aliases():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "symbols": ["step"],
+                "oracleProposal": {"kind": "checksum"},
+                "sourceMappingEvidenceIds": ["evidence:source-map"],
+                "includeClosureEvidenceIds": ["evidence:include-closure"],
+                "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
+                "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
+                "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
+                "proofFailureReasonCodes": ["output_oracle_missing"],
+                "sourceSpans": [{"path": "device.cu", "startLine": 7, "endLine": 9}],
+            },
+        }
+    )
+    parsed = parse_gpu_diff_response(raw)
+    candidate = parsed["fissionCandidate"]
+    assert candidate["targetSymbols"] == ["step"]
+    assert candidate["outputOracleProposal"] == {"kind": "checksum"}
+    assert candidate["abiMembraneEvidenceIds"] == ["evidence:abi-membrane"]
+    assert candidate["sourceSpans"][0]["startLine"] == 7
+
+
+def test_parse_gpu_diff_response_rejects_invalid_fission_evidence_shape():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {"sourceMappingEvidenceIds": ["evidence:source-map", ""]},
+        }
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse_gpu_diff_response(raw)
+    assert "fissionCandidate.sourceMappingEvidenceIds[1]" in str(excinfo.value)
+
+
+def test_parse_gpu_diff_response_rejects_invalid_fission_source_span():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "sourceSpans": [{"path": "device.cu", "startLine": 9, "endLine": 7}],
+            },
+        }
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse_gpu_diff_response(raw)
+    assert "fissionCandidate.sourceSpans[0].endLine" in str(excinfo.value)
+
+
 def test_gpu_prompt_contains_runtime_boundary_rule():
     prompt = build_gpu_diff_patch_prompt(GpuDiffPatchRequest(diff="@@"))
     assert "synthi_gpu_launch" in prompt
@@ -84,6 +140,8 @@ def test_gpu_prompt_marks_fission_candidate_as_proposal_only():
     prompt = build_gpu_diff_patch_prompt(GpuDiffPatchRequest(diff="@@"))
     assert "fissionCandidate" in prompt
     assert "deterministic verifier" in prompt
+    assert "sourceMappingEvidenceIds" in prompt
+    assert "Do not invent ids" in prompt
     assert "Use null" in prompt
 
 

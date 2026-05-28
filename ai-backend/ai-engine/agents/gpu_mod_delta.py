@@ -31,6 +31,48 @@ VALID_GPU_EDIT_MODULES = {"core", "gui", "shared", "host_runner", "device"}
 VALID_GPU_EDIT_OPS = {"insert_after", "insert_before", "replace", "delete"}
 DEVICE_PATHS = {"device.cu", "device.hip"}
 _QUOTED_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.MULTILINE)
+FISSION_CANDIDATE_STRING_FIELDS = {
+    "abiMembraneId",
+    "aiProposalId",
+    "artifactKind",
+    "compileCommandHash",
+    "compileRecipeHash",
+    "dependencyClosureHash",
+    "expectedAbiScope",
+    "generatedRolePath",
+    "islandId",
+    "originalHostLaunchMappingId",
+    "requiredOracleId",
+    "sourceEditId",
+}
+FISSION_CANDIDATE_STRING_LIST_FIELDS = {
+    "abiEvidenceIds",
+    "abiMembraneEvidenceIds",
+    "dependencyClosureEvidenceIds",
+    "exportedSymbolsExpected",
+    "includeClosure",
+    "includeClosureEvidenceIds",
+    "proofFailureReasonCodes",
+    "sourceMappingEvidenceIds",
+    "sourceMapEvidenceIds",
+    "sourcePaths",
+    "symbolOwnershipEvidenceIds",
+    "symbols",
+    "targetSymbols",
+    "verifierEvidenceIds",
+}
+FISSION_CANDIDATE_OBJECT_FIELDS = {
+    "loaderCapabilityRequirement",
+    "oracleProposal",
+    "originalHostPathRequirement",
+    "outputOracleProposal",
+    "runtimeAttachmentRequirement",
+    "runtimeOwnershipRequirement",
+}
+FISSION_CANDIDATE_ALIASES = {
+    "oracleProposal": "outputOracleProposal",
+    "symbols": "targetSymbols",
+}
 HOST_PATH_TO_MODULE = {
     "core.cpp": "core",
     "gui.cpp": "gui",
@@ -377,7 +419,69 @@ def validate_fission_candidate(candidate: object) -> Optional[dict]:
         return None
     if not isinstance(candidate, dict):
         raise HTTPException(status_code=400, detail="`fissionCandidate` must be an object when present")
-    return dict(candidate)
+    cleaned = dict(candidate)
+    for source_field, target_field in FISSION_CANDIDATE_ALIASES.items():
+        if target_field not in cleaned and source_field in cleaned:
+            cleaned[target_field] = cleaned[source_field]
+    for field in sorted(FISSION_CANDIDATE_STRING_FIELDS):
+        if field in cleaned and cleaned[field] is not None and not isinstance(cleaned[field], str):
+            raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be a string")
+    for field in sorted(FISSION_CANDIDATE_STRING_LIST_FIELDS):
+        if field in cleaned and cleaned[field] is not None:
+            cleaned[field] = _validate_fission_string_list(cleaned[field], field)
+    for field in sorted(FISSION_CANDIDATE_OBJECT_FIELDS):
+        if field in cleaned and cleaned[field] is not None and not isinstance(cleaned[field], dict):
+            raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be an object")
+    if "sourceSpans" in cleaned and cleaned["sourceSpans"] is not None:
+        cleaned["sourceSpans"] = _validate_fission_source_spans(cleaned["sourceSpans"])
+    return cleaned
+
+
+def _validate_fission_string_list(value: object, field: str) -> List[str]:
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be a string array")
+    cleaned: List[str] = []
+    for i, item in enumerate(value):
+        if not isinstance(item, str) or not item:
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.{field}[{i}]` must be a non-empty string",
+            )
+        cleaned.append(item)
+    return cleaned
+
+
+def _validate_fission_source_spans(value: object) -> List[dict]:
+    if not isinstance(value, list):
+        raise HTTPException(status_code=400, detail="`fissionCandidate.sourceSpans` must be an array")
+    cleaned: List[dict] = []
+    for i, span in enumerate(value):
+        if not isinstance(span, dict):
+            raise HTTPException(status_code=400, detail=f"`fissionCandidate.sourceSpans[{i}]` must be an object")
+        path = span.get("path")
+        start_line = span.get("startLine")
+        end_line = span.get("endLine")
+        if not isinstance(path, str) or not path:
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.sourceSpans[{i}].path` must be a non-empty string",
+            )
+        if type(start_line) is not int or start_line < 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.sourceSpans[{i}].startLine` must be a positive integer",
+            )
+        if type(end_line) is not int or end_line < start_line:
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.sourceSpans[{i}].endLine` must be an integer >= startLine",
+            )
+        cleaned_span = dict(span)
+        cleaned_span["path"] = path
+        cleaned_span["startLine"] = start_line
+        cleaned_span["endLine"] = end_line
+        cleaned.append(cleaned_span)
+    return cleaned
 
 
 def _normalize_module(module: str) -> str:
