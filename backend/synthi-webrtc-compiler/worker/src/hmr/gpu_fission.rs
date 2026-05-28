@@ -156,6 +156,12 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         reason_codes.push("fission.narrower_candidate_rejections_incomplete".to_string());
     }
 
+    if original_host_launch_mapping_required(candidate)
+        && !non_empty_string(candidate.get("originalHostLaunchMappingId"))
+    {
+        reason_codes.push("fission.original_host_launch_mapping_missing".to_string());
+    }
+
     let status = if reason_codes.is_empty() {
         reason_codes.push("fission.candidate_verified".to_string());
         "pass"
@@ -179,6 +185,11 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "safeExportSupersetSymbols": safe_export_superset_symbols(candidate),
         "safeExportSupersetEvidenceIds": safe_export_superset_evidence_ids(candidate),
         "narrowerRejectionCoverage": narrower_rejection_coverage(candidate),
+        "originalHostLaunchMappingRequired": original_host_launch_mapping_required(candidate),
+        "originalHostLaunchMappingId": candidate
+            .get("originalHostLaunchMappingId")
+            .cloned()
+            .unwrap_or(Value::Null),
         "selectionScore": fission_selection_score(candidate),
         "verifierEvidenceId": verifier_evidence_id(candidate, status),
         "candidate": candidate,
@@ -536,6 +547,64 @@ fn non_authoritative_evidence_ids(candidate: &Value) -> Vec<String> {
         .collect()
 }
 
+fn original_host_launch_mapping_required(candidate: &Value) -> bool {
+    bool_true(candidate.get("requiresOriginalHostPath"))
+        || bool_true(candidate.get("originalHostLaunchMappingRequired"))
+        || explicit_original_host_requirement(candidate.get("originalHostPathRequirement"))
+        || explicit_original_host_requirement(candidate.get("originalHostLaunchMappingRequirement"))
+        || runtime_ownership_requires_original_host(candidate.get("runtimeOwnershipRequirement"))
+        || runtime_ownership_requires_original_host(candidate.get("runtimeAttachmentRequirement"))
+}
+
+fn bool_true(value: Option<&Value>) -> bool {
+    value.and_then(Value::as_bool) == Some(true)
+}
+
+fn explicit_original_host_requirement(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::String(value)) => requirement_text_enabled(value),
+        Some(Value::Object(object)) => {
+            bool_true(object.get("required"))
+                || bool_true(object.get("enabled"))
+                || object
+                    .values()
+                    .filter_map(Value::as_str)
+                    .any(requirement_text_enabled)
+        }
+        _ => false,
+    }
+}
+
+fn runtime_ownership_requires_original_host(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(_)) => false,
+        Some(Value::String(value)) => ownership_text_requires_original_host(value),
+        Some(Value::Object(object)) => {
+            bool_true(object.get("requiresOriginalHostPath"))
+                || bool_true(object.get("originalHostLaunchMappingRequired"))
+                || object
+                    .values()
+                    .filter_map(Value::as_str)
+                    .any(ownership_text_requires_original_host)
+        }
+        _ => false,
+    }
+}
+
+fn requirement_text_enabled(value: &str) -> bool {
+    let normalized = normalized_scope_text(value);
+    !matches!(
+        normalized.as_str(),
+        "" | "none" | "false" | "optional" | "not_required" | "unneeded" | "unavailable"
+    )
+}
+
+fn ownership_text_requires_original_host(value: &str) -> bool {
+    let normalized = normalized_scope_text(value);
+    normalized.contains("original_host") || normalized.contains("host_path")
+}
+
 fn is_deterministic_verifier_evidence_id(value: &str) -> bool {
     let normalized = value.trim().to_ascii_lowercase();
     if normalized.is_empty()
@@ -787,6 +856,54 @@ mod tests {
             .unwrap()
             .iter()
             .any(|code| code == "fission.output_oracle_missing"));
+    }
+
+    #[test]
+    fn rejects_original_host_attachment_candidate_without_mapping() {
+        let mut candidate = valid_candidate();
+        candidate["requiresOriginalHostPath"] = json!(true);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["originalHostLaunchMappingRequired"], true);
+        assert_eq!(report["originalHostLaunchMappingId"], Value::Null);
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.original_host_launch_mapping_missing"));
+    }
+
+    #[test]
+    fn accepts_original_host_attachment_candidate_with_mapping() {
+        let mut candidate = valid_candidate();
+        candidate["originalHostPathRequirement"] = json!({
+            "required": true,
+            "reason": "attach through preserved runtime launch boundary"
+        });
+        candidate["originalHostLaunchMappingId"] = json!("host-launch:mapped-runtime-boundary");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["originalHostLaunchMappingRequired"], true);
+        assert_eq!(
+            report["originalHostLaunchMappingId"],
+            "host-launch:mapped-runtime-boundary"
+        );
+    }
+
+    #[test]
+    fn does_not_require_original_host_mapping_for_optional_requirement() {
+        let mut candidate = valid_candidate();
+        candidate["originalHostPathRequirement"] = json!("optional");
+        candidate["runtimeOwnershipRequirement"] = json!(true);
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["originalHostLaunchMappingRequired"], false);
     }
 
     #[test]
