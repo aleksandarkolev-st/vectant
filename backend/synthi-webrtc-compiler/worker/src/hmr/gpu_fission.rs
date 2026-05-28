@@ -28,11 +28,13 @@ pub fn verify_fission_candidates(value: &Value) -> Value {
     if candidates.is_empty() {
         return json!({
             "schemaVersion": FISSION_VERIFIER_SCHEMA_VERSION,
+            "selectionPolicy": "narrowest_viable_generic_v1",
             "status": "missing",
             "candidateCount": 0,
             "acceptedCount": 0,
             "rejectedCount": 0,
             "selectedIslandId": null,
+            "selectedCandidateIndex": null,
             "reasonCodes": ["fission.candidate_missing"],
             "candidates": [],
         });
@@ -40,25 +42,33 @@ pub fn verify_fission_candidates(value: &Value) -> Value {
 
     let mut accepted_count = 0usize;
     let mut rejected_count = 0usize;
-    let mut selected_island_id = Value::Null;
     let mut reports = Vec::new();
 
     for candidate in candidates {
         let report = verify_fission_candidate(&candidate);
         if report.get("status").and_then(Value::as_str) == Some("pass") {
             accepted_count += 1;
-            if selected_island_id.is_null() {
-                selected_island_id = report
-                    .get("islandId")
-                    .cloned()
-                    .filter(|v| !v.is_null())
-                    .unwrap_or(Value::Null);
-            }
         } else {
             rejected_count += 1;
         }
         reports.push(report);
     }
+
+    let selected_candidate_index = select_narrowest_candidate_index(&reports);
+    for (index, report) in reports.iter_mut().enumerate() {
+        if let Some(object) = report.as_object_mut() {
+            object.insert(
+                "selected".to_string(),
+                Value::Bool(selected_candidate_index == Some(index)),
+            );
+        }
+    }
+    let selected_island_id = selected_candidate_index
+        .and_then(|index| reports.get(index))
+        .and_then(|report| report.get("islandId"))
+        .cloned()
+        .filter(|value| !value.is_null())
+        .unwrap_or(Value::Null);
 
     let status = if accepted_count > 0 { "pass" } else { "reject" };
     let reason_codes = if accepted_count > 0 {
@@ -69,11 +79,13 @@ pub fn verify_fission_candidates(value: &Value) -> Value {
 
     json!({
         "schemaVersion": FISSION_VERIFIER_SCHEMA_VERSION,
+        "selectionPolicy": "narrowest_viable_generic_v1",
         "status": status,
         "candidateCount": reports.len(),
         "acceptedCount": accepted_count,
         "rejectedCount": rejected_count,
         "selectedIslandId": selected_island_id,
+        "selectedCandidateIndex": selected_candidate_index,
         "reasonCodes": reason_codes,
         "candidates": reports,
     })
@@ -136,6 +148,7 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "sourceEditId": candidate.get("sourceEditId").cloned().unwrap_or(Value::Null),
         "aiProposalId": candidate.get("aiProposalId").cloned().unwrap_or(Value::Null),
         "reasonCodes": reason_codes,
+        "selectionScore": fission_selection_score(candidate),
         "verifierEvidenceId": verifier_evidence_id(candidate, status),
         "candidate": candidate,
     })
@@ -193,6 +206,145 @@ fn target_symbols_exported(candidate: &Value) -> bool {
     let targets = string_set(candidate.get("targetSymbols"));
     let exports = string_set(candidate.get("exportedSymbolsExpected"));
     !targets.is_empty() && targets.is_subset(&exports)
+}
+
+fn select_narrowest_candidate_index(reports: &[Value]) -> Option<usize> {
+    reports
+        .iter()
+        .enumerate()
+        .filter(|(_, report)| report.get("status").and_then(Value::as_str) == Some("pass"))
+        .min_by(|(left_index, left), (right_index, right)| {
+            let left_score = selection_score_total(left).unwrap_or(u64::MAX);
+            let right_score = selection_score_total(right).unwrap_or(u64::MAX);
+            left_score
+                .cmp(&right_score)
+                .then_with(|| verifier_evidence_id_value(left).cmp(&verifier_evidence_id_value(right)))
+                .then_with(|| left_index.cmp(right_index))
+        })
+        .map(|(index, _)| index)
+}
+
+fn selection_score_total(report: &Value) -> Option<u64> {
+    report
+        .get("selectionScore")
+        .and_then(|score| score.get("total"))
+        .and_then(Value::as_u64)
+}
+
+fn verifier_evidence_id_value(report: &Value) -> String {
+    report
+        .get("verifierEvidenceId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn fission_selection_score(candidate: &Value) -> Value {
+    let target_symbol_count = string_set(candidate.get("targetSymbols")).len() as u64;
+    let exported_symbol_count = string_set(candidate.get("exportedSymbolsExpected")).len() as u64;
+    let source_path_count = string_set(candidate.get("sourcePaths")).len() as u64;
+    let include_closure_count = candidate
+        .get("includeClosure")
+        .and_then(Value::as_array)
+        .map(|items| items.len() as u64)
+        .unwrap_or(0);
+    let source_span_extent = source_span_extent(candidate.get("sourceSpans"));
+    let scope_rank = replacement_scope_rank(candidate);
+    let exported_symbol_overage = exported_symbol_count.saturating_sub(target_symbol_count);
+    let total = scope_rank
+        .saturating_mul(1_000_000_000)
+        .saturating_add(target_symbol_count.saturating_mul(10_000_000))
+        .saturating_add(exported_symbol_overage.saturating_mul(1_000_000))
+        .saturating_add(source_path_count.saturating_mul(100_000))
+        .saturating_add(include_closure_count.saturating_mul(1_000))
+        .saturating_add(source_span_extent.min(999));
+    json!({
+        "policy": "narrowest_viable_generic_v1",
+        "total": total,
+        "scopeRank": scope_rank,
+        "targetSymbolCount": target_symbol_count,
+        "exportedSymbolCount": exported_symbol_count,
+        "exportedSymbolOverage": exported_symbol_overage,
+        "sourcePathCount": source_path_count,
+        "includeClosureCount": include_closure_count,
+        "sourceSpanExtent": source_span_extent,
+    })
+}
+
+fn replacement_scope_rank(candidate: &Value) -> u64 {
+    let mut scope_text = Vec::new();
+    for field in ["replacementScope", "artifactScope", "scope", "artifactKind"] {
+        if let Some(value) = candidate.get(field).and_then(Value::as_str) {
+            scope_text.push(normalized_scope_text(value));
+        }
+    }
+    let scope_text = scope_text.join(" ");
+    if scope_text.is_empty() {
+        return 2;
+    }
+    if scope_text.contains("body") || scope_text.contains("function") {
+        0
+    } else if scope_text.contains("source_include")
+        || (scope_text.contains("partial") && scope_text.contains("device"))
+    {
+        1
+    } else if scope_text.contains("multi") {
+        2
+    } else if scope_text.contains("full")
+        && (scope_text.contains("device") || scope_text.contains("module"))
+    {
+        3
+    } else if scope_text.contains("host") {
+        4
+    } else if scope_text.contains("runner")
+        || scope_text.contains("process")
+        || scope_text.contains("restart")
+    {
+        5
+    } else {
+        2
+    }
+}
+
+fn normalized_scope_text(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
+}
+
+fn source_span_extent(value: Option<&Value>) -> u64 {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| {
+                    byte_span_extent(item)
+                        .or_else(|| line_span_extent(item))
+                        .unwrap_or(0)
+                })
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+fn byte_span_extent(value: &Value) -> Option<u64> {
+    let object = value.as_object()?;
+    zero_based_u64(object.get("startByte"))
+        .zip(zero_based_u64(object.get("endByte")))
+        .and_then(|(start, end)| end.checked_sub(start))
+        .filter(|extent| *extent > 0)
+}
+
+fn line_span_extent(value: &Value) -> Option<u64> {
+    let object = value.as_object()?;
+    positive_u64(object.get("startLine"))
+        .zip(positive_u64(object.get("endLine")))
+        .and_then(|(start, end)| end.checked_sub(start).map(|extent| extent + 1))
+        .filter(|extent| *extent > 0)
 }
 
 fn string_set(value: Option<&Value>) -> BTreeSet<String> {
@@ -257,7 +409,9 @@ mod tests {
         assert_eq!(report["status"], "pass");
         assert_eq!(report["acceptedCount"], 1);
         assert_eq!(report["selectedIslandId"], "island:sha256:1");
+        assert_eq!(report["selectedCandidateIndex"], 0);
         assert_eq!(report["candidates"][0]["status"], "pass");
+        assert_eq!(report["candidates"][0]["selected"], true);
         assert_eq!(
             report["candidates"][0]["reasonCodes"][0],
             "fission.candidate_verified"
@@ -292,5 +446,49 @@ mod tests {
             .unwrap()
             .iter()
             .any(|code| code == "fission.target_symbol_not_exported"));
+    }
+
+    #[test]
+    fn selects_narrowest_accepted_candidate_not_first_pass() {
+        let mut wide = valid_candidate();
+        wide["islandId"] = json!("island:wide");
+        wide["artifactKind"] = json!("full_device_module");
+        wide["sourcePaths"] = json!(["src/a.device", "src/b.device"]);
+        wide["sourceSpans"] = json!([
+            {"path": "src/a.device", "startLine": 1, "endLine": 200},
+            {"path": "src/b.device", "startLine": 1, "endLine": 150}
+        ]);
+        wide["targetSymbols"] = json!(["shade", "trace"]);
+        wide["exportedSymbolsExpected"] = json!(["shade", "trace", "helper"]);
+
+        let mut narrow = valid_candidate();
+        narrow["islandId"] = json!("island:narrow");
+        narrow["artifactKind"] = json!("source_include_bridge");
+        narrow["sourcePaths"] = json!(["src/a.device"]);
+        narrow["sourceSpans"] = json!([{"path": "src/a.device", "startLine": 20, "endLine": 24}]);
+        narrow["targetSymbols"] = json!(["shade"]);
+        narrow["exportedSymbolsExpected"] = json!(["shade"]);
+
+        let report = verify_fission_candidates(&json!([wide, narrow]));
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["acceptedCount"], 2);
+        assert_eq!(report["selectedIslandId"], "island:narrow");
+        assert_eq!(report["selectedCandidateIndex"], 1);
+        assert_eq!(report["candidates"][0]["selected"], false);
+        assert_eq!(report["candidates"][1]["selected"], true);
+    }
+
+    #[test]
+    fn rejected_candidates_are_not_selected() {
+        let mut rejected = valid_candidate();
+        rejected.as_object_mut().unwrap().remove("requiredOracleId");
+
+        let report = verify_fission_candidates(&json!([rejected]));
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["selectedIslandId"], Value::Null);
+        assert_eq!(report["selectedCandidateIndex"], Value::Null);
+        assert_eq!(report["candidates"][0]["selected"], false);
     }
 }
