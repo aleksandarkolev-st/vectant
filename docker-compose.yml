@@ -262,6 +262,7 @@ services:
       SIGNALING_URL: "ws://signaling-server:9000"
       COLLAB_SERVER_URL: "http://collab-server:1234"
       AI_BACKEND_URL: "http://ai-engine:8000"
+      SYNTHI_REPOS_PATH: "/data/repos"
       SYNTHI_GEMINI_MODEL: "${SYNTHI_GEMINI_MODEL:-}"
       # GStreamer
       GST_DEBUG: "2"
@@ -286,6 +287,7 @@ services:
     devices:
       - "/dev/dxg:/dev/dxg"
     volumes:
+      - collab-data:/data:ro
       - /usr/lib/wsl/lib/libdxcore.so:/usr/lib/libdxcore.so:ro
     cap_drop:
       - ALL

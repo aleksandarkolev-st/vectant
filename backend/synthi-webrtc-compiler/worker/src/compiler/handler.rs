@@ -1,6 +1,6 @@
 use crate::debug_log;
 use anyhow::{Context, Result};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::compiler::builder::{
@@ -8,7 +8,7 @@ use crate::compiler::builder::{
 };
 use crate::compiler::context::CompileContext;
 use crate::infra::crash_recovery::PLUGIN_TIMEOUT_SECS;
-use crate::infra::messages::{CompileRequest, FileEntry};
+use crate::infra::messages::{CompileRequest, FileEntry, FileRef};
 use sha2::{Digest, Sha256};
 
 // ULTRAPLAN Lightning Phase 11 — per-process Tier 0 bypass counters.
@@ -23,6 +23,10 @@ const MAX_DEVICE_PARTIAL_ARTIFACTS: usize = 128;
 const MAX_WARM_SOURCE_BRIDGE_TUS: usize = 16;
 const MAX_SOURCE_BRIDGE_SUPPORT_INLINE_DEPTH: usize = 6;
 const MAX_SOURCE_BRIDGE_SUPPORT_INLINE_BYTES: usize = 256 * 1024;
+const DEFAULT_WORKSPACE_FILE_REF_SEARCH_DEPTH: usize = 8;
+const MAX_WORKSPACE_FILE_REF_SEARCH_DEPTH: usize = 32;
+const DEFAULT_WORKSPACE_FILE_REF_SEARCH_LIMIT: usize = 16_384;
+const MAX_WORKSPACE_FILE_REF_SEARCH_LIMIT: usize = 65_536;
 const DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_GRACE_MS: u64 = 5_000;
 const DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS: u64 =
     PLUGIN_TIMEOUT_SECS * 1_000 + DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_GRACE_MS;
@@ -81,7 +85,11 @@ fn compile_request_relpath(path: &str) -> Result<PathBuf> {
     Ok(rel)
 }
 
-async fn write_compile_request_file(workspace: &Path, name: &str, content: &str) -> Result<()> {
+async fn write_compile_request_file_bytes(
+    workspace: &Path,
+    name: &str,
+    content: &[u8],
+) -> Result<()> {
     let rel = compile_request_relpath(name)?;
     let path = workspace.join(&rel);
     if let Some(parent) = path.parent() {
@@ -95,6 +103,10 @@ async fn write_compile_request_file(workspace: &Path, name: &str, content: &str)
     Ok(())
 }
 
+async fn write_compile_request_file(workspace: &Path, name: &str, content: &str) -> Result<()> {
+    write_compile_request_file_bytes(workspace, name, content.as_bytes()).await
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct WorkspaceFileRefSummary {
     count: usize,
@@ -106,6 +118,268 @@ fn normalize_optional_sha256(raw: &str) -> String {
         .strip_prefix("sha256:")
         .unwrap_or_else(|| raw.trim())
         .to_ascii_lowercase()
+}
+
+fn file_ref_bytes_match_integrity(file_ref: &FileRef, bytes: &[u8]) -> bool {
+    if let Some(expected) = file_ref.bytes {
+        if bytes.len() as u64 != expected {
+            return false;
+        }
+    }
+    if let Some(expected) = file_ref.sha256.as_deref() {
+        let actual = format!("{:x}", Sha256::digest(bytes));
+        if actual != normalize_optional_sha256(expected) {
+            return false;
+        }
+    }
+    true
+}
+
+fn bounded_usize_env(name: &str, default_value: usize, max_value: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .map(|value| value.min(max_value))
+        .unwrap_or(default_value)
+}
+
+async fn push_existing_file_ref_candidate(
+    candidates: &mut Vec<PathBuf>,
+    seen_candidates: &mut BTreeSet<PathBuf>,
+    slug_root: &Path,
+    candidate: PathBuf,
+) -> Result<()> {
+    let metadata = match tokio::fs::metadata(&candidate).await {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "reading collab workspace file ref metadata {}",
+                    candidate.display()
+                )
+            });
+        }
+    };
+    if !metadata.is_file() {
+        return Ok(());
+    }
+    let canonical = match tokio::fs::canonicalize(&candidate).await {
+        Ok(path) => path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("resolving collab workspace file ref {}", candidate.display())
+            });
+        }
+    };
+    if !canonical.starts_with(slug_root) {
+        anyhow::bail!(
+            "collab workspace file ref escaped workspace root: {}",
+            candidate.display()
+        );
+    }
+    if seen_candidates.insert(canonical.clone()) {
+        candidates.push(canonical);
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct CollabFileRefIndex {
+    slug_root: PathBuf,
+    candidate_dirs: Vec<PathBuf>,
+    search_limit: usize,
+}
+
+impl CollabFileRefIndex {
+    async fn from_slug(slug: Option<&str>) -> Result<Option<Self>> {
+        let Some(slug) = slug.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(None);
+        };
+        let Some(root) = std::env::var("SYNTHI_REPOS_PATH")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
+        else {
+            return Ok(None);
+        };
+        let Ok(root) = tokio::fs::canonicalize(&root).await else {
+            return Ok(None);
+        };
+        let slug_rel = compile_request_relpath(slug)?;
+        let slug_root = root.join(slug_rel);
+        let Ok(canonical_slug_root) = tokio::fs::canonicalize(&slug_root).await else {
+            return Ok(None);
+        };
+        if !canonical_slug_root.starts_with(&root) {
+            anyhow::bail!("workspace slug escaped repo root: {slug}");
+        }
+
+        let max_depth = bounded_usize_env(
+            "SYNTHI_WORKSPACE_FILE_REF_SEARCH_DEPTH",
+            DEFAULT_WORKSPACE_FILE_REF_SEARCH_DEPTH,
+            MAX_WORKSPACE_FILE_REF_SEARCH_DEPTH,
+        );
+        let search_limit = bounded_usize_env(
+            "SYNTHI_WORKSPACE_FILE_REF_SEARCH_LIMIT",
+            DEFAULT_WORKSPACE_FILE_REF_SEARCH_LIMIT,
+            MAX_WORKSPACE_FILE_REF_SEARCH_LIMIT,
+        );
+
+        let mut candidate_dirs = Vec::new();
+        let mut seen_dirs = BTreeSet::new();
+        let mut queue = VecDeque::new();
+        seen_dirs.insert(canonical_slug_root.clone());
+        queue.push_back((canonical_slug_root.clone(), 0usize));
+
+        while let Some((dir, depth)) = queue.pop_front() {
+            candidate_dirs.push(dir.clone());
+            if depth >= max_depth {
+                continue;
+            }
+
+            let mut entries = tokio::fs::read_dir(&dir)
+                .await
+                .with_context(|| format!("reading collab repo directory {}", dir.display()))?;
+            while let Some(entry) = entries.next_entry().await? {
+                let file_name = entry.file_name();
+                if file_name.to_string_lossy() == ".git" {
+                    continue;
+                }
+                if !entry.file_type().await?.is_dir() {
+                    continue;
+                }
+                let Ok(canonical_child) = tokio::fs::canonicalize(entry.path()).await else {
+                    continue;
+                };
+                if !canonical_child.starts_with(&canonical_slug_root) {
+                    continue;
+                }
+                if seen_dirs.insert(canonical_child.clone()) {
+                    if seen_dirs.len() > search_limit {
+                        anyhow::bail!(
+                            "workspace file ref search exceeded directory limit: {slug}"
+                        );
+                    }
+                    queue.push_back((canonical_child, depth + 1));
+                }
+            }
+        }
+        Ok(Some(Self {
+            slug_root: canonical_slug_root,
+            candidate_dirs,
+            search_limit,
+        }))
+    }
+
+    async fn candidates_for(&self, rel: &Path) -> Result<Vec<PathBuf>> {
+        let mut candidates = Vec::new();
+        let mut seen_candidates = BTreeSet::new();
+        for dir in &self.candidate_dirs {
+            push_existing_file_ref_candidate(
+                &mut candidates,
+                &mut seen_candidates,
+                &self.slug_root,
+                dir.join(rel),
+            )
+            .await?;
+            if candidates.len() > self.search_limit {
+                anyhow::bail!(
+                    "workspace file ref search exceeded candidate limit: {}",
+                    rel.display()
+                );
+            }
+        }
+        Ok(candidates)
+    }
+}
+
+async fn read_collab_repo_file_ref(
+    collab_index: Option<&CollabFileRefIndex>,
+    rel: &Path,
+    normalized: &str,
+    file_ref: &FileRef,
+) -> Result<Option<Vec<u8>>> {
+    let Some(collab_index) = collab_index else {
+        return Ok(None);
+    };
+    let mut existing = Vec::new();
+    for candidate in collab_index.candidates_for(rel).await? {
+        match tokio::fs::read(&candidate).await {
+            Ok(bytes) => existing.push((candidate, bytes)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("reading collab workspace file ref {}", normalized));
+            }
+        }
+    }
+    if existing.is_empty() {
+        return Ok(None);
+    }
+
+    let matches = existing
+        .iter()
+        .filter(|(_, bytes)| file_ref_bytes_match_integrity(file_ref, bytes))
+        .collect::<Vec<_>>();
+    let selected = if matches.is_empty() {
+        existing.remove(0).1
+    } else {
+        let first = &matches[0].1;
+        if matches
+            .iter()
+            .any(|(_, bytes)| bytes.as_slice() != first.as_slice())
+        {
+            anyhow::bail!("ambiguous collab workspace file ref: {}", normalized);
+        }
+        first.clone()
+    };
+    Ok(Some(selected))
+}
+
+async fn read_workspace_file_ref_bytes(
+    workspace: &Path,
+    canonical_workspace: &Path,
+    rel: &Path,
+    normalized: &str,
+    file_ref: &FileRef,
+    collab_index: Option<&CollabFileRefIndex>,
+) -> Result<Vec<u8>> {
+    let path = workspace.join(rel);
+    match tokio::fs::canonicalize(&path).await {
+        Ok(canonical_path) => {
+            if !canonical_path.starts_with(canonical_workspace) {
+                anyhow::bail!("workspace file ref escaped workspace: {}", normalized);
+            }
+            let bytes = tokio::fs::read(&canonical_path)
+                .await
+                .with_context(|| format!("reading workspace file ref {}", normalized))?;
+            if file_ref_bytes_match_integrity(file_ref, &bytes) {
+                return Ok(bytes);
+            }
+            if let Some(bytes) =
+                read_collab_repo_file_ref(collab_index, rel, normalized, file_ref).await?
+            {
+                write_compile_request_file_bytes(workspace, normalized, &bytes).await?;
+                return Ok(bytes);
+            }
+            Ok(bytes)
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(bytes) =
+                read_collab_repo_file_ref(collab_index, rel, normalized, file_ref).await?
+            {
+                write_compile_request_file_bytes(workspace, normalized, &bytes).await?;
+                return Ok(bytes);
+            }
+            Err(err).with_context(|| format!("resolving workspace file ref {}", normalized))
+        }
+        Err(err) => {
+            Err(err).with_context(|| format!("resolving workspace file ref {}", normalized))
+        }
+    }
 }
 
 async fn hydrate_workspace_file_refs(
@@ -139,24 +413,20 @@ async fn hydrate_workspace_file_refs(
         known_contents.insert(normalized, file.content.clone());
     }
 
+    let collab_index = CollabFileRefIndex::from_slug(req.slug.as_deref()).await?;
     let mut summary = WorkspaceFileRefSummary::default();
     for file_ref in &req.file_refs {
         let rel = compile_request_relpath(&file_ref.name)?;
         let normalized = rel.to_string_lossy().replace('\\', "/");
-        let path = workspace.join(&rel);
-        let canonical_path = tokio::fs::canonicalize(&path)
-            .await
-            .with_context(|| format!("resolving workspace file ref {}", normalized))?;
-        if !canonical_path.starts_with(&canonical_workspace) {
-            anyhow::bail!(
-                "workspace file ref escaped workspace: {}",
-                normalized
-            );
-        }
-
-        let bytes = tokio::fs::read(&canonical_path)
-            .await
-            .with_context(|| format!("reading workspace file ref {}", normalized))?;
+        let bytes = read_workspace_file_ref_bytes(
+            workspace,
+            &canonical_workspace,
+            &rel,
+            &normalized,
+            file_ref,
+            collab_index.as_ref(),
+        )
+        .await?;
         if let Some(expected) = file_ref.bytes {
             if bytes.len() as u64 != expected {
                 anyhow::bail!(
@@ -750,10 +1020,21 @@ fn scalar_type_layout(ty: &str) -> Option<(usize, usize)> {
         "short" | "short int" | "signed short" | "signed short int" | "unsigned short"
         | "unsigned short int" => Some((2, 2)),
         "int" | "signed int" | "unsigned int" | "float" => Some((4, 4)),
-        "long" | "long int" | "signed long" | "signed long int" | "unsigned long"
-        | "unsigned long int" | "long long" | "long long int" | "signed long long"
-        | "signed long long int" | "unsigned long long" | "unsigned long long int"
-        | "double" | "size_t" | "std::size_t" => Some((8, 8)),
+        "long"
+        | "long int"
+        | "signed long"
+        | "signed long int"
+        | "unsigned long"
+        | "unsigned long int"
+        | "long long"
+        | "long long int"
+        | "signed long long"
+        | "signed long long int"
+        | "unsigned long long"
+        | "unsigned long long int"
+        | "double"
+        | "size_t"
+        | "std::size_t" => Some((8, 8)),
         _ => None,
     }
 }
@@ -762,7 +1043,11 @@ fn is_builtin_or_void_type(ty: &str) -> bool {
     scalar_type_layout(ty).is_some() || matches!(layout_type_without_cv(ty).as_str(), "void")
 }
 
-fn abi_record_from_clang_param(kernel: &str, arg_index: usize, ty: &str) -> Option<serde_json::Value> {
+fn abi_record_from_clang_param(
+    kernel: &str,
+    arg_index: usize,
+    ty: &str,
+) -> Option<serde_json::Value> {
     let canonical = canonical_clang_type(ty);
     if canonical.contains('&') || canonical.contains('[') || canonical.contains(']') {
         return None;
@@ -800,7 +1085,10 @@ fn split_clang_function_params(params: &str) -> Vec<String> {
         .collect()
 }
 
-fn clang_ast_kernel_signatures(ast_text: &str, target_symbols: &[String]) -> BTreeMap<String, Vec<String>> {
+fn clang_ast_kernel_signatures(
+    ast_text: &str,
+    target_symbols: &[String],
+) -> BTreeMap<String, Vec<String>> {
     let target_symbols = target_symbols.iter().cloned().collect::<BTreeSet<_>>();
     let re = match regex::Regex::new(
         r#"FunctionDecl[^\n]*\b([A-Za-z_][A-Za-z0-9_]*)\s+'void \(([^']*)\)'"#,
@@ -816,7 +1104,8 @@ fn clang_ast_kernel_signatures(ast_text: &str, target_symbols: &[String]) -> BTr
         if !target_symbols.is_empty() && !target_symbols.contains(&name) {
             continue;
         }
-        let params = split_clang_function_params(caps.get(2).map(|m| m.as_str()).unwrap_or_default());
+        let params =
+            split_clang_function_params(caps.get(2).map(|m| m.as_str()).unwrap_or_default());
         out.entry(name.clone())
             .or_default()
             .insert(format!("{}({})", name, params.join(",")));
@@ -829,13 +1118,15 @@ fn clang_ast_kernel_signatures(ast_text: &str, target_symbols: &[String]) -> BTr
 fn has_device_constant_or_global_decl(source: &str) -> bool {
     regex::Regex::new(r"\b(__constant__|__device__|__managed__)\s+([^;]+);")
         .ok()
-        .is_some_and(|re| re.captures_iter(source).any(|caps| {
-            !caps
-                .get(2)
-                .map(|m| m.as_str())
-                .unwrap_or_default()
-                .contains('(')
-        }))
+        .is_some_and(|re| {
+            re.captures_iter(source).any(|caps| {
+                !caps
+                    .get(2)
+                    .map(|m| m.as_str())
+                    .unwrap_or_default()
+                    .contains('(')
+            })
+        })
 }
 
 fn clang_ast_abi_extraction_from_dump(
@@ -880,11 +1171,10 @@ fn clang_ast_abi_extraction_from_dump(
     kernel_signatures.sort();
     kernel_signatures.dedup();
     let globals_unverified = has_device_constant_or_global_decl(source);
-    let layout_size_alignment_verified =
-        !kernel_signatures.is_empty()
-            && missing_symbols.is_empty()
-            && unsupported_params.is_empty()
-            && !globals_unverified;
+    let layout_size_alignment_verified = !kernel_signatures.is_empty()
+        && missing_symbols.is_empty()
+        && unsupported_params.is_empty()
+        && !globals_unverified;
     let degraded_reason = if layout_size_alignment_verified {
         None
     } else if !missing_symbols.is_empty() {
@@ -931,7 +1221,10 @@ fn clang_ast_abi_extraction_from_dump(
     ClangAstAbiExtraction {
         layout_size_alignment_verified,
         accepted_extractor_evidence_refs: if layout_size_alignment_verified {
-            vec![provenance["evidenceId"].as_str().unwrap_or_default().to_string()]
+            vec![provenance["evidenceId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()]
         } else {
             Vec::new()
         },
@@ -1000,7 +1293,8 @@ async fn clang_ast_abi_extraction(
     }
     let mut successful_dump = None;
     for language in clang_ast_language_candidates(&outcome.compiled_source) {
-        let command_display = format!("{compiler} -x {language} -fsyntax-only -Xclang -ast-dump <input>");
+        let command_display =
+            format!("{compiler} -x {language} -fsyntax-only -Xclang -ast-dump <input>");
         let mut command = tokio::process::Command::new(&compiler);
         command
             .current_dir(workspace)
@@ -1010,7 +1304,12 @@ async fn clang_ast_abi_extraction(
             .arg("-Xclang")
             .arg("-ast-dump")
             .arg(&input_path);
-        let output = match tokio::time::timeout(std::time::Duration::from_secs(20), command.output()).await {
+        let output = match tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            command.output(),
+        )
+        .await
+        {
             Ok(Ok(output)) if output.status.success() => output,
             _ => continue,
         };
@@ -1224,11 +1523,7 @@ fn build_source_include_partial_source(source_paths: &[String]) -> Option<String
     Some(source)
 }
 
-fn add_json_string_array_paths(
-    value: &serde_json::Value,
-    key: &str,
-    paths: &mut BTreeSet<String>,
-) {
+fn add_json_string_array_paths(value: &serde_json::Value, key: &str, paths: &mut BTreeSet<String>) {
     if let Some(items) = value.get(key).and_then(serde_json::Value::as_array) {
         for item in items {
             if let Some(path) = item
@@ -1492,9 +1787,8 @@ fn build_contextual_source_include_partial_source(
             }
             if omit_paths.contains(&resolved) {
                 saw_source_include = true;
-                partial.push_str(
-                    "// synthi-gpu-hmr: omitted source include from partial artifact\n",
-                );
+                partial
+                    .push_str("// synthi-gpu-hmr: omitted source include from partial artifact\n");
                 wrote_nontrivia = true;
                 continue;
             }
@@ -1509,7 +1803,8 @@ fn build_contextual_source_include_partial_source(
                         0,
                         &mut inlined_bytes,
                     ) {
-                        partial.push_str("// synthi-gpu-hmr: inlined source bridge support include: ");
+                        partial
+                            .push_str("// synthi-gpu-hmr: inlined source bridge support include: ");
                         partial.push_str(&resolved);
                         partial.push('\n');
                         partial.push_str(&inlined);
@@ -1788,7 +2083,7 @@ fn symbol_maps_to_scope(
             && source_path
                 .map(|path| mapping.source_path == path)
                 .unwrap_or(true)
-        })
+    })
 }
 
 fn symbol_identity_uncertain_for_scope(
@@ -1844,9 +2139,12 @@ fn artifact_symbol_superset_is_safe(
 }
 
 fn sidecar_any_bool(sidecar: &serde_json::Value, pointers: &[&str]) -> bool {
-    pointers
-        .iter()
-        .any(|pointer| sidecar.pointer(pointer).and_then(serde_json::Value::as_bool) == Some(true))
+    pointers.iter().any(|pointer| {
+        sidecar
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+    })
 }
 
 fn select_device_partial_artifact_with_report(
@@ -2181,8 +2479,12 @@ async fn prepare_ai_delta_device_scope(
     };
     let symbols = vec![symbol];
 
-    let selection_report =
-        select_device_partial_artifact_with_report(sidecar, generated_path, Some(request_path), &symbols);
+    let selection_report = select_device_partial_artifact_with_report(
+        sidecar,
+        generated_path,
+        Some(request_path),
+        &symbols,
+    );
     if let Some(selection) = selection_report.selected {
         if selection.kind == "kernel_region" {
             if let Some(source) =
@@ -2698,14 +3000,12 @@ fn validate_partial_device_artifact_exports(outcome: &DeviceCompileOutcome) -> R
     let missing = expected
         .difference(&exported)
         .filter(|expected_symbol| {
-            !exported
-                .iter()
-                .any(|exported_symbol| {
-                    exported_symbol_matches_expected_source_identity(exported_symbol, &expected)
-                        && exported_symbol_source_identity_candidates(exported_symbol)
-                            .iter()
-                            .any(|candidate| candidate == *expected_symbol)
-                })
+            !exported.iter().any(|exported_symbol| {
+                exported_symbol_matches_expected_source_identity(exported_symbol, &expected)
+                    && exported_symbol_source_identity_candidates(exported_symbol)
+                        .iter()
+                        .any(|candidate| candidate == *expected_symbol)
+            })
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -2800,10 +3100,7 @@ fn parse_itanium_mangled_source_components(symbol: &str) -> Option<Vec<String>> 
     Some(vec![component])
 }
 
-fn parse_itanium_component_sequence(
-    mut input: &str,
-    nested: bool,
-) -> Option<(Vec<String>, &str)> {
+fn parse_itanium_component_sequence(mut input: &str, nested: bool) -> Option<(Vec<String>, &str)> {
     let mut components = Vec::new();
     loop {
         if nested && input.starts_with('E') {
@@ -2996,7 +3293,10 @@ fn abi_metadata_accepted_extractor_count(abi_material: &serde_json::Value) -> us
         .unwrap_or(0)
 }
 
-fn device_abi_evidence_summary(abi_material: &serde_json::Value, constant_global_layout_hash: &str) -> String {
+fn device_abi_evidence_summary(
+    abi_material: &serde_json::Value,
+    constant_global_layout_hash: &str,
+) -> String {
     format!(
         "kernel_signatures={} constant_global_layout_hash={} metadata_only=true accepted_extractors={}",
         abi_material
@@ -3751,8 +4051,7 @@ async fn compile_device_sources_phase0_and_refresh_catalog(
 
 async fn resume_active_runner_after_gpu_hmr(ctx: &CompileContext, session_id: &str) -> Result<()> {
     if let Err(error) =
-        send_active_runner_runtime_command(ctx, session_id, "synthi_resume_runtime", "resume")
-            .await
+        send_active_runner_runtime_command(ctx, session_id, "synthi_resume_runtime", "resume").await
     {
         let status = HmrStatus::gpu_rejected_with_fallback_reason(
             "device",
@@ -4450,7 +4749,9 @@ fn include_bridge_partial_artifact_specs(
             &omitted,
         )
         .or_else(|| build_source_include_partial_source(&target_paths))
-        .or_else(|| build_device_include_bridge_partial_source(full_source, &target_paths, &omitted));
+        .or_else(|| {
+            build_device_include_bridge_partial_source(full_source, &target_paths, &omitted)
+        });
         let Some(content) = content else { continue };
         let symbols = symbols.into_iter().collect::<Vec<_>>();
         let filename = partial_device_filename(&generated, &symbols, &content);
@@ -4462,13 +4763,13 @@ fn include_bridge_partial_artifact_specs(
             source_paths: target_paths,
             symbols,
             omitted_source_includes: omitted,
-            mapping_confidence: confidence_by_source
-                .remove(&source_path)
-                .and_then(|items| match items.len() {
+            mapping_confidence: confidence_by_source.remove(&source_path).and_then(|items| {
+                match items.len() {
                     0 => None,
                     1 => items.into_iter().next(),
                     _ => Some("mixed".to_string()),
-                }),
+                }
+            }),
         });
     }
     specs
@@ -5039,8 +5340,8 @@ fn device_fast_path_missing_toolchain_allows_split_bootstrap(
     {
         return false;
     }
-    let request_name =
-        normalized_request_filename(request_path).unwrap_or_else(|| request_path.replace('\\', "/"));
+    let request_name = normalized_request_filename(request_path)
+        .unwrap_or_else(|| request_path.replace('\\', "/"));
     sidecar_string_for_path(sidecar_meta, "sourceBaselineContents", &request_name).is_none()
         && sidecar_meta
             .get("original_source")
@@ -6270,7 +6571,8 @@ pub async fn handle_compile_request(
                                     reason_codes.join(",")
                                 );
                             };
-                            let ai_delta_device_prompt_source = ai_delta_device_scope.source.as_str();
+                            let ai_delta_device_prompt_source =
+                                ai_delta_device_scope.source.as_str();
 
                             let arch_hint: Option<&str> = if architecture_md.is_empty() {
                                 None
@@ -7540,7 +7842,11 @@ pub async fn handle_compile_request(
             let split_device_filename = split_data
                 .get("device")
                 .and_then(|v| v.get("filename"))
-                .or_else(|| split_data.get(device_filename).and_then(|v| v.get("filename")))
+                .or_else(|| {
+                    split_data
+                        .get(device_filename)
+                        .and_then(|v| v.get("filename"))
+                })
                 .and_then(|v| v.as_str())
                 .and_then(normalized_request_filename)
                 .unwrap_or_else(|| device_filename.to_string());
@@ -9301,14 +9607,14 @@ mod gpu_host_contract_tests {
     use super::*;
     use crate::compiler::stages::compile_device::DeviceCompileProofMetadata;
 
+    static WORKSPACE_FILE_REF_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     const FIXTURE_GENERATED_DEVICE_PATH: &str = ".synthi/generated/gpu/device.hip";
     const FIXTURE_SOURCE_PATH: &str = "fixtures/device/source.hip";
     const FIXTURE_SYMBOL: &str = "fixture_kernel_a";
     const FIXTURE_SIBLING_SYMBOL: &str = "fixture_kernel_b";
-    const FIXTURE_SOURCE_PARTIAL_FILENAME: &str =
-        ".synthi/generated/gpu/device.partial.source.hip";
-    const FIXTURE_KERNEL_PARTIAL_FILENAME: &str =
-        ".synthi/generated/gpu/device.partial.kernel.hip";
+    const FIXTURE_SOURCE_PARTIAL_FILENAME: &str = ".synthi/generated/gpu/device.partial.source.hip";
+    const FIXTURE_KERNEL_PARTIAL_FILENAME: &str = ".synthi/generated/gpu/device.partial.kernel.hip";
 
     fn symbols(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| (*name).to_string()).collect()
@@ -9387,7 +9693,10 @@ mod gpu_host_contract_tests {
             "_synthi_reload_plan": direct_device_split_file_reload_plan("device.hip")
         });
 
-        assert!(manifest_device_source_matches("device.hip", Some(&manifest)));
+        assert!(manifest_device_source_matches(
+            "device.hip",
+            Some(&manifest)
+        ));
         assert!(allow_direct_translation_unit_partial(
             &split_data,
             true,
@@ -9443,7 +9752,10 @@ mod gpu_host_contract_tests {
         assert_eq!(partial.filename, ".synthi/generated/gpu/device.partial.hip");
         assert_eq!(partial.symbols, vec!["shade".to_string()]);
         assert!(partial.required);
-        assert_eq!(partial.artifact_kind.as_deref(), Some("source_include_bridge"));
+        assert_eq!(
+            partial.artifact_kind.as_deref(),
+            Some("source_include_bridge")
+        );
         assert_eq!(
             partial.fallback_reason.as_deref(),
             Some("selection.source_path_mismatch")
@@ -9518,9 +9830,7 @@ mod gpu_host_contract_tests {
 
     #[test]
     fn runtime_control_ack_timeout_covers_plugin_watchdog() {
-        assert!(
-            DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS > PLUGIN_TIMEOUT_SECS * 1_000
-        );
+        assert!(DEFAULT_RUNNER_RUNTIME_CONTROL_ACK_TIMEOUT_MS > PLUGIN_TIMEOUT_SECS * 1_000);
     }
 
     #[test]
@@ -9640,7 +9950,10 @@ mod gpu_host_contract_tests {
             stages[1].degraded_state.as_deref(),
             Some("gpu-hmr-ram-io-unavailable")
         );
-        assert_eq!(stages[1].evidence_refs, vec!["evidence:transport".to_string()]);
+        assert_eq!(
+            stages[1].evidence_refs,
+            vec!["evidence:transport".to_string()]
+        );
         assert_eq!(stages[2].stage_id, "symbol-binding");
         assert_eq!(stages[2].status, "passed");
         assert_eq!(stages[3].stage_id, "abi-compatibility");
@@ -9668,8 +9981,7 @@ mod gpu_host_contract_tests {
         tokio::fs::write(&artifact_path, b"device-artifact")
             .await
             .unwrap();
-        let mut outcome =
-            fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        let mut outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
         outcome.artifact_path = artifact_path;
         outcome.compiled_source = r#"
 extern "C" __global__ void shade(float* pixels, int count) {}
@@ -9896,7 +10208,10 @@ __constant__ int scale;
             abi_stage.degraded_reason.as_deref(),
             Some("abi_layout_size_alignment_unverified")
         );
-        assert_eq!(abi_stage.evidence_refs, vec![abi_evidence.evidence_id.clone()]);
+        assert_eq!(
+            abi_stage.evidence_refs,
+            vec![abi_evidence.evidence_id.clone()]
+        );
         let transport_stage = artifact
             .stage_results
             .iter()
@@ -9951,7 +10266,10 @@ extern "C" __global__ void shade(const float* input, float* pixels, int count, u
             extraction.accepted_extractor_evidence_refs,
             vec!["evidence:abi-extractor:test".to_string()]
         );
-        assert_eq!(extraction.accepted_extractor_sources, vec!["clang_ast".to_string()]);
+        assert_eq!(
+            extraction.accepted_extractor_sources,
+            vec!["clang_ast".to_string()]
+        );
         assert_eq!(
             extraction.kernel_signatures,
             vec!["shade(const float*,float*,int,unsigned long long)".to_string()]
@@ -10013,11 +10331,8 @@ extern "C" __global__ void shade(RenderData* render_data) {}
         assert_eq!(outcome.target_symbols, symbols(&["shade"]));
         assert_eq!(device_hmr_result_label(&outcome), "gpu-hmr-partial");
 
-        let mut extra_export = fixture_device_outcome(
-            false,
-            Vec::new(),
-            symbols(&["shade", "unowned_kernel"]),
-        );
+        let mut extra_export =
+            fixture_device_outcome(false, Vec::new(), symbols(&["shade", "unowned_kernel"]));
         assert!(finalize_full_device_outcome(&mut extra_export, &sources, None, true).is_err());
 
         let mut initial_compile = fixture_device_outcome(false, Vec::new(), symbols(&["shade"]));
@@ -10098,11 +10413,7 @@ DECLARE_KERNEL(opaque_kernel)
 
     #[test]
     fn partial_reload_symbol_specs_map_logical_to_mangled_driver_symbol() {
-        let outcome = fixture_device_outcome(
-            true,
-            symbols(&["shade"]),
-            symbols(&["_Z5shadePf"]),
-        );
+        let outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["_Z5shadePf"]));
 
         assert_eq!(
             device_reload_kernel_symbol_specs("", &outcome),
@@ -10112,13 +10423,13 @@ DECLARE_KERNEL(opaque_kernel)
 
     #[test]
     fn partial_reload_symbol_specs_do_not_guess_unqualified_namespace_symbol() {
-        let outcome = fixture_device_outcome(
-            true,
-            symbols(&["shade"]),
-            symbols(&["_ZN3gpu5shadeEPf"]),
-        );
+        let outcome =
+            fixture_device_outcome(true, symbols(&["shade"]), symbols(&["_ZN3gpu5shadeEPf"]));
 
-        assert_eq!(device_reload_kernel_symbol_specs("", &outcome), symbols(&["shade"]));
+        assert_eq!(
+            device_reload_kernel_symbol_specs("", &outcome),
+            symbols(&["shade"])
+        );
     }
 
     #[test]
@@ -10227,7 +10538,9 @@ DECLARE_KERNEL(opaque_kernel)
         };
 
         let err = validate_partial_device_artifact_exports(&outcome).unwrap_err();
-        assert!(err.to_string().contains("ambiguous exported symbol identity"));
+        assert!(err
+            .to_string()
+            .contains("ambiguous exported symbol identity"));
     }
 
     #[test]
@@ -10629,8 +10942,12 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
 #include "src/Device/kernels/TraceTest.h"
 "#;
 
-        let specs =
-            device_partial_artifact_specs(&sidecar, ".synthi/generated/gpu/device.hip", source, None);
+        let specs = device_partial_artifact_specs(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            source,
+            None,
+        );
 
         assert_eq!(specs.len(), 2);
         let camera = specs
@@ -10672,8 +10989,12 @@ extern "C" __global__ void vec_add(const float* a, float* out, int n, float scal
 #include "src/Device/kernels/Megakernel.h"
 "#;
 
-        let specs =
-            device_partial_artifact_specs(&sidecar, ".synthi/generated/gpu/device.hip", source, None);
+        let specs = device_partial_artifact_specs(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            source,
+            None,
+        );
 
         assert_eq!(specs.len(), 1);
         let spec = specs.first().expect("single source bridge partial");
@@ -10724,7 +11045,10 @@ extern "C" __global__ void {FIXTURE_SYMBOL}(float* out) {{ out[0] = 2.0f; }}
             })
             .expect("source-backed TU bridge");
         assert_eq!(bridge.symbols, vec![FIXTURE_SYMBOL.to_string()]);
-        assert_eq!(bridge.content, fixture_source_include_partial(FIXTURE_SOURCE_PATH));
+        assert_eq!(
+            bridge.content,
+            fixture_source_include_partial(FIXTURE_SOURCE_PATH)
+        );
     }
 
     #[test]
@@ -10870,8 +11194,12 @@ extern "C" __global__ void generated_one(float* out) { out[0] = 1.0f; }
 extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
 "#;
 
-        let specs =
-            device_partial_artifact_specs(&sidecar, ".synthi/generated/gpu/device.hip", source, None);
+        let specs = device_partial_artifact_specs(
+            &sidecar,
+            ".synthi/generated/gpu/device.hip",
+            source,
+            None,
+        );
 
         assert_eq!(specs.len(), 4);
         assert!(specs.iter().any(|spec| {
@@ -11139,10 +11467,7 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
 
         assert_eq!(
             selected_partial_reload_symbols(&selection),
-            vec![
-                "shade_primary".to_string(),
-                "shade_secondary".to_string()
-            ]
+            vec!["shade_primary".to_string(), "shade_secondary".to_string()]
         );
     }
 
@@ -11313,7 +11638,131 @@ extern "C" __global__ void generated_two(float* out) { out[0] = 2.0f; }
         assert_eq!(summary.bytes, content.len());
         assert_eq!(req.files.len(), 1);
         assert_eq!(req.files[0].name, "include/kernel.h");
-        assert_eq!(req.files[0].content, String::from_utf8_lossy(content).to_string());
+        assert_eq!(
+            req.files[0].content,
+            String::from_utf8_lossy(content).to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn workspace_file_refs_hydrate_from_collab_repo_mount_when_workspace_missing() {
+        let _env_guard = WORKSPACE_FILE_REF_ENV_LOCK.lock().await;
+        let previous = std::env::var("SYNTHI_REPOS_PATH").ok();
+        let workspace = tempfile::tempdir().expect("workspace");
+        let repos = tempfile::tempdir().expect("repos");
+        let slug = "workspace-ref-slug";
+        let content = b"{\"kind\":\"workspace-ref-input\"}\n";
+        let collab_file = repos
+            .path()
+            .join(slug)
+            .join("project-root")
+            .join("inputs")
+            .join("runtime-input.json");
+        tokio::fs::create_dir_all(collab_file.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&collab_file, content).await.unwrap();
+        let digest = format!("{:x}", Sha256::digest(content));
+        std::env::set_var("SYNTHI_REPOS_PATH", repos.path());
+
+        let mut req = compile_request_with_file_refs(vec![crate::infra::messages::FileRef {
+            name: "inputs/runtime-input.json".to_string(),
+            sha256: Some(format!("sha256:{digest}")),
+            bytes: Some(content.len() as u64),
+        }]);
+        req.slug = Some(slug.to_string());
+
+        let summary = hydrate_workspace_file_refs(workspace.path(), &mut req)
+            .await
+            .expect("file refs hydrate from collab repo mount");
+
+        assert_eq!(summary.count, 1);
+        assert_eq!(summary.bytes, content.len());
+        assert_eq!(req.files[0].name, "inputs/runtime-input.json");
+        assert_eq!(
+            req.files[0].content,
+            String::from_utf8_lossy(content).to_string()
+        );
+        let materialized = tokio::fs::read(
+            workspace
+                .path()
+                .join("inputs")
+                .join("runtime-input.json"),
+        )
+        .await
+        .expect("materialized workspace ref");
+        assert_eq!(materialized, content);
+
+        if let Some(value) = previous {
+            std::env::set_var("SYNTHI_REPOS_PATH", value);
+        } else {
+            std::env::remove_var("SYNTHI_REPOS_PATH");
+        }
+    }
+
+    #[tokio::test]
+    async fn workspace_file_refs_search_collab_repo_subtree_by_integrity() {
+        let _env_guard = WORKSPACE_FILE_REF_ENV_LOCK.lock().await;
+        let previous = std::env::var("SYNTHI_REPOS_PATH").ok();
+        let workspace = tempfile::tempdir().expect("workspace");
+        let repos = tempfile::tempdir().expect("repos");
+        let slug = "workspace-ref-subtree-slug";
+        let rel = PathBuf::from("inputs/runtime-input.json");
+        let wrong_content = b"{\"kind\":\"wrong-input\"}\n";
+        let expected_content = b"{\"kind\":\"expected-input\"}\n";
+        let wrong_file = repos.path().join(slug).join(&rel);
+        let expected_file = repos
+            .path()
+            .join(slug)
+            .join("nested")
+            .join("deeper")
+            .join(&rel);
+        tokio::fs::create_dir_all(wrong_file.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(expected_file.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&wrong_file, wrong_content).await.unwrap();
+        tokio::fs::write(&expected_file, expected_content)
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(workspace.path().join("inputs"))
+            .await
+            .unwrap();
+        tokio::fs::write(workspace.path().join(&rel), wrong_content)
+            .await
+            .unwrap();
+        let digest = format!("{:x}", Sha256::digest(expected_content));
+        std::env::set_var("SYNTHI_REPOS_PATH", repos.path());
+
+        let mut req = compile_request_with_file_refs(vec![crate::infra::messages::FileRef {
+            name: rel.to_string_lossy().replace('\\', "/"),
+            sha256: Some(format!("sha256:{digest}")),
+            bytes: Some(expected_content.len() as u64),
+        }]);
+        req.slug = Some(slug.to_string());
+
+        let summary = hydrate_workspace_file_refs(workspace.path(), &mut req)
+            .await
+            .expect("file refs hydrate from integrity-matched subtree candidate");
+
+        assert_eq!(summary.count, 1);
+        assert_eq!(summary.bytes, expected_content.len());
+        assert_eq!(
+            req.files[0].content,
+            String::from_utf8_lossy(expected_content).to_string()
+        );
+        let materialized = tokio::fs::read(workspace.path().join(&rel))
+            .await
+            .expect("materialized integrity-matched workspace ref");
+        assert_eq!(materialized, expected_content);
+
+        if let Some(value) = previous {
+            std::env::set_var("SYNTHI_REPOS_PATH", value);
+        } else {
+            std::env::remove_var("SYNTHI_REPOS_PATH");
+        }
     }
 
     #[tokio::test]
@@ -12372,11 +12821,15 @@ extern "C" __global__ void trace(float* out) { out[0] = 2.0f; }
         .expect("single-symbol translation unit is a valid partial reload unit");
 
         assert_eq!(
-            payload.get("artifactKind").and_then(serde_json::Value::as_str),
+            payload
+                .get("artifactKind")
+                .and_then(serde_json::Value::as_str),
             Some("kernel_translation_unit")
         );
         assert_eq!(
-            payload.get("requirePartial").and_then(serde_json::Value::as_bool),
+            payload
+                .get("requirePartial")
+                .and_then(serde_json::Value::as_bool),
             Some(true)
         );
         assert_eq!(

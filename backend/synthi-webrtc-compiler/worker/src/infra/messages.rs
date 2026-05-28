@@ -106,7 +106,7 @@ pub struct CompileRequest {
     /// Project root path for mobile builds (relative to workspace)
     #[serde(default)]
     pub project_root: Option<String>,
-    /// Workspace slug for mobile builds (to download synced files)
+    /// Workspace slug for builds that need to resolve synced workspace file refs.
     #[serde(default)]
     pub slug: Option<String>,
 }
