@@ -61,6 +61,7 @@ pub enum GpuHmrDegradedState {
     EpochRetirementPending,
     EpochSwapUnverified,
     RamIoUnavailable,
+    OriginalHostPathUnattached,
     VisualOnly,
 }
 
@@ -76,6 +77,7 @@ impl GpuHmrDegradedState {
             Self::EpochRetirementPending => "gpu-hmr-epoch-retirement-pending",
             Self::EpochSwapUnverified => "gpu-hmr-epoch-swap-unverified",
             Self::RamIoUnavailable => "gpu-hmr-ram-io-unavailable",
+            Self::OriginalHostPathUnattached => "gpu-hmr-original-host-path-unattached",
             Self::VisualOnly => "gpu-hmr-visual-only",
         }
     }
@@ -495,6 +497,10 @@ mod tests {
         assert_eq!(
             GpuHmrDegradedState::RamIoUnavailable.as_str(),
             "gpu-hmr-ram-io-unavailable"
+        );
+        assert_eq!(
+            GpuHmrDegradedState::OriginalHostPathUnattached.as_str(),
+            "gpu-hmr-original-host-path-unattached"
         );
         assert_eq!(
             GpuHmrDegradedState::VisualOnly.as_str(),
