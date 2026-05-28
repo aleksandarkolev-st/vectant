@@ -737,6 +737,7 @@ use crate::hmr::gpu_device_fast_path::{
     device_only_capability_rejection_reason, device_source_hash, mapped_generated_device_path,
     try_direct_device_body_patch,
 };
+use crate::hmr::gpu_fission::verify_fission_candidates;
 use crate::hmr::gpu_prod_contracts::{normalize_split_sidecar, RELOAD_PLAN_SCHEMA_VERSION};
 use crate::hmr::gpu_proof::{
     sha256_hex_bytes, sha256_hex_str, write_proof_artifact, GpuHmrDegradedState,
@@ -3520,6 +3521,346 @@ fn fission_verifier_report_from_sidecar(
         .cloned()
 }
 
+fn normalized_fission_hash(value: Option<&str>, fallback_material: &serde_json::Value) -> String {
+    let valid = value
+        .map(str::trim)
+        .filter(|value| {
+            let digest = value.strip_prefix("sha256:").unwrap_or(value);
+            digest.len() == 64 && digest.chars().all(|ch| ch.is_ascii_hexdigit())
+        })
+        .map(str::to_string);
+    valid.unwrap_or_else(|| sha256_hex_str(&fallback_material.to_string()))
+}
+
+fn partial_fission_source_paths(
+    outcome: &DeviceCompileOutcome,
+    sources: Option<&DeviceCompileSources>,
+) -> Vec<String> {
+    let mut paths = sources
+        .map(|sources| sources.partial_source_paths.clone())
+        .unwrap_or_default();
+    if paths.is_empty() {
+        if let Some(filename) = sources
+            .and_then(|sources| sources.full_filename.as_deref())
+            .or(outcome.proof_metadata.source_filename.as_deref())
+        {
+            paths.push(filename.to_string());
+        }
+    }
+    paths
+        .into_iter()
+        .filter_map(|path| normalized_request_filename(&path))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn partial_fission_line_count(
+    outcome: &DeviceCompileOutcome,
+    sources: Option<&DeviceCompileSources>,
+) -> u64 {
+    let source = sources
+        .and_then(|sources| sources.partial_source.as_deref())
+        .unwrap_or(outcome.compiled_source.as_str());
+    let count = source.lines().count().max(1);
+    u64::try_from(count).unwrap_or(u64::MAX)
+}
+
+fn normalized_fission_scope_text(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
+}
+
+fn partial_fission_scope_rank(scope: &str) -> u64 {
+    let normalized = normalized_fission_scope_text(scope);
+    if normalized.contains("body") || normalized.contains("function") {
+        0
+    } else if normalized.contains("source_include")
+        || (normalized.contains("partial") && normalized.contains("device"))
+    {
+        1
+    } else if normalized.contains("multi") {
+        2
+    } else if normalized.contains("full")
+        && (normalized.contains("device") || normalized.contains("module"))
+    {
+        3
+    } else if normalized.contains("host") {
+        4
+    } else if normalized.contains("runner")
+        || normalized.contains("process")
+        || normalized.contains("restart")
+    {
+        5
+    } else {
+        2
+    }
+}
+
+fn partial_fission_rejected_scope_label(scope_rank: u64) -> &'static str {
+    match scope_rank {
+        0 => "single_body_or_function",
+        1 => "source_include_or_partial_device",
+        2 => "multi_artifact_region",
+        3 => "full_device_module",
+        4 => "host_path",
+        _ => "process_or_runner",
+    }
+}
+
+fn partial_fission_narrower_rejections(
+    selected_scope: &str,
+    candidate_evidence_id: &str,
+    sources: Option<&DeviceCompileSources>,
+) -> Vec<serde_json::Value> {
+    let selected_scope_rank = partial_fission_scope_rank(selected_scope);
+    (0..selected_scope_rank)
+        .map(|scope_rank| {
+            serde_json::json!({
+                "scopeRank": scope_rank,
+                "artifactKind": partial_fission_rejected_scope_label(scope_rank),
+                "reasonCode": "fission.narrower_scope_not_materialized_by_runtime_artifact_selection",
+                "selectionMetadata": {
+                    "selectedScope": selected_scope,
+                    "directWorkspaceSource": sources
+                        .map(|sources| sources.direct_workspace_source)
+                        .unwrap_or(false),
+                    "partialSourceAvailable": sources
+                        .and_then(|sources| sources.partial_source.as_ref())
+                        .is_some(),
+                    "partialFilenameAvailable": sources
+                        .and_then(|sources| sources.partial_filename.as_ref())
+                        .is_some(),
+                    "partialRequired": sources
+                        .map(|sources| sources.partial_required)
+                        .unwrap_or(false),
+                    "partialFallbackReason": sources
+                        .and_then(|sources| sources.partial_fallback_reason.as_deref()),
+                },
+                "verifierEvidenceIds": [candidate_evidence_id],
+            })
+        })
+        .collect()
+}
+
+fn partial_fission_candidate_and_evidence(
+    outcome: &DeviceCompileOutcome,
+    sources: Option<&DeviceCompileSources>,
+    created_at: &str,
+    runtime_session_id: &str,
+    source_edit_id: &str,
+    selected_artifact_id: &str,
+    artifact_hash: &str,
+    compiler_evidence_id: &str,
+    symbol_evidence_id: &str,
+    abi_evidence_id: &str,
+    transport_evidence_id: &str,
+) -> Option<(serde_json::Value, GpuHmrProofEvidenceRef)> {
+    if !outcome.partial_module {
+        return None;
+    }
+
+    let source_paths = partial_fission_source_paths(outcome, sources);
+    if source_paths.is_empty() || outcome.target_symbols.is_empty() {
+        return None;
+    }
+    let exported_symbols = if outcome.artifact_exported_symbols.is_empty() {
+        outcome.target_symbols.clone()
+    } else {
+        outcome.artifact_exported_symbols.clone()
+    };
+    let source_line_count = partial_fission_line_count(outcome, sources);
+    let source_spans = source_paths
+        .iter()
+        .map(|path| {
+            serde_json::json!({
+                "path": path,
+                "startLine": 1,
+                "endLine": source_line_count,
+            })
+        })
+        .collect::<Vec<_>>();
+    let include_closure = source_paths
+        .iter()
+        .map(|path| serde_json::json!({ "path": path }))
+        .collect::<Vec<_>>();
+    let artifact_kind = outcome
+        .selected_artifact_kind
+        .as_deref()
+        .or(outcome.requested_artifact_kind.as_deref())
+        .unwrap_or("partial_device");
+    let replacement_scope = if outcome.partial_module {
+        outcome
+            .selected_artifact_kind
+            .as_deref()
+            .or(outcome.requested_artifact_kind.as_deref())
+            .unwrap_or("partial_device")
+    } else {
+        artifact_kind
+    };
+    let compile_recipe_material = serde_json::json!({
+        "compileProvenance": &outcome.proof_metadata,
+        "artifactKind": artifact_kind,
+        "replacementScope": replacement_scope,
+        "sourcePaths": &source_paths,
+        "targetSymbols": &outcome.target_symbols,
+    });
+    let dependency_material = serde_json::json!({
+        "sourcePaths": &source_paths,
+        "includeClosure": &include_closure,
+        "artifactHash": format!("sha256:{artifact_hash}"),
+    });
+    let compile_command_material = serde_json::json!({
+        "compileCommandHash": outcome.proof_metadata.compile_command_hash.as_deref(),
+        "effectiveDeviceFlags": &outcome.proof_metadata.effective_device_flags,
+        "compilerIdentity": outcome.proof_metadata.compiler_identity.as_deref(),
+    });
+    let dependency_hash = normalized_fission_hash(
+        outcome.proof_metadata.dependency_hash.as_deref(),
+        &dependency_material,
+    );
+    let compile_recipe_hash = sha256_hex_str(&compile_recipe_material.to_string());
+    let compile_command_hash = normalized_fission_hash(
+        outcome.proof_metadata.compile_command_hash.as_deref(),
+        &compile_command_material,
+    );
+    let seed = serde_json::json!({
+        "sourceEditId": source_edit_id,
+        "selectedArtifactId": selected_artifact_id,
+        "artifactHash": format!("sha256:{artifact_hash}"),
+        "sourcePaths": &source_paths,
+        "sourceSpans": &source_spans,
+        "targetSymbols": &outcome.target_symbols,
+        "exportedSymbolsExpected": &exported_symbols,
+        "artifactKind": artifact_kind,
+        "replacementScope": replacement_scope,
+        "dependencyClosureHash": &dependency_hash,
+        "compileRecipeHash": &compile_recipe_hash,
+        "compileCommandHash": &compile_command_hash,
+    });
+    let seed_hash = sha256_hex_str(&seed.to_string());
+    let island_id = format!("fission-island:sha256:{seed_hash}");
+    let candidate_evidence_id = format!("evidence:fission-island-input:{seed_hash}");
+    let required_oracle_id = format!("oracle:required:sha256:{seed_hash}");
+
+    let mut candidate = serde_json::json!({
+        "schemaVersion": crate::hmr::gpu_fission::FISSION_ISLAND_SCHEMA_VERSION,
+        "islandId": island_id,
+        "sourceEditId": source_edit_id,
+        "sourcePaths": source_paths,
+        "sourceSpans": source_spans,
+        "generatedRolePath": sources
+            .and_then(|sources| sources.full_filename.as_deref())
+            .or(outcome.proof_metadata.source_filename.as_deref()),
+        "targetSymbols": &outcome.target_symbols,
+        "exportedSymbolsExpected": exported_symbols,
+        "artifactKind": artifact_kind,
+        "replacementScope": replacement_scope,
+        "includeClosure": include_closure,
+        "dependencyClosureHash": dependency_hash,
+        "abiMembraneId": format!("abi-membrane:{abi_evidence_id}"),
+        "compileRecipeHash": compile_recipe_hash,
+        "compileCommandHash": compile_command_hash,
+        "loaderCapabilityRequirement": {
+            "selectedArtifactId": selected_artifact_id,
+            "acceptedTransports": ["ram_blob", "filesystem_path"],
+        },
+        "requiredOracleId": required_oracle_id,
+        "verifierEvidenceIds": [
+            candidate_evidence_id.clone(),
+            compiler_evidence_id,
+            symbol_evidence_id,
+            abi_evidence_id,
+            transport_evidence_id
+        ],
+        "sourceMappingEvidenceIds": [candidate_evidence_id.clone()],
+        "includeClosureEvidenceIds": [candidate_evidence_id.clone()],
+        "symbolOwnershipEvidenceIds": [symbol_evidence_id],
+        "dependencyClosureEvidenceIds": [candidate_evidence_id.clone()],
+        "abiMembraneEvidenceIds": [abi_evidence_id],
+        "compileRecipeEvidenceIds": [compiler_evidence_id],
+        "loaderCapabilityEvidenceIds": [transport_evidence_id],
+        "outputOracleEvidenceIds": [candidate_evidence_id.clone()],
+        "proposalSource": {
+            "producer": "worker.compile_device",
+            "kind": "partial_artifact_selection_metadata"
+        },
+    });
+    if let Some(extra) = candidate
+        .get("exportedSymbolsExpected")
+        .and_then(serde_json::Value::as_array)
+        .map(|exports| {
+            let targets = outcome
+                .target_symbols
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            exports
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|symbol| !targets.contains(*symbol))
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|extra| !extra.is_empty())
+    {
+        if let Some(object) = candidate.as_object_mut() {
+            object.insert(
+                "safeExportSupersetReason".to_string(),
+                serde_json::Value::String(
+                    "partial artifact symbol ownership verifier accepted exported superset"
+                        .to_string(),
+                ),
+            );
+            object.insert(
+                "safeExportSupersetEvidenceIds".to_string(),
+                serde_json::json!([symbol_evidence_id]),
+            );
+            object.insert(
+                "safeExportSupersetSymbolsDeclared".to_string(),
+                serde_json::json!(extra),
+            );
+        }
+    }
+    let narrower_rejections =
+        partial_fission_narrower_rejections(replacement_scope, &candidate_evidence_id, sources);
+    if !narrower_rejections.is_empty() {
+        if let Some(object) = candidate.as_object_mut() {
+            object.insert(
+                "narrowerCandidateRejections".to_string(),
+                serde_json::Value::Array(narrower_rejections),
+            );
+        }
+    }
+
+    let evidence = GpuHmrProofEvidenceRef {
+        evidence_id: candidate_evidence_id,
+        kind: "fission-island-input".to_string(),
+        content_hash: format!("sha256:{}", sha256_hex_str(&candidate.to_string())),
+        producer_subsystem: "worker.compile_device".to_string(),
+        timestamp: created_at.to_string(),
+        session_id: Some(runtime_session_id.to_string()),
+        file_path: None,
+        artifact_uri: Some(selected_artifact_id.to_string()),
+        summary: format!(
+            "partial artifact fission candidate source_paths={} target_symbols={} artifact_kind={}",
+            candidate
+                .get("sourcePaths")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0),
+            outcome.target_symbols.len(),
+            artifact_kind
+        ),
+        metadata: Some(candidate.clone()),
+    };
+    Some((candidate, evidence))
+}
+
 fn fission_report_status(report: &serde_json::Value) -> &str {
     report
         .get("status")
@@ -3658,6 +3999,7 @@ async fn write_device_hmr_proof_artifact(
     session_id: &str,
     source_hash: &str,
     outcome: &DeviceCompileOutcome,
+    sources: Option<&DeviceCompileSources>,
     proof: &GpuHmrProofTelemetry,
     sidecar_meta: Option<&serde_json::Value>,
 ) -> Result<GpuHmrProofArtifactWrite> {
@@ -3877,7 +4219,32 @@ async fn write_device_hmr_proof_artifact(
         });
     }
 
-    let fission_stage = fission_verifier_report_from_sidecar(sidecar_meta).map(|report| {
+    let generated_fission = if fission_verifier_report_from_sidecar(sidecar_meta).is_none() {
+        partial_fission_candidate_and_evidence(
+            outcome,
+            sources,
+            &created_at,
+            &runtime_session_id,
+            &source_edit_id,
+            &selected_artifact_id,
+            &artifact_hash,
+            &compiler_evidence_id,
+            &symbol_evidence_id,
+            &abi_evidence_id,
+            &transport_evidence_id,
+        )
+    } else {
+        None
+    };
+    if let Some((_, evidence)) = generated_fission.as_ref() {
+        evidence_refs.push(evidence.clone());
+    }
+    let fission_report = fission_verifier_report_from_sidecar(sidecar_meta).or_else(|| {
+        generated_fission
+            .as_ref()
+            .map(|(candidate, _)| verify_fission_candidates(&serde_json::Value::Array(vec![candidate.clone()])))
+    });
+    let fission_stage = fission_report.map(|report| {
         let (evidence, stage) = fission_verifier_evidence_and_stage(
             &report,
             &created_at,
@@ -8952,6 +9319,7 @@ pub async fn handle_compile_request(
             &session_id,
             &source_hash_str,
             out,
+            device_source_content.as_ref(),
             &proof,
             proof_sidecar_meta.as_ref(),
         )
@@ -10295,6 +10663,7 @@ __constant__ int scale;
             "runtime-session",
             "source-edit:unit",
             &outcome,
+            None,
             &proof,
             None,
         )
@@ -10557,6 +10926,7 @@ __constant__ int scale;
             "runtime-session",
             "source-edit:fission",
             &outcome,
+            None,
             &proof,
             Some(&sidecar),
         )
@@ -10593,6 +10963,221 @@ __constant__ int scale;
         assert_eq!(fission_stage.status, "passed");
         assert_eq!(fission_stage.evidence_refs, vec![fission_evidence.evidence_id.clone()]);
         assert_eq!(artifact.stage_results[0].stage_id, "fission-candidate-verification");
+    }
+
+    #[tokio::test]
+    async fn partial_hmr_proof_artifact_promotes_partial_metadata_to_fission_candidate() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact_path = temp.path().join("device.hsaco");
+        tokio::fs::write(&artifact_path, b"device-artifact")
+            .await
+            .unwrap();
+        let partial_source = r#"extern "C" __global__ void shade(float* pixels) {
+  pixels[0] = 1.0f;
+}
+"#;
+        let mut outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        outcome.artifact_path = artifact_path;
+        outcome.compiled_source = partial_source.to_string();
+        outcome.requested_artifact_kind = Some("source_include_bridge".to_string());
+        outcome.selected_artifact_kind = Some("source_include_bridge".to_string());
+        outcome.proof_metadata = DeviceCompileProofMetadata {
+            compiler_executable: Some("/opt/toolchain/bin/hipcc".to_string()),
+            compiler_identity: Some("compiler-identity-hash".to_string()),
+            device_compiler: Some("hipcc".to_string()),
+            gpu_vendor: Some("rocm".to_string()),
+            gpu_arch: vec!["gfx0000".to_string()],
+            target_triple: Some("rocm:gfx0000".to_string()),
+            sdk_version: Some("rocm:test".to_string()),
+            source_filename: Some(".synthi/generated/gpu/device.hip".to_string()),
+            effective_device_flags: vec!["-O3".to_string()],
+            compile_command_hash: Some(sha256_hex_str("compile-command")),
+            dependency_hash: Some(sha256_hex_str("dependency-closure")),
+            dependency_method: Some("depfile".to_string()),
+            artifact_cache_key: Some("artifact-cache-key".to_string()),
+            cache_hit: false,
+        };
+        let sources = DeviceCompileSources {
+            full_source: partial_source.to_string(),
+            full_filename: Some(".synthi/generated/gpu/device.hip".to_string()),
+            full_symbols: symbols(&["shade"]),
+            direct_workspace_source: false,
+            partial_source: Some(partial_source.to_string()),
+            partial_filename: Some(".synthi/generated/gpu/device.partial.shade.hip".to_string()),
+            partial_symbols: symbols(&["shade"]),
+            partial_source_paths: vec!["src/gpu/shade.hip".to_string()],
+            partial_required: true,
+            partial_artifact_kind: Some("source_include_bridge".to_string()),
+            partial_fallback_reason: None,
+        };
+        let proof = device_hmr_proof_telemetry(&outcome);
+
+        let written = write_device_hmr_proof_artifact(
+            temp.path(),
+            Some("workspace"),
+            "runtime-session",
+            "source-edit:partial",
+            &outcome,
+            Some(&sources),
+            &proof,
+            None,
+        )
+        .await
+        .unwrap();
+        let artifact = crate::hmr::gpu_proof::read_proof_artifact(&written.path)
+            .await
+            .unwrap();
+        let fission_input = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| evidence.kind == "fission-island-input")
+            .expect("partial artifact fission input should be recorded");
+        let fission_evidence = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| evidence.kind == "fission-verifier-report")
+            .expect("partial artifact fission verifier should be recorded");
+        let fission_stage = artifact
+            .stage_results
+            .iter()
+            .find(|stage| stage.stage_id == "fission-candidate-verification")
+            .expect("fission stage should be recorded");
+        let report = fission_evidence
+            .metadata
+            .as_ref()
+            .expect("fission report metadata should be present");
+
+        assert_eq!(fission_stage.status, "passed");
+        assert_eq!(
+            report.get("status").and_then(serde_json::Value::as_str),
+            Some("pass")
+        );
+        assert_eq!(
+            report
+                .pointer("/candidates/0/candidate/sourcePaths/0")
+                .and_then(serde_json::Value::as_str),
+            Some("src/gpu/shade.hip")
+        );
+        assert_eq!(
+            report
+                .pointer("/candidates/0/candidate/artifactKind")
+                .and_then(serde_json::Value::as_str),
+            Some("source_include_bridge")
+        );
+        assert!(report
+            .pointer("/candidates/0/candidate/requiredOracleId")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.starts_with("oracle:required:sha256:")));
+        assert_eq!(
+            report
+                .pointer("/candidates/0/candidate/sourceMappingEvidenceIds/0")
+                .and_then(serde_json::Value::as_str),
+            Some(fission_input.evidence_id.as_str())
+        );
+        assert_eq!(
+            report
+                .pointer("/candidates/0/narrowerRejectionCoverage/missingRanks")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn partial_hmr_proof_artifact_covers_direct_translation_unit_narrower_scopes() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact_path = temp.path().join("device.hsaco");
+        tokio::fs::write(&artifact_path, b"device-artifact")
+            .await
+            .unwrap();
+        let source = r#"extern "C" __global__ void shade(float* pixels) {
+  pixels[0] = 1.0f;
+}
+"#;
+        let mut outcome = fixture_device_outcome(true, symbols(&["shade"]), symbols(&["shade"]));
+        outcome.artifact_path = artifact_path;
+        outcome.compiled_source = source.to_string();
+        outcome.requested_artifact_kind = Some("direct_device_translation_unit".to_string());
+        outcome.selected_artifact_kind = Some("direct_device_translation_unit".to_string());
+        outcome.proof_metadata = DeviceCompileProofMetadata {
+            compiler_executable: Some("/opt/toolchain/bin/hipcc".to_string()),
+            compiler_identity: Some("compiler-identity-hash".to_string()),
+            device_compiler: Some("hipcc".to_string()),
+            gpu_vendor: Some("rocm".to_string()),
+            gpu_arch: vec!["gfx0000".to_string()],
+            target_triple: Some("rocm:gfx0000".to_string()),
+            sdk_version: Some("rocm:test".to_string()),
+            source_filename: Some("device.hip".to_string()),
+            effective_device_flags: vec!["-O3".to_string()],
+            compile_command_hash: Some(sha256_hex_str("compile-command")),
+            dependency_hash: Some(sha256_hex_str("dependency-closure")),
+            dependency_method: Some("depfile".to_string()),
+            artifact_cache_key: Some("artifact-cache-key".to_string()),
+            cache_hit: false,
+        };
+        let sources = DeviceCompileSources {
+            full_source: source.to_string(),
+            full_filename: Some("device.hip".to_string()),
+            full_symbols: symbols(&["shade"]),
+            direct_workspace_source: true,
+            partial_source: None,
+            partial_filename: None,
+            partial_symbols: symbols(&["shade"]),
+            partial_source_paths: Vec::new(),
+            partial_required: false,
+            partial_artifact_kind: None,
+            partial_fallback_reason: None,
+        };
+        let proof = device_hmr_proof_telemetry(&outcome);
+
+        let written = write_device_hmr_proof_artifact(
+            temp.path(),
+            Some("workspace"),
+            "runtime-session",
+            "source-edit:direct-tu",
+            &outcome,
+            Some(&sources),
+            &proof,
+            None,
+        )
+        .await
+        .unwrap();
+        let artifact = crate::hmr::gpu_proof::read_proof_artifact(&written.path)
+            .await
+            .unwrap();
+        let fission_evidence = artifact
+            .evidence_refs
+            .iter()
+            .find(|evidence| evidence.kind == "fission-verifier-report")
+            .expect("direct translation unit fission verifier should be recorded");
+        let report = fission_evidence
+            .metadata
+            .as_ref()
+            .expect("fission report metadata should be present");
+
+        assert_eq!(
+            report.get("status").and_then(serde_json::Value::as_str),
+            Some("pass")
+        );
+        assert_eq!(
+            report
+                .pointer("/candidates/0/narrowerRejectionCoverage/requiredRanks")
+                .cloned(),
+            Some(serde_json::json!([0, 1]))
+        );
+        assert_eq!(
+            report
+                .pointer("/candidates/0/narrowerRejectionCoverage/missingRanks")
+                .cloned(),
+            Some(serde_json::json!([]))
+        );
+        assert_eq!(
+            report
+                .pointer("/candidates/0/candidate/narrowerCandidateRejections")
+                .and_then(serde_json::Value::as_array)
+                .map(Vec::len),
+            Some(2)
+        );
     }
 
     #[test]
