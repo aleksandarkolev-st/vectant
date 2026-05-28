@@ -1,3 +1,4 @@
+use crate::hmr::gpu_fission::verify_fission_candidates;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -220,6 +221,14 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
         .get("lastGpuAiDeltaVerifierReport")
         .cloned()
         .unwrap_or(Value::Null);
+    if let Some(fission_verifier_report) = fission_verifier_report_from_root(&root) {
+        root.insert(
+            "fissionVerifierReport".to_string(),
+            fission_verifier_report,
+        );
+    }
+    let fission_verifier_report = root.get("fissionVerifierReport").cloned();
+
     if !root.contains_key("runReport") {
         let mut report = run_report(
             &root,
@@ -234,6 +243,7 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
             device_fast_path_verifier_report,
             gpu_ai_delta_verifier_report,
         );
+        promote_fission_verifier_report_into_run_report(&mut report, fission_verifier_report);
         root.insert("runReport".to_string(), report);
     } else if let Some(report) = root.get_mut("runReport") {
         promote_verifier_reports_into_run_report(
@@ -241,6 +251,7 @@ pub fn normalize_split_sidecar(meta: &Value) -> Value {
             device_fast_path_verifier_report,
             gpu_ai_delta_verifier_report,
         );
+        promote_fission_verifier_report_into_run_report(report, fission_verifier_report);
     }
 
     Value::Object(root)
@@ -2534,6 +2545,55 @@ fn promote_verifier_reports_into_run_report(
     );
 }
 
+fn promote_fission_verifier_report_into_run_report(
+    report: &mut Value,
+    fission_report: Option<Value>,
+) {
+    let Some(report) = report.as_object_mut() else {
+        return;
+    };
+    if let Some(fission_report) = fission_report {
+        report.insert("fissionVerifierReport".to_string(), fission_report);
+    }
+}
+
+fn fission_verifier_report_from_root(root: &Map<String, Value>) -> Option<Value> {
+    let candidates = collect_fission_candidates(root);
+    if candidates.is_empty() {
+        return None;
+    }
+    Some(verify_fission_candidates(&Value::Array(candidates)))
+}
+
+fn collect_fission_candidates(root: &Map<String, Value>) -> Vec<Value> {
+    let mut candidates = Vec::new();
+    append_fission_candidates(&mut candidates, root.get("fissionCandidate"));
+    append_fission_candidates(&mut candidates, root.get("fissionCandidates"));
+    append_fission_candidates(
+        &mut candidates,
+        root.get("lastDeviceFastPathVerifierReport")
+            .and_then(|report| report.get("fissionCandidate")),
+    );
+    append_fission_candidates(
+        &mut candidates,
+        root.get("lastGpuAiDeltaVerifierReport")
+            .and_then(|report| report.get("fissionCandidate")),
+    );
+    candidates
+}
+
+fn append_fission_candidates(candidates: &mut Vec<Value>, value: Option<&Value>) {
+    match value {
+        Some(Value::Array(items)) => candidates.extend(items.iter().cloned()),
+        Some(Value::Object(_)) => {
+            if let Some(candidate) = value {
+                candidates.push(candidate.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
 fn ranked_plan_option<'a>(ranked_options: &'a Value, plan: &str) -> Option<&'a Value> {
     ranked_options.as_array().and_then(|items| {
         items
@@ -3984,6 +4044,100 @@ mod tests {
                 .pointer("/runReport/failureCard/problem")
                 .and_then(Value::as_str),
             Some("Device-only reload rejected.")
+        );
+    }
+
+    #[test]
+    fn fission_candidate_report_is_promoted_into_run_report() {
+        let manifest = gpu_compile_manifest();
+        let fission_candidate = json!({
+            "islandId": "island:sha256:abc",
+            "sourceEditId": "edit:abc",
+            "sourcePaths": ["src/render.kernel"],
+            "sourceSpans": [{"path": "src/render.kernel", "startByte": 10, "endByte": 24}],
+            "targetSymbols": ["render_step"],
+            "exportedSymbolsExpected": ["render_step"],
+            "artifactKind": "partial_device_artifact",
+            "includeClosure": [],
+            "dependencyClosureHash": "sha256:dependency",
+            "abiMembraneId": "abi:membrane",
+            "compileRecipeHash": "sha256:recipe",
+            "compileCommandHash": "sha256:command",
+            "loaderCapabilityRequirement": {"transportClass": "content_addressed_blob"},
+            "requiredOracleId": "oracle:render-step",
+            "verifierEvidenceIds": ["evidence:source-map", "evidence:abi-membrane"]
+        });
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "fissionCandidate": fission_candidate,
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+
+        assert_eq!(
+            migrated
+                .pointer("/fissionVerifierReport/status")
+                .and_then(Value::as_str),
+            Some("pass")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/fissionVerifierReport/selectedIslandId")
+                .and_then(Value::as_str),
+            Some("island:sha256:abc")
+        );
+        assert_eq!(
+            migrated
+                .pointer("/runReport/fissionVerifierReport/candidates/0/status")
+                .and_then(Value::as_str),
+            Some("pass")
+        );
+    }
+
+    #[test]
+    fn ai_fission_candidate_missing_oracle_is_rejected_by_deterministic_report() {
+        let manifest = gpu_compile_manifest();
+        let fission_candidate = json!({
+            "islandId": "island:sha256:def",
+            "sourceEditId": "edit:def",
+            "sourcePaths": ["src/render.kernel"],
+            "sourceSpans": [{"path": "src/render.kernel", "startLine": 3, "endLine": 7}],
+            "targetSymbols": ["render_step"],
+            "exportedSymbolsExpected": ["render_step"],
+            "artifactKind": "partial_device_artifact",
+            "includeClosure": [],
+            "dependencyClosureHash": "sha256:dependency",
+            "abiMembraneId": "abi:membrane",
+            "compileRecipeHash": "sha256:recipe",
+            "compileCommandHash": "sha256:command",
+            "loaderCapabilityRequirement": {"transportClass": "content_addressed_blob"},
+            "verifierEvidenceIds": ["evidence:source-map"],
+            "aiProposalId": "ai:fission:def"
+        });
+        let sidecar = json!({
+            "compile_manifest": manifest,
+            "lastGpuAiDeltaVerifierReport": {
+                "schemaVersion": "synthi.gpu.ai_delta_verifier.v1",
+                "status": "pass",
+                "fissionCandidate": fission_candidate,
+            }
+        });
+
+        let migrated = normalize_split_sidecar(&sidecar);
+
+        assert_eq!(
+            migrated
+                .pointer("/runReport/fissionVerifierReport/status")
+                .and_then(Value::as_str),
+            Some("reject")
+        );
+        assert!(
+            migrated
+                .pointer("/runReport/fissionVerifierReport/candidates/0/reasonCodes")
+                .and_then(Value::as_array)
+                .unwrap()
+                .iter()
+                .any(|code| code == "fission.output_oracle_missing")
         );
     }
 
