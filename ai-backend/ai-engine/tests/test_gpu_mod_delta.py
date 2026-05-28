@@ -89,6 +89,17 @@ def test_parse_gpu_diff_response_normalizes_fission_candidate_plan_aliases():
                 "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
                 "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
                 "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
+                "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
+                "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
+                "outputOracleEvidenceIds": ["evidence:output-oracle"],
+                "safeExportSupersetEvidenceIds": ["evidence:safe-export"],
+                "narrowerCandidateRejections": [
+                    {
+                        "scopeRank": 0,
+                        "reasonCode": "fission.edit_crosses_body_boundary",
+                        "verifierEvidenceIds": ["evidence:source-map"],
+                    }
+                ],
                 "proofFailureReasonCodes": ["output_oracle_missing"],
                 "sourceSpans": [{"path": "device.cu", "startLine": 7, "endLine": 9}],
             },
@@ -99,6 +110,11 @@ def test_parse_gpu_diff_response_normalizes_fission_candidate_plan_aliases():
     assert candidate["targetSymbols"] == ["step"]
     assert candidate["outputOracleProposal"] == {"kind": "checksum"}
     assert candidate["abiMembraneEvidenceIds"] == ["evidence:abi-membrane"]
+    assert candidate["compileRecipeEvidenceIds"] == ["evidence:compile-recipe"]
+    assert candidate["loaderCapabilityEvidenceIds"] == ["evidence:loader-capability"]
+    assert candidate["outputOracleEvidenceIds"] == ["evidence:output-oracle"]
+    assert candidate["safeExportSupersetEvidenceIds"] == ["evidence:safe-export"]
+    assert candidate["narrowerCandidateRejections"][0]["scopeRank"] == 0
     assert candidate["sourceSpans"][0]["startLine"] == 7
 
 
@@ -130,6 +146,57 @@ def test_parse_gpu_diff_response_rejects_invalid_fission_source_span():
     assert "fissionCandidate.sourceSpans[0].endLine" in str(excinfo.value)
 
 
+def test_parse_gpu_diff_response_accepts_byte_span_fission_source_span():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "sourceSpans": [{"path": "device.cu", "startByte": 10, "endByte": 42}],
+            },
+        }
+    )
+    parsed = parse_gpu_diff_response(raw)
+    assert parsed["fissionCandidate"]["sourceSpans"][0]["startByte"] == 10
+    assert parsed["fissionCandidate"]["sourceSpans"][0]["endByte"] == 42
+
+
+def test_parse_gpu_diff_response_rejects_invalid_fission_rejection_evidence():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "narrowerCandidateRejections": [
+                    {
+                        "scopeRank": -1,
+                        "reasonCode": "fission.edit_crosses_body_boundary",
+                        "verifierEvidenceIds": ["evidence:source-map"],
+                    }
+                ],
+            },
+        }
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse_gpu_diff_response(raw)
+    assert "fissionCandidate.narrowerCandidateRejections[0].scopeRank" in str(excinfo.value)
+
+
+def test_parse_gpu_diff_response_rejects_invalid_fission_timing_hint():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "compileCostEstimateMs": "fast",
+            },
+        }
+    )
+    with pytest.raises(Exception) as excinfo:
+        parse_gpu_diff_response(raw)
+    assert "fissionCandidate.compileCostEstimateMs" in str(excinfo.value)
+
+
 def test_parse_gpu_diff_response_rejects_placeholder_fission_hashes():
     raw = json.dumps(
         {
@@ -159,6 +226,10 @@ def test_gpu_prompt_marks_fission_candidate_as_proposal_only():
     assert "fissionCandidate" in prompt
     assert "deterministic verifier" in prompt
     assert "sourceMappingEvidenceIds" in prompt
+    assert "compileRecipeEvidenceIds" in prompt
+    assert "loaderCapabilityEvidenceIds" in prompt
+    assert "outputOracleEvidenceIds" in prompt
+    assert "narrowerCandidateRejections" in prompt
     assert "Do not invent ids" in prompt
     assert "Use null" in prompt
     assert "SHA-256" in prompt

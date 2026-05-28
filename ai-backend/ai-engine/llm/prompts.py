@@ -4615,6 +4615,18 @@ Return a JSON object:
     "symbolOwnershipEvidenceIds": ["..."],
     "dependencyClosureEvidenceIds": ["..."],
     "abiMembraneEvidenceIds": ["..."],
+    "compileRecipeEvidenceIds": ["..."],
+    "loaderCapabilityEvidenceIds": ["..."],
+    "outputOracleEvidenceIds": ["..."],
+    "safeExportSupersetReason": "...",
+    "safeExportSupersetEvidenceIds": ["..."],
+    "narrowerCandidateRejections": [
+      {
+        "scopeRank": 0,
+        "reasonCode": "...",
+        "verifierEvidenceIds": ["..."]
+      }
+    ],
     "proofFailureReasonCodes": ["..."],
     "verifierEvidenceIds": ["..."],
     "aiProposalId": "..."
@@ -4655,11 +4667,15 @@ Rules:
 - Evidence id fields are provenance for the deterministic verifier to re-check,
   not proof claims. Use ids already present in the mapping, compile, reload, or
   failure reports. Do not invent ids. If phase evidence is missing for source
-  mapping, include closure, symbol ownership, dependency closure, or ABI
-  membrane, return null or include the missing phase in `proofFailureReasonCodes`.
+  mapping, include closure, symbol ownership, dependency closure, ABI membrane,
+  compile recipe, loader capability, or output oracle, return null or include
+  the missing phase in `proofFailureReasonCodes`.
 - `dependencyClosureHash`, `compileRecipeHash`, and `compileCommandHash` must be
   real SHA-256 digests as 64 hex characters, optionally prefixed with `sha256:`.
   Use null when that digest is not present in provided evidence.
+- Use `narrowerCandidateRejections` only for deterministic reasons already
+  present in local reports, and include evidence ids for each rejected narrower
+  scope. It is not a place for model speculation.
 
 ARCHITECTURE CACHE:
 {ARCHITECTURE}

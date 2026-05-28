@@ -35,7 +35,9 @@ _SHA256_DIGEST_RE = re.compile(r"^(?:sha256:)?[0-9a-fA-F]{64}$")
 FISSION_CANDIDATE_STRING_FIELDS = {
     "abiMembraneId",
     "aiProposalId",
+    "artifactScope",
     "artifactKind",
+    "candidateSource",
     "compileCommandHash",
     "compileRecipeHash",
     "dependencyClosureHash",
@@ -43,7 +45,11 @@ FISSION_CANDIDATE_STRING_FIELDS = {
     "generatedRolePath",
     "islandId",
     "originalHostLaunchMappingId",
+    "plannerSource",
+    "replacementScope",
     "requiredOracleId",
+    "safeExportSupersetReason",
+    "scope",
     "sourceEditId",
 }
 FISSION_CANDIDATE_SHA256_FIELDS = {
@@ -54,11 +60,22 @@ FISSION_CANDIDATE_SHA256_FIELDS = {
 FISSION_CANDIDATE_STRING_LIST_FIELDS = {
     "abiEvidenceIds",
     "abiMembraneEvidenceIds",
+    "compileCommandEvidenceIds",
+    "compileEvidenceIds",
+    "compileRecipeEvidenceIds",
     "dependencyClosureEvidenceIds",
+    "evidenceIds",
     "exportedSymbolsExpected",
     "includeClosure",
     "includeClosureEvidenceIds",
+    "loaderCapabilityEvidenceIds",
+    "loaderEvidenceIds",
+    "oracleEvidenceIds",
+    "outputOracleEvidenceIds",
+    "proofEvidenceIds",
     "proofFailureReasonCodes",
+    "rejectionEvidenceIds",
+    "safeExportSupersetEvidenceIds",
     "sourceMappingEvidenceIds",
     "sourceMapEvidenceIds",
     "sourcePaths",
@@ -75,9 +92,42 @@ FISSION_CANDIDATE_OBJECT_FIELDS = {
     "runtimeAttachmentRequirement",
     "runtimeOwnershipRequirement",
 }
+FISSION_CANDIDATE_BOOL_FIELDS = {
+    "aiGenerated",
+    "aiProposalIdRequired",
+    "generatedRolePathRequired",
+    "llmGenerated",
+    "originalHostLaunchMappingRequired",
+    "requiresOriginalHostPath",
+}
+FISSION_CANDIDATE_NON_NEGATIVE_INT_FIELDS = {
+    "compileCostEstimateMs",
+    "compileCostMs",
+    "compileEstimateMs",
+    "estimatedCompileMs",
+    "historicalCompileMs",
+    "historicalTimingMs",
+    "lastCompileMs",
+    "meanCompileMs",
+    "p50CompileMs",
+}
 FISSION_CANDIDATE_ALIASES = {
     "oracleProposal": "outputOracleProposal",
     "symbols": "targetSymbols",
+}
+FISSION_REJECTION_STRING_FIELDS = {
+    "artifactKind",
+    "artifactScope",
+    "reasonCode",
+    "replacementScope",
+    "scope",
+}
+FISSION_REJECTION_STRING_LIST_FIELDS = {
+    "evidenceIds",
+    "proofEvidenceIds",
+    "reasonCodes",
+    "rejectionEvidenceIds",
+    "verifierEvidenceIds",
 }
 HOST_PATH_TO_MODULE = {
     "core.cpp": "core",
@@ -446,8 +496,18 @@ def validate_fission_candidate(candidate: object) -> Optional[dict]:
     for field in sorted(FISSION_CANDIDATE_OBJECT_FIELDS):
         if field in cleaned and cleaned[field] is not None and not isinstance(cleaned[field], dict):
             raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be an object")
+    for field in sorted(FISSION_CANDIDATE_BOOL_FIELDS):
+        if field in cleaned and cleaned[field] is not None and type(cleaned[field]) is not bool:
+            raise HTTPException(status_code=400, detail=f"`fissionCandidate.{field}` must be a boolean")
+    for field in sorted(FISSION_CANDIDATE_NON_NEGATIVE_INT_FIELDS):
+        if field in cleaned and cleaned[field] is not None:
+            cleaned[field] = _validate_non_negative_int(cleaned[field], f"fissionCandidate.{field}")
     if "sourceSpans" in cleaned and cleaned["sourceSpans"] is not None:
         cleaned["sourceSpans"] = _validate_fission_source_spans(cleaned["sourceSpans"])
+    if "narrowerCandidateRejections" in cleaned and cleaned["narrowerCandidateRejections"] is not None:
+        cleaned["narrowerCandidateRejections"] = _validate_fission_rejections(
+            cleaned["narrowerCandidateRejections"]
+        )
     return cleaned
 
 
@@ -475,27 +535,97 @@ def _validate_fission_source_spans(value: object) -> List[dict]:
         path = span.get("path")
         start_line = span.get("startLine")
         end_line = span.get("endLine")
+        start_byte = span.get("startByte")
+        end_byte = span.get("endByte")
         if not isinstance(path, str) or not path:
             raise HTTPException(
                 status_code=400,
                 detail=f"`fissionCandidate.sourceSpans[{i}].path` must be a non-empty string",
             )
-        if type(start_line) is not int or start_line < 1:
+        has_line_range = start_line is not None or end_line is not None
+        has_byte_range = start_byte is not None or end_byte is not None
+        if not has_line_range and not has_byte_range:
             raise HTTPException(
                 status_code=400,
-                detail=f"`fissionCandidate.sourceSpans[{i}].startLine` must be a positive integer",
+                detail=f"`fissionCandidate.sourceSpans[{i}]` must include a line or byte range",
             )
-        if type(end_line) is not int or end_line < start_line:
-            raise HTTPException(
-                status_code=400,
-                detail=f"`fissionCandidate.sourceSpans[{i}].endLine` must be an integer >= startLine",
-            )
+        if has_line_range:
+            if type(start_line) is not int or start_line < 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.sourceSpans[{i}].startLine` must be a positive integer",
+                )
+            if type(end_line) is not int or end_line < start_line:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.sourceSpans[{i}].endLine` must be an integer >= startLine",
+                )
+        if has_byte_range:
+            if type(start_byte) is not int or start_byte < 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.sourceSpans[{i}].startByte` must be a non-negative integer",
+                )
+            if type(end_byte) is not int or end_byte <= start_byte:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.sourceSpans[{i}].endByte` must be an integer > startByte",
+                )
         cleaned_span = dict(span)
         cleaned_span["path"] = path
-        cleaned_span["startLine"] = start_line
-        cleaned_span["endLine"] = end_line
+        if has_line_range:
+            cleaned_span["startLine"] = start_line
+            cleaned_span["endLine"] = end_line
+        if has_byte_range:
+            cleaned_span["startByte"] = start_byte
+            cleaned_span["endByte"] = end_byte
         cleaned.append(cleaned_span)
     return cleaned
+
+
+def _validate_fission_rejections(value: object) -> List[dict]:
+    if not isinstance(value, list):
+        raise HTTPException(
+            status_code=400,
+            detail="`fissionCandidate.narrowerCandidateRejections` must be an array",
+        )
+    cleaned: List[dict] = []
+    for i, rejection in enumerate(value):
+        if not isinstance(rejection, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"`fissionCandidate.narrowerCandidateRejections[{i}]` must be an object",
+            )
+        cleaned_rejection = dict(rejection)
+        if "scopeRank" in cleaned_rejection and cleaned_rejection["scopeRank"] is not None:
+            cleaned_rejection["scopeRank"] = _validate_non_negative_int(
+                cleaned_rejection["scopeRank"],
+                f"fissionCandidate.narrowerCandidateRejections[{i}].scopeRank",
+            )
+        for field in sorted(FISSION_REJECTION_STRING_FIELDS):
+            if (
+                field in cleaned_rejection
+                and cleaned_rejection[field] is not None
+                and not isinstance(cleaned_rejection[field], str)
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"`fissionCandidate.narrowerCandidateRejections[{i}].{field}` must be a string",
+                )
+        for field in sorted(FISSION_REJECTION_STRING_LIST_FIELDS):
+            if field in cleaned_rejection and cleaned_rejection[field] is not None:
+                cleaned_rejection[field] = _validate_fission_string_list(
+                    cleaned_rejection[field],
+                    f"narrowerCandidateRejections[{i}].{field}",
+                )
+        cleaned.append(cleaned_rejection)
+    return cleaned
+
+
+def _validate_non_negative_int(value: object, label: str) -> int:
+    if type(value) is not int or value < 0:
+        raise HTTPException(status_code=400, detail=f"`{label}` must be a non-negative integer")
+    return value
 
 
 def _normalize_module(module: str) -> str:
