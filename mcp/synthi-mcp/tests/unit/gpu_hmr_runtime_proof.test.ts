@@ -36,6 +36,9 @@ import {
   dockerSnapshotFromInspect,
   validationCommandMetadata,
 } from "../../scripts/lib/docker-validation-metadata.mjs";
+import {
+  buildValidationRuntimeProofArtifact,
+} from "../../scripts/lib/gpu-hmr-validation-proof-artifact.mjs";
 
 function acceptedAbiProof() {
   return classifyGpuHmrAbiProof({
@@ -1862,6 +1865,58 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.fullRuntimeProven).toBe(true);
     expect(proof.componentStates.originalHostPathRequired).toBe(true);
     expect(proof.componentStates.originalHostPathProven).toBe(true);
+  });
+
+  it("materializes runtime proof ladder as a structured validation artifact", () => {
+    const dispatchProof = safeDispatchProof();
+    const sourceProof = {
+      resultState: "gpu-hmr-abi-proven",
+      proofArtifactPath: ".synthi/gpu-hmr/proofs/source.json",
+    };
+    const outputProof = classifyGpuHmrOutputProof({
+      dispatchProof,
+      deterministicOutputObserved: true,
+      deterministicOracleProvided: true,
+      deterministicOraclePassed: true,
+      outputOracle: deterministicOutputOracle(),
+      visualFrameObserved: true,
+      visualEvidenceRefs: ["artifacts/frame.png"],
+    });
+    const fullRuntimeProof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [sourceProof],
+      fissionProof: acceptedFissionProof(),
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      originalHostPathProof: attachedOriginalHostPathProof(),
+    });
+
+    const artifact = buildValidationRuntimeProofArtifact({
+      workspaceSlug: "workspace",
+      runtimeSessionIds: ["runtime-session:test"],
+      sourceProofs: [sourceProof],
+      fissionProof: acceptedFissionProof(),
+      abiProof: acceptedAbiProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof,
+      outputProof,
+      hostPreservationProof: preservedHostProof(),
+      originalHostPathProof: attachedOriginalHostPathProof(),
+      fullRuntimeProof,
+      visualEvidenceRefs: ["artifacts/frame.png"],
+      createdAt: "2026-05-28T00:00:00.000Z",
+    });
+
+    expect(artifact.schemaVersion).toBe("synthi.gpu.hmr.proof.v1");
+    expect(artifact.proofId).toMatch(/^gpu-runtime-proof:sha256:/);
+    expect(artifact.resultState).toBe("gpu-hmr-full-runtime-proven");
+    expect(artifact.stageResults.map((stage) => stage.stageId)).toContain("host-preservation");
+    expect(artifact.stageResults.every((stage) => Array.isArray(stage.evidenceRefs))).toBe(true);
+    expect(artifact.evidenceRefs.map((ref) => ref.evidenceId)).toContain("worker-log:host_identity:core_state");
+    expect(artifact.visualEvidenceRefs).toEqual(["artifacts/frame.png"]);
+    expect(artifact.proofMaterial.fullRuntimeProof.fullRuntimeProven).toBe(true);
   });
 
   it("does not reconstruct dispatch proof from output state alone", () => {

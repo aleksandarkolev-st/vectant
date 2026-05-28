@@ -49,6 +49,9 @@ import {
   summarizeGpuHmrOriginalHostPathProof,
   summarizeGpuHmrOutputProof,
 } from './lib/gpu-hmr-runtime-proof.mjs';
+import {
+  writeValidationRuntimeProofArtifact,
+} from './lib/gpu-hmr-validation-proof-artifact.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -257,6 +260,8 @@ const report = {
   host_preservation_proof: null,
   original_host_path_proof: null,
   full_runtime_proof: null,
+  runtime_proof_artifact: null,
+  runtime_proof_artifact_path: null,
   compile_projection: {},
   compile_transport: CFG.compileTransport,
   output_oracle_contract: CFG.outputOracleContract,
@@ -2211,6 +2216,33 @@ async function writeResults() {
   report.finished_at = new Date().toISOString();
   await mkdir(LOG_DIR, { recursive: true });
   await mkdir(ARTIFACT_DIR, { recursive: true });
+  const runtimeProofArtifactDir = path.join(LOG_DIR, 'runtime-proof-artifacts');
+  if (report.full_runtime_proof) {
+    const written = await writeValidationRuntimeProofArtifact(runtimeProofArtifactDir, {
+      workspaceSlug: report.slug,
+      runtimeSessionIds: report.dispatch_proof?.runtimeSessionIds ?? report.evidence?.runtime_session?.unique_ids ?? [],
+      sourceProofs: report.phases.map((phase) => phase.gpu_proof).filter(Boolean),
+      fissionProof: report.fission_proof,
+      abiProof: report.abi_proof,
+      artifactTransportProof: report.artifact_transport_proof,
+      epochProof: report.epoch_swap_proof,
+      dispatchProof: report.dispatch_proof,
+      outputProof: report.output_proof,
+      hostPreservationProof: report.host_preservation_proof,
+      originalHostPathProof: report.original_host_path_proof,
+      fullRuntimeProof: report.full_runtime_proof,
+      label: 'real-rocm-runtime-proof',
+      visualEvidenceRefs: report.screenshots.map((shot) => shot.path).filter(Boolean),
+    });
+    report.runtime_proof_artifact_path = written.path;
+    report.runtime_proof_artifact = {
+      proofId: written.artifact.proofId,
+      path: written.path,
+      resultState: written.artifact.resultState,
+      degradedState: written.artifact.degradedState,
+      degradedReason: written.artifact.degradedReason,
+    };
+  }
   await writeFile(RESULTS_JSON, JSON.stringify(report, null, 2) + '\n');
   const lines = [
     `slug: ${report.slug}`,
@@ -2233,6 +2265,7 @@ async function writeResults() {
     `compile_transport: ${CFG.compileTransport}`,
     `compile_projection: ${JSON.stringify(report.compile_projection)}`,
     `output_oracle_contract: ${JSON.stringify(report.output_oracle_contract)}`,
+    `runtime_proof_artifact: ${JSON.stringify(report.runtime_proof_artifact)}`,
     '',
     ...report.checks.map((check) => `${check.status.toUpperCase()} ${check.name}${check.detail ? ` - ${check.detail}` : ''}`),
     '',

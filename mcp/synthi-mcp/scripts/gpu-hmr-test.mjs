@@ -74,6 +74,9 @@ import {
   summarizeGpuHmrHostPreservationProof,
   summarizeGpuHmrOutputProof,
 } from './lib/gpu-hmr-runtime-proof.mjs';
+import {
+  writeValidationRuntimeProofArtifact,
+} from './lib/gpu-hmr-validation-proof-artifact.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -209,6 +212,7 @@ function recordRuntimeFullProof(phase, name, observation) {
     phase,
     name,
     proof,
+    observation,
     ts: new Date().toISOString(),
   });
   record(phase, name, proof.fullRuntimeProven ? 'pass' : 'warn', summarizeGpuHmrFullRuntimeProof(proof));
@@ -3184,6 +3188,30 @@ async function writeSummary() {
     }
   }
 
+  const runtimeProofArtifactRecords = [];
+  const runtimeProofArtifactDir = path.join(LOG_DIR, 'runtime-proof-artifacts');
+  for (const entry of runtimeFullProofs) {
+    const outputVisualRefs = Array.isArray(entry.observation?.outputProof?.visualEvidenceRefs)
+      ? entry.observation.outputProof.visualEvidenceRefs
+      : [];
+    const written = await writeValidationRuntimeProofArtifact(runtimeProofArtifactDir, {
+      ...(entry.observation ?? {}),
+      workspaceSlug: CFG.slug,
+      fullRuntimeProof: entry.proof,
+      label: `${entry.phase}-${entry.name}`,
+      visualEvidenceRefs: outputVisualRefs,
+    });
+    runtimeProofArtifactRecords.push({
+      phase: entry.phase,
+      name: entry.name,
+      path: written.path,
+      proofId: written.artifact.proofId,
+      resultState: written.artifact.resultState,
+      degradedState: written.artifact.degradedState,
+      degradedReason: written.artifact.degradedReason,
+    });
+  }
+
   const summary = {
     slug: CFG.slug,
     vendor: CFG.vendor,
@@ -3225,6 +3253,7 @@ async function writeSummary() {
     paths: {
       logs: LOG_DIR,
       artifacts: ARTIFACT_DIR,
+      runtime_proof_artifacts: runtimeProofArtifactDir,
       results_json: path.join(LOG_DIR, 'results.json'),
       results_txt: path.join(LOG_DIR, 'results.txt'),
     },
@@ -3243,6 +3272,8 @@ async function writeSummary() {
     artifact_transport_proofs: artifactTransportProofs,
     runtime_host_preservation_proofs: runtimeHostPreservationProofs,
     runtime_full_proofs: runtimeFullProofs,
+    runtime_proof_artifacts: runtimeProofArtifactRecords,
+    runtime_proof_artifact_paths: runtimeProofArtifactRecords.map((record) => record.path),
     results,
   };
   await writeFile(path.join(LOG_DIR, 'results.json'), JSON.stringify(summary, null, 2));
