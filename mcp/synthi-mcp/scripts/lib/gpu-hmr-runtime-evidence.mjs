@@ -568,10 +568,26 @@ function originalHostPathRecord(line) {
     runtimeSession: fields.runtime_session ?? null,
     attached: boolValue(fields.attached ?? fields.attachment_proven),
     dispatchBoundaryObserved: boolValue(fields.dispatch_boundary_observed),
+    attachmentProvenance:
+      fields.attachment_provenance
+      ?? fields.attachmentProvenance
+      ?? fields.provenance
+      ?? null,
     hostPathId: fields.host_path_id ?? fields.hostPathId ?? null,
     dispatchTableEntryId: fields.dispatch_table_entry_id ?? fields.dispatchTableEntryId ?? null,
     generation: integerValue(fields.generation),
   };
+}
+
+const ACCEPTED_ORIGINAL_HOST_PATH_ATTACHMENT_PROVENANCE = new Set([
+  'runtime_explicit',
+  'source_instrumented',
+  'host_runtime_explicit',
+]);
+
+function originalHostPathAttachmentProvenanceAccepted(provenance) {
+  return typeof provenance === 'string'
+    && ACCEPTED_ORIGINAL_HOST_PATH_ATTACHMENT_PROVENANCE.has(provenance.trim().toLowerCase());
 }
 
 function launchBoundaryRecord(line) {
@@ -605,6 +621,7 @@ export function runtimeOriginalHostPathEvidence(lines, observation = {}) {
     && record.runtimeSession.trim()
     && record.attached === true
     && record.dispatchBoundaryObserved === true
+    && originalHostPathAttachmentProvenanceAccepted(record.attachmentProvenance)
     && typeof record.hostPathId === 'string'
     && record.hostPathId.trim()
     && Number.isFinite(record.generation)
