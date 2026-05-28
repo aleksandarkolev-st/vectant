@@ -32,6 +32,7 @@ import {
   runtimeHostIdentityEvidence,
   runtimeOutputOracleEvidence,
 } from './lib/gpu-hmr-runtime-evidence.mjs';
+import { positiveIntegerFromEnv } from './lib/validation-env.mjs';
 import {
   classifyGpuHmrAbiProof,
   classifyGpuHmrDispatchProof,
@@ -161,6 +162,7 @@ const CFG = {
   mcpAttachTimeoutMs: Number(process.env.MCP_ATTACH_TIMEOUT_MS ?? 30000),
   firstCompileTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_FIRST_TIMEOUT_MS ?? 300000),
   hmrTimeoutMs: Number(process.env.SYNTHI_REAL_ROCM_HMR_TIMEOUT_MS ?? 90000),
+  upstreamBuildTimeoutMs: positiveIntegerFromEnv(process.env, 'SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS', 240000),
   screenshotAttempts: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_ATTEMPTS ?? 3),
   screenshotRetryDelayMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_RETRY_MS ?? 1000),
   screenshotFreshnessMaxMs: Number(process.env.SYNTHI_REAL_ROCM_SCREENSHOT_FRESHNESS_MS ?? 5000),
@@ -213,6 +215,7 @@ const report = {
       SYNTHI_REAL_ROCM_TARGET: process.env.SYNTHI_REAL_ROCM_TARGET ?? '',
       SYNTHI_REAL_ROCM_BUILD_SUBDIR: process.env.SYNTHI_REAL_ROCM_BUILD_SUBDIR ?? '',
       SYNTHI_REAL_ROCM_BUILD_UPSTREAM: process.env.SYNTHI_REAL_ROCM_BUILD_UPSTREAM ?? '',
+      SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS: process.env.SYNTHI_REAL_ROCM_UPSTREAM_TIMEOUT_MS ?? '',
       SYNTHI_REAL_ROCM_RUN_UPSTREAM: process.env.SYNTHI_REAL_ROCM_RUN_UPSTREAM ?? '',
       SYNTHI_REAL_ROCM_MAX_FILE_BYTES: process.env.SYNTHI_REAL_ROCM_MAX_FILE_BYTES ?? '',
       SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES: process.env.SYNTHI_REAL_ROCM_COMPILE_CONTEXT_MAX_BYTES ?? '',
@@ -509,7 +512,7 @@ fi
 ran=$(date +%s%3N)
 printf 'configure_ms=%s\\nbuild_ms=%s\\nrun_ms=%s\\n' "$((configured-start))" "$((built-configured))" "$((ran-built))"
 `;
-  const timings = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', command], 240000, true);
+  const timings = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', command], CFG.upstreamBuildTimeoutMs, true);
   const runLog = await execText('docker', ['exec', CFG.workerContainer, 'sh', '-lc', `cat ${shQuote(`${CFG.workerTempDir}/run.log`)}`], 30000, true);
   report.logs.upstream_run = runLog;
   const phase = { name: 'upstream_gpu_build_run', timings, output: runLog.slice(0, 1000) };
