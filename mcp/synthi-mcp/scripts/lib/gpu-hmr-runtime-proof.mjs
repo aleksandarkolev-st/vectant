@@ -446,6 +446,29 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     ? rawOracle.evidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];
   const oracleEvidenceObserved = oracleEvidenceRefs.length > 0;
+  const oracleProducer = typeof rawOracle.producer === 'string' && rawOracle.producer.trim()
+    ? rawOracle.producer.trim()
+    : null;
+  const oracleOutputTargetId = typeof rawOracle.outputTargetId === 'string' && rawOracle.outputTargetId.trim()
+    ? rawOracle.outputTargetId.trim()
+    : typeof rawOracle.outputTarget === 'string' && rawOracle.outputTarget.trim()
+      ? rawOracle.outputTarget.trim()
+      : null;
+  const oracleReadbackTimestamp =
+    rawOracle.readbackTimestamp ?? rawOracle.readback_timestamp ?? rawOracle.readbackTs ?? rawOracle.readback_ts ?? null;
+  const oracleReadbackTimestampObserved =
+    (typeof oracleReadbackTimestamp === 'string' && oracleReadbackTimestamp.trim().length > 0)
+    || Number.isFinite(oracleReadbackTimestamp);
+  const oracleArtifactId = typeof rawOracle.artifactId === 'string' && rawOracle.artifactId.trim()
+    ? rawOracle.artifactId.trim()
+    : typeof rawOracle.artifact_id === 'string' && rawOracle.artifact_id.trim()
+      ? rawOracle.artifact_id.trim()
+      : null;
+  const oracleProvenanceComplete =
+    oracleProducer !== null
+    && oracleOutputTargetId !== null
+    && oracleReadbackTimestampObserved
+    && oracleArtifactId !== null;
   const hasTolerance = Object.prototype.hasOwnProperty.call(rawOracle, 'tolerance')
     && rawOracle.tolerance !== null
     && rawOracle.tolerance !== undefined;
@@ -471,6 +494,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     deterministicOutputObserved
     && deterministicOracleProvided
     && oracleEvidenceObserved
+    && oracleProvenanceComplete
     && oracleValuesCompatible
     && observation.deterministicOraclePassed === true;
   const outputOracle = {
@@ -478,6 +502,11 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     observed: deterministicOutputObserved,
     passed: deterministicOraclePassed,
     evidenceObserved: oracleEvidenceObserved,
+    provenanceComplete: oracleProvenanceComplete,
+    producer: oracleProducer,
+    outputTargetId: oracleOutputTargetId,
+    readbackTimestamp: oracleReadbackTimestampObserved ? oracleReadbackTimestamp : null,
+    artifactId: oracleArtifactId,
     valuesCompatible: oracleValuesCompatible,
     kind: oracleKind,
     expected: hasExpected ? rawOracle.expected : null,
@@ -524,12 +553,20 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     };
   }
 
+  const oracleOtherwisePassed =
+    deterministicOutputObserved
+    && deterministicOracleProvided
+    && oracleEvidenceObserved
+    && oracleValuesCompatible
+    && observation.deterministicOraclePassed === true;
   const degradedState = visualFrameObserved
     ? 'gpu-hmr-visual-only'
     : 'gpu-hmr-output-unobserved';
-  const degradedReason = visualFrameObserved
-    ? 'visual_frame_without_deterministic_output_oracle'
-    : 'output_oracle_not_collected';
+  const degradedReason = oracleOtherwisePassed && !oracleProvenanceComplete
+    ? 'output_oracle_provenance_incomplete'
+    : visualFrameObserved
+      ? 'visual_frame_without_deterministic_output_oracle'
+      : 'output_oracle_not_collected';
 
   return {
     schemaVersion: GPU_HMR_PROOF_SCHEMA_VERSION,

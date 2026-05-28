@@ -501,12 +501,21 @@ function outputOracleRecord(line) {
     line,
     oracleId: fields.id ?? fields.oracle_id ?? null,
     kind: fields.kind ?? null,
+    producer: fields.producer ?? fields.producer_id ?? null,
     expected: Object.prototype.hasOwnProperty.call(fields, 'expected') ? fields.expected : null,
     actual: Object.prototype.hasOwnProperty.call(fields, 'actual') ? fields.actual : null,
     tolerance: fields.tolerance ?? fields.absolute_tolerance ?? fields.abs_tolerance ?? null,
     passed: boolValue(fields.passed),
     generation: integerValue(fields.generation),
     runtimeSession: fields.runtime_session ?? null,
+    outputTargetId: fields.output_target_id ?? fields.output_target ?? fields.target ?? null,
+    readbackTimestamp:
+      fields.readback_timestamp
+      ?? fields.readback_ts
+      ?? fields.readback_elapsed_ms
+      ?? null,
+    artifactId: fields.artifact_id ?? fields.artifact ?? null,
+    visualEvidenceRef: fields.visual_evidence_ref ?? fields.visual_ref ?? null,
   };
 }
 
@@ -785,10 +794,15 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
     output_oracle: latest
       ? {
           kind: latest.kind,
+          producer: latest.producer,
           expected: latest.expected,
           actual: latest.actual,
           tolerance: latest.tolerance,
           runtimeSession: latest.runtimeSession,
+          outputTargetId: latest.outputTargetId,
+          readbackTimestamp: latest.readbackTimestamp,
+          artifactId: latest.artifactId,
+          visualEvidenceRef: latest.visualEvidenceRef,
           evidenceRefs,
         }
       : null,
