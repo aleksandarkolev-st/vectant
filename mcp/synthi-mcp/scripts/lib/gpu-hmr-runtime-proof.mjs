@@ -309,6 +309,74 @@ function stageResult(stageId, requiredState, evidenceRank, evidenceProof, degrad
   };
 }
 
+function finiteNumericValue(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || !/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(trimmed)) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function finiteNumericVector(value) {
+  if (Array.isArray(value)) {
+    const values = value.map(finiteNumericValue);
+    return values.length > 0 && values.every((item) => item !== null) ? values : null;
+  }
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed.includes(',')) {
+    const scalar = finiteNumericValue(trimmed);
+    return scalar === null ? null : [scalar];
+  }
+  const values = trimmed.split(',').map((part) => finiteNumericValue(part));
+  return values.length > 0 && values.every((item) => item !== null) ? values : null;
+}
+
+function absoluteToleranceValue(tolerance) {
+  if (tolerance && typeof tolerance === 'object' && !Array.isArray(tolerance)) {
+    return finiteNumericValue(tolerance.absolute ?? tolerance.abs ?? tolerance.value);
+  }
+  return finiteNumericValue(tolerance);
+}
+
+export function gpuHmrOracleValuesCompatible(expected, actual, tolerance = null) {
+  if (Object.is(expected, actual)) {
+    return {
+      compatible: true,
+      exact: true,
+      toleranceApplied: false,
+      toleranceValid: tolerance === null || tolerance === undefined || absoluteToleranceValue(tolerance) !== null,
+    };
+  }
+
+  const absoluteTolerance = absoluteToleranceValue(tolerance);
+  if (absoluteTolerance === null || absoluteTolerance < 0) {
+    return {
+      compatible: false,
+      exact: false,
+      toleranceApplied: false,
+      toleranceValid: false,
+    };
+  }
+
+  const expectedVector = finiteNumericVector(expected);
+  const actualVector = finiteNumericVector(actual);
+  const compatible =
+    expectedVector !== null
+    && actualVector !== null
+    && expectedVector.length === actualVector.length
+    && expectedVector.every((value, index) => Math.abs(value - actualVector[index]) <= absoluteTolerance);
+
+  return {
+    compatible,
+    exact: false,
+    toleranceApplied: compatible,
+    toleranceValid: true,
+    tolerance: absoluteTolerance,
+  };
+}
+
 export function classifyGpuHmrOutputProof(observation = {}) {
   const dispatchProof = observation.dispatchProof && typeof observation.dispatchProof === 'object'
     ? observation.dispatchProof
@@ -331,10 +399,22 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const hasTolerance = Object.prototype.hasOwnProperty.call(rawOracle, 'tolerance')
     && rawOracle.tolerance !== null
     && rawOracle.tolerance !== undefined;
+  const valueCompatibility = hasExpected && hasActual
+    ? gpuHmrOracleValuesCompatible(
+        rawOracle.expected,
+        rawOracle.actual,
+        hasTolerance ? rawOracle.tolerance : null,
+      )
+    : {
+        compatible: false,
+        exact: false,
+        toleranceApplied: false,
+        toleranceValid: !hasTolerance,
+      };
   const oracleValuesCompatible =
     hasExpected
     && hasActual
-    && (Object.is(rawOracle.expected, rawOracle.actual) || hasTolerance);
+    && valueCompatibility.compatible;
   const deterministicOutputObserved = observation.deterministicOutputObserved === true && hasActual;
   const deterministicOracleProvided = observation.deterministicOracleProvided === true && oracleKind !== null && hasExpected;
   const deterministicOraclePassed =
@@ -353,6 +433,9 @@ export function classifyGpuHmrOutputProof(observation = {}) {
     expected: hasExpected ? rawOracle.expected : null,
     actual: hasActual ? rawOracle.actual : null,
     tolerance: Object.prototype.hasOwnProperty.call(rawOracle, 'tolerance') ? rawOracle.tolerance : null,
+    exactValueMatch: valueCompatibility.exact,
+    toleranceApplied: valueCompatibility.toleranceApplied,
+    toleranceValid: valueCompatibility.toleranceValid,
     evidenceRefs: oracleEvidenceRefs,
   };
   const visualFrameObserved = observation.visualFrameObserved === true;

@@ -2,6 +2,7 @@ import {
   classifyGpuHmrEpochSwapProof,
   classifyGpuHmrHostPreservationProof,
   classifyGpuHmrOriginalHostPathProof,
+  gpuHmrOracleValuesCompatible,
 } from './gpu-hmr-runtime-proof.mjs';
 
 function parseRuntimeKeyValues(line) {
@@ -429,6 +430,7 @@ function outputOracleRecord(line) {
     kind: fields.kind ?? null,
     expected: Object.prototype.hasOwnProperty.call(fields, 'expected') ? fields.expected : null,
     actual: Object.prototype.hasOwnProperty.call(fields, 'actual') ? fields.actual : null,
+    tolerance: fields.tolerance ?? fields.absolute_tolerance ?? fields.abs_tolerance ?? null,
     passed: boolValue(fields.passed),
     generation: integerValue(fields.generation),
     runtimeSession: fields.runtime_session ?? null,
@@ -680,6 +682,14 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const evidenceRefs = latest ? [`worker-log:output_oracle:${latest.oracleId}`] : [];
   const expectedActualMatch = latest !== null && Object.is(latest.expected, latest.actual);
+  const valueCompatibility = latest !== null
+    ? gpuHmrOracleValuesCompatible(latest.expected, latest.actual, latest.tolerance)
+    : {
+        compatible: false,
+        exact: false,
+        toleranceApplied: false,
+        toleranceValid: false,
+      };
 
   return {
     total_count: records.length,
@@ -694,13 +704,17 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
     runtime_session_consistent: runtimeSessionConsistent,
     deterministic_output_observed: latest !== null && latest.actual !== null && runtimeSessionConsistent,
     deterministic_oracle_provided: latest !== null && latest.expected !== null && typeof latest.kind === 'string',
-    deterministic_oracle_passed: latest?.passed === true && runtimeSessionConsistent && expectedActualMatch,
+    deterministic_oracle_passed: latest?.passed === true && runtimeSessionConsistent && valueCompatibility.compatible,
     expected_actual_match: expectedActualMatch,
+    expected_actual_compatible: valueCompatibility.compatible,
+    tolerance_applied: valueCompatibility.toleranceApplied,
+    tolerance_valid: valueCompatibility.toleranceValid,
     output_oracle: latest
       ? {
           kind: latest.kind,
           expected: latest.expected,
           actual: latest.actual,
+          tolerance: latest.tolerance,
           runtimeSession: latest.runtimeSession,
           evidenceRefs,
         }
