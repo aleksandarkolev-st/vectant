@@ -38,6 +38,19 @@ const HISTORICAL_TIMING_HINT_FIELDS: &[&str] = &[
     "lastCompileMs",
 ];
 
+const ACCEPTED_OUTPUT_ORACLE_KINDS: &[&str] = &[
+    "edit_contract",
+    "sentinel_buffer_value",
+    "kernel_checksum",
+    "kernel_side_checksum",
+    "render_target_hash",
+    "accumulation_buffer_hash",
+    "selected_pixels",
+    "selected_pixel_values",
+    "per_pass_checksum",
+    "dispatch_counter",
+];
+
 #[derive(Clone, Copy)]
 struct VerificationEvidenceCategory {
     name: &'static str,
@@ -197,6 +210,9 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
     if !oracle_requirement_present(candidate) {
         reason_codes.push("fission.output_oracle_missing".to_string());
     }
+    if output_oracle_proposal_present(candidate) && !output_oracle_proposal_valid(candidate) {
+        reason_codes.push("fission.output_oracle_invalid".to_string());
+    }
 
     if !target_symbols_exported(candidate) {
         reason_codes.push("fission.target_symbol_not_exported".to_string());
@@ -240,6 +256,7 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "safeExportSupersetSymbols": safe_export_superset_symbols(candidate),
         "safeExportSupersetEvidenceIds": safe_export_superset_evidence_ids(candidate),
         "narrowerRejectionCoverage": narrower_rejection_coverage(candidate),
+        "outputOracleContract": output_oracle_contract_summary(candidate),
         "originalHostLaunchMappingRequired": original_host_launch_mapping_required(candidate),
         "originalHostLaunchMappingId": candidate
             .get("originalHostLaunchMappingId")
@@ -434,10 +451,80 @@ fn loader_capability_present(value: Option<&Value>) -> bool {
 
 fn oracle_requirement_present(candidate: &Value) -> bool {
     non_empty_string(candidate.get("requiredOracleId"))
-        || candidate
-            .get("outputOracleProposal")
-            .and_then(Value::as_object)
-            .is_some_and(|object| !object.is_empty())
+        || output_oracle_proposal_valid(candidate)
+}
+
+fn output_oracle_proposal_present(candidate: &Value) -> bool {
+    candidate.get("outputOracleProposal").is_some()
+}
+
+fn output_oracle_proposal_valid(candidate: &Value) -> bool {
+    let Some(object) = candidate.get("outputOracleProposal").and_then(Value::as_object) else {
+        return false;
+    };
+    let Some(kind) = output_oracle_kind(candidate) else {
+        return false;
+    };
+    ACCEPTED_OUTPUT_ORACLE_KINDS.contains(&kind.as_str())
+        && output_oracle_expected_value_present(object)
+        && output_oracle_producer_present(object)
+        && output_oracle_target_or_readback_present(object)
+}
+
+fn output_oracle_kind(candidate: &Value) -> Option<String> {
+    let kind = candidate
+        .get("outputOracleProposal")
+        .and_then(|proposal| proposal.get("kind"))
+        .and_then(Value::as_str)?;
+    let normalized = normalized_scope_text(kind);
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn output_oracle_expected_value_present(object: &serde_json::Map<String, Value>) -> bool {
+    ["expected", "expectedValue", "expectedHash", "expectedIncrement"]
+        .iter()
+        .any(|field| object.get(*field).is_some_and(value_present))
+}
+
+fn output_oracle_producer_present(object: &serde_json::Map<String, Value>) -> bool {
+    ["producer", "producerSubsystem", "producerId"]
+        .iter()
+        .any(|field| non_empty_string(object.get(*field)))
+}
+
+fn output_oracle_target_or_readback_present(object: &serde_json::Map<String, Value>) -> bool {
+    [
+        "outputTargetId",
+        "outputTarget",
+        "readbackPlan",
+        "probeMode",
+        "target",
+    ]
+    .iter()
+    .any(|field| object.get(*field).is_some_and(value_present))
+}
+
+fn value_present(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(value) => !value.trim().is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(object) => !object.is_empty(),
+        Value::Bool(_) | Value::Number(_) => true,
+    }
+}
+
+fn output_oracle_contract_summary(candidate: &Value) -> Value {
+    json!({
+        "requiredOracleId": candidate
+            .get("requiredOracleId")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "proposalPresent": output_oracle_proposal_present(candidate),
+        "proposalValid": output_oracle_proposal_valid(candidate),
+        "proposalKind": output_oracle_kind(candidate),
+        "acceptedKinds": ACCEPTED_OUTPUT_ORACLE_KINDS,
+    })
 }
 
 fn target_symbols_exported(candidate: &Value) -> bool {
@@ -1118,6 +1205,72 @@ mod tests {
             .unwrap()
             .iter()
             .any(|code| code == "fission.output_oracle_missing"));
+    }
+
+    #[test]
+    fn accepts_candidate_with_valid_inline_output_oracle_proposal() {
+        let mut candidate = valid_candidate();
+        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate["outputOracleProposal"] = json!({
+            "kind": "selected_pixels",
+            "producer": "deterministic_probe",
+            "expected": [[0, 0, [1.0, 0.0, 0.0, 1.0]]],
+            "tolerance": 0.001,
+            "outputTargetId": "render-target:primary"
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["outputOracleContract"]["proposalValid"], true);
+        assert_eq!(report["outputOracleContract"]["proposalKind"], "selected_pixels");
+    }
+
+    #[test]
+    fn rejects_inline_output_oracle_with_unknown_kind() {
+        let mut candidate = valid_candidate();
+        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate["outputOracleProposal"] = json!({
+            "kind": "screenshot_changed",
+            "producer": "deterministic_probe",
+            "expected": "changed",
+            "outputTargetId": "render-target:primary"
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["outputOracleContract"]["proposalValid"], false);
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.output_oracle_missing"));
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.output_oracle_invalid"));
+    }
+
+    #[test]
+    fn rejects_inline_output_oracle_without_expected_value() {
+        let mut candidate = valid_candidate();
+        candidate.as_object_mut().unwrap().remove("requiredOracleId");
+        candidate["outputOracleProposal"] = json!({
+            "kind": "dispatch_counter",
+            "producer": "deterministic_probe",
+            "outputTargetId": "dispatch-counter:main"
+        });
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.output_oracle_invalid"));
     }
 
     #[test]
