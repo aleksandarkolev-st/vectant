@@ -342,6 +342,21 @@ function fissionProofUsable(proof) {
     && compactStringList(proof.evidenceRefs).length > 0;
 }
 
+function sourceProofRequiresFission(sourceProofs) {
+  return sourceProofs.some((proof) => {
+    if (!proof || typeof proof !== 'object') return false;
+    if (proof.partialArtifactReplacement === true || proof.partialModule === true) return true;
+    const label = String(proof.label ?? proof.resultLabel ?? '').trim().toLowerCase();
+    const artifactKind = String(
+      proof.selectedArtifactKind ?? proof.requestedArtifactKind ?? proof.artifactKind ?? '',
+    ).trim().toLowerCase();
+    return label === 'gpu-hmr-partial'
+      || artifactKind.includes('partial')
+      || artifactKind.includes('source_include')
+      || artifactKind.includes('kernel_region');
+  });
+}
+
 function artifactTransportProofUsable(proof) {
   if (!proof || typeof proof !== 'object') return false;
   const evidenceRefs = compactStringList([
@@ -1359,11 +1374,15 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
     observation.originalHostPathRequired === true || originalHostPathProof.required === true;
   const originalHostPathAccepted =
     !originalHostPathRequired || originalHostPathProofUsable(originalHostPathProof);
+  const partialArtifactReplacementRequiresFission =
+    observation.partialArtifactReplacement === true || sourceProofRequiresFission(sourceProofs);
+  const fissionProofRequiredByObservation =
+    observation.fissionProofRequired === true || partialArtifactReplacementRequiresFission;
   const fissionProof = observation.fissionProof && typeof observation.fissionProof === 'object'
     ? observation.fissionProof
-    : classifyGpuHmrFissionProof({ required: observation.fissionProofRequired === true });
+    : classifyGpuHmrFissionProof({ required: fissionProofRequiredByObservation });
   const fissionProofRequired =
-    observation.fissionProofRequired === true || fissionProof.required === true;
+    fissionProofRequiredByObservation || fissionProof.required === true;
   const fissionProofAccepted = !fissionProofRequired || fissionProofUsable(fissionProof);
   const artifactTransportProof =
     observation.artifactTransportProof && typeof observation.artifactTransportProof === 'object'
@@ -1478,7 +1497,9 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
         : fissionProof?.degradedState ?? 'gpu-hmr-fission-unverified',
       degradedReason: fissionProofAccepted
         ? null
-        : fissionProof?.degradedReason ?? 'fission_candidate_verification_not_proven',
+        : fissionProof?.degradedReason ?? (fissionProof?.observed === true
+          ? 'fission_candidate_verification_not_proven'
+          : 'fission_candidate_verification_not_observed'),
     });
   }
   if (originalHostPathRequired) {
@@ -1533,6 +1554,7 @@ export function classifyGpuHmrFullRuntimeProof(observation = {}) {
       originalHostPathRequired,
       originalHostPathProven: originalHostPathAccepted,
       fissionProofRequired,
+      partialArtifactReplacementRequiresFission,
       fissionProofObserved: fissionProof.observed === true,
       fissionProofProven: fissionProofUsable(fissionProof),
       artifactTransportProven: artifactTransportAccepted,

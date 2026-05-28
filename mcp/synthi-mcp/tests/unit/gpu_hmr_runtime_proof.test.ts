@@ -1889,6 +1889,35 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(summarizeGpuHmrFullRuntimeProof(proof)).toContain("blocked=fission-candidate-verification");
   });
 
+  it("requires fission verifier evidence for partial artifact replacements", () => {
+    const proof = classifyGpuHmrFullRuntimeProof({
+      sourceProofs: [{
+        resultState: "gpu-hmr-abi-proven",
+        label: "gpu-hmr-partial",
+        selectedArtifactKind: "source_include_bridge",
+      }],
+      abiProof: acceptedAbiProof(),
+      artifactTransportProof: acceptedArtifactTransportProof(),
+      epochProof: retiredEpochProof(),
+      dispatchProof: safeDispatchProof(),
+      outputProof: classifyGpuHmrOutputProof({
+        dispatchProof: safeDispatchProof(),
+        deterministicOutputObserved: true,
+        deterministicOracleProvided: true,
+        deterministicOraclePassed: true,
+        outputOracle: deterministicOutputOracle(),
+      }),
+      hostPreservationProof: preservedHostProof(),
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedState).toBe("gpu-hmr-fission-unverified");
+    expect(proof.degradedReason).toBe("fission_candidate_verification_not_observed");
+    expect(proof.fullRuntimeProven).toBe(false);
+    expect(proof.componentStates.fissionProofRequired).toBe(true);
+    expect(proof.componentStates.partialArtifactReplacementRequiresFission).toBe(true);
+  });
+
   it("allows full runtime proof when required fission verifier evidence passes", () => {
     const proof = classifyGpuHmrFullRuntimeProof({
       sourceProofs: [{ resultState: "gpu-hmr-abi-proven" }],
