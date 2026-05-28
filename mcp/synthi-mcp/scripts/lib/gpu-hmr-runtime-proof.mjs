@@ -53,6 +53,11 @@ const ACCEPTED_OUTPUT_ORACLE_KINDS = new Set([
   'buffer_checksum',
 ]);
 
+export function gpuHmrOutputOracleKindAccepted(kind) {
+  return typeof kind === 'string'
+    && ACCEPTED_OUTPUT_ORACLE_KINDS.has(kind.trim().toLowerCase());
+}
+
 function proofStateRank(state) {
   return typeof state === 'string' ? GPU_HMR_PROOF_STATE_RANKS.get(state) ?? 0 : 0;
 }
@@ -551,9 +556,7 @@ export function classifyGpuHmrOutputProof(observation = {}) {
   const oracleKind = typeof rawOracle.kind === 'string' && rawOracle.kind.trim()
     ? rawOracle.kind.trim()
     : null;
-  const normalizedOracleKind = oracleKind?.toLowerCase() ?? null;
-  const oracleKindAccepted = normalizedOracleKind !== null
-    && ACCEPTED_OUTPUT_ORACLE_KINDS.has(normalizedOracleKind);
+  const oracleKindAccepted = gpuHmrOutputOracleKindAccepted(oracleKind);
   const oracleEvidenceRefs = Array.isArray(rawOracle.evidenceRefs)
     ? rawOracle.evidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
     : [];

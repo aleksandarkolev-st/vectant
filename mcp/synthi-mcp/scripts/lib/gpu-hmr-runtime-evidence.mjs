@@ -2,6 +2,7 @@ import {
   classifyGpuHmrEpochSwapProof,
   classifyGpuHmrHostPreservationProof,
   classifyGpuHmrOriginalHostPathProof,
+  gpuHmrOutputOracleKindAccepted,
   gpuHmrOracleValuesCompatible,
 } from './gpu-hmr-runtime-proof.mjs';
 
@@ -770,6 +771,7 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
   const runtimeSessionConsistent = runtimeSessionIds.length <= 1;
   const evidenceRefs = latest ? [`worker-log:output_oracle:${latest.oracleId}`] : [];
   const expectedActualMatch = latest !== null && Object.is(latest.expected, latest.actual);
+  const oracleKindAccepted = latest !== null && gpuHmrOutputOracleKindAccepted(latest.kind);
   const valueCompatibility = latest !== null
     ? gpuHmrOracleValuesCompatible(latest.expected, latest.actual, latest.tolerance)
     : {
@@ -791,8 +793,11 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
     runtime_session_observed: latest !== null,
     runtime_session_consistent: runtimeSessionConsistent,
     deterministic_output_observed: latest !== null && latest.actual !== null && runtimeSessionConsistent,
-    deterministic_oracle_provided: latest !== null && latest.expected !== null && typeof latest.kind === 'string',
-    deterministic_oracle_passed: latest?.passed === true && runtimeSessionConsistent && valueCompatibility.compatible,
+    deterministic_oracle_provided:
+      latest !== null && latest.expected !== null && oracleKindAccepted,
+    deterministic_oracle_passed:
+      latest?.passed === true && runtimeSessionConsistent && oracleKindAccepted && valueCompatibility.compatible,
+    oracle_kind_accepted: oracleKindAccepted,
     expected_actual_match: expectedActualMatch,
     expected_actual_compatible: valueCompatibility.compatible,
     tolerance_applied: valueCompatibility.toleranceApplied,
@@ -809,6 +814,7 @@ export function runtimeOutputOracleEvidence(lines, observation = {}) {
           readbackTimestamp: latest.readbackTimestamp,
           artifactId: latest.artifactId,
           visualEvidenceRef: latest.visualEvidenceRef,
+          kindAccepted: oracleKindAccepted,
           evidenceRefs,
         }
       : null,

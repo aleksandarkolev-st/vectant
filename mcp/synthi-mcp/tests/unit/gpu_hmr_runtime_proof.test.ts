@@ -399,6 +399,19 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.deterministic_oracle_passed).toBe(false);
   });
 
+  it("does not mark runtime oracle evidence as passed for unaccepted oracle kinds", () => {
+    const evidence = runtimeOutputOracleEvidence([
+      "[gpu-runtime-boundary] output_oracle id=probe.visual kind=visual_change_only expected=changed actual=changed passed=true generation=3 runtime_session=pid1",
+    ]);
+
+    expect(evidence.total_count).toBe(1);
+    expect(evidence.oracle_kind_accepted).toBe(false);
+    expect(evidence.deterministic_output_observed).toBe(true);
+    expect(evidence.deterministic_oracle_provided).toBe(false);
+    expect(evidence.deterministic_oracle_passed).toBe(false);
+    expect(evidence.output_oracle?.kindAccepted).toBe(false);
+  });
+
   it("accepts tolerant numeric runtime oracle records only inside tolerance", () => {
     const evidence = runtimeOutputOracleEvidence([
       "[gpu-runtime-boundary] output_oracle id=probe.scalar kind=sentinel_buffer_value producer=runtime_probe expected=1.0 actual=1.005 tolerance=0.01 passed=true generation=3 runtime_session=pid1 output_target_id=target:scalar readback_timestamp=1779980000000 artifact_id=artifact:scalar",
