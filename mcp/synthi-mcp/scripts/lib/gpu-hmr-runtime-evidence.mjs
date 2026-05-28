@@ -86,6 +86,91 @@ function epochEvidenceRefs(publication, retirement) {
   return refs;
 }
 
+function epochGraphNodeId(generation) {
+  return Number.isFinite(generation) ? `generation:${generation}` : null;
+}
+
+function addEpochGraphNode(nodes, generation, state) {
+  const id = epochGraphNodeId(generation);
+  if (!id) return;
+  const existing = nodes.get(id);
+  if (existing) {
+    if (state && existing.state !== 'retired') existing.state = state;
+    return;
+  }
+  nodes.set(id, {
+    id,
+    generation,
+    state: state ?? 'observed',
+  });
+}
+
+function buildEpochGenerationGraph(records, latestPublication, retirement, publicationRetirementComplete) {
+  if (!latestPublication) return null;
+  const nodes = new Map();
+  const edges = [];
+  for (const record of records) {
+    if (!Number.isFinite(record.previousGeneration) || !Number.isFinite(record.activeGeneration)) {
+      continue;
+    }
+    const from = epochGraphNodeId(record.previousGeneration);
+    const to = epochGraphNodeId(record.activeGeneration);
+    if (!from || !to) continue;
+    if (record.event === 'published') {
+      addEpochGraphNode(nodes, record.previousGeneration, 'superseded');
+      addEpochGraphNode(nodes, record.activeGeneration, 'published');
+      edges.push({
+        kind: 'publish',
+        from,
+        to,
+        previousGeneration: record.previousGeneration,
+        activeGeneration: record.activeGeneration,
+        runtimeSession: record.runtimeSession,
+        evidenceRef: `worker-log:dispatcher_epoch:published:${record.previousGeneration}->${record.activeGeneration}`,
+      });
+    } else if (record.event === 'retired') {
+      addEpochGraphNode(nodes, record.previousGeneration, 'retired');
+      addEpochGraphNode(nodes, record.activeGeneration, 'published');
+      edges.push({
+        kind: 'retire',
+        from,
+        to,
+        previousGeneration: record.previousGeneration,
+        activeGeneration: record.activeGeneration,
+        runtimeSession: record.runtimeSession,
+        evidenceRef: `worker-log:dispatcher_epoch:retired:${record.previousGeneration}->${record.activeGeneration}`,
+      });
+    }
+  }
+
+  const latestPreviousId = epochGraphNodeId(latestPublication.previousGeneration);
+  if (latestPreviousId && nodes.has(latestPreviousId)) {
+    nodes.get(latestPreviousId).state = publicationRetirementComplete
+      ? 'not-required'
+      : retirement
+        ? 'retired'
+        : 'pending-retirement';
+  }
+
+  return {
+    schemaVersion: 'synthi.gpu.epoch_graph.v1',
+    runtimeSessionIds: compactStringList(records.map((record) => record.runtimeSession)),
+    latestPublication: {
+      previousGeneration: latestPublication.previousGeneration,
+      activeGeneration: latestPublication.activeGeneration,
+    },
+    retirementState: publicationRetirementComplete
+      ? 'not-required'
+      : retirement
+        ? 'retired'
+        : 'pending',
+    retirementRequired: !publicationRetirementComplete,
+    matchingRetirementObserved: retirement !== null,
+    nodes: [...nodes.values()].sort((left, right) => left.generation - right.generation),
+    edges,
+  };
+}
+
 export function runtimeEpochSwapEvidence(lines) {
   const records = (Array.isArray(lines) ? lines : [])
     .filter((line) => /\bdispatcher_epoch\b/i.test(String(line ?? '')))
@@ -119,6 +204,12 @@ export function runtimeEpochSwapEvidence(lines) {
     latestPublication?.oldGenerationRetired === true
     && latestPublication?.retiredModules === 0;
   const oldGenerationRetired = publicationRetirementComplete || retirement !== null;
+  const epochGenerationGraph = buildEpochGenerationGraph(
+    records,
+    latestPublication,
+    retirement,
+    publicationRetirementComplete,
+  );
   const streamScope = latestPublication?.streamScope ?? null;
   const streamIds = latestPublication?.streamIds ?? [];
   const streamScopeEvidenceSupported = streamScopeSupported(streamScope, streamIds);
@@ -138,6 +229,8 @@ export function runtimeEpochSwapEvidence(lines) {
     runtime_session_ids: runtimeSessionIds,
     runtime_session_consistent: runtimeSessionConsistent,
     generation_lineage_observed: generationLineageObserved,
+    epoch_generation_graph: epochGenerationGraph,
+    epoch_generation_graph_observed: epochGenerationGraph !== null,
     dispatch_table_hash_observed: dispatchTableHashObserved,
     dispatch_table_hash_before_observed: dispatchTableHashBeforeObserved,
     dispatch_table_hash_after_observed: dispatchTableHashAfterObserved,
@@ -164,6 +257,7 @@ export function epochSwapProofFromRuntimeEvidence(lines) {
   const proof = classifyGpuHmrEpochSwapProof({
     published: evidence.published,
     generationLineageObserved: evidence.generation_lineage_observed,
+    epochGenerationGraph: evidence.epoch_generation_graph,
     dispatchTableHashObserved: evidence.dispatch_table_hash_observed,
     dispatchTableHashBeforeObserved: evidence.dispatch_table_hash_before_observed,
     dispatchTableHashAfterObserved: evidence.dispatch_table_hash_after_observed,

@@ -48,11 +48,60 @@ function acceptedAbiProof() {
   });
 }
 
+function epochGenerationGraph({
+  previousGeneration = 2,
+  activeGeneration = 3,
+  runtimeSession = "runtime-session:test",
+  retirementState = "retired",
+} = {}) {
+  const runtimeSessionFields = runtimeSession ? { runtimeSession } : {};
+  return {
+    schemaVersion: "synthi.gpu.epoch_graph.v1",
+    runtimeSessionIds: runtimeSession ? [runtimeSession] : [],
+    latestPublication: { previousGeneration, activeGeneration },
+    retirementState,
+    retirementRequired: retirementState !== "not-required",
+    matchingRetirementObserved: retirementState === "retired",
+    nodes: [
+      {
+        id: `generation:${previousGeneration}`,
+        generation: previousGeneration,
+        state: retirementState === "retired" ? "retired" : "pending-retirement",
+      },
+      {
+        id: `generation:${activeGeneration}`,
+        generation: activeGeneration,
+        state: "published",
+      },
+    ],
+    edges: [
+      {
+        kind: "publish",
+        from: `generation:${previousGeneration}`,
+        to: `generation:${activeGeneration}`,
+        previousGeneration,
+        activeGeneration,
+        ...runtimeSessionFields,
+      },
+      ...(retirementState === "retired"
+        ? [{
+            kind: "retire",
+            from: `generation:${previousGeneration}`,
+            to: `generation:${activeGeneration}`,
+            previousGeneration,
+            activeGeneration,
+            ...runtimeSessionFields,
+          }]
+        : []),
+    ],
+  };
+}
+
 function retiredEpochProof() {
   return classifyGpuHmrEpochSwapProof({
     published: true,
     runtimeSessionIds: ["runtime-session:test"],
-    generationLineageObserved: true,
+    epochGenerationGraph: epochGenerationGraph(),
     dispatchTableHashObserved: true,
     dispatchTableHashBeforeObserved: true,
     dispatchTableHashAfterObserved: true,
@@ -728,15 +777,40 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
     expect(proof.degradedState).toBeNull();
     expect(proof.runtimeSessionObserved).toBe(true);
+    expect(proof.generationGraphValid).toBe(true);
     expect(proof.streamOrderingProven).toBe(true);
     expect(summarizeGpuHmrEpochSwapProof(proof)).toContain("retired=yes");
+  });
+
+  it("does not prove epoch swap from a lineage boolean without a generation graph", () => {
+    const proof = classifyGpuHmrEpochSwapProof({
+      published: true,
+      runtimeSessionIds: ["runtime-session:test"],
+      generationLineageObserved: true,
+      dispatchTableHashObserved: true,
+      dispatchTableHashBeforeObserved: true,
+      dispatchTableHashAfterObserved: true,
+      dispatchTableHashChanged: true,
+      changedEntriesObserved: true,
+      streamOrderingProven: true,
+      streamScope: "affected",
+      streamIds: ["default"],
+      retirementTracked: true,
+      oldGenerationRetired: true,
+      evidenceRefs: ["evidence:epoch:no-graph"],
+    });
+
+    expect(proof.resultState).toBe("gpu-hmr-abi-proven");
+    expect(proof.generationGraphObserved).toBe(false);
+    expect(proof.degradedState).toBe("gpu-hmr-epoch-swap-unverified");
+    expect(proof.degradedReason).toBe("epoch_generation_graph_not_collected");
   });
 
   it("keeps pending epoch retirement as a blocker for higher proof", () => {
     const proof = classifyGpuHmrEpochSwapProof({
       published: true,
       runtimeSessionIds: ["runtime-session:test"],
-      generationLineageObserved: true,
+      epochGenerationGraph: epochGenerationGraph({ retirementState: "pending" }),
       dispatchTableHashObserved: true,
       dispatchTableHashBeforeObserved: true,
       dispatchTableHashAfterObserved: true,
@@ -757,7 +831,7 @@ describe("GPU HMR runtime output proof classification", () => {
   it("does not prove epoch swap without runtime session evidence", () => {
     const proof = classifyGpuHmrEpochSwapProof({
       published: true,
-      generationLineageObserved: true,
+      epochGenerationGraph: epochGenerationGraph({ runtimeSession: null }),
       dispatchTableHashObserved: true,
       dispatchTableHashBeforeObserved: true,
       dispatchTableHashAfterObserved: true,
@@ -780,7 +854,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrEpochSwapProof({
       published: true,
       runtimeSessionIds: ["runtime-session:test"],
-      generationLineageObserved: true,
+      epochGenerationGraph: epochGenerationGraph(),
       dispatchTableHashObserved: true,
       dispatchTableHashBeforeObserved: true,
       dispatchTableHashAfterObserved: true,
@@ -805,10 +879,17 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(evidence.stream_ordering_proven).toBe(true);
     expect(evidence.stream_ids).toEqual(["default"]);
     expect(evidence.runtime_session_ids).toEqual(["pid1"]);
+    expect(evidence.epoch_generation_graph?.schemaVersion).toBe("synthi.gpu.epoch_graph.v1");
+    expect(evidence.epoch_generation_graph?.nodes.map((node) => node.id)).toEqual([
+      "generation:2",
+      "generation:3",
+    ]);
+    expect(evidence.epoch_generation_graph?.retirementState).toBe("retired");
     expect(evidence.dispatch_table_hash_before_observed).toBe(true);
     expect(evidence.dispatch_table_hash_after_observed).toBe(true);
     expect(proof.resultState).toBe("gpu-hmr-epoch-swap-proven");
     expect(proof.degradedState).toBeNull();
+    expect(proof.generationGraphValid).toBe(true);
     expect(proof.evidenceRefs).toEqual([
       "worker-log:dispatcher_epoch:published:2->3",
       "worker-log:dispatcher_epoch:retired:2->3",
@@ -948,7 +1029,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrEpochSwapProof({
       published: true,
       runtimeSessionIds: ["runtime-session:test"],
-      generationLineageObserved: true,
+      epochGenerationGraph: epochGenerationGraph(),
       dispatchTableHashObserved: true,
       dispatchTableHashBeforeObserved: true,
       dispatchTableHashAfterObserved: true,
