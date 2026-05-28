@@ -251,6 +251,10 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         reason_codes.push("fission.original_host_launch_mapping_missing".to_string());
     }
 
+    if ai_proposal_id_required(candidate) && !non_empty_string(candidate.get("aiProposalId")) {
+        reason_codes.push("fission.ai_proposal_id_missing".to_string());
+    }
+
     let status = if reason_codes.is_empty() {
         reason_codes.push("fission.candidate_verified".to_string());
         "pass"
@@ -264,6 +268,7 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "islandId": candidate.get("islandId").cloned().unwrap_or(Value::Null),
         "sourceEditId": candidate.get("sourceEditId").cloned().unwrap_or(Value::Null),
         "aiProposalId": candidate.get("aiProposalId").cloned().unwrap_or(Value::Null),
+        "aiProposalIdRequired": ai_proposal_id_required(candidate),
         "reasonCodes": reason_codes,
         "deterministicVerifierEvidenceIds": deterministic_verifier_evidence_ids(candidate),
         "nonAuthoritativeEvidenceIds": non_authoritative_evidence_ids(candidate),
@@ -864,6 +869,43 @@ fn non_authoritative_evidence_ids(candidate: &Value) -> Vec<String> {
         .into_iter()
         .filter(|id| !is_deterministic_verifier_evidence_id(id))
         .collect()
+}
+
+fn ai_proposal_id_required(candidate: &Value) -> bool {
+    bool_true(candidate.get("aiProposalIdRequired"))
+        || bool_true(candidate.get("aiGenerated"))
+        || bool_true(candidate.get("llmGenerated"))
+        || ai_source_marker_present(candidate)
+        || non_authoritative_evidence_ids(candidate)
+            .iter()
+            .any(|id| text_indicates_ai_source(id))
+}
+
+fn ai_source_marker_present(candidate: &Value) -> bool {
+    [
+        "proposalSource",
+        "candidateSource",
+        "source",
+        "plannerSource",
+        "createdBy",
+    ]
+    .iter()
+    .any(|field| value_indicates_ai_source(candidate.get(*field)))
+}
+
+fn value_indicates_ai_source(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::String(value)) => text_indicates_ai_source(value),
+        Some(Value::Object(object)) => object.values().any(|value| value_indicates_ai_source(Some(value))),
+        Some(Value::Array(items)) => items.iter().any(|value| value_indicates_ai_source(Some(value))),
+        _ => false,
+    }
+}
+
+fn text_indicates_ai_source(value: &str) -> bool {
+    normalized_scope_text(value)
+        .split('_')
+        .any(|token| matches!(token, "ai" | "llm" | "model"))
 }
 
 fn original_host_launch_mapping_required(candidate: &Value) -> bool {
@@ -1709,6 +1751,40 @@ mod tests {
             .unwrap()
             .iter()
             .any(|code| code == "fission.deterministic_verifier_evidence_missing"));
+    }
+
+    #[test]
+    fn rejects_ai_marked_candidate_without_ai_proposal_id() {
+        let mut candidate = valid_candidate();
+        candidate["proposalSource"] = json!("ai_delta");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(report["aiProposalIdRequired"], true);
+        assert_eq!(report["aiProposalId"], Value::Null);
+        assert!(report["reasonCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "fission.ai_proposal_id_missing"));
+    }
+
+    #[test]
+    fn accepts_ai_marked_candidate_with_ai_proposal_id_and_deterministic_evidence() {
+        let mut candidate = valid_candidate();
+        candidate["proposalSource"] = json!({"planner": "llm_fission_planner"});
+        candidate["aiProposalId"] = json!("ai:fission:proposal:123");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "pass");
+        assert_eq!(report["aiProposalIdRequired"], true);
+        assert_eq!(report["aiProposalId"], "ai:fission:proposal:123");
+        assert_eq!(
+            report["deterministicVerifierEvidenceIds"],
+            json!(["evidence:source-map"])
+        );
     }
 
     #[test]
