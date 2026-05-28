@@ -287,12 +287,30 @@ fn parse_gpu_artifact_loader_transport(value: Option<&str>) -> ArtifactLoaderTra
 }
 
 #[cfg(feature = "gpu-hmr")]
-fn gpu_artifact_loader_transport_from_env() -> ArtifactLoaderTransport {
-    parse_gpu_artifact_loader_transport(
-        std::env::var("SYNTHI_GPU_HMR_ARTIFACT_LOADER_TRANSPORT")
-            .ok()
-            .as_deref(),
-    )
+fn gpu_artifact_loader_transport_for_reload(
+    configured_transport: Option<&str>,
+    artifact_blob: Option<&ReloadArtifactBlob>,
+) -> ArtifactLoaderTransport {
+    let normalized_transport = configured_transport
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+
+    match normalized_transport.as_deref() {
+        None | Some("auto") | Some("capability") | Some("capability_auto") => artifact_blob
+            .filter(|blob| !blob.bytes.is_empty())
+            .map(|_| ArtifactLoaderTransport::RamBytes)
+            .unwrap_or(ArtifactLoaderTransport::FilesystemPath),
+        Some(transport) => parse_gpu_artifact_loader_transport(Some(transport)),
+    }
+}
+
+#[cfg(feature = "gpu-hmr")]
+fn gpu_artifact_loader_transport_from_env_for_reload(
+    artifact_blob: Option<&ReloadArtifactBlob>,
+) -> ArtifactLoaderTransport {
+    let configured_transport = std::env::var("SYNTHI_GPU_HMR_ARTIFACT_LOADER_TRANSPORT").ok();
+    gpu_artifact_loader_transport_for_reload(configured_transport.as_deref(), artifact_blob)
 }
 
 // ============================================================
@@ -1652,6 +1670,10 @@ fn main() {
                             preserve_state: true,
                             timeout_ms: 5000,
                         };
+                        let artifact_loader_transport =
+                            gpu_artifact_loader_transport_from_env_for_reload(
+                                req.artifact_blob.as_ref(),
+                            );
 
                         if gpu_reload_inflight.contains_key(language) {
                             eprintln!(
@@ -1672,7 +1694,7 @@ fn main() {
                         let mut adapter = gpu_adapters.remove(language).unwrap_or_else(|| {
                             let mut adapter = GpuModuleAdapter::new(GpuModuleAdapterConfig {
                                 vendor,
-                                artifact_loader_transport: gpu_artifact_loader_transport_from_env(),
+                                artifact_loader_transport,
                                 ..Default::default()
                             });
                             if let Err(e) = adapter.initialize() {
@@ -2151,8 +2173,8 @@ mod tests {
     };
     #[cfg(feature = "gpu-hmr")]
     use super::{
-        gpu_reload_artifact_blob_from_path, parse_gpu_artifact_loader_transport,
-        ArtifactLoaderTransport,
+        gpu_artifact_loader_transport_for_reload, gpu_reload_artifact_blob_from_path,
+        parse_gpu_artifact_loader_transport, ArtifactLoaderTransport, ReloadArtifactBlob,
     };
     #[cfg(feature = "gpu-hmr")]
     use std::io::Write as _;
@@ -2288,6 +2310,67 @@ mod tests {
         assert_eq!(
             parse_gpu_artifact_loader_transport(Some("unknown")),
             ArtifactLoaderTransport::FilesystemPath
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn gpu_artifact_loader_transport_auto_prefers_runtime_ram_blob() {
+        let blob = ReloadArtifactBlob {
+            blob_id: "artifact:sha256:test".to_string(),
+            content_hash: "sha256:test".to_string(),
+            bytes: b"runtime-artifact".to_vec(),
+        };
+
+        assert_eq!(
+            gpu_artifact_loader_transport_for_reload(None, Some(&blob)),
+            ArtifactLoaderTransport::RamBytes
+        );
+        assert_eq!(
+            gpu_artifact_loader_transport_for_reload(Some("auto"), Some(&blob)),
+            ArtifactLoaderTransport::RamBytes
+        );
+        assert_eq!(
+            gpu_artifact_loader_transport_for_reload(Some("capability_auto"), Some(&blob)),
+            ArtifactLoaderTransport::RamBytes
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn gpu_artifact_loader_transport_auto_falls_back_without_runtime_ram_blob() {
+        let empty_blob = ReloadArtifactBlob {
+            blob_id: "artifact:sha256:empty".to_string(),
+            content_hash: "sha256:empty".to_string(),
+            bytes: Vec::new(),
+        };
+
+        assert_eq!(
+            gpu_artifact_loader_transport_for_reload(None, None),
+            ArtifactLoaderTransport::FilesystemPath
+        );
+        assert_eq!(
+            gpu_artifact_loader_transport_for_reload(Some("auto"), Some(&empty_blob)),
+            ArtifactLoaderTransport::FilesystemPath
+        );
+    }
+
+    #[cfg(feature = "gpu-hmr")]
+    #[test]
+    fn gpu_artifact_loader_transport_explicit_setting_overrides_auto_selection() {
+        let blob = ReloadArtifactBlob {
+            blob_id: "artifact:sha256:test".to_string(),
+            content_hash: "sha256:test".to_string(),
+            bytes: b"runtime-artifact".to_vec(),
+        };
+
+        assert_eq!(
+            gpu_artifact_loader_transport_for_reload(Some("module_load_path"), Some(&blob)),
+            ArtifactLoaderTransport::FilesystemPath
+        );
+        assert_eq!(
+            gpu_artifact_loader_transport_for_reload(Some("module_load_data"), None),
+            ArtifactLoaderTransport::RamBytes
         );
     }
 }
