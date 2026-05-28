@@ -15,6 +15,12 @@ const REQUIRED_STRING_FIELDS: &[&str] = &[
     "compileCommandHash",
 ];
 
+const REQUIRED_SHA256_DIGEST_FIELDS: &[&str] = &[
+    "dependencyClosureHash",
+    "compileRecipeHash",
+    "compileCommandHash",
+];
+
 const REQUIRED_NON_EMPTY_ARRAY_FIELDS: &[&str] = &[
     "sourcePaths",
     "sourceSpans",
@@ -166,6 +172,11 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
             reason_codes.push(format!("fission.{field}_missing"));
         }
     }
+    for field in REQUIRED_SHA256_DIGEST_FIELDS {
+        if !sha256_digest_string(candidate.get(*field)) {
+            reason_codes.push(format!("fission.{field}_invalid"));
+        }
+    }
 
     for field in REQUIRED_NON_EMPTY_ARRAY_FIELDS {
         if !non_empty_array(candidate.get(*field)) {
@@ -256,6 +267,7 @@ pub fn verify_fission_candidate(candidate: &Value) -> Value {
         "safeExportSupersetSymbols": safe_export_superset_symbols(candidate),
         "safeExportSupersetEvidenceIds": safe_export_superset_evidence_ids(candidate),
         "narrowerRejectionCoverage": narrower_rejection_coverage(candidate),
+        "hashFieldCoverage": hash_field_coverage(candidate),
         "outputOracleContract": output_oracle_contract_summary(candidate),
         "originalHostLaunchMappingRequired": original_host_launch_mapping_required(candidate),
         "originalHostLaunchMappingId": candidate
@@ -278,6 +290,25 @@ fn collect_candidates(value: &Value) -> Vec<Value> {
 
 fn non_empty_string(value: Option<&Value>) -> bool {
     value.and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty())
+}
+
+fn sha256_digest_string(value: Option<&Value>) -> bool {
+    let Some(value) = value.and_then(Value::as_str).map(str::trim) else {
+        return false;
+    };
+    let digest = value.strip_prefix("sha256:").unwrap_or(value);
+    digest.len() == 64 && digest.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn hash_field_coverage(candidate: &Value) -> Value {
+    json!({
+        "requiredFields": REQUIRED_SHA256_DIGEST_FIELDS,
+        "invalidFields": REQUIRED_SHA256_DIGEST_FIELDS
+            .iter()
+            .filter(|field| !sha256_digest_string(candidate.get(**field)))
+            .copied()
+            .collect::<Vec<_>>(),
+    })
 }
 
 fn non_empty_array(value: Option<&Value>) -> bool {
@@ -1102,10 +1133,10 @@ mod tests {
             "artifactKind": "device_partial",
             "safeExportSupersetReason": "helper symbol is verifier-owned dependency closure",
             "includeClosure": [],
-            "dependencyClosureHash": "sha256:dependency",
+            "dependencyClosureHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
             "abiMembraneId": "abi:membrane",
-            "compileRecipeHash": "sha256:recipe",
-            "compileCommandHash": "sha256:command",
+            "compileRecipeHash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "compileCommandHash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
             "loaderCapabilityRequirement": {"transport": "content_addressed_blob"},
             "requiredOracleId": "oracle:sentinel",
             "sourceMappingEvidenceIds": ["evidence:source-map"],
@@ -1161,6 +1192,33 @@ mod tests {
             .unwrap()
             .iter()
             .any(|code| code == "fission.abi_membrane_evidence_missing"));
+    }
+
+    #[test]
+    fn rejects_candidate_without_real_hash_field_digests() {
+        let mut candidate = valid_candidate();
+        candidate["dependencyClosureHash"] = json!("sha256:dependency");
+        candidate["compileRecipeHash"] = json!("not-a-digest");
+        candidate["compileCommandHash"] = json!("...");
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["hashFieldCoverage"]["invalidFields"],
+            json!(["dependencyClosureHash", "compileRecipeHash", "compileCommandHash"])
+        );
+        for reason in [
+            "fission.dependencyClosureHash_invalid",
+            "fission.compileRecipeHash_invalid",
+            "fission.compileCommandHash_invalid",
+        ] {
+            assert!(report["reasonCodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|code| code == reason));
+        }
     }
 
     #[test]
