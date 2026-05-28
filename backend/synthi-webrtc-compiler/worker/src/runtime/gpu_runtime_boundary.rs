@@ -578,6 +578,33 @@ fn record_launch_host_identities(
     }
 }
 
+fn record_original_host_path_event(
+    host_path_id: String,
+    dispatch_table_entry_id: String,
+    dispatch_boundary_observed: bool,
+) {
+    let generation = current_launch_generation();
+    let runtime_session = runtime_session_id().to_string();
+    {
+        let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
+        guard.original_host_paths.push(OriginalHostPathRecord {
+            host_path_id: host_path_id.clone(),
+            dispatch_table_entry_id: dispatch_table_entry_id.clone(),
+            dispatch_boundary_observed,
+            generation,
+            runtime_session_id: runtime_session.clone(),
+        });
+    }
+    eprintln!(
+        "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed={} host_path_id={} dispatch_table_entry_id={} generation={} runtime_session={}",
+        dispatch_boundary_observed,
+        log_token(&host_path_id),
+        log_token(&dispatch_table_entry_id),
+        generation,
+        runtime_session
+    );
+}
+
 #[no_mangle]
 pub extern "C" fn synthi_gpu_register_buffer(
     _gpu: *mut c_void,
@@ -677,25 +704,10 @@ pub extern "C" fn synthi_gpu_record_original_host_path(
     let host_path_id = cstr(host_path_id).unwrap_or_else(|| "<unknown>".to_string());
     let dispatch_table_entry_id =
         cstr(dispatch_table_entry_id).unwrap_or_else(|| "<unknown>".to_string());
-    let generation = current_launch_generation();
-    let runtime_session = runtime_session_id().to_string();
-    {
-        let mut guard = state().lock().expect("gpu runtime boundary mutex poisoned");
-        guard.original_host_paths.push(OriginalHostPathRecord {
-            host_path_id: host_path_id.clone(),
-            dispatch_table_entry_id: dispatch_table_entry_id.clone(),
-            dispatch_boundary_observed,
-            generation,
-            runtime_session_id: runtime_session.clone(),
-        });
-    }
-    eprintln!(
-        "[gpu-runtime-boundary] original_host_path event=attached attached=true dispatch_boundary_observed={} host_path_id={} dispatch_table_entry_id={} generation={} runtime_session={}",
+    record_original_host_path_event(
+        host_path_id,
+        dispatch_table_entry_id,
         dispatch_boundary_observed,
-        log_token(&host_path_id),
-        log_token(&dispatch_table_entry_id),
-        generation,
-        runtime_session
     );
 }
 
@@ -944,6 +956,14 @@ fn synthi_gpu_launch_raw_impl(
             None => (false, Some("launch record disappeared".to_string())),
         }
     };
+    if ok {
+        let kernel_hash = stable_hash64(&kernel_name);
+        record_original_host_path_event(
+            format!("synthi-gpu-launch-{kernel_hash:016x}"),
+            format!("dispatch-generation-{active_generation}-{kernel_hash:016x}"),
+            true,
+        );
+    }
     let dispatch_label = if stale_generation {
         "stale-pointer"
     } else if dispatcher.is_some() {
@@ -1416,6 +1436,7 @@ mod tests {
             Some("no GPU launch dispatcher installed")
         );
         assert!(managed_buffers_snapshot()[0].dirty);
+        assert!(original_host_path_records_snapshot().is_empty());
     }
 
     #[test]
@@ -1634,6 +1655,21 @@ mod tests {
         assert_eq!(
             launches[0].expected_generation,
             launches[0].active_generation
+        );
+
+        let host_paths = original_host_path_records_snapshot();
+        assert_eq!(host_paths.len(), 1);
+        assert!(host_paths[0]
+            .host_path_id
+            .starts_with("synthi-gpu-launch-"));
+        assert!(host_paths[0]
+            .dispatch_table_entry_id
+            .starts_with("dispatch-generation-"));
+        assert!(host_paths[0].dispatch_boundary_observed);
+        assert_eq!(host_paths[0].generation, launches[0].active_generation);
+        assert_eq!(
+            host_paths[0].runtime_session_id,
+            launches[0].runtime_session_id
         );
     }
 
