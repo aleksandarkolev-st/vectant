@@ -528,7 +528,12 @@ async function runtimeEpochSwapProofSince(checkpoint, timeoutMs = 5000) {
   );
 }
 
-async function runtimeHostPreservationProofSince(checkpoint, dispatchProof = null, timeoutMs = 5000) {
+async function runtimeHostPreservationProofSince(
+  checkpoint,
+  dispatchProof = null,
+  epochProof = null,
+  timeoutMs = 5000,
+) {
   const match = await awaitWorkerLogRegex(
     /\[gpu-runtime-boundary\]\s+host_identity\b/i,
     timeoutMs,
@@ -536,7 +541,10 @@ async function runtimeHostPreservationProofSince(checkpoint, dispatchProof = nul
   );
   return hostPreservationProofFromRuntimeEvidence(
     logEvidenceLines(match.window ?? match.tail ?? '', /\[gpu-runtime-boundary\]\s+host_identity\b/i),
-    { runtimeSessionIds: dispatchProof?.runtimeSessionIds ?? [] },
+    {
+      runtimeSessionIds: dispatchProof?.runtimeSessionIds ?? [],
+      epochProof,
+    },
   );
 }
 
@@ -2516,12 +2524,12 @@ async function phaseFlow(ctx) {
     visualFrameObserved: Boolean(inwardScreenshot),
     visualEvidenceRefs: inwardScreenshot ? [inwardScreenshot] : [],
   });
+  const inwardEpochProof = await runtimeEpochSwapProofSince(baselineStart);
   const inwardHostProof = recordRuntimeHostPreservationProof(
     'FLOW',
     'inward host preservation proof',
-    await runtimeHostPreservationProofSince(baselineStart, inwardDispatchProof),
+    await runtimeHostPreservationProofSince(baselineStart, inwardDispatchProof, inwardEpochProof.proof),
   );
-  const inwardEpochProof = await runtimeEpochSwapProofSince(baselineStart);
   recordRuntimeFullProof('FLOW', 'inward full runtime proof ladder', {
     sourceProof: baselineGpuProof,
     abiProof: baselineAbiProof,
@@ -2619,12 +2627,12 @@ async function phaseFlow(ctx) {
     visualFrameObserved: Boolean(outwardScreenshot),
     visualEvidenceRefs: outwardScreenshot ? [outwardScreenshot] : [],
   });
+  const outwardEpochProof = await runtimeEpochSwapProofSince(flipStart);
   const outwardHostProof = recordRuntimeHostPreservationProof(
     'FLOW',
     'outward host preservation proof',
-    await runtimeHostPreservationProofSince(flipStart, outwardDispatchProof),
+    await runtimeHostPreservationProofSince(flipStart, outwardDispatchProof, outwardEpochProof.proof),
   );
-  const outwardEpochProof = await runtimeEpochSwapProofSince(flipStart);
   recordRuntimeFullProof('FLOW', 'outward full runtime proof ladder', {
     sourceProof: flipGpuProof,
     abiProof: flipAbiProof,

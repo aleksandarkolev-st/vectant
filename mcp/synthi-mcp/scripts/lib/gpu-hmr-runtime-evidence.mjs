@@ -336,8 +336,59 @@ function hostIdentityRoleCategory(role) {
   return null;
 }
 
+function generationLineageFromValue(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (Array.isArray(value)) {
+    if (value.length < 2) return null;
+    const previousGeneration = integerValue(value[0]);
+    const activeGeneration = integerValue(value[1]);
+    return previousGeneration !== null && activeGeneration !== null && activeGeneration > previousGeneration
+      ? { previousGeneration, activeGeneration }
+      : null;
+  }
+  const nested =
+    value.latestPublication
+    ?? value.latest_publication
+    ?? value.epochGenerationGraph
+    ?? value.epoch_generation_graph
+    ?? value.generationGraph
+    ?? value.generation_graph
+    ?? null;
+  const previousGeneration = integerValue(
+    value.previousGeneration
+    ?? value.previous_generation
+    ?? value.fromGeneration
+    ?? value.from_generation
+  );
+  const activeGeneration = integerValue(
+    value.activeGeneration
+    ?? value.active_generation
+    ?? value.toGeneration
+    ?? value.to_generation
+  );
+  if (previousGeneration !== null && activeGeneration !== null && activeGeneration > previousGeneration) {
+    return { previousGeneration, activeGeneration };
+  }
+  return generationLineageFromValue(nested);
+}
+
+function expectedHostIdentityGenerationLineage(observation = {}) {
+  return generationLineageFromValue(observation.expectedGenerationLineage)
+    ?? generationLineageFromValue(observation.expected_generation_lineage)
+    ?? generationLineageFromValue(observation.epochGenerationGraph)
+    ?? generationLineageFromValue(observation.epoch_generation_graph)
+    ?? generationLineageFromValue(observation.generationGraph)
+    ?? generationLineageFromValue(observation.generation_graph)
+    ?? generationLineageFromValue(observation.epochProof?.epochGenerationGraph)
+    ?? generationLineageFromValue(observation.epochProof?.epoch_generation_graph)
+    ?? generationLineageFromValue(observation.epochProof?.generationGraph)
+    ?? generationLineageFromValue(observation.epochProof)
+    ?? null;
+}
+
 export function runtimeHostIdentityEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
+  const expectedGenerationLineage = expectedHostIdentityGenerationLineage(observation);
   const rawRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) => /\bhost_identity\b/i.test(String(line ?? '')))
     .map(hostIdentityRecord);
@@ -361,17 +412,30 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
 
   const preservedRoles = [];
   const changedRoles = [];
+  const lineageMissingRoles = [];
   for (const [role, roleRecords] of byRole) {
-    const identities = new Set(roleRecords.map((record) => `${record.ptr}:${record.aux ?? ''}`));
-    const generations = new Set(roleRecords.map((record) => record.generation));
-    if (identities.size === 1 && generations.size >= 2) {
+    const relevantRecords = expectedGenerationLineage
+      ? roleRecords.filter((record) =>
+        record.generation === expectedGenerationLineage.previousGeneration
+        || record.generation === expectedGenerationLineage.activeGeneration)
+      : roleRecords;
+    const identities = new Set(relevantRecords.map((record) => `${record.ptr}:${record.aux ?? ''}`));
+    const generations = new Set(relevantRecords.map((record) => record.generation));
+    const lineageComplete = expectedGenerationLineage
+      ? generations.has(expectedGenerationLineage.previousGeneration)
+        && generations.has(expectedGenerationLineage.activeGeneration)
+      : generations.size >= 2;
+    if (identities.size === 1 && lineageComplete) {
       preservedRoles.push(role);
     } else if (identities.size > 1) {
       changedRoles.push(role);
+    } else if (expectedGenerationLineage && relevantRecords.length > 0 && !lineageComplete) {
+      lineageMissingRoles.push(role);
     }
   }
   preservedRoles.sort();
   changedRoles.sort();
+  lineageMissingRoles.sort();
   const preservedRoleCategories = compactStringList(
     preservedRoles.map((role) => hostIdentityRoleCategory(role)),
   );
@@ -390,6 +454,14 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     runtime_session_ids: runtimeSessionIds,
     runtime_session_observed: records.length > 0,
     runtime_session_consistent: runtimeSessionConsistent,
+    expected_generation_lineage: expectedGenerationLineage,
+    expected_generation_lineage_observed:
+      expectedGenerationLineage !== null
+      && preservedRoles.length > 0
+      && changedRoles.length === 0
+      && lineageMissingRoles.length === 0,
+    lineage_identity_roles_observed: expectedGenerationLineage ? preservedRoles : [],
+    lineage_identity_roles_missing: lineageMissingRoles,
     preserved_roles: preservedRoles,
     changed_roles: changedRoles,
     preserved_role_categories: preservedRoleCategories,
@@ -399,6 +471,7 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
       records.length > 0
       && runtimeSessionConsistent
       && changedRoles.length === 0
+      && lineageMissingRoles.length === 0
       && preservedRoles.length > 0
       && requiredRolesObserved,
     evidence_refs: preservedRoles.map((role) => `worker-log:host_identity:${role}`),

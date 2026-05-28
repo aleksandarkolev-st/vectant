@@ -1921,6 +1921,7 @@ async function collectRuntimeEvidence() {
     hostReplacementObserved: runtimeOwnership.primary_replacement_count > 0,
     runtimeSessionIds: runtimeSession.unique_ids,
     identityEvidenceRefs: runtimeIdentityChanges.evidence_refs,
+    epochProof: runtimeEpochSwap.proof,
   });
   const runtimeOriginalHostPath = originalHostPathProofFromRuntimeEvidence(workerEvidence, {
     required: CFG.requireOriginalHostPath,
