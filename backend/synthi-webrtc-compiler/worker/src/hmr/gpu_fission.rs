@@ -90,6 +90,25 @@ const REQUIRED_VERIFICATION_EVIDENCE_CATEGORIES: &[VerificationEvidenceCategory]
         fields: &["abiMembraneEvidenceIds", "abiEvidenceIds"],
         fallback_tokens: &["abi_membrane", "abi_layout"],
     },
+    VerificationEvidenceCategory {
+        name: "compile_recipe",
+        fields: &[
+            "compileRecipeEvidenceIds",
+            "compileCommandEvidenceIds",
+            "compileEvidenceIds",
+        ],
+        fallback_tokens: &["compile_recipe", "compile_command", "compile_invocation"],
+    },
+    VerificationEvidenceCategory {
+        name: "loader_capability",
+        fields: &["loaderCapabilityEvidenceIds", "loaderEvidenceIds"],
+        fallback_tokens: &["loader_capability", "loader_requirement", "module_load"],
+    },
+    VerificationEvidenceCategory {
+        name: "output_oracle",
+        fields: &["outputOracleEvidenceIds", "oracleEvidenceIds"],
+        fallback_tokens: &["output_oracle", "oracle_contract", "oracle_requirement"],
+    },
 ];
 
 pub fn verify_fission_candidates(value: &Value) -> Value {
@@ -1240,6 +1259,9 @@ mod tests {
             "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
             "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
             "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
+            "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
+            "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
+            "outputOracleEvidenceIds": ["evidence:output-oracle"],
             "verifierEvidenceIds": ["evidence:source-map"],
             "narrowerCandidateRejections": [
                 {
@@ -1326,6 +1348,9 @@ mod tests {
             "symbolOwnershipEvidenceIds",
             "dependencyClosureEvidenceIds",
             "abiMembraneEvidenceIds",
+            "compileRecipeEvidenceIds",
+            "loaderCapabilityEvidenceIds",
+            "outputOracleEvidenceIds",
         ] {
             candidate.as_object_mut().unwrap().remove(field);
         }
@@ -1334,7 +1359,10 @@ mod tests {
             "evidence:include-closure",
             "evidence:symbol-ownership",
             "evidence:dependency-closure",
-            "evidence:abi-membrane"
+            "evidence:abi-membrane",
+            "evidence:compile-recipe",
+            "evidence:loader-capability",
+            "evidence:output-oracle"
         ]);
 
         let report = verify_fission_candidate(&candidate);
@@ -1344,6 +1372,37 @@ mod tests {
             report["verificationEvidenceCoverage"]["missingCategories"],
             json!([])
         );
+    }
+
+    #[test]
+    fn rejects_candidate_without_compile_loader_and_oracle_evidence() {
+        let mut candidate = valid_candidate();
+        for field in [
+            "compileRecipeEvidenceIds",
+            "loaderCapabilityEvidenceIds",
+            "outputOracleEvidenceIds",
+        ] {
+            candidate.as_object_mut().unwrap().remove(field);
+        }
+
+        let report = verify_fission_candidate(&candidate);
+
+        assert_eq!(report["status"], "reject");
+        assert_eq!(
+            report["verificationEvidenceCoverage"]["missingCategories"],
+            json!(["compile_recipe", "loader_capability", "output_oracle"])
+        );
+        for reason in [
+            "fission.compile_recipe_evidence_missing",
+            "fission.loader_capability_evidence_missing",
+            "fission.output_oracle_evidence_missing",
+        ] {
+            assert!(report["reasonCodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|code| code == reason));
+        }
     }
 
     #[test]

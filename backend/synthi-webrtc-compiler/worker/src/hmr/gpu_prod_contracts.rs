@@ -4071,6 +4071,9 @@ mod tests {
             "symbolOwnershipEvidenceIds": ["evidence:symbol-ownership"],
             "dependencyClosureEvidenceIds": ["evidence:dependency-closure"],
             "abiMembraneEvidenceIds": ["evidence:abi-membrane"],
+            "compileRecipeEvidenceIds": ["evidence:compile-recipe"],
+            "loaderCapabilityEvidenceIds": ["evidence:loader-capability"],
+            "outputOracleEvidenceIds": ["evidence:output-oracle"],
             "verifierEvidenceIds": ["evidence:source-map", "evidence:abi-membrane"],
             "narrowerCandidateRejections": [
                 {
