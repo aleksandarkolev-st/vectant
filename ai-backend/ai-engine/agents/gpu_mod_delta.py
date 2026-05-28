@@ -365,7 +365,19 @@ def parse_gpu_diff_response(raw: str) -> dict:
     if plan not in VALID_RELOAD_PLANS:
         raise HTTPException(status_code=400, detail=f"invalid reload_plan {plan!r}")
     edits = validate_gpu_edit_list(parsed.get("edits", []))
-    return {"reload_plan": plan, "edits": edits}
+    result = {"reload_plan": plan, "edits": edits}
+    fission_candidate = validate_fission_candidate(parsed.get("fissionCandidate"))
+    if fission_candidate is not None:
+        result["fissionCandidate"] = fission_candidate
+    return result
+
+
+def validate_fission_candidate(candidate: object) -> Optional[dict]:
+    if candidate is None:
+        return None
+    if not isinstance(candidate, dict):
+        raise HTTPException(status_code=400, detail="`fissionCandidate` must be an object when present")
+    return dict(candidate)
 
 
 def _normalize_module(module: str) -> str:

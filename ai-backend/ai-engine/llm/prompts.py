@@ -4591,7 +4591,28 @@ Return a JSON object:
       "operation": "insert_after" | "insert_before" | "replace" | "delete",
       "anchor": "...exact existing substring...",
       "content": "...replacement or insertion..." }
-  ]
+  ],
+  "fissionCandidate": null | {
+    "islandId": "...",
+    "sourceEditId": "...",
+    "sourcePaths": ["..."],
+    "sourceSpans": [{ "path": "...", "startLine": 1, "endLine": 1 }],
+    "generatedRolePath": "...",
+    "targetSymbols": ["..."],
+    "exportedSymbolsExpected": ["..."],
+    "artifactKind": "...",
+    "includeClosure": ["..."],
+    "dependencyClosureHash": "...",
+    "abiMembraneId": "...",
+    "compileRecipeHash": "...",
+    "compileCommandHash": "...",
+    "loaderCapabilityRequirement": {},
+    "requiredOracleId": "...",
+    "outputOracleProposal": {},
+    "originalHostLaunchMappingId": "...",
+    "verifierEvidenceIds": ["..."],
+    "aiProposalId": "..."
+  }
 }
 
 Rules:
@@ -4619,6 +4640,12 @@ Rules:
   includes may only target emitted Synthi role files such as `shared.h` or
   `synthi_gpu_runtime.h`. Copy or adapt required structs, constants, and
   helpers into the generated roles instead.
+- `fissionCandidate` is optional proposal metadata only. Include it only when
+  the source mapping, symbol set, dependency closure, ABI membrane, loader
+  capability requirement, and output oracle requirement can be stated from the
+  provided evidence. Do not claim proof: the worker's deterministic verifier
+  will accept or reject the proposal. Use null when any required field would be
+  guessed.
 
 ARCHITECTURE CACHE:
 {ARCHITECTURE}

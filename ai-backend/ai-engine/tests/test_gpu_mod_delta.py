@@ -57,10 +57,34 @@ def test_parse_gpu_diff_response_normalizes_device_file_module():
     assert parsed["edits"][0]["module"] == "device"
 
 
+def test_parse_gpu_diff_response_preserves_fission_candidate_as_proposal():
+    raw = json.dumps(
+        {
+            "reload_plan": "device_only",
+            "edits": [],
+            "fissionCandidate": {
+                "islandId": "island:1",
+                "targetSymbols": ["step"],
+                "requiredOracleId": "oracle:1",
+            },
+        }
+    )
+    parsed = parse_gpu_diff_response(raw)
+    assert parsed["fissionCandidate"]["islandId"] == "island:1"
+    assert parsed["fissionCandidate"]["targetSymbols"] == ["step"]
+
+
 def test_gpu_prompt_contains_runtime_boundary_rule():
     prompt = build_gpu_diff_patch_prompt(GpuDiffPatchRequest(diff="@@"))
     assert "synthi_gpu_launch" in prompt
     assert "reload_plan" in prompt
+
+
+def test_gpu_prompt_marks_fission_candidate_as_proposal_only():
+    prompt = build_gpu_diff_patch_prompt(GpuDiffPatchRequest(diff="@@"))
+    assert "fissionCandidate" in prompt
+    assert "deterministic verifier" in prompt
+    assert "Use null" in prompt
 
 
 def test_gpu_prompt_requires_generated_role_anchors():
