@@ -389,6 +389,7 @@ function expectedHostIdentityGenerationLineage(observation = {}) {
 export function runtimeHostIdentityEvidence(lines, observation = {}) {
   const expectedSessions = expectedRuntimeSessionIds(observation);
   const expectedGenerationLineage = expectedHostIdentityGenerationLineage(observation);
+  const lineageRequired = observation.requireGenerationLineage !== false;
   const rawRecords = (Array.isArray(lines) ? lines : [])
     .filter((line) => /\bhost_identity\b/i.test(String(line ?? '')))
     .map(hostIdentityRecord);
@@ -443,6 +444,11 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     preservedRoleCategories.includes('runner_process')
     && preservedRoleCategories.includes('host_state')
     && preservedRoleCategories.includes('runtime_resource');
+  const expectedGenerationLineageObserved =
+    expectedGenerationLineage !== null
+    && preservedRoles.length > 0
+    && changedRoles.length === 0
+    && lineageMissingRoles.length === 0;
 
   return {
     raw_count: rawRecords.length,
@@ -455,11 +461,9 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     runtime_session_observed: records.length > 0,
     runtime_session_consistent: runtimeSessionConsistent,
     expected_generation_lineage: expectedGenerationLineage,
-    expected_generation_lineage_observed:
-      expectedGenerationLineage !== null
-      && preservedRoles.length > 0
-      && changedRoles.length === 0
-      && lineageMissingRoles.length === 0,
+    expected_generation_lineage_observed: expectedGenerationLineageObserved,
+    identity_snapshot_lineage_required: lineageRequired,
+    identity_snapshot_lineage_observed: expectedGenerationLineageObserved,
     lineage_identity_roles_observed: expectedGenerationLineage ? preservedRoles : [],
     lineage_identity_roles_missing: lineageMissingRoles,
     preserved_roles: preservedRoles,
@@ -470,6 +474,7 @@ export function runtimeHostIdentityEvidence(lines, observation = {}) {
     identity_checks_passed:
       records.length > 0
       && runtimeSessionConsistent
+      && (!lineageRequired || expectedGenerationLineageObserved)
       && changedRoles.length === 0
       && lineageMissingRoles.length === 0
       && preservedRoles.length > 0
@@ -489,6 +494,7 @@ export function hostPreservationProofFromRuntimeEvidence(lines, observation = {}
     hostReplacementObserved: observation.hostReplacementObserved === true,
     identityChecksPassed: evidence.identity_checks_passed,
     identitySnapshotObserved: evidence.identity_snapshot_observed,
+    identitySnapshotLineageObserved: evidence.identity_snapshot_lineage_observed,
     requiredIdentityRolesObserved: evidence.required_roles_observed,
     identityEvidenceRefs: [...evidence.evidence_refs, ...externalIdentityEvidenceRefs],
   });

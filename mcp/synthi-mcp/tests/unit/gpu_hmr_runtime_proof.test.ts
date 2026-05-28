@@ -153,6 +153,7 @@ function preservedHostProof() {
   return classifyGpuHmrHostPreservationProof({
     identityChecksPassed: true,
     identitySnapshotObserved: true,
+    identitySnapshotLineageObserved: true,
     requiredIdentityRolesObserved: true,
     identityEvidenceRefs: [
       "worker-log:host_identity:runner_process",
@@ -559,6 +560,7 @@ describe("GPU HMR runtime output proof classification", () => {
     const proof = classifyGpuHmrHostPreservationProof({
       identityChecksPassed: true,
       identitySnapshotObserved: true,
+      identitySnapshotLineageObserved: true,
       requiredIdentityRolesObserved: true,
       identityEvidenceRefs: [
         "worker-log:host_identity:runner_process",
@@ -597,6 +599,23 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.resultState).toBeNull();
     expect(proof.degradedReason).toBe("host_identity_snapshots_not_collected");
     expect(proof.identitySnapshotObserved).toBe(false);
+  });
+
+  it("does not prove host preservation from snapshots without epoch lineage", () => {
+    const proof = classifyGpuHmrHostPreservationProof({
+      identityChecksPassed: true,
+      identitySnapshotObserved: true,
+      requiredIdentityRolesObserved: true,
+      identityEvidenceRefs: [
+        "worker-log:host_identity:runner_process",
+        "worker-log:host_identity:core_state",
+        "worker-log:host_identity:stream",
+      ],
+    });
+
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("host_identity_epoch_lineage_not_collected");
+    expect(proof.identitySnapshotLineageObserved).toBe(false);
   });
 
   it("does not prove host preservation from non-runtime identity evidence refs", () => {
@@ -1224,7 +1243,7 @@ describe("GPU HMR runtime output proof classification", () => {
     expect(proof.degradedReason).toBe("epoch_evidence_refs_not_collected");
   });
 
-  it("proves host preservation from matching runtime identity snapshots across generations", () => {
+  it("proves host preservation from matching runtime identity snapshots across the expected epoch lineage", () => {
     const { evidence, proof } = hostPreservationProofFromRuntimeEvidence([
       "[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=2 runtime_session=pid1",
       "[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=3 runtime_session=pid1",
@@ -1234,10 +1253,13 @@ describe("GPU HMR runtime output proof classification", () => {
       "[gpu-runtime-boundary] host_identity role=renderer ptr=0x2000 aux=0 generation=3 runtime_session=pid1",
       "[gpu-runtime-boundary] host_identity role=stream ptr=0x3000 aux=0 generation=2 runtime_session=pid1",
       "[gpu-runtime-boundary] host_identity role=stream ptr=0x3000 aux=0 generation=3 runtime_session=pid1",
-    ]);
+    ], {
+      expectedGenerationLineage: { previousGeneration: 2, activeGeneration: 3 },
+    });
 
     expect(evidence.identity_checks_passed).toBe(true);
     expect(evidence.identity_snapshot_observed).toBe(true);
+    expect(evidence.identity_snapshot_lineage_observed).toBe(true);
     expect(evidence.preserved_roles).toEqual(["core_state", "renderer", "runner_process", "stream"]);
     expect(evidence.preserved_role_categories).toEqual(["host_state", "runner_process", "runtime_resource"]);
     expect(proof.resultState).toBe("gpu-hmr-host-preservation-proven");
@@ -1248,6 +1270,24 @@ describe("GPU HMR runtime output proof classification", () => {
       "worker-log:host_identity:runner_process",
       "worker-log:host_identity:stream",
     ]);
+  });
+
+  it("does not prove host preservation from runtime identities without expected epoch lineage", () => {
+    const { evidence, proof } = hostPreservationProofFromRuntimeEvidence([
+      "[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=2 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=runner_process ptr=0x900 aux=1 generation=3 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=2 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=core_state ptr=0x1000 aux=42 generation=3 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=stream ptr=0x3000 aux=0 generation=2 runtime_session=pid1",
+      "[gpu-runtime-boundary] host_identity role=stream ptr=0x3000 aux=0 generation=3 runtime_session=pid1",
+    ]);
+
+    expect(evidence.identity_snapshot_observed).toBe(true);
+    expect(evidence.identity_snapshot_lineage_required).toBe(true);
+    expect(evidence.identity_snapshot_lineage_observed).toBe(false);
+    expect(evidence.identity_checks_passed).toBe(false);
+    expect(proof.resultState).toBeNull();
+    expect(proof.degradedReason).toBe("host_identity_checks_not_collected");
   });
 
   it("proves host preservation only for snapshots spanning the expected epoch lineage", () => {
@@ -1311,6 +1351,7 @@ describe("GPU HMR runtime output proof classification", () => {
       "[gpu-runtime-boundary] host_identity role=stream ptr=0x3000 aux=0 generation=3 runtime_session=current-session",
     ], {
       runtimeSessionIds: ["current-session"],
+      expectedGenerationLineage: { previousGeneration: 2, activeGeneration: 3 },
     });
 
     expect(evidence.raw_count).toBe(8);

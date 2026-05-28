@@ -246,6 +246,7 @@ function hostPreservationProofUsable(proof) {
   return proof.resultState === 'gpu-hmr-host-preservation-proven'
     && proof.identityChecksPassed === true
     && proof.identitySnapshotObserved === true
+    && proof.identitySnapshotLineageObserved === true
     && proof.requiredIdentityRolesObserved === true
     && runtimeHostIdentityEvidenceRefs(proof.identityEvidenceRefs).length > 0;
 }
@@ -1145,6 +1146,9 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
     observation.hostReplacementObserved === true || observation.hostRestartObserved === true;
   const identityChecksPassed = observation.identityChecksPassed === true;
   const identitySnapshotObserved = observation.identitySnapshotObserved === true;
+  const identitySnapshotLineageObserved =
+    observation.identitySnapshotLineageObserved === true
+    || observation.expectedGenerationLineageObserved === true;
   const requiredIdentityRolesObserved = observation.requiredIdentityRolesObserved === true;
   const identityEvidenceRefs = Array.isArray(observation.identityEvidenceRefs)
     ? observation.identityEvidenceRefs.filter((ref) => typeof ref === 'string' && ref.trim())
@@ -1161,6 +1165,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
       degradedReason: 'host_runtime_replaced_or_restarted',
       identityChecksPassed: false,
       identitySnapshotObserved,
+      identitySnapshotLineageObserved,
       requiredIdentityRolesObserved,
       identityEvidenceObserved,
       identityEvidenceRefs,
@@ -1171,6 +1176,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
   if (
     identityChecksPassed
     && identitySnapshotObserved
+    && identitySnapshotLineageObserved
     && requiredIdentityRolesObserved
     && runtimeIdentityEvidenceObserved
   ) {
@@ -1181,6 +1187,7 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
       degradedReason: null,
       identityChecksPassed: true,
       identitySnapshotObserved: true,
+      identitySnapshotLineageObserved: true,
       requiredIdentityRolesObserved: true,
       identityEvidenceObserved: true,
       identityEvidenceRefs,
@@ -1195,14 +1202,17 @@ export function classifyGpuHmrHostPreservationProof(observation = {}) {
     degradedReason: identityChecksPassed
       ? !identitySnapshotObserved
         ? 'host_identity_snapshots_not_collected'
-        : !requiredIdentityRolesObserved
-          ? 'host_identity_required_roles_not_collected'
-          : !runtimeIdentityEvidenceObserved
-            ? 'host_identity_evidence_refs_not_collected'
-            : 'host_identity_checks_not_collected'
+        : !runtimeIdentityEvidenceObserved
+          ? 'host_identity_evidence_refs_not_collected'
+          : !identitySnapshotLineageObserved
+            ? 'host_identity_epoch_lineage_not_collected'
+            : !requiredIdentityRolesObserved
+              ? 'host_identity_required_roles_not_collected'
+              : 'host_identity_checks_not_collected'
       : 'host_identity_checks_not_collected',
     identityChecksPassed: false,
     identitySnapshotObserved,
+    identitySnapshotLineageObserved,
     requiredIdentityRolesObserved,
     identityEvidenceObserved,
     identityEvidenceRefs,
